@@ -1,0 +1,18 @@
+# Xcode
+**/xcuserdata/
+**/*.xcuserstate
+DerivedData/
+build/
+
+# Swift Package Manager
+.build/
+**/.swiftpm/
+Packages/*/.build/
+Packages/*/.swiftpm/
+
+# macOS
+.DS_Store
+
+# Generated coverage / logs
+*.xcresult
+*.log
