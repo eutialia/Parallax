@@ -88,3 +88,43 @@ struct FilePathTests {
         #expect(FilePath("/").parent == nil)
     }
 }
+
+@Suite("MediaInfo enums")
+struct MediaInfoTests {
+    @Test("Container enum covers expected values")
+    func containerCases() {
+        #expect(Container.allCases.contains(.mp4))
+        #expect(Container.allCases.contains(.mkv))
+        #expect(Container.allCases.contains(.hls))
+    }
+
+    @Test("VideoCodec parses from common identifier strings")
+    func videoCodecFromIdentifier() {
+        #expect(VideoCodec(identifier: "h264") == .h264)
+        #expect(VideoCodec(identifier: "hevc") == .hevc)
+        #expect(VideoCodec(identifier: "H.264") == .h264)
+        #expect(VideoCodec(identifier: "HEVC") == .hevc)
+        #expect(VideoCodec(identifier: "av1") == .av1)
+        #expect(VideoCodec(identifier: "unknown-codec") == nil)
+    }
+
+    @Test("AudioCodec parses common identifiers")
+    func audioCodecFromIdentifier() {
+        #expect(AudioCodec(identifier: "aac") == .aac)
+        #expect(AudioCodec(identifier: "eac3") == .eac3)
+        #expect(AudioCodec(identifier: "ac3") == .ac3)
+        #expect(AudioCodec(identifier: "flac") == .flac)
+        #expect(AudioCodec(identifier: "dts") == .dts)
+        #expect(AudioCodec(identifier: "truehd") == .trueHD)
+    }
+
+    @Test("HDRSupport union semantics")
+    func hdrUnion() {
+        #expect(HDRSupport.dolbyVision.includes(.dolbyVision))
+        #expect(HDRSupport.both.includes(.hdr10))
+        #expect(HDRSupport.both.includes(.dolbyVision))
+        #expect(HDRSupport.hdr10.includes(.hdr10))
+        #expect(!HDRSupport.hdr10.includes(.dolbyVision))
+        #expect(!HDRSupport.none.includes(.hdr10))
+    }
+}
