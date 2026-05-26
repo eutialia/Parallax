@@ -50,3 +50,41 @@ struct BitrateTests {
         #expect(Bitrate.megabits(8) == Bitrate.megabits(8))
     }
 }
+
+@Suite("FilePath value type")
+struct FilePathTests {
+    @Test("FilePath constructs from string components")
+    func fromString() {
+        let path = FilePath("/Media/Movies/Inception.mkv")
+        #expect(path.components == ["Media", "Movies", "Inception.mkv"])
+    }
+
+    @Test("FilePath handles leading and trailing slashes")
+    func trimsSlashes() {
+        #expect(FilePath("/Media/").components == ["Media"])
+        #expect(FilePath("Media").components == ["Media"])
+        #expect(FilePath("").components == [])
+        #expect(FilePath("/").components == [])
+    }
+
+    @Test("FilePath appending produces a new path")
+    func appending() {
+        let parent = FilePath("/Media")
+        let child = parent.appending("Movies")
+        #expect(child.components == ["Media", "Movies"])
+        #expect(child.appending("Inception.mkv").components == ["Media", "Movies", "Inception.mkv"])
+    }
+
+    @Test("FilePath renders to string with leading slash")
+    func rendersToString() {
+        #expect(FilePath("/Media/Movies").rendered == "/Media/Movies")
+        #expect(FilePath("").rendered == "/")
+    }
+
+    @Test("FilePath parent returns container directory")
+    func parent() {
+        #expect(FilePath("/Media/Movies/Inception.mkv").parent?.rendered == "/Media/Movies")
+        #expect(FilePath("/Media").parent?.rendered == "/")
+        #expect(FilePath("/").parent == nil)
+    }
+}
