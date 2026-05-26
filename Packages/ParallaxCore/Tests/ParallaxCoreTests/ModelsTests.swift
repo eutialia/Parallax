@@ -27,3 +27,26 @@ struct BytesTests {
         #expect(decoded == original)
     }
 }
+
+@Suite("Bitrate value type")
+struct BitrateTests {
+    @Test("Bitrate constructs from convenience factory methods")
+    func factories() {
+        #expect(Bitrate.bitsPerSecond(8_000_000).rawValue == 8_000_000)
+        #expect(Bitrate.kilobits(1_000).rawValue == 1_000_000)
+        #expect(Bitrate.megabits(8).rawValue == 8_000_000)
+    }
+
+    @Test("Bitrate formats as a human-readable string")
+    func humanReadable() {
+        #expect(Bitrate.megabits(8).formatted() == "8 Mbps")
+        #expect(Bitrate.kilobits(500).formatted() == "500 kbps")
+        #expect(Bitrate.bitsPerSecond(500).formatted() == "500 bps")
+    }
+
+    @Test("Bitrate is comparable")
+    func comparable() {
+        #expect(Bitrate.megabits(4) < Bitrate.megabits(8))
+        #expect(Bitrate.megabits(8) == Bitrate.megabits(8))
+    }
+}
