@@ -5,6 +5,7 @@ let package = Package(
     name: "ParallaxCore",
     platforms: [
         .iOS(.v26),
+        .macOS(.v14),
     ],
     products: [
         .library(name: "ParallaxCore", targets: ["ParallaxCore"]),

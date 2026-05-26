@@ -5,6 +5,7 @@ let package = Package(
     name: "ParallaxFileBrowse",
     platforms: [
         .iOS(.v26),
+        .macOS(.v14),
     ],
     products: [
         .library(name: "ParallaxFileBrowse", targets: ["ParallaxFileBrowse"]),

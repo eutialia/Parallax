@@ -5,6 +5,7 @@ let package = Package(
     name: "ParallaxJellyfin",
     platforms: [
         .iOS(.v26),
+        .macOS(.v14),
     ],
     products: [
         .library(name: "ParallaxJellyfin", targets: ["ParallaxJellyfin"]),
