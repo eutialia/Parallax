@@ -6,6 +6,10 @@
 //
 
 import SwiftUI
+import ParallaxCore
+import ParallaxJellyfin
+import ParallaxFileBrowse
+import ParallaxPlayback
 
 @main
 struct ParallaxApp: App {
