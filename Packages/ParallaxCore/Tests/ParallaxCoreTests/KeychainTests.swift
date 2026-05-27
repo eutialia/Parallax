@@ -4,32 +4,33 @@ import Foundation
 
 @Suite("Keychain")
 struct KeychainTests {
-    @Test("store and read round-trip a value")
+    private static let service = "com.lhdev.parallax.tests"
+
+    @Test("store and read round-trip a Codable value")
     func storeAndRead() async throws {
-        let keychain = Keychain(service: "com.lhdev.parallax.tests")
-        let key = KeychainKey(account: "test-roundtrip-\(UUID().uuidString)")
-        let payload = Data("hello".utf8)
+        let keychain = Keychain(service: Self.service)
+        let key = KeychainKey<String>(account: "test-roundtrip-\(UUID().uuidString)")
 
-        try await keychain.store(payload, for: key)
-        defer { Task { try? await keychain.delete(key) } }
-
+        try await keychain.store("hello", for: key)
         let read = try await keychain.read(key)
-        #expect(read == payload)
+        #expect(read == "hello")
+
+        try await keychain.delete(key)
     }
 
     @Test("read returns nil for a missing key")
     func readMissing() async throws {
-        let keychain = Keychain(service: "com.lhdev.parallax.tests")
-        let key = KeychainKey(account: "missing-\(UUID().uuidString)")
+        let keychain = Keychain(service: Self.service)
+        let key = KeychainKey<String>(account: "missing-\(UUID().uuidString)")
         let read = try await keychain.read(key)
         #expect(read == nil)
     }
 
     @Test("delete removes the value")
     func delete() async throws {
-        let keychain = Keychain(service: "com.lhdev.parallax.tests")
-        let key = KeychainKey(account: "test-delete-\(UUID().uuidString)")
-        try await keychain.store(Data("bye".utf8), for: key)
+        let keychain = Keychain(service: Self.service)
+        let key = KeychainKey<String>(account: "test-delete-\(UUID().uuidString)")
+        try await keychain.store("bye", for: key)
         try await keychain.delete(key)
         let read = try await keychain.read(key)
         #expect(read == nil)
@@ -37,13 +38,31 @@ struct KeychainTests {
 
     @Test("storing twice updates the value")
     func updateValue() async throws {
-        let keychain = Keychain(service: "com.lhdev.parallax.tests")
-        let key = KeychainKey(account: "test-update-\(UUID().uuidString)")
-        defer { Task { try? await keychain.delete(key) } }
+        let keychain = Keychain(service: Self.service)
+        let key = KeychainKey<String>(account: "test-update-\(UUID().uuidString)")
 
-        try await keychain.store(Data("first".utf8), for: key)
-        try await keychain.store(Data("second".utf8), for: key)
+        try await keychain.store("first", for: key)
+        try await keychain.store("second", for: key)
         let read = try await keychain.read(key)
-        #expect(read == Data("second".utf8))
+        #expect(read == "second")
+
+        try await keychain.delete(key)
+    }
+
+    @Test("phantom type prevents cross-type read at compile time via key identity")
+    func typedKeys() async throws {
+        struct Token: Codable, Equatable, Sendable {
+            let access: String
+            let refresh: String
+        }
+        let keychain = Keychain(service: Self.service)
+        let key = KeychainKey<Token>(account: "test-typed-\(UUID().uuidString)")
+
+        let token = Token(access: "a", refresh: "b")
+        try await keychain.store(token, for: key)
+        let read = try await keychain.read(key)
+        #expect(read == token)
+
+        try await keychain.delete(key)
     }
 }

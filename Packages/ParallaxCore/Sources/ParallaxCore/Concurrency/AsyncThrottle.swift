@@ -2,7 +2,7 @@ import Foundation
 
 public actor AsyncThrottler<Value: Sendable> {
     public nonisolated let stream: AsyncStream<Value>
-    private let continuation: AsyncStream<Value>.Continuation
+    private nonisolated let continuation: AsyncStream<Value>.Continuation
     private let interval: Duration
     private var lastEmission: ContinuousClock.Instant?
 
@@ -21,6 +21,10 @@ public actor AsyncThrottler<Value: Sendable> {
     }
 
     public func finish() {
+        continuation.finish()
+    }
+
+    deinit {
         continuation.finish()
     }
 }

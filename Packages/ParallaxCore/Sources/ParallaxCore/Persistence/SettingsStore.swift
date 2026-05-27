@@ -11,6 +11,10 @@ public struct SettingKey<Value: Codable & Sendable>: Sendable {
 }
 
 public actor SettingsStore {
+    public enum SettingsError: Error, Sendable {
+        case encodingFailed(underlying: String)
+    }
+
     private let defaults: UserDefaults
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
@@ -23,19 +27,17 @@ public actor SettingsStore {
         guard let data = defaults.data(forKey: key.name) else {
             return key.defaultValue
         }
-        do {
-            return try decoder.decode(Value.self, from: data)
-        } catch {
-            return key.defaultValue
-        }
+        // Decode failures fall back to the default — a corrupted/migrated
+        // value should not crash the app on launch.
+        return (try? decoder.decode(Value.self, from: data)) ?? key.defaultValue
     }
 
-    public func set<Value>(_ value: Value, for key: SettingKey<Value>) {
+    public func set<Value>(_ value: Value, for key: SettingKey<Value>) throws {
         do {
             let data = try encoder.encode(value)
             defaults.set(data, forKey: key.name)
         } catch {
-            // Encoding failures shouldn't be possible for valid Codable types; if they happen, drop the write silently.
+            throw SettingsError.encodingFailed(underlying: String(describing: error))
         }
     }
 

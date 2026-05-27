@@ -4,15 +4,26 @@ import Security
 public actor Keychain {
     public enum KeychainError: Error, Sendable {
         case unexpectedStatus(OSStatus)
+        case encodingFailed(underlying: String)
+        case decodingFailed(underlying: String)
     }
 
     private let service: String
+    private let encoder = JSONEncoder()
+    private let decoder = JSONDecoder()
 
     public init(service: String) {
         self.service = service
     }
 
-    public func store(_ data: Data, for key: KeychainKey) throws {
+    public func store<Value: Codable & Sendable>(_ value: Value, for key: KeychainKey<Value>) throws {
+        let data: Data
+        do {
+            data = try encoder.encode(value)
+        } catch {
+            throw KeychainError.encodingFailed(underlying: String(describing: error))
+        }
+
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -23,7 +34,6 @@ public actor Keychain {
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
         ]
 
-        // Try update first; if not found, add.
         var status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
         if status == errSecItemNotFound {
             var addQuery = query
@@ -36,7 +46,7 @@ public actor Keychain {
         }
     }
 
-    public func read(_ key: KeychainKey) throws -> Data? {
+    public func read<Value: Codable & Sendable>(_ key: KeychainKey<Value>) throws -> Value? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -50,7 +60,12 @@ public actor Keychain {
 
         switch status {
         case errSecSuccess:
-            return result as? Data
+            guard let data = result as? Data else { return nil }
+            do {
+                return try decoder.decode(Value.self, from: data)
+            } catch {
+                throw KeychainError.decodingFailed(underlying: String(describing: error))
+            }
         case errSecItemNotFound:
             return nil
         default:
@@ -58,7 +73,7 @@ public actor Keychain {
         }
     }
 
-    public func delete(_ key: KeychainKey) throws {
+    public func delete<Value: Codable & Sendable>(_ key: KeychainKey<Value>) throws {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,

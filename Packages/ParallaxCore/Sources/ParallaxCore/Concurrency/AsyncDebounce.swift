@@ -2,7 +2,7 @@ import Foundation
 
 public actor AsyncDebouncer<Value: Sendable> {
     public nonisolated let stream: AsyncStream<Value>
-    private let continuation: AsyncStream<Value>.Continuation
+    private nonisolated let continuation: AsyncStream<Value>.Continuation
     private let delay: Duration
     private var currentTask: Task<Void, Never>?
 
@@ -18,16 +18,26 @@ public actor AsyncDebouncer<Value: Sendable> {
         currentTask = Task {
             do {
                 try await Task.sleep(for: delay)
-                guard !Task.isCancelled else { return }
-                continuation.yield(value)
+            } catch is CancellationError {
+                return
             } catch {
-                // Sleep cancelled — drop the update.
+                Log.persistence.error("AsyncDebouncer: unexpected sleep error \(error.localizedDescription)")
+                return
             }
+            guard !Task.isCancelled else { return }
+            continuation.yield(value)
         }
     }
 
     public func finish() {
         currentTask?.cancel()
+        continuation.finish()
+    }
+
+    deinit {
+        // Stream consumers iterating `.stream` exit cleanly on owner release.
+        // The unstructured Task captures `continuation` by value, not `self`,
+        // so its pending yield (if any) becomes a no-op after `finish()`.
         continuation.finish()
     }
 }
