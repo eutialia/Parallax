@@ -62,7 +62,5 @@ final class QuickConnectViewModel {
         }
     }
 
-    deinit {
-        streamTask?.cancel()
-    }
+
 }
