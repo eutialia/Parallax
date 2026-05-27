@@ -60,6 +60,79 @@ public actor SessionManager {
         }
     }
 
+    public func signInWithQuickConnect(server: URL) -> AsyncStream<QuickConnectStatus> {
+        AsyncStream { continuation in
+            let task = Task {
+                await runQuickConnect(server: server, continuation: continuation)
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    private func runQuickConnect(
+        server: URL,
+        continuation: AsyncStream<QuickConnectStatus>.Continuation
+    ) async {
+        continuation.yield(.waitingForCode)
+        let client = await factory.make(serverURL: server)
+        let events = client.quickConnectEvents()
+
+        var secret: String?
+        do {
+            for try await event in events {
+                switch event {
+                case .polling(let code):
+                    continuation.yield(.polling(code: code))
+                case .authenticated(let s):
+                    secret = s
+                }
+            }
+        } catch {
+            let mapped = ErrorMapping.appError(from: error)
+            if case .auth(.quickConnectExpired) = mapped {
+                continuation.yield(.expired)
+            } else {
+                continuation.yield(.rejected)
+            }
+            continuation.finish()
+            return
+        }
+
+        guard let secret else {
+            continuation.yield(.rejected)
+            continuation.finish()
+            return
+        }
+
+        let auth: AuthenticationResult
+        do {
+            auth = try await client.signIn(quickConnectSecret: secret)
+        } catch {
+            continuation.yield(.rejected)
+            continuation.finish()
+            return
+        }
+
+        let info: PublicSystemInfo
+        do {
+            info = try await client.fetchPublicSystemInfo()
+        } catch {
+            continuation.yield(.rejected)
+            continuation.finish()
+            return
+        }
+
+        do {
+            let session = try buildSession(authResult: auth, server: server, publicInfo: info)
+            try await serverStore.add(session)
+            continuation.yield(.signedIn(session))
+        } catch {
+            Log.auth.error("Quick Connect post-auth failed: \(ErrorMapping.appError(from: error).diagnosticDescription)")
+            continuation.yield(.rejected)
+        }
+        continuation.finish()
+    }
+
     // Internal — accessible from the same target (Task 9 Quick Connect will call this).
     func buildSession(authResult: AuthenticationResult, server: URL, publicInfo: PublicSystemInfo) throws -> Session {
         guard let accessToken = authResult.accessToken else {
