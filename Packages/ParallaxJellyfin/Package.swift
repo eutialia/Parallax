@@ -12,11 +12,15 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "../ParallaxCore"),
+        .package(url: "https://github.com/jellyfin/jellyfin-sdk-swift.git", exact: "2.1.0"),
     ],
     targets: [
         .target(
             name: "ParallaxJellyfin",
-            dependencies: ["ParallaxCore"],
+            dependencies: [
+                "ParallaxCore",
+                .product(name: "JellyfinAPI", package: "jellyfin-sdk-swift"),
+            ],
             swiftSettings: [
                 .swiftLanguageMode(.v6),
             ]
