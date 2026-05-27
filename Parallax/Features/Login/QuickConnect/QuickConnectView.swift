@@ -5,32 +5,32 @@ struct QuickConnectView: View {
     let onSwitchToPassword: () -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.isPresented) private var isPresented
     @Environment(AppDependencies.self) private var deps
     @Environment(AppRouter.self) private var router
     @State private var viewModel: QuickConnectViewModel?
+    @State private var retryToken: Int = 0
 
     var body: some View {
         VStack(spacing: 24) {
             content
             Button("Use username and password instead") {
-                viewModel?.cancel()
                 onSwitchToPassword()
             }
             .padding(.top, 16)
         }
         .padding()
-        .task {
+        .task(id: retryToken) {
+            // .task(id:) cancels the previous Task and starts a new one each
+            // time the id changes, so the stream lifetime is bound to view
+            // identity — no manual cancel() or onDisappear plumbing needed.
             if viewModel == nil {
-                let vm = QuickConnectViewModel(sessionManager: deps.sessionManager, router: router)
-                viewModel = vm
-                vm.start(serverURLInput: serverURLInput)
+                viewModel = QuickConnectViewModel(sessionManager: deps.sessionManager)
             }
-        }
-        .onDisappear {
-            viewModel?.cancel()
+            await viewModel?.consume(serverURLInput: serverURLInput)
         }
         .onChange(of: viewModel?.didSignIn ?? false) { _, newValue in
-            if newValue { dismiss() }
+            if newValue { handleSuccess() }
         }
     }
 
@@ -73,12 +73,20 @@ struct QuickConnectView: View {
                     Text(message)
                         .multilineTextAlignment(.center)
                     Button("Try again") {
-                        vm.start(serverURLInput: serverURLInput)
+                        retryToken &+= 1
                     }
                 }
             }
         } else {
             ProgressView()
+        }
+    }
+
+    private func handleSuccess() {
+        if isPresented {
+            dismiss()
+        } else {
+            router.goToHome()
         }
     }
 }

@@ -3,6 +3,7 @@ import ParallaxJellyfin
 
 struct LoginView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.isPresented) private var isPresented
     @Environment(AppDependencies.self) private var deps
     @Environment(AppRouter.self) private var router
     @State private var viewModel: LoginViewModel?
@@ -14,7 +15,7 @@ struct LoginView: View {
         }
         .task {
             if viewModel == nil {
-                viewModel = LoginViewModel(sessionManager: deps.sessionManager, router: router)
+                viewModel = LoginViewModel(sessionManager: deps.sessionManager)
             }
         }
     }
@@ -58,7 +59,7 @@ struct LoginView: View {
                 Button {
                     Task {
                         if await vm.signIn() {
-                            dismiss()
+                            handleSuccess()
                         }
                     }
                 } label: {
@@ -70,6 +71,18 @@ struct LoginView: View {
                     vm.switchToQuickConnect()
                 }
             }
+        }
+    }
+
+    private func handleSuccess() {
+        // When presented modally (Add Server flow), `isPresented` is true and
+        // dismiss() unwinds the sheet over ServerListView. When LoginView IS
+        // the RootView (initial launch, no sessions), there is nothing to
+        // dismiss — push the router instead so RootView swaps to home.
+        if isPresented {
+            dismiss()
+        } else {
+            router.goToHome()
         }
     }
 }

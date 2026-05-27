@@ -16,15 +16,14 @@ final class LoginViewModel {
     var mode: Mode = .password
 
     private let sessionManager: SessionManager
-    private let router: AppRouter
 
-    init(sessionManager: SessionManager, router: AppRouter) {
+    init(sessionManager: SessionManager) {
         self.sessionManager = sessionManager
-        self.router = router
     }
 
-    /// Returns true on successful sign-in so the caller can dismiss
-    /// itself if presented as a sheet. The router is also updated.
+    /// Returns true on successful sign-in. The caller decides what to do with
+    /// the success — dismiss the sheet if presented, or push the router to
+    /// .home if running as the root view.
     @discardableResult
     func signIn() async -> Bool {
         errorMessage = nil
@@ -41,7 +40,6 @@ final class LoginViewModel {
 
         do {
             _ = try await sessionManager.signIn(server: url, username: username, password: password)
-            router.goToHome()
             return true
         } catch let error as AppError {
             errorMessage = error.userMessage

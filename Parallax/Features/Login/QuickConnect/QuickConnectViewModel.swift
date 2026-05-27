@@ -19,32 +19,24 @@ final class QuickConnectViewModel {
     var didSignIn: Bool = false
 
     private let sessionManager: SessionManager
-    private let router: AppRouter
-    private var streamTask: Task<Void, Never>?
 
-    init(sessionManager: SessionManager, router: AppRouter) {
+    init(sessionManager: SessionManager) {
         self.sessionManager = sessionManager
-        self.router = router
     }
 
-    func start(serverURLInput: String) {
+    /// Drives the Quick Connect stream to completion. Designed to be invoked
+    /// from a SwiftUI `.task(id:)` so the Task's cancellation lifetime is tied
+    /// to the view's identity — no manual cancel(), no strong-self retention.
+    func consume(serverURLInput: String) async {
         guard let url = LoginViewModel.normalize(serverURLInput) else {
             uiState = .failure("Enter a valid server URL on the previous screen first.")
             return
         }
-        cancel()
         uiState = .starting
-        streamTask = Task { [weak self] in
-            guard let self else { return }
-            for await status in await self.sessionManager.signInWithQuickConnect(server: url) {
-                await MainActor.run { self.apply(status) }
-            }
+        didSignIn = false
+        for await status in await sessionManager.signInWithQuickConnect(server: url) {
+            apply(status)
         }
-    }
-
-    func cancel() {
-        streamTask?.cancel()
-        streamTask = nil
     }
 
     private func apply(_ status: QuickConnectStatus) {
@@ -56,13 +48,10 @@ final class QuickConnectViewModel {
         case .signedIn:
             uiState = .signingIn
             didSignIn = true
-            router.goToHome()
-        case .rejected:
-            uiState = .failure("The server rejected the pairing request. Check the URL and try again.")
         case .expired:
             uiState = .failure("The pairing code expired before you authorised it. Try again.")
+        case .failed(let reason):
+            uiState = .failure(reason)
         }
     }
-
-
 }

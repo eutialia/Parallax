@@ -17,6 +17,7 @@ struct ServerListView: View {
                         } label: {
                             Image(systemName: "plus")
                         }
+                        .disabled(viewModel == nil)
                     }
                 }
         }
@@ -30,36 +31,47 @@ struct ServerListView: View {
             }
             await viewModel?.refresh()
         }
-        .sheet(isPresented: Binding(
-            get: { viewModel?.presentingAddServer ?? false },
-            set: { newValue in
-                if !newValue {
-                    Task { await viewModel?.dismissAddServer() }
-                }
-            }
-        )) {
-            LoginView()
-        }
     }
 
     @ViewBuilder
     private var content: some View {
         if let vm = viewModel {
-            if vm.sessions.isEmpty {
-                ContentUnavailableView(
-                    "No servers",
-                    systemImage: "server.rack",
-                    description: Text("Add a Jellyfin server to get started.")
-                )
-            } else {
-                List {
-                    ForEach(vm.sessions) { session in
-                        row(for: session, vm: vm)
-                    }
+            // @Bindable lets us pass $vm.presentingAddServer straight to the
+            // sheet modifier — no hand-rolled Binding(get:set:) that defers
+            // state propagation through an async Task.
+            @Bindable var vm = vm
+            list(vm: vm)
+                .sheet(isPresented: $vm.presentingAddServer, onDismiss: {
+                    Task { await vm.refresh() }
+                }) {
+                    LoginView()
                 }
-            }
         } else {
             ProgressView()
+        }
+    }
+
+    @ViewBuilder
+    private func list(vm: ServerListViewModel) -> some View {
+        if vm.sessions.isEmpty {
+            ContentUnavailableView(
+                "No servers",
+                systemImage: "server.rack",
+                description: Text("Add a Jellyfin server to get started.")
+            )
+        } else {
+            List {
+                if let message = vm.signOutErrorMessage {
+                    Section {
+                        Text(message)
+                            .foregroundStyle(.red)
+                            .font(.footnote)
+                    }
+                }
+                ForEach(vm.sessions) { session in
+                    row(for: session, vm: vm)
+                }
+            }
         }
     }
 
