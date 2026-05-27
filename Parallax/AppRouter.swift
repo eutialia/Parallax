@@ -1,6 +1,6 @@
 import Foundation
 import Observation
-import ParallexJellyfin
+import ParallaxJellyfin
 
 @Observable
 @MainActor
