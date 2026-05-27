@@ -87,6 +87,11 @@ public actor SessionManager {
                     secret = s
                 }
             }
+        } catch is CancellationError {
+            // Consumer stopped iterating; their continuation is already torn down.
+            // Yielding here would be a no-op anyway — finish silently.
+            continuation.finish()
+            return
         } catch {
             let mapped = ErrorMapping.appError(from: error)
             if case .auth(.quickConnectExpired) = mapped {
@@ -125,6 +130,7 @@ public actor SessionManager {
         do {
             let session = try buildSession(authResult: auth, server: server, publicInfo: info)
             try await serverStore.add(session)
+            Log.auth.info("Signed in via Quick Connect to \(info.serverName ?? "Jellyfin server") as \(session.user.name)")
             continuation.yield(.signedIn(session))
         } catch {
             Log.auth.error("Quick Connect post-auth failed: \(ErrorMapping.appError(from: error).diagnosticDescription)")

@@ -85,7 +85,8 @@ struct SessionManagerQuickConnectTests {
             statuses.append(status)
         }
 
-        #expect(statuses.last == .expired || statuses.contains(.expired) || statuses.contains(.rejected))
+        #expect(statuses.contains(.expired))
+        #expect(statuses.last == .expired)
         let stored = await store.sessions
         #expect(stored.isEmpty)
     }
