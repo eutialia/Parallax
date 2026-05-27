@@ -38,4 +38,59 @@ struct ErrorMappingTests {
             Issue.record("expected .unexpected, got \(app)")
         }
     }
+
+    @Test("Synthetic unacceptableStatusCode(404) maps to .server(404, nil)")
+    func unacceptableStatusCode() {
+        struct FakeAPIError: Error, CustomStringConvertible {
+            var description: String { "unacceptableStatusCode(404)" }
+        }
+        let app = ErrorMapping.appError(from: FakeAPIError())
+        if case .server(let code, let message) = app {
+            #expect(code == 404)
+            #expect(message == nil)
+        } else {
+            Issue.record("expected .server, got \(app)")
+        }
+    }
+
+    @Test("unacceptableStatusCode parser ignores unrelated digits in the description")
+    func unacceptableStatusCodeIgnoresOtherDigits() {
+        struct FakeAPIError: Error, CustomStringConvertible {
+            // Port 8096 and a byte count are present; only the 503 inside the
+            // unacceptableStatusCode(...) call should be extracted.
+            var description: String { "host=127.0.0.1:8096 bytes=1024 unacceptableStatusCode(503)" }
+        }
+        let app = ErrorMapping.appError(from: FakeAPIError())
+        if case .server(let code, _) = app {
+            #expect(code == 503)
+        } else {
+            Issue.record("expected .server(503,_), got \(app)")
+        }
+    }
+
+    @Test("Quick Connect maxPollingHit maps to .auth(.quickConnectExpired)")
+    func quickConnectExpired() {
+        struct QuickConnectError: Error, CustomStringConvertible {
+            var description: String { "maxPollingHit" }
+        }
+        let app = ErrorMapping.appError(from: QuickConnectError())
+        if case .auth(let failure) = app {
+            #expect(failure == .quickConnectExpired)
+        } else {
+            Issue.record("expected .auth(.quickConnectExpired), got \(app)")
+        }
+    }
+
+    @Test("Quick Connect retrievingCodeFailed maps to .auth(.quickConnectRejected)")
+    func quickConnectRejected() {
+        struct QuickConnectError: Error, CustomStringConvertible {
+            var description: String { "retrievingCodeFailed" }
+        }
+        let app = ErrorMapping.appError(from: QuickConnectError())
+        if case .auth(let failure) = app {
+            #expect(failure == .quickConnectRejected)
+        } else {
+            Issue.record("expected .auth(.quickConnectRejected), got \(app)")
+        }
+    }
 }

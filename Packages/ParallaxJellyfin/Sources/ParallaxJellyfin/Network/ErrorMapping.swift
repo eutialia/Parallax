@@ -43,7 +43,19 @@ public enum ErrorMapping {
     }
 
     private static func extractStatusCode(from description: String) -> Int {
-        let digits = description.unicodeScalars.filter { CharacterSet.decimalDigits.contains($0) }
-        return Int(String(String.UnicodeScalarView(digits))) ?? 0
+        // Match `unacceptableStatusCode(NNN)` specifically so a stray digit
+        // sequence elsewhere in the description (port number, request ID,
+        // byte count) can't corrupt the result.
+        guard let match = description.range(
+            of: #"unacceptableStatusCode\((\d+)\)"#,
+            options: .regularExpression
+        ) else {
+            return 0
+        }
+        let chunk = description[match]
+        let prefix = "unacceptableStatusCode("
+        guard chunk.hasPrefix(prefix), chunk.hasSuffix(")") else { return 0 }
+        let digits = chunk.dropFirst(prefix.count).dropLast()
+        return Int(digits) ?? 0
     }
 }
