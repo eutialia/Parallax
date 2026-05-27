@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  drift-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run no-platform-drift check
+        run: ./scripts/check-no-platform-drift.sh
+
+  package-tests:
+    runs-on: macos-15
+    strategy:
+      matrix:
+        package: [ParallaxCore, ParallaxJellyfin, ParallaxFileBrowse, ParallaxPlayback]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode 26
+        run: sudo xcode-select -s /Applications/Xcode.app
+      - name: Run ${{ matrix.package }} tests
+        run: swift test --package-path Packages/${{ matrix.package }}
+
+  app-build:
+    runs-on: macos-15
+    needs: [drift-check, package-tests]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode 26
+        run: sudo xcode-select -s /Applications/Xcode.app
+      - name: Build app
+        run: |
+          xcodebuild build \
+            -project Parallax.xcodeproj \
+            -scheme Parallax \
+            -destination 'platform=iOS Simulator,name=iPhone 16'
