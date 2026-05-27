@@ -2,20 +2,36 @@
 # Rejects platform-conditional code inside Packages/.
 # Packages must compile identically on all supported platforms.
 
-set -e
+set -euo pipefail
 
-PACKAGES_DIR="Packages"
-
-if [ ! -d "$PACKAGES_DIR" ]; then
-    echo "$PACKAGES_DIR not found — running from the repo root?"
-    exit 0
+# Resolve repo root via git so the script works from any cwd
+# (a hook installed in .git/hooks invokes us with PWD = repo root,
+# but a manual run from a subdir would otherwise silently miss the dir).
+if ! REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null); then
+    echo "ERROR: must be run inside a git checkout" >&2
+    exit 1
 fi
 
-# Use ripgrep if available, else fall back to grep -r.
+PACKAGES_DIR="$REPO_ROOT/Packages"
+
+if [ ! -d "$PACKAGES_DIR" ]; then
+    echo "ERROR: $PACKAGES_DIR not found — repo layout has drifted from the architecture spec." >&2
+    exit 1
+fi
+
+# Catches every form of platform-conditional compilation banned in packages:
+#   #if os(iOS)          / #if !os(macOS)        — direct platform branch
+#   #if canImport(UIKit) / #if canImport(AppKit) — import-based branch
+#   #if targetEnvironment(simulator)             — simulator-only code
+# Tested with both ripgrep and POSIX grep -E.
+PATTERN='^[[:space:]]*#if[[:space:]]+(!?os\(|canImport\(|targetEnvironment\()'
+
 if command -v rg > /dev/null 2>&1; then
-    MATCHES=$(rg -n '^\s*#if\s+os\(' "$PACKAGES_DIR" --type swift || true)
+    MATCHES=$(rg -n --pcre2 "$PATTERN" "$PACKAGES_DIR" --type swift || true)
 else
-    MATCHES=$(grep -rn '^\s*#if\s\+os(' "$PACKAGES_DIR" --include='*.swift' || true)
+    # BSD grep on macOS treats \s as literal 's'. Use POSIX character classes
+    # via -E (ERE) so the same regex works on both GNU and BSD grep.
+    MATCHES=$(grep -rnE "$PATTERN" --include='*.swift' "$PACKAGES_DIR" || true)
 fi
 
 if [ -n "$MATCHES" ]; then

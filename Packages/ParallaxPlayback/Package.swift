@@ -5,7 +5,7 @@ let package = Package(
     name: "ParallaxPlayback",
     platforms: [
         .iOS(.v26),
-        .macOS(.v14),
+        .macOS(.v15), // swift-test baseline only; not a shipping target.
     ],
     products: [
         .library(name: "ParallaxPlayback", targets: ["ParallaxPlayback"]),
