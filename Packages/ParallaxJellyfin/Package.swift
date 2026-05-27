@@ -13,6 +13,7 @@ let package = Package(
     dependencies: [
         .package(path: "../ParallaxCore"),
         .package(url: "https://github.com/jellyfin/jellyfin-sdk-swift.git", exact: "2.1.0"),
+        .package(url: "https://github.com/kean/Nuke.git", from: "12.8.0"),
     ],
     targets: [
         .target(
@@ -20,6 +21,8 @@ let package = Package(
             dependencies: [
                 "ParallaxCore",
                 .product(name: "JellyfinAPI", package: "jellyfin-sdk-swift"),
+                .product(name: "Nuke", package: "Nuke"),
+                .product(name: "NukeUI", package: "Nuke"),
             ],
             swiftSettings: [
                 .swiftLanguageMode(.v6),
@@ -28,6 +31,9 @@ let package = Package(
         .testTarget(
             name: "ParallaxJellyfinTests",
             dependencies: ["ParallaxJellyfin"],
+            resources: [
+                .copy("Fixtures"),
+            ],
             swiftSettings: [
                 .swiftLanguageMode(.v6),
             ]
