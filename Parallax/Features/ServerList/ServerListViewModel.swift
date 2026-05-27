@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import os
 import ParallaxCore
 import ParallaxJellyfin
 
@@ -30,7 +31,11 @@ final class ServerListViewModel {
     }
 
     func setActive(_ id: ServerID) async {
-        try? await serverStore.setActive(id)
+        do {
+            try await serverStore.setActive(id)
+        } catch {
+            Log.persistence.error("ServerList setActive failed for \(id.rawValue): \(error.networkDiagnostic)")
+        }
         await refresh()
     }
 
@@ -38,8 +43,10 @@ final class ServerListViewModel {
         do {
             try await sessionManager.signOut(session)
         } catch let error as AppError {
+            Log.auth.error("ServerList signOut failed for \(session.serverName): \(error.userMessage)")
             signOutErrorMessage = "Couldn't fully sign out of \(session.serverName): \(error.userMessage)"
         } catch {
+            Log.auth.error("ServerList signOut unexpected for \(session.serverName): \(String(describing: type(of: error)))")
             signOutErrorMessage = "Couldn't fully sign out of \(session.serverName)."
         }
         await refresh()

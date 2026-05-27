@@ -41,3 +41,20 @@ public extension Logger {
         self.log(level: level, "\(message): \(value, privacy: .private(mask: .hash))")
     }
 }
+
+public extension Error {
+    /// Compact, log-safe summary of a network-shaped error. `URLError` gets
+    /// structured detail (code + symbol + failing URL) so an opaque
+    /// "Network error" turns into something like
+    /// `URLError code=-1022 (appTransportSecurityRequiresSecureConnection) failingURL=http://192.168.1.10:8096/...`.
+    /// Other errors fall back to type name + description, which for the kean/Get
+    /// and Jellyfin SDK errors covers status code / URL without echoing
+    /// authorization headers or response bodies.
+    var networkDiagnostic: String {
+        if let urlError = self as? URLError {
+            let failing = urlError.failingURL?.absoluteString ?? "nil"
+            return "URLError code=\(urlError.code.rawValue) (\(urlError.code)) failingURL=\(failing)"
+        }
+        return "\(type(of: self)): \(self)"
+    }
+}

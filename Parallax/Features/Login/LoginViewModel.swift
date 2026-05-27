@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import os
 import ParallaxCore
 import ParallaxJellyfin
 
@@ -42,9 +43,11 @@ final class LoginViewModel {
             _ = try await sessionManager.signIn(server: url, username: username, password: password)
             return true
         } catch let error as AppError {
+            Log.auth.error("LoginView signIn failed: \(error.userMessage)")
             errorMessage = error.userMessage
             return false
         } catch {
+            Log.auth.error("LoginView signIn unexpected: \(String(describing: type(of: error)))")
             errorMessage = "Something went wrong."
             return false
         }

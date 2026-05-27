@@ -29,6 +29,7 @@ public final class LANServerDiscovery {
     /// Idempotent — calling while already discovering is a no-op.
     public func start(timeout: TimeInterval = 1.5) {
         guard current == nil else { return }
+        Log.network.info("LAN discovery started (timeout=\(timeout)s)")
         isDiscovering = true
         current = Task.detached(priority: .utility) { [weak self] in
             let responses = Self.broadcast(timeout: timeout)
@@ -43,11 +44,14 @@ public final class LANServerDiscovery {
     }
 
     private func ingest(_ responses: [Data]) {
+        let before = discovered.count
         for data in responses {
             guard let server = Self.parseResponse(data),
                   seenIDs.insert(server.id).inserted else { continue }
             discovered.append(server)
         }
+        let added = self.discovered.count - before
+        Log.network.info("LAN discovery finished: \(responses.count) response(s), \(added) new server(s)")
         isDiscovering = false
         current = nil
     }

@@ -16,12 +16,14 @@ public actor SessionManager {
     }
 
     public func signIn(server: URL, username: String, password: String) async throws -> Session {
+        Log.network.info("signIn → \(server.absoluteString)")
         let client = await factory.make(serverURL: server)
 
         let authResult: AuthenticationResult
         do {
             authResult = try await client.signIn(username: username, password: password)
         } catch {
+            Log.network.error("signIn authenticate failed: \(error.networkDiagnostic)")
             throw ErrorMapping.appError(from: error)
         }
 
@@ -29,6 +31,7 @@ public actor SessionManager {
         do {
             publicInfo = try await client.fetchPublicSystemInfo()
         } catch {
+            Log.network.error("signIn publicInfo failed: \(error.networkDiagnostic)")
             throw ErrorMapping.appError(from: error)
         }
 
@@ -36,6 +39,7 @@ public actor SessionManager {
         do {
             try await serverStore.add(session)
         } catch {
+            Log.persistence.error("signIn ServerStore.add failed: \(error.networkDiagnostic)")
             throw AppError.unexpected(
                 "ServerStore.add failed",
                 underlying: AnySendableError(error)
@@ -50,6 +54,7 @@ public actor SessionManager {
     /// Throws if the local removal cannot be persisted, so the UI can show
     /// the user that their "sign out" did not fully take effect.
     public func signOut(_ session: Session) async throws {
+        Log.auth.info("signOut → \(session.serverName)")
         let client = await factory.make(serverURL: session.serverURL)
         do {
             try await client.signOut(accessToken: session.accessToken)
@@ -61,6 +66,7 @@ public actor SessionManager {
         do {
             try await serverStore.remove(session.id)
         } catch {
+            Log.persistence.error("signOut ServerStore.remove failed: \(error.networkDiagnostic)")
             throw AppError.unexpected(
                 "ServerStore.remove failed",
                 underlying: AnySendableError(error)
@@ -81,6 +87,7 @@ public actor SessionManager {
         server: URL,
         continuation: AsyncStream<QuickConnectStatus>.Continuation
     ) async {
+        Log.network.info("quickConnect → \(server.absoluteString)")
         continuation.yield(.waitingForCode)
         let client = await factory.make(serverURL: server)
         let events = client.quickConnectEvents()
@@ -99,6 +106,7 @@ public actor SessionManager {
             continuation.finish()
             return
         } catch {
+            Log.network.error("quickConnect stream failed: \(error.networkDiagnostic)")
             let mapped = ErrorMapping.appError(from: error)
             if case .auth(.quickConnectExpired) = mapped {
                 continuation.yield(.expired)
@@ -128,6 +136,7 @@ public actor SessionManager {
         do {
             auth = try await client.signIn(quickConnectSecret: secret)
         } catch {
+            Log.network.error("quickConnect authenticate failed: \(error.networkDiagnostic)")
             continuation.yield(.failed(reason: ErrorMapping.appError(from: error).userMessage))
             continuation.finish()
             return
@@ -137,6 +146,7 @@ public actor SessionManager {
         do {
             info = try await client.fetchPublicSystemInfo()
         } catch {
+            Log.network.error("quickConnect publicInfo failed: \(error.networkDiagnostic)")
             continuation.yield(.failed(reason: ErrorMapping.appError(from: error).userMessage))
             continuation.finish()
             return
