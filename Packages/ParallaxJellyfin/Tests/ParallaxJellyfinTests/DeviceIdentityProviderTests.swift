@@ -6,8 +6,9 @@ import ParallaxCore
 @Suite("DeviceIdentityProvider")
 struct DeviceIdentityProviderTests {
     private func freshDefaults() -> UserDefaults {
-        let suite = UserDefaults(suiteName: "DeviceIdentityProviderTests-\(UUID().uuidString)")!
-        suite.removePersistentDomain(forName: suite.dictionaryRepresentation().description)
+        let suiteName = "DeviceIdentityProviderTests-\(UUID().uuidString)"
+        let suite = UserDefaults(suiteName: suiteName)!
+        suite.removePersistentDomain(forName: suiteName)
         return suite
     }
 
