@@ -48,6 +48,42 @@ struct SettingsStoreTests {
         #expect(value == 100)
     }
 
+    @Test("tryValue returns nil when no value is stored")
+    func tryValueMissing() async throws {
+        let defaults = UserDefaults(suiteName: "test-defaults-\(UUID().uuidString)")!
+        let store = SettingsStore(defaults: defaults)
+        let key = SettingKey<Int>(name: "test.try.missing", defaultValue: 0)
+        let value = try await store.tryValue(for: key)
+        #expect(value == nil)
+    }
+
+    @Test("tryValue returns stored value after set")
+    func tryValueRoundTrip() async throws {
+        let defaults = UserDefaults(suiteName: "test-defaults-\(UUID().uuidString)")!
+        let store = SettingsStore(defaults: defaults)
+        let key = SettingKey<String>(name: "test.try.string", defaultValue: "default")
+        try await store.set("hello", for: key)
+        let value = try await store.tryValue(for: key)
+        #expect(value == "hello")
+    }
+
+    @Test("tryValue throws SettingsError.decodingFailed when stored data does not decode (schema mismatch)")
+    func tryValueSurfacesDecodeFailure() async throws {
+        struct V1: Codable, Sendable { let a: Int }
+        struct V2: Codable, Sendable { let a: Int; let required: String }
+        let suite = "test-defaults-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        let store = SettingsStore(defaults: defaults)
+        let keyV1 = SettingKey<V1>(name: "schema.evolution", defaultValue: V1(a: 0))
+        let keyV2 = SettingKey<V2>(name: "schema.evolution", defaultValue: V2(a: 0, required: ""))
+
+        try await store.set(V1(a: 7), for: keyV1)
+
+        await #expect(throws: SettingsStore.SettingsError.self) {
+            _ = try await store.tryValue(for: keyV2)
+        }
+    }
+
     @Test("set surfaces encoding failures as SettingsError")
     func encodingFailureSurfaces() async {
         struct Unencodable: Codable, Sendable {

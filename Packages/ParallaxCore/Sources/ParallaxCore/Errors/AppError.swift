@@ -56,7 +56,6 @@ public enum AuthFailure: Sendable {
     case invalidCredentials
     case quickConnectExpired
     case tokenInvalidated
-    case quickConnectRejected
 
     public var userMessage: String {
         switch self {
@@ -66,8 +65,6 @@ public enum AuthFailure: Sendable {
             return "The pairing code expired. Please try again."
         case .tokenInvalidated:
             return "Your session expired. Please sign in again."
-        case .quickConnectRejected:
-            return "The server rejected the pairing request."
         }
     }
 }
