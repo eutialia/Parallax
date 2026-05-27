@@ -23,6 +23,11 @@ struct ParallaxApp: App {
                 .environment(dependencies)
                 .environment(router)
                 .task {
+                    // Kick off LAN discovery first — it triggers the iOS
+                    // Local Network permission prompt up front (instead of
+                    // mid-sign-in) and populates auto-fill suggestions for
+                    // the Add Server flow.
+                    dependencies.lanDiscovery.start()
                     do {
                         try await dependencies.serverStore.load()
                     } catch {

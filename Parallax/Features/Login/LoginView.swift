@@ -40,6 +40,22 @@ struct LoginView: View {
     private func passwordForm(vm: LoginViewModel) -> some View {
         @Bindable var vm = vm
         Form {
+            if !deps.lanDiscovery.discovered.isEmpty {
+                Section("On your network") {
+                    ForEach(deps.lanDiscovery.discovered) { server in
+                        Button {
+                            vm.serverURLInput = server.address.absoluteString
+                        } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(server.name).foregroundStyle(.primary)
+                                Text(server.address.absoluteString)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
             Section("Server") {
                 TextField("https://jellyfin.example.com", text: $vm.serverURLInput)
                     .keyboardType(.URL)

@@ -9,15 +9,18 @@ final class AppDependencies {
     let serverStore: ServerStore
     let sessionManager: SessionManager
     let deviceIdentityProvider: DeviceIdentityProvider
+    let lanDiscovery: LANServerDiscovery
 
     init(
         serverStore: ServerStore,
         sessionManager: SessionManager,
-        deviceIdentityProvider: DeviceIdentityProvider
+        deviceIdentityProvider: DeviceIdentityProvider,
+        lanDiscovery: LANServerDiscovery
     ) {
         self.serverStore = serverStore
         self.sessionManager = sessionManager
         self.deviceIdentityProvider = deviceIdentityProvider
+        self.lanDiscovery = lanDiscovery
     }
 
     static func live() -> AppDependencies {
@@ -35,7 +38,8 @@ final class AppDependencies {
         return AppDependencies(
             serverStore: store,
             sessionManager: manager,
-            deviceIdentityProvider: identity
+            deviceIdentityProvider: identity,
+            lanDiscovery: LANServerDiscovery()
         )
     }
 
