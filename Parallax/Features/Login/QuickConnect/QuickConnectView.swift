@@ -4,6 +4,7 @@ struct QuickConnectView: View {
     let serverURLInput: String
     let onSwitchToPassword: () -> Void
 
+    @Environment(\.dismiss) private var dismiss
     @Environment(AppDependencies.self) private var deps
     @Environment(AppRouter.self) private var router
     @State private var viewModel: QuickConnectViewModel?
@@ -27,6 +28,9 @@ struct QuickConnectView: View {
         }
         .onDisappear {
             viewModel?.cancel()
+        }
+        .onChange(of: viewModel?.didSignIn ?? false) { _, newValue in
+            if newValue { dismiss() }
         }
     }
 

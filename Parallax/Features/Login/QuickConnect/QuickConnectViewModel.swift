@@ -16,6 +16,7 @@ final class QuickConnectViewModel {
     }
 
     var uiState: UIState = .idle
+    var didSignIn: Bool = false
 
     private let sessionManager: SessionManager
     private let router: AppRouter
@@ -54,6 +55,7 @@ final class QuickConnectViewModel {
             uiState = .showingCode(code)
         case .signedIn:
             uiState = .signingIn
+            didSignIn = true
             router.goToHome()
         case .rejected:
             uiState = .failure("The server rejected the pairing request. Check the URL and try again.")

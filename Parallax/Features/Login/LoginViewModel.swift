@@ -23,15 +23,18 @@ final class LoginViewModel {
         self.router = router
     }
 
-    func signIn() async {
+    /// Returns true on successful sign-in so the caller can dismiss
+    /// itself if presented as a sheet. The router is also updated.
+    @discardableResult
+    func signIn() async -> Bool {
         errorMessage = nil
         guard let url = Self.normalize(serverURLInput) else {
             errorMessage = "Enter a valid server URL."
-            return
+            return false
         }
         guard !username.isEmpty else {
             errorMessage = "Enter your username."
-            return
+            return false
         }
         isWorking = true
         defer { isWorking = false }
@@ -39,10 +42,13 @@ final class LoginViewModel {
         do {
             _ = try await sessionManager.signIn(server: url, username: username, password: password)
             router.goToHome()
+            return true
         } catch let error as AppError {
             errorMessage = error.userMessage
+            return false
         } catch {
             errorMessage = "Something went wrong."
+            return false
         }
     }
 

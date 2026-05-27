@@ -2,6 +2,7 @@ import SwiftUI
 import ParallaxJellyfin
 
 struct LoginView: View {
+    @Environment(\.dismiss) private var dismiss
     @Environment(AppDependencies.self) private var deps
     @Environment(AppRouter.self) private var router
     @State private var viewModel: LoginViewModel?
@@ -55,7 +56,11 @@ struct LoginView: View {
             }
             Section {
                 Button {
-                    Task { await vm.signIn() }
+                    Task {
+                        if await vm.signIn() {
+                            dismiss()
+                        }
+                    }
                 } label: {
                     if vm.isWorking { ProgressView() } else { Text("Sign In") }
                 }
