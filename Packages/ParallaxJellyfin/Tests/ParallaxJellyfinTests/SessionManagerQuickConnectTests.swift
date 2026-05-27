@@ -91,8 +91,8 @@ struct SessionManagerQuickConnectTests {
         #expect(stored.isEmpty)
     }
 
-    @Test("retrievingCodeFailed yields .rejected")
-    func rejected() async throws {
+    @Test("retrievingCodeFailed yields .failed (not .expired) with a user-facing reason")
+    func failedFetchingCode() async throws {
         struct FakeQuickConnectError: Error, CustomStringConvertible {
             var description: String { "retrievingCodeFailed" }
         }
@@ -108,6 +108,31 @@ struct SessionManagerQuickConnectTests {
             statuses.append(status)
         }
 
-        #expect(statuses.last == .rejected || statuses.contains(.rejected))
+        guard case .failed(let reason) = statuses.last else {
+            Issue.record("expected .failed(_), got \(String(describing: statuses.last))")
+            return
+        }
+        #expect(!reason.isEmpty)
+    }
+
+    @Test("Network failure during Quick Connect yields .failed with the network user message")
+    func failedOnNetworkError() async throws {
+        let (manager, _, factory) = make()
+        let url = URL(string: "https://jellyfin.example.com")!
+        let client = factory.client(for: url)
+        client.quickConnectEventsToYield = [
+            .failure(URLError(.notConnectedToInternet)),
+        ]
+
+        var statuses: [QuickConnectStatus] = []
+        for await status in await manager.signInWithQuickConnect(server: url) {
+            statuses.append(status)
+        }
+
+        guard case .failed(let reason) = statuses.last else {
+            Issue.record("expected .failed, got \(String(describing: statuses.last))")
+            return
+        }
+        #expect(reason.contains("internet") || reason.contains("connection") || reason.contains("Network"))
     }
 }

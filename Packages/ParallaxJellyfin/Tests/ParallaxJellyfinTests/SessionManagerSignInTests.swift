@@ -92,7 +92,7 @@ struct SessionManagerSignInTests {
         client.publicSystemInfoResult = .success(publicInfo())
 
         let session = try await manager.signIn(server: url, username: "alice", password: "hunter2")
-        await manager.signOut(session)
+        try await manager.signOut(session)
 
         let remaining = await store.sessions
         #expect(remaining.isEmpty)
@@ -109,7 +109,7 @@ struct SessionManagerSignInTests {
         client.signOutResult = .failure(URLError(.notConnectedToInternet))
 
         let session = try await manager.signIn(server: url, username: "alice", password: "hunter2")
-        await manager.signOut(session)
+        try await manager.signOut(session)
 
         let remaining = await store.sessions
         #expect(remaining.isEmpty)

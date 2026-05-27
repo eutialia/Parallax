@@ -81,16 +81,14 @@ struct ErrorMappingTests {
         }
     }
 
-    @Test("Quick Connect retrievingCodeFailed maps to .auth(.quickConnectRejected)")
-    func quickConnectRejected() {
+    @Test("Quick Connect retrievingCodeFailed falls through to .unexpected (not .auth) — server/transport problems must not be mis-rendered as 'rejected'")
+    func retrievingCodeFailedFallsThrough() {
         struct QuickConnectError: Error, CustomStringConvertible {
             var description: String { "retrievingCodeFailed" }
         }
         let app = ErrorMapping.appError(from: QuickConnectError())
-        if case .auth(let failure) = app {
-            #expect(failure == .quickConnectRejected)
-        } else {
-            Issue.record("expected .auth(.quickConnectRejected), got \(app)")
+        if case .auth = app {
+            Issue.record("retrievingCodeFailed should NOT map to .auth — it's a server/transport failure")
         }
     }
 }

@@ -9,7 +9,13 @@ public actor DeviceIdentityProvider {
     private let version: String
     private let settings: SettingsStore
 
-    private var cached: DeviceIdentity?
+    /// Concurrent callers must observe the same DeviceIdentity. A plain
+    /// `cached: DeviceIdentity?` would race: caller A awaits `settings.value`
+    /// and yields the actor; caller B enters at the same `if let cached`
+    /// check, also sees nil, generates a different UUID, persists it. The
+    /// in-process ID would then disagree with the persisted one. Storing the
+    /// produce-once Task instead makes both callers await the same result.
+    private var resolution: Task<DeviceIdentity, Never>?
 
     public init(client: String, deviceName: String, version: String, settings: SettingsStore) {
         self.client = client
@@ -19,8 +25,13 @@ public actor DeviceIdentityProvider {
     }
 
     public func current() async -> DeviceIdentity {
-        if let cached { return cached }
+        if let resolution { return await resolution.value }
+        let task = Task { await resolveIdentity() }
+        resolution = task
+        return await task.value
+    }
 
+    private func resolveIdentity() async -> DeviceIdentity {
         let storedID = await settings.value(for: Self.deviceIDKey)
         let deviceID: String
         if let storedID {
@@ -37,9 +48,6 @@ public actor DeviceIdentityProvider {
             }
             deviceID = newID
         }
-
-        let identity = DeviceIdentity(client: client, deviceName: deviceName, deviceID: deviceID, version: version)
-        cached = identity
-        return identity
+        return DeviceIdentity(client: client, deviceName: deviceName, deviceID: deviceID, version: version)
     }
 }

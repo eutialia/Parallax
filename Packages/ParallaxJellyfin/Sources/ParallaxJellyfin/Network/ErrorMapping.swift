@@ -19,14 +19,15 @@ public enum ErrorMapping {
 
         // Quick Connect errors are internal to the SDK's QuickConnect helper.
         // The cases aren't public, so match on the type description.
+        // Only `maxPollingHit` has a stable user-facing meaning ("the code
+        // expired"). `retrievingCodeFailed` is a server/transport problem
+        // that should fall through to .unexpected so the upper layer can
+        // render an accurate reason instead of a misleading "rejected".
         let typeName = String(describing: type(of: error))
         if typeName.contains("QuickConnectError") {
             let description = String(describing: error)
             if description.contains("maxPollingHit") {
                 return .auth(.quickConnectExpired)
-            }
-            if description.contains("retrievingCodeFailed") {
-                return .auth(.quickConnectRejected)
             }
         }
 

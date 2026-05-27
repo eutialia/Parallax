@@ -48,14 +48,19 @@ struct ModelsTests {
         let waiting = QuickConnectStatus.waitingForCode
         let polling = QuickConnectStatus.polling(code: "ABC123")
         let expired = QuickConnectStatus.expired
-        let rejected = QuickConnectStatus.rejected
+        let failed = QuickConnectStatus.failed(reason: "boom")
         #expect(waiting != polling)
         #expect(polling != expired)
-        #expect(expired != rejected)
+        #expect(expired != failed)
         if case .polling(let code) = polling {
             #expect(code == "ABC123")
         } else {
             Issue.record("expected .polling")
+        }
+        if case .failed(let reason) = failed {
+            #expect(reason == "boom")
+        } else {
+            Issue.record("expected .failed")
         }
     }
 }

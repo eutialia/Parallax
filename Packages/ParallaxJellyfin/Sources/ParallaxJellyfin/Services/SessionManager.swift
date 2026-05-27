@@ -45,18 +45,26 @@ public actor SessionManager {
         return session
     }
 
-    public func signOut(_ session: Session) async {
+    /// Signs out remotely (best-effort — a 401 or offline state is fine, the
+    /// local token revoke is what matters) and removes the session locally.
+    /// Throws if the local removal cannot be persisted, so the UI can show
+    /// the user that their "sign out" did not fully take effect.
+    public func signOut(_ session: Session) async throws {
         let client = await factory.make(serverURL: session.serverURL)
         do {
             try await client.signOut(accessToken: session.accessToken)
         } catch {
-            Log.auth.error("Remote sign-out failed for \(session.serverName) — \(ErrorMapping.appError(from: error).diagnosticDescription)")
-            // Continue: local removal is the security-relevant action.
+            // Type-only — don't pass the full mapped error description, which
+            // could carry a request URL/header echoed back by the server.
+            Log.auth.error("Remote sign-out failed for \(session.serverName) — \(String(describing: type(of: error)))")
         }
         do {
             try await serverStore.remove(session.id)
         } catch {
-            Log.persistence.error("ServerStore.remove failed for \(session.id.rawValue) — \(error.localizedDescription)")
+            throw AppError.unexpected(
+                "ServerStore.remove failed",
+                underlying: AnySendableError(error)
+            )
         }
     }
 
@@ -88,8 +96,6 @@ public actor SessionManager {
                 }
             }
         } catch is CancellationError {
-            // Consumer stopped iterating; their continuation is already torn down.
-            // Yielding here would be a no-op anyway — finish silently.
             continuation.finish()
             return
         } catch {
@@ -97,14 +103,23 @@ public actor SessionManager {
             if case .auth(.quickConnectExpired) = mapped {
                 continuation.yield(.expired)
             } else {
-                continuation.yield(.rejected)
+                continuation.yield(.failed(reason: mapped.userMessage))
             }
             continuation.finish()
             return
         }
 
+        // The SDK's QuickConnect.connect() swallows CancellationError and just
+        // finish()es the stream — so a cancelled run reaches here with the
+        // for-await loop having exited cleanly and `secret == nil`. Check the
+        // cancellation flag before treating that as a real failure.
+        if Task.isCancelled {
+            continuation.finish()
+            return
+        }
+
         guard let secret else {
-            continuation.yield(.rejected)
+            continuation.yield(.failed(reason: "The server completed Quick Connect without authorising. Try again."))
             continuation.finish()
             return
         }
@@ -113,7 +128,7 @@ public actor SessionManager {
         do {
             auth = try await client.signIn(quickConnectSecret: secret)
         } catch {
-            continuation.yield(.rejected)
+            continuation.yield(.failed(reason: ErrorMapping.appError(from: error).userMessage))
             continuation.finish()
             return
         }
@@ -122,7 +137,7 @@ public actor SessionManager {
         do {
             info = try await client.fetchPublicSystemInfo()
         } catch {
-            continuation.yield(.rejected)
+            continuation.yield(.failed(reason: ErrorMapping.appError(from: error).userMessage))
             continuation.finish()
             return
         }
@@ -133,13 +148,13 @@ public actor SessionManager {
             Log.auth.info("Signed in via Quick Connect to \(info.serverName ?? "Jellyfin server") as \(session.user.name)")
             continuation.yield(.signedIn(session))
         } catch {
-            Log.auth.error("Quick Connect post-auth failed: \(ErrorMapping.appError(from: error).diagnosticDescription)")
-            continuation.yield(.rejected)
+            Log.auth.error("Quick Connect post-auth failed: \(String(describing: type(of: error)))")
+            continuation.yield(.failed(reason: ErrorMapping.appError(from: error).userMessage))
         }
         continuation.finish()
     }
 
-    // Internal — accessible from the same target (Task 9 Quick Connect will call this).
+    // Internal — accessible from the same target.
     func buildSession(authResult: AuthenticationResult, server: URL, publicInfo: PublicSystemInfo) throws -> Session {
         guard let accessToken = authResult.accessToken else {
             throw AppError.auth(.invalidCredentials)

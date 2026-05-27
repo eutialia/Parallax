@@ -83,6 +83,41 @@ struct ServerStoreTests {
         #expect(storedToken == nil)
     }
 
+    @Test("Load throws ServerStoreError.decodeFailed when persisted sessions cannot be decoded (refuses to wipe)")
+    func loadRefusesToWipeOnDecodeFailure() async throws {
+        let suiteName = "ServerStoreTests-decode-\(UUID().uuidString)"
+        let corruptJSON = #"[{"unexpected":"shape"}]"#.data(using: .utf8)!
+        let key = "ParallaxJellyfin.persistedSessions"
+
+        // Seed the corrupt blob, then hand a fresh UserDefaults instance to
+        // the actor — avoids sending a shared reference across isolation.
+        do {
+            let seeder = UserDefaults(suiteName: suiteName)!
+            seeder.removePersistentDomain(forName: suiteName)
+            seeder.set(corruptJSON, forKey: key)
+            seeder.synchronize()
+        }
+
+        let store: ServerStore
+        do {
+            let defaults = UserDefaults(suiteName: suiteName)!
+            let settings = SettingsStore(defaults: defaults)
+            let keychain = Keychain(service: "com.lhdev.parallax.tests.\(UUID().uuidString)")
+            store = ServerStore(settings: settings, keychain: keychain)
+        }
+
+        await #expect(throws: ServerStore.ServerStoreError.self) {
+            try await store.load()
+        }
+
+        // Crucially: the raw UserDefaults data is still there — refusing to
+        // load means refusing to overwrite. The orphan-cleanup branch of
+        // load() must NOT have fired.
+        let verifier = UserDefaults(suiteName: suiteName)!
+        let stillThere = verifier.data(forKey: key)
+        #expect(stillThere == corruptJSON)
+    }
+
     @Test("Load drops persisted sessions whose token has vanished from Keychain")
     func loadHandlesMissingToken() async throws {
         let (store, _, keychain) = freshStore()
