@@ -11,33 +11,25 @@ public struct Bytes: Sendable, Hashable, Codable, Comparable {
         lhs.rawValue < rhs.rawValue
     }
 
+    // Locked to en_US_POSIX so output is deterministic across locales.
+    // Wire to a localized FormatStyle at the call site when displaying in UI.
     public func formatted() -> String {
-        let value = Double(rawValue)
+        let style = FloatingPointFormatStyle<Double>.number
+            .precision(.fractionLength(0...1))
+            .locale(Locale(identifier: "en_US_POSIX"))
 
-        let units = [
+        let value = Double(rawValue)
+        let units: [(Double, String)] = [
             (1_000_000_000_000, "TB"),
             (1_000_000_000, "GB"),
             (1_000_000, "MB"),
             (1_000, "KB"),
-            (1, "B"),
         ]
 
-        for (threshold, unit) in units {
-            if abs(value) >= Double(threshold) {
-                let divided = value / Double(threshold)
-                // Round to 1 decimal place
-                let rounded = (divided * 10).rounded() / 10
-
-                // Format the number, removing trailing .0
-                let formatter = NumberFormatter()
-                formatter.minimumFractionDigits = 0
-                formatter.maximumFractionDigits = 1
-                let formatted = formatter.string(from: NSNumber(value: rounded)) ?? "\(rounded)"
-
-                return "\(formatted) \(unit)"
-            }
+        for (threshold, unit) in units where abs(value) >= threshold {
+            return "\((value / threshold).formatted(style)) \(unit)"
         }
 
-        return "0 B"
+        return "\(rawValue) B"
     }
 }

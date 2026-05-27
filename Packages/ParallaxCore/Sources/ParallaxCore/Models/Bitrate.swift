@@ -23,14 +23,20 @@ public struct Bitrate: Sendable, Hashable, Codable, Comparable {
         lhs.rawValue < rhs.rawValue
     }
 
+    // Locked to en_US_POSIX so output is deterministic across locales.
+    // Wire to a localized FormatStyle at the call site when displaying in UI.
     public func formatted() -> String {
+        let style = FloatingPointFormatStyle<Double>.number
+            .precision(.fractionLength(0...1))
+            .locale(Locale(identifier: "en_US_POSIX"))
+
         switch rawValue {
         case 1_000_000...:
             let mbps = Double(rawValue) / 1_000_000
-            return mbps == mbps.rounded() ? "\(Int(mbps)) Mbps" : "\(mbps) Mbps"
+            return "\(mbps.formatted(style)) Mbps"
         case 1_000...:
             let kbps = Double(rawValue) / 1_000
-            return kbps == kbps.rounded() ? "\(Int(kbps)) kbps" : "\(kbps) kbps"
+            return "\(kbps.formatted(style)) kbps"
         default:
             return "\(rawValue) bps"
         }

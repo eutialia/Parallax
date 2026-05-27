@@ -44,6 +44,15 @@ struct BitrateTests {
         #expect(Bitrate.bitsPerSecond(500).formatted() == "500 bps")
     }
 
+    @Test("Bitrate caps non-integer values to one fractional digit")
+    func boundedDecimals() {
+        // 8_333_333 bps → 8.333333 Mbps → "8.3 Mbps", not full Double precision
+        #expect(Bitrate(rawValue: 8_333_333).formatted() == "8.3 Mbps")
+        #expect(Bitrate(rawValue: 8_500_000).formatted() == "8.5 Mbps")
+        // Integer-valued cases drop the fractional digit
+        #expect(Bitrate(rawValue: 2_000_000).formatted() == "2 Mbps")
+    }
+
     @Test("Bitrate is comparable")
     func comparable() {
         #expect(Bitrate.megabits(4) < Bitrate.megabits(8))
@@ -118,13 +127,31 @@ struct MediaInfoTests {
         #expect(AudioCodec(identifier: "truehd") == .trueHD)
     }
 
-    @Test("HDRSupport union semantics")
-    func hdrUnion() {
+    @Test("HDRSupport composes as an OptionSet")
+    func hdrOptionSet() {
         #expect(HDRSupport.dolbyVision.includes(.dolbyVision))
         #expect(HDRSupport.both.includes(.hdr10))
         #expect(HDRSupport.both.includes(.dolbyVision))
         #expect(HDRSupport.hdr10.includes(.hdr10))
         #expect(!HDRSupport.hdr10.includes(.dolbyVision))
         #expect(!HDRSupport.none.includes(.hdr10))
+    }
+
+    @Test("HDRSupport covers HDR10+ and combinations")
+    func hdr10PlusCombinations() {
+        let modern: HDRSupport = [.hdr10, .hdr10Plus, .dolbyVision]
+        #expect(modern.includes(.hdr10Plus))
+        #expect(modern.includes(.hdr10))
+        #expect(modern.includes(.dolbyVision))
+        #expect(modern.includes([.hdr10, .dolbyVision]))
+        #expect(!HDRSupport.hdr10.includes(.hdr10Plus))
+    }
+
+    @Test("HDRSupport round-trips through Codable")
+    func hdrCodable() throws {
+        let original: HDRSupport = [.hdr10, .hdr10Plus, .dolbyVision]
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(HDRSupport.self, from: data)
+        #expect(decoded == original)
     }
 }

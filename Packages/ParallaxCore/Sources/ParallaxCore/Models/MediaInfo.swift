@@ -62,21 +62,24 @@ public enum ColorSpace: String, Sendable, Hashable, Codable, CaseIterable {
     case dolbyVision
 }
 
-public enum HDRSupport: Sendable, Hashable, Codable {
-    case none
-    case hdr10
-    case dolbyVision
-    case both
+// OptionSet because a device can support several HDR formats simultaneously
+// (e.g., an iPhone 15 Pro supports HDR10, HDR10+, and Dolby Vision).
+public struct HDRSupport: OptionSet, Sendable, Hashable, Codable {
+    public let rawValue: Int
+
+    public init(rawValue: Int) {
+        self.rawValue = rawValue
+    }
+
+    public static let hdr10 = HDRSupport(rawValue: 1 << 0)
+    public static let hdr10Plus = HDRSupport(rawValue: 1 << 1)
+    public static let dolbyVision = HDRSupport(rawValue: 1 << 2)
+
+    public static let none: HDRSupport = []
+    public static let both: HDRSupport = [.hdr10, .dolbyVision]
 
     public func includes(_ other: HDRSupport) -> Bool {
-        switch (self, other) {
-        case (.both, _), (_, .none):
-            return true
-        case (.hdr10, .hdr10), (.dolbyVision, .dolbyVision):
-            return true
-        default:
-            return false
-        }
+        contains(other)
     }
 }
 
