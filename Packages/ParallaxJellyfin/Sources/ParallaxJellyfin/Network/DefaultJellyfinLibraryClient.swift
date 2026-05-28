@@ -53,7 +53,9 @@ public final class DefaultJellyfinLibraryClient: JellyfinLibraryClient, @uncheck
         params.imageTypeLimit = 1
         params.enableImageTypes = [.primary, .backdrop, .logo, .thumb]
         params.filters = filter.wireFormat
-        params.isFavorite = filter.favoritesOnly ? true : nil
+        // `favoritesOnly` is already emitted via filter.wireFormat as
+        // .isFavorite — don't double-write here, or a future filter case
+        // (e.g. "hide favorites") would fight a hard-coded true.
         params.includeItemTypes = [.movie, .series]
 
         let request = Paths.getItems(parameters: params)
@@ -77,9 +79,13 @@ public final class DefaultJellyfinLibraryClient: JellyfinLibraryClient, @uncheck
 
     public func getEpisodes(seasonID: String) async throws -> [BaseItemDto] {
         // Episodes queried via /Items with parentId = seasonID, sorted by index.
+        // includeItemTypes=[.episode] keeps trailers, extras, and theme
+        // videos out of the list — a season folder can contain non-episode
+        // children that we don't want to surface here.
         var params = Paths.GetItemsParameters()
         params.userID = userID
         params.parentID = seasonID
+        params.includeItemTypes = [.episode]
         params.fields = [.overview, .primaryImageAspectRatio]
         params.sortBy = [.indexNumber]
         params.sortOrder = [.ascending]
