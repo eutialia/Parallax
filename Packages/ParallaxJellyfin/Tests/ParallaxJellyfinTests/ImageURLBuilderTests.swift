@@ -61,4 +61,19 @@ struct ImageURLBuilderTests {
         let url = ImageURLBuilder.url(serverURL: prefixed, ref: ref, maxWidth: 320)
         #expect(url?.path == "/jellyfin/Items/item-123/Images/Primary")
     }
+
+    @Test("Trailing slash on server URL is normalised, not doubled")
+    func trailingSlashBase() {
+        let trailing = URL(string: "https://jellyfin.example.com/")!
+        let ref = ImageRef(itemID: itemID, kind: .primary, tag: tag)
+        let url = ImageURLBuilder.url(serverURL: trailing, ref: ref, maxWidth: 320)
+        #expect(url?.path == "/Items/item-123/Images/Primary")
+    }
+
+    @Test("Backdrop index 0 is encoded as /0, not elided")
+    func backdropIndexZero() {
+        let ref = ImageRef(itemID: itemID, kind: .backdrop(index: 0), tag: tag)
+        let url = ImageURLBuilder.url(serverURL: serverURL, ref: ref, maxWidth: nil)
+        #expect(url?.path == "/Items/item-123/Images/Backdrop/0")
+    }
 }

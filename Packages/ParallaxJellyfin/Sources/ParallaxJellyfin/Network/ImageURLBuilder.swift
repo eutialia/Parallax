@@ -8,7 +8,13 @@ public enum ImageURLBuilder {
         maxHeight: Int? = nil,
         quality: Int = 90
     ) -> URL? {
-        var path = "/Items/\(ref.itemID.rawValue)/Images/\(ref.kind.pathSegment)"
+        // ItemID is an unconstrained String wrapper — percent-encode before
+        // path interpolation so a stray "/" or "?" can't corrupt the URL.
+        // Jellyfin uses UUIDs in practice; this is defense-in-depth.
+        guard let encodedID = ref.itemID.rawValue.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else {
+            return nil
+        }
+        var path = "/Items/\(encodedID)/Images/\(ref.kind.pathSegment)"
         if case .backdrop(let index) = ref.kind {
             path += "/\(index)"
         }
