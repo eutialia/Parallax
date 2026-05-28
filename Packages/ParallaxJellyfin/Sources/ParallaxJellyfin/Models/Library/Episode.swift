@@ -26,7 +26,14 @@ public struct Episode: Sendable, Hashable, Identifiable {
     }
 
     public func imageRef(_ kind: ImageKind) -> ImageRef? {
-        guard case .primary = kind, let tag = primaryTag else { return nil }
-        return ImageRef(itemID: id, kind: .primary, tag: tag)
+        // Switch (not guard case) so the compiler errors if ImageKind
+        // gains a new case — Episode would otherwise silently eat it.
+        switch kind {
+        case .primary:
+            guard let tag = primaryTag else { return nil }
+            return ImageRef(itemID: id, kind: .primary, tag: tag)
+        case .backdrop, .logo, .thumb, .banner, .art, .disc:
+            return nil
+        }
     }
 }

@@ -93,6 +93,60 @@ struct LibraryPrimitivesTests {
         #expect(movie.imageRef(.logo)?.tag.rawValue == "l")
     }
 
+    @Test("Series.imageRef supports primary/backdrop/logo/thumb/banner; nil for art/disc")
+    func seriesImageRefSupportedKinds() {
+        let series = Series(
+            id: ItemID(rawValue: "s1"), title: "T",
+            overview: nil, year: nil, status: nil, genres: [],
+            primaryTag: ImageTag(rawValue: "p"),
+            backdropTags: [ImageTag(rawValue: "b0")],
+            logoTag: ImageTag(rawValue: "l"),
+            thumbTag: ImageTag(rawValue: "th"),
+            bannerTag: ImageTag(rawValue: "bn"),
+            userData: UserItemData(played: false, playbackPositionTicks: 0, playCount: 0, isFavorite: false)
+        )
+        #expect(series.imageRef(.primary)?.tag.rawValue == "p")
+        #expect(series.imageRef(.backdrop(index: 0))?.tag.rawValue == "b0")
+        #expect(series.imageRef(.logo)?.tag.rawValue == "l")
+        #expect(series.imageRef(.thumb)?.tag.rawValue == "th")
+        #expect(series.imageRef(.banner)?.tag.rawValue == "bn")
+        #expect(series.imageRef(.art) == nil)
+        #expect(series.imageRef(.disc) == nil)
+    }
+
+    @Test("Season.imageRef supports only primary + thumb")
+    func seasonImageRef() {
+        let season = Season(
+            id: ItemID(rawValue: "se1"), seriesID: ItemID(rawValue: "ser1"),
+            name: "S1", indexNumber: 1,
+            primaryTag: ImageTag(rawValue: "p"),
+            thumbTag: ImageTag(rawValue: "th"),
+            episodeCount: 7
+        )
+        #expect(season.imageRef(.primary)?.tag.rawValue == "p")
+        #expect(season.imageRef(.thumb)?.tag.rawValue == "th")
+        #expect(season.imageRef(.backdrop(index: 0)) == nil)
+        #expect(season.imageRef(.logo) == nil)
+        #expect(season.imageRef(.banner) == nil)
+    }
+
+    @Test("Episode.imageRef supports only primary; other kinds return nil")
+    func episodeImageRef() {
+        let ep = Episode(
+            id: ItemID(rawValue: "e1"), seriesID: ItemID(rawValue: "ser1"),
+            seasonID: ItemID(rawValue: "se1"), name: "Pilot",
+            indexNumber: 1, parentIndexNumber: 1,
+            overview: nil, runtime: nil,
+            primaryTag: ImageTag(rawValue: "p"),
+            userData: UserItemData(played: false, playbackPositionTicks: 0, playCount: 0, isFavorite: false)
+        )
+        #expect(ep.imageRef(.primary)?.tag.rawValue == "p")
+        #expect(ep.imageRef(.backdrop(index: 0)) == nil)
+        #expect(ep.imageRef(.logo) == nil)
+        #expect(ep.imageRef(.thumb) == nil)
+        #expect(ep.imageRef(.banner) == nil)
+    }
+
     @Test("Item enum exposes id regardless of concrete case")
     func itemID() {
         let movie = Movie(
