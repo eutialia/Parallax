@@ -91,23 +91,59 @@ struct LibraryRepositoryDrillInTests {
         if case .episode = items.first { } else { Issue.record("expected .episode") }
     }
 
-    @Test("search() returns categorised SearchResults")
-    func searchCategorises() async throws {
+    @Test("search(.all) fans out to three per-type calls and merges results")
+    func searchAllFansOut() async throws {
         let (repo, client) = make()
         var seriesDto = BaseItemDto()
         seriesDto.id = "ser1"; seriesDto.name = "Breaking Bad"; seriesDto.type = .series
-        client.searchResult = .success([
-            dtoMovie("m1"),
-            seriesDto,
-            dtoEpisode("e1", seriesID: "ser1", seasonID: "se1"),
-        ])
+        client.searchResultsByScope = [
+            .movies: .success([dtoMovie("m1")]),
+            .series: .success([seriesDto]),
+            .episodes: .success([dtoEpisode("e1", seriesID: "ser1", seasonID: "se1")]),
+        ]
         let results = try await repo.search("bad", scope: .all)
         #expect(results.movies.count == 1)
         #expect(results.series.count == 1)
         #expect(results.episodes.count == 1)
+        // Three independent calls, never .all — that's the whole point: a
+        // single combined query lets episode floods crowd series out, which
+        // is what we saw against the user's anime library.
+        #expect(client.searchCalls.count == 3)
+        let scopes = Set(client.searchCalls.map { $0.scope })
+        #expect(scopes == [.movies, .series, .episodes])
+        #expect(client.searchCalls.allSatisfy { $0.query == "bad" })
+    }
+
+    @Test("search(.all) surfaces series even when episodes flood results")
+    func searchAllSeriesNotCrowdedOut() async throws {
+        let (repo, client) = make()
+        var seriesDto = BaseItemDto()
+        seriesDto.id = "ser1"; seriesDto.name = "Hyouka"; seriesDto.type = .series
+        let manyEpisodes = (0..<50).map { dtoEpisode("e\($0)", seriesID: "ser1", seasonID: "se1") }
+        client.searchResultsByScope = [
+            .movies: .success([]),
+            .series: .success([seriesDto]),
+            .episodes: .success(manyEpisodes),
+        ]
+        let results = try await repo.search("hyouka", scope: .all)
+        // Regression: previously a single combined query with limit=50 let
+        // 50 episode hits push the series out of the response entirely.
+        #expect(results.series.count == 1)
+        #expect(results.series.first?.title == "Hyouka")
+        #expect(results.episodes.count == 50)
+    }
+
+    @Test("search(.series) only calls the series scope")
+    func searchSeriesScope() async throws {
+        let (repo, client) = make()
+        var s = BaseItemDto(); s.id = "ser1"; s.name = "X"; s.type = .series
+        client.searchResultsByScope = [.series: .success([s])]
+        let results = try await repo.search("x", scope: .series)
+        #expect(results.series.count == 1)
+        #expect(results.movies.isEmpty)
+        #expect(results.episodes.isEmpty)
         #expect(client.searchCalls.count == 1)
-        #expect(client.searchCalls.first?.query == "bad")
-        #expect(client.searchCalls.first?.scope == .all)
+        #expect(client.searchCalls.first?.scope == .series)
     }
 
     @Test("search() with whitespace-only query short-circuits without calling client")

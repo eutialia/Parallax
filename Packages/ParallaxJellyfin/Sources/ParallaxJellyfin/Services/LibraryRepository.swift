@@ -101,24 +101,33 @@ public actor LibraryRepository {
     public func search(_ query: String, scope: SearchScope) async throws -> SearchResults {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return .empty }
-        let dtos: [BaseItemDto]
         do {
-            dtos = try await client.search(query: trimmed, scope: scope)
+            switch scope {
+            case .all:
+                // Fan out per type so a flood of episode matches can't crowd
+                // a matching series out of a single shared result limit.
+                async let movieDtos = client.search(query: trimmed, scope: .movies)
+                async let seriesDtos = client.search(query: trimmed, scope: .series)
+                async let episodeDtos = client.search(query: trimmed, scope: .episodes)
+                let (m, s, e) = try await (movieDtos, seriesDtos, episodeDtos)
+                return SearchResults(
+                    movies: m.compactMap { $0.toMovie() },
+                    series: s.compactMap { $0.toSeries() },
+                    episodes: e.compactMap { $0.toEpisode() }
+                )
+            case .movies:
+                let dtos = try await client.search(query: trimmed, scope: .movies)
+                return SearchResults(movies: dtos.compactMap { $0.toMovie() }, series: [], episodes: [])
+            case .series:
+                let dtos = try await client.search(query: trimmed, scope: .series)
+                return SearchResults(movies: [], series: dtos.compactMap { $0.toSeries() }, episodes: [])
+            case .episodes:
+                let dtos = try await client.search(query: trimmed, scope: .episodes)
+                return SearchResults(movies: [], series: [], episodes: dtos.compactMap { $0.toEpisode() })
+            }
         } catch {
             throw ErrorMapping.appError(from: error)
         }
-        var movies: [Movie] = []
-        var series: [Series] = []
-        var episodes: [Episode] = []
-        for dto in dtos {
-            switch dto.type {
-            case .movie: if let m = dto.toMovie() { movies.append(m) }
-            case .series: if let s = dto.toSeries() { series.append(s) }
-            case .episode: if let e = dto.toEpisode() { episodes.append(e) }
-            default: continue
-            }
-        }
-        return SearchResults(movies: movies, series: series, episodes: episodes)
     }
 
     private static func dtoToItem(_ dto: BaseItemDto) -> Item? {

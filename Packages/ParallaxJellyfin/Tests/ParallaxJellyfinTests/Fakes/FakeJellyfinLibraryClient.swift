@@ -15,6 +15,10 @@ final class FakeJellyfinLibraryClient: JellyfinLibraryClient, @unchecked Sendabl
     var continueWatchingResult: Result<[BaseItemDto], Error> = .success([])
     var nextUpResult: Result<[BaseItemDto], Error> = .success([])
     var searchResult: Result<[BaseItemDto], Error> = .success([])
+    // Per-scope override — used by tests that need to verify the repository
+    // routes per-type searches independently (scope .all fans out into three
+    // parallel calls). Falls back to `searchResult` if a scope is unmapped.
+    var searchResultsByScope: [SearchScope: Result<[BaseItemDto], Error>] = [:]
 
     // Call records.
     private(set) var collectionsCallCount = 0
@@ -69,6 +73,9 @@ final class FakeJellyfinLibraryClient: JellyfinLibraryClient, @unchecked Sendabl
 
     func search(query: String, scope: SearchScope) async throws -> [BaseItemDto] {
         searchCalls.append((query, scope))
+        if let perScope = searchResultsByScope[scope] {
+            return try perScope.get()
+        }
         return try searchResult.get()
     }
 }
