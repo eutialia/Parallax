@@ -3,16 +3,21 @@ import Nuke
 
 public actor ImagePipelineFactory {
     private let identity: DeviceIdentity
-    private var pipelinesByServer: [ServerID: ImagePipeline] = [:]
+    // Store (token, pipeline) so we can detect token rotation.
+    private var pipelinesByServer: [ServerID: (token: String, pipeline: ImagePipeline)] = [:]
 
     public init(identity: DeviceIdentity) {
         self.identity = identity
     }
 
     public func pipeline(for session: Session) -> ImagePipeline {
-        if let existing = pipelinesByServer[session.id] { return existing }
+        if let entry = pipelinesByServer[session.id], entry.token == session.accessToken {
+            return entry.pipeline
+        }
+        // Either no cached pipeline OR token has rotated (sign-out + sign-in
+        // to same server). Build fresh.
         let pipeline = Self.makePipeline(session: session, identity: identity)
-        pipelinesByServer[session.id] = pipeline
+        pipelinesByServer[session.id] = (session.accessToken, pipeline)
         return pipeline
     }
 

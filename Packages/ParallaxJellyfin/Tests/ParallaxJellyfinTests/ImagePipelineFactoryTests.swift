@@ -38,6 +38,14 @@ struct ImagePipelineFactoryTests {
         #expect(p1 !== p2)
     }
 
+    @Test("Same ServerID with rotated token returns a fresh pipeline")
+    func tokenRotation() async {
+        let factory = ImagePipelineFactory(identity: identity())
+        let p1 = await factory.pipeline(for: session(id: "a", token: "tok-old"))
+        let p2 = await factory.pipeline(for: session(id: "a", token: "tok-new"))
+        #expect(p1 !== p2)
+    }
+
     @Test("Authorization header builder includes Token and Client metadata")
     func authHeader() {
         let header = ImagePipelineFactory.authorizationHeader(identity: identity(), token: "tok-abc")
