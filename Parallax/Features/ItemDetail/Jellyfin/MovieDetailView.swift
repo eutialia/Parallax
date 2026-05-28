@@ -21,7 +21,6 @@ struct MovieDetailView: View {
                                 title: md.movie.title,
                                 subtitle: subtitle(md),
                                 backdropRef: md.movie.imageRef(.backdrop(index: 0)),
-                                logoRef: md.movie.imageRef(.logo),
                                 session: session
                             )
 
@@ -68,6 +67,8 @@ struct MovieDetailView: View {
                 ProgressView().padding(40)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemBackground))
         .task {
             if viewModel == nil {
                 let repo = await deps.libraryRepoFactory(session)

@@ -52,20 +52,30 @@ struct JellyfinSearchView: View {
                 ContentUnavailableView.search
             } else {
                 List {
-                    if !results.movies.isEmpty {
-                        Section("Movies") {
-                            ForEach(results.movies) { m in
-                                NavigationLink(value: ItemNavigation.movie(m.id, session)) {
-                                    resultRow(title: m.title, subtitle: m.year.map(String.init), imageRef: m.imageRef(.primary), session: session)
-                                }
-                            }
-                        }
-                    }
                     if !results.series.isEmpty {
                         Section("Series") {
                             ForEach(results.series) { s in
                                 NavigationLink(value: ItemNavigation.series(s.id, session)) {
-                                    resultRow(title: s.title, subtitle: s.year.map(String.init), imageRef: s.imageRef(.primary), session: session)
+                                    posterRow(
+                                        title: s.title,
+                                        subtitle: s.year.map(String.init),
+                                        imageRef: s.imageRef(.primary),
+                                        session: session
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    if !results.movies.isEmpty {
+                        Section("Movies") {
+                            ForEach(results.movies) { m in
+                                NavigationLink(value: ItemNavigation.movie(m.id, session)) {
+                                    posterRow(
+                                        title: m.title,
+                                        subtitle: m.year.map(String.init),
+                                        imageRef: m.imageRef(.primary),
+                                        session: session
+                                    )
                                 }
                             }
                         }
@@ -74,7 +84,12 @@ struct JellyfinSearchView: View {
                         Section("Episodes") {
                             ForEach(results.episodes) { e in
                                 NavigationLink(value: ItemNavigation.episode(e.id, session)) {
-                                    resultRow(title: e.name, subtitle: episodeSubtitle(e), imageRef: e.imageRef(.primary), session: session)
+                                    landscapeRow(
+                                        title: e.name,
+                                        subtitle: episodeSubtitle(e),
+                                        imageRef: e.imageRef(.primary),
+                                        session: session
+                                    )
                                 }
                             }
                         }
@@ -91,11 +106,38 @@ struct JellyfinSearchView: View {
     }
 
     @ViewBuilder
-    private func resultRow(title: String, subtitle: String?, imageRef: ImageRef?, session: Session) -> some View {
+    private func posterRow(title: String, subtitle: String?, imageRef: ImageRef?, session: Session) -> some View {
         HStack(spacing: 12) {
-            JellyfinImage(ref: imageRef, kind: .primary, session: session, maxWidth: 80)
-                .frame(width: 44, height: 66)
-                .clipShape(.rect(cornerRadius: 4))
+            JellyfinImage(
+                ref: imageRef,
+                kind: .primary,
+                session: session,
+                maxWidth: 160,
+                aspectRatio: JellyfinImage.poster
+            )
+            .frame(width: 44, height: 66)
+            .clipShape(.rect(cornerRadius: 4))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).lineLimit(2)
+                if let subtitle {
+                    Text(subtitle).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func landscapeRow(title: String, subtitle: String?, imageRef: ImageRef?, session: Session) -> some View {
+        HStack(spacing: 12) {
+            JellyfinImage(
+                ref: imageRef,
+                kind: .primary,
+                session: session,
+                maxWidth: 240,
+                aspectRatio: JellyfinImage.landscape
+            )
+            .frame(width: 96, height: 54)
+            .clipShape(.rect(cornerRadius: 4))
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).lineLimit(2)
                 if let subtitle {

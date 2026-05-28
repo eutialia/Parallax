@@ -8,6 +8,28 @@ struct MediaTile: View {
     let imageKind: ImageKind
     let session: Session
     let progress: Double?   // 0.0–1.0; nil hides the bar
+    let aspectRatio: CGFloat
+    let maxImageWidth: Int
+
+    init(
+        title: String,
+        subtitle: String?,
+        imageRef: ImageRef?,
+        imageKind: ImageKind,
+        session: Session,
+        progress: Double?,
+        aspectRatio: CGFloat = JellyfinImage.poster,
+        maxImageWidth: Int = 600
+    ) {
+        self.title = title
+        self.subtitle = subtitle
+        self.imageRef = imageRef
+        self.imageKind = imageKind
+        self.session = session
+        self.progress = progress
+        self.aspectRatio = aspectRatio
+        self.maxImageWidth = maxImageWidth
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -16,7 +38,8 @@ struct MediaTile: View {
                     ref: imageRef,
                     kind: imageKind,
                     session: session,
-                    maxWidth: 320
+                    maxWidth: maxImageWidth,
+                    aspectRatio: aspectRatio
                 )
                 .clipShape(.rect(cornerRadius: 8))
 

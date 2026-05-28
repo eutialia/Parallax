@@ -21,7 +21,6 @@ struct SeriesDetailView: View {
                                 title: sd.series.title,
                                 subtitle: subtitle(sd),
                                 backdropRef: sd.series.imageRef(.backdrop(index: 0)),
-                                logoRef: sd.series.imageRef(.logo),
                                 session: session
                             )
                             if let overview = sd.series.overview {
@@ -36,7 +35,9 @@ struct SeriesDetailView: View {
                                             imageRef: season.imageRef(.primary),
                                             imageKind: .primary,
                                             session: session,
-                                            progress: nil
+                                            progress: nil,
+                                            aspectRatio: JellyfinImage.poster,
+                                            maxImageWidth: 320
                                         )
                                     }
                                     .buttonStyle(.plain)
@@ -59,6 +60,8 @@ struct SeriesDetailView: View {
                 ProgressView().padding(40)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemBackground))
         .task {
             if viewModel == nil {
                 let repo = await deps.libraryRepoFactory(session)

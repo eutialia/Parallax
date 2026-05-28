@@ -21,9 +21,9 @@ struct EpisodeDetailView: View {
                                 ref: ed.episode.imageRef(.primary),
                                 kind: .primary,
                                 session: session,
-                                maxWidth: 1280
+                                maxWidth: 1280,
+                                aspectRatio: JellyfinImage.landscape
                             )
-                            .frame(maxHeight: 280)
 
                             VStack(alignment: .leading, spacing: 8) {
                                 if let s = ed.episode.parentIndexNumber, let e = ed.episode.indexNumber {
@@ -70,6 +70,8 @@ struct EpisodeDetailView: View {
                 ProgressView().padding(40)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemBackground))
         .task {
             if viewModel == nil {
                 let repo = await deps.libraryRepoFactory(session)

@@ -22,9 +22,10 @@ struct SeasonDetailView: View {
                                     ref: sd.season.imageRef(.primary),
                                     kind: .primary,
                                     session: session,
-                                    maxWidth: 320
+                                    maxWidth: 400,
+                                    aspectRatio: JellyfinImage.poster
                                 )
-                                .frame(maxHeight: 240)
+                                .frame(maxWidth: 200, maxHeight: 300)
                                 .clipShape(.rect(cornerRadius: 8))
                                 Text(sd.season.name).font(.title2).bold()
                                 if let overview = sd.overview {
@@ -67,7 +68,8 @@ struct SeasonDetailView: View {
                 ref: ep.imageRef(.primary),
                 kind: .primary,
                 session: session,
-                maxWidth: 160
+                maxWidth: 320,
+                aspectRatio: JellyfinImage.landscape
             )
             .frame(width: 120, height: 68)
             .clipShape(.rect(cornerRadius: 6))

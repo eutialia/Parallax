@@ -7,6 +7,25 @@ struct JellyfinImage: View {
     let kind: ImageKind
     let session: Session
     let maxWidth: Int
+    let aspectRatio: CGFloat
+
+    static let poster: CGFloat = 2.0 / 3.0
+    static let landscape: CGFloat = 16.0 / 9.0
+    static let banner: CGFloat = 1000.0 / 185.0
+
+    init(
+        ref: ImageRef?,
+        kind: ImageKind,
+        session: Session,
+        maxWidth: Int,
+        aspectRatio: CGFloat = 2.0 / 3.0
+    ) {
+        self.ref = ref
+        self.kind = kind
+        self.session = session
+        self.maxWidth = maxWidth
+        self.aspectRatio = aspectRatio
+    }
 
     var body: some View {
         ZStack {
@@ -15,7 +34,7 @@ struct JellyfinImage: View {
                 LazyImageRenderer(url: url, session: session)
             }
         }
-        .aspectRatio(Self.aspectRatio(for: kind), contentMode: .fill)
+        .aspectRatio(aspectRatio, contentMode: .fill)
         .clipped()
     }
 
@@ -23,17 +42,6 @@ struct JellyfinImage: View {
     private var placeholder: some View {
         Rectangle()
             .fill(Color(white: 0.15))
-    }
-
-    static func aspectRatio(for kind: ImageKind) -> CGFloat {
-        switch kind {
-        case .primary: return 2.0 / 3.0       // poster
-        case .backdrop(_): return 16.0 / 9.0
-        case .thumb: return 16.0 / 9.0
-        case .banner: return 1000.0 / 185.0
-        case .disc: return 1.0
-        case .logo, .art: return 16.0 / 9.0   // sized by container in practice; sane default
-        }
     }
 }
 

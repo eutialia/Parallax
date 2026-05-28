@@ -16,6 +16,8 @@ struct JellyfinLibraryGridView: View {
                 ProgressView().padding(40)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemBackground))
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 if let vm = viewModel {
@@ -64,7 +66,9 @@ struct JellyfinLibraryGridView: View {
                             imageRef: image(for: item),
                             imageKind: .primary,
                             session: session,
-                            progress: nil
+                            progress: nil,
+                            aspectRatio: JellyfinImage.poster,
+                            maxImageWidth: 600
                         )
                     }
                     .buttonStyle(.plain)

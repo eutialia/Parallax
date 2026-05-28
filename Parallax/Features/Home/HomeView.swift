@@ -10,6 +10,10 @@ struct HomeView: View {
         ScrollView {
             content
         }
+        // Solid floor under the scroll content so the floating iPadOS 26
+        // sidebar's translucent material blurs over the app background
+        // instead of letting tile imagery bleed through.
+        .background(Color(.systemBackground))
         .navigationTitle("Home")
         .navigationDestination(for: ItemNavigation.self) { nav in
             destinationView(for: nav)
@@ -33,22 +37,15 @@ struct HomeView: View {
             case .idle, .loading:
                 ProgressView().padding(40)
             case .loaded:
-                VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: 24) {
                     if !vm.continueWatching.isEmpty {
                         MetadataRow(
                             title: "Continue Watching",
                             items: vm.continueWatching,
-                            tileWidth: 160
+                            tileWidth: 240
                         ) { item in
                             NavigationLink(value: nav(for: item, session: session)) {
-                                MediaTile(
-                                    title: tileTitle(item),
-                                    subtitle: tileSubtitle(item),
-                                    imageRef: tileImage(item),
-                                    imageKind: tileImageKind(item),
-                                    session: session,
-                                    progress: tileProgress(item)
-                                )
+                                landscapeTile(item: item, session: session, showProgress: true)
                             }
                             .buttonStyle(.plain)
                         }
@@ -57,17 +54,10 @@ struct HomeView: View {
                         MetadataRow(
                             title: "Next Up",
                             items: vm.nextUp,
-                            tileWidth: 160
+                            tileWidth: 240
                         ) { item in
                             NavigationLink(value: nav(for: item, session: session)) {
-                                MediaTile(
-                                    title: tileTitle(item),
-                                    subtitle: tileSubtitle(item),
-                                    imageRef: tileImage(item),
-                                    imageKind: tileImageKind(item),
-                                    session: session,
-                                    progress: nil
-                                )
+                                landscapeTile(item: item, session: session, showProgress: false)
                             }
                             .buttonStyle(.plain)
                         }
@@ -89,6 +79,20 @@ struct HomeView: View {
         } else {
             ProgressView().padding(40)
         }
+    }
+
+    @ViewBuilder
+    private func landscapeTile(item: Item, session: Session, showProgress: Bool) -> some View {
+        MediaTile(
+            title: tileTitle(item),
+            subtitle: tileSubtitle(item),
+            imageRef: landscapeImage(item),
+            imageKind: landscapeImageKind(item),
+            session: session,
+            progress: showProgress ? tileProgress(item) : nil,
+            aspectRatio: JellyfinImage.landscape,
+            maxImageWidth: 600
+        )
     }
 
     @ViewBuilder
@@ -130,17 +134,30 @@ struct HomeView: View {
         }
     }
 
-    private func tileImage(_ item: Item) -> ImageRef? {
+    // For landscape Home rows we want 16:9 imagery for every type. Episodes'
+    // .primary IS a 16:9 still; movies/series prefer .thumb then .backdrop
+    // then fall back to the poster as last resort (still cropped to 16:9 fill).
+    private func landscapeImage(_ item: Item) -> ImageRef? {
         switch item {
-        case .movie(let m): return m.imageRef(.primary) ?? m.imageRef(.thumb)
-        case .series(let s): return s.imageRef(.primary) ?? s.imageRef(.thumb)
-        case .episode(let e): return e.imageRef(.primary)
+        case .movie(let m):
+            return m.imageRef(.thumb) ?? m.imageRef(.backdrop(index: 0)) ?? m.imageRef(.primary)
+        case .series(let s):
+            return s.imageRef(.thumb) ?? s.imageRef(.backdrop(index: 0)) ?? s.imageRef(.primary)
+        case .episode(let e):
+            return e.imageRef(.primary)
         }
     }
 
-    private func tileImageKind(_ item: Item) -> ImageKind {
+    private func landscapeImageKind(_ item: Item) -> ImageKind {
         switch item {
-        case .movie, .series: return .primary
+        case .movie(let m):
+            if m.imageRef(.thumb) != nil { return .thumb }
+            if m.imageRef(.backdrop(index: 0)) != nil { return .backdrop(index: 0) }
+            return .primary
+        case .series(let s):
+            if s.imageRef(.thumb) != nil { return .thumb }
+            if s.imageRef(.backdrop(index: 0)) != nil { return .backdrop(index: 0) }
+            return .primary
         case .episode: return .primary
         }
     }
