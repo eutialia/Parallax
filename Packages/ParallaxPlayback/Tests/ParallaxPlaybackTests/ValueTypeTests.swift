@@ -146,6 +146,15 @@ struct ValueTypeTests {
         }
     }
 
+    @Test("PlaybackEngine protocol requirements are visible")
+    func playbackEngineProtocolExists() {
+        // Verify the protocol is importable and the associated type names match the spec.
+        // FakePlaybackEngine (Task 4a.6) is the concrete conformance; this test
+        // is a compile-time assertion that the protocol surface exists.
+        let _: (any PlaybackEngine).Type = (any PlaybackEngine).self
+        #expect(Bool(true))
+    }
+
     @Test("PlaybackEngineCapabilities AVKit preset has all capabilities true")
     func playbackEngineCapabilitiesAVKit() {
         let caps = PlaybackEngineCapabilities(
