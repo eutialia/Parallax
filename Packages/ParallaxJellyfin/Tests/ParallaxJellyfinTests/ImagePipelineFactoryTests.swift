@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import Nuke
+import ParallaxCore
 @testable import ParallaxJellyfin
 
 @Suite("ImagePipelineFactory")
@@ -21,9 +22,19 @@ struct ImagePipelineFactoryTests {
         DeviceIdentity(client: "Parallax", deviceName: "iPhone Test", deviceID: "test-dev-id", version: "0.3.0")
     }
 
+    private func provider() -> DeviceIdentityProvider {
+        let suiteName = "ImagePipelineFactoryTests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        return DeviceIdentityProvider(
+            client: "Parallax", deviceName: "iPhone Test", version: "0.3.0",
+            settings: SettingsStore(defaults: defaults)
+        )
+    }
+
     @Test("Same session returns the same pipeline instance (memoised)")
     func memoised() async {
-        let factory = ImagePipelineFactory(identity: identity())
+        let factory = ImagePipelineFactory(identityProvider: provider())
         let s = session(id: "a", token: "tok-a")
         let p1 = await factory.pipeline(for: s)
         let p2 = await factory.pipeline(for: s)
@@ -32,7 +43,7 @@ struct ImagePipelineFactoryTests {
 
     @Test("Different sessions return different pipelines")
     func perSession() async {
-        let factory = ImagePipelineFactory(identity: identity())
+        let factory = ImagePipelineFactory(identityProvider: provider())
         let p1 = await factory.pipeline(for: session(id: "a", token: "tok-a"))
         let p2 = await factory.pipeline(for: session(id: "b", token: "tok-b"))
         #expect(p1 !== p2)
@@ -40,7 +51,7 @@ struct ImagePipelineFactoryTests {
 
     @Test("Same ServerID with rotated token returns a fresh pipeline")
     func tokenRotation() async {
-        let factory = ImagePipelineFactory(identity: identity())
+        let factory = ImagePipelineFactory(identityProvider: provider())
         let p1 = await factory.pipeline(for: session(id: "a", token: "tok-old"))
         let p2 = await factory.pipeline(for: session(id: "a", token: "tok-new"))
         #expect(p1 !== p2)
