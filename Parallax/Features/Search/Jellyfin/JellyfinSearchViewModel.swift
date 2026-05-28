@@ -47,12 +47,6 @@ final class JellyfinSearchViewModel {
         }
     }
 
-    func stop() {
-        consumerTask?.cancel()
-        consumerTask = nil
-        Task { await debouncer.finish() }
-    }
-
     private func runQuery(_ q: String) async {
         let trimmed = q.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {

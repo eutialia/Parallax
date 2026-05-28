@@ -38,9 +38,6 @@ struct JellyfinSearchView: View {
                 viewModel = vm
             }
         }
-        .onDisappear {
-            viewModel?.stop()
-        }
     }
 
     @ViewBuilder
