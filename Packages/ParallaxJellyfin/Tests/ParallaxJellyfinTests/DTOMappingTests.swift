@@ -49,24 +49,35 @@ struct DTOMappingTests {
         #expect(m?.userData.playbackPositionTicks == 30_000_000_000)
     }
 
-    @Test("series.json → Series with banner tag and Ended status")
+    @Test("series.json → Series with all fields populated")
     func series() throws {
         let dto = try loadDto("series")
         let s = dto.toSeries()
         #expect(s?.id.rawValue == "series-uuid-1")
         #expect(s?.title == "Breaking Bad")
+        #expect(s?.year == 2008)
         #expect(s?.status == "Ended")
+        #expect(s?.overview?.hasPrefix("A high school chemistry teacher") == true)
+        #expect(s?.genres == ["Drama", "Crime"])
+        #expect(s?.primaryTag?.rawValue == "series-primary-1")
+        #expect(s?.logoTag?.rawValue == "series-logo-1")
+        #expect(s?.thumbTag?.rawValue == "series-thumb-1")
         #expect(s?.bannerTag?.rawValue == "series-banner-1")
         #expect(s?.backdropTags.first?.rawValue == "series-backdrop-1")
+        #expect(s?.userData.isFavorite == false)
     }
 
-    @Test("Missing required fields cause translation to return nil")
+    @Test("Missing required fields cause every translator to return nil")
     func missingRequired() {
         var dto = BaseItemDto()
         dto.id = nil
         #expect(dto.toMovie() == nil)
+        #expect(dto.toSeries() == nil)
+        #expect(dto.toMediaCollection() == nil)
         dto.id = "x"
         dto.name = nil
         #expect(dto.toMovie() == nil)
+        #expect(dto.toSeries() == nil)
+        #expect(dto.toMediaCollection() == nil)
     }
 }
