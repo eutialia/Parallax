@@ -11,6 +11,10 @@ struct LibraryPrimitivesTests {
         let tag = ImageTag(rawValue: "abc")
         #expect(item.rawValue == coll.rawValue)
         #expect(item.rawValue == tag.rawValue)
+        // The point of the wrappers is that the type system rejects
+        // cross-assignment. That's a compile-time guarantee — these
+        // runtime checks only prove the value-equality semantics on
+        // `rawValue`, not the type-system distinctness.
         #expect(ItemID(rawValue: "abc") == ItemID(rawValue: "abc"))
         #expect(ItemID(rawValue: "abc") != ItemID(rawValue: "xyz"))
     }
