@@ -3,25 +3,25 @@ import ParallaxJellyfin
 
 struct RootTabView: View {
     @Environment(AppDependencies.self) private var deps
-    @State private var selectedTab: Tab = .home
+    @State private var selectedTab: AppTab = .home
     @State private var activeServerID: ServerID?
 
-    enum Tab: Hashable {
+    enum AppTab: Hashable {
         case home, library, search, servers
     }
 
     var body: some View {
         TabView(selection: $selectedTab) {
-            Tab("Home", systemImage: "house", value: Tab.home) {
+            Tab("Home", systemImage: "house", value: AppTab.home) {
                 NavigationStack { HomeView() }
             }
-            Tab("Library", systemImage: "rectangle.stack", value: Tab.library) {
+            Tab("Library", systemImage: "rectangle.stack", value: AppTab.library) {
                 NavigationStack { LibraryHostView() }
             }
-            Tab("Search", systemImage: "magnifyingglass", value: Tab.search, role: .search) {
+            Tab("Search", systemImage: "magnifyingglass", value: AppTab.search, role: .search) {
                 NavigationStack { JellyfinSearchView() }
             }
-            Tab("Servers", systemImage: "server.rack", value: Tab.servers) {
+            Tab("Servers", systemImage: "server.rack", value: AppTab.servers) {
                 NavigationStack { ServerListView() }
             }
         }
