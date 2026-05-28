@@ -8,7 +8,7 @@ struct RootView: View {
         case .login:
             LoginView()
         case .home:
-            ServerListView()
+            RootTabView()
         }
     }
 }
