@@ -1,0 +1,23 @@
+{
+    "Id": "movie-uuid-1",
+    "Name": "The Matrix",
+    "Type": "Movie",
+    "Overview": "A computer hacker learns from mysterious rebels...",
+    "ProductionYear": 1999,
+    "RunTimeTicks": 81780000000,
+    "CommunityRating": 8.7,
+    "OfficialRating": "R",
+    "Genres": ["Action", "Science Fiction"],
+    "ImageTags": {
+        "Primary": "primary-tag-1",
+        "Logo": "logo-tag-1",
+        "Thumb": "thumb-tag-1"
+    },
+    "BackdropImageTags": ["backdrop-tag-1", "backdrop-tag-2"],
+    "UserData": {
+        "Played": false,
+        "PlaybackPositionTicks": 30000000000,
+        "PlayCount": 0,
+        "IsFavorite": true
+    }
+}

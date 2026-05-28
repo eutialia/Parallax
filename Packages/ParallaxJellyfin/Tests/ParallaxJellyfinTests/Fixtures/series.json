@@ -1,0 +1,22 @@
+{
+    "Id": "series-uuid-1",
+    "Name": "Breaking Bad",
+    "Type": "Series",
+    "Overview": "A high school chemistry teacher diagnosed with...",
+    "ProductionYear": 2008,
+    "Status": "Ended",
+    "Genres": ["Drama", "Crime"],
+    "ImageTags": {
+        "Primary": "series-primary-1",
+        "Logo": "series-logo-1",
+        "Thumb": "series-thumb-1",
+        "Banner": "series-banner-1"
+    },
+    "BackdropImageTags": ["series-backdrop-1"],
+    "UserData": {
+        "Played": false,
+        "PlaybackPositionTicks": 0,
+        "PlayCount": 0,
+        "IsFavorite": false
+    }
+}

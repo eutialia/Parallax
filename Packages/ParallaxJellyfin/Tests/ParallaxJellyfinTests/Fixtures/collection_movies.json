@@ -1,0 +1,7 @@
+{
+    "Id": "f137a2dd21bbc1b99aa5c0f6bf02a805",
+    "Name": "Movies",
+    "Type": "CollectionFolder",
+    "CollectionType": "movies",
+    "ImageTags": { "Primary": "abc123primary" }
+}
