@@ -68,7 +68,13 @@ private struct LazyImageRenderer: View {
                 Color.clear
             }
         }
-        .task(id: session.id) {
+        // Key on the whole session, not just session.id: when the user signs
+        // out and back into the SAME server the ServerID is unchanged but the
+        // access token rotates. Keying on session.id alone would keep serving
+        // the stale pipeline (401s). Session is Hashable over its token, so
+        // this refires on rotation; switching the pipeline also makes NukeUI
+        // cancel the in-flight tasks bound to the old (stale-token) pipeline.
+        .task(id: session) {
             pipeline = await deps.imagePipelineFactory.pipeline(for: session)
         }
     }

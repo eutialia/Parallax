@@ -46,10 +46,16 @@ final class JellyfinLibraryGridViewModel {
     }
 
     private func reload() async {
+        // Drive fetchPage directly rather than going through load(): a
+        // sort/filter change can land while the first load is still in
+        // flight (state == .loading). load()'s `guard state != .loading`
+        // would then bail, leaving the grid stuck on the spinner forever.
+        // We've already cancelled the in-flight task, so a fresh fetch is safe.
         inFlight?.cancel()
         cursor = nil
         items = []
-        await load()
+        state = .loading
+        await fetchPage(reset: true)
     }
 
     private func fetchPage(reset: Bool) async {

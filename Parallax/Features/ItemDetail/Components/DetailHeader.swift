@@ -18,7 +18,8 @@ struct DetailHeader: View {
                 ref: backdropRef,
                 kind: .backdrop(index: 0),
                 session: session,
-                maxWidth: 1280
+                maxWidth: 1280,
+                aspectRatio: JellyfinImage.landscape
             )
 
             LinearGradient(

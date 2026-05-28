@@ -5,6 +5,10 @@ struct JellyfinSearchView: View {
     @Environment(AppDependencies.self) private var deps
     @State private var viewModel: JellyfinSearchViewModel?
     @State private var session: Session?
+    // Bind the search field to local state so keystrokes typed before the VM
+    // finishes its async construction aren't dropped on the floor (the old
+    // `viewModel?.query = $0` was a silent no-op while viewModel was nil).
+    @State private var query = ""
 
     var body: some View {
         Group {
@@ -15,10 +19,10 @@ struct JellyfinSearchView: View {
             }
         }
         .navigationTitle("Search")
-        .searchable(text: Binding(
-            get: { viewModel?.query ?? "" },
-            set: { viewModel?.query = $0 }
-        ))
+        .searchable(text: $query)
+        .onChange(of: query) { _, newValue in
+            viewModel?.query = newValue
+        }
         .navigationDestination(for: ItemNavigation.self) { nav in
             switch nav {
             case .movie(let id, let s): MovieDetailView(itemID: id, session: s)
@@ -35,6 +39,8 @@ struct JellyfinSearchView: View {
                 let repo = await deps.libraryRepoFactory(session)
                 let vm = JellyfinSearchViewModel(repo: repo)
                 vm.start()
+                // Seed any text typed during construction before wiring up.
+                if !query.isEmpty { vm.query = query }
                 viewModel = vm
             }
         }
