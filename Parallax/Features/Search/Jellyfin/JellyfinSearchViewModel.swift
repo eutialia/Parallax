@@ -53,9 +53,11 @@ final class JellyfinSearchViewModel {
         }
     }
 
-    deinit {
+    isolated deinit {
         // Belt-and-suspenders: the debouncer's own deinit finishes the stream
         // (ending the loop), but cancelling here makes teardown immediate.
+        // `isolated deinit` (SE-0371) runs teardown on the MainActor so it can
+        // touch the actor-isolated `consumerTask`.
         consumerTask?.cancel()
     }
 
