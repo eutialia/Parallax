@@ -3,7 +3,7 @@ import JellyfinAPI
 
 extension BaseItemDto {
     func toSeries() -> Series? {
-        guard let id, let name else { return nil }
+        guard type == .series, let id, let name else { return nil }
         let backdrops = (backdropImageTags ?? []).map(ImageTag.init(rawValue:))
         return Series(
             id: ItemID(rawValue: id),

@@ -3,7 +3,7 @@ import JellyfinAPI
 
 extension BaseItemDto {
     func toSeason() -> Season? {
-        guard let id, let name, let seriesIdRaw = seriesID else { return nil }
+        guard type == .season, let id, let name, let seriesIdRaw = seriesID else { return nil }
         return Season(
             id: ItemID(rawValue: id),
             seriesID: ItemID(rawValue: seriesIdRaw),

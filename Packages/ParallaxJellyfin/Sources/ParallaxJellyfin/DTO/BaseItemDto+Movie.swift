@@ -3,7 +3,10 @@ import JellyfinAPI
 
 extension BaseItemDto {
     func toMovie() -> Movie? {
-        guard let id, let name else { return nil }
+        // Guard the kind: a scoped /Items search (includeItemTypes=[movie])
+        // can still return BoxSet/Folder children, which have id+name and
+        // would otherwise be projected into a Movie that fails to open.
+        guard type == .movie, let id, let name else { return nil }
         let runtime: Duration?
         if let ticks = runTimeTicks {
             runtime = .microseconds(ticks / 10)

@@ -133,6 +133,24 @@ struct LibraryRepositoryDrillInTests {
         #expect(results.episodes.count == 50)
     }
 
+    @Test("search drops wrong-type DTOs the server leaks into a scoped result")
+    func searchDropsWrongType() async throws {
+        let (repo, client) = make()
+        var box = BaseItemDto()
+        box.id = "b1"; box.name = "Marvel Collection"; box.type = .boxSet
+        // Server returns a BoxSet inside the movies-scoped /Items response.
+        client.searchResultsByScope = [
+            .movies: .success([dtoMovie("m1"), box]),
+            .series: .success([]),
+            .episodes: .success([]),
+        ]
+        let results = try await repo.search("marvel", scope: .all)
+        // The BoxSet must be filtered out by the type guard — only the real
+        // movie survives, so tapping a result never lands on a dead detail page.
+        #expect(results.movies.count == 1)
+        #expect(results.movies.first?.title == "Movie m1")
+    }
+
     @Test("search(.series) only calls the series scope")
     func searchSeriesScope() async throws {
         let (repo, client) = make()

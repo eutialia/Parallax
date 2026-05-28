@@ -3,7 +3,7 @@ import JellyfinAPI
 
 extension BaseItemDto {
     func toEpisode() -> Episode? {
-        guard let id, let name,
+        guard type == .episode, let id, let name,
               let seriesIdRaw = seriesID,
               let seasonIdRaw = seasonID else { return nil }
         let runtime: Duration?
