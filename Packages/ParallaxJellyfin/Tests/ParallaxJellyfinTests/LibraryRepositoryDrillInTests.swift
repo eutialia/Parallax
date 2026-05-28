@@ -1,0 +1,122 @@
+import Foundation
+import Testing
+import JellyfinAPI
+import ParallaxCore
+@testable import ParallaxJellyfin
+
+@Suite("LibraryRepository — drill-in + home + search")
+struct LibraryRepositoryDrillInTests {
+    private func make() -> (LibraryRepository, FakeJellyfinLibraryClient) {
+        let session = Session(
+            persisted: PersistedSession(
+                id: ServerID(rawValue: "s1"),
+                serverURL: URL(string: "https://j.example.com")!,
+                serverName: "Home",
+                user: UserSnapshot(id: "u1", name: "alice", serverLastUpdatedAt: nil)
+            ),
+            accessToken: "tok-1"
+        )
+        let client = FakeJellyfinLibraryClient()
+        return (LibraryRepository(session: session, client: client), client)
+    }
+
+    private func dtoSeason(_ id: String, seriesID: String) -> BaseItemDto {
+        var d = BaseItemDto()
+        d.id = id; d.name = "Season \(id)"; d.type = .season
+        d.seriesID = seriesID
+        d.indexNumber = 1
+        return d
+    }
+
+    private func dtoEpisode(_ id: String, seriesID: String, seasonID: String) -> BaseItemDto {
+        var d = BaseItemDto()
+        d.id = id; d.name = "Episode \(id)"; d.type = .episode
+        d.seriesID = seriesID; d.seasonID = seasonID
+        d.indexNumber = 1; d.parentIndexNumber = 1
+        return d
+    }
+
+    private func dtoMovie(_ id: String) -> BaseItemDto {
+        var d = BaseItemDto()
+        d.id = id; d.name = "Movie \(id)"; d.type = .movie
+        return d
+    }
+
+    @Test("seasons(of:) translates and forwards seriesID")
+    func seasons() async throws {
+        let (repo, client) = make()
+        client.seasonsResult = .success([
+            dtoSeason("se1", seriesID: "ser1"),
+            dtoSeason("se2", seriesID: "ser1"),
+        ])
+        let seasons = try await repo.seasons(of: ItemID(rawValue: "ser1"))
+        #expect(seasons.count == 2)
+        #expect(seasons.allSatisfy { $0.seriesID == ItemID(rawValue: "ser1") })
+        #expect(client.seasonsCalls == ["ser1"])
+    }
+
+    @Test("episodes(of:) translates and forwards seasonID")
+    func episodes() async throws {
+        let (repo, client) = make()
+        client.episodesResult = .success([
+            dtoEpisode("e1", seriesID: "ser1", seasonID: "se1"),
+        ])
+        let eps = try await repo.episodes(of: ItemID(rawValue: "se1"))
+        #expect(eps.count == 1)
+        #expect(eps.first?.seasonID == ItemID(rawValue: "se1"))
+        #expect(client.episodesCalls == ["se1"])
+    }
+
+    @Test("continueWatching() returns a mixed Item array")
+    func continueWatching() async throws {
+        let (repo, client) = make()
+        client.continueWatchingResult = .success([
+            dtoMovie("m1"),
+            dtoEpisode("e1", seriesID: "ser1", seasonID: "se1"),
+        ])
+        let items = try await repo.continueWatching()
+        #expect(items.count == 2)
+        if case .movie = items.first { } else { Issue.record("first should be .movie") }
+        if case .episode = items.last { } else { Issue.record("last should be .episode") }
+    }
+
+    @Test("nextUp() returns Episode items")
+    func nextUp() async throws {
+        let (repo, client) = make()
+        client.nextUpResult = .success([
+            dtoEpisode("e1", seriesID: "ser1", seasonID: "se1"),
+        ])
+        let items = try await repo.nextUp()
+        #expect(items.count == 1)
+        if case .episode = items.first { } else { Issue.record("expected .episode") }
+    }
+
+    @Test("search() returns categorised SearchResults")
+    func searchCategorises() async throws {
+        let (repo, client) = make()
+        var seriesDto = BaseItemDto()
+        seriesDto.id = "ser1"; seriesDto.name = "Breaking Bad"; seriesDto.type = .series
+        client.searchResult = .success([
+            dtoMovie("m1"),
+            seriesDto,
+            dtoEpisode("e1", seriesID: "ser1", seasonID: "se1"),
+        ])
+        let results = try await repo.search("bad", scope: .all)
+        #expect(results.movies.count == 1)
+        #expect(results.series.count == 1)
+        #expect(results.episodes.count == 1)
+        #expect(client.searchCalls.count == 1)
+        #expect(client.searchCalls.first?.query == "bad")
+        #expect(client.searchCalls.first?.scope == .all)
+    }
+
+    @Test("search() with whitespace-only query short-circuits without calling client")
+    func searchEmpty() async throws {
+        let (repo, client) = make()
+        let results = try await repo.search("   ", scope: .all)
+        #expect(results.movies.isEmpty)
+        #expect(results.series.isEmpty)
+        #expect(results.episodes.isEmpty)
+        #expect(client.searchCalls.isEmpty)
+    }
+}
