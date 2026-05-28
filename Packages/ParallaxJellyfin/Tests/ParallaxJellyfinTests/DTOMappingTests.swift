@@ -80,4 +80,52 @@ struct DTOMappingTests {
         #expect(dto.toSeries() == nil)
         #expect(dto.toMediaCollection() == nil)
     }
+
+    @Test("season.json → Season with seriesID linkage")
+    func season() throws {
+        let dto = try loadDto("season")
+        let s = dto.toSeason()
+        #expect(s?.id.rawValue == "season-uuid-1")
+        #expect(s?.seriesID.rawValue == "series-uuid-1")
+        #expect(s?.indexNumber == 1)
+        #expect(s?.episodeCount == 7)
+        #expect(s?.primaryTag?.rawValue == "season-primary-1")
+    }
+
+    @Test("episode.json → Episode with full parent linkage and played userData")
+    func episode() throws {
+        let dto = try loadDto("episode")
+        let e = dto.toEpisode()
+        #expect(e?.id.rawValue == "episode-uuid-1")
+        #expect(e?.seriesID.rawValue == "series-uuid-1")
+        #expect(e?.seasonID.rawValue == "season-uuid-1")
+        #expect(e?.indexNumber == 1)
+        #expect(e?.parentIndexNumber == 1)
+        #expect(e?.userData.played == true)
+        #expect(e?.userData.playCount == 1)
+    }
+
+    @Test("movie_detail.json → ItemDetail.movie with tagline/studios/people populated")
+    func movieDetail() throws {
+        let dto = try loadDto("movie_detail")
+        let detail = dto.toItemDetail()
+        guard case .movie(let movieDetail) = detail else {
+            Issue.record("expected .movie, got \(String(describing: detail))")
+            return
+        }
+        #expect(movieDetail.movie.title == "The Matrix")
+        #expect(movieDetail.tagline == "Welcome to the Real World.")
+        #expect(movieDetail.studios == ["Warner Bros.", "Village Roadshow"])
+        #expect(movieDetail.people.contains("Lana Wachowski"))
+        #expect(movieDetail.people.contains("Keanu Reeves"))
+    }
+
+    @Test("Unknown item type returns nil from toItemDetail")
+    func unknownDetailType() {
+        var dto = BaseItemDto()
+        dto.id = "x"
+        dto.name = "x"
+        dto.type = nil
+        #expect(dto.toItemDetail() == nil)
+    }
 }

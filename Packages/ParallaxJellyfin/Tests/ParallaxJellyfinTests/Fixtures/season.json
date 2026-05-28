@@ -1,0 +1,9 @@
+{
+    "Id": "season-uuid-1",
+    "SeriesId": "series-uuid-1",
+    "Name": "Season 1",
+    "Type": "Season",
+    "IndexNumber": 1,
+    "ChildCount": 7,
+    "ImageTags": { "Primary": "season-primary-1" }
+}

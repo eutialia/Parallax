@@ -1,0 +1,31 @@
+{
+    "Id": "movie-uuid-1",
+    "Name": "The Matrix",
+    "Type": "Movie",
+    "Overview": "A computer hacker...",
+    "ProductionYear": 1999,
+    "RunTimeTicks": 81780000000,
+    "CommunityRating": 8.7,
+    "OfficialRating": "R",
+    "Genres": ["Action", "Science Fiction"],
+    "Taglines": ["Welcome to the Real World."],
+    "Studios": [
+        { "Name": "Warner Bros." },
+        { "Name": "Village Roadshow" }
+    ],
+    "People": [
+        { "Name": "Lana Wachowski", "Type": "Director" },
+        { "Name": "Keanu Reeves", "Type": "Actor" }
+    ],
+    "ImageTags": {
+        "Primary": "primary-tag-1",
+        "Logo": "logo-tag-1"
+    },
+    "BackdropImageTags": ["backdrop-tag-1"],
+    "UserData": {
+        "Played": false,
+        "PlaybackPositionTicks": 0,
+        "PlayCount": 0,
+        "IsFavorite": false
+    }
+}

@@ -1,0 +1,18 @@
+{
+    "Id": "episode-uuid-1",
+    "SeriesId": "series-uuid-1",
+    "SeasonId": "season-uuid-1",
+    "Name": "Pilot",
+    "Type": "Episode",
+    "IndexNumber": 1,
+    "ParentIndexNumber": 1,
+    "Overview": "A high school teacher...",
+    "RunTimeTicks": 34020000000,
+    "ImageTags": { "Primary": "episode-primary-1" },
+    "UserData": {
+        "Played": true,
+        "PlaybackPositionTicks": 0,
+        "PlayCount": 1,
+        "IsFavorite": false
+    }
+}
