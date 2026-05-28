@@ -101,6 +101,8 @@ struct DTOMappingTests {
         #expect(e?.seasonID.rawValue == "season-uuid-1")
         #expect(e?.indexNumber == 1)
         #expect(e?.parentIndexNumber == 1)
+        // 34_020_000_000 ticks / 10 = 3_402_000_000 µs = 3_402 s
+        #expect(e?.runtime == .seconds(3402))
         #expect(e?.userData.played == true)
         #expect(e?.userData.playCount == 1)
     }
@@ -122,10 +124,14 @@ struct DTOMappingTests {
 
     @Test("Unknown item type returns nil from toItemDetail")
     func unknownDetailType() {
+        // Nil type → guard let type rejects
         var dto = BaseItemDto()
-        dto.id = "x"
-        dto.name = "x"
-        dto.type = nil
+        dto.id = "x"; dto.name = "x"; dto.type = nil
         #expect(dto.toItemDetail() == nil)
+
+        // Known-but-unhandled type (e.g. .audio) → switch's default arm rejects
+        var audioDto = BaseItemDto()
+        audioDto.id = "x"; audioDto.name = "x"; audioDto.type = .audio
+        #expect(audioDto.toItemDetail() == nil)
     }
 }
