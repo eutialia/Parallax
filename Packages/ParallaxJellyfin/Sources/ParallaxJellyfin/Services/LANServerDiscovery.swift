@@ -22,24 +22,51 @@ public final class LANServerDiscovery {
     public private(set) var isDiscovering: Bool = false
 
     private var seenIDs: Set<String> = []
-    private var current: Task<Void, Never>?
+    private var task: Task<Void, Never>?
 
-    public init() {}
+    /// Source of one UDP broadcast pass. Injected so tests can drive discovery
+    /// deterministically without touching real sockets; defaults to the live
+    /// BSD-socket broadcast.
+    private let broadcaster: @Sendable (TimeInterval) -> [Data]
 
-    /// Idempotent — calling while already discovering is a no-op.
-    public func start(timeout: TimeInterval = 1.5) {
-        guard current == nil else { return }
-        Log.network.info("LAN discovery started (timeout=\(timeout)s)")
+    public init(broadcaster: (@Sendable (TimeInterval) -> [Data])? = nil) {
+        self.broadcaster = broadcaster ?? LANServerDiscovery.broadcast
+    }
+
+    /// Starts discovery. Up to `retries` additional passes run (spaced by
+    /// `retryInterval`) until at least one server is found — this catches a late
+    /// Local Network permission grant during the launch window, since iOS keeps
+    /// the app active through the permission alert and exposes no authorization
+    /// status to observe the grant. Idempotent: calling while a run is in flight
+    /// is a no-op; calling after one finishes starts a fresh, additive run
+    /// (results dedupe by server id).
+    public func start(timeout: TimeInterval = 1.5, retries: Int = 0, retryInterval: Duration = .seconds(2)) {
+        guard task == nil else { return }
+        Log.network.info("LAN discovery started (timeout=\(timeout)s, retries=\(retries))")
         isDiscovering = true
-        current = Task.detached(priority: .utility) { [weak self] in
-            let responses = Self.broadcast(timeout: timeout)
-            await self?.ingest(responses)
+        let broadcaster = self.broadcaster
+        task = Task { [weak self] in
+            var attempt = 0
+            while !Task.isCancelled {
+                let responses = await Task.detached(priority: .utility) { broadcaster(timeout) }.value
+                guard let self else { return }
+                self.ingest(responses)
+                // Stop as soon as we've found a server, or once retries are spent.
+                if !self.discovered.isEmpty || attempt >= retries { break }
+                attempt += 1
+                do {
+                    try await Task.sleep(for: retryInterval)
+                } catch {
+                    break  // cancelled
+                }
+            }
+            self?.didFinish()
         }
     }
 
     public func stop() {
-        current?.cancel()
-        current = nil
+        task?.cancel()
+        task = nil
         isDiscovering = false
     }
 
@@ -50,10 +77,13 @@ public final class LANServerDiscovery {
                   seenIDs.insert(server.id).inserted else { continue }
             discovered.append(server)
         }
-        let added = self.discovered.count - before
-        Log.network.info("LAN discovery finished: \(responses.count) response(s), \(added) new server(s)")
+        let added = discovered.count - before
+        Log.network.info("LAN discovery pass: \(responses.count) response(s), \(added) new server(s)")
+    }
+
+    private func didFinish() {
         isDiscovering = false
-        current = nil
+        task = nil
     }
 
     /// Parses one UDP response payload. Returns nil for malformed JSON or an
