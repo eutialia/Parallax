@@ -38,7 +38,6 @@ final class PlayerViewModel {
 
     private var stateTask: Task<Void, Never>?
     private var resolved: ResolvedPlayback?
-    private var currentItemID: ItemID?
     private var didReportStart = false
     private var didReportStopped = false
     private var lastPosition: CMTime = .zero
@@ -94,7 +93,6 @@ final class PlayerViewModel {
             let resumeTime = ResumePolicy.resumeStartTime(positionTicks: positionTicks, runtime: runtime)
             let resolved = try await resolve(itemID, caps, resumeTime)
             self.resolved = resolved
-            self.currentItemID = itemID
 
             let asset = Self.makeAsset(from: resolved)
             let id = EngineSelector.select(hints: asset.hints)
@@ -127,9 +125,9 @@ final class PlayerViewModel {
         if let engine {
             await engine.teardown()
         }
-        if let resolved, let itemID = currentItemID, !didReportStopped {
+        if let resolved, !didReportStopped {
             didReportStopped = true
-            await playbackInfo.reportStopped(beat(position: lastPosition, isPaused: true, itemID: itemID, from: resolved))
+            await playbackInfo.reportStopped(beat(position: lastPosition, isPaused: true, from: resolved))
         }
         await audioSession.deactivate()
         engine = nil
@@ -156,7 +154,7 @@ final class PlayerViewModel {
     }
 
     private func handle(_ state: PlaybackState) async {
-        guard let resolved, let itemID = currentItemID else { return }
+        guard let resolved else { return }
         switch state {
         case .idle, .loading:
             break
@@ -167,17 +165,17 @@ final class PlayerViewModel {
             lastPosition = position
             if !didReportStart {
                 didReportStart = true
-                await playbackInfo.reportStart(beat(position: position, isPaused: false, itemID: itemID, from: resolved))
+                await playbackInfo.reportStart(beat(position: position, isPaused: false, from: resolved))
             } else {
-                await playbackInfo.reportProgress(beat(position: position, isPaused: false, itemID: itemID, from: resolved))
+                await playbackInfo.reportProgress(beat(position: position, isPaused: false, from: resolved))
             }
         case .paused(let position, _):
             lastPosition = position
-            await playbackInfo.reportProgress(beat(position: position, isPaused: true, itemID: itemID, from: resolved))
+            await playbackInfo.reportProgress(beat(position: position, isPaused: true, from: resolved))
         case .ended:
             if !didReportStopped {
                 didReportStopped = true
-                await playbackInfo.reportStopped(beat(position: lastPosition, isPaused: true, itemID: itemID, from: resolved))
+                await playbackInfo.reportStopped(beat(position: lastPosition, isPaused: true, from: resolved))
             }
         case .failed(let error):
             phase = .failed(Self.map(error))
@@ -187,15 +185,13 @@ final class PlayerViewModel {
     private func beat(
         position: CMTime,
         isPaused: Bool,
-        itemID: ItemID,
         from resolved: ResolvedPlayback
     ) -> ProgressBeat {
-        let ticks = Int(round(CMTimeGetSeconds(position) * 10_000_000))
-        return ProgressBeat(
-            positionTicks: ticks,
+        ProgressBeat(
+            positionTicks: PlaybackInfoService.ticks(from: position),
             isPaused: isPaused,
             method: resolved.method,
-            itemID: itemID.rawValue,
+            itemID: resolved.itemID,
             mediaSourceID: resolved.mediaSourceID,
             playSessionID: resolved.playSessionID
         )

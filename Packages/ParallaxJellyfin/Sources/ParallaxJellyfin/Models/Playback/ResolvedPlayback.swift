@@ -7,7 +7,11 @@ import ParallaxCore
 /// the X-Emby-Authorization header on HLS segment fetches, so a header-only
 /// URL would 401 silently mid-stream. Carries only Core enums + Jellyfin ids
 /// so the app (not this package) can map it to a ParallaxPlayback.PlayableAsset.
+/// `itemID` makes the value self-describing: progress reporting needs the
+/// source item id, so the consumer reads it from here rather than tracking it
+/// in parallel.
 public struct ResolvedPlayback: Sendable {
+    public let itemID: String
     public let url: URL
     public let method: PlaybackMethod
     public let container: Container?
@@ -19,6 +23,7 @@ public struct ResolvedPlayback: Sendable {
     public let startTime: CMTime?
 
     public init(
+        itemID: String,
         url: URL,
         method: PlaybackMethod,
         container: Container?,
@@ -29,6 +34,7 @@ public struct ResolvedPlayback: Sendable {
         runtime: CMTime?,
         startTime: CMTime?
     ) {
+        self.itemID = itemID
         self.url = url
         self.method = method
         self.container = container

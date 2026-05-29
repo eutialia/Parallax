@@ -17,18 +17,12 @@ struct PlayerView: View {
             if let vm = viewModel {
                 switch vm.phase {
                 case .idle, .loading:
-                    if let engine = vm.engine {
-                        AVPlayerViewControllerHost(engine: engine)
-                            .ignoresSafeArea()
-                    }
+                    videoLayer(vm)
                     ProgressView()
                         .controlSize(.large)
                         .tint(.white)
                 case .playing:
-                    if let engine = vm.engine {
-                        AVPlayerViewControllerHost(engine: engine)
-                            .ignoresSafeArea()
-                    }
+                    videoLayer(vm)
                 case .failed(let error):
                     errorOverlay(error, vm: vm)
                 }
@@ -56,6 +50,16 @@ struct PlayerView: View {
         .onDisappear {
             let vm = viewModel
             Task { await vm?.stop() }
+        }
+    }
+
+    /// The AVPlayer surface, shown for every phase except `.failed`. Extracted
+    /// so the `.idle/.loading` and `.playing` branches share one definition.
+    @ViewBuilder
+    private func videoLayer(_ vm: PlayerViewModel) -> some View {
+        if let engine = vm.engine {
+            AVPlayerViewControllerHost(engine: engine)
+                .ignoresSafeArea()
         }
     }
 

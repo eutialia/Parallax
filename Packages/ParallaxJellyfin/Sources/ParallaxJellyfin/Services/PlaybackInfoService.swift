@@ -88,6 +88,7 @@ public actor PlaybackInfoService {
         }
 
         return ResolvedPlayback(
+            itemID: item.rawValue,
             url: url,
             method: method,
             container: container,
@@ -102,7 +103,10 @@ public actor PlaybackInfoService {
 
     // MARK: - Tick helpers
 
-    static func ticks(from time: CMTime) -> Int {
+    /// Converts a `CMTime` position to Jellyfin's 100-nanosecond ticks. Public
+    /// so the app's view model reports progress through the one canonical
+    /// conversion instead of re-deriving `seconds * ticksPerSecond` inline.
+    public static func ticks(from time: CMTime) -> Int {
         let seconds = CMTimeGetSeconds(time)
         guard seconds.isFinite, seconds > 0 else { return 0 }
         return Int((seconds * Double(ticksPerSecond)).rounded())
@@ -121,7 +125,8 @@ public actor PlaybackInfoService {
     public func reportStart(_ beat: ProgressBeat) async {
         lastReportedAt = 0
         lastPaused = beat.isPaused
-        await send(start: stateInfo(from: beat))
+        let info = stateInfo(from: beat)
+        await send("reportStart") { try await self.client.reportStart(info) }
     }
 
     /// Throttled to ~10s; a pause flip or seek reports immediately. `now` is
@@ -136,7 +141,8 @@ public actor PlaybackInfoService {
         }
         lastReportedAt = now
         lastPaused = beat.isPaused
-        await send(progress: stateInfo(from: beat))
+        let info = stateInfo(from: beat)
+        await send("reportProgress") { try await self.client.reportProgress(info) }
     }
 
     public func reportStopped(_ beat: ProgressBeat) async {
@@ -146,7 +152,7 @@ public actor PlaybackInfoService {
             playSessionID: beat.playSessionID,
             positionTicks: beat.positionTicks
         )
-        await send(stopped: info)
+        await send("reportStopped") { try await self.client.reportStopped(info) }
     }
 
     // MARK: - Body translation + named non-fatal send
@@ -171,28 +177,13 @@ public actor PlaybackInfoService {
     }
 
     // Named non-fatal policy: a thrown SDK request error is logged and
-    // swallowed so a flaky report never tears down playback.
-    private func send(start info: PlaybackStateInfo) async {
+    // swallowed so a flaky report never tears down playback. The label names
+    // the report so the swallowed failure is still traceable in the log.
+    private func send(_ label: String, _ work: () async throws -> Void) async {
         do {
-            try await client.reportStart(info)
+            try await work()
         } catch {
-            Log.playback.error("reportStart failed: \(error.localizedDescription, privacy: .public)")
-        }
-    }
-
-    private func send(progress info: PlaybackStateInfo) async {
-        do {
-            try await client.reportProgress(info)
-        } catch {
-            Log.playback.error("reportProgress failed: \(error.localizedDescription, privacy: .public)")
-        }
-    }
-
-    private func send(stopped info: PlaybackStopInfo) async {
-        do {
-            try await client.reportStopped(info)
-        } catch {
-            Log.playback.error("reportStopped failed: \(error.localizedDescription, privacy: .public)")
+            Log.playback.error("\(label) failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 }

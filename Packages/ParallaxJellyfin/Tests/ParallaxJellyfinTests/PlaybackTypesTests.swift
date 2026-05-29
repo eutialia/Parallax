@@ -16,6 +16,7 @@ struct PlaybackTypesTests {
     func resolvedShape() {
         let url = URL(string: "https://j.example.com/Videos/x/stream.mp4?api_key=tok")!
         let resolved = ResolvedPlayback(
+            itemID: "item-1",
             url: url,
             method: .directPlay,
             container: .mp4,
@@ -26,6 +27,7 @@ struct PlaybackTypesTests {
             runtime: CMTime(seconds: 100, preferredTimescale: 1),
             startTime: CMTime(seconds: 5, preferredTimescale: 1)
         )
+        #expect(resolved.itemID == "item-1")
         #expect(resolved.url == url)
         #expect(resolved.method == .directPlay)
         #expect(resolved.container == .mp4)

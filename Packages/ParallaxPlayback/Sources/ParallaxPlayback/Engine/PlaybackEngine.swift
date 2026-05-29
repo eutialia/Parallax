@@ -13,6 +13,12 @@ public protocol PlaybackEngine: AnyObject, Sendable {
     nonisolated var capabilities: PlaybackEngineCapabilities { get }
 
     /// Single-consumer state stream. Only `PlayerViewModel` iterates this.
+    /// Terminal delivery is NOT idempotent at the engine layer: an engine may
+    /// emit `.ended`, and `teardown()` separately finishes the continuation, so
+    /// the consumer must de-duplicate terminal reporting (e.g. a natural
+    /// `.ended` followed by a teardown on dismissal). A future engine is free to
+    /// strengthen this to a single terminal event; until then the guard lives in
+    /// the view model.
     nonisolated var state: AsyncStream<PlaybackState> { get }
 
     /// Load the asset. Seeks to `asset.startTime` when the item becomes ready.

@@ -84,6 +84,7 @@ enum PlayerFixtures {
 
     static func resolved() -> ResolvedPlayback {
         ResolvedPlayback(
+            itemID: "movie-1",
             url: URL(string: "https://jf.example.com/Videos/movie-1/stream.m3u8?api_key=abc")!,
             method: .directPlay,
             container: .mp4,
