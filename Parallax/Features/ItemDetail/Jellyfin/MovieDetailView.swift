@@ -7,6 +7,7 @@ struct MovieDetailView: View {
 
     @Environment(AppDependencies.self) private var deps
     @State private var viewModel: MovieDetailViewModel?
+    @State private var playerItem: ItemDetail?
 
     var body: some View {
         Group {
@@ -25,13 +26,12 @@ struct MovieDetailView: View {
                             )
 
                             Button {
-                                // Phase 4 wires playback.
+                                playerItem = .movie(md)
                             } label: {
                                 Label("Play", systemImage: "play.fill")
                                     .frame(maxWidth: .infinity)
                             }
                             .buttonStyle(.borderedProminent)
-                            .disabled(true)
                             .padding(.horizontal, 20)
 
                             if let tagline = md.tagline {
@@ -69,6 +69,9 @@ struct MovieDetailView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(.systemBackground))
+        .fullScreenCover(item: $playerItem) { detail in
+            PlayerView(item: detail, session: session)
+        }
         .task {
             if viewModel == nil {
                 let repo = await deps.libraryRepoFactory(session)

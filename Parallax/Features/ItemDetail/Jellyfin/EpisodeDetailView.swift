@@ -7,6 +7,7 @@ struct EpisodeDetailView: View {
 
     @Environment(AppDependencies.self) private var deps
     @State private var viewModel: EpisodeDetailViewModel?
+    @State private var playerItem: ItemDetail?
 
     var body: some View {
         Group {
@@ -41,13 +42,12 @@ struct EpisodeDetailView: View {
                             .padding(.horizontal, 20)
 
                             Button {
-                                // Phase 4 wires playback.
+                                playerItem = .episode(ed)
                             } label: {
                                 Label("Play", systemImage: "play.fill")
                                     .frame(maxWidth: .infinity)
                             }
                             .buttonStyle(.borderedProminent)
-                            .disabled(true)
                             .padding(.horizontal, 20)
 
                             if let overview = ed.episode.overview {
@@ -72,6 +72,9 @@ struct EpisodeDetailView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(.systemBackground))
+        .fullScreenCover(item: $playerItem) { detail in
+            PlayerView(item: detail, session: session)
+        }
         .task {
             if viewModel == nil {
                 let repo = await deps.libraryRepoFactory(session)
