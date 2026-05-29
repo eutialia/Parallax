@@ -53,3 +53,20 @@ final class FakeJellyfinPlaybackClient: JellyfinPlaybackClient, @unchecked Senda
         if let stoppedError { throw stoppedError }
     }
 }
+
+final class FakeJellyfinPlaybackClientFactory: JellyfinPlaybackClientFactory, @unchecked Sendable {
+    private var clientsBySession: [ServerID: FakeJellyfinPlaybackClient] = [:]
+    private(set) var makeCalls: [ServerID] = []
+
+    func client(for session: Session) -> FakeJellyfinPlaybackClient {
+        if let existing = clientsBySession[session.id] { return existing }
+        let new = FakeJellyfinPlaybackClient()
+        clientsBySession[session.id] = new
+        return new
+    }
+
+    func make(for session: Session) async -> JellyfinPlaybackClient {
+        makeCalls.append(session.id)
+        return client(for: session)
+    }
+}
