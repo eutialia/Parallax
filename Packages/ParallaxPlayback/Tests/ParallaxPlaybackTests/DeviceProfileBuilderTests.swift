@@ -137,29 +137,30 @@ struct DeviceProfileBuilderTests {
 // A variant of FakeCapabilityProbe that counts how many times it is called.
 // Defined here (file-private to the test file effectively, but @testable is fine)
 // rather than in the Fakes/ folder because it's only used in this suite.
-actor CountingFakeCapabilityProbe: CapabilityProbe {
+// `@MainActor` (not an `actor`) so the call count increments synchronously
+// inside `hdrSupport()`. The earlier `actor` version recorded each call via a
+// fire-and-forget `Task { await recordCall() }`, which raced the test's
+// `await probe.callCount` read and failed non-deterministically under parallel
+// test execution. `DeviceProfileBuilder.build()` awaits the `@MainActor`
+// `hdrSupport()` before it returns, so by the time the test reads `callCount`
+// the increment has already landed — fully deterministic, no extra Task.
+@MainActor
+final class CountingFakeCapabilityProbe: CapabilityProbe {
     private let stubbedHDR: HDRSupport
     private let stubbedAudioOutput: AudioOutputCapability
     private(set) var callCount: Int = 0
 
-    init(hdr: HDRSupport, audioOutput: AudioOutputCapability) {
+    nonisolated init(hdr: HDRSupport, audioOutput: AudioOutputCapability) {
         self.stubbedHDR = hdr
         self.stubbedAudioOutput = audioOutput
     }
 
-    @MainActor func hdrSupport() -> HDRSupport {
-        // callCount is actor-isolated but hdrSupport() is @MainActor;
-        // we need to increment from within the actor. Use a nonisolated
-        // bridge to record the call.
-        Task { await self.recordCall() }
+    func hdrSupport() -> HDRSupport {
+        callCount += 1
         return stubbedHDR
     }
 
     nonisolated func audioOutput() -> AudioOutputCapability {
         stubbedAudioOutput
-    }
-
-    func recordCall() {
-        callCount += 1
     }
 }
