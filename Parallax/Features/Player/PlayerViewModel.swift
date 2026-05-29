@@ -88,7 +88,17 @@ final class PlayerViewModel {
         }
 
         do {
-            try await audioSession.activate()
+            do {
+                try await audioSession.activate()
+            } catch {
+                // An audio-session config failure is not a connectivity problem;
+                // map it to a distinct case and log the real error so on-device
+                // failures leave a trail (the bare AVAudioSession NSError is not
+                // an AppError, so it would otherwise fall into the generic catch
+                // and be mislabeled as "Couldn't reach the file").
+                Log.playback.error("audio session activate failed: \(error.networkDiagnostic, privacy: .public)")
+                throw AppError.playback(.audioSessionFailed)
+            }
             let caps = await deviceProfileBuilder.build()
             let resumeTime = ResumePolicy.resumeStartTime(positionTicks: positionTicks, runtime: runtime)
             let resolved = try await resolve(itemID, caps, resumeTime)
@@ -114,7 +124,12 @@ final class PlayerViewModel {
             phase = .failed(error)
             await audioSession.deactivate()
         } catch {
-            phase = .failed(.playback(.resourceUnavailable))
+            // A non-AppError reaching here is genuinely unexpected (resolve()
+            // already maps its failures to AppError). Log it and preserve the
+            // underlying error in diagnostics instead of mislabeling it as a
+            // network problem.
+            Log.playback.error("playback start failed (unmapped): \(error.networkDiagnostic, privacy: .public)")
+            phase = .failed(.unexpected("playback start failed", underlying: AnySendableError(error)))
             await audioSession.deactivate()
         }
     }
@@ -201,18 +216,40 @@ final class PlayerViewModel {
         PlayableAsset(
             url: resolved.url,
             headers: nil,
-            hints: PlaybackHints(
-                scheme: resolved.url.scheme,
-                container: resolved.container,
-                videoCodec: resolved.videoCodec,
-                audioCodec: resolved.audioCodec,
-                subtitleFormats: []
-            ),
+            hints: deliveredHints(for: resolved),
             // Direct-play/-stream seek on .ready; transcode bakes the offset
             // into the stream URL, so only honor startTime here for non-transcode.
             startTime: resolved.method == .transcode ? nil : resolved.startTime,
             externalSubtitles: []
         )
+    }
+
+    /// Format hints describing the *delivered* stream the engine selector must
+    /// reason about — not necessarily the source. For `.transcode` the server
+    /// delivers an HLS stream whose codecs target the AVKit whitelist (per the
+    /// device profile), so gating on the source container/codecs (e.g. MKV / AV1
+    /// / DTS) would wrongly route an AVKit-playable transcode to VLC and surface
+    /// "unsupported format". Direct-play/-stream serve the source bytes verbatim,
+    /// so their feasibility correctly gates on the source.
+    private static func deliveredHints(for resolved: ResolvedPlayback) -> PlaybackHints {
+        switch resolved.method {
+        case .transcode:
+            return PlaybackHints(
+                scheme: resolved.url.scheme,
+                container: .hls,
+                videoCodec: nil,
+                audioCodec: nil,
+                subtitleFormats: []
+            )
+        case .directPlay, .directStream:
+            return PlaybackHints(
+                scheme: resolved.url.scheme,
+                container: resolved.container,
+                videoCodec: resolved.videoCodec,
+                audioCodec: resolved.audioCodec,
+                subtitleFormats: []
+            )
+        }
     }
 
     private static func map(_ error: PlaybackError) -> AppError {

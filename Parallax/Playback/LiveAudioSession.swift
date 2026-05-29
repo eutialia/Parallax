@@ -35,7 +35,12 @@ final class LiveAudioSession: AudioSessionControlling, @unchecked Sendable {
 
     func activate() async throws {
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playback, mode: .moviePlayback, options: [.allowAirPlay])
+        // `.allowAirPlay` is only valid with `.playAndRecord`; passing it with
+        // `.playback` makes setCategory throw (NSOSStatusErrorDomain -50), which
+        // aborted every on-device playback. `.playback` already routes video to
+        // AirPlay/external displays via the AVPlayer path, so the option is both
+        // illegal and unnecessary here.
+        try session.setCategory(.playback, mode: .moviePlayback)
         try session.setActive(true)
     }
 

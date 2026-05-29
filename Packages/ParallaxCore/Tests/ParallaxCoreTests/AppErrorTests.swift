@@ -27,6 +27,15 @@ struct AppErrorTests {
         #expect(err.diagnosticDescription.contains("DB down"))
     }
 
+    @Test("audioSessionFailed reports an audio-specific message, not the network one")
+    func audioSessionFailedMessage() {
+        let err = AppError.playback(.audioSessionFailed)
+        #expect(err.userMessage == "Couldn't start audio playback. Try again.")
+        // Must be distinct from the network-flavored resourceUnavailable text
+        // so an audio-config failure no longer masquerades as a connectivity bug.
+        #expect(err.userMessage != AppError.playback(.resourceUnavailable).userMessage)
+    }
+
     @Test("unexpected error preserves the underlying description in diagnostic")
     func unexpectedWithUnderlying() {
         struct Underlying: Error { let note: String }

@@ -16,6 +16,7 @@ struct PlayerViewModelTests {
         reporting: StubPlaybackReporting,
         engine: FakePlaybackEngine,
         resolved: ResolvedPlayback,
+        audioSession: any AudioSessionControlling = NoopAudioSession(),
         capturedItem: @escaping @Sendable (ItemID) -> Void
     ) -> PlayerViewModel {
         let probe = StubCapabilityProbe(hdr: .none, audio: .stereo)
@@ -28,7 +29,7 @@ struct PlayerViewModelTests {
                 return resolved
             },
             engineFactory: { _ in engine },
-            audioSession: NoopAudioSession()
+            audioSession: audioSession
         )
     }
 
@@ -72,6 +73,52 @@ struct PlayerViewModelTests {
             .progress(ticks: 20 * 10_000_000, isPaused: false, itemID: "movie-1"),
             .stopped(ticks: 20 * 10_000_000, itemID: "movie-1"),
         ])
+    }
+
+    @Test("audio session activation failure surfaces a distinct error and short-circuits before resolve")
+    func audioSessionFailureIsDistinctAndShortCircuits() async {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine()
+        var didResolve = false
+
+        let vm = makeVM(
+            reporting: reporting,
+            engine: engine,
+            resolved: PlayerFixtures.resolved(),
+            audioSession: ThrowingAudioSession(),
+            capturedItem: { _ in didResolve = true }
+        )
+
+        await vm.start(item: PlayerFixtures.movieDetail())
+
+        // A failed audio session is NOT a network problem — it must not be
+        // reported as ".resourceUnavailable" ("Couldn't reach the file…").
+        #expect(vm.phase == .failed(.playback(.audioSessionFailed)))
+        #expect(vm.phase != .failed(.playback(.resourceUnavailable)))
+        // activate() throws before resolve() runs, so nothing downstream fired.
+        #expect(didResolve == false)
+        #expect(engine.loadedAsset == nil)
+    }
+
+    @Test("transcoded MKV plays via AVKit — selector gates on the delivered HLS, not the source container")
+    func transcodedMKVSelectsAVKit() async {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine()
+
+        let vm = makeVM(
+            reporting: reporting,
+            engine: engine,
+            resolved: PlayerFixtures.resolvedTranscodedMKV(),
+            capturedItem: { _ in }
+        )
+
+        await vm.start(item: PlayerFixtures.movieDetail())
+
+        // Source is MKV/AV1/DTS, but the transcode delivery is HLS → AVKit.
+        #expect(vm.phase != .failed(.playback(.unsupportedFormat)))
+        #expect(engine.loadedAsset != nil)
+        #expect(engine.loadedAsset?.hints.container == .hls)
+        #expect(engine.didPlay)
     }
 
     @Test("teardown reports stopped and finishes the engine")

@@ -90,6 +90,7 @@ public enum PlaybackFailure: Sendable {
     case decodeFailed
     case unsupportedFormat
     case resourceUnavailable
+    case audioSessionFailed
 
     public var userMessage: String {
         switch self {
@@ -99,6 +100,8 @@ public enum PlaybackFailure: Sendable {
             return "This file's format isn't supported on this device."
         case .resourceUnavailable:
             return "Couldn't reach the file. Check your connection."
+        case .audioSessionFailed:
+            return "Couldn't start audio playback. Try again."
         }
     }
 }

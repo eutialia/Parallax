@@ -57,6 +57,18 @@ struct NoopAudioSession: AudioSessionControlling {
     func deactivate() async {}
 }
 
+/// AudioSessionControlling whose `activate()` throws the way the on-device
+/// `AVAudioSession` does in bug #3 (an invalid-parameter `NSError`, not an
+/// `AppError`). Lets the test prove `start()` surfaces a distinct, non-network
+/// failure and short-circuits before `resolve()` runs.
+struct ThrowingAudioSession: AudioSessionControlling {
+    let routeChanges: AsyncStream<Void> = AsyncStream { _ in }
+    func activate() async throws {
+        throw NSError(domain: NSOSStatusErrorDomain, code: -50)
+    }
+    func deactivate() async {}
+}
+
 enum PlayerFixtures {
     static func movieDetail(positionTicks: Int64 = 0) -> ItemDetail {
         let movie = Movie(
@@ -90,6 +102,25 @@ enum PlayerFixtures {
             container: .mp4,
             videoCodec: .h264,
             audioCodec: .aac,
+            mediaSourceID: "ms-1",
+            playSessionID: "ps-1",
+            runtime: CMTime(seconds: 7200, preferredTimescale: 600),
+            startTime: nil
+        )
+    }
+
+    /// A server-transcoded MKV (bug #2): the *source* is MKV / AV1 / DTS — none
+    /// of which AVKit can direct-play — but the server delivers an HLS transcode
+    /// stream AVKit *can* play. The engine selector must gate on the delivered
+    /// stream (HLS), not the source container.
+    static func resolvedTranscodedMKV() -> ResolvedPlayback {
+        ResolvedPlayback(
+            itemID: "movie-1",
+            url: URL(string: "https://jf.example.com/videos/movie-1/master.m3u8?api_key=abc")!,
+            method: .transcode,
+            container: .mkv,
+            videoCodec: .av1,
+            audioCodec: .dts,
             mediaSourceID: "ms-1",
             playSessionID: "ps-1",
             runtime: CMTime(seconds: 7200, preferredTimescale: 600),
