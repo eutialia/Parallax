@@ -2,17 +2,8 @@
 //  ParallaxTests.swift
 //  ParallaxTests
 //
-//  Created by Linghao Hsu on 2026-05-26.
-//
 
 import Testing
 
-struct ParallaxTests {
-
-    @Test func example() async throws {
-        // Write your test here and use APIs like `#expect(...)` to check expected conditions.
-        // Swift Testing Documentation
-        // https://developer.apple.com/documentation/testing
-    }
-
-}
+// Real suites live in their own files (ResumePolicyTests, PlayerViewModelTests).
+// This file is intentionally minimal — the target's anchor, no placeholder test.
