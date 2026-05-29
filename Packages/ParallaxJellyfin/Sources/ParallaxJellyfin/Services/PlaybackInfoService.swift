@@ -66,8 +66,16 @@ public actor PlaybackInfoService {
             method = .transcode
             url = client.transcodeURL(relativePath: transcodingURL)
         } else {
-            let isStatic = !(source.isSupportsDirectStream ?? false)
-            method = isStatic ? .directPlay : .directStream
+            // No server transcode: our device profile only advertises AVKit-native
+            // containers + codecs for direct playback, so a non-transcode source is
+            // directly playable. Serve it raw (static=true). AVPlayer requires HTTP
+            // byte-range support for progressive playback, which the raw file
+            // provides but Jellyfin's on-the-fly remux (static=false) does not — the
+            // remux answers 200/chunked, which AVFoundation rejects
+            // (NSOSStatusErrorDomain -12939 → AVFoundationErrorDomain -11850). True
+            // remux/transcode is delivered as HLS via transcodingURL (handled above),
+            // never the progressive static=false endpoint.
+            method = .directPlay
             url = client.streamURL(
                 StreamRequest(
                     itemID: item.rawValue,
@@ -75,7 +83,7 @@ public actor PlaybackInfoService {
                     mediaSourceID: mediaSourceID,
                     playSessionID: playSessionID,
                     startTimeTicks: startTimeTicks ?? 0,
-                    isStatic: isStatic
+                    isStatic: true
                 )
             )
         }

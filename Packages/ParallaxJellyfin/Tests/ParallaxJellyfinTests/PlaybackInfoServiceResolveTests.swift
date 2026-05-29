@@ -59,7 +59,7 @@ struct PlaybackInfoServiceResolveTests {
         return (PlaybackInfoService(client: fake), fake)
     }
 
-    @Test("Direct-play source resolves to .directStream with a static stream URL carrying api_key")
+    @Test("Non-transcode source resolves to .directPlay with a static (range-seekable) stream URL")
     func directBranch() async throws {
         let (service, fake) = makeService(source: directPlaySource())
         let resolved = try await service.resolve(
@@ -67,14 +67,20 @@ struct PlaybackInfoServiceResolveTests {
             capabilities: caps(),
             startTime: nil
         )
-        #expect(resolved.method == .directStream)
+        // AVPlayer requires HTTP byte-range support for progressive playback,
+        // which Jellyfin's raw-file (static=true) direct-play endpoint provides
+        // but its on-the-fly remux (static=false) does not — the remux answers
+        // 200/chunked, which AVFoundation rejects (-12939 / -11850). A
+        // non-transcode source is AVKit-native per our device profile, so we
+        // direct-play the raw, seekable file.
+        #expect(resolved.method == .directPlay)
+        #expect(fake.streamURLRequests.first?.isStatic == true)
         #expect(resolved.mediaSourceID == "ms-1")
         #expect(resolved.playSessionID == "ps-1")
         #expect(resolved.container == .mp4)
         #expect(resolved.videoCodec == .h264)
         #expect(resolved.audioCodec == .aac)
         #expect(resolved.url.query?.contains("api_key=") == true)
-        // The stream-URL builder was asked for a static stream of this source.
         #expect(fake.streamURLRequests.first?.mediaSourceID == "ms-1")
         #expect(fake.transcodePaths.isEmpty)
     }
