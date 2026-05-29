@@ -28,20 +28,22 @@ struct JellyfinImage: View {
     }
 
     var body: some View {
-        ZStack {
-            placeholder
-            if let ref, let url = ImageURLBuilder.url(serverURL: session.serverURL, ref: ref, maxWidth: maxWidth) {
-                LazyImageRenderer(url: url, session: session)
+        // The cell size derives from the proposed WIDTH and the aspect ratio
+        // alone — never from the loaded image's intrinsic size. The old
+        // `.aspectRatio(.fill)` over a flexible ZStack let a loaded image leak
+        // its natural dimensions into layout: grid/row cells grew row-to-row
+        // once the image arrived and overflowed their column, swallowing the
+        // inter-item spacing (device smoke-test #6/#7). Pin the box first, then
+        // fill it with the image and clip the overflow — every cell stays
+        // uniform regardless of image-load state.
+        Color(white: 0.15)
+            .overlay {
+                if let ref, let url = ImageURLBuilder.url(serverURL: session.serverURL, ref: ref, maxWidth: maxWidth) {
+                    LazyImageRenderer(url: url, session: session)
+                }
             }
-        }
-        .aspectRatio(aspectRatio, contentMode: .fill)
-        .clipped()
-    }
-
-    @ViewBuilder
-    private var placeholder: some View {
-        Rectangle()
-            .fill(Color(white: 0.15))
+            .aspectRatio(aspectRatio, contentMode: .fit)
+            .clipped()
     }
 }
 
