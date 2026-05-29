@@ -60,15 +60,17 @@ struct MediaTile: View {
             }
             Text(title)
                 .font(.caption)
-                .lineLimit(2)
+                .lineLimit(2, reservesSpace: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            if let subtitle {
-                Text(subtitle)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
+            // Always render the subtitle line (empty when absent) and reserve
+            // both lines' height so every tile is identical — otherwise mixed
+            // 1-/2-line titles and present/absent subtitles make a row's (and
+            // grid's) thumbnails misalign (smoke-test #6/#7).
+            Text(subtitle ?? "")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1, reservesSpace: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }

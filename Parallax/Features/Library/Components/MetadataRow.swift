@@ -12,7 +12,7 @@ struct MetadataRow<Item: Identifiable & Hashable, Content: View>: View {
                 .font(.headline)
                 .padding(.horizontal, AppLayout.contentHMargin)
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 12) {
+                HStack(alignment: .top, spacing: 12) {
                     ForEach(items) { item in
                         content(item)
                             .frame(width: tileWidth)

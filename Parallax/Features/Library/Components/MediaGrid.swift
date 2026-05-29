@@ -19,7 +19,7 @@ struct MediaGrid<Item: Identifiable & Hashable, Content: View>: View {
     }
 
     var body: some View {
-        let columns = [GridItem(.adaptive(minimum: columnMinWidth), spacing: 12)]
+        let columns = [GridItem(.adaptive(minimum: columnMinWidth), spacing: 12, alignment: .top)]
         LazyVGrid(columns: columns, spacing: 16) {
             ForEach(items) { item in
                 content(item)

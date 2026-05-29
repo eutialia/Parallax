@@ -118,19 +118,18 @@ struct HomeView: View {
         switch item {
         case .movie(let m): return m.title
         case .series(let s): return s.title
-        case .episode(let e):
-            if let season = e.parentIndexNumber, let idx = e.indexNumber {
-                return "S\(String(format: "%02d", season))E\(String(format: "%02d", idx)) · \(e.name)"
-            }
-            return e.name
+        case .episode(let e): return e.name
         }
     }
 
     private func tileSubtitle(_ item: Item) -> String? {
         switch item {
-        case .movie(let m): return m.year.map(String.init)
-        case .series(let s): return s.year.map(String.init)
-        case .episode: return nil
+        // Home rows show only the title for movies/series; episodes get a
+        // compact SxxExx so the tile reads "name / S01E04" (smoke-test #7).
+        case .movie, .series: return nil
+        case .episode(let e):
+            guard let season = e.parentIndexNumber, let idx = e.indexNumber else { return nil }
+            return "S\(String(format: "%02d", season))E\(String(format: "%02d", idx))"
         }
     }
 
