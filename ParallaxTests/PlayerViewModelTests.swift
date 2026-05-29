@@ -91,4 +91,25 @@ struct PlayerViewModelTests {
         let events = await reporting.events
         #expect(events.contains(.stopped(ticks: 30 * 10_000_000, itemID: "movie-1")))
     }
+
+    @Test("natural end followed by dismissal reports stopped exactly once")
+    func endThenDismissReportsStoppedOnce() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine()
+        let resolved = PlayerFixtures.resolved()
+
+        let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(position: CMTime(seconds: 40, preferredTimescale: 1), duration: resolved.runtime!))
+        engine.push(.ended)
+        try await Task.sleep(for: .milliseconds(50))
+
+        // PlayerView.onDisappear always calls stop(); after a natural .ended that
+        // already reported stopped, stop() must NOT emit a second stopped beat.
+        await vm.stop()
+
+        let events = await reporting.events
+        let stoppedCount = events.filter { if case .stopped = $0 { return true } else { return false } }.count
+        #expect(stoppedCount == 1)
+    }
 }

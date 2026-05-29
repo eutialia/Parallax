@@ -40,6 +40,7 @@ final class PlayerViewModel {
     private var resolved: ResolvedPlayback?
     private var currentItemID: ItemID?
     private var didReportStart = false
+    private var didReportStopped = false
     private var lastPosition: CMTime = .zero
 
     /// The resolve surface, narrowed so the integration test can inject a stub
@@ -126,7 +127,8 @@ final class PlayerViewModel {
         if let engine {
             await engine.teardown()
         }
-        if let resolved, let itemID = currentItemID {
+        if let resolved, let itemID = currentItemID, !didReportStopped {
+            didReportStopped = true
             await playbackInfo.reportStopped(beat(position: lastPosition, isPaused: true, itemID: itemID, from: resolved))
         }
         await audioSession.deactivate()
@@ -137,6 +139,7 @@ final class PlayerViewModel {
         await stop()
         phase = .idle
         didReportStart = false
+        didReportStopped = false
         lastPosition = .zero
         await start(item: item)
     }
@@ -172,7 +175,10 @@ final class PlayerViewModel {
             lastPosition = position
             await playbackInfo.reportProgress(beat(position: position, isPaused: true, itemID: itemID, from: resolved))
         case .ended:
-            await playbackInfo.reportStopped(beat(position: lastPosition, isPaused: true, itemID: itemID, from: resolved))
+            if !didReportStopped {
+                didReportStopped = true
+                await playbackInfo.reportStopped(beat(position: lastPosition, isPaused: true, itemID: itemID, from: resolved))
+            }
         case .failed(let error):
             phase = .failed(Self.map(error))
         }
