@@ -22,6 +22,14 @@ struct DetailHeader: View {
                 aspectRatio: JellyfinImage.landscape
             )
 
+            // Top scrim so the floating nav button (back / menu) reads against
+            // the backdrop and fades into the image instead of a hard cut.
+            LinearGradient(
+                colors: [Color.black.opacity(0.45), Color.black.opacity(0.0)],
+                startPoint: .top,
+                endPoint: .center
+            )
+
             LinearGradient(
                 colors: [Color.black.opacity(0.0), Color.black.opacity(0.85)],
                 startPoint: .center,

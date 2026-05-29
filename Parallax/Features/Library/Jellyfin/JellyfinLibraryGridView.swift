@@ -77,6 +77,7 @@ struct JellyfinLibraryGridView: View {
                     ProgressView().padding()
                 }
             }
+            .contentMargins(.horizontal, AppLayout.contentHMargin, for: .scrollContent)
         }
     }
 

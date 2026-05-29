@@ -10,7 +10,7 @@ struct MetadataRow<Item: Identifiable & Hashable, Content: View>: View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title)
                 .font(.headline)
-                .padding(.horizontal, 16)
+                .padding(.horizontal, AppLayout.contentHMargin)
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 12) {
                     ForEach(items) { item in
@@ -18,7 +18,7 @@ struct MetadataRow<Item: Identifiable & Hashable, Content: View>: View {
                             .frame(width: tileWidth)
                     }
                 }
-                .padding(.horizontal, 16)
+                .padding(.horizontal, AppLayout.contentHMargin)
             }
         }
     }

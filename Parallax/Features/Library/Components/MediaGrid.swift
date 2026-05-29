@@ -28,6 +28,8 @@ struct MediaGrid<Item: Identifiable & Hashable, Content: View>: View {
                     }
             }
         }
-        .padding(.horizontal, 16)
+        // Leading/trailing inset is applied by the host ScrollView via
+        // `.contentMargins` (one shared value, keeps the scroll indicator at
+        // the edge) — the grid itself stays inset-free.
     }
 }
