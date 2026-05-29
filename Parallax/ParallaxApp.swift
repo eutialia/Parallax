@@ -34,6 +34,15 @@ struct ParallaxApp: App {
                         ParallaxCore.Log.persistence.error("ServerStore.load failed: \(error.localizedDescription)")
                     }
                     router.updateForCurrentSession(await dependencies.serverStore.active)
+
+                    // Rebuild the device profile on the next resolve whenever
+                    // the audio route changes (e.g. AirPlay connects). Per the
+                    // spec, in-flight playback is intentionally NOT interrupted.
+                    Task {
+                        for await _ in dependencies.audioSession.routeChanges {
+                            await dependencies.deviceProfileBuilder.invalidate()
+                        }
+                    }
                 }
         }
     }

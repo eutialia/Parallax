@@ -2,6 +2,7 @@ import Foundation
 import Observation
 import ParallaxCore
 import ParallaxJellyfin
+import ParallaxPlayback
 
 @Observable
 @MainActor
@@ -12,6 +13,10 @@ final class AppDependencies {
     let lanDiscovery: LANServerDiscovery
     let libraryRepoFactory: @Sendable (Session) async -> LibraryRepository
     let imagePipelineFactory: ImagePipelineFactory
+    let deviceProfileBuilder: DeviceProfileBuilder
+    let playbackInfoFactory: @Sendable (Session) async -> PlaybackInfoService
+    let playbackEngineFactory: @MainActor @Sendable (PlaybackEngineID) -> any PlaybackEngine
+    let audioSession: any AudioSessionControlling
 
     init(
         serverStore: ServerStore,
@@ -19,7 +24,11 @@ final class AppDependencies {
         deviceIdentityProvider: DeviceIdentityProvider,
         lanDiscovery: LANServerDiscovery,
         libraryRepoFactory: @Sendable @escaping (Session) async -> LibraryRepository,
-        imagePipelineFactory: ImagePipelineFactory
+        imagePipelineFactory: ImagePipelineFactory,
+        deviceProfileBuilder: DeviceProfileBuilder,
+        playbackInfoFactory: @Sendable @escaping (Session) async -> PlaybackInfoService,
+        playbackEngineFactory: @MainActor @Sendable @escaping (PlaybackEngineID) -> any PlaybackEngine,
+        audioSession: any AudioSessionControlling
     ) {
         self.serverStore = serverStore
         self.sessionManager = sessionManager
@@ -27,6 +36,10 @@ final class AppDependencies {
         self.lanDiscovery = lanDiscovery
         self.libraryRepoFactory = libraryRepoFactory
         self.imagePipelineFactory = imagePipelineFactory
+        self.deviceProfileBuilder = deviceProfileBuilder
+        self.playbackInfoFactory = playbackInfoFactory
+        self.playbackEngineFactory = playbackEngineFactory
+        self.audioSession = audioSession
     }
 
     static func live() -> AppDependencies {
@@ -51,6 +64,38 @@ final class AppDependencies {
             await repoStore.repository(for: session)
         }
 
+        // Playback wiring. The profile builder probes HDR/audio at runtime via
+        // the iOS-only LiveCapabilityProbe; everything else is the fixed
+        // AVPlayer whitelist.
+        let profileBuilder = DeviceProfileBuilder(probe: LiveCapabilityProbe())
+
+        // One PlaybackInfoService per server, token-keyed — mirrors the
+        // LibraryRepositoryStore wiring above. The playback client factory is
+        // built exactly like the library one (same identity provider), and the
+        // canonical store lives in ParallaxJellyfin (Task 4c.6); the app only
+        // delegates to it, never re-implements it.
+        let playbackClientFactory = DefaultJellyfinPlaybackClientFactory(identityProvider: identity)
+        let playbackStore = PlaybackInfoServiceStore(clientFactory: playbackClientFactory)
+        let playbackInfoFactory: @Sendable (Session) async -> PlaybackInfoService = { session in
+            await playbackStore.service(for: session)
+        }
+
+        let engineFactory: @MainActor @Sendable (PlaybackEngineID) -> any PlaybackEngine = { id in
+            switch id {
+            case .avKit:
+                return AVKitEngine()
+            case .vlcKit:
+                // No VLCKit until Phase 5. PlayerViewModel guards on the
+                // selected id before reaching the factory and surfaces
+                // .unsupportedFormat, so this fallback is never instantiated
+                // for a real .vlcKit selection — it only satisfies the
+                // non-optional return type without a crash.
+                return AVKitEngine()
+            }
+        }
+
+        let audioSession = LiveAudioSession()
+
         return AppDependencies(
             serverStore: store,
             sessionManager: manager,
@@ -60,7 +105,11 @@ final class AppDependencies {
             // Resolve the image-pipeline device identity from the same provider
             // as auth, so image traffic presents the persisted deviceID rather
             // than a per-launch random UUID.
-            imagePipelineFactory: ImagePipelineFactory(identityProvider: identity)
+            imagePipelineFactory: ImagePipelineFactory(identityProvider: identity),
+            deviceProfileBuilder: profileBuilder,
+            playbackInfoFactory: playbackInfoFactory,
+            playbackEngineFactory: engineFactory,
+            audioSession: audioSession
         )
     }
 
