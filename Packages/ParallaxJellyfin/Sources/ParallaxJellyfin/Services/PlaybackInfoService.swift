@@ -95,6 +95,25 @@ public actor PlaybackInfoService {
             )
         }
 
+        // Diagnostic: what are we actually handing the engine? video
+        // profile + bit depth distinguish a decodable stream from one the
+        // device/simulator can't handle (e.g. 10-bit H.264 that iOS won't
+        // hardware-decode), and `method` shows direct-play vs HLS. URL is
+        // hashed because it embeds api_key.
+        let videoStream = source.mediaStreams?.first(where: { $0.type == .video })
+        Log.playback.info(
+            """
+            resolve item=\(item.rawValue, privacy: .public) \
+            method=\(String(describing: method), privacy: .public) \
+            container=\(source.container ?? "nil", privacy: .public) \
+            video=\(videoStream?.codec ?? "nil", privacy: .public)/\(videoStream?.profile ?? "nil", privacy: .public) \
+            bitDepth=\(videoStream?.bitDepth.map(String.init) ?? "nil", privacy: .public) \
+            res=\(videoStream?.width ?? 0, privacy: .public)x\(videoStream?.height ?? 0, privacy: .public) \
+            audio=\(Self.firstCodec(in: source, type: .audio) ?? "nil", privacy: .public) \
+            url=\(url.absoluteString, privacy: .private(mask: .hash))
+            """
+        )
+
         return ResolvedPlayback(
             itemID: item.rawValue,
             url: url,
