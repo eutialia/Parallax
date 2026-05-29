@@ -11,6 +11,15 @@ public actor PlaybackInfoService {
 
     private let client: JellyfinPlaybackClient
 
+    /// Minimum seconds between throttled progress beats. A pause-flip or seek
+    /// bypasses this and reports immediately.
+    static let progressThrottleSeconds: Double = 10
+
+    // Cadence state. `lastReportedAt` is the clock value of the last sent
+    // progress/start beat; `lastPaused` detects pause flips.
+    private var lastReportedAt: Double = 0
+    private var lastPaused: Bool = false
+
     public init(client: JellyfinPlaybackClient) {
         self.client = client
     }
@@ -105,5 +114,85 @@ public actor PlaybackInfoService {
 
     private static func firstCodec(in source: MediaSourceInfo, type: MediaStreamType) -> String? {
         source.mediaStreams?.first(where: { $0.type == type })?.codec
+    }
+
+    // MARK: - Progress reporting
+
+    public func reportStart(_ beat: ProgressBeat) async {
+        lastReportedAt = 0
+        lastPaused = beat.isPaused
+        await send(start: stateInfo(from: beat))
+    }
+
+    /// Throttled to ~10s; a pause flip or seek reports immediately. `now` is
+    /// an injected clock (seconds) so cadence is deterministic in tests.
+    public func reportProgress(_ beat: ProgressBeat, now: Double) async {
+        let pauseFlipped = beat.isPaused != lastPaused
+        let elapsed = now - lastReportedAt
+        let throttled = elapsed >= Self.progressThrottleSeconds
+        guard pauseFlipped || throttled else {
+            lastPaused = beat.isPaused
+            return
+        }
+        lastReportedAt = now
+        lastPaused = beat.isPaused
+        await send(progress: stateInfo(from: beat))
+    }
+
+    public func reportStopped(_ beat: ProgressBeat) async {
+        let info = PlaybackStopInfo(
+            itemID: beat.itemID,
+            mediaSourceID: beat.mediaSourceID,
+            playSessionID: beat.playSessionID,
+            positionTicks: beat.positionTicks
+        )
+        await send(stopped: info)
+    }
+
+    // MARK: - Body translation + named non-fatal send
+
+    private func stateInfo(from beat: ProgressBeat) -> PlaybackStateInfo {
+        PlaybackStateInfo(
+            isPaused: beat.isPaused,
+            itemID: beat.itemID,
+            mediaSourceID: beat.mediaSourceID,
+            playMethod: Self.playMethod(from: beat.method),
+            playSessionID: beat.playSessionID,
+            positionTicks: beat.positionTicks
+        )
+    }
+
+    private static func playMethod(from method: PlaybackMethod) -> PlayMethod {
+        switch method {
+        case .directPlay: return .directPlay
+        case .directStream: return .directStream
+        case .transcode: return .transcode
+        }
+    }
+
+    // Named non-fatal policy: a thrown SDK request error is logged and
+    // swallowed so a flaky report never tears down playback.
+    private func send(start info: PlaybackStateInfo) async {
+        do {
+            try await client.reportStart(info)
+        } catch {
+            Log.playback.error("reportStart failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func send(progress info: PlaybackStateInfo) async {
+        do {
+            try await client.reportProgress(info)
+        } catch {
+            Log.playback.error("reportProgress failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func send(stopped info: PlaybackStopInfo) async {
+        do {
+            try await client.reportStopped(info)
+        } catch {
+            Log.playback.error("reportStopped failed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 }
