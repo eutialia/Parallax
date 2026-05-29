@@ -1,0 +1,55 @@
+import Foundation
+import JellyfinAPI
+@testable import ParallaxJellyfin
+
+final class FakeJellyfinPlaybackClient: JellyfinPlaybackClient, @unchecked Sendable {
+    // Programmable responses.
+    var playbackInfoResult: Result<PlaybackInfoResponse, Error> = .success(PlaybackInfoResponse())
+    // Canned URLs — both carry api_key so resolve tests can assert auth.
+    var streamURLValue = URL(string: "https://fake.example.com/Videos/x/stream.mp4?api_key=tok-1&mediaSourceId=ms-1")
+    var transcodeURLValue = URL(string: "https://fake.example.com/videos/x/master.m3u8?api_key=tok-1&PlaySessionId=ps-1")
+    // Per-call failures so the named non-fatal policy can be exercised.
+    var startError: Error?
+    var progressError: Error?
+    var stoppedError: Error?
+
+    // Call records.
+    private(set) var playbackInfoCalls: [(itemID: String, profile: DeviceProfile, startTimeTicks: Int?)] = []
+    private(set) var streamURLRequests: [StreamRequest] = []
+    private(set) var transcodePaths: [String] = []
+    private(set) var startInfos: [PlaybackStateInfo] = []
+    private(set) var progressInfos: [PlaybackStateInfo] = []
+    private(set) var stoppedInfos: [PlaybackStopInfo] = []
+
+    enum FakeError: Error { case reportFailed }
+
+    func playbackInfo(itemID: String, profile: DeviceProfile, startTimeTicks: Int?) async throws -> PlaybackInfoResponse {
+        playbackInfoCalls.append((itemID, profile, startTimeTicks))
+        return try playbackInfoResult.get()
+    }
+
+    func streamURL(_ request: StreamRequest) -> URL? {
+        streamURLRequests.append(request)
+        return streamURLValue
+    }
+
+    func transcodeURL(relativePath: String) -> URL? {
+        transcodePaths.append(relativePath)
+        return transcodeURLValue
+    }
+
+    func reportStart(_ info: PlaybackStateInfo) async throws {
+        startInfos.append(info)
+        if let startError { throw startError }
+    }
+
+    func reportProgress(_ info: PlaybackStateInfo) async throws {
+        progressInfos.append(info)
+        if let progressError { throw progressError }
+    }
+
+    func reportStopped(_ info: PlaybackStopInfo) async throws {
+        stoppedInfos.append(info)
+        if let stoppedError { throw stoppedError }
+    }
+}
