@@ -105,6 +105,13 @@ struct DTOMappingTests {
         #expect(e?.runtime == .seconds(3402))
         #expect(e?.userData.played == true)
         #expect(e?.userData.playCount == 1)
+        // Episodes carry their still under the natural `.primary` tag (16:9),
+        // mapped identically to movies/series. This guards the Home row image
+        // resolution path (Continue Watching / Next Up) against a regression
+        // that drops the Primary tag — the only kind episodes expose.
+        #expect(e?.primaryTag?.rawValue == "episode-primary-1")
+        #expect(e?.imageRef(.primary)?.tag.rawValue == "episode-primary-1")
+        #expect(e?.imageRef(.thumb) == nil)
     }
 
     @Test("movie_detail.json → ItemDetail.movie with tagline/studios/people populated")
