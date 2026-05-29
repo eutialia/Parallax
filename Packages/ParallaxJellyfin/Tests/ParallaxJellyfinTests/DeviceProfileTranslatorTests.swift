@@ -58,6 +58,18 @@ struct DeviceProfileTranslatorTests {
         #expect(codecs.contains { $0.codec == "hevc" && $0.type == .video })
     }
 
+    @Test("CodecProfile gates H.264 direct play to AVKit-decodable profiles (excludes 10-bit High 10)")
+    func h264ProfileGuard() {
+        let profile = DeviceProfileTranslator.deviceProfile(from: sampleCaps())
+        let codecs = profile.codecProfiles ?? []
+        let h264 = codecs.first { $0.codec == "h264" && $0.type == .video }
+        let condition = h264?.conditions?.first { $0.property == .videoProfile }
+        #expect(condition?.condition == .equalsAny)
+        // The allowed set is 8-bit 4:2:0 profiles; "high 10" (10-bit) is absent,
+        // so the server transcodes it rather than serving an undecodable stream.
+        #expect(condition?.value == "high|main|baseline|constrained baseline")
+    }
+
     @Test("Bitrate caps are nil regardless of capabilities.maxBitrate")
     func noBitrateCap() {
         let profile = DeviceProfileTranslator.deviceProfile(from: sampleCaps())

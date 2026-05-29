@@ -41,10 +41,36 @@ enum DeviceProfileTranslator {
     }
 
     private static func codecProfiles(for capabilities: DeviceCapabilities) -> [CodecProfile] {
-        // HEVC main/main10 only — bit-depth guard keeps the server from
-        // direct-playing a 12-bit master AVPlayer can't decode. HDR is left
-        // to the server/AVPlayer tone-mapping path; conservative in Phase 4.
+        // Keep the server from direct-playing a stream the hardware can't decode.
+        //
+        // H.264: Apple silicon hardware-decodes 8-bit 4:2:0 only. Gate on
+        // VideoProfile (the approach Swiftfin's AVKit profile and jellyfin-web
+        // both ship): the allowed set excludes "high 10" (10-bit), "high 4:2:2",
+        // and "high 4:4:4", so the server transcodes those to HLS rather than
+        // serving a stream VideoToolbox rejects (kVTVideoDecoderBadDataErr /
+        // -8969 → black video). Profile gating catches the whole undecodable
+        // class, not just bit depth.
+        //
+        // HEVC: 10-bit (Main 10) IS hardware-decodable, so cap on bit depth —
+        // 12-bit masters transcode. HDR is left to the server/AVPlayer
+        // tone-mapping path; conservative in Phase 4.
+        //
+        // isRequired:false matches the ecosystem; for a probed stream the
+        // condition gates regardless, and false only avoids a needless transcode
+        // when the server couldn't read the profile/bit depth.
         [
+            CodecProfile(
+                codec: "h264",
+                conditions: [
+                    ProfileCondition(
+                        condition: .equalsAny,
+                        isRequired: false,
+                        property: .videoProfile,
+                        value: "high|main|baseline|constrained baseline"
+                    ),
+                ],
+                type: .video
+            ),
             CodecProfile(
                 codec: "hevc",
                 conditions: [
