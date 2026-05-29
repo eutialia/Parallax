@@ -1,6 +1,7 @@
 import Foundation
 import AVFoundation
 import CoreMedia
+import ParallaxCore
 
 @MainActor
 public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
@@ -124,6 +125,24 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
             }
             continuation.yield(.ready(duration: item.duration, tracks: trackInventory(of: item)))
         case .failed:
+            // The item never became playable. Capture the concrete failure so a
+            // device/sim trace can tell a genuine codec problem apart from a URL
+            // load failure (401 / TLS trust / bad path / redirect) — the symptom
+            // is identical ("Couldn't decode that file.") but the cause is not.
+            // domain+code+localizedDescription are the actionable, token-free
+            // bits; the asset URL is hashed because it embeds the api_key.
+            let nsError = item.error as NSError?
+            let underlying = nsError?.userInfo[NSUnderlyingErrorKey] as? NSError
+            Log.playback.error(
+                """
+                AVPlayerItem failed: \
+                domain=\(nsError?.domain ?? "nil", privacy: .public) \
+                code=\(nsError?.code ?? 0, privacy: .public) \
+                desc=\(nsError?.localizedDescription ?? "nil", privacy: .public) \
+                underlying=\(underlying.map { "\($0.domain) code=\($0.code)" } ?? "nil", privacy: .public) \
+                url=\((item.asset as? AVURLAsset)?.url.absoluteString ?? "<no-url>", privacy: .private(mask: .hash))
+                """
+            )
             continuation.yield(.failed(.assetNotPlayable))
         case .unknown:
             break
