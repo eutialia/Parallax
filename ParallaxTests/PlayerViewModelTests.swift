@@ -8,7 +8,12 @@ import ParallaxPlaybackTestSupport
 @testable import ParallaxJellyfin
 @testable import ParallaxCore
 
-@Suite("PlayerViewModel integration")
+// .serialized is required because several tests write to MPNowPlayingInfoCenter.default(),
+// which is a process-wide singleton. Parallel async tests interleave at `await` points
+// and clobber each other's nowPlayingInfo state even when the NowPlaying sub-suite itself
+// is serialized, because outer-suite tests (e.g. teardownReportsStopped calling vm.stop()
+// → nowPlaying.clear()) run concurrently with the inner suite.
+@Suite("PlayerViewModel integration", .serialized)
 @MainActor
 struct PlayerViewModelTests {
     /// Builds a VM wired to a FakePlaybackEngine + recording reporting stub +
@@ -305,27 +310,101 @@ struct PlayerViewModelTests {
         #expect(stoppedCount == 1)
     }
 
-    @Test("NowPlayingController.update writes elapsed/duration/rate into MPNowPlayingInfoCenter.default")
-    func nowPlayingUpdate() {
-        let controller = NowPlayingController()
-        controller.update(position: CMTime(seconds: 60, preferredTimescale: 600),
-                          duration: CMTime(seconds: 7200, preferredTimescale: 600),
-                          isPlaying: true, title: "Test Movie")
-        let info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
-        #expect((info[MPNowPlayingInfoPropertyElapsedPlaybackTime] as? Double) == 60.0)
-        #expect((info[MPMediaItemPropertyPlaybackDuration] as? Double) == 7200.0)
-        #expect((info[MPNowPlayingInfoPropertyPlaybackRate] as? Double) == 1.0)
-        #expect((info[MPMediaItemPropertyTitle] as? String) == "Test Movie")
-    }
+    // MARK: - NowPlaying (serialized — MPNowPlayingInfoCenter is a process-wide singleton)
 
-    @Test("NowPlayingController.update sets rate 0 when paused")
-    func nowPlayingPaused() {
-        let controller = NowPlayingController()
-        controller.update(position: CMTime(seconds: 120, preferredTimescale: 600),
-                          duration: CMTime(seconds: 7200, preferredTimescale: 600),
-                          isPlaying: false, title: "Test Movie")
-        let info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
-        #expect((info[MPNowPlayingInfoPropertyPlaybackRate] as? Double) == 0.0)
-        #expect((info[MPNowPlayingInfoPropertyElapsedPlaybackTime] as? Double) == 120.0)
+    /// All 5 tests that read/write MPNowPlayingInfoCenter.default() are grouped
+    /// here with `.serialized` to prevent concurrent async tests from clobbering
+    /// each other's nowPlayingInfo state.
+    @Suite("NowPlaying", .serialized)
+    @MainActor
+    struct NowPlayingTests {
+        private func makeVM(
+            reporting: StubPlaybackReporting,
+            engine: FakePlaybackEngine,
+            resolved: ResolvedPlayback,
+            audioSession: any AudioSessionControlling = NoopAudioSession(),
+            capturedItem: @escaping @Sendable (ItemID) -> Void
+        ) -> PlayerViewModel {
+            let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
+            let builder = DeviceProfileBuilder(probe: probe)
+            return PlayerViewModel(
+                deviceProfileBuilder: builder,
+                playbackInfo: reporting,
+                resolve: { id, _, _ in
+                    capturedItem(id)
+                    return resolved
+                },
+                engineFactory: { _ in engine },
+                audioSession: audioSession
+            )
+        }
+
+        @Test("PlayerViewModel populates MPNowPlayingInfoCenter on .playing")
+        func vmPopulatesNowPlayingOnPlaying() async throws {
+            let reporting = StubPlaybackReporting()
+            let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+            let resolved = PlayerFixtures.resolved()
+            let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
+            await vm.start(item: PlayerFixtures.movieDetailNamed("Fixture Movie"))
+            engine.push(.playing(position: CMTime(seconds: 30, preferredTimescale: 1), duration: resolved.runtime!))
+            try await Task.sleep(for: .milliseconds(50))
+            let info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+            #expect((info[MPMediaItemPropertyTitle] as? String) == "Fixture Movie")
+            #expect(((info[MPNowPlayingInfoPropertyElapsedPlaybackTime] as? Double) ?? 0.0) > 0.0)
+            #expect((info[MPNowPlayingInfoPropertyPlaybackRate] as? Double) == 1.0)
+            await vm.stop()
+        }
+
+        @Test("PlayerViewModel sets rate 0 in MPNowPlayingInfoCenter on .paused")
+        func vmSetsNowPlayingRateZeroOnPaused() async throws {
+            let reporting = StubPlaybackReporting()
+            let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+            let resolved = PlayerFixtures.resolved()
+            let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
+            await vm.start(item: PlayerFixtures.movieDetailNamed("Fixture Movie"))
+            engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!))
+            engine.push(.paused(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!))
+            try await Task.sleep(for: .milliseconds(50))
+            let info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+            #expect((info[MPNowPlayingInfoPropertyPlaybackRate] as? Double) == 0.0)
+            await vm.stop()
+        }
+
+        @Test("PlayerViewModel clears MPNowPlayingInfoCenter on stop()")
+        func vmClearsNowPlayingOnStop() async throws {
+            let reporting = StubPlaybackReporting()
+            let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+            let resolved = PlayerFixtures.resolved()
+            let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
+            await vm.start(item: PlayerFixtures.movieDetailNamed("Fixture Movie"))
+            engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!))
+            try await Task.sleep(for: .milliseconds(50))
+            await vm.stop()
+            #expect(MPNowPlayingInfoCenter.default().nowPlayingInfo == nil)
+        }
+
+        @Test("NowPlayingController.update writes elapsed/duration/rate into MPNowPlayingInfoCenter.default")
+        func nowPlayingUpdate() {
+            let controller = NowPlayingController()
+            controller.update(position: CMTime(seconds: 60, preferredTimescale: 600),
+                              duration: CMTime(seconds: 7200, preferredTimescale: 600),
+                              isPlaying: true, title: "Test Movie")
+            let info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+            #expect((info[MPNowPlayingInfoPropertyElapsedPlaybackTime] as? Double) == 60.0)
+            #expect((info[MPMediaItemPropertyPlaybackDuration] as? Double) == 7200.0)
+            #expect((info[MPNowPlayingInfoPropertyPlaybackRate] as? Double) == 1.0)
+            #expect((info[MPMediaItemPropertyTitle] as? String) == "Test Movie")
+        }
+
+        @Test("NowPlayingController.update sets rate 0 when paused")
+        func nowPlayingPaused() {
+            let controller = NowPlayingController()
+            controller.update(position: CMTime(seconds: 120, preferredTimescale: 600),
+                              duration: CMTime(seconds: 7200, preferredTimescale: 600),
+                              isPlaying: false, title: "Test Movie")
+            let info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+            #expect((info[MPNowPlayingInfoPropertyPlaybackRate] as? Double) == 0.0)
+            #expect((info[MPNowPlayingInfoPropertyElapsedPlaybackTime] as? Double) == 120.0)
+        }
     }
 }

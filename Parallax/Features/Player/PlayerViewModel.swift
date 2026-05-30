@@ -1,4 +1,5 @@
 import Foundation
+import MediaPlayer
 import Observation
 import os
 import CoreMedia
@@ -47,6 +48,8 @@ final class PlayerViewModel {
     private var didReportStart = false
     private var didReportStopped = false
     private var lastPosition: CMTime = .zero
+    private let nowPlaying = NowPlayingController()
+    private var itemTitle: String = ""
 
     /// The resolve surface, narrowed so the integration test can inject a stub
     /// without standing up a full PlaybackInfoService. Mirrors 4c's
@@ -85,9 +88,11 @@ final class PlayerViewModel {
         case .movie(let d):
             positionTicks = d.movie.userData.playbackPositionTicks
             runtime = d.movie.runtime
+            itemTitle = d.movie.title
         case .episode(let d):
             positionTicks = d.episode.userData.playbackPositionTicks
             runtime = d.episode.runtime
+            itemTitle = d.episode.name
         case .series, .season:
             phase = .failed(.playback(.unsupportedFormat))
             return
@@ -116,6 +121,11 @@ final class PlayerViewModel {
             let engine = engineFactory(id)
             self.engine = engine
             subscribe(to: engine)
+            nowPlaying.configure(
+                onSeek: { [weak self] time in Task { await self?.engine?.seek(to: time) } },
+                onPlay: { [weak self] in Task { await self?.engine?.play() } },
+                onPause: { [weak self] in Task { await self?.engine?.pause() } }
+            )
 
             try await engine.load(asset)
             await engine.play()
@@ -139,6 +149,7 @@ final class PlayerViewModel {
         if let engine {
             await engine.teardown()
         }
+        nowPlaying.clear()
         if let resolved, !didReportStopped {
             didReportStopped = true
             await playbackInfo.reportStopped(beat(position: lastPosition, isPaused: true, from: resolved))
@@ -199,6 +210,7 @@ final class PlayerViewModel {
             lastPosition = position
             currentPosition = position
             currentDuration = duration
+            nowPlaying.update(position: position, duration: duration, isPlaying: true, title: itemTitle)
             if !didReportStart {
                 didReportStart = true
                 await playbackInfo.reportStart(beat(position: position, isPaused: false, from: resolved))
@@ -209,6 +221,7 @@ final class PlayerViewModel {
             lastPosition = position
             currentPosition = position
             currentDuration = duration
+            nowPlaying.update(position: position, duration: duration, isPlaying: false, title: itemTitle)
             await playbackInfo.reportProgress(beat(position: position, isPaused: true, from: resolved))
         case .ended:
             if !didReportStopped {

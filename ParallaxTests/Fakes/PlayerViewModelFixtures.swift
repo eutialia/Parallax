@@ -48,6 +48,30 @@ enum PlayerFixtures {
         return .movie(MovieDetail(movie: movie, tagline: nil, studios: [], people: []))
     }
 
+    static func movieDetailNamed(_ title: String, positionTicks: Int64 = 0) -> ItemDetail {
+        let movie = Movie(
+            id: ItemID(rawValue: "movie-1"),
+            title: title,
+            overview: nil,
+            year: 2024,
+            runtime: .seconds(7200),
+            communityRating: nil,
+            officialRating: nil,
+            genres: [],
+            primaryTag: nil,
+            backdropTags: [],
+            logoTag: nil,
+            thumbTag: nil,
+            userData: UserItemData(
+                played: false,
+                playbackPositionTicks: positionTicks,
+                playCount: 0,
+                isFavorite: false
+            )
+        )
+        return .movie(MovieDetail(movie: movie, tagline: nil, studios: [], people: []))
+    }
+
     static func resolved() -> ResolvedPlayback {
         ResolvedPlayback(
             itemID: "movie-1",
