@@ -9,6 +9,7 @@ let package = Package(
     ],
     products: [
         .library(name: "ParallaxPlayback", targets: ["ParallaxPlayback"]),
+        .library(name: "ParallaxPlaybackTestSupport", targets: ["ParallaxPlaybackTestSupport"]),
     ],
     dependencies: [
         .package(path: "../ParallaxCore"),
@@ -24,16 +25,17 @@ let package = Package(
                 "ParallaxCore",
                 .product(name: "VLCKitSPM", package: "vlckit-spm"),
             ],
-            swiftSettings: [
-                .swiftLanguageMode(.v6),
-            ]
+            swiftSettings: [ .swiftLanguageMode(.v6) ]
+        ),
+        .target(
+            name: "ParallaxPlaybackTestSupport",
+            dependencies: ["ParallaxPlayback", "ParallaxCore"],
+            swiftSettings: [ .swiftLanguageMode(.v6) ]
         ),
         .testTarget(
             name: "ParallaxPlaybackTests",
-            dependencies: ["ParallaxPlayback"],
-            swiftSettings: [
-                .swiftLanguageMode(.v6),
-            ]
+            dependencies: ["ParallaxPlayback", "ParallaxPlaybackTestSupport"],
+            swiftSettings: [ .swiftLanguageMode(.v6) ]
         ),
     ]
 )

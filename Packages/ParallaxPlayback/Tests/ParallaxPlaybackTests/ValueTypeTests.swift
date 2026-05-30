@@ -2,7 +2,7 @@ import Foundation
 import CoreMedia
 import Testing
 import ParallaxCore
-@testable import ParallaxPlayback
+import ParallaxPlayback
 
 @Suite("Value types")
 struct ValueTypeTests {

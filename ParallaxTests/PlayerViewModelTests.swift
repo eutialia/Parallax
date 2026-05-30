@@ -2,7 +2,8 @@ import Foundation
 import CoreMedia
 import Testing
 @testable import Parallax
-@testable import ParallaxPlayback
+import ParallaxPlayback
+import ParallaxPlaybackTestSupport
 @testable import ParallaxJellyfin
 @testable import ParallaxCore
 
@@ -19,7 +20,7 @@ struct PlayerViewModelTests {
         audioSession: any AudioSessionControlling = NoopAudioSession(),
         capturedItem: @escaping @Sendable (ItemID) -> Void
     ) -> PlayerViewModel {
-        let probe = StubCapabilityProbe(hdr: .none, audio: .stereo)
+        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
         let builder = DeviceProfileBuilder(probe: probe)
         return PlayerViewModel(
             deviceProfileBuilder: builder,
@@ -36,7 +37,7 @@ struct PlayerViewModelTests {
     @Test("resolves, selects .avKit, loads + plays, maps states, emits beats in order")
     func happyPath() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         let resolved = PlayerFixtures.resolved()
         var resolvedItemID: ItemID?
 
@@ -51,9 +52,9 @@ struct PlayerViewModelTests {
 
         // Resolve happened with the right item; engine was selected + driven.
         #expect(resolvedItemID == ItemID(rawValue: "movie-1"))
-        #expect(engine.loadedAsset != nil)
-        #expect(engine.loadedAsset?.hints.container == .mp4)
-        #expect(engine.didPlay)
+        #expect(!engine.loadedAssets.isEmpty)
+        #expect(engine.loadedAssets.first?.hints.container == .mp4)
+        #expect(engine.calls.contains("play"))
 
         // Script ready → play → progress → ended through the single consumer.
         engine.push(.ready(duration: resolved.runtime!, tracks: .empty))
@@ -78,7 +79,7 @@ struct PlayerViewModelTests {
     @Test("audio session activation failure surfaces a distinct error and short-circuits before resolve")
     func audioSessionFailureIsDistinctAndShortCircuits() async {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         var didResolve = false
 
         let vm = makeVM(
@@ -97,13 +98,13 @@ struct PlayerViewModelTests {
         #expect(vm.phase != .failed(.playback(.resourceUnavailable)))
         // activate() throws before resolve() runs, so nothing downstream fired.
         #expect(didResolve == false)
-        #expect(engine.loadedAsset == nil)
+        #expect(engine.loadedAssets.isEmpty)
     }
 
     @Test("transcoded MKV plays via AVKit — selector gates on the delivered HLS, not the source container")
     func transcodedMKVSelectsAVKit() async {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
 
         let vm = makeVM(
             reporting: reporting,
@@ -116,15 +117,15 @@ struct PlayerViewModelTests {
 
         // Source is MKV/AV1/DTS, but the transcode delivery is HLS → AVKit.
         #expect(vm.phase != .failed(.playback(.unsupportedFormat)))
-        #expect(engine.loadedAsset != nil)
-        #expect(engine.loadedAsset?.hints.container == .hls)
-        #expect(engine.didPlay)
+        #expect(!engine.loadedAssets.isEmpty)
+        #expect(engine.loadedAssets.first?.hints.container == .hls)
+        #expect(engine.calls.contains("play"))
     }
 
     @Test("teardown reports stopped and finishes the engine")
     func teardownReportsStopped() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         let resolved = PlayerFixtures.resolved()
 
         let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
@@ -133,7 +134,7 @@ struct PlayerViewModelTests {
         try await Task.sleep(for: .milliseconds(50))
 
         await vm.stop()
-        #expect(engine.didTeardown)
+        #expect(engine.calls.contains("teardown"))
 
         let events = await reporting.events
         #expect(events.contains(.stopped(ticks: 30 * 10_000_000, itemID: "movie-1")))
@@ -142,7 +143,7 @@ struct PlayerViewModelTests {
     @Test("natural end followed by dismissal reports stopped exactly once")
     func endThenDismissReportsStoppedOnce() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         let resolved = PlayerFixtures.resolved()
 
         let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })

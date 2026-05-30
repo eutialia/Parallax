@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-@testable import ParallaxPlayback
+import ParallaxPlayback
 
 // These tests are intentionally thin — they exist to prove that the protocol
 // declarations compile on the macOS host baseline and that the type system

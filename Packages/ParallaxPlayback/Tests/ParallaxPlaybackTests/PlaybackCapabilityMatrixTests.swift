@@ -1,6 +1,6 @@
 import Testing
 import ParallaxCore
-@testable import ParallaxPlayback
+import ParallaxPlayback
 
 @Suite("PlaybackCapabilityMatrix")
 struct PlaybackCapabilityMatrixTests {

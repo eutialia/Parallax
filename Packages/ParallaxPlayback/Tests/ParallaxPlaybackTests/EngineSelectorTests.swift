@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 import ParallaxCore
-@testable import ParallaxPlayback
+import ParallaxPlayback
 
 // Helpers to build PlaybackHints concisely in matrix tests.
 private extension PlaybackHints {

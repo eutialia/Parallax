@@ -1,7 +1,8 @@
 import Testing
 import Foundation
 import ParallaxCore
-@testable import ParallaxPlayback
+import ParallaxPlayback
+import ParallaxPlaybackTestSupport
 
 @Suite("DeviceProfileBuilder")
 struct DeviceProfileBuilderTests {

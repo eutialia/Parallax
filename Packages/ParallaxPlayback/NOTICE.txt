@@ -1,0 +1,9 @@
+This module links VLCKit (https://github.com/videolan/vlckit), distributed
+under the GNU Lesser General Public License v2.1 or later (LGPL-2.1+).
+The full license text is available at:
+https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html
+
+The VLCKit source code is available at: https://code.videolan.org/videolan/VLCKit
+
+This app does not modify VLCKit; it links it dynamically via the xcframework
+distributed at https://github.com/virtualox/vlckit-spm.

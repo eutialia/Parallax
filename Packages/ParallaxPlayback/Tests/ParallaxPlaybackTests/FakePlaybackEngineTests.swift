@@ -1,7 +1,8 @@
 import Foundation
 import CoreMedia
 import Testing
-@testable import ParallaxPlayback
+import ParallaxPlayback
+import ParallaxPlaybackTestSupport
 
 @Suite("FakePlaybackEngine")
 @MainActor

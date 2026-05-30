@@ -1,7 +1,7 @@
 import Foundation
 import CoreMedia
 import Testing
-@testable import ParallaxPlayback
+import ParallaxPlayback
 
 @Suite("AVKitEngine")
 @MainActor
