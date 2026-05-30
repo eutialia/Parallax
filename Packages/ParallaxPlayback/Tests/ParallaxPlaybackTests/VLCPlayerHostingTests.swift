@@ -10,4 +10,11 @@ struct VLCPlayerHostingTests {
         let _: (any VLCPlayerHosting).Type = (any VLCPlayerHosting).self
         #expect(Bool(true))
     }
+
+    @Test("VLCKitEngine conforms to VLCPlayerHosting")
+    @MainActor func engineConforms() {
+        let engine = VLCKitEngine()
+        let hosting = engine as? any VLCPlayerHosting
+        #expect(hosting != nil)
+    }
 }
