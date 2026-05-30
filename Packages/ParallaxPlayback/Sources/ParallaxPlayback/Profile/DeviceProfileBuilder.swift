@@ -5,9 +5,9 @@ import ParallaxCore
 /// via AVPlayer, with a minimal runtime probe for HDR and audio-output.
 ///
 /// The fixed AVPlayer whitelist (codecs, containers, resolution, bitrate) is
-/// hardcoded — those capabilities do not change at runtime. Only `hdr` and
-/// `audioOutput` are probed via the injected `CapabilityProbe` so that
-/// `ParallaxPlayback` stays free of iOS-only APIs.
+/// sourced from `PlaybackCapabilityMatrix` — a single declaration shared with
+/// `EngineSelector`. Only `hdr` and `audioOutput` are probed via the injected
+/// `CapabilityProbe` so that `ParallaxPlayback` stays free of iOS-only APIs.
 ///
 /// `build()` caches the result after the first probe; `invalidate()` clears
 /// the cache so the next `build()` re-probes. The app target calls
@@ -29,14 +29,15 @@ public actor DeviceProfileBuilder {
         let hdr = await probe.hdrSupport()           // hops to @MainActor, then returns
         let audioOutput = probe.audioOutput()
         let caps = DeviceCapabilities(
-            supportedVideoCodecs: [.h264, .hevc],
-            supportedAudioCodecs: [.aac, .ac3, .eac3, .mp3],
-            supportedContainers: [.mp4, .mov, .hls],
+            supportedVideoCodecs: Array(PlaybackCapabilityMatrix.avKitVideoCodecs),
+            supportedAudioCodecs: Array(PlaybackCapabilityMatrix.avKitAudioCodecs),
+            supportedContainers: Array(PlaybackCapabilityMatrix.avKitContainers),
             hdr: hdr,
             maxResolution: .uhd4K,
             maxBitrate: .megabits(120),              // sentinel "high"; wire profile sends no cap
             audioOutput: audioOutput,
-            preferredSubtitleFormats: [.vtt, .srt]
+            preferredSubtitleFormats: PlaybackCapabilityMatrix.avKitSubtitleFormats
+                .sorted(by: { $0.rawValue < $1.rawValue })
         )
         cached = caps
         return caps

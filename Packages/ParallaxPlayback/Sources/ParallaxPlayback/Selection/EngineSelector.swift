@@ -17,15 +17,6 @@ import ParallaxCore
 /// covered by tests and consumed by the Phase 5 factory.
 public enum EngineSelector {
 
-    // MARK: — AVPlayer whitelist (Phase 4 only; Phase 5 does not shrink this)
-
-    private static let avKitContainers: Set<Container> = [.mp4, .mov, .hls]
-    private static let avKitVideoCodecs: Set<VideoCodec> = [.h264, .hevc]
-    private static let avKitAudioCodecs: Set<AudioCodec> = [.aac, .ac3, .eac3, .mp3]
-
-    // Subtitle formats that AVPlayer can render without VLC (in-manifest WebVTT or SRT sidecar).
-    private static let avKitSubtitleFormats: Set<SubtitleFormat> = [.vtt, .srt]
-
     // MARK: — Selection
 
     public static func select(hints: PlaybackHints) -> PlaybackEngineID {
@@ -36,23 +27,28 @@ public enum EngineSelector {
 
         // 2. Non-AVPlayer-renderable subtitle format present → VLC
         //    ASS/SSA require libass; PGS and VobSub are image-based bitmaps.
-        let hasNonAVKitSubtitle = hints.subtitleFormats.contains { !avKitSubtitleFormats.contains($0) }
+        let hasNonAVKitSubtitle = hints.subtitleFormats.contains {
+            !PlaybackCapabilityMatrix.avKitSubtitleFormats.contains($0)
+        }
         if hasNonAVKitSubtitle {
             return .vlcKit
         }
 
         // 3. Container known and not in the AVPlayer set → VLC
-        if let container = hints.container, !avKitContainers.contains(container) {
+        if let container = hints.container,
+           !PlaybackCapabilityMatrix.avKitContainers.contains(container) {
             return .vlcKit
         }
 
         // 4. Video codec known and not in the AVPlayer set → VLC
-        if let video = hints.videoCodec, !avKitVideoCodecs.contains(video) {
+        if let video = hints.videoCodec,
+           !PlaybackCapabilityMatrix.avKitVideoCodecs.contains(video) {
             return .vlcKit
         }
 
         // 5. Audio codec known and not in the AVPlayer set → VLC
-        if let audio = hints.audioCodec, !avKitAudioCodecs.contains(audio) {
+        if let audio = hints.audioCodec,
+           !PlaybackCapabilityMatrix.avKitAudioCodecs.contains(audio) {
             return .vlcKit
         }
 

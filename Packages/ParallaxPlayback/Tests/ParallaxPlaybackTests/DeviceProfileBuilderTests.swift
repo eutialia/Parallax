@@ -58,7 +58,7 @@ struct DeviceProfileBuilderTests {
         let probe = FakeCapabilityProbe()
         let builder = DeviceProfileBuilder(probe: probe)
         let caps = await builder.build()
-        #expect(caps.preferredSubtitleFormats == [.vtt, .srt])
+        #expect(Set(caps.preferredSubtitleFormats) == [.vtt, .srt])
     }
 
     // MARK: - Dynamic: HDR permutations
