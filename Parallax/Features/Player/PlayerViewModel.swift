@@ -33,6 +33,8 @@ final class PlayerViewModel {
     private(set) var availableSubtitleTracks: [SubtitleTrack] = []
     private(set) var selectedAudioTrack: AudioTrack? = nil
     private(set) var selectedSubtitleTrack: SubtitleTrack? = nil
+    private(set) var currentPosition: CMTime = .zero
+    private(set) var currentDuration: CMTime = .zero
 
     private let deviceProfileBuilder: DeviceProfileBuilder
     private let playbackInfo: any PlaybackReporting
@@ -147,6 +149,8 @@ final class PlayerViewModel {
         availableSubtitleTracks = []
         selectedAudioTrack = nil
         selectedSubtitleTrack = nil
+        currentPosition = .zero
+        currentDuration = .zero
     }
 
     func retry(item: ItemDetail) async {
@@ -190,17 +194,21 @@ final class PlayerViewModel {
             availableAudioTracks = tracks.audio
             availableSubtitleTracks = tracks.subtitles
             phase = .loading
-        case .playing(let position, _):
+        case .playing(let position, let duration):
             phase = .playing
             lastPosition = position
+            currentPosition = position
+            currentDuration = duration
             if !didReportStart {
                 didReportStart = true
                 await playbackInfo.reportStart(beat(position: position, isPaused: false, from: resolved))
             } else {
                 await playbackInfo.reportProgress(beat(position: position, isPaused: false, from: resolved))
             }
-        case .paused(let position, _):
+        case .paused(let position, let duration):
             lastPosition = position
+            currentPosition = position
+            currentDuration = duration
             await playbackInfo.reportProgress(beat(position: position, isPaused: true, from: resolved))
         case .ended:
             if !didReportStopped {
