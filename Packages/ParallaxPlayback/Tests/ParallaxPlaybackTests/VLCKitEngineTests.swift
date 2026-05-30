@@ -80,10 +80,6 @@ struct VLCKitEngineTests {
         }
     }
 
-    @Test("defaultExternalSubtitle prefers forced, else first, else nil")
-    func defaultExternalSubtitleSelection() {
-        #expect(VLCKitEngine.defaultExternalSubtitle(from: []) == nil)
-    }
 }
 
 @Suite("VLCKitEngine — track mapping")
@@ -111,5 +107,40 @@ struct VLCKitEngineTrackMappingTests {
         #expect(track.displayName == "French ASS")
         #expect(track.languageCode == "fr")
         #expect(track.isForced == false)
+    }
+}
+
+@Suite("VLCKitEngine — slave subtitle selection")
+@MainActor
+struct VLCKitEngineSlaveSubtitleTests {
+
+    @Test("defaultExternalSubtitle returns the forced subtitle when one is present")
+    func forcedSubtitleIsDefault() {
+        let srt = ExternalSubtitle(
+            url: URL(string: "https://jf.example.com/sub.srt")!,
+            format: .srt, languageCode: "en", isForced: false)
+        let forced = ExternalSubtitle(
+            url: URL(string: "https://jf.example.com/forced.srt")!,
+            format: .srt, languageCode: "en", isForced: true)
+        let result = VLCKitEngine.defaultExternalSubtitle(from: [srt, forced])
+        #expect(result?.url == forced.url)
+    }
+
+    @Test("defaultExternalSubtitle returns first subtitle when none is forced")
+    func firstSubtitleIsDefaultWhenNoneForced() {
+        let first = ExternalSubtitle(
+            url: URL(string: "https://jf.example.com/en.srt")!,
+            format: .srt, languageCode: "en", isForced: false)
+        let second = ExternalSubtitle(
+            url: URL(string: "https://jf.example.com/fr.srt")!,
+            format: .srt, languageCode: "fr", isForced: false)
+        let result = VLCKitEngine.defaultExternalSubtitle(from: [first, second])
+        #expect(result?.url == first.url)
+    }
+
+    @Test("defaultExternalSubtitle returns nil for empty array")
+    func emptyArrayReturnsNil() {
+        let result = VLCKitEngine.defaultExternalSubtitle(from: [])
+        #expect(result == nil)
     }
 }
