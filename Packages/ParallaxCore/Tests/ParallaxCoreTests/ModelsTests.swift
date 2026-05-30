@@ -170,4 +170,9 @@ struct MediaInfoTests {
         #expect(VideoCodec(identifier: "mpeg2video") == .mpeg2video)
         #expect(VideoCodec(identifier: "mpeg2") == .mpeg2video)
     }
+
+    @Test("Container.avi exists and rawValue is 'avi'")
+    func aviRawValue() {
+        #expect(Container.avi.rawValue == "avi")
+    }
 }

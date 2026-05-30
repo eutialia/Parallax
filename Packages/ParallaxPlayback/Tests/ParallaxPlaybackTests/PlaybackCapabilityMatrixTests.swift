@@ -150,4 +150,27 @@ struct PlaybackCapabilityMatrixTests {
             .subtracting(PlaybackCapabilityMatrix.avKitContainers)
         #expect(PlaybackCapabilityMatrix.softwareContainers == expected)
     }
+
+    // MARK: — 5d.1: VLC-only codecs + AVI container
+
+    @Test("vlcVideoCodecs includes vc1 and mpeg2video")
+    func vlcVideoCodecsIncludesVC1MPEG2() {
+        let vlc = PlaybackCapabilityMatrix.vlcVideoCodecs
+        #expect(vlc.contains(.vc1))
+        #expect(vlc.contains(.mpeg2video))
+    }
+
+    @Test("vlcContainers includes avi")
+    func vlcContainersIncludesAVI() {
+        #expect(PlaybackCapabilityMatrix.vlcContainers.contains(.avi))
+    }
+
+    @Test("softwareVideoCodecs covers vc1/mpeg2video but never h264/hevc")
+    func softwareVideoCodecsCoversVLCOnly() {
+        let sw = PlaybackCapabilityMatrix.softwareVideoCodecs
+        #expect(sw.contains(.vc1))
+        #expect(sw.contains(.mpeg2video))
+        #expect(!sw.contains(.h264))
+        #expect(!sw.contains(.hevc))
+    }
 }

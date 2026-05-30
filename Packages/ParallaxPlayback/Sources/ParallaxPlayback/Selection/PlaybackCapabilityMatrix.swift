@@ -44,7 +44,7 @@ public enum PlaybackCapabilityMatrix {
     /// enum case — add it when the enum is extended.
     public static let vlcContainers: Set<Container> = [
         .mp4, .mov, .hls,   // everything AVKit handles
-        .mkv, .webm, .ts, .flac, .mp3,
+        .mkv, .webm, .avi, .ts, .flac, .mp3,
     ]
 
     /// Video codecs libvlc / VideoToolbox can decode on iOS.
@@ -54,6 +54,7 @@ public enum PlaybackCapabilityMatrix {
     public static let vlcVideoCodecs: Set<VideoCodec> = [
         .h264, .hevc,   // VideoToolbox HW (same as AVKit)
         .vp9, .av1,     // VLC software-decodes
+        .vc1, .mpeg2video,  // VLC-only; AVKit cannot decode
     ]
 
     /// Audio codecs VLC decodes. Superset of the AVKit set.

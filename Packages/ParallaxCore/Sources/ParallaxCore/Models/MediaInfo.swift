@@ -9,6 +9,7 @@ public enum Container: String, Sendable, Hashable, Codable, CaseIterable {
     case hls
     case flac
     case mp3
+    case avi
 }
 
 public enum VideoCodec: String, Sendable, Hashable, Codable, CaseIterable {
