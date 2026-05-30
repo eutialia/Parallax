@@ -1,6 +1,7 @@
 import SwiftUI
 import ParallaxCore
 import ParallaxJellyfin
+import ParallaxPlayback
 
 struct PlayerView: View {
     let item: ItemDetail
@@ -17,12 +18,13 @@ struct PlayerView: View {
             if let vm = viewModel {
                 switch vm.phase {
                 case .idle, .loading:
-                    videoLayer(vm)
+                    videoHost(vm)
                     ProgressView()
                         .controlSize(.large)
                         .tint(.white)
                 case .playing:
-                    videoLayer(vm)
+                    videoHost(vm)
+                    PlayerControlsView(vm: vm) { dismiss() }
                 case .failed(let error):
                     errorOverlay(error, vm: vm)
                 }
@@ -30,6 +32,7 @@ struct PlayerView: View {
                 ProgressView().tint(.white)
             }
         }
+        .ignoresSafeArea()
         .task {
             if viewModel == nil {
                 let info = await deps.playbackInfoFactory(session)
@@ -53,13 +56,17 @@ struct PlayerView: View {
         }
     }
 
-    /// The AVPlayer surface, shown for every phase except `.failed`. Extracted
-    /// so the `.idle/.loading` and `.playing` branches share one definition.
+    /// The engine-specific video surface. Shown for every phase except `.failed`.
     @ViewBuilder
-    private func videoLayer(_ vm: PlayerViewModel) -> some View {
+    private func videoHost(_ vm: PlayerViewModel) -> some View {
         if let engine = vm.engine {
-            AVPlayerViewControllerHost(engine: engine)
-                .ignoresSafeArea()
+            switch engine.id {
+            case .avKit:
+                AVKitVideoLayerHost(engine: engine)
+                    .ignoresSafeArea()
+            case .vlcKit:
+                Color.black.ignoresSafeArea()   // VLCVideoHost added in 5c.6
+            }
         }
     }
 
