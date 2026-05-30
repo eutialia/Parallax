@@ -29,6 +29,10 @@ final class PlayerViewModel {
 
     private(set) var phase: Phase = .idle
     private(set) var engine: (any PlaybackEngine)?
+    private(set) var availableAudioTracks: [AudioTrack] = []
+    private(set) var availableSubtitleTracks: [SubtitleTrack] = []
+    private(set) var selectedAudioTrack: AudioTrack? = nil
+    private(set) var selectedSubtitleTrack: SubtitleTrack? = nil
 
     private let deviceProfileBuilder: DeviceProfileBuilder
     private let playbackInfo: any PlaybackReporting
@@ -139,6 +143,10 @@ final class PlayerViewModel {
         }
         await audioSession.deactivate()
         engine = nil
+        availableAudioTracks = []
+        availableSubtitleTracks = []
+        selectedAudioTrack = nil
+        selectedSubtitleTrack = nil
     }
 
     func retry(item: ItemDetail) async {
@@ -148,6 +156,18 @@ final class PlayerViewModel {
         didReportStopped = false
         lastPosition = .zero
         await start(item: item)
+    }
+
+    func selectAudioTrack(_ track: AudioTrack) async {
+        guard let engine else { return }
+        await engine.setAudioTrack(track)
+        selectedAudioTrack = track
+    }
+
+    func selectSubtitleTrack(_ track: SubtitleTrack?) async {
+        guard let engine else { return }
+        await engine.setSubtitleTrack(track)
+        selectedSubtitleTrack = track
     }
 
     // MARK: - Private
@@ -166,7 +186,9 @@ final class PlayerViewModel {
         switch state {
         case .idle, .loading:
             break
-        case .ready:
+        case .ready(_, let tracks):
+            availableAudioTracks = tracks.audio
+            availableSubtitleTracks = tracks.subtitles
             phase = .loading
         case .playing(let position, _):
             phase = .playing

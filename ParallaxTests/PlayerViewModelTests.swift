@@ -164,6 +164,71 @@ struct PlayerViewModelTests {
         #expect(engine.calls.contains("play"))
     }
 
+    @Test("availableAudio/SubtitleTracks start empty and populate on .ready")
+    func trackStatePopulatesOnReady() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let vm = makeVM(reporting: reporting, engine: engine, resolved: PlayerFixtures.resolved(), capturedItem: { _ in })
+        await vm.start(item: PlayerFixtures.movieDetail())
+
+        #expect(vm.availableAudioTracks.isEmpty)
+        #expect(vm.availableSubtitleTracks.isEmpty)
+        #expect(vm.selectedAudioTrack == nil)
+        #expect(vm.selectedSubtitleTrack == nil)
+
+        let inventory = TrackInventory(
+            audio: [
+                AudioTrack(id: "a1", displayName: "English", languageCode: "en"),
+                AudioTrack(id: "a2", displayName: "French", languageCode: "fr"),
+            ],
+            subtitles: [
+                SubtitleTrack(id: "s1", displayName: "English SDH", languageCode: "en", isForced: false),
+            ]
+        )
+        engine.push(.ready(duration: CMTime(seconds: 7200, preferredTimescale: 600), tracks: inventory))
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(vm.availableAudioTracks.count == 2)
+        #expect(vm.availableSubtitleTracks.count == 1)
+        #expect(vm.selectedAudioTrack == nil)
+        #expect(vm.selectedSubtitleTrack == nil)
+    }
+
+    @Test("selectAudioTrack forwards to the engine and updates selectedAudioTrack")
+    func audioTrackSelectionForwardsToEngine() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let vm = makeVM(reporting: reporting, engine: engine, resolved: PlayerFixtures.resolved(), capturedItem: { _ in })
+        await vm.start(item: PlayerFixtures.movieDetail())
+
+        let track = AudioTrack(id: "a1", displayName: "English", languageCode: "en")
+        engine.push(.ready(duration: CMTime(seconds: 7200, preferredTimescale: 600), tracks: TrackInventory(audio: [track], subtitles: [])))
+        try await Task.sleep(for: .milliseconds(50))
+
+        await vm.selectAudioTrack(track)
+        #expect(vm.selectedAudioTrack?.id == "a1")
+        #expect(engine.selectedAudioTrackID == "a1")
+    }
+
+    @Test("selectSubtitleTrack nil deselects and forwards nil to engine")
+    func subtitleTrackDeselect() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let vm = makeVM(reporting: reporting, engine: engine, resolved: PlayerFixtures.resolved(), capturedItem: { _ in })
+        await vm.start(item: PlayerFixtures.movieDetail())
+
+        let sub = SubtitleTrack(id: "s1", displayName: "English", languageCode: "en", isForced: false)
+        engine.push(.ready(duration: CMTime(seconds: 7200, preferredTimescale: 600), tracks: TrackInventory(audio: [], subtitles: [sub])))
+        try await Task.sleep(for: .milliseconds(50))
+
+        await vm.selectSubtitleTrack(sub)
+        #expect(vm.selectedSubtitleTrack?.id == "s1")
+
+        await vm.selectSubtitleTrack(nil)
+        #expect(vm.selectedSubtitleTrack == nil)
+        #expect(engine.selectedSubtitleTrackID == nil)
+    }
+
     @Test("natural end followed by dismissal reports stopped exactly once")
     func endThenDismissReportsStoppedOnce() async throws {
         let reporting = StubPlaybackReporting()
