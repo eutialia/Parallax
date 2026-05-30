@@ -154,4 +154,20 @@ struct MediaInfoTests {
         let decoded = try JSONDecoder().decode(HDRSupport.self, from: data)
         #expect(decoded == original)
     }
+
+    @Test("VideoCodec has vc1 and mpeg2video cases")
+    func videoCodecVLCOnlyCases() {
+        // Compile-time proof the cases exist.
+        let codecs: [VideoCodec] = [.vc1, .mpeg2video]
+        #expect(codecs.count == 2)
+        #expect(VideoCodec.vc1.rawValue == "vc1")
+        #expect(VideoCodec.mpeg2video.rawValue == "mpeg2video")
+    }
+
+    @Test("VideoCodec.init?(identifier:) parses vc1 and mpeg2video wire strings")
+    func videoCodecIdentifierVLC() {
+        #expect(VideoCodec(identifier: "vc1") == .vc1)
+        #expect(VideoCodec(identifier: "mpeg2video") == .mpeg2video)
+        #expect(VideoCodec(identifier: "mpeg2") == .mpeg2video)
+    }
 }

@@ -16,6 +16,8 @@ public enum VideoCodec: String, Sendable, Hashable, Codable, CaseIterable {
     case hevc
     case av1
     case vp9
+    case vc1          // VC-1 (Windows Media Video 9)
+    case mpeg2video   // MPEG-2 Video
 
     public init?(identifier: String) {
         let normalized = identifier.lowercased().replacingOccurrences(of: ".", with: "")
@@ -24,6 +26,8 @@ public enum VideoCodec: String, Sendable, Hashable, Codable, CaseIterable {
         case "hevc", "h265", "hvc1": self = .hevc
         case "av1": self = .av1
         case "vp9": self = .vp9
+        case "vc1": self = .vc1
+        case "mpeg2video", "mpeg2": self = .mpeg2video
         default: return nil
         }
     }
