@@ -29,14 +29,23 @@ public actor DeviceProfileBuilder {
         let hdr = await probe.hdrSupport()           // hops to @MainActor, then returns
         let audioOutput = probe.audioOutput()
         let caps = DeviceCapabilities(
-            supportedVideoCodecs: Array(PlaybackCapabilityMatrix.avKitVideoCodecs),
-            supportedAudioCodecs: Array(PlaybackCapabilityMatrix.avKitAudioCodecs),
-            supportedContainers: Array(PlaybackCapabilityMatrix.avKitContainers),
+            supportedVideoCodecs: PlaybackCapabilityMatrix.avKitVideoCodecs
+                .sorted(by: { $0.rawValue < $1.rawValue }),
+            supportedAudioCodecs: PlaybackCapabilityMatrix.avKitAudioCodecs
+                .sorted(by: { $0.rawValue < $1.rawValue }),
+            supportedContainers: PlaybackCapabilityMatrix.avKitContainers
+                .sorted(by: { $0.rawValue < $1.rawValue }),
             hdr: hdr,
             maxResolution: .uhd4K,
             maxBitrate: .megabits(120),              // sentinel "high"; wire profile sends no cap
             audioOutput: audioOutput,
             preferredSubtitleFormats: PlaybackCapabilityMatrix.avKitSubtitleFormats
+                .sorted(by: { $0.rawValue < $1.rawValue }),
+            softwareVideoCodecs: PlaybackCapabilityMatrix.softwareVideoCodecs
+                .sorted(by: { $0.rawValue < $1.rawValue }),
+            softwareAudioCodecs: PlaybackCapabilityMatrix.softwareAudioCodecs
+                .sorted(by: { $0.rawValue < $1.rawValue }),
+            softwareContainers: PlaybackCapabilityMatrix.softwareContainers
                 .sorted(by: { $0.rawValue < $1.rawValue })
         )
         cached = caps

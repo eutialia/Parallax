@@ -37,16 +37,3 @@ struct DeviceCapabilitiesTests {
         #expect(decoded == original)
     }
 }
-
-extension DeviceCapabilities {
-    static let stub = DeviceCapabilities(
-        supportedVideoCodecs: [.h264, .hevc],
-        supportedAudioCodecs: [.aac, .eac3, .ac3],
-        supportedContainers: [.mp4, .hls],
-        hdr: .hdr10,
-        maxResolution: .hd1080p,
-        maxBitrate: .megabits(20),
-        audioOutput: .stereo,
-        preferredSubtitleFormats: [.vtt]
-    )
-}

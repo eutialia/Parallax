@@ -61,6 +61,30 @@ struct DeviceProfileBuilderTests {
         #expect(Set(caps.preferredSubtitleFormats) == [.vtt, .srt])
     }
 
+    @Test("build() populates softwareVideoCodecs from the matrix")
+    func buildPopulatesSoftwareVideoCodecs() async {
+        let probe = FakeCapabilityProbe()
+        let builder = DeviceProfileBuilder(probe: probe)
+        let caps = await builder.build()
+        #expect(Set(caps.softwareVideoCodecs) == PlaybackCapabilityMatrix.softwareVideoCodecs)
+    }
+
+    @Test("build() populates softwareAudioCodecs from the matrix")
+    func buildPopulatesSoftwareAudioCodecs() async {
+        let probe = FakeCapabilityProbe()
+        let builder = DeviceProfileBuilder(probe: probe)
+        let caps = await builder.build()
+        #expect(Set(caps.softwareAudioCodecs) == PlaybackCapabilityMatrix.softwareAudioCodecs)
+    }
+
+    @Test("build() populates softwareContainers from the matrix")
+    func buildPopulatesSoftwareContainers() async {
+        let probe = FakeCapabilityProbe()
+        let builder = DeviceProfileBuilder(probe: probe)
+        let caps = await builder.build()
+        #expect(Set(caps.softwareContainers) == PlaybackCapabilityMatrix.softwareContainers)
+    }
+
     // MARK: - Dynamic: HDR permutations
 
     @Test("build() reflects .none when probe returns no HDR support")
