@@ -12,11 +12,18 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "../ParallaxCore"),
+        .package(
+            url: "https://github.com/virtualox/vlckit-spm",
+            exact: "4.0.0-alpha.19"
+        ),
     ],
     targets: [
         .target(
             name: "ParallaxPlayback",
-            dependencies: ["ParallaxCore"],
+            dependencies: [
+                "ParallaxCore",
+                .product(name: "VLCKitSPM", package: "vlckit-spm"),
+            ],
             swiftSettings: [
                 .swiftLanguageMode(.v6),
             ]
