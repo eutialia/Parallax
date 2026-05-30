@@ -99,6 +99,17 @@ enum PlayerFixtures {
         )
     }
 
+    /// A VLC direct-play MKV with VC-1 video (routes to .vlcKit).
+    static func resolvedVLCDirectPlayMKV() -> ResolvedPlayback {
+        ResolvedPlayback(
+            itemID: "movie-2",
+            url: URL(string: "https://jf.example.com/Videos/movie-2/stream.mkv?api_key=abc")!,
+            method: .directPlay, container: .mkv, videoCodec: .vc1, audioCodec: .aac,
+            mediaSourceID: "ms-2", playSessionID: "ps-2",
+            runtime: CMTime(seconds: 5400, preferredTimescale: 600), startTime: nil
+        )
+    }
+
     /// A VP9/WebM/Opus direct-play item — container and codec both outside the AVKit
     /// whitelist, so EngineSelector routes it to .vlcKit.
     static func resolvedVP9WebM() -> ResolvedPlayback {

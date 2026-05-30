@@ -84,14 +84,20 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         currentMedia = media
         player.media = media
 
-        let defaultSub = Self.defaultExternalSubtitle(from: asset.externalSubtitles)
-        for sub in asset.externalSubtitles {
-            let enforce = (sub.url == defaultSub?.url)
-            let result = player.addPlaybackSlave(sub.url, type: .subtitle, enforce: enforce)
-            if result != 0 {
-                Log.playback.warning(
-                    "VLC addPlaybackSlave failed for \(sub.url.lastPathComponent, privacy: .public), result=\(result, privacy: .public)"
-                )
+        // Resolve and attach external subtitles before playback begins.
+        // addPlaybackSlave must run before play() so VLC loads them with the media open.
+        let deliveries = SubtitleResolver.resolveAll(
+            subtitles: asset.externalSubtitles,
+            engine: .vlcKit
+        )
+        for delivery in deliveries {
+            if case .vlcSlave(let url, let enforce) = delivery {
+                let result = player.addPlaybackSlave(url, type: .subtitle, enforce: enforce)
+                if result != 0 {
+                    Log.playback.warning(
+                        "VLCKitEngine: addPlaybackSlave returned \(result, privacy: .public) for \(url.lastPathComponent, privacy: .public)"
+                    )
+                }
             }
         }
     }
@@ -203,12 +209,6 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         let position = vlcTimeToCMTime(ms: positionMs)
         let duration = durationMs > 0 ? CMTime(value: CMTimeValue(durationMs), timescale: 1000) : .zero
         return isPlaying ? .playing(position: position, duration: duration) : .paused(position: position, duration: duration)
-    }
-
-    public static func defaultExternalSubtitle(
-        from subtitles: [ExternalSubtitle]
-    ) -> ExternalSubtitle? {
-        subtitles.first(where: { $0.isForced }) ?? subtitles.first
     }
 
     public static func buildAudioTrack(id: String, name: String, language: String?) -> AudioTrack {

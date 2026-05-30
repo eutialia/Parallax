@@ -262,6 +262,27 @@ struct PlayerViewModelTests {
         #expect(vm.availableSubtitleTracks.count == 1)
     }
 
+    @Test("VC-1 MKV direct-play calls engineFactory with .vlcKit (5d routing contract)")
+    func vc1MKVRoutesToVLCKitFactory() async {
+        let reporting = StubPlaybackReporting()
+        let fakeEngine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        var capturedEngineID: PlaybackEngineID?
+        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
+        let builder = DeviceProfileBuilder(probe: probe)
+        let vm = PlayerViewModel(
+            deviceProfileBuilder: builder,
+            playbackInfo: reporting,
+            resolve: { _, _, _ in PlayerFixtures.resolvedVLCDirectPlayMKV() },
+            engineFactory: { id in capturedEngineID = id; return fakeEngine },
+            audioSession: NoopAudioSession()
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+        #expect(capturedEngineID == .vlcKit, "Expected engineFactory called with .vlcKit, got \(String(describing: capturedEngineID))")
+        #expect(fakeEngine.loadedAssets.first != nil)
+        #expect(fakeEngine.loadedAssets.first?.hints.container == .mkv)
+        #expect(fakeEngine.loadedAssets.first?.hints.videoCodec == .vc1)
+    }
+
     @Test("natural end followed by dismissal reports stopped exactly once")
     func endThenDismissReportsStoppedOnce() async throws {
         let reporting = StubPlaybackReporting()
