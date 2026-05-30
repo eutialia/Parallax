@@ -113,11 +113,21 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     }
 
     public func setAudioTrack(_ track: AudioTrack) async {
-        // Implemented in Task 5b.5
+        for t in player.audioTracks where t.trackId == track.id {
+            t.isSelectedExclusively = true
+            return
+        }
     }
 
     public func setSubtitleTrack(_ track: SubtitleTrack?) async {
-        // Implemented in Task 5b.5
+        guard let track else {
+            player.deselectAllTextTracks()
+            return
+        }
+        for t in player.textTracks where t.trackId == track.id {
+            t.isSelectedExclusively = true
+            return
+        }
     }
 
     /// Teardown order: nil delegate → stop → nil media → finish continuation.
@@ -157,7 +167,13 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     }
 
     private func buildTrackInventory() -> TrackInventory {
-        TrackInventory.empty
+        let audioTracks = player.audioTracks.map { t in
+            Self.buildAudioTrack(id: t.trackId, name: t.trackName, language: t.language)
+        }
+        let subtitleTracks = player.textTracks.map { t in
+            Self.buildSubtitleTrack(id: t.trackId, name: t.trackName, language: t.language)
+        }
+        return TrackInventory(audio: audioTracks, subtitles: subtitleTracks)
     }
 
     /// Idempotent one-time setter for VLC's events configuration. The first access

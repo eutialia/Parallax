@@ -85,3 +85,31 @@ struct VLCKitEngineTests {
         #expect(VLCKitEngine.defaultExternalSubtitle(from: []) == nil)
     }
 }
+
+@Suite("VLCKitEngine — track mapping")
+@MainActor
+struct VLCKitEngineTrackMappingTests {
+
+    @Test("buildAudioTrack maps trackId, trackName, language")
+    func audioTrackMapping() {
+        let track = VLCKitEngine.buildAudioTrack(id: "42", name: "English DTS", language: "en")
+        #expect(track.id == "42")
+        #expect(track.displayName == "English DTS")
+        #expect(track.languageCode == "en")
+    }
+
+    @Test("buildAudioTrack with nil language stores nil")
+    func audioTrackNilLanguage() {
+        let track = VLCKitEngine.buildAudioTrack(id: "7", name: "Unknown", language: nil)
+        #expect(track.languageCode == nil)
+    }
+
+    @Test("buildSubtitleTrack maps trackId, trackName, language, forced=false")
+    func subtitleTrackMapping() {
+        let track = VLCKitEngine.buildSubtitleTrack(id: "s1", name: "French ASS", language: "fr")
+        #expect(track.id == "s1")
+        #expect(track.displayName == "French ASS")
+        #expect(track.languageCode == "fr")
+        #expect(track.isForced == false)
+    }
+}
