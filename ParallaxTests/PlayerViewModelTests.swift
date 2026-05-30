@@ -229,6 +229,39 @@ struct PlayerViewModelTests {
         #expect(engine.selectedSubtitleTrackID == nil)
     }
 
+    @Test("VP9/WebM direct-play routes to .vlcKit engine and loads the asset")
+    func vp9WebMSelectsVLC() async {
+        let reporting = StubPlaybackReporting()
+        let vlcEngine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let vm = makeVM(reporting: reporting, engine: vlcEngine, resolved: PlayerFixtures.resolvedVP9WebM(), capturedItem: { _ in })
+        await vm.start(item: PlayerFixtures.movieDetail())
+
+        #expect(vlcEngine.loadedAssets.first != nil)
+        #expect(vlcEngine.loadedAssets.first?.hints.container == .webm)
+        #expect(vlcEngine.loadedAssets.first?.hints.videoCodec == .vp9)
+        #expect(vlcEngine.calls.contains("play"))
+        #expect(vm.phase != .failed(.playback(.unsupportedFormat)))
+    }
+
+    @Test(".vlcKit engine tracks populate on .ready state")
+    func vlcEngineTrackStatePopulates() async throws {
+        let reporting = StubPlaybackReporting()
+        let vlcEngine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let vm = makeVM(reporting: reporting, engine: vlcEngine, resolved: PlayerFixtures.resolvedVP9WebM(), capturedItem: { _ in })
+        await vm.start(item: PlayerFixtures.movieDetail())
+
+        let inventory = TrackInventory(
+            audio: [AudioTrack(id: "vlc-a1", displayName: "Deutsch", languageCode: "de")],
+            subtitles: [SubtitleTrack(id: "vlc-s1", displayName: "ASS Sub", languageCode: "en", isForced: false)]
+        )
+        vlcEngine.push(.ready(duration: CMTime(seconds: 3600, preferredTimescale: 600), tracks: inventory))
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(vm.availableAudioTracks.count == 1)
+        #expect(vm.availableAudioTracks[0].id == "vlc-a1")
+        #expect(vm.availableSubtitleTracks.count == 1)
+    }
+
     @Test("natural end followed by dismissal reports stopped exactly once")
     func endThenDismissReportsStoppedOnce() async throws {
         let reporting = StubPlaybackReporting()

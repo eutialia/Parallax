@@ -98,4 +98,21 @@ enum PlayerFixtures {
             startTime: nil
         )
     }
+
+    /// A VP9/WebM/Opus direct-play item — container and codec both outside the AVKit
+    /// whitelist, so EngineSelector routes it to .vlcKit.
+    static func resolvedVP9WebM() -> ResolvedPlayback {
+        ResolvedPlayback(
+            itemID: "movie-2",
+            url: URL(string: "https://jf.example.com/Videos/movie-2/stream.webm?api_key=abc")!,
+            method: .directPlay,
+            container: .webm,
+            videoCodec: .vp9,
+            audioCodec: .opus,
+            mediaSourceID: "ms-2",
+            playSessionID: "ps-2",
+            runtime: CMTime(seconds: 3600, preferredTimescale: 600),
+            startTime: nil
+        )
+    }
 }
