@@ -165,9 +165,38 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     }
 
     private func trackInventory(of item: AVPlayerItem) -> TrackInventory {
-        // The AVPlayerViewController system picker drives selection in Phase 4;
-        // an empty inventory is a faithful "host UI owns track selection" signal.
-        TrackInventory.empty
+        var audio: [AudioTrack] = []
+        var subtitles: [SubtitleTrack] = []
+
+        guard let asset = item.asset as? AVURLAsset else {
+            return TrackInventory.empty
+        }
+
+        if let audibleGroup = asset.mediaSelectionGroup(forMediaCharacteristic: .audible) {
+            for option in audibleGroup.options {
+                let langCode = option.locale?.language.languageCode?.identifier
+                audio.append(AudioTrack(
+                    id: option.displayName,
+                    displayName: option.displayName,
+                    languageCode: langCode
+                ))
+            }
+        }
+
+        if let legibleGroup = asset.mediaSelectionGroup(forMediaCharacteristic: .legible) {
+            for option in legibleGroup.options
+                where !option.hasMediaCharacteristic(.containsOnlyForcedSubtitles) {
+                let langCode = option.locale?.language.languageCode?.identifier
+                subtitles.append(SubtitleTrack(
+                    id: option.displayName,
+                    displayName: option.displayName,
+                    languageCode: langCode,
+                    isForced: false
+                ))
+            }
+        }
+
+        return TrackInventory(audio: audio, subtitles: subtitles)
     }
 
     private func legibleGroup() async -> AVMediaSelectionGroup? {
