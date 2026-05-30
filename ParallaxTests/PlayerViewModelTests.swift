@@ -140,6 +140,30 @@ struct PlayerViewModelTests {
         #expect(events.contains(.stopped(ticks: 30 * 10_000_000, itemID: "movie-1")))
     }
 
+    @Test("VC-1 MKV direct-play routes to .vlcKit — no unsupportedFormat error")
+    func vc1MKVDirectPlaySelectsVLCKit() async {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+
+        let vm = makeVM(
+            reporting: reporting,
+            engine: engine,
+            resolved: PlayerFixtures.resolvedVC1MKV(),
+            capturedItem: { _ in }
+        )
+
+        await vm.start(item: PlayerFixtures.movieDetail())
+
+        // The guard is gone; .vlcKit is now a valid path. The factory closure
+        // { _ in engine } returns the fake regardless of id — the point is that
+        // start() does NOT short-circuit with unsupportedFormat.
+        #expect(vm.phase != .failed(.playback(.unsupportedFormat)))
+        #expect(engine.loadedAssets.first != nil)
+        #expect(engine.loadedAssets.first?.hints.container == .mkv)
+        #expect(engine.loadedAssets.first?.hints.videoCodec == .vc1)
+        #expect(engine.calls.contains("play"))
+    }
+
     @Test("natural end followed by dismissal reports stopped exactly once")
     func endThenDismissReportsStoppedOnce() async throws {
         let reporting = StubPlaybackReporting()

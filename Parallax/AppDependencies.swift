@@ -80,17 +80,13 @@ final class AppDependencies {
             await playbackStore.service(for: session)
         }
 
+        // VLC events are configured lazily by VLCKitEngine.init() (idempotent static-once).
         let engineFactory: @MainActor @Sendable (PlaybackEngineID) -> any PlaybackEngine = { id in
             switch id {
             case .avKit:
                 return AVKitEngine()
             case .vlcKit:
-                // No VLCKit until Phase 5. PlayerViewModel guards on the
-                // selected id before reaching the factory and surfaces
-                // .unsupportedFormat, so this fallback is never instantiated
-                // for a real .vlcKit selection — it only satisfies the
-                // non-optional return type without a crash.
-                return AVKitEngine()
+                return VLCKitEngine()
             }
         }
 

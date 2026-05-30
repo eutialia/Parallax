@@ -81,4 +81,21 @@ enum PlayerFixtures {
             startTime: nil
         )
     }
+
+    /// VC-1 MKV direct-play — routes to .vlcKit because .vc1 is not in
+    /// EngineSelector's avKitVideoCodecs set.
+    static func resolvedVC1MKV() -> ResolvedPlayback {
+        ResolvedPlayback(
+            itemID: "movie-2",
+            url: URL(string: "https://jf.example.com/Videos/movie-2/stream.mkv?api_key=abc")!,
+            method: .directPlay,
+            container: .mkv,
+            videoCodec: .vc1,
+            audioCodec: .dts,
+            mediaSourceID: "ms-2",
+            playSessionID: "ps-2",
+            runtime: CMTime(seconds: 5400, preferredTimescale: 600),
+            startTime: nil
+        )
+    }
 }

@@ -106,13 +106,6 @@ final class PlayerViewModel {
 
             let asset = Self.makeAsset(from: resolved)
             let id = EngineSelector.select(hints: asset.hints)
-            guard id == .avKit else {
-                // .vlcKit is not shippable until Phase 5 — surface before the
-                // engine factory is reached.
-                phase = .failed(.playback(.unsupportedFormat))
-                await audioSession.deactivate()
-                return
-            }
 
             let engine = engineFactory(id)
             self.engine = engine
