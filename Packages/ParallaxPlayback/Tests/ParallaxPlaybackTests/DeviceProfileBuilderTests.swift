@@ -86,6 +86,42 @@ struct DeviceProfileBuilderTests {
         #expect(Set(caps.softwareContainers) == PlaybackCapabilityMatrix.softwareContainers)
     }
 
+    // MARK: - Software tier: VLC-only membership (5d.1 expansion)
+
+    @Test("build() softwareVideoCodecs cover the VLC-only codecs and exclude h264/hevc")
+    func buildSoftwareVideoCodecsCoverVLCOnly() async {
+        let builder = DeviceProfileBuilder(probe: FakeCapabilityProbe())
+        let caps = await builder.build()
+        let sw = Set(caps.softwareVideoCodecs)
+        #expect(sw.contains(.vc1))
+        #expect(sw.contains(.mpeg2video))
+        #expect(sw.contains(.vp9))
+        #expect(sw.contains(.av1))
+        #expect(!sw.contains(.h264))
+        #expect(!sw.contains(.hevc))
+    }
+
+    @Test("build() softwareAudioCodecs cover DTS/TrueHD/FLAC/Opus")
+    func buildSoftwareAudioCodecsCoverVLCOnly() async {
+        let builder = DeviceProfileBuilder(probe: FakeCapabilityProbe())
+        let caps = await builder.build()
+        let sw = Set(caps.softwareAudioCodecs)
+        #expect(sw.contains(.dts))
+        #expect(sw.contains(.trueHD))
+        #expect(sw.contains(.flac))
+        #expect(sw.contains(.opus))
+    }
+
+    @Test("build() softwareContainers cover mkv/webm/avi")
+    func buildSoftwareContainersCoverVLCOnly() async {
+        let builder = DeviceProfileBuilder(probe: FakeCapabilityProbe())
+        let caps = await builder.build()
+        let sw = Set(caps.softwareContainers)
+        #expect(sw.contains(.mkv))
+        #expect(sw.contains(.webm))
+        #expect(sw.contains(.avi))
+    }
+
     // MARK: - Dynamic: HDR permutations
 
     @Test("build() reflects .none when probe returns no HDR support")
