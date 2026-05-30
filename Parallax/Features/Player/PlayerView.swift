@@ -65,7 +65,8 @@ struct PlayerView: View {
                 AVKitVideoLayerHost(engine: engine)
                     .ignoresSafeArea()
             case .vlcKit:
-                Color.black.ignoresSafeArea()   // VLCVideoHost added in 5c.6
+                VLCVideoHost(engine: engine)
+                    .ignoresSafeArea()
             }
         }
     }
