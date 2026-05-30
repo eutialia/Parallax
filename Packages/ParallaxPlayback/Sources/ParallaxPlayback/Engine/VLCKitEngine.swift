@@ -60,6 +60,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     // MARK: - Init
 
     public override init() {
+        _ = Self._eventsConfigured   // guarantee main-queue delegate delivery before the player exists
         let (stream, cont) = AsyncStream<PlaybackState>.makeStream()
         self.state = stream
         self.continuation = cont
@@ -159,9 +160,20 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         TrackInventory.empty
     }
 
-    /// Call once at process start, before any `VLCMediaPlayer` is created.
-    public static func configureVLCEvents() {
+    /// Idempotent one-time setter for VLC's events configuration. The first access
+    /// runs the closure exactly once (Swift `static let` semantics); later accesses
+    /// are no-ops. Routing all configuration through this guarantees the legacy
+    /// events config (main-queue delegate delivery) is installed before any
+    /// `VLCMediaPlayer` is created — which the `assumeIsolated` delegate hops require.
+    private static let _eventsConfigured: Void = {
         VLCLibrary.sharedEventsConfiguration = VLCEventsLegacyConfiguration()
+    }()
+
+    /// Ensures VLC delivers delegate callbacks on the main queue. Idempotent and
+    /// safe to call multiple times; `init()` invokes it automatically, so an
+    /// explicit app-launch call is optional belt-and-suspenders.
+    public static func configureVLCEvents() {
+        _ = _eventsConfigured
     }
 
     // MARK: - Pure static helpers (testable without a live VLC decode)
@@ -195,5 +207,75 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
 // MARK: - VLCMediaPlayerDelegate
 
 extension VLCKitEngine: VLCMediaPlayerDelegate {
-    // Delegate methods implemented in Task 5b.4
+
+    // MARK: — State changes
+
+    /// VLC 4.x delivers state directly as `VLCMediaPlayerState` (NOT a Notification).
+    /// In 4.x the legacy events config routes this callback to the main queue.
+    /// Swift cannot prove that, so we assert isolation via `assumeIsolated`.
+    public nonisolated func mediaPlayerStateChanged(_ newState: VLCMediaPlayerState) {
+        MainActor.assumeIsolated {
+            handleStateChanged(newState)
+        }
+    }
+
+    // MARK: — Time changes (periodic)
+
+    public nonisolated func mediaPlayerTimeChanged(_ aNotification: NSNotification) {
+        MainActor.assumeIsolated {
+            handleTimeChanged()
+        }
+    }
+
+    // MARK: — Duration / track availability
+
+    /// Delivered as Int64 ms directly (not a Notification). Used to emit
+    /// `.ready` once duration is known.
+    public nonisolated func mediaPlayerLengthChanged(_ length: Int64) {
+        MainActor.assumeIsolated {
+            handleLengthChanged(length)
+        }
+    }
+
+    // MARK: — Private (MainActor, called via assumeIsolated)
+
+    private func handleStateChanged(_ state: VLCMediaPlayerState) {
+        switch state {
+        case .opening, .buffering:
+            continuation.yield(.loading)
+        case .playing:
+            handleTimeChanged()
+        case .paused:
+            emitPausedIfReady()
+        case .stopped, .stopping:
+            // Emit .ended only when there is a current media (natural end-of-stream).
+            // During teardown the delegate is nilled BEFORE player.stop(), so this
+            // branch is never reached from teardown — no spurious .ended beat.
+            if currentMedia != nil {
+                continuation.yield(.ended)
+            }
+        case .error:
+            continuation.yield(.failed(.assetNotPlayable))
+        @unknown default:
+            break
+        }
+    }
+
+    private func handleTimeChanged() {
+        guard let media = currentMedia else { return }
+        let posMs = player.time.intValue       // Int32
+        let durMs = media.length.intValue      // Int32
+        // durMs is 0 until mediaPlayerLengthChanged fires, so this also prevents a .playing beat landing before .ready.
+        guard durMs > 0 else { return }
+        // Re-read player.state rather than trusting the delivered event, so a near-simultaneous pause surfaces correctly.
+        let isPlaying = player.state == .playing
+        continuation.yield(Self.positionState(isPlaying: isPlaying, positionMs: posMs, durationMs: durMs))
+    }
+
+    private func handleLengthChanged(_ lengthMs: Int64) {
+        guard lengthMs > 0 else { return }
+        let inventory = buildTrackInventory()
+        let duration = CMTime(value: CMTimeValue(lengthMs), timescale: 1000)
+        continuation.yield(.ready(duration: duration, tracks: inventory))
+    }
 }
