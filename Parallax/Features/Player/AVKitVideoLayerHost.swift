@@ -9,7 +9,7 @@ import ParallaxPlayback
 /// App target (UIKit/AVKit allowed here).
 struct AVKitVideoLayerHost: UIViewRepresentable {
     let engine: any PlaybackEngine
-    var onPiPReady: (@MainActor (@MainActor () -> Void, @MainActor () -> Void) -> Void)?
+    var onPiPReady: (@MainActor (@escaping @MainActor () -> Void, @escaping @MainActor () -> Void) -> Void)?
 
     func makeUIView(context: Context) -> PlayerLayerView {
         let view = PlayerLayerView()

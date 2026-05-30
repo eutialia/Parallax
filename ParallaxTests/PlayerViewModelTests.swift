@@ -298,6 +298,17 @@ struct PlayerViewModelTests {
         #expect(vm.isPiPAvailable == true)
     }
 
+    @Test("startPiP/stopPiP are safe no-ops; isPiPAvailable true when engine supports PiP")
+    func pipActionsAreSafeWhenSupported() async {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)  // supportsPiP == true
+        let vm = makeVM(reporting: reporting, engine: engine, resolved: PlayerFixtures.resolved(), capturedItem: { _ in })
+        await vm.start(item: PlayerFixtures.movieDetailNamed("Fixture Movie"))
+        #expect(vm.isPiPAvailable == true)
+        vm.startPiP()   // no action mounted in tests → safe no-op
+        vm.stopPiP()
+    }
+
     @Test("isVideoAirPlayAvailable mirrors engine.capabilities.supportsVideoAirPlay")
     func airPlayAvailabilityMirrorsCapabilities() async {
         let reporting = StubPlaybackReporting()

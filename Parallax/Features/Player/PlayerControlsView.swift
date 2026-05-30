@@ -150,6 +150,18 @@ struct PlayerControlsView: View {
                     .frame(width: 44, height: 44)
             }
 
+            if vm.isPiPAvailable {
+                Button {
+                    resetHideTimer()
+                    vm.startPiP()
+                } label: {
+                    Image(systemName: "pip.enter")
+                        .foregroundStyle(.white)
+                        .padding(10)
+                        .background(.ultraThinMaterial, in: Circle())
+                }
+            }
+
             if !vm.availableAudioTracks.isEmpty {
                 Menu {
                     ForEach(vm.availableAudioTracks, id: \.id) { track in

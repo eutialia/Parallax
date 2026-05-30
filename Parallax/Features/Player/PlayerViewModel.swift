@@ -32,6 +32,14 @@ final class PlayerViewModel {
     private(set) var engine: (any PlaybackEngine)?
     var isPiPAvailable: Bool { engine?.capabilities.supportsPiP ?? false }
     var isVideoAirPlayAvailable: Bool { engine?.capabilities.supportsVideoAirPlay ?? false }
+
+    /// PiP start/stop actions, pushed up from the video host once its
+    /// PiP controller is ready (AVKit: `onPiPReady`; VLC: `VLCPictureInPictureDrawable`).
+    /// Nil until a host mounts — so `startPiP()`/`stopPiP()` are safe no-ops in tests.
+    var startPiPAction: (@MainActor () -> Void)?
+    var stopPiPAction: (@MainActor () -> Void)?
+    func startPiP() { startPiPAction?() }
+    func stopPiP() { stopPiPAction?() }
     private(set) var availableAudioTracks: [AudioTrack] = []
     private(set) var availableSubtitleTracks: [SubtitleTrack] = []
     private(set) var selectedAudioTrack: AudioTrack? = nil

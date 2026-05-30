@@ -62,11 +62,17 @@ struct PlayerView: View {
         if let engine = vm.engine {
             switch engine.id {
             case .avKit:
-                AVKitVideoLayerHost(engine: engine)
-                    .ignoresSafeArea()
+                AVKitVideoLayerHost(engine: engine, onPiPReady: { start, stop in
+                    vm.startPiPAction = start
+                    vm.stopPiPAction = stop
+                })
+                .ignoresSafeArea()
             case .vlcKit:
-                VLCVideoHost(engine: engine)
-                    .ignoresSafeArea()
+                VLCVideoHost(engine: engine, onPiPReady: { start, stop in
+                    vm.startPiPAction = start
+                    vm.stopPiPAction = stop
+                })
+                .ignoresSafeArea()
             }
         }
     }
