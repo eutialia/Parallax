@@ -123,7 +123,17 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
                 pendingStartTime = nil
                 Task { await seek(to: start) }
             }
-            continuation.yield(.ready(duration: item.duration, tracks: trackInventory(of: item)))
+            // Media-selection groups load asynchronously: the synchronous
+            // `mediaSelectionGroup(forMediaCharacteristic:)` accessor is
+            // deprecated and returns nil/incomplete data before the property
+            // loads — which dropped the subtitle list on device. Resolve the
+            // inventory on the actor, then emit .ready; duration is ready now.
+            let duration = item.duration
+            Task { [weak self] in
+                guard let self else { return }
+                let tracks = await self.loadTrackInventory(of: item)
+                self.continuation.yield(.ready(duration: duration, tracks: tracks))
+            }
         case .failed:
             // The item never became playable. Capture the concrete failure so a
             // device/sim trace can tell a genuine codec problem apart from a URL
@@ -164,39 +174,93 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         }
     }
 
-    private func trackInventory(of item: AVPlayerItem) -> TrackInventory {
-        var audio: [AudioTrack] = []
-        var subtitles: [SubtitleTrack] = []
+    private func loadTrackInventory(of item: AVPlayerItem) async -> TrackInventory {
+        guard let asset = item.asset as? AVURLAsset else { return .empty }
 
-        guard let asset = item.asset as? AVURLAsset else {
-            return TrackInventory.empty
-        }
+        let audibleGroup = try? await asset.loadMediaSelectionGroup(for: .audible)
+        let legibleGroup = try? await asset.loadMediaSelectionGroup(for: .legible)
 
-        if let audibleGroup = asset.mediaSelectionGroup(forMediaCharacteristic: .audible) {
-            for option in audibleGroup.options {
-                let langCode = option.locale?.language.languageCode?.identifier
-                audio.append(AudioTrack(
-                    id: option.displayName,
-                    displayName: option.displayName,
-                    languageCode: langCode
-                ))
-            }
-        }
-
-        if let legibleGroup = asset.mediaSelectionGroup(forMediaCharacteristic: .legible) {
-            for option in legibleGroup.options
-                where !option.hasMediaCharacteristic(.containsOnlyForcedSubtitles) {
-                let langCode = option.locale?.language.languageCode?.identifier
-                subtitles.append(SubtitleTrack(
-                    id: option.displayName,
-                    displayName: option.displayName,
-                    languageCode: langCode,
-                    isForced: false
-                ))
-            }
-        }
-
+        let audio = Self.audioTracks(from: audibleGroup)
+        let subtitles = Self.subtitleTracks(from: legibleGroup)
+        logTrackDiagnostics(audible: audibleGroup, legible: legibleGroup, audio: audio, subtitles: subtitles)
         return TrackInventory(audio: audio, subtitles: subtitles)
+    }
+
+    /// `id` is the option's index within its *full* selection group (not the
+    /// filtered display list), so `select(trackID:)` can index straight back in
+    /// even though forced-only subtitles are hidden from the menu. displayName
+    /// is resolved against `AVKitTrackNaming` so a manifest with no NAME/LANGUAGE
+    /// never surfaces a bare "Unknown".
+    private static func audioTracks(from group: AVMediaSelectionGroup?) -> [AudioTrack] {
+        guard let group else { return [] }
+        var result: [AudioTrack] = []
+        var ordinal = 0
+        for (index, option) in group.options.enumerated() {
+            ordinal += 1
+            let lang = language(of: option)
+            result.append(AudioTrack(
+                id: String(index),
+                displayName: AVKitTrackNaming.resolvedName(
+                    displayName: option.displayName, languageCode: lang, kind: .audio, ordinal: ordinal
+                ),
+                languageCode: lang
+            ))
+        }
+        return result
+    }
+
+    private static func subtitleTracks(from group: AVMediaSelectionGroup?) -> [SubtitleTrack] {
+        guard let group else { return [] }
+        var result: [SubtitleTrack] = []
+        var ordinal = 0
+        for (index, option) in group.options.enumerated()
+            where !option.hasMediaCharacteristic(.containsOnlyForcedSubtitles) {
+            ordinal += 1
+            let lang = language(of: option)
+            result.append(SubtitleTrack(
+                id: String(index),
+                displayName: AVKitTrackNaming.resolvedName(
+                    displayName: option.displayName, languageCode: lang, kind: .subtitle, ordinal: ordinal
+                ),
+                languageCode: lang,
+                isForced: false
+            ))
+        }
+        return result
+    }
+
+    private static func language(of option: AVMediaSelectionOption) -> String? {
+        option.extendedLanguageTag ?? option.locale?.language.languageCode?.identifier
+    }
+
+    /// Dumps the raw media-selection options so a device run reveals exactly
+    /// what AVFoundation exposed for this stream (counts, names, language tags,
+    /// forced flags) — the ground truth behind "audio shows unknown / subtitle
+    /// missing" reports. Names here are not sensitive (e.g. "Unknown"/"English").
+    private func logTrackDiagnostics(
+        audible: AVMediaSelectionGroup?,
+        legible: AVMediaSelectionGroup?,
+        audio: [AudioTrack],
+        subtitles: [SubtitleTrack]
+    ) {
+        func describe(_ group: AVMediaSelectionGroup?) -> String {
+            guard let group else { return "nil" }
+            if group.options.isEmpty { return "empty" }
+            return group.options.enumerated().map { index, opt in
+                let lang = opt.extendedLanguageTag ?? "—"
+                let forced = opt.hasMediaCharacteristic(.containsOnlyForcedSubtitles) ? " forced" : ""
+                return "[\(index) '\(opt.displayName)' lang=\(lang) type=\(opt.mediaType.rawValue)\(forced)]"
+            }.joined(separator: " ")
+        }
+        Log.playback.info(
+            """
+            AVKit tracks: audible=\(audible?.options.count ?? -1, privacy: .public) \
+            legible=\(legible?.options.count ?? -1, privacy: .public) \
+            → audio=\(audio.count, privacy: .public) subs=\(subtitles.count, privacy: .public) | \
+            audible: \(describe(audible), privacy: .public) | \
+            legible: \(describe(legible), privacy: .public)
+            """
+        )
     }
 
     private func legibleGroup() async -> AVMediaSelectionGroup? {
@@ -207,10 +271,10 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     private func select(trackID: String, characteristic: AVMediaCharacteristic) async {
         guard
             let asset = currentItem?.asset as? AVURLAsset,
-            let group = try? await asset.loadMediaSelectionGroup(for: characteristic)
+            let group = try? await asset.loadMediaSelectionGroup(for: characteristic),
+            let index = Int(trackID),
+            group.options.indices.contains(index)
         else { return }
-        if let option = group.options.first(where: { $0.displayName == trackID }) {
-            currentItem?.select(option, in: group)
-        }
+        currentItem?.select(group.options[index], in: group)
     }
 }

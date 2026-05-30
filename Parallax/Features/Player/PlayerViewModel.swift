@@ -212,9 +212,12 @@ final class PlayerViewModel {
         case .idle, .loading:
             break
         case .ready(_, let tracks):
+            // Track inventory now resolves asynchronously (AVKit loads media
+            // selection groups off the actor), so .ready can land *after*
+            // .playing. Only publish the tracks — never regress phase back to
+            // .loading, or the spinner would reappear over a playing video.
             availableAudioTracks = tracks.audio
             availableSubtitleTracks = tracks.subtitles
-            phase = .loading
         case .playing(let position, let duration):
             phase = .playing
             lastPosition = position
