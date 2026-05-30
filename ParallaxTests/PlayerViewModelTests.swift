@@ -289,6 +289,24 @@ struct PlayerViewModelTests {
         #expect(fakeEngine.loadedAssets.first?.hints.videoCodec == .vc1)
     }
 
+    @Test("isPiPAvailable mirrors engine.capabilities.supportsPiP")
+    func pipAvailabilityMirrorsCapabilities() async {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)  // supportsPiP == true
+        let vm = makeVM(reporting: reporting, engine: engine, resolved: PlayerFixtures.resolved(), capturedItem: { _ in })
+        await vm.start(item: PlayerFixtures.movieDetailNamed("Fixture Movie"))
+        #expect(vm.isPiPAvailable == true)
+    }
+
+    @Test("isVideoAirPlayAvailable mirrors engine.capabilities.supportsVideoAirPlay")
+    func airPlayAvailabilityMirrorsCapabilities() async {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)  // supportsVideoAirPlay == true
+        let vm = makeVM(reporting: reporting, engine: engine, resolved: PlayerFixtures.resolved(), capturedItem: { _ in })
+        await vm.start(item: PlayerFixtures.movieDetailNamed("Fixture Movie"))
+        #expect(vm.isVideoAirPlayAvailable == true)
+    }
+
     @Test("natural end followed by dismissal reports stopped exactly once")
     func endThenDismissReportsStoppedOnce() async throws {
         let reporting = StubPlaybackReporting()

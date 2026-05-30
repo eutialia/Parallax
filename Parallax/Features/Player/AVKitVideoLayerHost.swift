@@ -3,68 +3,57 @@ import UIKit
 import AVKit
 import ParallaxPlayback
 
-/// Hosts an `AVPlayerLayer`-backed `UIView` for the unified player surface.
-/// Wires an `AVPictureInPictureController` for PiP.
-///
-/// Lives in the app target because `AVPlayerLayer`, `AVPictureInPictureController`,
-/// and `UIView` are UIKit/AVKit types banned from `Packages/`.
+/// Hosts the AVPlayer's video via a layer-backed AVPlayerLayer view and owns an
+/// AVPictureInPictureController so PiP works when the engine supports it.
+/// `onPiPReady` lets PlayerView/5e.4 push start/stop PiP actions back to the VM.
+/// App target (UIKit/AVKit allowed here).
 struct AVKitVideoLayerHost: UIViewRepresentable {
     let engine: any PlaybackEngine
+    var onPiPReady: (@MainActor (@MainActor () -> Void, @MainActor () -> Void) -> Void)?
 
-    // MARK: - Coordinator
-
-    final class Coordinator: NSObject, AVPictureInPictureControllerDelegate {
-        private(set) var pipController: AVPictureInPictureController?
-
-        func setup(playerLayer: AVPlayerLayer) {
-            guard AVPictureInPictureController.isPictureInPictureSupported() else { return }
-            guard let pip = AVPictureInPictureController(playerLayer: playerLayer) else { return }
-            pip.canStartPictureInPictureAutomaticallyFromInline = true
-            pip.delegate = self
-            pipController = pip
-        }
-
-        func pictureInPictureControllerWillStartPictureInPicture(
-            _ pictureInPictureController: AVPictureInPictureController
-        ) {}
-
-        func pictureInPictureControllerDidStopPictureInPicture(
-            _ pictureInPictureController: AVPictureInPictureController
-        ) {}
-    }
-
-    // MARK: - UIViewRepresentable
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator()
-    }
-
-    func makeUIView(context: Context) -> UIView {
-        let view = UIView()
+    func makeUIView(context: Context) -> PlayerLayerView {
+        let view = PlayerLayerView()
         view.backgroundColor = .black
-        view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-
         if let hosting = engine as? AVPlayerHosting {
-            let layer = AVPlayerLayer(player: hosting.avPlayer)
-            layer.videoGravity = .resizeAspect
-            layer.frame = view.bounds
-            view.layer.addSublayer(layer)
-            context.coordinator.setup(playerLayer: layer)
+            view.playerLayer.player = hosting.avPlayer
         }
-
+        view.playerLayer.videoGravity = .resizeAspect
+        context.coordinator.attach(to: view)
+        if let onPiPReady {
+            let coordinator = context.coordinator
+            onPiPReady({ coordinator.startPiP() }, { coordinator.stopPiP() })
+        }
         return view
     }
 
-    func updateUIView(_ uiView: UIView, context: Context) {
-        // Sync the player layer frame to the current view bounds. Wrap in a
-        // CATransaction with actions disabled so the layer frame change does NOT
-        // animate (the default implicit CALayer animation would visibly slide/
-        // resize the video on rotation or layout changes).
-        if let playerLayer = uiView.layer.sublayers?.first(where: { $0 is AVPlayerLayer }) as? AVPlayerLayer {
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            playerLayer.frame = uiView.bounds
-            CATransaction.commit()
+    func updateUIView(_ uiView: PlayerLayerView, context: Context) {
+        if let hosting = engine as? AVPlayerHosting,
+           uiView.playerLayer.player !== hosting.avPlayer {
+            uiView.playerLayer.player = hosting.avPlayer
         }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    /// A UIView whose backing layer IS an AVPlayerLayer (auto-sizes; no frame sync).
+    final class PlayerLayerView: UIView {
+        override class var layerClass: AnyClass { AVPlayerLayer.self }
+        var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, AVPictureInPictureControllerDelegate {
+        private var pip: AVPictureInPictureController?
+
+        func attach(to view: PlayerLayerView) {
+            guard AVPictureInPictureController.isPictureInPictureSupported() else { return }
+            guard let controller = AVPictureInPictureController(playerLayer: view.playerLayer) else { return }
+            controller.delegate = self
+            controller.canStartPictureInPictureAutomaticallyFromInline = true
+            pip = controller
+        }
+
+        func startPiP() { pip?.startPictureInPicture() }
+        func stopPiP()  { pip?.stopPictureInPicture() }
     }
 }

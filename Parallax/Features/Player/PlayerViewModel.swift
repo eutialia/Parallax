@@ -30,6 +30,8 @@ final class PlayerViewModel {
 
     private(set) var phase: Phase = .idle
     private(set) var engine: (any PlaybackEngine)?
+    var isPiPAvailable: Bool { engine?.capabilities.supportsPiP ?? false }
+    var isVideoAirPlayAvailable: Bool { engine?.capabilities.supportsVideoAirPlay ?? false }
     private(set) var availableAudioTracks: [AudioTrack] = []
     private(set) var availableSubtitleTracks: [SubtitleTrack] = []
     private(set) var selectedAudioTrack: AudioTrack? = nil

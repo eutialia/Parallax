@@ -1,4 +1,5 @@
 import SwiftUI
+import AVKit
 import CoreMedia
 import ParallaxPlayback
 
@@ -144,6 +145,11 @@ struct PlayerControlsView: View {
     @ViewBuilder
     private var trackMenus: some View {
         HStack(spacing: 12) {
+            if vm.isVideoAirPlayAvailable {
+                AVRoutePickerViewRepresentable()
+                    .frame(width: 44, height: 44)
+            }
+
             if !vm.availableAudioTracks.isEmpty {
                 Menu {
                     ForEach(vm.availableAudioTracks, id: \.id) { track in
@@ -231,4 +237,13 @@ struct PlayerControlsView: View {
             }
         }
     }
+}
+
+private struct AVRoutePickerViewRepresentable: UIViewRepresentable {
+    func makeUIView(context: Context) -> AVRoutePickerView {
+        let view = AVRoutePickerView()
+        view.tintColor = .white
+        return view
+    }
+    func updateUIView(_ uiView: AVRoutePickerView, context: Context) {}
 }
