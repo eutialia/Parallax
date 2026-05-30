@@ -205,4 +205,33 @@ struct EngineSelectorTests {
         let hints = PlaybackHints(scheme: "smb", container: .mkv, videoCodec: .h264, audioCodec: .aac, subtitleFormats: [])
         #expect(EngineSelector.select(hints: hints) == .vlcKit)
     }
+
+    // MARK: — 5d tiered-profile routing contract
+
+    @Test("mkv+vc1 → .vlcKit (VLC direct-play entry matches; vc1 ∉ AVKit video codecs)")
+    func mkvVC1DirectPlayVLC() {
+        let hints = PlaybackHints.with(container: .mkv, video: .vc1, audio: .aac)
+        #expect(EngineSelector.select(hints: hints) == .vlcKit)
+    }
+
+    @Test("mkv+mpeg2video → .vlcKit (VLC direct-play entry matches)")
+    func mkvMpeg2VideoDirectPlayVLC() {
+        let hints = PlaybackHints.with(container: .mkv, video: .mpeg2video, audio: .aac)
+        #expect(EngineSelector.select(hints: hints) == .vlcKit)
+    }
+
+    @Test("hls (transcode delivery) → .avKit regardless of source codec")
+    func hlsTranscodeDeliveryAVKit() {
+        // After server remuxes mkv+hevc, it delivers HLS; the selector sees the
+        // delivered stream, not the source — this is the regression guard for 5d.
+        let hints = PlaybackHints(scheme: "https", container: .hls,
+                                  videoCodec: nil, audioCodec: nil, subtitleFormats: [])
+        #expect(EngineSelector.select(hints: hints) == .avKit)
+    }
+
+    @Test("avi+mpeg2video → .vlcKit")
+    func aviMpeg2VLC() {
+        let hints = PlaybackHints.with(container: .avi, video: .mpeg2video, audio: .mp3)
+        #expect(EngineSelector.select(hints: hints) == .vlcKit)
+    }
 }
