@@ -37,7 +37,9 @@ public protocol JellyfinPlaybackClient: Sendable {
     func playbackInfo(
         itemID: String,
         profile: DeviceProfile,
-        startTimeTicks: Int?
+        startTimeTicks: Int?,
+        audioStreamIndex: Int?,
+        subtitleStreamIndex: Int?
     ) async throws -> PlaybackInfoResponse
 
     func streamURL(_ request: StreamRequest) -> URL?

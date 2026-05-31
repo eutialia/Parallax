@@ -14,7 +14,7 @@ final class FakeJellyfinPlaybackClient: JellyfinPlaybackClient, @unchecked Senda
     var stoppedError: Error?
 
     // Call records.
-    private(set) var playbackInfoCalls: [(itemID: String, profile: DeviceProfile, startTimeTicks: Int?)] = []
+    private(set) var playbackInfoCalls: [(itemID: String, profile: DeviceProfile, startTimeTicks: Int?, audioStreamIndex: Int?, subtitleStreamIndex: Int?)] = []
     private(set) var streamURLRequests: [StreamRequest] = []
     private(set) var transcodePaths: [String] = []
     private(set) var startInfos: [PlaybackStateInfo] = []
@@ -23,8 +23,14 @@ final class FakeJellyfinPlaybackClient: JellyfinPlaybackClient, @unchecked Senda
 
     enum FakeError: Error { case reportFailed }
 
-    func playbackInfo(itemID: String, profile: DeviceProfile, startTimeTicks: Int?) async throws -> PlaybackInfoResponse {
-        playbackInfoCalls.append((itemID, profile, startTimeTicks))
+    func playbackInfo(
+        itemID: String,
+        profile: DeviceProfile,
+        startTimeTicks: Int?,
+        audioStreamIndex: Int?,
+        subtitleStreamIndex: Int?
+    ) async throws -> PlaybackInfoResponse {
+        playbackInfoCalls.append((itemID, profile, startTimeTicks, audioStreamIndex, subtitleStreamIndex))
         return try playbackInfoResult.get()
     }
 

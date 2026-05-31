@@ -118,6 +118,33 @@ struct PlaybackInfoServiceResolveTests {
         #expect(fake.streamURLRequests.isEmpty)
     }
 
+    @Test("Explicit audio/subtitle stream indices are forwarded to the PlaybackInfo request")
+    func streamIndicesForwarded() async throws {
+        let (service, fake) = makeService(source: transcodeSource())
+        _ = try await service.resolve(
+            item: ItemID(rawValue: "item-1"),
+            capabilities: caps(),
+            startTime: CMTime(seconds: 600, preferredTimescale: 600),
+            audioStreamIndex: 4,
+            subtitleStreamIndex: 7
+        )
+        #expect(fake.playbackInfoCalls.first?.audioStreamIndex == 4)
+        #expect(fake.playbackInfoCalls.first?.subtitleStreamIndex == 7)
+        #expect(fake.playbackInfoCalls.first?.startTimeTicks == 6_000_000_000)
+    }
+
+    @Test("Omitted stream indices default to nil (server picks)")
+    func streamIndicesDefaultNil() async throws {
+        let (service, fake) = makeService(source: directPlaySource())
+        _ = try await service.resolve(
+            item: ItemID(rawValue: "item-1"),
+            capabilities: caps(),
+            startTime: nil
+        )
+        #expect(fake.playbackInfoCalls.first?.audioStreamIndex == nil)
+        #expect(fake.playbackInfoCalls.first?.subtitleStreamIndex == nil)
+    }
+
     @Test("Source media streams + default indices are mapped to ResolvedPlayback")
     func mediaStreamsMapped() async throws {
         let (service, _) = makeService(source: transcodeSource())

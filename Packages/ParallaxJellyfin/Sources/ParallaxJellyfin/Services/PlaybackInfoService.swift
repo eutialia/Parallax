@@ -29,7 +29,9 @@ public actor PlaybackInfoService {
     public func resolve(
         item: ItemID,
         capabilities: DeviceCapabilities,
-        startTime: CMTime?
+        startTime: CMTime?,
+        audioStreamIndex: Int? = nil,
+        subtitleStreamIndex: Int? = nil
     ) async throws -> ResolvedPlayback {
         let startTimeTicks = startTime.map(Self.ticks(from:))
         let profile = DeviceProfileTranslator.deviceProfile(from: capabilities)
@@ -39,7 +41,9 @@ public actor PlaybackInfoService {
             response = try await client.playbackInfo(
                 itemID: item.rawValue,
                 profile: profile,
-                startTimeTicks: startTimeTicks
+                startTimeTicks: startTimeTicks,
+                audioStreamIndex: audioStreamIndex,
+                subtitleStreamIndex: subtitleStreamIndex
             )
         } catch {
             throw ErrorMapping.appError(from: error)

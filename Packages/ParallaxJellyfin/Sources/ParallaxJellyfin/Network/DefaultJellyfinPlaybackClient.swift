@@ -33,18 +33,24 @@ public final class DefaultJellyfinPlaybackClient: JellyfinPlaybackClient, @unche
     public func playbackInfo(
         itemID: String,
         profile: DeviceProfile,
-        startTimeTicks: Int?
+        startTimeTicks: Int?,
+        audioStreamIndex: Int?,
+        subtitleStreamIndex: Int?
     ) async throws -> PlaybackInfoResponse {
         var params = Paths.GetPostedPlaybackInfoParameters()
         params.userID = userID
         params.startTimeTicks = startTimeTicks
+        // Force the server to build the transcode around a specific source
+        // track (track switching on the transcode path). nil → server default.
+        params.audioStreamIndex = audioStreamIndex
+        params.subtitleStreamIndex = subtitleStreamIndex
         params.enableDirectPlay = true
         params.enableDirectStream = true
         params.enableTranscoding = true
         params.allowVideoStreamCopy = true
         params.allowAudioStreamCopy = true
 
-        let body = PlaybackInfoDto(
+        var body = PlaybackInfoDto(
             deviceProfile: profile,
             enableDirectPlay: true,
             enableDirectStream: true,
@@ -52,6 +58,8 @@ public final class DefaultJellyfinPlaybackClient: JellyfinPlaybackClient, @unche
             startTimeTicks: startTimeTicks,
             userID: userID
         )
+        body.audioStreamIndex = audioStreamIndex
+        body.subtitleStreamIndex = subtitleStreamIndex
 
         let request = Paths.getPostedPlaybackInfo(itemID: itemID, parameters: params, body)
         return try await client().send(request).value
