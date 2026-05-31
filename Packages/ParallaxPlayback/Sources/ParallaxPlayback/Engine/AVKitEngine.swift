@@ -186,8 +186,25 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
 
         let audio = Self.audioTracks(from: audibleGroup)
         let subtitles = Self.subtitleTracks(from: legibleGroup)
+        let selection = item.currentMediaSelection
         logTrackDiagnostics(audible: audibleGroup, legible: legibleGroup, audio: audio, subtitles: subtitles)
-        return TrackInventory(audio: audio, subtitles: subtitles)
+        return TrackInventory(
+            audio: audio,
+            subtitles: subtitles,
+            selectedAudioID: Self.selectedID(in: audibleGroup, selection: selection),
+            selectedSubtitleID: Self.selectedID(in: legibleGroup, selection: selection)
+        )
+    }
+
+    /// The index (matching the `id` scheme above) of the option the engine is
+    /// currently playing in `group`, so the UI can show it pre-selected.
+    private static func selectedID(in group: AVMediaSelectionGroup?, selection: AVMediaSelection) -> String? {
+        guard
+            let group,
+            let option = selection.selectedMediaOption(in: group),
+            let index = group.options.firstIndex(of: option)
+        else { return nil }
+        return String(index)
     }
 
     /// `id` is the option's index within its *full* selection group (not the

@@ -218,6 +218,15 @@ final class PlayerViewModel {
             // .loading, or the spinner would reappear over a playing video.
             availableAudioTracks = tracks.audio
             availableSubtitleTracks = tracks.subtitles
+            // Reflect the engine's default selection so the menus show a
+            // checkmark on the track that's actually playing. Don't clobber a
+            // choice the user already made (a late/duplicate .ready).
+            if selectedAudioTrack == nil {
+                selectedAudioTrack = tracks.audio.first { $0.id == tracks.selectedAudioID }
+            }
+            if selectedSubtitleTrack == nil {
+                selectedSubtitleTrack = tracks.subtitles.first { $0.id == tracks.selectedSubtitleID }
+            }
         case .playing(let position, let duration):
             phase = .playing
             lastPosition = position

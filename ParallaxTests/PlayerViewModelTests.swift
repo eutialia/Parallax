@@ -200,6 +200,31 @@ struct PlayerViewModelTests {
         #expect(vm.selectedSubtitleTrack == nil)
     }
 
+    @Test(".ready seeds the engine's default-selected audio/subtitle so the menu shows a checkmark")
+    func readySeedsDefaultSelection() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let vm = makeVM(reporting: reporting, engine: engine, resolved: PlayerFixtures.resolved(), capturedItem: { _ in })
+        await vm.start(item: PlayerFixtures.movieDetail())
+
+        let inventory = TrackInventory(
+            audio: [
+                AudioTrack(id: "0", displayName: "Audio 1", languageCode: nil),
+                AudioTrack(id: "1", displayName: "English", languageCode: "en"),
+            ],
+            subtitles: [
+                SubtitleTrack(id: "0", displayName: "English", languageCode: "en", isForced: false),
+            ],
+            selectedAudioID: "1",
+            selectedSubtitleID: nil
+        )
+        engine.push(.ready(duration: CMTime(seconds: 3600, preferredTimescale: 600), tracks: inventory))
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(vm.selectedAudioTrack?.id == "1")     // reflects engine default, not just first
+        #expect(vm.selectedSubtitleTrack == nil)      // nil subtitle id == "Off"
+    }
+
     @Test("selectAudioTrack forwards to the engine and updates selectedAudioTrack")
     func audioTrackSelectionForwardsToEngine() async throws {
         let reporting = StubPlaybackReporting()
