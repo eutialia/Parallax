@@ -33,14 +33,27 @@ enum AVKitTrackNaming {
         ordinal: Int,
         locale: Locale = .current
     ) -> String {
+        meaningfulName(displayName: displayName, languageCode: languageCode, locale: locale)
+            ?? "\(kind.label) \(ordinal)"
+    }
+
+    /// The first two naming tiers — a non-placeholder `displayName`, else a
+    /// localized language name — or `nil` when neither is usable.
+    static func meaningfulName(
+        displayName: String,
+        languageCode: String?,
+        locale: Locale = .current
+    ) -> String? {
+        nonGenericDisplayName(displayName) ?? localizedLanguageName(languageCode, locale: locale)
+    }
+
+    /// Just the first tier: the option's own name when it isn't a placeholder,
+    /// else `nil`. Kept distinct from the language tier so a caller can slot a
+    /// richer source (e.g. server metadata) ahead of a bare language name.
+    static func nonGenericDisplayName(_ displayName: String) -> String? {
         let trimmed = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty, !isGenericPlaceholder(trimmed) {
-            return trimmed
-        }
-        if let name = localizedLanguageName(languageCode, locale: locale) {
-            return name
-        }
-        return "\(kind.label) \(ordinal)"
+        guard !trimmed.isEmpty, !isGenericPlaceholder(trimmed) else { return nil }
+        return trimmed
     }
 
     /// AVFoundation returns a localized "Unknown" when an option has no name and

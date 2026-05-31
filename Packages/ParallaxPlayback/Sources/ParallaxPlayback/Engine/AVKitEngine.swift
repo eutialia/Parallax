@@ -25,6 +25,12 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     private var timeObserverToken: Any?
     private var endObserver: NSObjectProtocol?
 
+    // Server-side track metadata for the current asset, used to label tracks a
+    // transcode manifest left unnamed.
+    private var mediaStreams: [MediaStreamInfo] = []
+    private var defaultAudioStreamIndex: Int?
+    private var defaultSubtitleStreamIndex: Int?
+
     public override init() {
         let (stream, continuation) = AsyncStream<PlaybackState>.makeStream()
         self.state = stream
@@ -36,6 +42,9 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     public func load(_ asset: PlayableAsset) async throws {
         continuation.yield(.loading)
         pendingStartTime = asset.startTime
+        mediaStreams = asset.mediaStreams
+        defaultAudioStreamIndex = asset.defaultAudioStreamIndex
+        defaultSubtitleStreamIndex = asset.defaultSubtitleStreamIndex
 
         let urlAsset = AVURLAsset(url: asset.url)
         let item = AVPlayerItem(asset: urlAsset)
@@ -115,6 +124,9 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         player.pause()
         player.replaceCurrentItem(with: nil)
         currentItem = nil
+        mediaStreams = []
+        defaultAudioStreamIndex = nil
+        defaultSubtitleStreamIndex = nil
         continuation.finish()
     }
 
@@ -184,8 +196,8 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         let audibleGroup = try? await asset.loadMediaSelectionGroup(for: .audible)
         let legibleGroup = try? await asset.loadMediaSelectionGroup(for: .legible)
 
-        let audio = Self.audioTracks(from: audibleGroup)
-        let subtitles = Self.subtitleTracks(from: legibleGroup)
+        let audio = audioTracks(from: audibleGroup)
+        let subtitles = subtitleTracks(from: legibleGroup)
         let selection = item.currentMediaSelection
         logTrackDiagnostics(audible: audibleGroup, legible: legibleGroup, audio: audio, subtitles: subtitles)
         return TrackInventory(
@@ -209,20 +221,28 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
 
     /// `id` is the option's index within its *full* selection group (not the
     /// filtered display list), so `select(trackID:)` can index straight back in
-    /// even though forced-only subtitles are hidden from the menu. displayName
-    /// is resolved against `AVKitTrackNaming` so a manifest with no NAME/LANGUAGE
-    /// never surfaces a bare "Unknown".
-    private static func audioTracks(from group: AVMediaSelectionGroup?) -> [AudioTrack] {
+    /// even though forced-only subtitles are hidden from the menu. The label
+    /// runs through `JellyfinTrackMatcher`: the manifest's own name wins, else
+    /// the server's stream title (a transcode often strips names), else a
+    /// language/ordinal fallback — so a track never surfaces a bare "Unknown".
+    private func audioTracks(from group: AVMediaSelectionGroup?) -> [AudioTrack] {
         guard let group else { return [] }
+        let count = group.options.count
         var result: [AudioTrack] = []
         var ordinal = 0
         for (index, option) in group.options.enumerated() {
             ordinal += 1
-            let lang = language(of: option)
+            let lang = Self.language(of: option)
             result.append(AudioTrack(
                 id: String(index),
-                displayName: AVKitTrackNaming.resolvedName(
-                    displayName: option.displayName, languageCode: lang, kind: .audio, ordinal: ordinal
+                displayName: JellyfinTrackMatcher.name(
+                    kind: .audio,
+                    optionDisplayName: option.displayName,
+                    optionLanguage: lang,
+                    ordinal: ordinal,
+                    optionCount: count,
+                    streams: mediaStreams,
+                    defaultStreamIndex: defaultAudioStreamIndex
                 ),
                 languageCode: lang
             ))
@@ -230,18 +250,26 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         return result
     }
 
-    private static func subtitleTracks(from group: AVMediaSelectionGroup?) -> [SubtitleTrack] {
+    private func subtitleTracks(from group: AVMediaSelectionGroup?) -> [SubtitleTrack] {
         guard let group else { return [] }
+        let displayed = group.options.enumerated().filter {
+            !$0.element.hasMediaCharacteristic(.containsOnlyForcedSubtitles)
+        }
         var result: [SubtitleTrack] = []
         var ordinal = 0
-        for (index, option) in group.options.enumerated()
-            where !option.hasMediaCharacteristic(.containsOnlyForcedSubtitles) {
+        for (index, option) in displayed {
             ordinal += 1
-            let lang = language(of: option)
+            let lang = Self.language(of: option)
             result.append(SubtitleTrack(
                 id: String(index),
-                displayName: AVKitTrackNaming.resolvedName(
-                    displayName: option.displayName, languageCode: lang, kind: .subtitle, ordinal: ordinal
+                displayName: JellyfinTrackMatcher.name(
+                    kind: .subtitle,
+                    optionDisplayName: option.displayName,
+                    optionLanguage: lang,
+                    ordinal: ordinal,
+                    optionCount: displayed.count,
+                    streams: mediaStreams,
+                    defaultStreamIndex: defaultSubtitleStreamIndex
                 ),
                 languageCode: lang,
                 isForced: false
@@ -273,13 +301,19 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
                 return "[\(index) '\(opt.displayName)' lang=\(lang) type=\(opt.mediaType.rawValue)\(forced)]"
             }.joined(separator: " ")
         }
+        let serverStreams = mediaStreams
+            .filter { $0.kind == .audio || $0.kind == .subtitle }
+            .map { "[\($0.index) \($0.kind.rawValue) '\($0.displayTitle ?? "—")' lang=\($0.language ?? "—")\($0.isExternal ? " ext" : "")]" }
+            .joined(separator: " ")
         Log.playback.info(
             """
             AVKit tracks: audible=\(audible?.options.count ?? -1, privacy: .public) \
             legible=\(legible?.options.count ?? -1, privacy: .public) \
             → audio=\(audio.count, privacy: .public) subs=\(subtitles.count, privacy: .public) | \
             audible: \(describe(audible), privacy: .public) | \
-            legible: \(describe(legible), privacy: .public)
+            legible: \(describe(legible), privacy: .public) | \
+            server[defA=\(self.defaultAudioStreamIndex ?? -1, privacy: .public) defS=\(self.defaultSubtitleStreamIndex ?? -1, privacy: .public)]: \
+            \(serverStreams.isEmpty ? "none" : serverStreams, privacy: .public)
             """
         )
     }
