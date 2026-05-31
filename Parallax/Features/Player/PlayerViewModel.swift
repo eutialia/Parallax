@@ -278,7 +278,12 @@ final class PlayerViewModel {
             // Direct-play/-stream seek on .ready; transcode bakes the offset
             // into the stream URL, so only honor startTime here for non-transcode.
             startTime: resolved.method == .transcode ? nil : resolved.startTime,
-            externalSubtitles: []
+            externalSubtitles: [],
+            // Authoritative track names/languages — the engine uses these to
+            // label tracks a transcode manifest left unnamed.
+            mediaStreams: resolved.mediaStreams,
+            defaultAudioStreamIndex: resolved.defaultAudioStreamIndex,
+            defaultSubtitleStreamIndex: resolved.defaultSubtitleStreamIndex
         )
     }
 
