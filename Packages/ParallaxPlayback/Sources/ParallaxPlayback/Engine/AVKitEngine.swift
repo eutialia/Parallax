@@ -81,7 +81,11 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     }
 
     public func seek(to time: CMTime) async {
-        await player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
+        // Default (efficient) tolerance, not zero. Frame-exact seeking on an HLS
+        // transcode is pathologically slow and can stall — it made scrubbing a 4K
+        // stream feel stuck. Segment-level accuracy is right for a scrubber, and
+        // transcode resume offsets are baked into the stream URL, not sought here.
+        await player.seek(to: time)
     }
 
     public func setAudioTrack(_ track: AudioTrack) async {

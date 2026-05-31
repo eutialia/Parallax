@@ -14,6 +14,8 @@ struct PlayerControlsView: View {
 
     @State private var controlsVisible = true
     @State private var hideTask: Task<Void, Never>? = nil
+    @State private var isScrubbing = false
+    @State private var scrubProgress: Double = 0
 
     var body: some View {
         ZStack {
@@ -119,19 +121,40 @@ struct PlayerControlsView: View {
     private var scrubber: some View {
         let posSeconds = CMTimeGetSeconds(vm.currentPosition)
         let durSeconds = CMTimeGetSeconds(vm.currentDuration)
-        let progress = durSeconds > 0 ? posSeconds / durSeconds : 0.0
+        let liveProgress = durSeconds > 0 ? min(max(posSeconds / durSeconds, 0), 1) : 0
+        // While scrubbing, the thumb follows the finger (scrubProgress); otherwise
+        // it tracks live playback. Binding the thumb directly to currentPosition
+        // made it snap back mid-drag, so the bar felt undraggable — and firing a
+        // seek on every value change flooded an HLS transcode. Seek once, on release.
+        let displayed = isScrubbing ? scrubProgress : liveProgress
+        let shownSeconds = isScrubbing ? scrubProgress * durSeconds : posSeconds
 
         VStack(spacing: 4) {
-            Slider(value: .init(get: { progress }, set: { newValue in
-                resetHideTimer()
-                guard let engine = vm.engine, durSeconds > 0 else { return }
-                let target = CMTime(seconds: newValue * durSeconds, preferredTimescale: 600)
-                Task { await engine.seek(to: target) }
-            }))
+            Slider(
+                value: Binding(get: { displayed }, set: { scrubProgress = $0 }),
+                in: 0...1,
+                onEditingChanged: { editing in
+                    resetHideTimer()
+                    if editing {
+                        scrubProgress = liveProgress
+                        isScrubbing = true
+                    } else {
+                        guard let engine = vm.engine, durSeconds > 0 else {
+                            isScrubbing = false
+                            return
+                        }
+                        let target = CMTime(seconds: scrubProgress * durSeconds, preferredTimescale: 600)
+                        Task {
+                            await engine.seek(to: target)
+                            isScrubbing = false
+                        }
+                    }
+                }
+            )
             .tint(.white)
 
             HStack {
-                Text(formatTime(posSeconds))
+                Text(formatTime(shownSeconds))
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.white)
                 Spacer()
