@@ -61,10 +61,19 @@ final class PlayerViewModel {
     private let nowPlaying = NowPlayingController()
     private var itemTitle: String = ""
 
+    // Transcode track switching: the server bakes one audio + only text subs
+    // into a transcode, so switching tracks means re-resolving the stream around
+    // a different source index. We keep the item + the current indices to rebuild.
+    private var playingItem: ItemDetail?
+    private var currentAudioStreamIndex: Int?
+    private var currentSubtitleStreamIndex: Int?
+
     /// The resolve surface, narrowed so the integration test can inject a stub
-    /// without standing up a full PlaybackInfoService. Mirrors 4c's
-    /// PlaybackInfoService.resolve(item:capabilities:startTime:) exactly.
-    typealias ResolveCall = @Sendable (ItemID, DeviceCapabilities, CMTime?) async throws -> ResolvedPlayback
+    /// without standing up a full PlaybackInfoService. Mirrors
+    /// PlaybackInfoService.resolve(item:capabilities:startTime:audioStreamIndex:subtitleStreamIndex:).
+    /// The two indices are nil on first play (server default) and set when the
+    /// user switches a track on the transcode path.
+    typealias ResolveCall = @Sendable (ItemID, DeviceCapabilities, CMTime?, Int?, Int?) async throws -> ResolvedPlayback
 
     init(
         deviceProfileBuilder: DeviceProfileBuilder,
@@ -91,7 +100,7 @@ final class PlayerViewModel {
 
     func start(item: ItemDetail) async {
         phase = .loading
-        let itemID = item.id
+        playingItem = item
         let positionTicks: Int64
         let runtime: Duration?
         switch item {
@@ -120,25 +129,13 @@ final class PlayerViewModel {
                 Log.playback.error("audio session activate failed: \(error.networkDiagnostic, privacy: .public)")
                 throw AppError.playback(.audioSessionFailed)
             }
-            let caps = await deviceProfileBuilder.build()
             let resumeTime = ResumePolicy.resumeStartTime(positionTicks: positionTicks, runtime: runtime)
-            let resolved = try await resolve(itemID, caps, resumeTime)
-            self.resolved = resolved
-
-            let asset = Self.makeAsset(from: resolved)
-            let id = EngineSelector.select(hints: asset.hints)
-
-            let engine = engineFactory(id)
-            self.engine = engine
-            subscribe(to: engine)
-            nowPlaying.configure(
-                onSeek: { [weak self] time in Task { await self?.engine?.seek(to: time) } },
-                onPlay: { [weak self] in Task { await self?.engine?.play() } },
-                onPause: { [weak self] in Task { await self?.engine?.pause() } }
+            try await beginPlayback(
+                item: item,
+                startTime: resumeTime,
+                audioStreamIndex: nil,
+                subtitleStreamIndex: nil
             )
-
-            try await engine.load(asset)
-            await engine.play()
         } catch let error as AppError {
             phase = .failed(error)
             await audioSession.deactivate()
@@ -151,6 +148,41 @@ final class PlayerViewModel {
             phase = .failed(.unexpected("playback start failed", underlying: AnySendableError(error)))
             await audioSession.deactivate()
         }
+    }
+
+    /// Resolve + load + play. Shared by first play (`start`) and a transcode
+    /// track switch (`switchTranscodeTrack`). On the transcode path the menus
+    /// are sourced from the server's full track list, since the HLS manifest
+    /// only carries the single chosen rendition.
+    private func beginPlayback(
+        item: ItemDetail,
+        startTime: CMTime?,
+        audioStreamIndex: Int?,
+        subtitleStreamIndex: Int?
+    ) async throws {
+        let caps = await deviceProfileBuilder.build()
+        let resolved = try await resolve(item.id, caps, startTime, audioStreamIndex, subtitleStreamIndex)
+        self.resolved = resolved
+        currentAudioStreamIndex = audioStreamIndex ?? resolved.defaultAudioStreamIndex
+        currentSubtitleStreamIndex = subtitleStreamIndex ?? resolved.defaultSubtitleStreamIndex
+        if resolved.method == .transcode {
+            populateTranscodeMenus(from: resolved)
+        }
+
+        let asset = Self.makeAsset(from: resolved)
+        let id = EngineSelector.select(hints: asset.hints)
+
+        let engine = engineFactory(id)
+        self.engine = engine
+        subscribe(to: engine)
+        nowPlaying.configure(
+            onSeek: { [weak self] time in Task { await self?.engine?.seek(to: time) } },
+            onPlay: { [weak self] in Task { await self?.engine?.play() } },
+            onPause: { [weak self] in Task { await self?.engine?.pause() } }
+        )
+
+        try await engine.load(asset)
+        await engine.play()
     }
 
     func stop() async {
@@ -166,6 +198,9 @@ final class PlayerViewModel {
         }
         await audioSession.deactivate()
         engine = nil
+        playingItem = nil
+        currentAudioStreamIndex = nil
+        currentSubtitleStreamIndex = nil
         availableAudioTracks = []
         availableSubtitleTracks = []
         selectedAudioTrack = nil
@@ -184,15 +219,66 @@ final class PlayerViewModel {
     }
 
     func selectAudioTrack(_ track: AudioTrack) async {
-        guard let engine else { return }
-        await engine.setAudioTrack(track)
-        selectedAudioTrack = track
+        // Direct-play has every track in the stream → switch in-engine (instant).
+        // Transcode carries only the baked-in rendition → re-resolve around the
+        // chosen source index (track.id) and reload at the current position.
+        if resolved?.method == .transcode {
+            guard let index = Int(track.id) else { return }
+            selectedAudioTrack = track
+            await switchTranscodeTrack(audioStreamIndex: index, subtitleStreamIndex: currentSubtitleStreamIndex)
+        } else {
+            guard let engine else { return }
+            await engine.setAudioTrack(track)
+            selectedAudioTrack = track
+        }
     }
 
     func selectSubtitleTrack(_ track: SubtitleTrack?) async {
-        guard let engine else { return }
-        await engine.setSubtitleTrack(track)
-        selectedSubtitleTrack = track
+        if resolved?.method == .transcode {
+            selectedSubtitleTrack = track
+            // -1 is Jellyfin's "no subtitle" sentinel; nil would mean "server default".
+            let subtitleIndex = track.flatMap { Int($0.id) } ?? -1
+            await switchTranscodeTrack(audioStreamIndex: currentAudioStreamIndex, subtitleStreamIndex: subtitleIndex)
+        } else {
+            guard let engine else { return }
+            await engine.setSubtitleTrack(track)
+            selectedSubtitleTrack = track
+        }
+    }
+
+    /// Rebuilds the transcode around new stream indices, resuming at the current
+    /// position. Costs a brief re-buffer — the server has to re-encode around the
+    /// chosen track (a PGS subtitle, for instance, is burned in). The audio
+    /// session stays active; only the engine + stream are replaced.
+    private func switchTranscodeTrack(audioStreamIndex: Int?, subtitleStreamIndex: Int?) async {
+        guard let item = playingItem else { return }
+        // currentPosition is relative to the *current* transcode (which began at
+        // its own origin); the new request needs the absolute source position.
+        let origin = resolved?.startTime ?? .zero
+        let absolutePosition = CMTimeAdd(origin, currentPosition)
+
+        phase = .loading
+        stateTask?.cancel()
+        stateTask = nil
+        if let engine {
+            await engine.teardown()
+        }
+        engine = nil
+        didReportStart = false   // new transcode = new play session → reportStart again
+
+        do {
+            try await beginPlayback(
+                item: item,
+                startTime: absolutePosition,
+                audioStreamIndex: audioStreamIndex,
+                subtitleStreamIndex: subtitleStreamIndex
+            )
+        } catch let error as AppError {
+            phase = .failed(error)
+        } catch {
+            Log.playback.error("track switch failed: \(error.networkDiagnostic, privacy: .public)")
+            phase = .failed(.unexpected("track switch failed", underlying: AnySendableError(error)))
+        }
     }
 
     // MARK: - Private
@@ -212,20 +298,27 @@ final class PlayerViewModel {
         case .idle, .loading:
             break
         case .ready(_, let tracks):
-            // Track inventory now resolves asynchronously (AVKit loads media
+            // For a transcode the menus are the server's FULL track list
+            // (populated at resolve); the engine only sees the one baked-in
+            // rendition, so don't let it overwrite them. Direct-play has every
+            // track in the stream, so the engine's inventory is authoritative.
+            //
+            // Track inventory resolves asynchronously (AVKit loads media
             // selection groups off the actor), so .ready can land *after*
             // .playing. Only publish the tracks — never regress phase back to
             // .loading, or the spinner would reappear over a playing video.
-            availableAudioTracks = tracks.audio
-            availableSubtitleTracks = tracks.subtitles
-            // Reflect the engine's default selection so the menus show a
-            // checkmark on the track that's actually playing. Don't clobber a
-            // choice the user already made (a late/duplicate .ready).
-            if selectedAudioTrack == nil {
-                selectedAudioTrack = tracks.audio.first { $0.id == tracks.selectedAudioID }
-            }
-            if selectedSubtitleTrack == nil {
-                selectedSubtitleTrack = tracks.subtitles.first { $0.id == tracks.selectedSubtitleID }
+            if resolved.method != .transcode {
+                availableAudioTracks = tracks.audio
+                availableSubtitleTracks = tracks.subtitles
+                // Reflect the engine's default selection so the menus show a
+                // checkmark on the track that's actually playing. Don't clobber
+                // a choice the user already made (a late/duplicate .ready).
+                if selectedAudioTrack == nil {
+                    selectedAudioTrack = tracks.audio.first { $0.id == tracks.selectedAudioID }
+                }
+                if selectedSubtitleTrack == nil {
+                    selectedSubtitleTrack = tracks.subtitles.first { $0.id == tracks.selectedSubtitleID }
+                }
             }
         case .playing(let position, let duration):
             phase = .playing
@@ -268,6 +361,31 @@ final class PlayerViewModel {
             mediaSourceID: resolved.mediaSourceID,
             playSessionID: resolved.playSessionID
         )
+    }
+
+    /// Builds the audio/subtitle menus from the server's full track list (used
+    /// on the transcode path) and marks the active rendition. Track `id` is the
+    /// source stream index — `selectAudioTrack`/`selectSubtitleTrack` feed it
+    /// straight back to the server as `AudioStreamIndex`/`SubtitleStreamIndex`.
+    private func populateTranscodeMenus(from resolved: ResolvedPlayback) {
+        availableAudioTracks = resolved.mediaStreams
+            .filter { $0.kind == .audio }
+            .map { AudioTrack(id: String($0.index), displayName: Self.label(for: $0), languageCode: $0.language) }
+        availableSubtitleTracks = resolved.mediaStreams
+            .filter { $0.kind == .subtitle }
+            .map { SubtitleTrack(id: String($0.index), displayName: Self.label(for: $0), languageCode: $0.language, isForced: $0.isForced) }
+
+        selectedAudioTrack = availableAudioTracks.first { $0.id == currentAudioStreamIndex.map(String.init) }
+        selectedSubtitleTrack = availableSubtitleTracks.first { $0.id == currentSubtitleStreamIndex.map(String.init) }
+    }
+
+    /// A track's menu label, from the server's pre-formatted title (dropping the
+    /// redundant " - Default" — the checkmark already marks the active track).
+    private static func label(for stream: MediaStreamInfo) -> String {
+        let title = (stream.displayTitle ?? stream.language ?? "Track \(stream.index)")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let suffix = " - Default"
+        return title.hasSuffix(suffix) ? String(title.dropLast(suffix.count)) : title
     }
 
     private static func makeAsset(from resolved: ResolvedPlayback) -> PlayableAsset {

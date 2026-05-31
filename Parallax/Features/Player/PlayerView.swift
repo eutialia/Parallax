@@ -40,8 +40,14 @@ struct PlayerView: View {
                 let vm = PlayerViewModel(
                     deviceProfileBuilder: deps.deviceProfileBuilder,
                     playbackInfo: info,
-                    resolve: { id, caps, start in
-                        try await info.resolve(item: id, capabilities: caps, startTime: start)
+                    resolve: { id, caps, start, audioIndex, subtitleIndex in
+                        try await info.resolve(
+                            item: id,
+                            capabilities: caps,
+                            startTime: start,
+                            audioStreamIndex: audioIndex,
+                            subtitleStreamIndex: subtitleIndex
+                        )
                     },
                     engineFactory: { id in engineFactory(id) },
                     audioSession: deps.audioSession

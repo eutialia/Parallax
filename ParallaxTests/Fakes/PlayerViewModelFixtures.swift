@@ -106,6 +106,41 @@ enum PlayerFixtures {
         )
     }
 
+    /// A transcoded MKV with a full multi-track source: 3 audio + 2 subtitle
+    /// streams. The HLS transcode only carries the default rendition, so the
+    /// menus must come from `mediaStreams` and switching re-resolves.
+    static func resolvedMultiTrackTranscode(startTime: CMTime? = nil) -> ResolvedPlayback {
+        func audio(_ i: Int, _ title: String) -> MediaStreamInfo {
+            MediaStreamInfo(index: i, kind: .audio, displayTitle: title, language: "jpn",
+                            codec: "truehd", channels: 8, isExternal: false, isForced: false, isDefault: i == 3)
+        }
+        func sub(_ i: Int, _ title: String, _ lang: String) -> MediaStreamInfo {
+            MediaStreamInfo(index: i, kind: .subtitle, displayTitle: title, language: lang,
+                            codec: "subrip", channels: nil, isExternal: true, isForced: false, isDefault: i == 1)
+        }
+        return ResolvedPlayback(
+            itemID: "movie-1",
+            url: URL(string: "https://jf.example.com/videos/movie-1/master.m3u8?api_key=abc")!,
+            method: .transcode,
+            container: .mkv,
+            videoCodec: .hevc,
+            audioCodec: .trueHD,
+            mediaSourceID: "ms-1",
+            playSessionID: "ps-1",
+            runtime: CMTime(seconds: 7200, preferredTimescale: 600),
+            startTime: startTime,
+            mediaStreams: [
+                audio(3, "Surround 7.1 - Japanese - Default"),
+                audio(4, "Surround 5.1 - Japanese"),
+                audio(5, "Stereo - Japanese"),
+                sub(1, "Chinese", "zho"),
+                sub(7, "English - PGSSUB", "eng"),
+            ],
+            defaultAudioStreamIndex: 3,
+            defaultSubtitleStreamIndex: 1
+        )
+    }
+
     /// VC-1 MKV direct-play — routes to .vlcKit because .vc1 is not in
     /// EngineSelector's avKitVideoCodecs set.
     static func resolvedVC1MKV() -> ResolvedPlayback {

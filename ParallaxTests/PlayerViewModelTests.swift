@@ -31,7 +31,7 @@ struct PlayerViewModelTests {
         return PlayerViewModel(
             deviceProfileBuilder: builder,
             playbackInfo: reporting,
-            resolve: { id, _, _ in
+            resolve: { id, _, _, _, _ in
                 capturedItem(id)
                 return resolved
             },
@@ -225,6 +225,53 @@ struct PlayerViewModelTests {
         #expect(vm.selectedSubtitleTrack == nil)      // nil subtitle id == "Off"
     }
 
+    @Test("transcode: menus come from MediaStreams; selecting audio re-resolves at position with that index")
+    func transcodeAudioSwitch() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
+        let builder = DeviceProfileBuilder(probe: probe)
+        let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
+
+        nonisolated(unsafe) var resolveCalls: [(audio: Int?, sub: Int?, start: CMTime?)] = []
+        let vm = PlayerViewModel(
+            deviceProfileBuilder: builder,
+            playbackInfo: reporting,
+            resolve: { _, _, start, audioIdx, subIdx in
+                resolveCalls.append((audioIdx, subIdx, start))
+                return resolved
+            },
+            engineFactory: { _ in engine },
+            audioSession: NoopAudioSession()
+        )
+
+        await vm.start(item: PlayerFixtures.movieDetail())
+
+        // Menus reflect the server's FULL track list, not the one-rendition manifest.
+        #expect(vm.availableAudioTracks.count == 3)
+        #expect(vm.availableSubtitleTracks.count == 2)
+        #expect(vm.selectedAudioTrack?.id == "3")                       // server default
+        #expect(vm.availableAudioTracks.first?.displayName == "Surround 7.1 - Japanese")  // " - Default" stripped
+
+        // Advance playback so the switch resumes at a real position.
+        engine.push(.playing(
+            position: CMTime(seconds: 100, preferredTimescale: 600),
+            duration: CMTime(seconds: 7200, preferredTimescale: 600)
+        ))
+        try await Task.sleep(for: .milliseconds(50))
+
+        // Switch to audio index 4 → re-resolve at the current position with that index.
+        let track = try #require(vm.availableAudioTracks.first { $0.id == "4" })
+        await vm.selectAudioTrack(track)
+
+        #expect(resolveCalls.count == 2)
+        #expect(resolveCalls.last?.audio == 4)
+        #expect(resolveCalls.last?.sub == 1)                            // current subtitle preserved
+        #expect(CMTimeGetSeconds(resolveCalls.last?.start ?? .zero) == 100)
+        #expect(vm.selectedAudioTrack?.id == "4")
+        #expect(engine.loadedAssets.count == 2)                         // engine reloaded
+    }
+
     @Test("selectAudioTrack forwards to the engine and updates selectedAudioTrack")
     func audioTrackSelectionForwardsToEngine() async throws {
         let reporting = StubPlaybackReporting()
@@ -303,7 +350,7 @@ struct PlayerViewModelTests {
         let vm = PlayerViewModel(
             deviceProfileBuilder: builder,
             playbackInfo: reporting,
-            resolve: { _, _, _ in PlayerFixtures.resolvedVLCDirectPlayMKV() },
+            resolve: { _, _, _, _, _ in PlayerFixtures.resolvedVLCDirectPlayMKV() },
             engineFactory: { id in capturedEngineID = id; return fakeEngine },
             audioSession: NoopAudioSession()
         )
@@ -384,7 +431,7 @@ struct PlayerViewModelTests {
             return PlayerViewModel(
                 deviceProfileBuilder: builder,
                 playbackInfo: reporting,
-                resolve: { id, _, _ in
+                resolve: { id, _, _, _, _ in
                     capturedItem(id)
                     return resolved
                 },
