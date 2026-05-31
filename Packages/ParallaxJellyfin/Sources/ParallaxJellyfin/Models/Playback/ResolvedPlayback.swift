@@ -21,6 +21,14 @@ public struct ResolvedPlayback: Sendable {
     public let playSessionID: String
     public let runtime: CMTime?
     public let startTime: CMTime?
+    /// Authoritative per-stream track metadata from the source. The player uses
+    /// it to label tracks (a transcode manifest often omits names/languages).
+    public let mediaStreams: [MediaStreamInfo]
+    /// The source stream index the server chose for the (single) transcoded
+    /// audio / subtitle, so the player can name the one rendition the manifest
+    /// actually carries. `nil` when the server didn't specify one.
+    public let defaultAudioStreamIndex: Int?
+    public let defaultSubtitleStreamIndex: Int?
 
     public init(
         itemID: String,
@@ -32,7 +40,10 @@ public struct ResolvedPlayback: Sendable {
         mediaSourceID: String,
         playSessionID: String,
         runtime: CMTime?,
-        startTime: CMTime?
+        startTime: CMTime?,
+        mediaStreams: [MediaStreamInfo] = [],
+        defaultAudioStreamIndex: Int? = nil,
+        defaultSubtitleStreamIndex: Int? = nil
     ) {
         self.itemID = itemID
         self.url = url
@@ -44,5 +55,8 @@ public struct ResolvedPlayback: Sendable {
         self.playSessionID = playSessionID
         self.runtime = runtime
         self.startTime = startTime
+        self.mediaStreams = mediaStreams
+        self.defaultAudioStreamIndex = defaultAudioStreamIndex
+        self.defaultSubtitleStreamIndex = defaultSubtitleStreamIndex
     }
 }

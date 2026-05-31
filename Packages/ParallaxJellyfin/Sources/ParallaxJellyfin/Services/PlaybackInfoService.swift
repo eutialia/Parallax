@@ -124,8 +124,39 @@ public actor PlaybackInfoService {
             mediaSourceID: mediaSourceID,
             playSessionID: playSessionID,
             runtime: runtime,
-            startTime: startTime
+            startTime: startTime,
+            mediaStreams: Self.mediaStreamInfos(from: source),
+            defaultAudioStreamIndex: source.defaultAudioStreamIndex,
+            defaultSubtitleStreamIndex: source.defaultSubtitleStreamIndex
         )
+    }
+
+    /// Maps the source's `MediaStream`s to neutral `MediaStreamInfo`, dropping
+    /// streams without an index (no stable identity / not server-selectable).
+    private static func mediaStreamInfos(from source: MediaSourceInfo) -> [MediaStreamInfo] {
+        (source.mediaStreams ?? []).compactMap { stream in
+            guard let index = stream.index else { return nil }
+            return MediaStreamInfo(
+                index: index,
+                kind: kind(from: stream.type),
+                displayTitle: stream.displayTitle,
+                language: stream.language,
+                codec: stream.codec,
+                channels: stream.channels,
+                isExternal: stream.isExternal ?? false,
+                isForced: stream.isForced ?? false,
+                isDefault: stream.isDefault ?? false
+            )
+        }
+    }
+
+    private static func kind(from type: MediaStreamType?) -> MediaStreamInfo.Kind {
+        switch type {
+        case .video: return .video
+        case .audio: return .audio
+        case .subtitle: return .subtitle
+        default: return .other
+        }
     }
 
     // MARK: - Tick helpers

@@ -43,10 +43,27 @@ struct PlaybackInfoServiceResolveTests {
         source.container = "mkv"
         source.runTimeTicks = 1_000_000_000
         source.transcodingURL = "/videos/item-1/master.m3u8?api_key=tok-1&PlaySessionId=ps-1"
+        source.defaultAudioStreamIndex = 3
+        source.defaultSubtitleStreamIndex = 1
         var video = MediaStream()
         video.type = .video
+        video.index = 0
         video.codec = "hevc"
-        source.mediaStreams = [video]
+        var audio = MediaStream()
+        audio.type = .audio
+        audio.index = 3
+        audio.codec = "truehd"
+        audio.channels = 8
+        audio.displayTitle = "English - TrueHD 7.1"
+        audio.language = "eng"
+        audio.isDefault = true
+        var subtitle = MediaStream()
+        subtitle.type = .subtitle
+        subtitle.index = 1
+        subtitle.codec = "subrip"
+        subtitle.displayTitle = "Chinese"
+        subtitle.language = "zho"
+        source.mediaStreams = [video, audio, subtitle]
         return source
     }
 
@@ -99,6 +116,30 @@ struct PlaybackInfoServiceResolveTests {
         // It resolved the server-provided transcodingURL, not a stream URL.
         #expect(fake.transcodePaths.first == "/videos/item-1/master.m3u8?api_key=tok-1&PlaySessionId=ps-1")
         #expect(fake.streamURLRequests.isEmpty)
+    }
+
+    @Test("Source media streams + default indices are mapped to ResolvedPlayback")
+    func mediaStreamsMapped() async throws {
+        let (service, _) = makeService(source: transcodeSource())
+        let resolved = try await service.resolve(
+            item: ItemID(rawValue: "item-1"),
+            capabilities: caps(),
+            startTime: nil
+        )
+        #expect(resolved.mediaStreams.count == 3)
+        #expect(resolved.defaultAudioStreamIndex == 3)
+        #expect(resolved.defaultSubtitleStreamIndex == 1)
+
+        let audio = resolved.mediaStreams.first { $0.kind == .audio }
+        #expect(audio?.index == 3)
+        #expect(audio?.displayTitle == "English - TrueHD 7.1")
+        #expect(audio?.language == "eng")
+        #expect(audio?.channels == 8)
+        #expect(audio?.isDefault == true)
+
+        let subtitle = resolved.mediaStreams.first { $0.kind == .subtitle }
+        #expect(subtitle?.index == 1)
+        #expect(subtitle?.displayTitle == "Chinese")
     }
 
     @Test("startTime is converted to ticks (seconds * 10_000_000) for the POST and echoed back")
