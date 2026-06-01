@@ -29,6 +29,28 @@ public struct MediaStreamInfo: Sendable, Hashable, Identifiable {
     public let isForced: Bool
     public let isDefault: Bool
 
+    // MARK: Debug / diagnostic fields (nil unless the server reported them)
+
+    /// Codec profile, e.g. "Main 10", "High".
+    public let profile: String?
+    public let bitDepth: Int?
+    public let width: Int?
+    public let height: Int?
+    /// "SDR" / "HDR" (Jellyfin `VideoRange`).
+    public let videoRange: String?
+    /// Granular HDR flavour: "HDR10" / "HLG" / "DOVI" / … (Jellyfin `VideoRangeType`).
+    public let videoRangeType: String?
+    public let colorSpace: String?
+    /// Stream bitrate in bits per second.
+    public let bitRate: Int?
+    public let frameRate: Double?
+    /// Audio sample rate in Hz.
+    public let sampleRate: Int?
+    /// How the server delivers a subtitle: "Embed" / "External" / "Hls" / "Encode" /
+    /// "Drop". The key diagnostic for sync + render problems — "Hls" is segmented
+    /// WebVTT (the AVFoundation desync path) and "Encode" is burned-in.
+    public let subtitleDeliveryMethod: String?
+
     public var id: Int { index }
 
     public init(
@@ -40,7 +62,18 @@ public struct MediaStreamInfo: Sendable, Hashable, Identifiable {
         channels: Int?,
         isExternal: Bool,
         isForced: Bool,
-        isDefault: Bool
+        isDefault: Bool,
+        profile: String? = nil,
+        bitDepth: Int? = nil,
+        width: Int? = nil,
+        height: Int? = nil,
+        videoRange: String? = nil,
+        videoRangeType: String? = nil,
+        colorSpace: String? = nil,
+        bitRate: Int? = nil,
+        frameRate: Double? = nil,
+        sampleRate: Int? = nil,
+        subtitleDeliveryMethod: String? = nil
     ) {
         self.index = index
         self.kind = kind
@@ -51,6 +84,17 @@ public struct MediaStreamInfo: Sendable, Hashable, Identifiable {
         self.isExternal = isExternal
         self.isForced = isForced
         self.isDefault = isDefault
+        self.profile = profile
+        self.bitDepth = bitDepth
+        self.width = width
+        self.height = height
+        self.videoRange = videoRange
+        self.videoRangeType = videoRangeType
+        self.colorSpace = colorSpace
+        self.bitRate = bitRate
+        self.frameRate = frameRate
+        self.sampleRate = sampleRate
+        self.subtitleDeliveryMethod = subtitleDeliveryMethod
     }
 }
 
