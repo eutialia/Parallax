@@ -10,6 +10,9 @@ struct PlayerView: View {
     @Environment(AppDependencies.self) private var deps
     @Environment(\.dismiss) private var dismiss
     @State private var viewModel: PlayerViewModel?
+    #if DEBUG
+    @State private var showDebugHUD = false
+    #endif
 
     var body: some View {
         ZStack {
@@ -32,6 +35,28 @@ struct PlayerView: View {
                 ProgressView().tint(.white)
             }
         }
+        #if DEBUG
+        .overlay(alignment: .topLeading) {
+            if showDebugHUD, let vm = viewModel {
+                DebugInfoOverlay(vm: vm) { showDebugHUD = false }
+                    .padding(.top, 70)
+                    .padding(.leading, 16)
+                    .transition(.opacity)
+            }
+        }
+        .overlay(alignment: .bottomTrailing) {
+            if viewModel != nil {
+                Button("Toggle debug overlay", systemImage: "info.circle") {
+                    showDebugHUD.toggle()
+                }
+                .labelStyle(.iconOnly)
+                .font(.title3)
+                .foregroundStyle(.white.opacity(0.55))
+                .padding(12)
+            }
+        }
+        .animation(.easeInOut(duration: 0.15), value: showDebugHUD)
+        #endif
         .ignoresSafeArea()
         .task {
             if viewModel == nil {

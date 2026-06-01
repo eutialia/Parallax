@@ -484,3 +484,25 @@ final class PlayerViewModel {
         }
     }
 }
+
+#if DEBUG
+extension PlayerViewModel {
+    /// The resolved server-side playback metadata for the playing item.
+    /// Debug HUD only — exposes the otherwise-private `resolved`.
+    var debugResolved: ResolvedPlayback? { resolved }
+
+    /// The active engine's id, for the HUD's engine label.
+    var debugEngineID: PlaybackEngineID? { engine?.id }
+
+    /// The engine's live decode snapshot (actual dimensions, bitrates, the true
+    /// audio/subtitle selection). Polled by the HUD.
+    func currentDebugSnapshot() async -> PlaybackDebugInfo {
+        await engine?.debugSnapshot() ?? .empty
+    }
+
+    /// Live subtitle-delay nudge (VLC retimes; AVKit ignores). `ms` is absolute.
+    func setSubtitleDelay(ms: Int) async {
+        await engine?.setSubtitleDelay(milliseconds: ms)
+    }
+}
+#endif
