@@ -68,11 +68,17 @@ enum JellyfinTrackMatcher {
             }
         }
 
-        // Multiple renditions: match on language (the only reliable join when
-        // the manifest dropped names).
-        if let language = optionLanguage,
-           let stream = candidates.first(where: { sameLanguage($0.language, language) }) {
-            return cleaned(stream.displayTitle)
+        // Multiple renditions: match on language (the only reliable join when the
+        // manifest dropped names) — but only when it is UNAMBIGUOUS. If several
+        // server streams share the language (e.g. two "zho" streams that differ
+        // only by script, Traditional vs Simplified), language can't disambiguate
+        // them, so fall through to AVFoundation's own script-aware locale name
+        // rather than slapping the first stream's title on every variant.
+        if let language = optionLanguage {
+            let matches = candidates.filter { sameLanguage($0.language, language) }
+            if matches.count == 1 {
+                return cleaned(matches[0].displayTitle)
+            }
         }
         return nil
     }
@@ -86,7 +92,14 @@ enum JellyfinTrackMatcher {
 
     private static func sameLanguage(_ a: String?, _ b: String?) -> Bool {
         guard let a, let b else { return false }
-        return a.lowercased() == b.lowercased()
+        if a.caseInsensitiveCompare(b) == .orderedSame { return true }
+        // Jellyfin reports ISO 639-2/T ("eng"); AVFoundation's extendedLanguageTag
+        // yields BCP-47 ("en", "zh-Hant"). Normalize both to alpha-3 so the join
+        // doesn't silently fail — without this every "eng" vs "en" pair missed and
+        // the track fell back to a bare "Audio N" ordinal.
+        let a3 = Locale.Language(identifier: a).languageCode?.identifier(.alpha3)
+        let b3 = Locale.Language(identifier: b).languageCode?.identifier(.alpha3)
+        return a3 != nil && a3 == b3
     }
 
     /// Trims, drops a trailing " - Default" (the menu marks the active track
@@ -94,7 +107,6 @@ enum JellyfinTrackMatcher {
     private static func cleaned(_ title: String?) -> String? {
         guard let trimmed = title?.trimmingCharacters(in: .whitespacesAndNewlines),
               !trimmed.isEmpty else { return nil }
-        let suffix = " - Default"
-        return trimmed.hasSuffix(suffix) ? String(trimmed.dropLast(suffix.count)) : trimmed
+        return MediaStreamInfo.strippingDefaultSuffix(trimmed)
     }
 }

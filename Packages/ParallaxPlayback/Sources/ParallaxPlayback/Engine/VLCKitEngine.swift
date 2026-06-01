@@ -119,7 +119,8 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     }
 
     public func setAudioTrack(_ track: AudioTrack) async {
-        for t in player.audioTracks where t.trackId == track.id {
+        guard let vlcID = track.id.vlcTrackID else { return }
+        for t in player.audioTracks where t.trackId == vlcID {
             t.isSelectedExclusively = true
             return
         }
@@ -130,7 +131,8 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
             player.deselectAllTextTracks()
             return
         }
-        for t in player.textTracks where t.trackId == track.id {
+        guard let vlcID = track.id.vlcTrackID else { return }
+        for t in player.textTracks where t.trackId == vlcID {
             t.isSelectedExclusively = true
             return
         }
@@ -179,7 +181,17 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         let subtitleTracks = player.textTracks.map { t in
             Self.buildSubtitleTrack(id: t.trackId, name: t.trackName, language: t.language)
         }
-        return TrackInventory(audio: audioTracks, subtitles: subtitleTracks)
+        // Surface VLC's own default selection so the menus check the active track
+        // at start (AVKit's inventory already does this; without it the VLC path
+        // opened with every track unchecked). A subtitle is often unselected → nil.
+        let selectedAudioID = player.audioTracks.first(where: { $0.isSelected }).map { TrackID.vlc($0.trackId) }
+        let selectedSubtitleID = player.textTracks.first(where: { $0.isSelected }).map { TrackID.vlc($0.trackId) }
+        return TrackInventory(
+            audio: audioTracks,
+            subtitles: subtitleTracks,
+            selectedAudioID: selectedAudioID,
+            selectedSubtitleID: selectedSubtitleID
+        )
     }
 
     /// Idempotent one-time setter for VLC's events configuration. The first access
@@ -211,12 +223,14 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         return isPlaying ? .playing(position: position, duration: duration) : .paused(position: position, duration: duration)
     }
 
+    /// `id` is VLC's own `trackId` string; it is tagged `.vlc` so it can never be
+    /// confused with an AVKit option index or a Jellyfin stream index.
     public static func buildAudioTrack(id: String, name: String, language: String?) -> AudioTrack {
-        AudioTrack(id: id, displayName: name, languageCode: language)
+        AudioTrack(id: .vlc(id), displayName: name, languageCode: language)
     }
 
     public static func buildSubtitleTrack(id: String, name: String, language: String?) -> SubtitleTrack {
-        SubtitleTrack(id: id, displayName: name, languageCode: language, isForced: false)
+        SubtitleTrack(id: .vlc(id), displayName: name, languageCode: language, isForced: false)
     }
 }
 

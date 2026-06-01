@@ -176,3 +176,37 @@ struct MediaInfoTests {
         #expect(Container.avi.rawValue == "avi")
     }
 }
+
+@Suite("MediaStreamInfo helpers")
+struct MediaStreamInfoHelperTests {
+    private func sub(_ codec: String?, title: String? = nil) -> MediaStreamInfo {
+        MediaStreamInfo(index: 1, kind: .subtitle, displayTitle: title, language: "eng",
+                        codec: codec, channels: nil, isExternal: false, isForced: false, isDefault: false)
+    }
+
+    @Test("menuLabel drops a trailing ' - Default' and falls back through title→language→index")
+    func menuLabelFallback() {
+        #expect(sub("subrip", title: "English - SDH - Default").menuLabel == "English - SDH")
+        #expect(sub("subrip", title: "  English  ").menuLabel == "English")
+        #expect(sub("subrip", title: nil).menuLabel == "eng")          // falls to language
+        let noLang = MediaStreamInfo(index: 4, kind: .audio, displayTitle: nil, language: nil,
+                                     codec: nil, channels: nil, isExternal: false, isForced: false, isDefault: false)
+        #expect(noLang.menuLabel == "Track 4")                         // falls to index
+    }
+
+    @Test("isImageSubtitle flags burn-in-only formats and clears text formats")
+    func imageSubtitleClassification() {
+        #expect(sub("PGSSUB").isImageSubtitle)
+        #expect(sub("hdmv_pgs_subtitle").isImageSubtitle)
+        #expect(sub("vobsub").isImageSubtitle)
+        #expect(sub("dvd_subtitle").isImageSubtitle)
+        #expect(!sub("subrip").isImageSubtitle)
+        #expect(!sub("ass").isImageSubtitle)
+        #expect(!sub("webvtt").isImageSubtitle)
+        #expect(!sub(nil).isImageSubtitle)                             // unknown → treat as text
+        // Audio is never an image subtitle, whatever the codec string.
+        let audio = MediaStreamInfo(index: 1, kind: .audio, displayTitle: nil, language: nil,
+                                    codec: "pgs", channels: nil, isExternal: false, isForced: false, isDefault: false)
+        #expect(!audio.isImageSubtitle)
+    }
+}

@@ -26,8 +26,6 @@ public enum SubtitleDelivery: Sendable {
 /// track inventory — not a `SubtitleResolver` concern.
 public enum SubtitleResolver {
 
-    private static let avKitSupportedFormats: Set<SubtitleFormat> = [.srt, .vtt]
-
     /// Resolve the delivery mode for a single external subtitle.
     public static func resolve(
         subtitle: ExternalSubtitle,
@@ -37,7 +35,9 @@ public enum SubtitleResolver {
         case .vlcKit:
             return .vlcSlave(url: subtitle.url, enforce: subtitle.isForced)
         case .avKit:
-            if avKitSupportedFormats.contains(subtitle.format) {
+            // Single source of truth for the AVKit-native set lives in the matrix;
+            // a private copy here would silently diverge when a format is added.
+            if PlaybackCapabilityMatrix.avKitSubtitleFormats.contains(subtitle.format) {
                 return .avKitSidecar(url: subtitle.url)
             } else {
                 return .unsupported

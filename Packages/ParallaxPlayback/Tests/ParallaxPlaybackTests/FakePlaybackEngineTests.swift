@@ -64,17 +64,17 @@ struct FakePlaybackEngineTests {
     @Test("setAudioTrack records the selected track id")
     func setAudioTrack() async {
         let fake = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let track = AudioTrack(id: "a1", displayName: "English", languageCode: "en")
+        let track = AudioTrack(id: .vlc("a1"), displayName: "English", languageCode: "en")
         await fake.setAudioTrack(track)
-        #expect(fake.selectedAudioTrackID == "a1")
+        #expect(fake.selectedAudioTrackID == .vlc("a1"))
     }
 
     @Test("setSubtitleTrack nil clears the selection")
     func setSubtitleTrackNil() async {
         let fake = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let track = SubtitleTrack(id: "s1", displayName: "French", languageCode: "fr", isForced: false)
+        let track = SubtitleTrack(id: .vlc("s1"), displayName: "French", languageCode: "fr", isForced: false)
         await fake.setSubtitleTrack(track)
-        #expect(fake.selectedSubtitleTrackID == "s1")
+        #expect(fake.selectedSubtitleTrackID == .vlc("s1"))
         await fake.setSubtitleTrack(nil)
         #expect(fake.selectedSubtitleTrackID == nil)
     }

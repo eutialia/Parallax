@@ -82,4 +82,49 @@ struct JellyfinTrackMatcherTests {
         )
         #expect(name == "English - AC3")
     }
+
+    @Test("language match normalizes BCP-47 'en' against ISO 639-2/T 'eng'")
+    func languageMatchNormalizesAlpha2VsAlpha3() {
+        let streams = [
+            audioStream(index: 2, title: "Français", lang: "fra"),
+            audioStream(index: 3, title: "English - DTS", lang: "eng"),
+        ]
+        let name = JellyfinTrackMatcher.name(
+            kind: .audio,
+            optionDisplayName: "Unknown",
+            optionLanguage: "en",             // AVFoundation BCP-47, vs server "eng"
+            ordinal: 2,
+            optionCount: 2,
+            streams: streams,
+            defaultStreamIndex: nil,
+            locale: en
+        )
+        // Before the alpha-2/alpha-3 normalization this missed → "Audio 2".
+        #expect(name == "English - DTS")
+    }
+
+    @Test("ambiguous same-language streams (zh-Hant vs zh-Hans) are not collapsed onto one server title")
+    func ambiguousLanguageDoesNotFalseMatch() {
+        // Two server streams both report lang "zho" (script lives only in the title);
+        // AVFoundation distinguishes them by tag. Alpha-3 normalization makes both
+        // "zh-Hant" and "zho" equal, so a first-match join would label BOTH the same.
+        let streams = [
+            audioStream(index: 2, title: "Chinese - Traditional", lang: "zho"),
+            audioStream(index: 3, title: "Chinese - Simplified", lang: "zho"),
+        ]
+        let name = JellyfinTrackMatcher.name(
+            kind: .audio,
+            optionDisplayName: "Unknown",
+            optionLanguage: "zh-Hant",
+            ordinal: 1,
+            optionCount: 2,
+            streams: streams,
+            defaultStreamIndex: nil,
+            locale: en
+        )
+        // Must NOT slap the first stream's title on; the match is ambiguous, so it
+        // falls through to a language/ordinal fallback instead of a wrong rendition.
+        #expect(name != "Chinese - Traditional")
+        #expect(name != "Chinese - Simplified")
+    }
 }

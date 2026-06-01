@@ -6,14 +6,14 @@ public struct TrackInventory: Sendable, Hashable {
     /// The track each list is *currently* playing, as chosen by the engine's
     /// default selection. Lets the UI show a checkmark on the active track at
     /// start instead of an unselected menu. `nil` subtitle id means "Off".
-    public let selectedAudioID: String?
-    public let selectedSubtitleID: String?
+    public let selectedAudioID: TrackID?
+    public let selectedSubtitleID: TrackID?
 
     public init(
         audio: [AudioTrack],
         subtitles: [SubtitleTrack],
-        selectedAudioID: String? = nil,
-        selectedSubtitleID: String? = nil
+        selectedAudioID: TrackID? = nil,
+        selectedSubtitleID: TrackID? = nil
     ) {
         self.audio = audio
         self.subtitles = subtitles

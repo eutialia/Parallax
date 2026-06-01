@@ -184,11 +184,11 @@ struct PlayerViewModelTests {
 
         let inventory = TrackInventory(
             audio: [
-                AudioTrack(id: "a1", displayName: "English", languageCode: "en"),
-                AudioTrack(id: "a2", displayName: "French", languageCode: "fr"),
+                AudioTrack(id: .avKitOption(1), displayName: "English", languageCode: "en"),
+                AudioTrack(id: .avKitOption(2), displayName: "French", languageCode: "fr"),
             ],
             subtitles: [
-                SubtitleTrack(id: "s1", displayName: "English SDH", languageCode: "en", isForced: false),
+                SubtitleTrack(id: .avKitOption(1), displayName: "English SDH", languageCode: "en", isForced: false),
             ]
         )
         engine.push(.ready(duration: CMTime(seconds: 7200, preferredTimescale: 600), tracks: inventory))
@@ -209,19 +209,19 @@ struct PlayerViewModelTests {
 
         let inventory = TrackInventory(
             audio: [
-                AudioTrack(id: "0", displayName: "Audio 1", languageCode: nil),
-                AudioTrack(id: "1", displayName: "English", languageCode: "en"),
+                AudioTrack(id: .avKitOption(0), displayName: "Audio 1", languageCode: nil),
+                AudioTrack(id: .avKitOption(1), displayName: "English", languageCode: "en"),
             ],
             subtitles: [
-                SubtitleTrack(id: "0", displayName: "English", languageCode: "en", isForced: false),
+                SubtitleTrack(id: .avKitOption(0), displayName: "English", languageCode: "en", isForced: false),
             ],
-            selectedAudioID: "1",
+            selectedAudioID: .avKitOption(1),
             selectedSubtitleID: nil
         )
         engine.push(.ready(duration: CMTime(seconds: 3600, preferredTimescale: 600), tracks: inventory))
         try await Task.sleep(for: .milliseconds(50))
 
-        #expect(vm.selectedAudioTrack?.id == "1")     // reflects engine default, not just first
+        #expect(vm.selectedAudioTrack?.id == .avKitOption(1))     // reflects engine default, not just first
         #expect(vm.selectedSubtitleTrack == nil)      // nil subtitle id == "Off"
     }
 
@@ -249,8 +249,9 @@ struct PlayerViewModelTests {
 
         // Menus reflect the server's FULL track list, not the one-rendition manifest.
         #expect(vm.availableAudioTracks.count == 3)
-        #expect(vm.availableSubtitleTracks.count == 2)
-        #expect(vm.selectedAudioTrack?.id == "3")                       // server default
+        #expect(vm.availableSubtitleTracks.count == 1)                  // PGS (image) sub filtered out — no burn-in this phase
+        #expect(vm.selectedAudioTrack?.id == .jellyfinStream(3))        // server default audio
+        #expect(vm.selectedSubtitleTrack == nil)                        // subtitle never auto-selected (D1)
         #expect(vm.availableAudioTracks.first?.displayName == "Surround 7.1 - Japanese")  // " - Default" stripped
 
         // Advance playback so the switch resumes at a real position.
@@ -261,15 +262,110 @@ struct PlayerViewModelTests {
         try await Task.sleep(for: .milliseconds(50))
 
         // Switch to audio index 4 → re-resolve at the current position with that index.
-        let track = try #require(vm.availableAudioTracks.first { $0.id == "4" })
+        let track = try #require(vm.availableAudioTracks.first { $0.id == .jellyfinStream(4) })
         await vm.selectAudioTrack(track)
 
         #expect(resolveCalls.count == 2)
         #expect(resolveCalls.last?.audio == 4)
-        #expect(resolveCalls.last?.sub == 1)                            // current subtitle preserved
+        #expect(resolveCalls.last?.sub == nil)                          // no subtitle was selected → switch carries none (D1)
         #expect(CMTimeGetSeconds(resolveCalls.last?.start ?? .zero) == 100)
-        #expect(vm.selectedAudioTrack?.id == "4")
+        #expect(vm.selectedAudioTrack?.id == .jellyfinStream(4))
         #expect(engine.loadedAssets.count == 2)                         // engine reloaded
+    }
+
+    @Test("transcode: subtitle selection is isolated — an explicit sub survives an audio switch; none stays none")
+    func transcodeSubtitleIsolation() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
+        let builder = DeviceProfileBuilder(probe: probe)
+        let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
+
+        nonisolated(unsafe) var resolveCalls: [(audio: Int?, sub: Int?)] = []
+        let vm = PlayerViewModel(
+            deviceProfileBuilder: builder,
+            playbackInfo: reporting,
+            resolve: { _, _, _, audioIdx, subIdx in
+                resolveCalls.append((audioIdx, subIdx))
+                return resolved
+            },
+            engineFactory: { _ in engine },
+            audioSession: NoopAudioSession()
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(
+            position: CMTime(seconds: 50, preferredTimescale: 600),
+            duration: CMTime(seconds: 7200, preferredTimescale: 600)
+        ))
+        try await Task.sleep(for: .milliseconds(50))
+
+        // Nothing auto-selected at start (server default is never applied).
+        #expect(vm.selectedSubtitleTrack == nil)
+        #expect(resolveCalls.first?.sub == nil)
+
+        // User turns on the Chinese text subtitle (index 1) → re-resolve with sub=1.
+        let chinese = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(1) })
+        await vm.selectSubtitleTrack(chinese)
+        #expect(resolveCalls.last?.sub == 1)
+        #expect(vm.selectedSubtitleTrack?.id == .jellyfinStream(1))
+
+        // Switch audio → the subtitle (1) must be carried unchanged; audio becomes 4.
+        let audio4 = try #require(vm.availableAudioTracks.first { $0.id == .jellyfinStream(4) })
+        await vm.selectAudioTrack(audio4)
+        #expect(resolveCalls.last?.audio == 4)
+        #expect(resolveCalls.last?.sub == 1)            // subtitle isolated — preserved across the audio switch
+        #expect(vm.selectedSubtitleTrack?.id == .jellyfinStream(1))
+    }
+
+    @Test("isPlaying tracks engine play/pause so the button can resume from pause")
+    func isPlayingTracksPauseState() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let resolved = PlayerFixtures.resolved()
+        let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
+        await vm.start(item: PlayerFixtures.movieDetail())
+
+        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!))
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(vm.isPlaying == true)
+
+        // The bug this guards: phase stays .playing while paused, so a phase-derived
+        // button stayed "pause" forever. isPlaying must flip so resume is reachable.
+        engine.push(.paused(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!))
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(vm.isPlaying == false)
+        #expect(vm.phase == .playing)   // video surface stays up; only isPlaying flips
+    }
+
+    @Test("transcode track switch closes the outgoing session before opening the next")
+    func transcodeSwitchClosesOldSession() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
+        let builder = DeviceProfileBuilder(probe: probe)
+        let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
+        let vm = PlayerViewModel(
+            deviceProfileBuilder: builder,
+            playbackInfo: reporting,
+            resolve: { _, _, _, _, _ in resolved },
+            engineFactory: { _ in engine },
+            audioSession: NoopAudioSession()
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(
+            position: CMTime(seconds: 100, preferredTimescale: 600),
+            duration: CMTime(seconds: 7200, preferredTimescale: 600)
+        ))
+        try await Task.sleep(for: .milliseconds(50))
+
+        let track = try #require(vm.availableAudioTracks.first { $0.id == .jellyfinStream(4) })
+        await vm.selectAudioTrack(track)
+
+        // The outgoing transcode session must get a stopped beat so the server
+        // doesn't leak it — switching tracks re-resolves a fresh play session.
+        let events = await reporting.events
+        let stoppedCount = events.filter { if case .stopped = $0 { return true } else { return false } }.count
+        #expect(stoppedCount == 1)
     }
 
     @Test("selectAudioTrack forwards to the engine and updates selectedAudioTrack")
@@ -279,13 +375,13 @@ struct PlayerViewModelTests {
         let vm = makeVM(reporting: reporting, engine: engine, resolved: PlayerFixtures.resolved(), capturedItem: { _ in })
         await vm.start(item: PlayerFixtures.movieDetail())
 
-        let track = AudioTrack(id: "a1", displayName: "English", languageCode: "en")
+        let track = AudioTrack(id: .avKitOption(1), displayName: "English", languageCode: "en")
         engine.push(.ready(duration: CMTime(seconds: 7200, preferredTimescale: 600), tracks: TrackInventory(audio: [track], subtitles: [])))
         try await Task.sleep(for: .milliseconds(50))
 
         await vm.selectAudioTrack(track)
-        #expect(vm.selectedAudioTrack?.id == "a1")
-        #expect(engine.selectedAudioTrackID == "a1")
+        #expect(vm.selectedAudioTrack?.id == .avKitOption(1))
+        #expect(engine.selectedAudioTrackID == .avKitOption(1))
     }
 
     @Test("selectSubtitleTrack nil deselects and forwards nil to engine")
@@ -295,12 +391,12 @@ struct PlayerViewModelTests {
         let vm = makeVM(reporting: reporting, engine: engine, resolved: PlayerFixtures.resolved(), capturedItem: { _ in })
         await vm.start(item: PlayerFixtures.movieDetail())
 
-        let sub = SubtitleTrack(id: "s1", displayName: "English", languageCode: "en", isForced: false)
+        let sub = SubtitleTrack(id: .avKitOption(1), displayName: "English", languageCode: "en", isForced: false)
         engine.push(.ready(duration: CMTime(seconds: 7200, preferredTimescale: 600), tracks: TrackInventory(audio: [], subtitles: [sub])))
         try await Task.sleep(for: .milliseconds(50))
 
         await vm.selectSubtitleTrack(sub)
-        #expect(vm.selectedSubtitleTrack?.id == "s1")
+        #expect(vm.selectedSubtitleTrack?.id == .avKitOption(1))
 
         await vm.selectSubtitleTrack(nil)
         #expect(vm.selectedSubtitleTrack == nil)
@@ -329,14 +425,14 @@ struct PlayerViewModelTests {
         await vm.start(item: PlayerFixtures.movieDetail())
 
         let inventory = TrackInventory(
-            audio: [AudioTrack(id: "vlc-a1", displayName: "Deutsch", languageCode: "de")],
-            subtitles: [SubtitleTrack(id: "vlc-s1", displayName: "ASS Sub", languageCode: "en", isForced: false)]
+            audio: [AudioTrack(id: .vlc("vlc-a1"), displayName: "Deutsch", languageCode: "de")],
+            subtitles: [SubtitleTrack(id: .vlc("vlc-s1"), displayName: "ASS Sub", languageCode: "en", isForced: false)]
         )
         vlcEngine.push(.ready(duration: CMTime(seconds: 3600, preferredTimescale: 600), tracks: inventory))
         try await Task.sleep(for: .milliseconds(50))
 
         #expect(vm.availableAudioTracks.count == 1)
-        #expect(vm.availableAudioTracks[0].id == "vlc-a1")
+        #expect(vm.availableAudioTracks[0].id == .vlc("vlc-a1"))
         #expect(vm.availableSubtitleTracks.count == 1)
     }
 
@@ -409,6 +505,63 @@ struct PlayerViewModelTests {
         let events = await reporting.events
         let stoppedCount = events.filter { if case .stopped = $0 { return true } else { return false } }.count
         #expect(stoppedCount == 1)
+    }
+
+    @Test("transcode switch whose re-resolve fails reports stop exactly once — no double, no orphan")
+    func transcodeSwitchResolveFailureReportsStoppedOnce() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
+        let builder = DeviceProfileBuilder(probe: probe)
+        let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
+
+        nonisolated(unsafe) var callCount = 0
+        let vm = PlayerViewModel(
+            deviceProfileBuilder: builder,
+            playbackInfo: reporting,
+            resolve: { _, _, _, _, _ in
+                callCount += 1
+                if callCount >= 2 { throw AppError.playback(.resourceUnavailable) }  // the switch re-resolve fails
+                return resolved
+            },
+            engineFactory: { _ in engine },
+            audioSession: NoopAudioSession()
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(
+            position: CMTime(seconds: 100, preferredTimescale: 600),
+            duration: CMTime(seconds: 7200, preferredTimescale: 600)
+        ))
+        try await Task.sleep(for: .milliseconds(50))
+
+        // Switch audio → the re-resolve throws → phase .failed.
+        let track = try #require(vm.availableAudioTracks.first { $0.id == .jellyfinStream(4) })
+        await vm.selectAudioTrack(track)
+
+        // Dismiss → stop(). The outgoing session was already closed by the switch; the
+        // failed session was never started, so stop() must NOT fire a second stop.
+        await vm.stop()
+
+        let stoppedCount = (await reporting.events).filter { if case .stopped = $0 { return true } else { return false } }.count
+        #expect(stoppedCount == 1)
+    }
+
+    @Test("a .failed state clears isPlaying")
+    func failedStateClearsIsPlaying() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let resolved = PlayerFixtures.resolved()
+        let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
+        await vm.start(item: PlayerFixtures.movieDetail())
+
+        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!))
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(vm.isPlaying == true)
+
+        engine.push(.failed(.decodeFailed))
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(vm.isPlaying == false)
+        #expect(vm.phase == .failed(.playback(.decodeFailed)))
     }
 
     // MARK: - NowPlaying (serialized — MPNowPlayingInfoCenter is a process-wide singleton)

@@ -74,10 +74,10 @@ struct PlayerControlsView: View {
         )
     }
 
-    private var isPlaying: Bool {
-        if case .playing = vm.phase { return true }
-        return false
-    }
+    // Reads the VM's explicit play/pause flag, not `phase`: `phase` stays
+    // `.playing` while the engine is paused (the video stays on screen), so
+    // deriving this from `phase` left the button stuck on "pause" — unable to resume.
+    private var isPlaying: Bool { vm.isPlaying }
 
     @ViewBuilder
     private var playPauseButton: some View {

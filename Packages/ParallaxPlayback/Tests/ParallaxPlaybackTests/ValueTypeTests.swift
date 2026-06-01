@@ -75,8 +75,8 @@ struct ValueTypeTests {
 
     @Test("AudioTrack is Hashable and stores all fields")
     func audioTrackFields() {
-        let track = AudioTrack(id: "1", displayName: "English AAC 5.1", languageCode: "en")
-        #expect(track.id == "1")
+        let track = AudioTrack(id: .avKitOption(1), displayName: "English AAC 5.1", languageCode: "en")
+        #expect(track.id == .avKitOption(1))
         #expect(track.displayName == "English AAC 5.1")
         #expect(track.languageCode == "en")
         let set: Set<AudioTrack> = [track, track]
@@ -85,8 +85,8 @@ struct ValueTypeTests {
 
     @Test("SubtitleTrack isForced flag round-trips")
     func subtitleTrackForced() {
-        let forced = SubtitleTrack(id: "2", displayName: "English (Forced)", languageCode: "en", isForced: true)
-        let normal = SubtitleTrack(id: "3", displayName: "English", languageCode: "en", isForced: false)
+        let forced = SubtitleTrack(id: .avKitOption(2), displayName: "English (Forced)", languageCode: "en", isForced: true)
+        let normal = SubtitleTrack(id: .avKitOption(3), displayName: "English", languageCode: "en", isForced: false)
         #expect(forced.isForced == true)
         #expect(normal.isForced == false)
         #expect(forced != normal)
@@ -101,8 +101,8 @@ struct ValueTypeTests {
 
     @Test("TrackInventory stores audio and subtitle tracks")
     func trackInventoryPopulated() {
-        let audio = [AudioTrack(id: "a1", displayName: "English", languageCode: "en")]
-        let subs = [SubtitleTrack(id: "s1", displayName: "French", languageCode: "fr", isForced: false)]
+        let audio = [AudioTrack(id: .vlc("a1"), displayName: "English", languageCode: "en")]
+        let subs = [SubtitleTrack(id: .vlc("s1"), displayName: "French", languageCode: "fr", isForced: false)]
         let inv = TrackInventory(audio: audio, subtitles: subs)
         #expect(inv.audio.count == 1)
         #expect(inv.subtitles.count == 1)

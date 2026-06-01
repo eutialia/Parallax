@@ -46,6 +46,10 @@ final class PlayerViewModel {
     private(set) var selectedSubtitleTrack: SubtitleTrack? = nil
     private(set) var currentPosition: CMTime = .zero
     private(set) var currentDuration: CMTime = .zero
+    /// Whether the engine is actively playing (vs paused). `phase` stays `.playing`
+    /// while paused (the video surface stays on screen), so the play/pause button
+    /// must read this — not `phase` — or it shows "pause" forever and can never resume.
+    private(set) var isPlaying: Bool = false
 
     private let deviceProfileBuilder: DeviceProfileBuilder
     private let playbackInfo: any PlaybackReporting
@@ -164,7 +168,11 @@ final class PlayerViewModel {
         let resolved = try await resolve(item.id, caps, startTime, audioStreamIndex, subtitleStreamIndex)
         self.resolved = resolved
         currentAudioStreamIndex = audioStreamIndex ?? resolved.defaultAudioStreamIndex
-        currentSubtitleStreamIndex = subtitleStreamIndex ?? resolved.defaultSubtitleStreamIndex
+        // Subtitle is the user's EXPLICIT choice only — never seeded from the server
+        // default. That isolates it from audio switching (an audio switch carries
+        // this value unchanged: none stays none, a chosen sub stays chosen) and means
+        // nothing is auto-burned-in. nil = "no subtitle". Burn-in is a later phase.
+        currentSubtitleStreamIndex = subtitleStreamIndex
         if resolved.method == .transcode {
             populateTranscodeMenus(from: resolved)
         }
@@ -181,7 +189,18 @@ final class PlayerViewModel {
             onPause: { [weak self] in Task { await self?.engine?.pause() } }
         )
 
-        try await engine.load(asset)
+        do {
+            try await engine.load(asset)
+        } catch {
+            // A load failure must not leave the engine + its state subscription
+            // dangling: tear down before propagating, so start()/switchTranscodeTrack
+            // surface .failed with no leaked Task and no open AsyncStream.
+            stateTask?.cancel()
+            stateTask = nil
+            await engine.teardown()
+            self.engine = nil
+            throw error
+        }
         await engine.play()
     }
 
@@ -192,10 +211,7 @@ final class PlayerViewModel {
             await engine.teardown()
         }
         nowPlaying.clear()
-        if let resolved, !didReportStopped {
-            didReportStopped = true
-            await playbackInfo.reportStopped(beat(position: lastPosition, isPaused: true, from: resolved))
-        }
+        await reportStoppedIfNeeded()
         await audioSession.deactivate()
         engine = nil
         playingItem = nil
@@ -207,6 +223,21 @@ final class PlayerViewModel {
         selectedSubtitleTrack = nil
         currentPosition = .zero
         currentDuration = .zero
+        isPlaying = false
+    }
+
+    /// Sends the final PlaybackStopped beat for the current session exactly once.
+    /// Shared by `stop()`, a natural `.ended`, and a transcode track switch (which
+    /// closes the outgoing session before opening the next).
+    ///
+    /// Requires `didReportStart`: a session that never reported start must never
+    /// report stop. Without this guard a re-resolve that *fails* (so the flags were
+    /// reset but `self.resolved` was never advanced past the old/failed session)
+    /// would let `stop()` fire a second/orphan PlaybackStopped.
+    private func reportStoppedIfNeeded() async {
+        guard let resolved, didReportStart, !didReportStopped else { return }
+        didReportStopped = true
+        await playbackInfo.reportStopped(beat(position: lastPosition, isPaused: true, from: resolved))
     }
 
     func retry(item: ItemDetail) async {
@@ -223,7 +254,9 @@ final class PlayerViewModel {
         // Transcode carries only the baked-in rendition → re-resolve around the
         // chosen source index (track.id) and reload at the current position.
         if resolved?.method == .transcode {
-            guard let index = Int(track.id) else { return }
+            // Transcode menus carry `.jellyfinStream` ids — the source stream index
+            // the server selects by. A non-jellyfin id here would be a wiring bug.
+            guard let index = track.id.jellyfinStreamIndex else { return }
             selectedAudioTrack = track
             await switchTranscodeTrack(audioStreamIndex: index, subtitleStreamIndex: currentSubtitleStreamIndex)
         } else {
@@ -237,7 +270,7 @@ final class PlayerViewModel {
         if resolved?.method == .transcode {
             selectedSubtitleTrack = track
             // -1 is Jellyfin's "no subtitle" sentinel; nil would mean "server default".
-            let subtitleIndex = track.flatMap { Int($0.id) } ?? -1
+            let subtitleIndex = track.flatMap { $0.id.jellyfinStreamIndex } ?? -1
             await switchTranscodeTrack(audioStreamIndex: currentAudioStreamIndex, subtitleStreamIndex: subtitleIndex)
         } else {
             guard let engine else { return }
@@ -258,13 +291,19 @@ final class PlayerViewModel {
         let absolutePosition = CMTimeAdd(origin, currentPosition)
 
         phase = .loading
+        // Close the outgoing transcode session so the server doesn't leak it,
+        // then reset BOTH reporting flags — the re-resolve is a brand-new play
+        // session that must reportStart and reportStopped on its own terms (the
+        // old session already reported stopped just above).
+        await reportStoppedIfNeeded()
         stateTask?.cancel()
         stateTask = nil
         if let engine {
             await engine.teardown()
         }
         engine = nil
-        didReportStart = false   // new transcode = new play session → reportStart again
+        didReportStart = false
+        didReportStopped = false
 
         do {
             try await beginPlayback(
@@ -275,9 +314,14 @@ final class PlayerViewModel {
             )
         } catch let error as AppError {
             phase = .failed(error)
+            // The switch tore the engine down and ended in a terminal .failed
+            // state — release the audio session like start()'s failure paths do,
+            // rather than holding audio focus until the user dismisses.
+            await audioSession.deactivate()
         } catch {
             Log.playback.error("track switch failed: \(error.networkDiagnostic, privacy: .public)")
             phase = .failed(.unexpected("track switch failed", underlying: AnySendableError(error)))
+            await audioSession.deactivate()
         }
     }
 
@@ -322,6 +366,7 @@ final class PlayerViewModel {
             }
         case .playing(let position, let duration):
             phase = .playing
+            isPlaying = true
             lastPosition = position
             currentPosition = position
             currentDuration = duration
@@ -333,17 +378,17 @@ final class PlayerViewModel {
                 await playbackInfo.reportProgress(beat(position: position, isPaused: false, from: resolved))
             }
         case .paused(let position, let duration):
+            isPlaying = false
             lastPosition = position
             currentPosition = position
             currentDuration = duration
             nowPlaying.update(position: position, duration: duration, isPlaying: false, title: itemTitle)
             await playbackInfo.reportProgress(beat(position: position, isPaused: true, from: resolved))
         case .ended:
-            if !didReportStopped {
-                didReportStopped = true
-                await playbackInfo.reportStopped(beat(position: lastPosition, isPaused: true, from: resolved))
-            }
+            isPlaying = false
+            await reportStoppedIfNeeded()
         case .failed(let error):
+            isPlaying = false
             phase = .failed(Self.map(error))
         }
     }
@@ -367,25 +412,20 @@ final class PlayerViewModel {
     /// on the transcode path) and marks the active rendition. Track `id` is the
     /// source stream index — `selectAudioTrack`/`selectSubtitleTrack` feed it
     /// straight back to the server as `AudioStreamIndex`/`SubtitleStreamIndex`.
+    ///
+    /// Image subtitles (PGS/VobSub) are dropped: the server can only deliver them
+    /// by burning into the video, which this phase deliberately doesn't do. Only
+    /// text subs (carried in the HLS manifest) are offered until burn-in lands.
     private func populateTranscodeMenus(from resolved: ResolvedPlayback) {
         availableAudioTracks = resolved.mediaStreams
             .filter { $0.kind == .audio }
-            .map { AudioTrack(id: String($0.index), displayName: Self.label(for: $0), languageCode: $0.language) }
+            .map { AudioTrack(id: .jellyfinStream($0.index), displayName: $0.menuLabel, languageCode: $0.language) }
         availableSubtitleTracks = resolved.mediaStreams
-            .filter { $0.kind == .subtitle }
-            .map { SubtitleTrack(id: String($0.index), displayName: Self.label(for: $0), languageCode: $0.language, isForced: $0.isForced) }
+            .filter { $0.kind == .subtitle && !$0.isImageSubtitle }
+            .map { SubtitleTrack(id: .jellyfinStream($0.index), displayName: $0.menuLabel, languageCode: $0.language, isForced: $0.isForced) }
 
-        selectedAudioTrack = availableAudioTracks.first { $0.id == currentAudioStreamIndex.map(String.init) }
-        selectedSubtitleTrack = availableSubtitleTracks.first { $0.id == currentSubtitleStreamIndex.map(String.init) }
-    }
-
-    /// A track's menu label, from the server's pre-formatted title (dropping the
-    /// redundant " - Default" — the checkmark already marks the active track).
-    private static func label(for stream: MediaStreamInfo) -> String {
-        let title = (stream.displayTitle ?? stream.language ?? "Track \(stream.index)")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let suffix = " - Default"
-        return title.hasSuffix(suffix) ? String(title.dropLast(suffix.count)) : title
+        selectedAudioTrack = availableAudioTracks.first { $0.id == currentAudioStreamIndex.map(TrackID.jellyfinStream) }
+        selectedSubtitleTrack = availableSubtitleTracks.first { $0.id == currentSubtitleStreamIndex.map(TrackID.jellyfinStream) }
     }
 
     private static func makeAsset(from resolved: ResolvedPlayback) -> PlayableAsset {

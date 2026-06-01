@@ -24,6 +24,10 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     private var statusObservation: NSKeyValueObservation?
     private var timeObserverToken: Any?
     private var endObserver: NSObjectProtocol?
+    /// Loads the media-selection inventory off the actor. Held so `teardown()`
+    /// can cancel it — otherwise a slow `loadMediaSelectionGroup` keeps the
+    /// AVPlayerItem (and its open network connection) alive after dismissal.
+    private var inventoryTask: Task<Void, Never>?
 
     // Server-side track metadata for the current asset, used to label tracks a
     // transcode manifest left unnamed.
@@ -111,6 +115,8 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     }
 
     public func teardown() async {
+        inventoryTask?.cancel()
+        inventoryTask = nil
         statusObservation?.invalidate()
         statusObservation = nil
         if let token = timeObserverToken {
@@ -145,7 +151,7 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
             // loads — which dropped the subtitle list on device. Resolve the
             // inventory on the actor, then emit .ready; duration is ready now.
             let duration = item.duration
-            Task { [weak self] in
+            inventoryTask = Task { [weak self] in
                 guard let self else { return }
                 let tracks = await self.loadTrackInventory(of: item)
                 self.continuation.yield(.ready(duration: duration, tracks: tracks))
@@ -193,8 +199,12 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     private func loadTrackInventory(of item: AVPlayerItem) async -> TrackInventory {
         guard let asset = item.asset as? AVURLAsset else { return .empty }
 
-        let audibleGroup = try? await asset.loadMediaSelectionGroup(for: .audible)
-        let legibleGroup = try? await asset.loadMediaSelectionGroup(for: .legible)
+        // The two groups are independent — load them concurrently so the track
+        // menus surface one round-trip sooner instead of audible-then-legible.
+        async let audibleTask = asset.loadMediaSelectionGroup(for: .audible)
+        async let legibleTask = asset.loadMediaSelectionGroup(for: .legible)
+        let audibleGroup = try? await audibleTask
+        let legibleGroup = try? await legibleTask
 
         let audio = audioTracks(from: audibleGroup)
         let subtitles = subtitleTracks(from: legibleGroup)
@@ -208,15 +218,15 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         )
     }
 
-    /// The index (matching the `id` scheme above) of the option the engine is
-    /// currently playing in `group`, so the UI can show it pre-selected.
-    private static func selectedID(in group: AVMediaSelectionGroup?, selection: AVMediaSelection) -> String? {
+    /// The id (an `.avKitOption` index) of the option the engine is currently
+    /// playing in `group`, so the UI can show it pre-selected.
+    private static func selectedID(in group: AVMediaSelectionGroup?, selection: AVMediaSelection) -> TrackID? {
         guard
             let group,
             let option = selection.selectedMediaOption(in: group),
             let index = group.options.firstIndex(of: option)
         else { return nil }
-        return String(index)
+        return .avKitOption(index)
     }
 
     /// `id` is the option's index within its *full* selection group (not the
@@ -234,7 +244,7 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
             ordinal += 1
             let lang = Self.language(of: option)
             result.append(AudioTrack(
-                id: String(index),
+                id: .avKitOption(index),
                 displayName: JellyfinTrackMatcher.name(
                     kind: .audio,
                     optionDisplayName: option.displayName,
@@ -261,7 +271,7 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
             ordinal += 1
             let lang = Self.language(of: option)
             result.append(SubtitleTrack(
-                id: String(index),
+                id: .avKitOption(index),
                 displayName: JellyfinTrackMatcher.name(
                     kind: .subtitle,
                     optionDisplayName: option.displayName,
@@ -323,11 +333,13 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         return try? await asset.loadMediaSelectionGroup(for: .legible)
     }
 
-    private func select(trackID: String, characteristic: AVMediaCharacteristic) async {
+    private func select(trackID: TrackID, characteristic: AVMediaCharacteristic) async {
+        // This engine only ever vends `.avKitOption` ids; any other namespace
+        // (a Jellyfin stream index from the transcode path) is not ours to honor.
         guard
+            let index = trackID.avKitOptionIndex,
             let asset = currentItem?.asset as? AVURLAsset,
             let group = try? await asset.loadMediaSelectionGroup(for: characteristic),
-            let index = Int(trackID),
             group.options.indices.contains(index)
         else { return }
         currentItem?.select(group.options[index], in: group)

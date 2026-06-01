@@ -54,12 +54,12 @@ struct AVKitEngineTests {
         // AVPlayerItem over a real asset isn't feasible in a unit test; verify the
         // TrackInventory shape round-trips (real mapping is device-verified in 5f).
         let inv = TrackInventory(
-            audio: [AudioTrack(id: "opt-en", displayName: "English", languageCode: "en")],
-            subtitles: [SubtitleTrack(id: "opt-fr", displayName: "French SDH", languageCode: "fr", isForced: false)]
+            audio: [AudioTrack(id: .avKitOption(0), displayName: "English", languageCode: "en")],
+            subtitles: [SubtitleTrack(id: .avKitOption(1), displayName: "French SDH", languageCode: "fr", isForced: false)]
         )
         #expect(inv.audio.count == 1)
-        #expect(inv.audio[0].id == "opt-en")
+        #expect(inv.audio[0].id == .avKitOption(0))
         #expect(inv.subtitles.count == 1)
-        #expect(inv.subtitles[0].id == "opt-fr")
+        #expect(inv.subtitles[0].id == .avKitOption(1))
     }
 }

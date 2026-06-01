@@ -114,9 +114,9 @@ enum PlayerFixtures {
             MediaStreamInfo(index: i, kind: .audio, displayTitle: title, language: "jpn",
                             codec: "truehd", channels: 8, isExternal: false, isForced: false, isDefault: i == 3)
         }
-        func sub(_ i: Int, _ title: String, _ lang: String) -> MediaStreamInfo {
+        func sub(_ i: Int, _ title: String, _ lang: String, _ codec: String = "subrip") -> MediaStreamInfo {
             MediaStreamInfo(index: i, kind: .subtitle, displayTitle: title, language: lang,
-                            codec: "subrip", channels: nil, isExternal: true, isForced: false, isDefault: i == 1)
+                            codec: codec, channels: nil, isExternal: true, isForced: false, isDefault: i == 1)
         }
         return ResolvedPlayback(
             itemID: "movie-1",
@@ -133,8 +133,8 @@ enum PlayerFixtures {
                 audio(3, "Surround 7.1 - Japanese - Default"),
                 audio(4, "Surround 5.1 - Japanese"),
                 audio(5, "Stereo - Japanese"),
-                sub(1, "Chinese", "zho"),
-                sub(7, "English - PGSSUB", "eng"),
+                sub(1, "Chinese", "zho"),                       // text (SubRip)
+                sub(7, "English - PGSSUB", "eng", "pgssub"),    // image — filtered out (burn-in only)
             ],
             defaultAudioStreamIndex: 3,
             defaultSubtitleStreamIndex: 1

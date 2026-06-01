@@ -47,8 +47,8 @@ public final class FakePlaybackEngine: PlaybackEngine {
 
     public nonisolated(unsafe) private(set) var loadedAssets: [PlayableAsset] = []
     public nonisolated(unsafe) private(set) var calls: [String] = []
-    public nonisolated(unsafe) private(set) var selectedAudioTrackID: String? = nil
-    public nonisolated(unsafe) private(set) var selectedSubtitleTrackID: String? = nil
+    public nonisolated(unsafe) private(set) var selectedAudioTrackID: TrackID? = nil
+    public nonisolated(unsafe) private(set) var selectedSubtitleTrackID: TrackID? = nil
 
     private let continuation: AsyncStream<PlaybackState>.Continuation
 

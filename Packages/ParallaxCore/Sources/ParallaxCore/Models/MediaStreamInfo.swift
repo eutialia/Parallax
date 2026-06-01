@@ -53,3 +53,30 @@ public struct MediaStreamInfo: Sendable, Hashable, Identifiable {
         self.isDefault = isDefault
     }
 }
+
+public extension MediaStreamInfo {
+    /// A menu-ready label: the server's title (else language, else "Track N"),
+    /// trimmed, with the redundant trailing " - Default" dropped (the menu marks
+    /// the active track with a checkmark already). Single source of truth for the
+    /// suffix rule, shared by the transcode menu and the AVKit track matcher.
+    var menuLabel: String {
+        Self.strippingDefaultSuffix(displayTitle ?? language ?? "Track \(index)")
+    }
+
+    /// Trims `title` and drops a trailing " - Default".
+    static func strippingDefaultSuffix(_ title: String) -> String {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let suffix = " - Default"
+        return trimmed.hasSuffix(suffix) ? String(trimmed.dropLast(suffix.count)) : trimmed
+    }
+
+    /// An image-based subtitle (PGS / VobSub / DVD / DVB) — the server can only
+    /// deliver these by burning them into the video. Text formats (SubRip, ASS,
+    /// WebVTT…) ride along in the HLS manifest and need no burn-in, so only they
+    /// are offered on the transcode path until burn-in lands in a later phase.
+    var isImageSubtitle: Bool {
+        guard kind == .subtitle, let codec = codec?.lowercased() else { return false }
+        let imageMarkers = ["pgs", "vobsub", "dvdsub", "dvd_subtitle", "dvbsub", "dvb_subtitle", "xsub"]
+        return imageMarkers.contains { codec.contains($0) }
+    }
+}
