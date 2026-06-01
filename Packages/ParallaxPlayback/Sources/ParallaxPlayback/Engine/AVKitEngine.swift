@@ -136,6 +136,49 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         continuation.finish()
     }
 
+    public func debugSnapshot() async -> PlaybackDebugInfo {
+        guard let item = currentItem else { return .empty }
+        var info = PlaybackDebugInfo()
+
+        let size = item.presentationSize
+        if size.width > 0, size.height > 0 {
+            info.presentationWidth = Int(size.width)
+            info.presentationHeight = Int(size.height)
+        }
+
+        // Access log: the negative sentinel means "not yet measured".
+        if let event = item.accessLog()?.events.last {
+            info.indicatedBitrate = event.indicatedBitrate > 0 ? event.indicatedBitrate : nil
+            info.observedBitrate = event.observedBitrate > 0 ? event.observedBitrate : nil
+            info.droppedVideoFrames = event.numberOfDroppedVideoFrames >= 0 ? event.numberOfDroppedVideoFrames : nil
+        }
+
+        if let videoTrack = item.tracks.first(where: { $0.assetTrack?.mediaType == .video }) {
+            let fps = Double(videoTrack.currentVideoFrameRate)
+            info.renderedFrameRate = fps > 0 ? fps : nil
+        }
+
+        if let range = item.loadedTimeRanges.last?.timeRangeValue {
+            let end = CMTimeGetSeconds(CMTimeRangeGetEnd(range))
+            let now = CMTimeGetSeconds(item.currentTime())
+            if end.isFinite, now.isFinite { info.bufferedSeconds = max(0, end - now) }
+        }
+
+        // The engine's TRUE selection — what's actually audible/legible right now,
+        // which is what answers "I picked a subtitle but nothing renders".
+        if let asset = item.asset as? AVURLAsset {
+            let audibleGroup = try? await asset.loadMediaSelectionGroup(for: .audible)
+            let legibleGroup = try? await asset.loadMediaSelectionGroup(for: .legible)
+            let selection = item.currentMediaSelection
+            info.audibleOptions = audibleGroup?.options.map(\.displayName) ?? []
+            info.legibleOptions = legibleGroup?.options.map(\.displayName) ?? []
+            info.selectedAudible = audibleGroup.flatMap { selection.selectedMediaOption(in: $0)?.displayName }
+            info.selectedLegible = legibleGroup.flatMap { selection.selectedMediaOption(in: $0)?.displayName }
+        }
+
+        return info
+    }
+
     // MARK: - Private
 
     private func handleStatusChange(_ item: AVPlayerItem) {

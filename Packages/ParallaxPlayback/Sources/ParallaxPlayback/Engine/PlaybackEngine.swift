@@ -43,4 +43,21 @@ public protocol PlaybackEngine: AnyObject, Sendable {
     /// Stop playback, remove observers, finish the state stream continuation.
     /// Must be called before releasing the engine.
     func teardown() async
+
+    /// A runtime snapshot for the debug HUD — actual decoded dimensions, network
+    /// bitrates, dropped frames, and the engine's *true* audio/subtitle selection.
+    /// Polled (not render-bound); reflects "now", not the requested stream.
+    func debugSnapshot() async -> PlaybackDebugInfo
+
+    /// Nudge the subtitle timing by `milliseconds` (VLC live-corrects subtitle
+    /// sync; AVKit has no such control and ignores it). Positive = subtitles later.
+    func setSubtitleDelay(milliseconds: Int) async
+}
+
+public extension PlaybackEngine {
+    /// Default: no debug info. Concrete engines override with real telemetry.
+    func debugSnapshot() async -> PlaybackDebugInfo { .empty }
+
+    /// Default: no-op. Only engines that can retime subtitles (VLC) override.
+    func setSubtitleDelay(milliseconds: Int) async {}
 }

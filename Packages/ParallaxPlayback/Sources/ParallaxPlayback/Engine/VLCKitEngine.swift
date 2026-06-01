@@ -138,6 +138,34 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         }
     }
 
+    public func debugSnapshot() async -> PlaybackDebugInfo {
+        var info = PlaybackDebugInfo()
+
+        let size = player.videoSize
+        if size.width > 0, size.height > 0 {
+            info.presentationWidth = Int(size.width)
+            info.presentationHeight = Int(size.height)
+        }
+
+        info.audibleOptions = player.audioTracks.map(\.trackName)
+        info.selectedAudible = player.audioTracks.first(where: { $0.isSelected })?.trackName
+        info.legibleOptions = player.textTracks.map(\.trackName)
+        info.selectedLegible = player.textTracks.first(where: { $0.isSelected })?.trackName
+
+        // VLC stores the subtitle delay in microseconds; surface it in ms (and
+        // a non-nil value is how the HUD knows to offer the ± nudge control).
+        info.subtitleDelayMs = player.currentVideoSubTitleDelay / 1000
+
+        return info
+    }
+
+    /// VLC retimes subtitles live (microsecond-precision). Used by the HUD to
+    /// diagnose / work around the segmented-WebVTT desync on the AVKit path by
+    /// proving the SRT itself is correctly timed under VLC.
+    public func setSubtitleDelay(milliseconds: Int) async {
+        player.currentVideoSubTitleDelay = milliseconds * 1000
+    }
+
     /// Teardown order: nil delegate → stop → nil media → finish continuation.
     public func teardown() async {
         player.delegate = nil
