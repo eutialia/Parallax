@@ -16,3 +16,6 @@ Packages/*/.swiftpm/
 # Generated coverage / logs
 *.xcresult
 *.log
+
+# Claude Code (local skills/settings)
+.claude/
