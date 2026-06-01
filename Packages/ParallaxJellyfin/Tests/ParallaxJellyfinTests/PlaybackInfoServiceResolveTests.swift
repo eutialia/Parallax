@@ -49,11 +49,22 @@ struct PlaybackInfoServiceResolveTests {
         video.type = .video
         video.index = 0
         video.codec = "hevc"
+        video.profile = "Main 10"
+        video.bitDepth = 10
+        video.width = 3840
+        video.height = 2160
+        video.videoRange = .hdr
+        video.videoRangeType = .hdr10
+        video.colorSpace = "bt2020nc"
+        video.bitRate = 18_200_000
+        video.realFrameRate = 23.976
         var audio = MediaStream()
         audio.type = .audio
         audio.index = 3
         audio.codec = "truehd"
         audio.channels = 8
+        audio.sampleRate = 48_000
+        audio.bitRate = 4_500_000
         audio.displayTitle = "English - TrueHD 7.1"
         audio.language = "eng"
         audio.isDefault = true
@@ -63,7 +74,17 @@ struct PlaybackInfoServiceResolveTests {
         subtitle.codec = "subrip"
         subtitle.displayTitle = "Chinese"
         subtitle.language = "zho"
+        subtitle.deliveryMethod = .hls
         source.mediaStreams = [video, audio, subtitle]
+        return source
+    }
+
+    /// A transcode whose URL carries `TranscodeReasons` (the server tells us *why*
+    /// it's transcoding) — parsed onto `ResolvedPlayback.transcodeReasons`.
+    private func transcodeSourceWithReasons() -> MediaSourceInfo {
+        var source = transcodeSource()
+        source.transcodingURL =
+            "/videos/item-1/master.m3u8?api_key=tok-1&PlaySessionId=ps-1&TranscodeReasons=ContainerNotSupported,AudioCodecNotSupported"
         return source
     }
 
@@ -163,10 +184,55 @@ struct PlaybackInfoServiceResolveTests {
         #expect(audio?.language == "eng")
         #expect(audio?.channels == 8)
         #expect(audio?.isDefault == true)
+        #expect(audio?.sampleRate == 48_000)
+        #expect(audio?.bitRate == 4_500_000)
 
         let subtitle = resolved.mediaStreams.first { $0.kind == .subtitle }
         #expect(subtitle?.index == 1)
         #expect(subtitle?.displayTitle == "Chinese")
+        #expect(subtitle?.subtitleDeliveryMethod == "Hls")
+    }
+
+    @Test("Video stream's HDR / resolution / bit-depth debug fields are mapped")
+    func videoDebugFieldsMapped() async throws {
+        let (service, _) = makeService(source: transcodeSource())
+        let resolved = try await service.resolve(
+            item: ItemID(rawValue: "item-1"),
+            capabilities: caps(),
+            startTime: nil
+        )
+        let video = resolved.mediaStreams.first { $0.kind == .video }
+        #expect(video?.profile == "Main 10")
+        #expect(video?.bitDepth == 10)
+        #expect(video?.width == 3840)
+        #expect(video?.height == 2160)
+        #expect(video?.videoRange == "HDR")
+        #expect(video?.videoRangeType == "HDR10")
+        #expect(video?.colorSpace == "bt2020nc")
+        #expect(video?.bitRate == 18_200_000)
+        #expect(video?.frameRate == 23.976)
+    }
+
+    @Test("TranscodeReasons in the transcoding URL are parsed onto ResolvedPlayback")
+    func transcodeReasonsParsed() async throws {
+        let (service, _) = makeService(source: transcodeSourceWithReasons())
+        let resolved = try await service.resolve(
+            item: ItemID(rawValue: "item-1"),
+            capabilities: caps(),
+            startTime: nil
+        )
+        #expect(resolved.transcodeReasons == ["ContainerNotSupported", "AudioCodecNotSupported"])
+    }
+
+    @Test("Direct-play has no transcode reasons")
+    func directPlayNoTranscodeReasons() async throws {
+        let (service, _) = makeService(source: directPlaySource())
+        let resolved = try await service.resolve(
+            item: ItemID(rawValue: "item-1"),
+            capabilities: caps(),
+            startTime: nil
+        )
+        #expect(resolved.transcodeReasons.isEmpty)
     }
 
     @Test("startTime is converted to ticks (seconds * 10_000_000) for the POST and echoed back")

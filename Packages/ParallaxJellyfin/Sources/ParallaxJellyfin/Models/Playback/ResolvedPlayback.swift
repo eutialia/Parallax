@@ -29,6 +29,10 @@ public struct ResolvedPlayback: Sendable {
     /// actually carries. `nil` when the server didn't specify one.
     public let defaultAudioStreamIndex: Int?
     public let defaultSubtitleStreamIndex: Int?
+    /// Why the server is transcoding (e.g. "ContainerNotSupported",
+    /// "AudioCodecNotSupported"), parsed from the transcoding URL. Empty for
+    /// direct-play/-stream or when the server didn't say.
+    public let transcodeReasons: [String]
 
     public init(
         itemID: String,
@@ -43,7 +47,8 @@ public struct ResolvedPlayback: Sendable {
         startTime: CMTime?,
         mediaStreams: [MediaStreamInfo] = [],
         defaultAudioStreamIndex: Int? = nil,
-        defaultSubtitleStreamIndex: Int? = nil
+        defaultSubtitleStreamIndex: Int? = nil,
+        transcodeReasons: [String] = []
     ) {
         self.itemID = itemID
         self.url = url
@@ -58,5 +63,6 @@ public struct ResolvedPlayback: Sendable {
         self.mediaStreams = mediaStreams
         self.defaultAudioStreamIndex = defaultAudioStreamIndex
         self.defaultSubtitleStreamIndex = defaultSubtitleStreamIndex
+        self.transcodeReasons = transcodeReasons
     }
 }

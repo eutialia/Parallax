@@ -131,8 +131,25 @@ public actor PlaybackInfoService {
             startTime: startTime,
             mediaStreams: Self.mediaStreamInfos(from: source),
             defaultAudioStreamIndex: source.defaultAudioStreamIndex,
-            defaultSubtitleStreamIndex: source.defaultSubtitleStreamIndex
+            defaultSubtitleStreamIndex: source.defaultSubtitleStreamIndex,
+            transcodeReasons: Self.transcodeReasons(from: source.transcodingURL)
         )
+    }
+
+    /// Parses the `TranscodeReasons` query item the server appends to the
+    /// transcoding URL (comma-separated). Reads the source's `transcodingURL`
+    /// string directly — the authoritative value, before the client rebuilds the
+    /// final URL. Empty for direct-play or when the server didn't include it —
+    /// best-effort diagnostic, never load-bearing.
+    private static func transcodeReasons(from transcodingURL: String?) -> [String] {
+        guard let transcodingURL,
+              let raw = URLComponents(string: transcodingURL)?
+                .queryItems?.first(where: { $0.name == "TranscodeReasons" })?.value
+        else { return [] }
+        return raw
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
     }
 
     /// Maps the source's `MediaStream`s to neutral `MediaStreamInfo`, dropping
@@ -149,9 +166,27 @@ public actor PlaybackInfoService {
                 channels: stream.channels,
                 isExternal: stream.isExternal ?? false,
                 isForced: stream.isForced ?? false,
-                isDefault: stream.isDefault ?? false
+                isDefault: stream.isDefault ?? false,
+                profile: stream.profile,
+                bitDepth: stream.bitDepth,
+                width: stream.width,
+                height: stream.height,
+                videoRange: stream.videoRange?.rawValue,
+                videoRangeType: stream.videoRangeType?.rawValue,
+                colorSpace: stream.colorSpace,
+                bitRate: stream.bitRate,
+                frameRate: Self.roundedFrameRate(stream.realFrameRate ?? stream.averageFrameRate),
+                sampleRate: stream.sampleRate,
+                subtitleDeliveryMethod: stream.deliveryMethod?.rawValue
             )
         }
+    }
+
+    /// Rounds a frame rate to 3 decimals so 23.976 / 59.94 display cleanly
+    /// (a raw `Float`→`Double` widen leaves 23.97599983…).
+    private static func roundedFrameRate(_ value: Float?) -> Double? {
+        guard let value else { return nil }
+        return (Double(value) * 1000).rounded() / 1000
     }
 
     private static func kind(from type: MediaStreamType?) -> MediaStreamInfo.Kind {
