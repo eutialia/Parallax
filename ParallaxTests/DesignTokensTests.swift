@@ -47,4 +47,11 @@ struct DesignTokensTests {
         let l = rgba(.buttonFill, dark: false)
         #expect(abs(l.r - 0x2A/255.0) < 0.01 && abs(l.b - 0x1D/255.0) < 0.01)  // #2A241D
     }
+
+    @Test("radius + spacing scales hold the handoff values")
+    func metricScales() {
+        #expect(Radius.panel == 24 && Radius.card == 18 && Radius.field == 14 && Radius.tile == 12)
+        #expect(Space.s8 == 8 && Space.s22 == 22 && Space.s40 == 40)
+        #expect(ContentInset.phone == 18 && ContentInset.pad == 40)
+    }
 }

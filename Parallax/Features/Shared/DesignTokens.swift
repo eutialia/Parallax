@@ -27,6 +27,9 @@ extension Color {
 // Named after Apple's semantic vocabulary (label / secondaryLabel / fill /
 // separator / background) + app-specific roles (glass, button, chip, selection).
 // Dark / Light(Matinee) values from the design handoff.
+// Always reference these qualified — `Color.fill` / `Color.background` / `Color.separator`;
+// unqualified `.fill` / `.background` / `.separator` in a modifier resolve to SwiftUI's
+// built-in ShapeStyle, not these tokens.
 extension Color {
     static let background         = Color(light: 0xD0C8BA, dark: 0x07070B)
     static let backgroundElevated = Color(light: 0xDCD5C8, dark: 0x101016)
@@ -50,4 +53,35 @@ extension Color {
     static let chipSelectedFill   = Color(light: 0x2A241D, dark: 0xFFFFFF, darkAlpha: 0.92)
     static let chipSelectedLabel  = Color(light: 0xF7F2EA, dark: 0x0A0A0C)
     static let selectionFill      = Color(light: 0x2D200F, lightAlpha: 0.09, dark: 0xFFFFFF, darkAlpha: 0.15)
+}
+
+// MARK: - Metric tokens (radii, spacing, content insets)
+//
+// "native+" call: radii + content insets are custom (the concentric system is the
+// brand "feel" lever); native List/Form keep their own system insets; typography
+// is native Dynamic Type (added per-screen in later phases).
+enum Radius {
+    static let panel: CGFloat = 24    // sidebar, large bars, modals
+    static let card: CGFloat = 18     // cards, list groups, info cards
+    static let field: CGFloat = 14    // text fields, form buttons
+    static let tile: CGFloat = 12     // posters, thumbs, small tiles
+    static let navItem: CGFloat = 12  // sidebar/tab item pills (panel − 12 inset)
+}
+
+enum Space {
+    static let s3: CGFloat = 3
+    static let s8: CGFloat = 8
+    static let s12: CGFloat = 12
+    static let s14: CGFloat = 14
+    static let s18: CGFloat = 18
+    static let s22: CGFloat = 22
+    static let s26: CGFloat = 26
+    static let s30: CGFloat = 30
+    static let s40: CGFloat = 40
+    static let s60: CGFloat = 60
+}
+
+enum ContentInset {
+    static let phone: CGFloat = 18    // iOS content inset
+    static let pad: CGFloat = 40      // iPad content inset
 }
