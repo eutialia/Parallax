@@ -25,6 +25,7 @@ Schemes: `Parallax` (app), `ParallaxCore`, `ParallaxFileBrowse`, `ParallaxJellyf
 - **Package tests need an iOS Simulator** (macOS `swift test` fails: NukeUI→`SwiftUICore`). From the package dir:
   `cd Packages/ParallaxJellyfin && xcodebuild test -scheme ParallaxJellyfin -destination 'platform=iOS Simulator,name=iPhone 17 Pro'`
   Expect **9 pre-existing Keychain failures** (`errSecMissingEntitlement -34018`) — not regressions; `-only-testing:ParallaxJellyfinTests/<Suite>` to skip.
+- **`ParallaxPlayback` tests need `-scheme ParallaxPlayback-Package`** (the bare `ParallaxPlayback` scheme has no test action). Swift Testing (`@Test`) results are absent from the XCTest "Executed N tests" line (reads 0) — grep `✔`/`Test run with N tests` instead.
 
 ## Rules
 
