@@ -2,9 +2,8 @@ import SwiftUI
 import ParallaxJellyfin
 
 struct RootTabView: View {
-    @Environment(AppDependencies.self) private var deps
+    @Environment(AppRouter.self) private var router
     @State private var selectedTab: AppTab = .home
-    @State private var activeServerID: ServerID?
 
     enum AppTab: Hashable {
         case home, library, search, servers
@@ -26,15 +25,11 @@ struct RootTabView: View {
             }
         }
         .tabViewStyle(.sidebarAdaptable)
-        .id(activeServerID)
-        .task(id: activeServerID) {
-            // Re-read on appearance and whenever activeServerID changes.
-            // First-launch: activeServerID is nil → reads the actual active
-            // and sets it, triggering one more task pass that's a no-op.
-            let current = await deps.serverStore.active?.id
-            if current != activeServerID {
-                activeServerID = current
-            }
-        }
+        // Remount every tab when the active server changes. `activeServerID`
+        // is owned by AppRouter and updated by every site that switches, adds,
+        // or signs out a server, so a switch from the Servers tab tears down
+        // and rebuilds Home/Library/Search against the new server instead of
+        // leaving them on the previous one's content.
+        .id(router.activeServerID)
     }
 }

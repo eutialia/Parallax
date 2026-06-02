@@ -37,6 +37,9 @@ final class ServerListViewModel {
             Log.persistence.error("ServerList setActive failed for \(id.rawValue): \(error.networkDiagnostic)")
         }
         await refresh()
+        // Propagate the switch to the router so RootTabView remounts the tabs
+        // against the new server (Home/Library/Search reload).
+        router.updateForCurrentSession(await serverStore.active)
     }
 
     func signOut(_ session: Session) async {
@@ -50,9 +53,10 @@ final class ServerListViewModel {
             signOutErrorMessage = "Couldn't fully sign out of \(session.serverName)."
         }
         await refresh()
-        if sessions.isEmpty {
-            router.goToLogin()
-        }
+        // Re-point the router at whatever is active now: nil (no sessions left)
+        // routes to login; otherwise the store's fallback active server, with a
+        // tab remount so the screens leave the signed-out server's content.
+        router.updateForCurrentSession(await serverStore.active)
     }
 
     func presentAddServer() {
@@ -62,5 +66,8 @@ final class ServerListViewModel {
     func dismissAddServer() async {
         presentingAddServer = false
         await refresh()
+        // A newly added server may have become active; remount the tabs so the
+        // screens follow it instead of staying on the previously active server.
+        router.updateForCurrentSession(await serverStore.active)
     }
 }
