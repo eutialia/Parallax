@@ -205,6 +205,9 @@ struct DeviceProfileTranslatorTests {
         #expect(trans.first?.type == .video)
         #expect(trans.first?.videoCodec == "h264,hevc")
         #expect(trans.first?.audioCodec == "aac,ac3,eac3")
+        // Always request up to 7.1 (8ch); the OS downmixes/spatializes per route.
+        // Without this Jellyfin defaults the transcode to 5.1 and downmixes 7.1 sources.
+        #expect(trans.first?.maxAudioChannels == "8")
         // In-manifest WebVTT mis-times on fMP4 (jellyfin#16647); we fetch a sidecar.
         #expect(trans.first?.enableSubtitlesInManifest == false)
     }

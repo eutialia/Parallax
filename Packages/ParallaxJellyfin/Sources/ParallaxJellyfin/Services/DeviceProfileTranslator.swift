@@ -117,6 +117,15 @@ enum DeviceProfileTranslator {
             // correctly-timed sidecar VTT and draw it ourselves, so the server
             // must NOT embed the mis-timed in-manifest WebVTT (jellyfin#16647).
             enableSubtitlesInManifest: false,
+            // Request up to 7.1 (8ch) on every transcode. Audio channel layout
+            // is output-side: iOS/tvOS hand AVPlayer the full multichannel bed
+            // and downmix for the speaker / spatialize for AirPods / re-render
+            // on route change — live, free, no re-negotiation. So we never clamp
+            // channels to the current route (that would strand a mid-playback
+            // headphone switch on a stereo stream); we always deliver the widest
+            // bed and let the OS adapt. Without this Jellyfin defaults the
+            // transcode to 5.1 and downmixes 7.1 sources.
+            maxAudioChannels: "8",
             type: .video,
             videoCodec: "h264,hevc"
         )
