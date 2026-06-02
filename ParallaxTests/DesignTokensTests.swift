@@ -34,4 +34,17 @@ struct DesignTokensTests {
         #expect(abs(rgba(c, dark: false).a - 0.5) < 0.01)
         #expect(abs(rgba(c, dark: true).a - 0.25) < 0.01)
     }
+
+    @Test("background token matches the handoff dark hex #07070B")
+    func backgroundDark() {
+        let d = rgba(.background, dark: true)
+        #expect(abs(d.r - 7.0/255) < 0.01 && abs(d.g - 7.0/255) < 0.01 && abs(d.b - 11.0/255) < 0.01)
+    }
+
+    @Test("buttonFill is white in dark, espresso in light")
+    func buttonFillFlips() {
+        #expect(rgba(.buttonFill, dark: true).r > 0.99)          // #FFFFFF
+        let l = rgba(.buttonFill, dark: false)
+        #expect(abs(l.r - 0x2A/255.0) < 0.01 && abs(l.b - 0x1D/255.0) < 0.01)  // #2A241D
+    }
 }
