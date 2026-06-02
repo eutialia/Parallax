@@ -44,6 +44,12 @@ final class PlayerViewModel {
     private(set) var availableSubtitleTracks: [SubtitleTrack] = []
     private(set) var selectedAudioTrack: AudioTrack? = nil
     private(set) var selectedSubtitleTrack: SubtitleTrack? = nil
+    /// Parsed cues for a client-rendered subtitle (transcode path): the
+    /// correctly-timed sidecar WebVTT that `SubtitleOverlayView` draws. Empty
+    /// when no text subtitle is active, or on direct-play where the engine
+    /// renders subtitles itself. This is how we sidestep the in-manifest WebVTT
+    /// drift (jellyfin/jellyfin#16647).
+    private(set) var activeSubtitleCues: [SubtitleCue] = []
     private(set) var currentPosition: CMTime = .zero
     private(set) var currentDuration: CMTime = .zero
     /// Whether the engine is actively playing (vs paused). `phase` stays `.playing`
@@ -56,11 +62,19 @@ final class PlayerViewModel {
     private let resolve: ResolveCall
     private let engineFactory: @Sendable (PlaybackEngineID) -> any PlaybackEngine
     private let audioSession: any AudioSessionControlling
+    /// Fetches sidecar subtitle bytes. Injectable so tests feed canned WebVTT
+    /// without a network round-trip; production reads the authed VTT URL.
+    private let subtitleFetch: @Sendable (URL) async -> Data?
 
     private var stateTask: Task<Void, Never>?
+    private var subtitleFetchTask: Task<Void, Never>?
     private var resolved: ResolvedPlayback?
     private var didReportStart = false
     private var didReportStopped = false
+    /// True only while a transcode track switch is reloading the (reused) engine.
+    /// Gates `handle(_:)` so the outgoing stream's trailing beats are ignored — a
+    /// stale `.playing` would otherwise claim the new session's `reportStart`.
+    private var isSwitchingTracks = false
     private var lastPosition: CMTime = .zero
     private let nowPlaying = NowPlayingController()
     private var itemTitle: String = ""
@@ -84,13 +98,15 @@ final class PlayerViewModel {
         playbackInfo: any PlaybackReporting,
         resolve: @escaping ResolveCall,
         engineFactory: @escaping @Sendable (PlaybackEngineID) -> any PlaybackEngine,
-        audioSession: any AudioSessionControlling
+        audioSession: any AudioSessionControlling,
+        subtitleFetch: @escaping @Sendable (URL) async -> Data? = { try? await URLSession.shared.data(from: $0).0 }
     ) {
         self.deviceProfileBuilder = deviceProfileBuilder
         self.playbackInfo = playbackInfo
         self.resolve = resolve
         self.engineFactory = engineFactory
         self.audioSession = audioSession
+        self.subtitleFetch = subtitleFetch
     }
 
     isolated deinit {
@@ -100,6 +116,7 @@ final class PlayerViewModel {
         // stop()); cancelling here makes teardown immediate if stop() was
         // never reached.
         stateTask?.cancel()
+        subtitleFetchTask?.cancel()
     }
 
     func start(item: ItemDetail) async {
@@ -162,7 +179,8 @@ final class PlayerViewModel {
         item: ItemDetail,
         startTime: CMTime?,
         audioStreamIndex: Int?,
-        subtitleStreamIndex: Int?
+        subtitleStreamIndex: Int?,
+        reusingEngine: Bool = false
     ) async throws {
         let caps = await deviceProfileBuilder.build()
         let resolved = try await resolve(item.id, caps, startTime, audioStreamIndex, subtitleStreamIndex)
@@ -180,14 +198,24 @@ final class PlayerViewModel {
         let asset = Self.makeAsset(from: resolved)
         let id = EngineSelector.select(hints: asset.hints)
 
-        let engine = engineFactory(id)
-        self.engine = engine
-        subscribe(to: engine)
-        nowPlaying.configure(
-            onSeek: { [weak self] time in Task { await self?.engine?.seek(to: time) } },
-            onPlay: { [weak self] in Task { await self?.engine?.play() } },
-            onPause: { [weak self] in Task { await self?.engine?.pause() } }
-        )
+        // Reuse the live engine when a transcode track switch keeps the same engine
+        // type: reloading the asset on the existing AVPlayer keeps its video layer
+        // mounted, so the surface holds the last frame through the swap instead of
+        // tearing down to black. A fresh play (or an engine-type change) builds a new
+        // engine and wires up its state subscription + Now Playing handlers.
+        let engine: any PlaybackEngine
+        if reusingEngine, let existing = self.engine, existing.id == id {
+            engine = existing
+        } else {
+            engine = engineFactory(id)
+            self.engine = engine
+            subscribe(to: engine)
+            nowPlaying.configure(
+                onSeek: { [weak self] time in Task { await self?.engine?.seek(to: time) } },
+                onPlay: { [weak self] in Task { await self?.engine?.play() } },
+                onPause: { [weak self] in Task { await self?.engine?.pause() } }
+            )
+        }
 
         do {
             try await engine.load(asset)
@@ -195,13 +223,22 @@ final class PlayerViewModel {
             // A load failure must not leave the engine + its state subscription
             // dangling: tear down before propagating, so start()/switchTranscodeTrack
             // surface .failed with no leaked Task and no open AsyncStream.
-            stateTask?.cancel()
-            stateTask = nil
-            await engine.teardown()
-            self.engine = nil
+            await tearDownEngine()
             throw error
         }
         await engine.play()
+    }
+
+    /// Cancels the engine's state subscription and tears the engine down, clearing
+    /// the reference. The focused engine-only teardown (no session report, no UI
+    /// reset) used by a load failure and a failed track switch.
+    private func tearDownEngine() async {
+        stateTask?.cancel()
+        stateTask = nil
+        if let engine {
+            await engine.teardown()
+            self.engine = nil
+        }
     }
 
     func stop() async {
@@ -221,6 +258,9 @@ final class PlayerViewModel {
         availableSubtitleTracks = []
         selectedAudioTrack = nil
         selectedSubtitleTrack = nil
+        subtitleFetchTask?.cancel()
+        subtitleFetchTask = nil
+        activeSubtitleCues = []
         currentPosition = .zero
         currentDuration = .zero
         isPlaying = false
@@ -268,10 +308,19 @@ final class PlayerViewModel {
 
     func selectSubtitleTrack(_ track: SubtitleTrack?) async {
         if resolved?.method == .transcode {
+            // Client-side rendering: the chosen text subtitle is fetched as a
+            // correctly-timed sidecar VTT and drawn by SubtitleOverlayView — NO
+            // server re-transcode, so toggling subtitles is instant and immune to
+            // the in-manifest WebVTT drift. (Image subs never reach here; they're
+            // filtered out of the transcode menu — burn-in is a later phase.)
             selectedSubtitleTrack = track
-            // -1 is Jellyfin's "no subtitle" sentinel; nil would mean "server default".
-            let subtitleIndex = track.flatMap { $0.id.jellyfinStreamIndex } ?? -1
-            await switchTranscodeTrack(audioStreamIndex: currentAudioStreamIndex, subtitleStreamIndex: subtitleIndex)
+            if let index = track?.id.jellyfinStreamIndex {
+                currentSubtitleStreamIndex = index
+                loadSidecarSubtitle(streamIndex: index)
+            } else {
+                currentSubtitleStreamIndex = -1   // Jellyfin's "no subtitle" sentinel
+                clearSidecarSubtitle()
+            }
         } else {
             guard let engine else { return }
             await engine.setSubtitleTrack(track)
@@ -279,48 +328,80 @@ final class PlayerViewModel {
         }
     }
 
+    /// Fetches + parses the sidecar WebVTT for `streamIndex` into
+    /// `activeSubtitleCues`. Cancels any in-flight fetch first so a slow/stale
+    /// parse can't land on screen after a newer pick.
+    private func loadSidecarSubtitle(streamIndex: Int) {
+        subtitleFetchTask?.cancel()
+        guard let url = resolved?.subtitleStreamURLs[streamIndex] else {
+            activeSubtitleCues = []
+            return
+        }
+        let fetch = subtitleFetch
+        subtitleFetchTask = Task { [weak self] in
+            guard let data = await fetch(url) else { return }
+            let cues = WebVTTParser.parse(data: data)
+            if Task.isCancelled { return }
+            self?.activeSubtitleCues = cues
+        }
+    }
+
+    private func clearSidecarSubtitle() {
+        subtitleFetchTask?.cancel()
+        subtitleFetchTask = nil
+        activeSubtitleCues = []
+    }
+
     /// Rebuilds the transcode around new stream indices, resuming at the current
     /// position. Costs a brief re-buffer — the server has to re-encode around the
-    /// chosen track (a PGS subtitle, for instance, is burned in). The audio
-    /// session stays active; only the engine + stream are replaced.
+    /// chosen track. The engine instance is REUSED (reloaded), so the video surface
+    /// stays mounted and holds the last frame through the swap instead of blinking to
+    /// black; the audio session stays active too.
     private func switchTranscodeTrack(audioStreamIndex: Int?, subtitleStreamIndex: Int?) async {
         guard let item = playingItem else { return }
-        // currentPosition is relative to the *current* transcode (which began at
-        // its own origin); the new request needs the absolute source position.
-        let origin = resolved?.startTime ?? .zero
-        let absolutePosition = CMTimeAdd(origin, currentPosition)
+        // The transcode plays a full-timeline HLS playlist that the engine SEEKS to
+        // the resume offset (Jellyfin ignores StartTimeTicks for the playlist start),
+        // so currentPosition is already absolute media time — resume the new stream
+        // right there. (Adding the old origin double-counted it, so resume drifted
+        // further forward on every track switch.)
+        let resumePosition = currentPosition
 
+        // Keep the engine + its layer alive across the switch (beginPlayback reloads
+        // it). Suppress the outgoing stream's trailing beats while we do.
+        isSwitchingTracks = true
+        defer { isSwitchingTracks = false }
+
+        // Freeze the current frame at the moment of selection — the frosted cover
+        // frosts over it while the new transcode buffers, and pausing stops the
+        // outgoing audio instead of letting it play on under the cover.
+        await engine?.pause()
         phase = .loading
         // Close the outgoing transcode session so the server doesn't leak it,
-        // then reset BOTH reporting flags — the re-resolve is a brand-new play
-        // session that must reportStart and reportStopped on its own terms (the
-        // old session already reported stopped just above).
+        // then reset BOTH reporting flags — the reload is a brand-new play session
+        // that must reportStart and reportStopped on its own terms.
         await reportStoppedIfNeeded()
-        stateTask?.cancel()
-        stateTask = nil
-        if let engine {
-            await engine.teardown()
-        }
-        engine = nil
         didReportStart = false
         didReportStopped = false
 
         do {
             try await beginPlayback(
                 item: item,
-                startTime: absolutePosition,
+                startTime: resumePosition,
                 audioStreamIndex: audioStreamIndex,
-                subtitleStreamIndex: subtitleStreamIndex
+                subtitleStreamIndex: subtitleStreamIndex,
+                reusingEngine: true
             )
         } catch let error as AppError {
             phase = .failed(error)
-            // The switch tore the engine down and ended in a terminal .failed
-            // state — release the audio session like start()'s failure paths do,
-            // rather than holding audio focus until the user dismisses.
+            // resolve threw before the reused engine reloaded → the stale stream is
+            // still mounted; tear it down so it doesn't play on under the error UI,
+            // and release the audio session like start()'s failure paths do.
+            await tearDownEngine()
             await audioSession.deactivate()
         } catch {
             Log.playback.error("track switch failed: \(error.networkDiagnostic, privacy: .public)")
             phase = .failed(.unexpected("track switch failed", underlying: AnySendableError(error)))
+            await tearDownEngine()
             await audioSession.deactivate()
         }
     }
@@ -337,6 +418,10 @@ final class PlayerViewModel {
     }
 
     private func handle(_ state: PlaybackState) async {
+        // While a transcode track switch reloads the reused engine, ignore the
+        // outgoing stream's trailing beats — a stale `.playing` would claim the new
+        // session's reportStart and the server would never register it starting.
+        if isSwitchingTracks { return }
         guard let resolved else { return }
         switch state {
         case .idle, .loading:
@@ -433,9 +518,14 @@ final class PlayerViewModel {
             url: resolved.url,
             headers: nil,
             hints: deliveredHints(for: resolved),
-            // Direct-play/-stream seek on .ready; transcode bakes the offset
-            // into the stream URL, so only honor startTime here for non-transcode.
-            startTime: resolved.method == .transcode ? nil : resolved.startTime,
+            // Every method resumes by SEEKING client-side. Jellyfin's HLS transcode
+            // serves a full-timeline VOD playlist (position 0 = media start) and
+            // ignores StartTimeTicks for the offset, so — exactly like direct-play —
+            // the engine must seek to resolved.startTime on .ready. (Was nil for
+            // transcode on the false "baked into the URL" assumption, which made
+            // every transcode — first-play resume and post-track-switch — restart
+            // at 0:00.)
+            startTime: resolved.startTime,
             externalSubtitles: [],
             // Authoritative track names/languages — the engine uses these to
             // label tracks a transcode manifest left unnamed.

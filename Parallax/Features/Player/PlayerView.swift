@@ -22,19 +22,26 @@ struct PlayerView: View {
                 switch vm.phase {
                 case .idle, .loading:
                     videoHost(vm)
-                    ProgressView()
-                        .controlSize(.large)
-                        .tint(.white)
                 case .playing:
                     videoHost(vm)
+                    SubtitleOverlayView(vm: vm)
                     PlayerControlsView(vm: vm) { dismiss() }
                 case .failed(let error):
                     errorOverlay(error, vm: vm)
                 }
-            } else {
-                ProgressView().tint(.white)
             }
         }
+        // Loading + reload visual: a frosted, shimmering cover over the frozen frame,
+        // replacing the spinner. On a transcode track switch the engine is paused +
+        // reused, so the last frame stays put under the frost until the new stream
+        // plays; the cover fades out when playback resumes.
+        .overlay {
+            if showsReloadCover {
+                TrackReloadCover()
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.3), value: showsReloadCover)
         #if DEBUG
         .overlay(alignment: .topLeading) {
             if showDebugHUD, let vm = viewModel {
@@ -84,6 +91,17 @@ struct PlayerView: View {
         .onDisappear {
             let vm = viewModel
             Task { await vm?.stop() }
+        }
+    }
+
+    /// Whether to show the frosted reload cover: before the VM exists and while it's
+    /// idle/loading (initial load and a track-switch re-buffer). Hidden once playing
+    /// (the video shows) or failed (the error overlay shows).
+    private var showsReloadCover: Bool {
+        guard let vm = viewModel else { return true }
+        switch vm.phase {
+        case .idle, .loading: return true
+        case .playing, .failed: return false
         }
     }
 

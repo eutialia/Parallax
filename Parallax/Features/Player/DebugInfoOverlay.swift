@@ -119,6 +119,12 @@ struct DebugInfoOverlay: View {
         }
         // Engine truth — the live diagnosis for "selected but doesn't render".
         row("engine ▸", snapshot.selectedLegible ?? "none active")
+        // Client-side path: on a transcode we fetch a correctly-timed sidecar
+        // VTT and draw it ourselves (SubtitleOverlayView), so `engine ▸` reading
+        // "none active" is EXPECTED — the cues render via the overlay, not AVPlayer.
+        if !vm.activeSubtitleCues.isEmpty {
+            row("client ▸", "\(vm.activeSubtitleCues.count) cues · sidecar VTT")
+        }
         if let warning = subtitleWarning {
             Text(warning)
                 .foregroundStyle(.yellow)
@@ -216,6 +222,11 @@ struct DebugInfoOverlay: View {
 
     /// A live diagnosis line for the two subtitle bugs.
     private var subtitleWarning: String? {
+        // Client-side rendering active: cues are drawn by SubtitleOverlayView from
+        // a correctly-timed sidecar VTT, so the engine-selection / HLS-desync
+        // diagnostics below don't apply — suppress them to avoid false alarms.
+        if !vm.activeSubtitleCues.isEmpty { return nil }
+
         let pickedInMenu = vm.selectedSubtitleTrack != nil
         let activeInEngine = snapshot.selectedLegible != nil
         if pickedInMenu && !activeInEngine && !snapshot.legibleOptions.isEmpty {

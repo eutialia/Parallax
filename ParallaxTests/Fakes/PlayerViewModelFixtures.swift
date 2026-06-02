@@ -137,7 +137,10 @@ enum PlayerFixtures {
                 sub(7, "English - PGSSUB", "eng", "pgssub"),    // image — filtered out (burn-in only)
             ],
             defaultAudioStreamIndex: 3,
-            defaultSubtitleStreamIndex: 1
+            defaultSubtitleStreamIndex: 1,
+            subtitleStreamURLs: [
+                1: URL(string: "https://jf.example.com/Videos/movie-1/ms-1/Subtitles/1/Stream.vtt?api_key=abc&copyTimestamps=true")!
+            ]
         )
     }
 
