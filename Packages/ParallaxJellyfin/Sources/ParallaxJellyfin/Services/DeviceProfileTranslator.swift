@@ -98,13 +98,16 @@ enum DeviceProfileTranslator {
 
     // MARK: — Private: Transcode floor
 
-    private static func transcodingProfile() -> TranscodingProfile {
+    private static func transcodingProfile() -> TranscodingProfile { 
         TranscodingProfile(
             protocol: .hls,
             audioCodec: "aac,ac3,eac3",
             container: "mp4",
             context: .streaming,
-            enableSubtitlesInManifest: true,
+            // Client-side subtitle rendering: we fetch each text subtitle as a
+            // correctly-timed sidecar VTT and draw it ourselves, so the server
+            // must NOT embed the mis-timed in-manifest WebVTT (jellyfin#16647).
+            enableSubtitlesInManifest: false,
             type: .video,
             videoCodec: "h264,hevc"
         )
@@ -113,9 +116,14 @@ enum DeviceProfileTranslator {
     // MARK: — Private: SubtitleProfiles
 
     private static func subtitleProfiles(for capabilities: DeviceCapabilities) -> [SubtitleProfile] {
-        // AVKit subtitle delivery: VTT in-manifest or as an external sidecar.
+        // Text subtitles are delivered EXTERNAL only — never in-manifest. Advertising
+        // `vtt/.hls` made the server embed the source's *default* subtitle as an
+        // in-manifest WebVTT track on a transcode (even with no subtitle requested);
+        // AVPlayer auto-selected and rendered it mis-timed (jellyfin#16647), stacked
+        // under our own sidecar overlay and impossible to turn off. With external-only
+        // the transcode manifest carries no legible group, and each text sub is fetched
+        // as a correctly-timed sidecar VTT (see PlaybackInfoService.subtitleStreamURLs).
         var profiles: [SubtitleProfile] = [
-            SubtitleProfile(format: "vtt", method: .hls),
             SubtitleProfile(format: "vtt", method: .external),
             // SRT external: SubtitleResolver delivers sidecar URLs via
             // addPlaybackSlave on VLC; AVKit receives SRT via existing sidecar path.

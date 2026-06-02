@@ -92,6 +92,23 @@ public final class DefaultJellyfinPlaybackClient: JellyfinPlaybackClient, @unche
         client().url(path: relativePath)
     }
 
+    public func subtitleStreamURL(itemID: String, mediaSourceID: String, streamIndex: Int, format: String) -> URL? {
+        var params = Paths.GetSubtitleParameters()
+        // Absolute cue timestamps — we parse + render this ourselves and must NOT
+        // inherit the in-manifest X-TIMESTAMP-MAP offset (jellyfin#16647).
+        params.isCopyTimestamps = true
+        let request = Paths.getSubtitle(
+            routeItemID: itemID,
+            routeMediaSourceID: mediaSourceID,
+            routeIndex: streamIndex,
+            routeFormat: format,
+            parameters: params
+        )
+        // queryAPIKey: true puts api_key in the query (same as streamURL) so the
+        // sidecar fetch authenticates without an auth header.
+        return client().url(with: request, queryAPIKey: true)
+    }
+
     // MARK: - Progress reporting (non-deprecated /Sessions/Playing paths)
 
     public func reportStart(_ info: PlaybackStateInfo) async throws {

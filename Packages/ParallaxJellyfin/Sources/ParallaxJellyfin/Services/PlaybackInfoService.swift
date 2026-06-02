@@ -118,6 +118,14 @@ public actor PlaybackInfoService {
             """
         )
 
+        let streams = Self.mediaStreamInfos(from: source)
+        let subtitleURLs = Self.subtitleStreamURLs(
+            streams: streams,
+            itemID: item.rawValue,
+            mediaSourceID: mediaSourceID,
+            client: client
+        )
+
         return ResolvedPlayback(
             itemID: item.rawValue,
             url: url,
@@ -129,11 +137,35 @@ public actor PlaybackInfoService {
             playSessionID: playSessionID,
             runtime: runtime,
             startTime: startTime,
-            mediaStreams: Self.mediaStreamInfos(from: source),
+            mediaStreams: streams,
             defaultAudioStreamIndex: source.defaultAudioStreamIndex,
             defaultSubtitleStreamIndex: source.defaultSubtitleStreamIndex,
+            subtitleStreamURLs: subtitleURLs,
             transcodeReasons: Self.transcodeReasons(from: source.transcodingURL)
         )
+    }
+
+    /// Builds an authed sidecar WebVTT URL per TEXT subtitle stream. Image subs
+    /// (PGS/VobSub) are skipped — the server can't deliver them as VTT. These are
+    /// fetched + rendered client-side to dodge the in-manifest WebVTT drift.
+    private static func subtitleStreamURLs(
+        streams: [MediaStreamInfo],
+        itemID: String,
+        mediaSourceID: String,
+        client: JellyfinPlaybackClient
+    ) -> [Int: URL] {
+        var map: [Int: URL] = [:]
+        for stream in streams where stream.kind == .subtitle && !stream.isImageSubtitle {
+            if let url = client.subtitleStreamURL(
+                itemID: itemID,
+                mediaSourceID: mediaSourceID,
+                streamIndex: stream.index,
+                format: "vtt"
+            ) {
+                map[stream.index] = url
+            }
+        }
+        return map
     }
 
     /// Parses the `TranscodeReasons` query item the server appends to the

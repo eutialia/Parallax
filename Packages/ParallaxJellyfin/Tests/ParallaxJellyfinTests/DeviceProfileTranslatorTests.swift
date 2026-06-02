@@ -193,9 +193,9 @@ struct DeviceProfileTranslatorTests {
         #expect(!parts.contains("hls"))
     }
 
-    // MARK: — TranscodingProfile (unchanged)
+    // MARK: — TranscodingProfile
 
-    @Test("TranscodingProfile targets HLS mp4 with subtitles in the manifest")
+    @Test("TranscodingProfile targets HLS mp4; subtitles are NOT in the manifest (client renders sidecar VTT)")
     func transcoding() {
         let profile = DeviceProfileTranslator.deviceProfile(from: tieredCaps())
         let trans = profile.transcodingProfiles ?? []
@@ -205,17 +205,20 @@ struct DeviceProfileTranslatorTests {
         #expect(trans.first?.type == .video)
         #expect(trans.first?.videoCodec == "h264,hevc")
         #expect(trans.first?.audioCodec == "aac,ac3,eac3")
-        #expect(trans.first?.enableSubtitlesInManifest == true)
+        // In-manifest WebVTT mis-times on fMP4 (jellyfin#16647); we fetch a sidecar.
+        #expect(trans.first?.enableSubtitlesInManifest == false)
     }
 
     // MARK: — SubtitleProfiles
 
-    @Test("SubtitleProfiles include VTT via HLS and external")
+    @Test("SubtitleProfiles deliver VTT external only — never in-manifest HLS (jellyfin#16647)")
     func vttSubtitleProfiles() {
         let profile = DeviceProfileTranslator.deviceProfile(from: tieredCaps())
         let subs = profile.subtitleProfiles ?? []
-        #expect(subs.contains { $0.format == "vtt" && $0.method == .hls })
         #expect(subs.contains { $0.format == "vtt" && $0.method == .external })
+        // No subtitle may be delivered in the HLS manifest: an in-manifest WebVTT
+        // mis-times on fMP4 segments and AVPlayer auto-renders it under our sidecar.
+        #expect(!subs.contains { $0.method == .hls })
     }
 
     @Test("SubtitleProfiles include SRT external for VLC sidecar delivery")

@@ -29,6 +29,12 @@ public struct ResolvedPlayback: Sendable {
     /// actually carries. `nil` when the server didn't specify one.
     public let defaultAudioStreamIndex: Int?
     public let defaultSubtitleStreamIndex: Int?
+    /// Authed sidecar WebVTT URLs keyed by source subtitle stream index. Built
+    /// with `copyTimestamps` so cues carry ABSOLUTE times; the app fetches and
+    /// renders these client-side instead of the mis-timed in-manifest HLS WebVTT
+    /// (jellyfin/jellyfin#16647). Only text subtitles appear here (image subs
+    /// can't be delivered as VTT). Empty when there are no text subtitles.
+    public let subtitleStreamURLs: [Int: URL]
     /// Why the server is transcoding (e.g. "ContainerNotSupported",
     /// "AudioCodecNotSupported"), parsed from the transcoding URL. Empty for
     /// direct-play/-stream or when the server didn't say.
@@ -48,6 +54,7 @@ public struct ResolvedPlayback: Sendable {
         mediaStreams: [MediaStreamInfo] = [],
         defaultAudioStreamIndex: Int? = nil,
         defaultSubtitleStreamIndex: Int? = nil,
+        subtitleStreamURLs: [Int: URL] = [:],
         transcodeReasons: [String] = []
     ) {
         self.itemID = itemID
@@ -63,6 +70,7 @@ public struct ResolvedPlayback: Sendable {
         self.mediaStreams = mediaStreams
         self.defaultAudioStreamIndex = defaultAudioStreamIndex
         self.defaultSubtitleStreamIndex = defaultSubtitleStreamIndex
+        self.subtitleStreamURLs = subtitleStreamURLs
         self.transcodeReasons = transcodeReasons
     }
 }

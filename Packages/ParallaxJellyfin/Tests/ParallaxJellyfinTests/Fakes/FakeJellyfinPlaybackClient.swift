@@ -17,6 +17,7 @@ final class FakeJellyfinPlaybackClient: JellyfinPlaybackClient, @unchecked Senda
     private(set) var playbackInfoCalls: [(itemID: String, profile: DeviceProfile, startTimeTicks: Int?, audioStreamIndex: Int?, subtitleStreamIndex: Int?)] = []
     private(set) var streamURLRequests: [StreamRequest] = []
     private(set) var transcodePaths: [String] = []
+    private(set) var subtitleStreamURLRequests: [(itemID: String, mediaSourceID: String, streamIndex: Int, format: String)] = []
     private(set) var startInfos: [PlaybackStateInfo] = []
     private(set) var progressInfos: [PlaybackStateInfo] = []
     private(set) var stoppedInfos: [PlaybackStopInfo] = []
@@ -42,6 +43,11 @@ final class FakeJellyfinPlaybackClient: JellyfinPlaybackClient, @unchecked Senda
     func transcodeURL(relativePath: String) -> URL? {
         transcodePaths.append(relativePath)
         return transcodeURLValue
+    }
+
+    func subtitleStreamURL(itemID: String, mediaSourceID: String, streamIndex: Int, format: String) -> URL? {
+        subtitleStreamURLRequests.append((itemID, mediaSourceID, streamIndex, format))
+        return URL(string: "https://fake.example.com/Videos/\(itemID)/\(mediaSourceID)/Subtitles/\(streamIndex)/Stream.\(format)?api_key=tok-1&copyTimestamps=true")
     }
 
     func reportStart(_ info: PlaybackStateInfo) async throws {

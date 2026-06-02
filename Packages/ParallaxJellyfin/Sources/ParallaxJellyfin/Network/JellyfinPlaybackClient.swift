@@ -45,6 +45,13 @@ public protocol JellyfinPlaybackClient: Sendable {
     func streamURL(_ request: StreamRequest) -> URL?
     func transcodeURL(relativePath: String) -> URL?
 
+    /// A self-contained, authed URL for a single subtitle stream in `format`
+    /// (e.g. "vtt"). Built with `copyTimestamps` so the sidecar carries ABSOLUTE
+    /// cue times — the client fetches and renders this itself instead of the
+    /// in-manifest HLS WebVTT, whose `X-TIMESTAMP-MAP` drifts on fMP4 segments
+    /// (jellyfin/jellyfin#16647). `nil` if the URL can't be built.
+    func subtitleStreamURL(itemID: String, mediaSourceID: String, streamIndex: Int, format: String) -> URL?
+
     func reportStart(_ info: PlaybackStateInfo) async throws
     func reportProgress(_ info: PlaybackStateInfo) async throws
     func reportStopped(_ info: PlaybackStopInfo) async throws

@@ -193,6 +193,30 @@ struct PlaybackInfoServiceResolveTests {
         #expect(subtitle?.subtitleDeliveryMethod == "Hls")
     }
 
+    @Test("Sidecar VTT URLs are built for text subtitles (copyTimestamps + api_key) and exclude image subs")
+    func subtitleSidecarURLsBuilt() async throws {
+        var source = transcodeSource()          // text sub: index 1, subrip
+        var pgs = MediaStream()                  // image sub: index 2, pgssub
+        pgs.type = .subtitle
+        pgs.index = 2
+        pgs.codec = "pgssub"
+        source.mediaStreams?.append(pgs)
+        let (service, _) = makeService(source: source)
+
+        let resolved = try await service.resolve(
+            item: ItemID(rawValue: "item-1"),
+            capabilities: caps(),
+            startTime: nil
+        )
+
+        #expect(resolved.subtitleStreamURLs.count == 1)
+        #expect(resolved.subtitleStreamURLs[2] == nil)          // image sub excluded
+        let url = try #require(resolved.subtitleStreamURLs[1]?.absoluteString)
+        #expect(url.contains("/Subtitles/1/Stream.vtt"))
+        #expect(url.contains("copyTimestamps=true"))
+        #expect(url.contains("api_key="))
+    }
+
     @Test("Video stream's HDR / resolution / bit-depth debug fields are mapped")
     func videoDebugFieldsMapped() async throws {
         let (service, _) = makeService(source: transcodeSource())
