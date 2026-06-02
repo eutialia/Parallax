@@ -252,7 +252,10 @@ struct PlayerViewModelTests {
         #expect(vm.availableSubtitleTracks.count == 1)                  // PGS (image) sub filtered out — no burn-in this phase
         #expect(vm.selectedAudioTrack?.id == .jellyfinStream(3))        // server default audio
         #expect(vm.selectedSubtitleTrack == nil)                        // subtitle never auto-selected (D1)
-        #expect(vm.availableAudioTracks.first?.displayName == "Surround 7.1 - Japanese")  // " - Default" stripped
+        // menuLabel strips " - Default"; the truehd source can't be stream-copied on the
+        // HLS transcode, so it's re-encoded to AAC and the menu honestly shows the
+        // delivered format (7.1 = min(8 source ch, 8)) rather than promising TrueHD.
+        #expect(vm.availableAudioTracks.first?.displayName == "Surround 7.1 - Japanese → AAC 7.1")
 
         // Advance playback so the switch resumes at a real position.
         engine.push(.playing(

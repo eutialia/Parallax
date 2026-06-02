@@ -504,13 +504,39 @@ final class PlayerViewModel {
     private func populateTranscodeMenus(from resolved: ResolvedPlayback) {
         availableAudioTracks = resolved.mediaStreams
             .filter { $0.kind == .audio }
-            .map { AudioTrack(id: .jellyfinStream($0.index), displayName: $0.menuLabel, languageCode: $0.language) }
+            .map { AudioTrack(id: .jellyfinStream($0.index), displayName: Self.transcodeAudioLabel(for: $0), languageCode: $0.language) }
         availableSubtitleTracks = resolved.mediaStreams
             .filter { $0.kind == .subtitle && !$0.isImageSubtitle }
             .map { SubtitleTrack(id: .jellyfinStream($0.index), displayName: $0.menuLabel, languageCode: $0.language, isForced: $0.isForced) }
 
         selectedAudioTrack = availableAudioTracks.first { $0.id == currentAudioStreamIndex.map(TrackID.jellyfinStream) }
         selectedSubtitleTrack = availableSubtitleTracks.first { $0.id == currentSubtitleStreamIndex.map(TrackID.jellyfinStream) }
+    }
+
+    /// Rough delivered-format label for the transcode audio menu. The track's
+    /// `menuLabel` names the SOURCE mix (e.g. "English - TrueHD 7.1"), but on the
+    /// HLS transcode/remux the server only stream-COPIES audio whose codec is in
+    /// the device profile's transcode set (aac/ac3/eac3) — that arrives untouched,
+    /// channels and any DD+ Atmos intact, so the source label is already honest.
+    /// Anything else (TrueHD, DTS-HD, FLAC…) is re-encoded to AAC capped at 7.1, so
+    /// we annotate the delivered format and the menu doesn't promise a lossless /
+    /// Atmos track we can't actually deliver. Placeholder presentation baked into
+    /// the label — slated for a proper redesign.
+    private static func transcodeAudioLabel(for stream: MediaStreamInfo) -> String {
+        let copyCodecs: Set<String> = ["aac", "ac3", "eac3"]
+        if copyCodecs.contains((stream.codec ?? "").lowercased()) {
+            return stream.menuLabel
+        }
+        let channels = min(stream.channels ?? 2, 8)   // we never request more than 7.1
+        let layout: String
+        switch channels {
+        case ...1: layout = "Mono"
+        case 2:    layout = "Stereo"
+        case 6:    layout = "5.1"
+        case 8:    layout = "7.1"
+        default:   layout = "\(channels)ch"
+        }
+        return "\(stream.menuLabel) → AAC \(layout)"
     }
 
     private static func makeAsset(from resolved: ResolvedPlayback) -> PlayableAsset {
