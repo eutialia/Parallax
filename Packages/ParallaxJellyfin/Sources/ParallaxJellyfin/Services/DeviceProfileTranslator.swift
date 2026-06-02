@@ -38,11 +38,20 @@ enum DeviceProfileTranslator {
             directPlayProfiles.append(vlcDirectPlay(from: capabilities))
         }
 
+        // Serialize the device's max bitrate. Sending nil does NOT mean
+        // "unlimited" — Jellyfin then applies an 8 Mbps default, which forces a
+        // full re-encode (1080p + HDR→SDR tone-map) of any 4K HDR source rather
+        // than a stream-copy. With the real ceiling declared, the server copies
+        // the bitstream when it fits (verified: a 4K HDR10/PQ HLS variant is
+        // offered once the budget ≥ source bitrate). Same value for static
+        // (direct-play) and streaming (transcode/remux) so neither path is
+        // silently throttled to the default.
+        let maxBitrate = Int(capabilities.maxBitrate.rawValue)
         return DeviceProfile(
             codecProfiles: codecProfiles(for: capabilities),
             directPlayProfiles: directPlayProfiles,
-            maxStaticBitrate: nil,
-            maxStreamingBitrate: nil,
+            maxStaticBitrate: maxBitrate,
+            maxStreamingBitrate: maxBitrate,
             subtitleProfiles: subtitleProfiles(for: capabilities),
             transcodingProfiles: [transcodingProfile()]
         )

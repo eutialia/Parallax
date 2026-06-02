@@ -266,10 +266,13 @@ struct DeviceProfileTranslatorTests {
 
     // MARK: — Bitrate caps
 
-    @Test("Bitrate caps are nil regardless of capabilities.maxBitrate")
-    func noBitrateCap() {
+    @Test("Bitrate caps are serialized from capabilities.maxBitrate")
+    func serializesBitrateCap() {
         let profile = DeviceProfileTranslator.deviceProfile(from: tieredCaps())
-        #expect(profile.maxStreamingBitrate == nil)
-        #expect(profile.maxStaticBitrate == nil)
+        // tieredCaps() declares .megabits(120) → 120_000_000 bps on the wire.
+        // nil would make Jellyfin apply an 8 Mbps default and re-encode 4K HDR.
+        let expected = Int(Bitrate.megabits(120).rawValue)
+        #expect(profile.maxStreamingBitrate == expected)
+        #expect(profile.maxStaticBitrate == expected)
     }
 }

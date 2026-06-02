@@ -46,12 +46,12 @@ struct DeviceProfileBuilderTests {
         #expect(caps.maxResolution == .uhd4K)
     }
 
-    @Test("build() sets maxBitrate to 120 Mbps sentinel")
+    @Test("build() sets maxBitrate to the 360 Mbps LAN ceiling")
     func staticBitrate() async {
         let probe = FakeCapabilityProbe()
         let builder = DeviceProfileBuilder(probe: probe)
         let caps = await builder.build()
-        #expect(caps.maxBitrate == .megabits(120))
+        #expect(caps.maxBitrate == .megabits(360))
     }
 
     @Test("build() sets preferred subtitle formats to [.vtt, .srt]")

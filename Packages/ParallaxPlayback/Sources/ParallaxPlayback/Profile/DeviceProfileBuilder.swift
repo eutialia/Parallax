@@ -37,7 +37,7 @@ public actor DeviceProfileBuilder {
                 .sorted(by: { $0.rawValue < $1.rawValue }),
             hdr: hdr,
             maxResolution: .uhd4K,
-            maxBitrate: .megabits(120),              // sentinel "high"; wire profile sends no cap
+            maxBitrate: .megabits(360),              // LAN ceiling, serialized into the wire profile — above UHD-BD's ~144 Mbps so it never forces a bitrate transcode; nil would mean Jellyfin's 8 Mbps default
             audioOutput: audioOutput,
             preferredSubtitleFormats: PlaybackCapabilityMatrix.avKitSubtitleFormats
                 .sorted(by: { $0.rawValue < $1.rawValue }),
