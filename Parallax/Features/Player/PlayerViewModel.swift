@@ -523,11 +523,17 @@ final class PlayerViewModel {
     /// Atmos track we can't actually deliver. Placeholder presentation baked into
     /// the label — slated for a proper redesign.
     private static func transcodeAudioLabel(for stream: MediaStreamInfo) -> String {
+        // Must mirror DeviceProfileTranslator.transcodingProfile()'s `audioCodec`
+        // ("aac,ac3,eac3") — those are exactly the codecs the HLS transcode stream-
+        // COPIES; anything else is re-encoded. The translator is internal to
+        // ParallaxJellyfin, so the set can't be shared without leaking transcode
+        // policy into Core; keep the two in sync by hand until the label is rebuilt.
         let copyCodecs: Set<String> = ["aac", "ac3", "eac3"]
         if copyCodecs.contains((stream.codec ?? "").lowercased()) {
             return stream.menuLabel
         }
-        let channels = min(stream.channels ?? 2, 8)   // we never request more than 7.1
+        // 8 = the transcode's maxAudioChannels (DeviceProfileTranslator); keep in sync.
+        let channels = min(stream.channels ?? 2, 8)
         let layout: String
         switch channels {
         case ...1: layout = "Mono"
