@@ -44,6 +44,12 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     }
 
     public func load(_ asset: PlayableAsset) async throws {
+        // Reload-safe: a transcode track switch loads a NEW asset into this same
+        // engine, keeping the AVPlayer + its mounted layer (so the swap holds the
+        // last frame instead of blinking to black). Detach the previous item's
+        // observers first — otherwise the periodic-time observer leaks and the KVO /
+        // end observers double-fire.
+        detachCurrentItem()
         continuation.yield(.loading)
         pendingStartTime = asset.startTime
         mediaStreams = asset.mediaStreams
@@ -96,8 +102,9 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     public func seek(to time: CMTime) async {
         // Default (efficient) tolerance, not zero. Frame-exact seeking on an HLS
         // transcode is pathologically slow and can stall — it made scrubbing a 4K
-        // stream feel stuck. Segment-level accuracy is right for a scrubber, and
-        // transcode resume offsets are baked into the stream URL, not sought here.
+        // stream feel stuck. Segment-level accuracy is right for both scrubbing and
+        // the resume seek: Jellyfin's transcode is a full-timeline playlist, so
+        // resume is an ordinary seek — the stream URL carries no start offset.
         await player.seek(to: time)
     }
 
@@ -115,6 +122,21 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     }
 
     public func teardown() async {
+        detachCurrentItem()
+        player.pause()
+        player.replaceCurrentItem(with: nil)
+        currentItem = nil
+        mediaStreams = []
+        defaultAudioStreamIndex = nil
+        defaultSubtitleStreamIndex = nil
+        continuation.finish()
+    }
+
+    /// Tears down the current item's observers + async inventory load. Shared by
+    /// `teardown()` (full stop) and `load()` (reload-safe: a track switch installs a
+    /// new item on the same player). Deliberately does NOT finish the state stream or
+    /// drop the AVPlayer, so a reload keeps the surface — and the layer — alive.
+    private func detachCurrentItem() {
         inventoryTask?.cancel()
         inventoryTask = nil
         statusObservation?.invalidate()
@@ -127,13 +149,6 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
             NotificationCenter.default.removeObserver(endObserver)
             self.endObserver = nil
         }
-        player.pause()
-        player.replaceCurrentItem(with: nil)
-        currentItem = nil
-        mediaStreams = []
-        defaultAudioStreamIndex = nil
-        defaultSubtitleStreamIndex = nil
-        continuation.finish()
     }
 
     public func debugSnapshot() async -> PlaybackDebugInfo {
