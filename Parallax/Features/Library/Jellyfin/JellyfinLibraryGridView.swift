@@ -6,7 +6,6 @@ struct JellyfinLibraryGridView: View {
     let session: Session
 
     @Environment(AppDependencies.self) private var deps
-    @Environment(PlaybackPresenter.self) private var playback
     @State private var viewModel: JellyfinLibraryGridViewModel?
 
     var body: some View {
@@ -26,12 +25,7 @@ struct JellyfinLibraryGridView: View {
                 }
             }
         }
-        .navigationDestination(for: ItemNavigation.self) { nav in
-            switch nav {
-            case .movie(let id, let s): MovieDetailView(itemID: id, session: s)
-            case .series(let id, let s): SeriesDetailView(itemID: id, session: s)
-            }
-        }
+        .itemNavigationDestination()
         .task {
             if viewModel == nil {
                 let repo = await deps.libraryRepoFactory(session)
@@ -62,14 +56,7 @@ struct JellyfinLibraryGridView: View {
                         columnMinWidth: 140,
                         onAppearLast: { Task { await vm.loadMore() } }
                     ) { item in
-                        switch item {
-                        case .episode(let e):
-                            Button { playback.play(e.id, in: session) } label: { tile(for: item) }
-                                .buttonStyle(.plain)
-                        default:
-                            NavigationLink(value: nav(for: item)) { tile(for: item) }
-                                .buttonStyle(.plain)
-                        }
+                        ItemNavigator(item: item, session: session) { tile(for: item) }
                     }
                     if vm.isLoadingMore {
                         ProgressView().padding()
@@ -141,7 +128,7 @@ struct JellyfinLibraryGridView: View {
     @ViewBuilder
     private func tile(for item: Item) -> some View {
         MediaTile(
-            title: title(for: item),
+            title: item.displayTitle,
             subtitle: subtitle(for: item),
             imageRef: image(for: item),
             imageKind: .primary,
@@ -161,29 +148,11 @@ struct JellyfinLibraryGridView: View {
         }
     }
 
-    private func nav(for item: Item) -> ItemNavigation {
-        switch item {
-        case .movie(let m): return .movie(m.id, session)
-        case .series(let s): return .series(s.id, session)
-        case .episode(let e): return .series(e.id, session)  // unreachable: episodes play directly
-        }
-    }
-
-    private func title(for item: Item) -> String {
-        switch item {
-        case .movie(let m): return m.title
-        case .series(let s): return s.title
-        case .episode(let e): return e.name
-        }
-    }
-
     private func subtitle(for item: Item) -> String? {
         switch item {
         case .movie(let m): return m.year.map(String.init)
         case .series(let s): return s.year.map(String.init)
-        case .episode(let e):
-            guard let s = e.parentIndexNumber, let ep = e.indexNumber else { return nil }
-            return "S\(s)E\(ep)"
+        case .episode(let e): return e.episodeCode
         }
     }
 

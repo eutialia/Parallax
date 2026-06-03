@@ -33,12 +33,7 @@ struct JellyfinSearchView: View {
             viewModel?.query = newValue
         }
         .onChange(of: scope) { _, newValue in viewModel?.scope = newValue }
-        .navigationDestination(for: ItemNavigation.self) { nav in
-            switch nav {
-            case .movie(let id, let s): MovieDetailView(itemID: id, session: s)
-            case .series(let id, let s): SeriesDetailView(itemID: id, session: s)
-            }
-        }
+        .itemNavigationDestination()
         .task {
             if session == nil {
                 session = await deps.serverStore.active
@@ -89,7 +84,7 @@ struct JellyfinSearchView: View {
                             gridSection("Episodes", count: results.episodes.count, cols: landscapeCols) {
                                 ForEach(results.episodes) { e in
                                     Button { playback.play(e.id, in: session) } label: {
-                                        MediaTile(title: e.name, subtitle: episodeSubtitle(e), imageRef: e.imageRef(.primary), imageKind: .primary, session: session, progress: nil, aspectRatio: JellyfinImage.landscape, maxImageWidth: 500)
+                                        MediaTile(title: e.name, subtitle: e.episodeCode, imageRef: e.imageRef(.primary), imageKind: .primary, session: session, progress: nil, aspectRatio: JellyfinImage.landscape, maxImageWidth: 500)
                                     }.buttonStyle(.plain)
                                 }
                             }
@@ -121,10 +116,5 @@ struct JellyfinSearchView: View {
                 content()
             }
         }
-    }
-
-    private func episodeSubtitle(_ e: Episode) -> String? {
-        guard let s = e.parentIndexNumber, let ep = e.indexNumber else { return nil }
-        return "S\(s)E\(ep)"
     }
 }

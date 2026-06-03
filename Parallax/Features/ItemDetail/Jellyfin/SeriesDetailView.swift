@@ -31,7 +31,7 @@ struct SeriesDetailView: View {
                                 .padding(.horizontal, Space.s18)
                             }
                             HStack(spacing: Space.s12) {
-                                actionButton(
+                                DetailActionButton(
                                     systemImage: vm.isFavorite ? "heart.fill" : "heart",
                                     label: "Favorite",
                                     isActive: vm.isFavorite
@@ -45,19 +45,14 @@ struct SeriesDetailView: View {
                             if !seasons.isEmpty {
                                 seasonPicker(seasons: seasons, vm: vm)
                                     .padding(.horizontal, Space.s18)
-                                Button { Task { await vm.markSelectedSeasonWatched() } } label: {
-                                    Label("Mark Season Watched", systemImage: "checkmark.circle")
-                                        .font(.subheadline.weight(.medium))
-                                        .foregroundStyle(Color.secondaryLabel)
-                                        .padding(.horizontal, Space.s14).frame(height: 40)
-                                        .glassPanel(cornerRadius: Radius.field)
+                                DetailActionButton(systemImage: "checkmark.circle", label: "Mark Season Watched") {
+                                    Task { await vm.markSelectedSeasonWatched() }
                                 }
-                                .buttonStyle(.plain)
                                 .padding(.horizontal, Space.s18)
                             }
                             episodeList(vm: vm)
                             if !sd.series.genres.isEmpty {
-                                metadataLine(label: "Genres", value: sd.series.genres.joined(separator: ", "))
+                                DetailMetadataLine(label: "Genres", value: sd.series.genres.joined(separator: ", "))
                             }
                         }
                         .padding(.vertical)
@@ -135,34 +130,11 @@ struct SeriesDetailView: View {
         .padding(.horizontal, Space.s18).padding(.vertical, Space.s8)
     }
 
-    @ViewBuilder
-    private func metadataLine(label: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(label).font(.caption).foregroundStyle(Color.secondaryLabel)
-            Text(value).font(.callout).foregroundStyle(Color.label)
-        }
-        .padding(.horizontal, Space.s18)
-    }
-
     private func subtitle(_ sd: SeriesDetail) -> String? {
         var parts: [String] = []
         if let y = sd.series.year { parts.append(String(y)) }
         if let s = sd.series.status { parts.append(s) }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
-    }
-
-    @ViewBuilder
-    private func actionButton(systemImage: String, label: String, isActive: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: Space.s8) {
-                Image(systemName: systemImage)
-                Text(label).font(.subheadline.weight(.medium))
-            }
-            .foregroundStyle(isActive ? Color.label : Color.secondaryLabel)
-            .padding(.horizontal, Space.s14).frame(height: 40)
-            .glassPanel(cornerRadius: Radius.field)
-        }
-        .buttonStyle(.plain)
     }
 
     private func resumeLabel(_ ep: Episode) -> String {

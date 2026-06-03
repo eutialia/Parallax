@@ -37,3 +37,11 @@ public struct Episode: Sendable, Hashable, Identifiable {
         }
     }
 }
+
+public extension Episode {
+    /// Compact "S01E04" code, or nil when the season/episode index is unknown.
+    var episodeCode: String? {
+        guard let season = parentIndexNumber, let index = indexNumber else { return nil }
+        return "S\(String(format: "%02d", season))E\(String(format: "%02d", index))"
+    }
+}

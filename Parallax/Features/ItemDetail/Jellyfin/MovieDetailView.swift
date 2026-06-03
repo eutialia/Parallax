@@ -31,12 +31,12 @@ struct MovieDetailView: View {
                             .padding(.horizontal, Space.s18)
 
                             HStack(spacing: Space.s12) {
-                                actionButton(
+                                DetailActionButton(
                                     systemImage: vm.isFavorite ? "heart.fill" : "heart",
                                     label: "Favorite",
                                     isActive: vm.isFavorite
                                 ) { Task { await vm.toggleFavorite() } }
-                                actionButton(
+                                DetailActionButton(
                                     systemImage: vm.isPlayed ? "checkmark.circle.fill" : "checkmark.circle",
                                     label: vm.isPlayed ? "Watched" : "Mark Watched",
                                     isActive: vm.isPlayed
@@ -56,13 +56,13 @@ struct MovieDetailView: View {
                                     .padding(.horizontal, Space.s18)
                             }
                             if !md.studios.isEmpty {
-                                metadataLine(label: "Studios", value: md.studios.joined(separator: ", "))
+                                DetailMetadataLine(label: "Studios", value: md.studios.joined(separator: ", "))
                             }
                             if !md.people.isEmpty {
-                                metadataLine(label: "Cast & Crew", value: md.people.prefix(10).joined(separator: ", "))
+                                DetailMetadataLine(label: "Cast & Crew", value: md.people.prefix(10).joined(separator: ", "))
                             }
                             if !md.movie.genres.isEmpty {
-                                metadataLine(label: "Genres", value: md.movie.genres.joined(separator: ", "))
+                                DetailMetadataLine(label: "Genres", value: md.movie.genres.joined(separator: ", "))
                             }
                         }
                         .padding(.vertical)
@@ -91,29 +91,6 @@ struct MovieDetailView: View {
                 await viewModel?.load()
             }
         }
-    }
-
-    @ViewBuilder
-    private func actionButton(systemImage: String, label: String, isActive: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: Space.s8) {
-                Image(systemName: systemImage)
-                Text(label).font(.subheadline.weight(.medium))
-            }
-            .foregroundStyle(isActive ? Color.label : Color.secondaryLabel)
-            .padding(.horizontal, Space.s14).frame(height: 40)
-            .glassPanel(cornerRadius: Radius.field)
-        }
-        .buttonStyle(.plain)
-    }
-
-    @ViewBuilder
-    private func metadataLine(label: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(label).font(.caption).foregroundStyle(Color.secondaryLabel)
-            Text(value).font(.callout).foregroundStyle(Color.label)
-        }
-        .padding(.horizontal, Space.s18)
     }
 
     private func subtitle(_ md: MovieDetail) -> String? {

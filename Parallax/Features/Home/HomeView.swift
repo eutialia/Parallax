@@ -18,9 +18,7 @@ struct HomeView: View {
         .background(Color.background)
         .navigationTitle("Home")
         .toolbar(.hidden, for: .navigationBar)
-        .navigationDestination(for: ItemNavigation.self) { nav in
-            destinationView(for: nav)
-        }
+        .itemNavigationDestination()
         .task {
             if session == nil {
                 session = await deps.serverStore.active
@@ -75,7 +73,7 @@ struct HomeView: View {
     @ViewBuilder
     private func landscapeTile(item: Item, session: Session, showProgress: Bool) -> some View {
         MediaTile(
-            title: tileTitle(item),
+            title: item.displayTitle,
             subtitle: tileSubtitle(item),
             imageRef: landscapeImage(item),
             imageKind: landscapeImageKind(item),
@@ -86,41 +84,11 @@ struct HomeView: View {
         )
     }
 
-    @ViewBuilder
-    private func destinationView(for nav: ItemNavigation) -> some View {
-        switch nav {
-        case .movie(let id, let s): MovieDetailView(itemID: id, session: s)
-        case .series(let id, let s): SeriesDetailView(itemID: id, session: s)
-        }
-    }
-
     // MARK: - Item rendering helpers
     @ViewBuilder
     private func itemTile(item: Item, session: Session, showProgress: Bool) -> some View {
-        switch item {
-        case .episode(let e):
-            Button { playback.play(e.id, in: session) } label: {
-                landscapeTile(item: item, session: session, showProgress: showProgress)
-            }
-            .buttonStyle(.plain)
-        case .movie(let m):
-            NavigationLink(value: ItemNavigation.movie(m.id, session)) {
-                landscapeTile(item: item, session: session, showProgress: showProgress)
-            }
-            .buttonStyle(.plain)
-        case .series(let s):
-            NavigationLink(value: ItemNavigation.series(s.id, session)) {
-                landscapeTile(item: item, session: session, showProgress: showProgress)
-            }
-            .buttonStyle(.plain)
-        }
-    }
-
-    private func tileTitle(_ item: Item) -> String {
-        switch item {
-        case .movie(let m): return m.title
-        case .series(let s): return s.title
-        case .episode(let e): return e.name
+        ItemNavigator(item: item, session: session) {
+            landscapeTile(item: item, session: session, showProgress: showProgress)
         }
     }
 
@@ -129,9 +97,7 @@ struct HomeView: View {
         // Home rows show only the title for movies/series; episodes get a
         // compact SxxExx so the tile reads "name / S01E04" (smoke-test #7).
         case .movie, .series: return nil
-        case .episode(let e):
-            guard let season = e.parentIndexNumber, let idx = e.indexNumber else { return nil }
-            return "S\(String(format: "%02d", season))E\(String(format: "%02d", idx))"
+        case .episode(let e): return e.episodeCode
         }
     }
 
@@ -186,7 +152,7 @@ struct HomeView: View {
                 Text("FEATURED")
                     .font(.caption.weight(.bold)).tracking(1.5)
                     .foregroundStyle(.white.opacity(0.7))
-                Text(tileTitle(featured))
+                Text(featured.displayTitle)
                     .font(.system(size: hSize == .regular ? 52 : 32, weight: .heavy))
                     .foregroundStyle(.white).lineLimit(2)
                 if let meta = heroMeta(featured) {
