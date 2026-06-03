@@ -13,8 +13,11 @@ struct DetailActionButton: View {
         Button(action: action) {
             HStack(spacing: Space.s8) {
                 Image(systemName: systemImage)
-                Text(label).font(.subheadline.weight(.medium))
+                Text(label)
             }
+            // Font on the HStack so the SF Symbol matches the label size — uniform
+            // across all three detail pills (Favorite / Mark-Watched / Mark-Season).
+            .font(.subheadline.weight(.medium))
             .foregroundStyle(isActive ? Color.label : Color.secondaryLabel)
             .padding(.horizontal, Space.s14).frame(height: 40)
             .glassPanel(cornerRadius: Radius.field)
