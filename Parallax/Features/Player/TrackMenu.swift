@@ -227,7 +227,11 @@ struct ChapterMenu: View {
     let onSelect: (Chapter) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        // LazyVStack (not VStack): a movie can carry 30–60 chapters, and the
+        // popover's ScrollView eagerly builds+measures every row of a plain VStack
+        // on present — the brief hang when opening the chip. Lazy defers off-screen
+        // rows. (Audio/Subtitle/Speed stay plain VStacks: a handful of rows each.)
+        LazyVStack(alignment: .leading, spacing: 2) {
             MenuHeader(systemImage: "list.bullet", title: "Chapters", trailing: "\(chapters.count)")
             ForEach(chapters) { chapter in
                 MenuRow(isSelected: false, action: { onSelect(chapter) }) {
@@ -254,6 +258,41 @@ struct ChapterMenu: View {
         let total = Int(duration.components.seconds)
         let h = total / 3600, m = (total % 3600) / 60, s = total % 60
         return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%d:%02d", m, s)
+    }
+}
+
+struct SpeedMenu: View {
+    let options: [Double]
+    let selected: Double
+    let onSelect: (Double) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            MenuHeader(systemImage: "timer", title: "Playback Speed")
+            ForEach(options, id: \.self) { rate in
+                MenuRow(isSelected: rate == selected, action: { onSelect(rate) }) {
+                    HStack(spacing: Space.s12) {
+                        MenuCheckColumn(isSelected: rate == selected)
+                        Text(Self.label(rate))
+                            .font(.callout.weight(.semibold))
+                            .foregroundStyle(Color.label)
+                        Spacer(minLength: Space.s8)
+                        if rate == 1.0 {
+                            Text("Normal")
+                                .font(.caption)
+                                .foregroundStyle(Color.tertiaryLabel)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Shared "1.5×" formatter — also used by the speed chip label so the chip and
+    /// the menu can't drift.
+    static func label(_ rate: Double) -> String {
+        let s = String(format: rate == rate.rounded() ? "%.0f" : "%g", rate)
+        return s + "×"
     }
 }
 

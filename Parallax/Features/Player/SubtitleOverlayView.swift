@@ -36,6 +36,10 @@ struct SubtitleOverlayView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        // Opt into full-bleed like the video host: PlayerView no longer applies a
+        // blanket .ignoresSafeArea(), so without this the cues would float up by the
+        // bottom safe-area inset instead of sitting just above the home indicator.
+        .ignoresSafeArea()
         .allowsHitTesting(false)
         .task { await drive() }
     }

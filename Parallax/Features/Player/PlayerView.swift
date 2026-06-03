@@ -25,6 +25,8 @@ struct PlayerView: View {
     /// Aspect-fill (fill the screen, cropping) vs fit. Toggled by the player's
     /// expand chip; honored by the AVKit host's `videoGravity`.
     @State private var fillMode = false
+    /// Chrome visibility, owned here so the status bar can hide with the controls.
+    @State private var chromeVisible = true
     #if DEBUG
     @State private var showDebugHUD = false
     #endif
@@ -40,20 +42,28 @@ struct PlayerView: View {
                 case .playing:
                     videoHost(vm)
                     SubtitleOverlayView(vm: vm)
-                    PlayerControlsView(vm: vm, isFilled: fillMode, onToggleFill: { fillMode.toggle() }) { dismiss() }
+                    PlayerControlsView(vm: vm, controlsVisible: $chromeVisible, isFilled: fillMode, onToggleFill: { fillMode.toggle() }) { dismiss() }
                 case .failed(let error):
                     errorOverlay(error, vm: vm)
                 }
             }
         }
-        // Loading + reload visual: a frosted, shimmering cover over the frozen frame,
-        // replacing the spinner. On a transcode track switch the engine is paused +
-        // reused, so the last frame stays put under the frost until the new stream
-        // plays; the cover fades out when playback resumes.
+        // Loading visual: the video surface itself becomes the loader. The picture
+        // calms to a dark field and a liquid-glass orb takes center — NOT a frosted
+        // blocking pill. On a transcode track switch the engine is paused + reused, so
+        // the last frame stays under the calm scrim until the new stream plays; on a
+        // first play the field is the black floor. Fades out when playback resumes.
         .overlay {
             if showsReloadCover {
-                TrackReloadCover()
-                    .transition(.opacity)
+                ZStack {
+                    Color.black.opacity(0.55).ignoresSafeArea()
+                    if let vm = viewModel {
+                        LoaderOrb(label: vm.loaderTitle, sublabel: vm.loaderSubtitle)
+                    } else {
+                        LoaderOrb()
+                    }
+                }
+                .transition(.opacity)
             }
         }
         .animation(.easeInOut(duration: 0.3), value: showsReloadCover)
@@ -79,7 +89,20 @@ struct PlayerView: View {
         }
         .animation(.easeInOut(duration: 0.15), value: showDebugHUD)
         #endif
-        .ignoresSafeArea()
+        // No blanket .ignoresSafeArea() here: the black floor, video host, and reload
+        // cover each opt into full-bleed individually (see above), while the chrome
+        // (top bar, scrubber) and status bar respect the safe area. The status bar
+        // hides in lockstep with the chrome.
+        .statusBarHidden(!chromeVisible)
+        .persistentSystemOverlays(chromeVisible ? .automatic : .hidden)
+        .animation(.easeInOut(duration: 0.2), value: chromeVisible)
+        // The controls (which restore chromeVisible) only exist in .playing. If the
+        // stream fails after the chrome auto-hid, force it back so the status bar and
+        // home indicator return over the error overlay — and so a successful retry
+        // re-mounts the controls already visible.
+        .onChange(of: isPlaybackActive) { _, active in
+            if !active { chromeVisible = true }
+        }
         .task {
             if viewModel == nil {
                 let info = await deps.playbackInfoFactory(session)
@@ -112,6 +135,12 @@ struct PlayerView: View {
             let vm = viewModel
             Task { await vm?.stop() }
         }
+    }
+
+    /// True only while actively playing — gates the chrome-visibility reset above.
+    private var isPlaybackActive: Bool {
+        if case .playing = viewModel?.phase { return true }
+        return false
     }
 
     /// Whether to show the frosted reload cover: before the VM exists and while it's

@@ -16,15 +16,15 @@ import ParallaxPlayback
 /// is suspended while a track menu (popover/sheet) is open.
 struct PlayerControlsView: View {
     @Bindable var vm: PlayerViewModel
+    /// Chrome visibility, owned by `PlayerView` so it can also drive the status bar
+    /// (hidden when the chrome is) across the whole fullScreenCover.
+    @Binding var controlsVisible: Bool
     /// Whether the video is filling the screen (aspect-fill) vs fit. Owned by
     /// `PlayerView` (it owns the host); the expand chip toggles it.
     let isFilled: Bool
     let onToggleFill: () -> Void
     let onDismiss: () -> Void
 
-    @Environment(\.horizontalSizeClass) private var hSize
-
-    @State private var controlsVisible = true
     @State private var hideTask: Task<Void, Never>? = nil
     @State private var isScrubbing = false
     @State private var scrubProgress: Double = 0
@@ -35,14 +35,16 @@ struct PlayerControlsView: View {
     @State private var audioMenu = false
     @State private var subtitleMenu = false
     @State private var chapterMenu = false
+    @State private var speedMenu = false
 
-    private var menuOpen: Bool { audioMenu || subtitleMenu || chapterMenu }
+    private var menuOpen: Bool { audioMenu || subtitleMenu || chapterMenu || speedMenu }
 
     var body: some View {
         ZStack {
             Color.clear
                 .contentShape(Rectangle())
                 .onTapGesture { toggleControls() }
+                .ignoresSafeArea()   // tap-to-show works across the whole screen
 
             if controlsVisible {
                 controls
@@ -73,6 +75,11 @@ struct PlayerControlsView: View {
                 endPoint: .bottom
             )
             .ignoresSafeArea()
+            // Don't swallow taps: empty video-area taps must reach the Color.clear
+            // toggle layer beneath so tap-to-hide works. Buttons, the scrubber, and
+            // the bottom glass bar still absorb their own taps (so tapping a control
+            // bar doesn't hide the chrome).
+            .allowsHitTesting(false)
         )
     }
 
@@ -99,12 +106,10 @@ struct PlayerControlsView: View {
 
             Spacer(minLength: Space.s8)
 
-            if let engineLabel = vm.engineLabel, hSize == .regular {
-                EngineBadge(text: engineLabel)
-            }
             if vm.isVideoAirPlayAvailable {
                 AVRoutePickerViewRepresentable()
-                    .frame(width: 44, height: 44)
+                    .frame(width: 40, height: 40)
+                    .glassEffect(.regular, in: Circle())
             }
             if vm.isPiPAvailable {
                 GlassCircleButton(systemImage: "pip.enter", size: 40, iconSize: 18) {
@@ -138,6 +143,10 @@ struct PlayerControlsView: View {
                     .foregroundStyle(.white)
                     .frame(width: 88, height: 88)
                     .glassEffect(.regular, in: Circle())
+                    // .glassEffect paints a material but adds no hit fill; without an
+                    // explicit shape only the glyph is tappable and edge taps fall
+                    // through to the toggle layer. Make the whole disc hittable.
+                    .contentShape(Circle())
             }
             .buttonStyle(.plain)
 
@@ -239,13 +248,7 @@ struct PlayerControlsView: View {
                     resetHideTimer()
                     audioMenu = true
                 }
-                .popover(isPresented: popoverBinding($audioMenu)) { audioMenuList }
-                .sheet(isPresented: sheetBinding($audioMenu)) {
-                    audioMenuList
-                        .presentationDetents([.medium, .large])
-                        .presentationDragIndicator(.visible)
-                        .presentationBackground(.regularMaterial)
-                }
+                .trackPresentation(isPresented: $audioMenu) { audioMenuList }
             }
 
             if !vm.availableSubtitleTracks.isEmpty {
@@ -258,13 +261,7 @@ struct PlayerControlsView: View {
                     resetHideTimer()
                     subtitleMenu = true
                 }
-                .popover(isPresented: popoverBinding($subtitleMenu)) { subtitleMenuList }
-                .sheet(isPresented: sheetBinding($subtitleMenu)) {
-                    subtitleMenuList
-                        .presentationDetents([.medium, .large])
-                        .presentationDragIndicator(.visible)
-                        .presentationBackground(.regularMaterial)
-                }
+                .trackPresentation(isPresented: $subtitleMenu) { subtitleMenuList }
             }
 
             speedChip
@@ -276,13 +273,7 @@ struct PlayerControlsView: View {
                     resetHideTimer()
                     chapterMenu = true
                 }
-                .popover(isPresented: popoverBinding($chapterMenu)) { chapterMenuList }
-                .sheet(isPresented: sheetBinding($chapterMenu)) {
-                    chapterMenuList
-                        .presentationDetents([.medium, .large])
-                        .presentationDragIndicator(.visible)
-                        .presentationBackground(.regularMaterial)
-                }
+                .trackPresentation(isPresented: $chapterMenu) { chapterMenuList }
             }
 
             GlassCircleButton(
@@ -300,40 +291,20 @@ struct PlayerControlsView: View {
 
     private let speedOptions: [Double] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
 
+    // Speed is a CtlChip + popover/sheet like audio/subtitles/chapters, so it joins
+    // `menuOpen` and the auto-hide suppression covers it uniformly — no more system
+    // `Menu` (which emitted the UIContextMenuInteraction warning) and no fragile pin.
     @ViewBuilder
     private var speedChip: some View {
-        Menu {
-            ForEach(speedOptions, id: \.self) { rate in
-                Button {
-                    resetHideTimer()
-                    Task { await vm.setPlaybackRate(Float(rate)) }
-                } label: {
-                    if vm.playbackRate == Float(rate) {
-                        Label(speedText(rate), systemImage: "checkmark")
-                    } else {
-                        Text(speedText(rate))
-                    }
-                }
-            }
-        } label: {
-            ChipLabel(systemImage: "timer", label: speedText(Double(vm.playbackRate)), sub: nil, isActive: false)
+        CtlChip(
+            systemImage: "timer",
+            label: SpeedMenu.label(Double(vm.playbackRate)),
+            isActive: speedMenu
+        ) {
+            resetHideTimer()
+            speedMenu = true
         }
-        // The speed picker is a system Menu with no open/close binding, so it can't
-        // join `menuOpen`. Pin the chrome when it's tapped open; the rate buttons
-        // reschedule the auto-hide on selection.
-        .simultaneousGesture(TapGesture().onEnded { pinControls() })
-    }
-
-    /// Keep the chrome up indefinitely (used while a system Menu with no dismissal
-    /// callback is open). A later `resetHideTimer()` re-arms the auto-hide.
-    private func pinControls() {
-        controlsVisible = true
-        hideTask?.cancel()
-    }
-
-    private func speedText(_ rate: Double) -> String {
-        let s = String(format: rate == rate.rounded() ? "%.0f" : "%g", rate)
-        return s + "×"
+        .trackPresentation(isPresented: $speedMenu, detents: [.medium]) { speedMenuList }
     }
 
     // MARK: - Track menus (popover on iPad, sheet on iPhone)
@@ -377,12 +348,19 @@ struct PlayerControlsView: View {
         }
     }
 
+    @ViewBuilder
+    private var speedMenuList: some View {
+        trackMenuChrome {
+            SpeedMenu(options: speedOptions, selected: Double(vm.playbackRate)) { rate in
+                speedMenu = false   // dismiss the popover/sheet on selection
+                resetHideTimer()
+                Task { await vm.setPlaybackRate(Float(rate)) }
+            }
+        }
+    }
+
     /// Shared presentation wrapper: scrollable, dark-pinned (so tokens resolve to the
     /// immersive dark palette), width-bounded for the popover (the sheet ignores width).
-    /// No `presentationCompactAdaptation` here — it's shared by both the popover and
-    /// the sheet, and forcing `.popover` would defeat the iPhone sheet's detents. The
-    /// popover only ever presents in regular width (see `popoverBinding`), so it stays
-    /// a popover natively; the sheet only ever presents in compact width.
     @ViewBuilder
     private func trackMenuChrome<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
         ScrollView {
@@ -393,17 +371,6 @@ struct PlayerControlsView: View {
         .frame(idealWidth: 360)
         .frame(maxHeight: 520)
         .environment(\.colorScheme, .dark)
-    }
-
-    /// A popover binding that only fires in regular width (iPad). In compact width the
-    /// flag drives the sheet instead, so the two presentations never race.
-    private func popoverBinding(_ flag: Binding<Bool>) -> Binding<Bool> {
-        Binding(get: { flag.wrappedValue && hSize == .regular }, set: { flag.wrappedValue = $0 })
-    }
-
-    /// The compact-width (iPhone) counterpart: drives a bottom sheet.
-    private func sheetBinding(_ flag: Binding<Bool>) -> Binding<Bool> {
-        Binding(get: { flag.wrappedValue && hSize != .regular }, set: { flag.wrappedValue = $0 })
     }
 
     // MARK: - Time
@@ -421,6 +388,8 @@ struct PlayerControlsView: View {
     // MARK: - Auto-hide
 
     private func toggleControls() {
+        // A tap should never pull the chrome out from under an open popover/sheet.
+        guard !menuOpen else { return }
         controlsVisible.toggle()
         if controlsVisible { scheduleHide() }
     }
@@ -446,7 +415,8 @@ struct PlayerControlsView: View {
 
 // MARK: - Chrome primitives
 
-/// The styled pill content shared by `CtlChip` (a button) and the speed `Menu` label.
+/// The styled pill content rendered by `CtlChip` (its sole caller now that the speed
+/// control is a `CtlChip` + popover/sheet rather than a `Menu`).
 private struct ChipLabel: View {
     let systemImage: String
     let label: String
@@ -504,35 +474,102 @@ private struct GlassCircleButton: View {
                 .foregroundStyle(.white)
                 .frame(width: size, height: size)
                 .glassEffect(.regular, in: Circle())
+                // The whole glass circle must be tappable, not just the SF Symbol
+                // glyph: .glassEffect adds no hit region, so without this the
+                // transparent ring around small icons (return 46, zoom 36) misses
+                // and the tap falls through to the chrome-toggle layer beneath.
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
     }
 }
 
-private struct EngineBadge: View {
-    let text: String
+/// Presents a track/speed/chapter menu as a popover on iPad (regular width) and a
+/// bottom sheet on iPhone (compact width), gated so the two never race. One place for
+/// the presentation chrome all four chips share — the only per-chip difference is the
+/// sheet detents.
+private struct TrackPresentation<MenuContent: View>: ViewModifier {
+    @Binding var isPresented: Bool
+    var detents: Set<PresentationDetent> = [.medium, .large]
+    @ViewBuilder var menu: () -> MenuContent
 
-    var body: some View {
-        HStack(spacing: 7) {
-            Circle()
-                .fill(.white.opacity(0.85))
-                .frame(width: 6, height: 6)
-            Text(text)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.white)
-        }
-        .padding(.horizontal, 11)
-        .frame(height: 32)
-        .background(.black.opacity(0.3), in: Capsule())
-        .overlay(Capsule().strokeBorder(.white.opacity(0.2), lineWidth: 1))
+    @Environment(\.horizontalSizeClass) private var hSize
+
+    func body(content: Content) -> some View {
+        content
+            .popover(isPresented: gated(whenRegular: true)) { menu() }
+            .sheet(isPresented: gated(whenRegular: false)) {
+                menu()
+                    .presentationDetents(detents)
+                    .presentationDragIndicator(.visible)
+                    .presentationBackground(.regularMaterial)
+            }
+    }
+
+    /// A binding that only fires for the matching width class, so the popover and the
+    /// sheet never present at once.
+    private func gated(whenRegular: Bool) -> Binding<Bool> {
+        Binding(
+            get: { isPresented && (hSize == .regular) == whenRegular },
+            set: { isPresented = $0 }
+        )
     }
 }
 
-private struct AVRoutePickerViewRepresentable: UIViewRepresentable {
-    func makeUIView(context: Context) -> AVRoutePickerView {
-        let view = AVRoutePickerView()
-        view.tintColor = .white
-        return view
+private extension View {
+    func trackPresentation<MenuContent: View>(
+        isPresented: Binding<Bool>,
+        detents: Set<PresentationDetent> = [.medium, .large],
+        @ViewBuilder menu: @escaping () -> MenuContent
+    ) -> some View {
+        modifier(TrackPresentation(isPresented: isPresented, detents: detents, menu: menu))
     }
-    func updateUIView(_ uiView: AVRoutePickerView, context: Context) {}
+}
+
+/// AirPlay route button. Hosts an `AVRoutePickerView` inside a child view controller
+/// whose horizontal size class we pin to `.regular` on iPad.
+///
+/// AVKit presents its route list from the nearest *presenting* view controller and
+/// adapts popover→sheet on THAT controller's size class — never the picker view's.
+/// Overriding the leaf view's `traitOverrides` (the first attempt) therefore did
+/// nothing, so inside a `.fullScreenCover` the picker sheeted up from the bottom on
+/// iPad. Wrapping the picker in a child VC and overriding *its* traits via
+/// `setOverrideTraitCollection(_:forChild:)` makes the controller the picker lives
+/// in — the one AVKit finds and presents from — report `.regular`, so the route list
+/// anchors to the button. iPhone keeps the system bottom sheet (platform convention).
+private struct AVRoutePickerViewRepresentable: UIViewControllerRepresentable {
+    func makeUIViewController(context: Context) -> RoutePickerController {
+        RoutePickerController()
+    }
+
+    func updateUIViewController(_ controller: RoutePickerController, context: Context) {
+        controller.applyTraitOverride()   // idempotent; re-asserts after any trait flip
+    }
+}
+
+/// Controller whose `view` IS the `AVRoutePickerView`, so it's the nearest view
+/// controller in the responder chain when AVKit presents the route list — i.e. the
+/// presenter whose `horizontalSizeClass` decides popover vs. bottom sheet. Pinning
+/// its `traitOverrides` to `.regular` on iPad keeps the list an anchored popover.
+private final class RoutePickerController: UIViewController {
+    override func loadView() {
+        let picker = AVRoutePickerView()
+        picker.tintColor = .white
+        picker.activeTintColor = .white
+        // Clear so the surrounding `.glassEffect(in: Circle())` is the visible backing.
+        picker.backgroundColor = .clear
+        // Rank video-capable receivers (Apple TV) above audio-only ones.
+        picker.prioritizesVideoDevices = true
+        view = picker
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        applyTraitOverride()
+    }
+
+    func applyTraitOverride() {
+        guard UIDevice.current.userInterfaceIdiom == .pad else { return }
+        traitOverrides.horizontalSizeClass = .regular
+    }
 }

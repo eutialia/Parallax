@@ -62,6 +62,11 @@ final class PlayerViewModel {
     /// The playing item's title — surfaced in the player's top bar.
     var title: String { itemTitle }
 
+    /// Caption for the liquid-orb loader. A transcode audio switch reloads the
+    /// stream ("Switching audio · <track>"); a first play / re-buffer is "Loading".
+    var loaderTitle: String { isSwitchingTracks ? "Switching audio" : "Loading" }
+    var loaderSubtitle: String? { isSwitchingTracks ? selectedAudioTrack?.displayName : nil }
+
     /// User-selected playback speed (1.0 = normal). Drives the speed chip.
     private(set) var playbackRate: Float = 1
 
@@ -83,21 +88,6 @@ final class PlayerViewModel {
             ?? resolved.mediaStreams.first { $0.kind == .audio }
         if let channels = audio?.channels { parts.append(Self.channelLayout(channels)) }
         mediaSummary = parts.isEmpty ? nil : parts.joined(separator: " · ")
-    }
-
-    /// Engine + delivery label for the top-bar badge, e.g. "AVKit · Direct Play".
-    var engineLabel: String? {
-        guard let engine else { return nil }
-        let name = engine.id == .avKit ? "AVKit" : "VLCKit"
-        guard let method = resolved?.method else { return name }
-        let delivery: String
-        switch method {
-        case .directPlay: delivery = "Direct Play"
-        case .directStream: delivery = "Direct Stream"
-        case .transcode: delivery = "Transcode"
-        @unknown default: delivery = "Streaming"
-        }
-        return "\(name) · \(delivery)"
     }
 
     /// Set the playback speed and apply it to the live engine. Persists across
@@ -147,7 +137,9 @@ final class PlayerViewModel {
     /// True only while a transcode track switch is reloading the (reused) engine.
     /// Gates `handle(_:)` so the outgoing stream's trailing beats are ignored — a
     /// stale `.playing` would otherwise claim the new session's `reportStart`.
-    private var isSwitchingTracks = false
+    /// Also drives the loader caption (a switch reads "Switching audio", a first
+    /// play reads "Loading").
+    private(set) var isSwitchingTracks = false
     private var lastPosition: CMTime = .zero
     private let nowPlaying = NowPlayingController()
     private var itemTitle: String = ""
