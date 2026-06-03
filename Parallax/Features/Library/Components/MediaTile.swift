@@ -46,9 +46,9 @@ struct MediaTile: View {
                 if let progress, progress > 0 {
                     GeometryReader { geo in
                         ZStack(alignment: .leading) {
-                            Rectangle().fill(Color.black.opacity(0.5))
+                            Rectangle().fill(Color.white.opacity(0.25))   // track (over artwork)
                             Rectangle()
-                                .fill(Color.accentColor)
+                                .fill(Color.white)                        // played portion — monochrome
                                 .frame(width: geo.size.width * progress)
                         }
                     }
