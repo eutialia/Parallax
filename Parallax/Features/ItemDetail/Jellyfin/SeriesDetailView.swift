@@ -47,6 +47,7 @@ struct SeriesDetailView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.background)
+        .toolbar(.visible, for: .navigationBar)
         .task {
             if viewModel == nil {
                 let repo = await deps.libraryRepoFactory(session)

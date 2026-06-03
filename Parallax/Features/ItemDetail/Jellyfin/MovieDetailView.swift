@@ -65,6 +65,7 @@ struct MovieDetailView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.background)
+        .toolbar(.visible, for: .navigationBar)
         .fullScreenCover(item: $playerItem) { detail in
             PlayerView(item: detail, session: session)
         }

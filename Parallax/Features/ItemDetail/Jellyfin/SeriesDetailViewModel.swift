@@ -50,12 +50,18 @@ final class SeriesDetailViewModel {
     func selectSeason(_ id: ItemID) async {
         selectedSeasonID = id
         episodesLoading = true
-        defer { episodesLoading = false }
         do {
-            episodes = try await repo.episodes(of: id)
+            let result = try await repo.episodes(of: id)
+            // Drop a stale response: the user moved to another season (or the
+            // auto-select raced a tap) while this fetch was in flight, so a
+            // slower earlier fetch must not overwrite the newer season's list.
+            guard selectedSeasonID == id else { return }
+            episodes = result
         } catch {
             Log.ui.error("Season episodes load failed: \(String(describing: type(of: error)))")
+            guard selectedSeasonID == id else { return }
             episodes = []
         }
+        if selectedSeasonID == id { episodesLoading = false }
     }
 }

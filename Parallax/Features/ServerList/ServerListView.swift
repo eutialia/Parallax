@@ -34,7 +34,9 @@ struct ServerListView: View {
             @Bindable var vm = vm
             list(vm: vm)
                 .sheet(isPresented: $vm.presentingAddServer, onDismiss: {
-                    Task { await vm.refresh() }
+                    // dismissAddServer (not refresh) re-points the router at the
+                    // now-active server so the tabs remount onto a newly-added one.
+                    Task { await vm.dismissAddServer() }
                 }) {
                     LoginView()
                 }
@@ -77,23 +79,35 @@ struct ServerListView: View {
     @ViewBuilder
     private func serverCard(_ session: Session, vm: ServerListViewModel) -> some View {
         HStack(spacing: Space.s14) {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.fill)
-                .frame(width: 44, height: 44)
-                .overlay { Image(systemName: "server.rack").foregroundStyle(Color.label) }
-            VStack(alignment: .leading, spacing: 2) {
-                Text(session.serverName).font(.headline).foregroundStyle(Color.label)
-                Text(session.serverURL.host ?? session.serverURL.absoluteString)
-                    .font(.caption).foregroundStyle(Color.secondaryLabel).lineLimit(1)
-                Text(session.user.name).font(.caption2).foregroundStyle(Color.tertiaryLabel)
-            }
-            Spacer(minLength: 0)
-            if session.id == vm.activeID {
-                HStack(spacing: 5) {
-                    Circle().fill(.green).frame(width: 8, height: 8)
-                    Text("Active").font(.caption).foregroundStyle(Color.secondaryLabel)
+            // The card body (tap to make active) is its own Button so it doesn't
+            // compete with the trailing Menu's gesture — a card-wide onTapGesture
+            // would swallow the ellipsis tap and switch servers instead.
+            Button {
+                Task { await vm.setActive(session.id) }
+            } label: {
+                HStack(spacing: Space.s14) {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.fill)
+                        .frame(width: 44, height: 44)
+                        .overlay { Image(systemName: "server.rack").foregroundStyle(Color.label) }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(session.serverName).font(.headline).foregroundStyle(Color.label)
+                        Text(session.serverURL.host ?? session.serverURL.absoluteString)
+                            .font(.caption).foregroundStyle(Color.secondaryLabel).lineLimit(1)
+                        Text(session.user.name).font(.caption2).foregroundStyle(Color.tertiaryLabel)
+                    }
+                    Spacer(minLength: 0)
+                    if session.id == vm.activeID {
+                        HStack(spacing: 5) {
+                            Circle().fill(.green).frame(width: 8, height: 8)
+                            Text("Active").font(.caption).foregroundStyle(Color.secondaryLabel)
+                        }
+                    }
                 }
+                .contentShape(.rect)
             }
+            .buttonStyle(.plain)
+
             Menu {
                 if session.id != vm.activeID {
                     Button("Make Active") { Task { await vm.setActive(session.id) } }
@@ -107,7 +121,5 @@ struct ServerListView: View {
         }
         .padding(Space.s14)
         .glassPanel(cornerRadius: Radius.card)
-        .contentShape(.rect)
-        .onTapGesture { Task { await vm.setActive(session.id) } }
     }
 }

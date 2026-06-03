@@ -55,7 +55,7 @@ struct JellyfinLibraryListView: View {
     private func libraryCard(_ coll: MediaCollection) -> some View {
         ZStack(alignment: .bottomLeading) {
             JellyfinImage(ref: coll.imageRef(.primary), kind: .primary, session: session,
-                          maxWidth: 600, aspectRatio: 16.0 / 10.0)
+                          maxWidth: 600, aspectRatio: 2.0 / 3.0)
             LinearGradient(colors: [.black.opacity(0.0), .black.opacity(0.7)],
                            startPoint: .top, endPoint: .bottom)
             VStack(alignment: .leading) {

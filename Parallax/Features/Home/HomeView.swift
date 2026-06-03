@@ -192,20 +192,12 @@ struct HomeView: View {
                 if let meta = heroMeta(featured) {
                     Text(meta).font(.subheadline).foregroundStyle(.white.opacity(0.85))
                 }
-                Button {
-                    playback.play(featured.id, in: session)
-                } label: {
-                    Label("Play", systemImage: "play.fill")
-                        .font(.headline).foregroundStyle(Color.buttonLabel)
-                        .padding(.horizontal, Space.s22).frame(height: 46)
-                        .background(Color.buttonFill, in: Capsule())
-                }
-                .padding(.top, Space.s8)
+                heroPlayButton(featured: featured, session: session)
+                    .padding(.top, Space.s8)
             }
             .padding(hSize == .regular ? Space.s40 : Space.s22)
         }
         .clipped()
-        .ignoresSafeArea(edges: .top)
     }
 
     private func heroMeta(_ item: Item) -> String? {
@@ -220,6 +212,29 @@ struct HomeView: View {
             if let season = e.parentIndexNumber, let idx = e.indexNumber { return "S\(season) · E\(idx)" }
             return nil
         }
+    }
+
+    // The hero CTA plays a movie/episode directly; a series can't be "played"
+    // (PlayerViewModel rejects .series), so it navigates to the series screen.
+    @ViewBuilder
+    private func heroPlayButton(featured: Item, session: Session) -> some View {
+        switch featured {
+        case .series(let s):
+            NavigationLink(value: ItemNavigation.series(s.id, session)) {
+                heroButtonLabel("View", icon: "chevron.right")
+            }
+        case .movie, .episode:
+            Button { playback.play(featured.id, in: session) } label: {
+                heroButtonLabel("Play", icon: "play.fill")
+            }
+        }
+    }
+
+    private func heroButtonLabel(_ title: String, icon: String) -> some View {
+        Label(title, systemImage: icon)
+            .font(.headline).foregroundStyle(Color.buttonLabel)
+            .padding(.horizontal, Space.s22).frame(height: 46)
+            .background(Color.buttonFill, in: Capsule())
     }
 
     private func tileProgress(_ item: Item) -> Double? {

@@ -107,7 +107,7 @@ struct JellyfinSearchView: View {
         }
     }
 
-    private var posterCols: Int { hSize == .regular ? 6 : 3 }
+    private var posterCols: Int { hSize == .regular ? 4 : 3 }
     private var landscapeCols: Int { hSize == .regular ? 3 : 2 }
 
     @ViewBuilder
