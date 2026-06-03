@@ -13,8 +13,20 @@ struct LiveCapabilityProbe: CapabilityProbe {
         // eligible for HDR playback AND the screen is wide-gamut (P3). Dolby
         // Vision is deliberately NOT claimed in Phase 4.
         let eligible = AVPlayer.eligibleForHDRPlayback
-        let wideGamut = UIScreen.main.traitCollection.displayGamut == .P3
+        let wideGamut = activeDisplayGamut == .P3
         return (eligible && wideGamut) ? .hdr10 : .none
+    }
+
+    /// Display gamut of the active scene's screen. Replaces the deprecated
+    /// `UIScreen.main` (iOS 26): UIKit wants the screen read contextually from the
+    /// window scene that manages the app's windows, not the global main screen.
+    /// Falls back to `.unspecified` (→ no wide-gamut, conservative non-HDR) when no
+    /// foreground scene is attached.
+    @MainActor
+    private var activeDisplayGamut: UIDisplayGamut {
+        let scene = UIApplication.shared.connectedScenes
+            .first { $0.activationState == .foregroundActive } as? UIWindowScene
+        return scene?.screen.traitCollection.displayGamut ?? .unspecified
     }
 
     nonisolated func audioOutput() -> AudioOutputCapability {
