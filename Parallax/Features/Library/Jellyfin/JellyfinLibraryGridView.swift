@@ -7,6 +7,10 @@ struct JellyfinLibraryGridView: View {
 
     @Environment(AppDependencies.self) private var deps
     @State private var viewModel: JellyfinLibraryGridViewModel?
+    /// Genre-chip height scales with Dynamic Type (relative to the chip's `.subheadline`
+    /// label). Shared by the real chip and its loading placeholder so the swap stays
+    /// height-neutral.
+    @ScaledMetric(relativeTo: .subheadline) private var genreChipHeight: CGFloat = 34
 
     var body: some View {
         Group {
@@ -17,7 +21,7 @@ struct JellyfinLibraryGridView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(.systemBackground))
+        .background(Color.background)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 if let vm = viewModel {
@@ -47,9 +51,12 @@ struct JellyfinLibraryGridView: View {
             )
         } else {
             VStack(spacing: 0) {
-                if !vm.availableGenres.isEmpty {
-                    genreBar(vm: vm)
-                }
+                // Reserve the genre row from the first paint so the grid doesn't
+                // "drop" when genres (loaded concurrently) land a beat later. The
+                // animation smooths the one place this can still move: a library that
+                // turns out to have NO genres collapses the placeholder gently.
+                genreSection(vm: vm)
+                    .animation(.smooth, value: vm.isLoadingGenres)
                 ScrollView {
                     MediaGrid(
                         items: vm.items,
@@ -67,6 +74,34 @@ struct JellyfinLibraryGridView: View {
         }
     }
 
+    /// Genre row that holds a stable height across loading → loaded so the grid
+    /// below never shifts. While genres load it shows placeholder pills; once loaded
+    /// it shows the real chips, or collapses if the library has no genres.
+    @ViewBuilder
+    private func genreSection(vm: JellyfinLibraryGridViewModel) -> some View {
+        if vm.isLoadingGenres {
+            genrePlaceholder
+        } else if !vm.availableGenres.isEmpty {
+            genreBar(vm: vm)
+        }
+    }
+
+    private var genrePlaceholder: some View {
+        // Same geometry as genreBar (34pt pills + Space.s8 vertical padding) so the
+        // swap to real chips is height-neutral.
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: Space.s8) {
+                ForEach([64, 52, 78, 60, 70, 56], id: \.self) { width in
+                    Capsule().fill(Color.fill)
+                        .frame(width: CGFloat(width), height: genreChipHeight)
+                }
+            }
+            .padding(.horizontal, AppLayout.contentHMargin)
+            .padding(.vertical, Space.s8)
+        }
+        .scrollDisabled(true)
+    }
+
     @ViewBuilder
     private func genreBar(vm: JellyfinLibraryGridViewModel) -> some View {
         @Bindable var vm = vm
@@ -80,7 +115,7 @@ struct JellyfinLibraryGridView: View {
                         Text(genre)
                             .font(.subheadline.weight(.medium))
                             .foregroundStyle(isSelected ? Color.chipSelectedLabel : Color.secondaryLabel)
-                            .padding(.horizontal, Space.s14).frame(height: 34)
+                            .padding(.horizontal, Space.s14).frame(height: genreChipHeight)
                             .background(isSelected ? Color.chipSelectedFill : Color.fill, in: Capsule())
                     }
                     .buttonStyle(.plain)
@@ -94,24 +129,29 @@ struct JellyfinLibraryGridView: View {
     @ViewBuilder
     private func sortFilterMenu(vm: JellyfinLibraryGridViewModel) -> some View {
         @Bindable var vm = vm
+        // Field + direction are separate inline Pickers (not a hand-rolled row with a
+        // trailing arrow), so every selected item gets the system's LEADING checkmark
+        // column — aligned with the Filter watch-state picker, and no 0-height slot.
+        let field = Binding(
+            get: { vm.sort.field },
+            set: { vm.sort = ItemSort(field: $0, direction: vm.sort.direction) }
+        )
+        let direction = Binding(
+            get: { vm.sort.direction },
+            set: { vm.sort = ItemSort(field: vm.sort.field, direction: $0) }
+        )
         Menu {
-            Section("Sort") {
-                ForEach(ItemSort.Field.allCases, id: \.self) { field in
-                    Button {
-                        let dir: ItemSort.Direction =
-                            (vm.sort.field == field && vm.sort.direction == .ascending) ? .descending : .ascending
-                        vm.sort = ItemSort(field: field, direction: dir)
-                    } label: {
-                        HStack {
-                            Text(label(for: field))
-                            if vm.sort.field == field {
-                                Spacer()
-                                Image(systemName: vm.sort.direction == .ascending ? "arrow.up" : "arrow.down")
-                            }
-                        }
-                    }
+            Picker("Sort By", selection: field) {
+                ForEach(ItemSort.Field.allCases, id: \.self) { f in
+                    Text(label(for: f)).tag(f)
                 }
             }
+            .pickerStyle(.inline)
+            Picker("Order", selection: direction) {
+                Label("Ascending", systemImage: "arrow.up").tag(ItemSort.Direction.ascending)
+                Label("Descending", systemImage: "arrow.down").tag(ItemSort.Direction.descending)
+            }
+            .pickerStyle(.inline)
             Section("Filter") {
                 Picker("Watched", selection: $vm.filter.watchState) {
                     Text("All").tag(ItemFilter.WatchState.all)

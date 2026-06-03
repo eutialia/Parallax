@@ -12,15 +12,10 @@ struct LibraryHostView: View {
                 case .jellyfin(let session):
                     JellyfinLibraryListView(session: session)
                         .navigationTitle("Library")
-                        .toolbar {
-                            ToolbarItem(placement: .topBarLeading) {
-                                // Non-interactive label in v1.
-                                // Becomes a Menu in v2 when SMB/Local sources arrive.
-                                Text(source.displayName)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
+                        // Server name sits under the title (was a truncated "cort…"
+                        // caption crammed into the top-left). Becomes a source-switcher
+                        // Menu in v2 when SMB/Local sources arrive.
+                        .navigationSubtitle(source.displayName)
                 }
             } else {
                 ContentUnavailableView(
