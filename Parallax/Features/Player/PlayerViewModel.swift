@@ -66,9 +66,13 @@ final class PlayerViewModel {
     private(set) var playbackRate: Float = 1
 
     /// A concise format summary for the top bar, e.g. "4K · Dolby Vision · 7.1".
-    /// Derived from the resolved media streams, so it works on every method.
-    var mediaSummary: String? {
-        guard let resolved else { return nil }
+    /// Cached, not computed-per-read: `body` re-evaluates ~twice a second off the
+    /// periodic time observer, and the derivation scans `resolved.mediaStreams`.
+    /// Recomputed only when the stream resolves (`recomputeMediaSummary`).
+    private(set) var mediaSummary: String?
+
+    private func recomputeMediaSummary() {
+        guard let resolved else { mediaSummary = nil; return }
         var parts: [String] = []
         if let video = resolved.mediaStreams.first(where: { $0.kind == .video }) {
             if let q = Self.qualityLabel(width: video.width, height: video.height) { parts.append(q) }
@@ -78,7 +82,7 @@ final class PlayerViewModel {
         let audio = resolved.mediaStreams.first { $0.kind == .audio && $0.index == audioIndex }
             ?? resolved.mediaStreams.first { $0.kind == .audio }
         if let channels = audio?.channels { parts.append(Self.channelLayout(channels)) }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+        mediaSummary = parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     /// Engine + delivery label for the top-bar badge, e.g. "AVKit · Direct Play".
@@ -269,6 +273,7 @@ final class PlayerViewModel {
         if resolved.method == .transcode {
             populateTranscodeMenus(from: resolved)
         }
+        recomputeMediaSummary()
 
         let asset = Self.makeAsset(from: resolved)
         let id = EngineSelector.select(hints: asset.hints)
@@ -345,7 +350,12 @@ final class PlayerViewModel {
         currentPosition = .zero
         currentDuration = .zero
         isPlaying = false
-        playbackRate = 1
+        mediaSummary = nil
+        // NOTE: playbackRate is deliberately NOT reset here. retry() routes through
+        // stop()→start(); zeroing it would silently drop the user's chosen speed on
+        // the fresh engine (beginPlayback's re-apply guard would see 1.0×). A real
+        // dismiss discards the whole view model, so the next item starts at the
+        // init default (1.0×) anyway.
     }
 
     /// Sends the final PlaybackStopped beat for the current session exactly once.
@@ -598,7 +608,7 @@ final class PlayerViewModel {
                 let isTranscode = !copyCodecs.contains((stream.codec ?? "").lowercased())
                 return AudioTrack(
                     id: .jellyfinStream(stream.index),
-                    displayName: Self.trackLanguageLabel(stream),
+                    displayName: stream.menuLabel,
                     languageCode: stream.language,
                     codecLabel: Self.audioCodecLabel(stream),
                     isTranscode: isTranscode,
@@ -612,7 +622,7 @@ final class PlayerViewModel {
             .map { stream in
                 SubtitleTrack(
                     id: .jellyfinStream(stream.index),
-                    displayName: Self.trackLanguageLabel(stream),
+                    displayName: stream.menuLabel,
                     languageCode: stream.language,
                     isForced: stream.isForced,
                     sourceLabel: stream.isExternal ? "External" : "Embedded",
@@ -625,18 +635,8 @@ final class PlayerViewModel {
         selectedSubtitleTrack = availableSubtitleTracks.first { $0.id == currentSubtitleStreamIndex.map(TrackID.jellyfinStream) }
     }
 
-    /// A human language name ("English"), falling back to the server's full menu
-    /// label when the language code is missing or unresolvable.
-    private static func trackLanguageLabel(_ stream: MediaStreamInfo) -> String {
-        if let code = stream.language,
-           let name = Locale.current.localizedString(forLanguageCode: code) {
-            return name.capitalized
-        }
-        return stream.menuLabel
-    }
-
-    /// Source codec + channel layout, e.g. "TrueHD · 7.1" — the SECONDARY detail
-    /// line under the language. Nil when neither is known.
+    /// Source codec + channel layout, e.g. "TRUEHD · 7.1" — the SECONDARY detail
+    /// line under the track's name. Nil when neither is known.
     private static func audioCodecLabel(_ stream: MediaStreamInfo) -> String? {
         let parts = [stream.codec?.uppercased(), stream.channels.map { channelLayout($0) }].compactMap { $0 }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
@@ -659,6 +659,7 @@ final class PlayerViewModel {
         guard let range = range?.uppercased() else { return nil }
         if range.contains("DOVI") || range.contains("DOLBY") { return "Dolby Vision" }
         if range.contains("HDR10+") || range.contains("HDR10PLUS") { return "HDR10+" }
+        if range.contains("HDR10") { return "HDR10" }
         if range.contains("HDR") { return "HDR" }
         if range.contains("HLG") { return "HLG" }
         return nil

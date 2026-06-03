@@ -28,6 +28,10 @@ struct PlayerControlsView: View {
     @State private var hideTask: Task<Void, Never>? = nil
     @State private var isScrubbing = false
     @State private var scrubProgress: Double = 0
+    /// Bumped on every drag start. The seek Task captures it and only clears
+    /// `isScrubbing` if no newer drag began while its (possibly slow) seek was in
+    /// flight — otherwise a rapid re-grab would snap the thumb to live playback.
+    @State private var scrubGeneration = 0
     @State private var audioMenu = false
     @State private var subtitleMenu = false
 
@@ -196,15 +200,19 @@ struct PlayerControlsView: View {
                     if editing {
                         scrubProgress = liveProgress
                         isScrubbing = true
+                        scrubGeneration += 1
                     } else {
                         guard let engine = vm.engine, durSeconds > 0 else {
                             isScrubbing = false
                             return
                         }
+                        let gen = scrubGeneration
                         let target = CMTime(seconds: scrubProgress * durSeconds, preferredTimescale: 600)
                         Task {
                             await engine.seek(to: target)
-                            isScrubbing = false
+                            // Skip the clear if the user already started another drag
+                            // while this (possibly multi-second transcode) seek ran.
+                            if scrubGeneration == gen { isScrubbing = false }
                         }
                     }
                 }
@@ -295,6 +303,17 @@ struct PlayerControlsView: View {
         } label: {
             ChipLabel(systemImage: "timer", label: speedText(Double(vm.playbackRate)), sub: nil, isActive: false)
         }
+        // The speed picker is a system Menu with no open/close binding, so it can't
+        // join `menuOpen`. Pin the chrome when it's tapped open; the rate buttons
+        // reschedule the auto-hide on selection.
+        .simultaneousGesture(TapGesture().onEnded { pinControls() })
+    }
+
+    /// Keep the chrome up indefinitely (used while a system Menu with no dismissal
+    /// callback is open). A later `resetHideTimer()` re-arms the auto-hide.
+    private func pinControls() {
+        controlsVisible = true
+        hideTask?.cancel()
     }
 
     private func speedText(_ rate: Double) -> String {
@@ -311,6 +330,7 @@ struct PlayerControlsView: View {
                 tracks: vm.availableAudioTracks,
                 selectedID: vm.selectedAudioTrack?.id
             ) { track in
+                audioMenu = false   // dismiss the popover/sheet on selection
                 resetHideTimer()
                 Task { await vm.selectAudioTrack(track) }
             }
@@ -324,6 +344,7 @@ struct PlayerControlsView: View {
                 tracks: vm.availableSubtitleTracks,
                 selectedID: vm.selectedSubtitleTrack?.id
             ) { track in
+                subtitleMenu = false   // dismiss the popover/sheet on selection
                 resetHideTimer()
                 Task { await vm.selectSubtitleTrack(track) }
             }
@@ -332,6 +353,10 @@ struct PlayerControlsView: View {
 
     /// Shared presentation wrapper: scrollable, dark-pinned (so tokens resolve to the
     /// immersive dark palette), width-bounded for the popover (the sheet ignores width).
+    /// No `presentationCompactAdaptation` here — it's shared by both the popover and
+    /// the sheet, and forcing `.popover` would defeat the iPhone sheet's detents. The
+    /// popover only ever presents in regular width (see `popoverBinding`), so it stays
+    /// a popover natively; the sheet only ever presents in compact width.
     @ViewBuilder
     private func trackMenuChrome<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
         ScrollView {
@@ -342,7 +367,6 @@ struct PlayerControlsView: View {
         .frame(idealWidth: 360)
         .frame(maxHeight: 520)
         .environment(\.colorScheme, .dark)
-        .presentationCompactAdaptation(.popover)
     }
 
     /// A popover binding that only fires in regular width (iPad). In compact width the
@@ -409,10 +433,12 @@ private struct ChipLabel: View {
                 .font(.system(size: 16, weight: .semibold))
             Text(label)
                 .font(.subheadline.weight(.medium))
+                .lineLimit(1)
             if let sub {
                 Text(sub)
                     .font(.subheadline)
                     .foregroundStyle(.white.opacity(0.6))
+                    .lineLimit(1)
             }
         }
         .foregroundStyle(.white)
