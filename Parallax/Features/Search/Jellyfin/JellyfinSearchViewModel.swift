@@ -28,6 +28,9 @@ final class JellyfinSearchViewModel {
     }
 
     private(set) var state: LoadState = .idle
+    /// True while a refine query is in flight on top of existing results — drives an
+    /// inline indicator instead of tearing the whole results page down.
+    private(set) var isSearching = false
     private let repo: LibraryRepository
     private let debouncer: AsyncDebouncer<String>
     private var consumerTask: Task<Void, Never>?
@@ -65,9 +68,16 @@ final class JellyfinSearchViewModel {
         let trimmed = q.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
             state = .idle
+            isSearching = false
             return
         }
-        state = .loading
+        // Full-page spinner only on the FIRST search. Once results are on screen, keep
+        // them mounted while refining (so the ScrollView keeps its offset and the main
+        // actor isn't busy rebuilding the whole grid on every keystroke) and show a
+        // small inline indicator via `isSearching` instead.
+        if case .loaded = state {} else { state = .loading }
+        isSearching = true
+        defer { isSearching = false }
         do {
             let results = try await repo.search(trimmed, scope: scope)
             state = .loaded(results)

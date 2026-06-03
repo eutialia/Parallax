@@ -22,7 +22,11 @@ struct JellyfinSearchView: View {
             }
         }
         .navigationTitle("Search")
-        .searchable(text: $query)
+        // Anchor the field to THIS screen's navigation bar. With the default
+        // (automatic) placement, the `.search`-role tab hoisted the field into the
+        // sidebarAdaptable chrome and hijacked the sidebar toggle (couldn't reopen
+        // the sidebar without restarting). navigationBarDrawer keeps it self-contained.
+        .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always))
         .searchScopes($scope) {
             Text("All").tag(SearchScope.all)
             Text("Movies").tag(SearchScope.movies)
@@ -91,6 +95,16 @@ struct JellyfinSearchView: View {
                         }
                     }
                     .padding(Space.s18)
+                }
+                // Floating indicator while refining — an overlay (not an inline row)
+                // so the results don't shift down/up on every debounced keystroke.
+                .overlay(alignment: .top) {
+                    if vm.isSearching {
+                        ProgressView()
+                            .padding(10)
+                            .background(.regularMaterial, in: Capsule())
+                            .padding(.top, Space.s8)
+                    }
                 }
             }
         case .failed(let message):
