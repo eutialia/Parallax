@@ -16,6 +16,7 @@ import ParallaxPlayback
 struct ParallaxApp: App {
     @State private var dependencies: AppDependencies = .live()
     @State private var router: AppRouter = .init()
+    @State private var playback: PlaybackPresenter = .init()
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
@@ -23,6 +24,7 @@ struct ParallaxApp: App {
             RootView()
                 .environment(dependencies)
                 .environment(router)
+                .environment(playback)
                 .onChange(of: scenePhase) { _, newPhase in
                     // Re-run LAN discovery on every foreground. The launch-time
                     // pass races (and usually loses to) the iOS Local Network

@@ -3,6 +3,7 @@ import ParallaxJellyfin
 
 struct RootTabView: View {
     @Environment(AppRouter.self) private var router
+    @Environment(PlaybackPresenter.self) private var playback
     @State private var selectedTab: AppTab = .home
 
     enum AppTab: Hashable {
@@ -10,6 +11,7 @@ struct RootTabView: View {
     }
 
     var body: some View {
+        @Bindable var playback = playback
         TabView(selection: $selectedTab) {
             Tab("Home", systemImage: "house", value: AppTab.home) {
                 NavigationStack { HomeView() }
@@ -31,5 +33,8 @@ struct RootTabView: View {
         // and rebuilds Home/Library/Search against the new server instead of
         // leaving them on the previous one's content.
         .id(router.activeServerID)
+        .fullScreenCover(item: $playback.request) { request in
+            PlayerView(itemID: request.itemID, session: request.session)
+        }
     }
 }
