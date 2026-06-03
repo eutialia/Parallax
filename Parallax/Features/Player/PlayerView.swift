@@ -4,8 +4,20 @@ import ParallaxJellyfin
 import ParallaxPlayback
 
 struct PlayerView: View {
-    let item: ItemDetail
+    private enum Source { case resolved(ItemDetail); case unresolved(ItemID) }
+    private let source: Source
     let session: Session
+
+    /// Play an already-loaded detail (e.g. the movie-detail Play button).
+    init(item: ItemDetail, session: Session) {
+        self.source = .resolved(item)
+        self.session = session
+    }
+    /// Play by id — fetches the detail in the loading cover (direct episode play).
+    init(itemID: ItemID, session: Session) {
+        self.source = .unresolved(itemID)
+        self.session = session
+    }
 
     @Environment(AppDependencies.self) private var deps
     @Environment(\.dismiss) private var dismiss
@@ -68,6 +80,7 @@ struct PlayerView: View {
         .task {
             if viewModel == nil {
                 let info = await deps.playbackInfoFactory(session)
+                let repo = await deps.libraryRepoFactory(session)
                 let engineFactory = deps.playbackEngineFactory
                 let vm = PlayerViewModel(
                     deviceProfileBuilder: deps.deviceProfileBuilder,
@@ -82,10 +95,14 @@ struct PlayerView: View {
                         )
                     },
                     engineFactory: { id in engineFactory(id) },
-                    audioSession: deps.audioSession
+                    audioSession: deps.audioSession,
+                    fetchDetail: { try await repo.detail(for: $0) }
                 )
                 viewModel = vm
-                await vm.start(item: item)
+                switch source {
+                case .resolved(let item): await vm.start(item: item)
+                case .unresolved(let id): await vm.start(itemID: id)
+                }
             }
         }
         .onDisappear {
@@ -137,7 +154,7 @@ struct PlayerView: View {
                 .multilineTextAlignment(.center)
             HStack(spacing: 12) {
                 Button("Retry") {
-                    Task { await vm.retry(item: item) }
+                    Task { await vm.retry() }
                 }
                 .buttonStyle(.borderedProminent)
                 Button("Close") { dismiss() }

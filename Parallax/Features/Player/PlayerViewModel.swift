@@ -62,6 +62,10 @@ final class PlayerViewModel {
     private let resolve: ResolveCall
     private let engineFactory: @Sendable (PlaybackEngineID) -> any PlaybackEngine
     private let audioSession: any AudioSessionControlling
+    /// Fetches an item's full detail (`ItemDetail`) from its id — used by the
+    /// direct-play entry `start(itemID:)`. Defaulted so existing `start(item:)`
+    /// call sites/tests that already hold the detail don't have to provide it.
+    private let fetchDetail: @Sendable (ItemID) async throws -> ItemDetail
     /// Fetches sidecar subtitle bytes. Injectable so tests feed canned WebVTT
     /// without a network round-trip; production reads the authed VTT URL.
     private let subtitleFetch: @Sendable (URL) async -> Data?
@@ -83,6 +87,9 @@ final class PlayerViewModel {
     // into a transcode, so switching tracks means re-resolving the stream around
     // a different source index. We keep the item + the current indices to rebuild.
     private var playingItem: ItemDetail?
+    /// The id requested via `start(itemID:)`, kept so `retry()` can re-fetch when
+    /// the original failure was the detail fetch itself (no `playingItem` yet).
+    private var pendingItemID: ItemID?
     private var currentAudioStreamIndex: Int?
     private var currentSubtitleStreamIndex: Int?
 
@@ -99,6 +106,9 @@ final class PlayerViewModel {
         resolve: @escaping ResolveCall,
         engineFactory: @escaping @Sendable (PlaybackEngineID) -> any PlaybackEngine,
         audioSession: any AudioSessionControlling,
+        fetchDetail: @escaping @Sendable (ItemID) async throws -> ItemDetail = { _ in
+            throw AppError.playback(.unsupportedFormat)
+        },
         subtitleFetch: @escaping @Sendable (URL) async -> Data? = { try? await URLSession.shared.data(from: $0).0 }
     ) {
         self.deviceProfileBuilder = deviceProfileBuilder
@@ -106,6 +116,7 @@ final class PlayerViewModel {
         self.resolve = resolve
         self.engineFactory = engineFactory
         self.audioSession = audioSession
+        self.fetchDetail = fetchDetail
         self.subtitleFetch = subtitleFetch
     }
 
@@ -117,6 +128,24 @@ final class PlayerViewModel {
         // never reached.
         stateTask?.cancel()
         subtitleFetchTask?.cancel()
+    }
+
+    /// Direct-play entry: fetch the item's detail, then play. The frosted reload
+    /// cover stays up through the fetch (phase == .loading), so there's no separate
+    /// spinner. Used when a screen has only the item id (an episode tapped in Home /
+    /// Search / a library / a season list) — no detail screen in between.
+    func start(itemID: ItemID) async {
+        phase = .loading
+        pendingItemID = itemID
+        do {
+            let detail = try await fetchDetail(itemID)
+            await start(item: detail)
+        } catch let error as AppError {
+            phase = .failed(error)
+        } catch {
+            Log.playback.error("item detail fetch failed: \(error.networkDiagnostic, privacy: .public)")
+            phase = .failed(.unexpected("couldn't load item", underlying: AnySendableError(error)))
+        }
     }
 
     func start(item: ItemDetail) async {
@@ -280,13 +309,16 @@ final class PlayerViewModel {
         await playbackInfo.reportStopped(beat(position: lastPosition, isPaused: true, from: resolved))
     }
 
-    func retry(item: ItemDetail) async {
+    func retry() async {
+        let item = playingItem
+        let id = pendingItemID
         await stop()
         phase = .idle
         didReportStart = false
         didReportStopped = false
         lastPosition = .zero
-        await start(item: item)
+        if let item { await start(item: item) }
+        else if let id { await start(itemID: id) }
     }
 
     func selectAudioTrack(_ track: AudioTrack) async {

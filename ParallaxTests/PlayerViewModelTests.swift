@@ -694,6 +694,47 @@ struct PlayerViewModelTests {
         #expect(vm.phase == .failed(.playback(.decodeFailed)))
     }
 
+    @Test("start(itemID:) fetches the detail first, then plays it")
+    func startByItemIDFetchesThenPlays() async {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
+        let builder = DeviceProfileBuilder(probe: probe)
+        nonisolated(unsafe) var fetchedID: ItemID?
+        let vm = PlayerViewModel(
+            deviceProfileBuilder: builder,
+            playbackInfo: reporting,
+            resolve: { _, _, _, _, _ in PlayerFixtures.resolved() },
+            engineFactory: { _ in engine },
+            audioSession: NoopAudioSession(),
+            fetchDetail: { id in fetchedID = id; return PlayerFixtures.movieDetail() }
+        )
+        await vm.start(itemID: ItemID(rawValue: "movie-1"))
+        #expect(fetchedID == ItemID(rawValue: "movie-1"))
+        #expect(!engine.loadedAssets.isEmpty)
+    }
+
+    @Test("start(itemID:) surfaces a fetch failure as .failed without resolving")
+    func startByItemIDFetchFailure() async {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
+        let builder = DeviceProfileBuilder(probe: probe)
+        nonisolated(unsafe) var didResolve = false
+        let vm = PlayerViewModel(
+            deviceProfileBuilder: builder,
+            playbackInfo: reporting,
+            resolve: { _, _, _, _, _ in didResolve = true; return PlayerFixtures.resolved() },
+            engineFactory: { _ in engine },
+            audioSession: NoopAudioSession(),
+            fetchDetail: { _ in throw AppError.playback(.resourceUnavailable) }
+        )
+        await vm.start(itemID: ItemID(rawValue: "ep-1"))
+        #expect(vm.phase == .failed(.playback(.resourceUnavailable)))
+        #expect(didResolve == false)
+        #expect(engine.loadedAssets.isEmpty)
+    }
+
     // MARK: - NowPlaying (serialized — MPNowPlayingInfoCenter is a process-wide singleton)
 
     /// All 5 tests that read/write MPNowPlayingInfoCenter.default() are grouped
