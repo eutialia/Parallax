@@ -15,6 +15,8 @@ final class SeriesDetailViewModel {
     private(set) var selectedSeasonID: ItemID?
     private(set) var episodes: [Episode] = []
     private(set) var episodesLoading = false
+    private(set) var isFavorite = false
+    private(set) var resumeEpisode: Episode?
 
     private let repo: LibraryRepository
     private let itemID: ItemID
@@ -35,6 +37,8 @@ final class SeriesDetailViewModel {
                 return
             }
             state = .loaded(sd, seasons)
+            isFavorite = sd.series.userData.isFavorite
+            resumeEpisode = try? await repo.resumeEpisode(forSeries: itemID)
             if let first = seasons.first {
                 await selectSeason(first.id)
             }
@@ -45,6 +49,20 @@ final class SeriesDetailViewModel {
             Log.ui.error("SeriesDetail load unexpected: \(String(describing: type(of: error)))")
             state = .failed("Something went wrong.")
         }
+    }
+
+    func toggleFavorite() async {
+        let target = !isFavorite
+        isFavorite = target
+        do { try await repo.setFavorite(itemID: itemID, isFavorite: target) }
+        catch { isFavorite = !target; Log.ui.error("series toggleFavorite failed: \(String(describing: type(of: error)))") }
+    }
+
+    /// Mark the currently-selected season played (Jellyfin cascades to its episodes).
+    func markSelectedSeasonWatched() async {
+        guard let seasonID = selectedSeasonID else { return }
+        do { try await repo.setPlayed(itemID: seasonID, isPlayed: true) }
+        catch { Log.ui.error("markSeasonWatched failed: \(String(describing: type(of: error)))") }
     }
 
     func selectSeason(_ id: ItemID) async {

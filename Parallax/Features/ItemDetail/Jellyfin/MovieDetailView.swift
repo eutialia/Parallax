@@ -30,6 +30,21 @@ struct MovieDetailView: View {
                             }
                             .padding(.horizontal, Space.s18)
 
+                            HStack(spacing: Space.s12) {
+                                actionButton(
+                                    systemImage: vm.isFavorite ? "heart.fill" : "heart",
+                                    label: "Favorite",
+                                    isActive: vm.isFavorite
+                                ) { Task { await vm.toggleFavorite() } }
+                                actionButton(
+                                    systemImage: vm.isPlayed ? "checkmark.circle.fill" : "checkmark.circle",
+                                    label: vm.isPlayed ? "Watched" : "Mark Watched",
+                                    isActive: vm.isPlayed
+                                ) { Task { await vm.togglePlayed() } }
+                                Spacer(minLength: 0)
+                            }
+                            .padding(.horizontal, Space.s18)
+
                             if let tagline = md.tagline {
                                 Text(tagline)
                                     .italic()
@@ -76,6 +91,20 @@ struct MovieDetailView: View {
                 await viewModel?.load()
             }
         }
+    }
+
+    @ViewBuilder
+    private func actionButton(systemImage: String, label: String, isActive: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: Space.s8) {
+                Image(systemName: systemImage)
+                Text(label).font(.subheadline.weight(.medium))
+            }
+            .foregroundStyle(isActive ? Color.label : Color.secondaryLabel)
+            .padding(.horizontal, Space.s14).frame(height: 40)
+            .glassPanel(cornerRadius: Radius.field)
+        }
+        .buttonStyle(.plain)
     }
 
     @ViewBuilder

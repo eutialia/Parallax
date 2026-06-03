@@ -199,6 +199,7 @@ public actor PlaybackInfoService {
                 isExternal: stream.isExternal ?? false,
                 isForced: stream.isForced ?? false,
                 isDefault: stream.isDefault ?? false,
+                isHearingImpaired: stream.isHearingImpaired ?? false,
                 profile: stream.profile,
                 bitDepth: stream.bitDepth,
                 width: stream.width,

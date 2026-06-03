@@ -14,6 +14,7 @@ extension BaseItemDto {
             runtime = nil
         }
         let backdrops = (backdropImageTags ?? []).map(ImageTag.init(rawValue:))
+        let video = mediaStreams?.first { $0.type == .video }
         return Movie(
             id: ItemID(rawValue: id),
             title: name,
@@ -27,7 +28,10 @@ extension BaseItemDto {
             backdropTags: backdrops,
             logoTag: imageTags?["Logo"].map(ImageTag.init(rawValue:)),
             thumbTag: imageTags?["Thumb"].map(ImageTag.init(rawValue:)),
-            userData: userData?.toUserItemData() ?? .absent
+            userData: userData?.toUserItemData() ?? .absent,
+            width: video?.width,
+            height: video?.height,
+            videoRangeType: video?.videoRangeType?.rawValue
         )
     }
 }

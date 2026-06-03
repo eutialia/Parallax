@@ -1,5 +1,6 @@
 import SwiftUI
 import ParallaxPlayback
+import ParallaxJellyfin
 
 // MARK: - Private primitives
 
@@ -218,6 +219,41 @@ struct SubtitleTrackMenu: View {
                 MenuFootnote(text: "External subtitles are matched by filename or fetched automatically.")
             }
         }
+    }
+}
+
+struct ChapterMenu: View {
+    let chapters: [Chapter]
+    let onSelect: (Chapter) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            MenuHeader(systemImage: "list.bullet", title: "Chapters", trailing: "\(chapters.count)")
+            ForEach(chapters) { chapter in
+                MenuRow(isSelected: false, action: { onSelect(chapter) }) {
+                    HStack(spacing: Space.s12) {
+                        Text("\(chapter.index + 1)")
+                            .font(.caption.weight(.semibold).monospacedDigit())
+                            .foregroundStyle(Color.tertiaryLabel)
+                            .frame(width: 22)
+                        Text(chapter.name ?? "Chapter \(chapter.index + 1)")
+                            .font(.callout.weight(.semibold))
+                            .foregroundStyle(Color.label)
+                            .lineLimit(1)
+                        Spacer(minLength: Space.s8)
+                        Text(Self.timecode(chapter.start))
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(Color.secondaryLabel)
+                    }
+                }
+            }
+        }
+    }
+
+    private static func timecode(_ duration: Duration) -> String {
+        let total = Int(duration.components.seconds)
+        let h = total / 3600, m = (total % 3600) / 60, s = total % 60
+        return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%d:%02d", m, s)
     }
 }
 

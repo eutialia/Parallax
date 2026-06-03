@@ -16,4 +16,13 @@ public protocol JellyfinLibraryClient: Sendable {
     func getContinueWatching() async throws -> [BaseItemDto]
     func getNextUp() async throws -> [BaseItemDto]
     func search(query: String, scope: SearchScope) async throws -> [BaseItemDto]
+    /// POST/DELETE the item's favorite flag for the current user.
+    func setFavorite(itemID: String, isFavorite: Bool) async throws
+    /// Mark the item (movie/episode/season/series) played or unplayed for the current user.
+    func setPlayed(itemID: String, isPlayed: Bool) async throws
+    /// The single resume/next-up episode for a series (Jellyfin /Shows/NextUp?seriesId=),
+    /// or nil when the series is unwatched-from-start / finished.
+    func seriesNextUp(seriesID: String) async throws -> BaseItemDto?
+    /// Distinct genre names available under a library/collection (Jellyfin /Genres?parentId=).
+    func genres(parentID: String) async throws -> [String]
 }

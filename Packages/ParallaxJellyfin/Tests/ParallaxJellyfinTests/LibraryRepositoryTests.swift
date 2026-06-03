@@ -40,6 +40,16 @@ struct LibraryRepositoryTests {
         return dto
     }
 
+    private func sampleEpisodeDto(id: String = "ep-1", seriesID: String = "ser-1", seasonID: String = "sea-1") -> BaseItemDto {
+        var dto = BaseItemDto()
+        dto.id = id
+        dto.name = "Episode \(id)"
+        dto.type = .episode
+        dto.seriesID = seriesID
+        dto.seasonID = seasonID
+        return dto
+    }
+
     @Test("collections() returns translated MediaCollections")
     func collections() async throws {
         let (repo, client, _) = make()
@@ -102,7 +112,7 @@ struct LibraryRepositoryTests {
     func itemsForwardsParams() async throws {
         let (repo, client, _) = make()
         client.itemsResult = .success(([], 0))
-        let filter = ItemFilter(watchState: .unplayed, favoritesOnly: true)
+        let filter = ItemFilter(watchState: .unplayed, favoritesOnly: true, genres: ["Action"])
         let sort = ItemSort(field: .dateAdded, direction: .descending)
         _ = try await repo.items(
             in: CollectionID(rawValue: "coll-movies"),
@@ -111,6 +121,7 @@ struct LibraryRepositoryTests {
             cursor: nil
         )
         #expect(client.itemsCalls.last?.filter == filter)
+        #expect(client.itemsCalls.last?.filter.genres == ["Action"])
         #expect(client.itemsCalls.last?.sort == sort)
         #expect(client.itemsCalls.last?.parentID == "coll-movies")
         #expect(client.itemsCalls.last?.startIndex == 0)
@@ -142,5 +153,102 @@ struct LibraryRepositoryTests {
         await #expect(throws: AppError.self) {
             _ = try await repo.detail(for: ItemID(rawValue: "missing"))
         }
+    }
+}
+
+@Suite("LibraryRepository — setFavorite, setPlayed, resumeEpisode, genres")
+struct LibraryRepositoryUserActionTests {
+    private func make() -> (LibraryRepository, FakeJellyfinLibraryClient) {
+        let persisted = PersistedSession(
+            id: ServerID(rawValue: "s1"),
+            serverURL: URL(string: "https://j.example.com")!,
+            serverName: "Home",
+            user: UserSnapshot(id: "u1", name: "alice", serverLastUpdatedAt: nil)
+        )
+        let session = Session(persisted: persisted, accessToken: "tok-1")
+        let client = FakeJellyfinLibraryClient()
+        let repo = LibraryRepository(session: session, client: client)
+        return (repo, client)
+    }
+
+    private func sampleEpisodeDto(id: String = "ep-1", seriesID: String = "ser-1", seasonID: String = "sea-1") -> BaseItemDto {
+        var dto = BaseItemDto()
+        dto.id = id
+        dto.name = "Episode \(id)"
+        dto.type = .episode
+        dto.seriesID = seriesID
+        dto.seasonID = seasonID
+        return dto
+    }
+
+    @Test("setFavorite(true) forwards itemID and flag to client")
+    func setFavoriteTrue() async throws {
+        let (repo, client) = make()
+        try await repo.setFavorite(itemID: ItemID(rawValue: "item-42"), isFavorite: true)
+        #expect(client.setFavoriteCalls.count == 1)
+        #expect(client.setFavoriteCalls.last?.itemID == "item-42")
+        #expect(client.setFavoriteCalls.last?.isFavorite == true)
+    }
+
+    @Test("setFavorite(false) forwards itemID and flag to client")
+    func setFavoriteFalse() async throws {
+        let (repo, client) = make()
+        try await repo.setFavorite(itemID: ItemID(rawValue: "item-99"), isFavorite: false)
+        #expect(client.setFavoriteCalls.last?.itemID == "item-99")
+        #expect(client.setFavoriteCalls.last?.isFavorite == false)
+    }
+
+    @Test("setPlayed(true) forwards itemID and flag to client")
+    func setPlayedTrue() async throws {
+        let (repo, client) = make()
+        try await repo.setPlayed(itemID: ItemID(rawValue: "item-7"), isPlayed: true)
+        #expect(client.setPlayedCalls.count == 1)
+        #expect(client.setPlayedCalls.last?.itemID == "item-7")
+        #expect(client.setPlayedCalls.last?.isPlayed == true)
+    }
+
+    @Test("setPlayed(false) forwards itemID and flag to client")
+    func setPlayedFalse() async throws {
+        let (repo, client) = make()
+        try await repo.setPlayed(itemID: ItemID(rawValue: "item-8"), isPlayed: false)
+        #expect(client.setPlayedCalls.last?.itemID == "item-8")
+        #expect(client.setPlayedCalls.last?.isPlayed == false)
+    }
+
+    @Test("resumeEpisode maps a BaseItemDto into an Episode")
+    func resumeEpisodeMapsDto() async throws {
+        let (repo, client) = make()
+        client.seriesNextUpResult = .success(sampleEpisodeDto(id: "ep-5", seriesID: "ser-2", seasonID: "sea-3"))
+        let episode = try await repo.resumeEpisode(forSeries: ItemID(rawValue: "ser-2"))
+        #expect(client.seriesNextUpCalls == ["ser-2"])
+        #expect(episode?.id == ItemID(rawValue: "ep-5"))
+        #expect(episode?.seriesID == ItemID(rawValue: "ser-2"))
+        #expect(episode?.name == "Episode ep-5")
+    }
+
+    @Test("resumeEpisode returns nil when client yields nil")
+    func resumeEpisodeNil() async throws {
+        let (repo, client) = make()
+        client.seriesNextUpResult = .success(nil)
+        let episode = try await repo.resumeEpisode(forSeries: ItemID(rawValue: "ser-1"))
+        #expect(episode == nil)
+        #expect(client.seriesNextUpCalls == ["ser-1"])
+    }
+
+    @Test("genres forwards parentID and returns client list")
+    func genresForwards() async throws {
+        let (repo, client) = make()
+        client.genresResult = .success(["Action", "Drama"])
+        let result = try await repo.genres(in: CollectionID(rawValue: "coll-1"))
+        #expect(client.genresCalls == ["coll-1"])
+        #expect(result == ["Action", "Drama"])
+    }
+
+    @Test("genres returns empty when client yields empty")
+    func genresEmpty() async throws {
+        let (repo, client) = make()
+        client.genresResult = .success([])
+        let result = try await repo.genres(in: CollectionID(rawValue: "coll-2"))
+        #expect(result.isEmpty)
     }
 }

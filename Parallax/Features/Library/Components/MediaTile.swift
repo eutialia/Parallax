@@ -10,6 +10,7 @@ struct MediaTile: View {
     let progress: Double?   // 0.0–1.0; nil hides the bar
     let aspectRatio: CGFloat
     let maxImageWidth: Int
+    var badges: [String]
 
     init(
         title: String,
@@ -19,7 +20,8 @@ struct MediaTile: View {
         session: Session,
         progress: Double?,
         aspectRatio: CGFloat = JellyfinImage.poster,
-        maxImageWidth: Int = 600
+        maxImageWidth: Int = 600,
+        badges: [String] = []
     ) {
         self.title = title
         self.subtitle = subtitle
@@ -29,6 +31,7 @@ struct MediaTile: View {
         self.progress = progress
         self.aspectRatio = aspectRatio
         self.maxImageWidth = maxImageWidth
+        self.badges = badges
     }
 
     var body: some View {
@@ -59,6 +62,20 @@ struct MediaTile: View {
                     .clipShape(.rect(cornerRadius: 2))
                     .padding(.horizontal, 4)
                     .padding(.bottom, 4)
+                }
+
+                if !badges.isEmpty {
+                    HStack(spacing: 4) {
+                        ForEach(badges, id: \.self) { badge in
+                            Text(badge)
+                                .font(.caption2.weight(.bold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 6).padding(.vertical, 3)
+                                .background(.black.opacity(0.55), in: Capsule())
+                        }
+                    }
+                    .padding(6)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                 }
             }
             Text(title)

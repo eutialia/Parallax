@@ -98,6 +98,40 @@ public actor LibraryRepository {
         }
     }
 
+    public func setFavorite(itemID: ItemID, isFavorite: Bool) async throws {
+        do {
+            try await client.setFavorite(itemID: itemID.rawValue, isFavorite: isFavorite)
+        } catch {
+            throw ErrorMapping.appError(from: error)
+        }
+    }
+
+    public func setPlayed(itemID: ItemID, isPlayed: Bool) async throws {
+        do {
+            try await client.setPlayed(itemID: itemID.rawValue, isPlayed: isPlayed)
+        } catch {
+            throw ErrorMapping.appError(from: error)
+        }
+    }
+
+    public func resumeEpisode(forSeries id: ItemID) async throws -> Episode? {
+        let dto: BaseItemDto?
+        do {
+            dto = try await client.seriesNextUp(seriesID: id.rawValue)
+        } catch {
+            throw ErrorMapping.appError(from: error)
+        }
+        return dto?.toEpisode()
+    }
+
+    public func genres(in collection: CollectionID) async throws -> [String] {
+        do {
+            return try await client.genres(parentID: collection.rawValue)
+        } catch {
+            throw ErrorMapping.appError(from: error)
+        }
+    }
+
     public func search(_ query: String, scope: SearchScope) async throws -> SearchResults {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return .empty }

@@ -19,6 +19,8 @@ final class FakeJellyfinLibraryClient: JellyfinLibraryClient, @unchecked Sendabl
     // routes per-type searches independently (scope .all fans out into three
     // parallel calls). Falls back to `searchResult` if a scope is unmapped.
     var searchResultsByScope: [SearchScope: Result<[BaseItemDto], Error>] = [:]
+    var seriesNextUpResult: Result<BaseItemDto?, Error> = .success(nil)
+    var genresResult: Result<[String], Error> = .success([])
 
     // Call records.
     private(set) var collectionsCallCount = 0
@@ -29,6 +31,10 @@ final class FakeJellyfinLibraryClient: JellyfinLibraryClient, @unchecked Sendabl
     private(set) var continueWatchingCallCount = 0
     private(set) var nextUpCallCount = 0
     private(set) var searchCalls: [(query: String, scope: SearchScope)] = []
+    private(set) var setFavoriteCalls: [(itemID: String, isFavorite: Bool)] = []
+    private(set) var setPlayedCalls: [(itemID: String, isPlayed: Bool)] = []
+    private(set) var seriesNextUpCalls: [String] = []
+    private(set) var genresCalls: [String] = []
 
     enum FakeError: Error { case notConfigured }
 
@@ -77,6 +83,24 @@ final class FakeJellyfinLibraryClient: JellyfinLibraryClient, @unchecked Sendabl
             return try perScope.get()
         }
         return try searchResult.get()
+    }
+
+    func setFavorite(itemID: String, isFavorite: Bool) async throws {
+        setFavoriteCalls.append((itemID: itemID, isFavorite: isFavorite))
+    }
+
+    func setPlayed(itemID: String, isPlayed: Bool) async throws {
+        setPlayedCalls.append((itemID: itemID, isPlayed: isPlayed))
+    }
+
+    func seriesNextUp(seriesID: String) async throws -> BaseItemDto? {
+        seriesNextUpCalls.append(seriesID)
+        return try seriesNextUpResult.get()
+    }
+
+    func genres(parentID: String) async throws -> [String] {
+        genresCalls.append(parentID)
+        return try genresResult.get()
     }
 }
 

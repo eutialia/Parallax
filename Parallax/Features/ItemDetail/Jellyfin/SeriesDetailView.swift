@@ -24,12 +24,36 @@ struct SeriesDetailView: View {
                                 backdropRef: sd.series.imageRef(.backdrop(index: 0)),
                                 session: session
                             )
+                            if let ep = vm.resumeEpisode {
+                                PrimaryPlayButton(title: resumeLabel(ep)) {
+                                    playback.play(ep.id, in: session)
+                                }
+                                .padding(.horizontal, Space.s18)
+                            }
+                            HStack(spacing: Space.s12) {
+                                actionButton(
+                                    systemImage: vm.isFavorite ? "heart.fill" : "heart",
+                                    label: "Favorite",
+                                    isActive: vm.isFavorite
+                                ) { Task { await vm.toggleFavorite() } }
+                                Spacer(minLength: 0)
+                            }
+                            .padding(.horizontal, Space.s18)
                             if let overview = sd.series.overview {
                                 Text(overview).padding(.horizontal, Space.s18)
                             }
                             if !seasons.isEmpty {
                                 seasonPicker(seasons: seasons, vm: vm)
                                     .padding(.horizontal, Space.s18)
+                                Button { Task { await vm.markSelectedSeasonWatched() } } label: {
+                                    Label("Mark Season Watched", systemImage: "checkmark.circle")
+                                        .font(.subheadline.weight(.medium))
+                                        .foregroundStyle(Color.secondaryLabel)
+                                        .padding(.horizontal, Space.s14).frame(height: 40)
+                                        .glassPanel(cornerRadius: Radius.field)
+                                }
+                                .buttonStyle(.plain)
+                                .padding(.horizontal, Space.s18)
                             }
                             episodeList(vm: vm)
                             if !sd.series.genres.isEmpty {
@@ -125,5 +149,24 @@ struct SeriesDetailView: View {
         if let y = sd.series.year { parts.append(String(y)) }
         if let s = sd.series.status { parts.append(s) }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    @ViewBuilder
+    private func actionButton(systemImage: String, label: String, isActive: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: Space.s8) {
+                Image(systemName: systemImage)
+                Text(label).font(.subheadline.weight(.medium))
+            }
+            .foregroundStyle(isActive ? Color.label : Color.secondaryLabel)
+            .padding(.horizontal, Space.s14).frame(height: 40)
+            .glassPanel(cornerRadius: Radius.field)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func resumeLabel(_ ep: Episode) -> String {
+        if let s = ep.parentIndexNumber, let e = ep.indexNumber { return "Resume S\(s) E\(e)" }
+        return "Resume"
     }
 }

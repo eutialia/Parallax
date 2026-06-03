@@ -21,10 +21,12 @@ public struct MovieDetail: Sendable, Hashable {
     public let tagline: String?
     public let studios: [String]
     public let people: [String]   // simplified — full Person type lands in Phase 4
+    public let chapters: [Chapter]
 
-    public init(movie: Movie, tagline: String?, studios: [String], people: [String]) {
+    public init(movie: Movie, tagline: String?, studios: [String], people: [String], chapters: [Chapter] = []) {
         self.movie = movie; self.tagline = tagline
         self.studios = studios; self.people = people
+        self.chapters = chapters
     }
 }
 
@@ -52,8 +54,10 @@ public struct SeasonDetail: Sendable, Hashable {
 public struct EpisodeDetail: Sendable, Hashable {
     public let episode: Episode
     public let people: [String]
+    public let chapters: [Chapter]
 
-    public init(episode: Episode, people: [String]) {
+    public init(episode: Episode, people: [String], chapters: [Chapter] = []) {
         self.episode = episode; self.people = people
+        self.chapters = chapters
     }
 }

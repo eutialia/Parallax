@@ -34,8 +34,9 @@ struct PlayerControlsView: View {
     @State private var scrubGeneration = 0
     @State private var audioMenu = false
     @State private var subtitleMenu = false
+    @State private var chapterMenu = false
 
-    private var menuOpen: Bool { audioMenu || subtitleMenu }
+    private var menuOpen: Bool { audioMenu || subtitleMenu || chapterMenu }
 
     var body: some View {
         ZStack {
@@ -270,6 +271,20 @@ struct PlayerControlsView: View {
 
             Spacer(minLength: 0)
 
+            if !vm.chapters.isEmpty {
+                CtlChip(systemImage: "list.bullet", label: "Chapters", isActive: chapterMenu) {
+                    resetHideTimer()
+                    chapterMenu = true
+                }
+                .popover(isPresented: popoverBinding($chapterMenu)) { chapterMenuList }
+                .sheet(isPresented: sheetBinding($chapterMenu)) {
+                    chapterMenuList
+                        .presentationDetents([.medium, .large])
+                        .presentationDragIndicator(.visible)
+                        .presentationBackground(.regularMaterial)
+                }
+            }
+
             GlassCircleButton(
                 systemImage: isFilled ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
                 size: 36,
@@ -347,6 +362,17 @@ struct PlayerControlsView: View {
                 subtitleMenu = false   // dismiss the popover/sheet on selection
                 resetHideTimer()
                 Task { await vm.selectSubtitleTrack(track) }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var chapterMenuList: some View {
+        trackMenuChrome {
+            ChapterMenu(chapters: vm.chapters) { chapter in
+                chapterMenu = false   // dismiss the popover/sheet on selection
+                resetHideTimer()
+                Task { await vm.seekToChapter(chapter) }
             }
         }
     }

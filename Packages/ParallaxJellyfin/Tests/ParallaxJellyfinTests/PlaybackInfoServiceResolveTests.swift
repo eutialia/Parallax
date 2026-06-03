@@ -282,6 +282,34 @@ struct PlaybackInfoServiceResolveTests {
         #expect(resolved.runtime == CMTime(seconds: 100, preferredTimescale: 10_000_000))
     }
 
+    @Test("isHearingImpaired maps through mediaStreamInfos")
+    func hearingImpairedMapped() async throws {
+        var source = transcodeSource()
+        var sdhSub = MediaStream()
+        sdhSub.type = .subtitle
+        sdhSub.index = 5
+        sdhSub.codec = "subrip"
+        sdhSub.displayTitle = "English SDH"
+        sdhSub.isHearingImpaired = true
+        var normalSub = MediaStream()
+        normalSub.type = .subtitle
+        normalSub.index = 6
+        normalSub.codec = "subrip"
+        normalSub.displayTitle = "English"
+        normalSub.isHearingImpaired = false
+        source.mediaStreams?.append(contentsOf: [sdhSub, normalSub])
+        let (service, _) = makeService(source: source)
+        let resolved = try await service.resolve(
+            item: ItemID(rawValue: "item-1"),
+            capabilities: caps(),
+            startTime: nil
+        )
+        let sdh = try #require(resolved.mediaStreams.first { $0.index == 5 })
+        #expect(sdh.isHearingImpaired == true)
+        let normal = try #require(resolved.mediaStreams.first { $0.index == 6 })
+        #expect(normal.isHearingImpaired == false)
+    }
+
     @Test("Empty media sources throws an AppError")
     func emptySourcesThrows() async {
         let fake = FakeJellyfinPlaybackClient()

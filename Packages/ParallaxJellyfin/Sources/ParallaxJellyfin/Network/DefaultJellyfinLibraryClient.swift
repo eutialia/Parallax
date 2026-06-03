@@ -1,5 +1,6 @@
 import Foundation
 import JellyfinAPI
+import ParallaxCore
 
 public final class DefaultJellyfinLibraryClient: JellyfinLibraryClient, @unchecked Sendable {
     private let session: Session
@@ -49,10 +50,15 @@ public final class DefaultJellyfinLibraryClient: JellyfinLibraryClient, @uncheck
         params.isRecursive = true
         params.sortBy = [sort.wireFormat]
         params.sortOrder = [sort.direction.wireFormat]
-        params.fields = [.primaryImageAspectRatio, .mediaSourceCount]
+        // NOTE: .mediaStreams is requested here to populate poster quality badges (4K / HDR /
+        // Dolby Vision). It is the heaviest field on this list query — each item returns audio,
+        // subtitle, and video streams. Keep this the only list call that requests it; detail/
+        // continue-watching/next-up queries do not need badges.
+        params.fields = [.primaryImageAspectRatio, .mediaSourceCount, .mediaStreams]
         params.imageTypeLimit = 1
         params.enableImageTypes = [.primary, .backdrop, .logo, .thumb]
         params.filters = filter.wireFormat
+        params.genres = filter.genres.isEmpty ? nil : filter.genres
         // `favoritesOnly` is already emitted via filter.wireFormat as
         // .isFavorite — don't double-write here, or a future filter case
         // (e.g. "hide favorites") would fight a hard-coded true.
@@ -64,8 +70,20 @@ public final class DefaultJellyfinLibraryClient: JellyfinLibraryClient, @uncheck
     }
 
     public func getItemDetail(itemID: String) async throws -> BaseItemDto {
-        let request = Paths.getItem(itemID: itemID, userID: userID)
-        return try await client().send(request).value
+        // `Paths.getItem` takes no `fields` parameter, so chapters (and other
+        // optional fields like taglines/studios/people) may be absent. Switch to
+        // `Paths.getItems` with an explicit field list so chapters are always
+        // returned when the server has them.
+        var params = Paths.GetItemsParameters()
+        params.userID = userID
+        params.ids = [itemID]
+        params.fields = [.overview, .genres, .taglines, .studios, .people, .chapters]
+        let request = Paths.getItems(parameters: params)
+        let response = try await client().send(request)
+        guard let dto = response.value.items?.first else {
+            throw AppError.unexpected("getItemDetail: no item returned for id \(itemID)", underlying: nil)
+        }
+        return dto
     }
 
     public func getSeasons(seriesID: String) async throws -> [BaseItemDto] {
@@ -130,6 +148,42 @@ public final class DefaultJellyfinLibraryClient: JellyfinLibraryClient, @uncheck
         let request = Paths.getItems(parameters: params)
         let response = try await client().send(request)
         return response.value.items ?? []
+    }
+
+    public func setFavorite(itemID: String, isFavorite: Bool) async throws {
+        let request = isFavorite
+            ? Paths.markFavoriteItem(itemID: itemID, userID: userID)
+            : Paths.unmarkFavoriteItem(itemID: itemID, userID: userID)
+        _ = try await client().send(request)
+    }
+
+    public func setPlayed(itemID: String, isPlayed: Bool) async throws {
+        let request = isPlayed
+            ? Paths.markPlayedItem(itemID: itemID, userID: userID)
+            : Paths.markUnplayedItem(itemID: itemID, userID: userID)
+        _ = try await client().send(request)
+    }
+
+    public func seriesNextUp(seriesID: String) async throws -> BaseItemDto? {
+        var params = Paths.GetNextUpParameters()
+        params.userID = userID
+        params.seriesID = seriesID
+        params.limit = 1
+        params.fields = [.overview, .primaryImageAspectRatio]
+        params.imageTypeLimit = 1
+        params.enableImageTypes = [.primary, .backdrop, .thumb]
+        let request = Paths.getNextUp(parameters: params)
+        let response = try await client().send(request)
+        return response.value.items?.first
+    }
+
+    public func genres(parentID: String) async throws -> [String] {
+        var params = Paths.GetGenresParameters()
+        params.parentID = parentID
+        params.userID = userID
+        let request = Paths.getGenres(parameters: params)
+        let response = try await client().send(request)
+        return response.value.items?.compactMap(\.name) ?? []
     }
 }
 

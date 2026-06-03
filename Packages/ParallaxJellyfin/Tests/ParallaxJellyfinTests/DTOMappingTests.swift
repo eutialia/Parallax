@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import JellyfinAPI
+import ParallaxCore
 @testable import ParallaxJellyfin
 
 @Suite("DTO mapping")
@@ -127,6 +128,104 @@ struct DTOMappingTests {
         #expect(movieDetail.studios == ["Warner Bros.", "Village Roadshow"])
         #expect(movieDetail.people.contains("Lana Wachowski"))
         #expect(movieDetail.people.contains("Keanu Reeves"))
+    }
+
+    @Test("BaseItemDto with two chapters maps to MovieDetail with 2 Chapters (names + start offsets)")
+    func movieDetailChapters() {
+        var dto = BaseItemDto()
+        dto.id = "movie-uuid-ch"
+        dto.name = "Chapters Movie"
+        dto.type = .movie
+        var ch0 = ChapterInfo()
+        ch0.name = "Opening"
+        ch0.startPositionTicks = 0                  // 0 µs → .zero
+        var ch1 = ChapterInfo()
+        ch1.name = "Act 2"
+        ch1.startPositionTicks = 3_000_000_000       // 300_000_000 µs = 300 s
+        dto.chapters = [ch0, ch1]
+        let detail = dto.toItemDetail()
+        guard case .movie(let md) = detail else {
+            Issue.record("expected .movie, got \(String(describing: detail))")
+            return
+        }
+        #expect(md.chapters.count == 2)
+        #expect(md.chapters[0].index == 0)
+        #expect(md.chapters[0].name == "Opening")
+        #expect(md.chapters[0].start == .microseconds(0))
+        #expect(md.chapters[1].index == 1)
+        #expect(md.chapters[1].name == "Act 2")
+        // 3_000_000_000 ticks / 10 = 300_000_000 µs = 300 s
+        #expect(md.chapters[1].start == .seconds(300))
+    }
+
+    @Test("Chapter with nil startPositionTicks is dropped from mapping")
+    func chapterNilTicksDropped() {
+        var dto = BaseItemDto()
+        dto.id = "movie-uuid-ch2"
+        dto.name = "Partial"
+        dto.type = .movie
+        var ch = ChapterInfo()
+        ch.name = "No Ticks"
+        ch.startPositionTicks = nil
+        dto.chapters = [ch]
+        let detail = dto.toItemDetail()
+        guard case .movie(let md) = detail else {
+            Issue.record("expected .movie, got \(String(describing: detail))")
+            return
+        }
+        #expect(md.chapters.isEmpty)
+    }
+
+    @Test("BaseItemDto with two chapters maps to EpisodeDetail with 2 Chapters")
+    func episodeDetailChapters() {
+        var dto = BaseItemDto()
+        dto.id = "ep-uuid-ch"
+        dto.name = "Chapter Episode"
+        dto.type = .episode
+        dto.seriesID = "series-uuid-1"
+        dto.seasonID = "season-uuid-1"
+        var ch0 = ChapterInfo()
+        ch0.name = "Intro"
+        ch0.startPositionTicks = 0
+        var ch1 = ChapterInfo()
+        ch1.name = "Main"
+        ch1.startPositionTicks = 900_000_000        // 90_000_000 µs = 90 s
+        dto.chapters = [ch0, ch1]
+        let detail = dto.toItemDetail()
+        guard case .episode(let ed) = detail else {
+            Issue.record("expected .episode, got \(String(describing: detail))")
+            return
+        }
+        #expect(ed.chapters.count == 2)
+        #expect(ed.chapters[1].name == "Main")
+        #expect(ed.chapters[1].start == .seconds(90))
+    }
+
+    @Test("3840×2160 DOVI video stream → posterBadges == [\"4K\", \"Dolby Vision\"]")
+    func moviePosterBadges4kDovi() {
+        var dto = BaseItemDto()
+        dto.id = "movie-badge-4k"
+        dto.name = "Badge Movie"
+        dto.type = .movie
+        var stream = MediaStream()
+        stream.type = .video
+        stream.width = 3840
+        stream.height = 2160
+        stream.videoRangeType = .dovi
+        dto.mediaStreams = [stream]
+        let m = dto.toMovie()
+        #expect(m?.posterBadges == ["4K", "Dolby Vision"])
+    }
+
+    @Test("No video stream → posterBadges == []")
+    func moviePosterBadgesNoStream() {
+        var dto = BaseItemDto()
+        dto.id = "movie-badge-empty"
+        dto.name = "No Stream Movie"
+        dto.type = .movie
+        dto.mediaStreams = nil
+        let m = dto.toMovie()
+        #expect(m?.posterBadges == [])
     }
 
     @Test("Unknown item type returns nil from toItemDetail")

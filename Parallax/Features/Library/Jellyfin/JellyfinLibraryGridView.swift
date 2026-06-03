@@ -52,26 +52,55 @@ struct JellyfinLibraryGridView: View {
                 description: Text(message)
             )
         } else {
-            ScrollView {
-                MediaGrid(
-                    items: vm.items,
-                    columnMinWidth: 140,
-                    onAppearLast: { Task { await vm.loadMore() } }
-                ) { item in
-                    switch item {
-                    case .episode(let e):
-                        Button { playback.play(e.id, in: session) } label: { tile(for: item) }
-                            .buttonStyle(.plain)
-                    default:
-                        NavigationLink(value: nav(for: item)) { tile(for: item) }
-                            .buttonStyle(.plain)
+            VStack(spacing: 0) {
+                if !vm.availableGenres.isEmpty {
+                    genreBar(vm: vm)
+                }
+                ScrollView {
+                    MediaGrid(
+                        items: vm.items,
+                        columnMinWidth: 140,
+                        onAppearLast: { Task { await vm.loadMore() } }
+                    ) { item in
+                        switch item {
+                        case .episode(let e):
+                            Button { playback.play(e.id, in: session) } label: { tile(for: item) }
+                                .buttonStyle(.plain)
+                        default:
+                            NavigationLink(value: nav(for: item)) { tile(for: item) }
+                                .buttonStyle(.plain)
+                        }
+                    }
+                    if vm.isLoadingMore {
+                        ProgressView().padding()
                     }
                 }
-                if vm.isLoadingMore {
-                    ProgressView().padding()
+                .contentMargins(.horizontal, AppLayout.contentHMargin, for: .scrollContent)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func genreBar(vm: JellyfinLibraryGridViewModel) -> some View {
+        @Bindable var vm = vm
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: Space.s8) {
+                ForEach(vm.availableGenres, id: \.self) { genre in
+                    let isSelected = vm.filter.genres == [genre]
+                    Button {
+                        vm.filter.genres = isSelected ? [] : [genre]
+                    } label: {
+                        Text(genre)
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(isSelected ? Color.chipSelectedLabel : Color.secondaryLabel)
+                            .padding(.horizontal, Space.s14).frame(height: 34)
+                            .background(isSelected ? Color.chipSelectedFill : Color.fill, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
                 }
             }
-            .contentMargins(.horizontal, AppLayout.contentHMargin, for: .scrollContent)
+            .padding(.horizontal, AppLayout.contentHMargin)
+            .padding(.vertical, Space.s8)
         }
     }
 
@@ -119,8 +148,17 @@ struct JellyfinLibraryGridView: View {
             session: session,
             progress: nil,
             aspectRatio: JellyfinImage.poster,
-            maxImageWidth: 600
+            maxImageWidth: 600,
+            badges: badges(for: item)
         )
+    }
+
+    private func badges(for item: Item) -> [String] {
+        switch item {
+        case .movie(let m): return m.posterBadges
+        case .series(let s): return s.posterBadges
+        case .episode: return []
+        }
     }
 
     private func nav(for item: Item) -> ItemNavigation {

@@ -28,6 +28,8 @@ public struct MediaStreamInfo: Sendable, Hashable, Identifiable {
     public let isExternal: Bool
     public let isForced: Bool
     public let isDefault: Bool
+    /// SDH (Subtitles for the Deaf and Hard-of-Hearing) subtitle track.
+    public let isHearingImpaired: Bool
 
     // MARK: Debug / diagnostic fields (nil unless the server reported them)
 
@@ -63,6 +65,7 @@ public struct MediaStreamInfo: Sendable, Hashable, Identifiable {
         isExternal: Bool,
         isForced: Bool,
         isDefault: Bool,
+        isHearingImpaired: Bool = false,
         profile: String? = nil,
         bitDepth: Int? = nil,
         width: Int? = nil,
@@ -84,6 +87,7 @@ public struct MediaStreamInfo: Sendable, Hashable, Identifiable {
         self.isExternal = isExternal
         self.isForced = isForced
         self.isDefault = isDefault
+        self.isHearingImpaired = isHearingImpaired
         self.profile = profile
         self.bitDepth = bitDepth
         self.width = width

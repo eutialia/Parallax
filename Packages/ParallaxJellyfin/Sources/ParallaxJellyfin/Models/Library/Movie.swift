@@ -14,12 +14,20 @@ public struct Movie: Sendable, Hashable, Identifiable {
     public let logoTag: ImageTag?
     public let thumbTag: ImageTag?
     public let userData: UserItemData
+    public let width: Int?
+    public let height: Int?
+    public let videoRangeType: String?
+
+    public var posterBadges: [String] {
+        QualityBadge.badges(width: width, height: height, videoRangeType: videoRangeType)
+    }
 
     public init(
         id: ItemID, title: String, overview: String?, year: Int?, runtime: Duration?,
         communityRating: Double?, officialRating: String?, genres: [String],
         primaryTag: ImageTag?, backdropTags: [ImageTag], logoTag: ImageTag?, thumbTag: ImageTag?,
-        userData: UserItemData
+        userData: UserItemData,
+        width: Int? = nil, height: Int? = nil, videoRangeType: String? = nil
     ) {
         self.id = id; self.title = title; self.overview = overview; self.year = year
         self.runtime = runtime; self.communityRating = communityRating
@@ -27,6 +35,7 @@ public struct Movie: Sendable, Hashable, Identifiable {
         self.primaryTag = primaryTag; self.backdropTags = backdropTags
         self.logoTag = logoTag; self.thumbTag = thumbTag
         self.userData = userData
+        self.width = width; self.height = height; self.videoRangeType = videoRangeType
     }
 
     public func imageRef(_ kind: ImageKind) -> ImageRef? {

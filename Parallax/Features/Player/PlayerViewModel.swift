@@ -107,6 +107,23 @@ final class PlayerViewModel {
         await engine?.setRate(rate)
     }
 
+    /// Chapter markers for the playing item (movie/episode only). Empty when the
+    /// server reported none, or for the unsupported series/season cases.
+    var chapters: [Chapter] {
+        switch playingItem {
+        case .movie(let d): return d.chapters
+        case .episode(let d): return d.chapters
+        case .series, .season, .none: return []
+        }
+    }
+
+    /// Seek to a chapter's start. Chapter offsets are second-granular, so a default-
+    /// tolerance seek (the same one the scrubber uses) is right.
+    func seekToChapter(_ chapter: Chapter) async {
+        let seconds = Double(chapter.start.components.seconds)
+        await engine?.seek(to: CMTime(seconds: seconds, preferredTimescale: 600))
+    }
+
     private let deviceProfileBuilder: DeviceProfileBuilder
     private let playbackInfo: any PlaybackReporting
     private let resolve: ResolveCall
@@ -627,7 +644,7 @@ final class PlayerViewModel {
                     isForced: stream.isForced,
                     sourceLabel: stream.isExternal ? "External" : "Embedded",
                     formatLabel: stream.codec?.uppercased(),
-                    isSDH: false
+                    isSDH: stream.isHearingImpaired
                 )
             }
 

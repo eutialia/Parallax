@@ -14,6 +14,7 @@ final class JellyfinLibraryGridViewModel {
     private(set) var state: LoadState = .idle
     private(set) var items: [Item] = []
     private(set) var isLoadingMore: Bool = false
+    private(set) var availableGenres: [String] = []
 
     var sort: ItemSort = .defaultForLibrary {
         didSet { if sort != oldValue { Task { await reload() } } }
@@ -36,6 +37,7 @@ final class JellyfinLibraryGridViewModel {
         guard state != .loading else { return }
         state = .loading
         await fetchPage(reset: true)
+        availableGenres = (try? await repo.genres(in: collectionID)) ?? []
     }
 
     func loadMore() async {
