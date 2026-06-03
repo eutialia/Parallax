@@ -9,16 +9,7 @@ struct ServerListView: View {
     var body: some View {
         content
             .navigationTitle("Servers")
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        viewModel?.presentAddServer()
-                    } label: {
-                        Image(systemName: "plus")
-                    }
-                    .disabled(viewModel == nil)
-                }
-            }
+            .background(Color.background)
             .task {
                 // Build + refresh together inside the guard so the .task re-firing
                 // when `content`'s identity flips (ProgressView → list once the VM
@@ -54,52 +45,69 @@ struct ServerListView: View {
 
     @ViewBuilder
     private func list(vm: ServerListViewModel) -> some View {
-        if vm.sessions.isEmpty {
-            ContentUnavailableView(
-                "No servers",
-                systemImage: "server.rack",
-                description: Text("Add a Jellyfin server to get started.")
-            )
-        } else {
-            List {
+        ScrollView {
+            VStack(spacing: Space.s12) {
                 if let message = vm.signOutErrorMessage {
-                    Section {
-                        Text(message)
-                            .foregroundStyle(.red)
-                            .font(.footnote)
+                    Text(message).font(.footnote).foregroundStyle(.red)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                if vm.sessions.isEmpty {
+                    ContentUnavailableView("No servers", systemImage: "server.rack",
+                        description: Text("Add a Jellyfin server to get started."))
+                        .padding(.top, 60)
+                } else {
+                    ForEach(vm.sessions) { session in
+                        serverCard(session, vm: vm)
                     }
                 }
-                ForEach(vm.sessions) { session in
-                    row(for: session, vm: vm)
+                Button {
+                    vm.presentAddServer()
+                } label: {
+                    Label("Add Another Server", systemImage: "plus")
+                        .font(.headline).foregroundStyle(Color.label)
+                        .frame(maxWidth: .infinity).frame(height: 50)
                 }
+                .glassPanel(cornerRadius: Radius.field)
+                .padding(.top, Space.s8)
             }
+            .padding(Space.s18)
         }
     }
 
     @ViewBuilder
-    private func row(for session: Session, vm: ServerListViewModel) -> some View {
-        HStack {
+    private func serverCard(_ session: Session, vm: ServerListViewModel) -> some View {
+        HStack(spacing: Space.s14) {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.fill)
+                .frame(width: 44, height: 44)
+                .overlay { Image(systemName: "server.rack").foregroundStyle(Color.label) }
             VStack(alignment: .leading, spacing: 2) {
-                Text(session.serverName).font(.headline)
-                Text("\(session.user.name) — \(session.serverURL.host ?? session.serverURL.absoluteString)")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                Text(session.serverName).font(.headline).foregroundStyle(Color.label)
+                Text(session.serverURL.host ?? session.serverURL.absoluteString)
+                    .font(.caption).foregroundStyle(Color.secondaryLabel).lineLimit(1)
+                Text(session.user.name).font(.caption2).foregroundStyle(Color.tertiaryLabel)
             }
-            Spacer()
+            Spacer(minLength: 0)
             if session.id == vm.activeID {
-                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                HStack(spacing: 5) {
+                    Circle().fill(.green).frame(width: 8, height: 8)
+                    Text("Active").font(.caption).foregroundStyle(Color.secondaryLabel)
+                }
             }
-        }
-        .contentShape(.rect)
-        .onTapGesture {
-            Task { await vm.setActive(session.id) }
-        }
-        .swipeActions {
-            Button(role: .destructive) {
-                Task { await vm.signOut(session) }
+            Menu {
+                if session.id != vm.activeID {
+                    Button("Make Active") { Task { await vm.setActive(session.id) } }
+                }
+                Button("Sign Out", role: .destructive) { Task { await vm.signOut(session) } }
             } label: {
-                Label("Sign out", systemImage: "rectangle.portrait.and.arrow.right")
+                Image(systemName: "ellipsis")
+                    .foregroundStyle(Color.secondaryLabel)
+                    .frame(width: 32, height: 32).contentShape(.rect)
             }
         }
+        .padding(Space.s14)
+        .glassPanel(cornerRadius: Radius.card)
+        .contentShape(.rect)
+        .onTapGesture { Task { await vm.setActive(session.id) } }
     }
 }
