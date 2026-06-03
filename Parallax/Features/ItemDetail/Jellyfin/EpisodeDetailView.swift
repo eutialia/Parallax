@@ -41,13 +41,9 @@ struct EpisodeDetailView: View {
                             }
                             .padding(.horizontal, 20)
 
-                            Button {
+                            PrimaryPlayButton(title: "Play") {
                                 playerItem = .episode(ed)
-                            } label: {
-                                Label("Play", systemImage: "play.fill")
-                                    .frame(maxWidth: .infinity)
                             }
-                            .buttonStyle(.borderedProminent)
                             .padding(.horizontal, 20)
 
                             if let overview = ed.episode.overview {

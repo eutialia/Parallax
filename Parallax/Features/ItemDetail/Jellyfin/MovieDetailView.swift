@@ -25,13 +25,9 @@ struct MovieDetailView: View {
                                 session: session
                             )
 
-                            Button {
+                            PrimaryPlayButton(title: "Play") {
                                 playerItem = .movie(md)
-                            } label: {
-                                Label("Play", systemImage: "play.fill")
-                                    .frame(maxWidth: .infinity)
                             }
-                            .buttonStyle(.borderedProminent)
                             .padding(.horizontal, 20)
 
                             if let tagline = md.tagline {

@@ -46,7 +46,10 @@ struct MediaTile: View {
                 if let progress, progress > 0 {
                     GeometryReader { geo in
                         ZStack(alignment: .leading) {
-                            Rectangle().fill(Color.white.opacity(0.25))   // track (over artwork)
+                            // Dark track + white fill reads on any artwork in both
+                            // appearances; the handoff's white-on-scrim treatment
+                            // arrives with the MediaTile redesign (P3).
+                            Rectangle().fill(Color.black.opacity(0.5))    // track
                             Rectangle()
                                 .fill(Color.white)                        // played portion — monochrome
                                 .frame(width: geo.size.width * progress)

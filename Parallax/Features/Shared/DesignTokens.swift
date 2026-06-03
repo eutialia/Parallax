@@ -33,7 +33,7 @@ extension Color {
 extension Color {
     static let background         = Color(light: 0xD0C8BA, dark: 0x07070B)
     static let backgroundElevated = Color(light: 0xDCD5C8, dark: 0x101016)
-    static let surface            = Color(light: 0xFAF7F0, lightAlpha: 0.92, dark: 0x1A1A22)
+    static let surface            = Color(light: 0xFAF7F0, lightAlpha: 0.92, dark: 0x1A1A22)  // dark tile opaque, light 0.92 — per handoff
 
     static let label              = Color(light: 0x221E17, dark: 0xFFFFFF)
     static let secondaryLabel     = Color(light: 0x2C261C, lightAlpha: 0.62, dark: 0xEBEBF5, darkAlpha: 0.62)
@@ -55,11 +55,12 @@ extension Color {
     static let selectionFill      = Color(light: 0x2D200F, lightAlpha: 0.09, dark: 0xFFFFFF, darkAlpha: 0.15)
 }
 
-// MARK: - Metric tokens (radii, spacing, content insets)
+// MARK: - Metric tokens (radii, spacing)
 //
-// "native+" call: radii + content insets are custom (the concentric system is the
-// brand "feel" lever); native List/Form keep their own system insets; typography
-// is native Dynamic Type (added per-screen in later phases).
+// "native+" call: radii are custom (the concentric system is the brand "feel"
+// lever); native List/Form keep their own system insets; typography is native
+// Dynamic Type (added per-screen in later phases). Content insets land in P2,
+// replacing AppLayout.contentHMargin (kept as one source until then).
 enum Radius {
     static let panel: CGFloat = 24    // sidebar, large bars, modals
     static let card: CGFloat = 18     // cards, list groups, info cards
@@ -79,9 +80,4 @@ enum Space {
     static let s30: CGFloat = 30
     static let s40: CGFloat = 40
     static let s60: CGFloat = 60
-}
-
-enum ContentInset {
-    static let phone: CGFloat = 18    // iOS content inset
-    static let pad: CGFloat = 40      // iPad content inset
 }
