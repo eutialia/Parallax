@@ -41,7 +41,7 @@ struct MediaTile: View {
                     maxWidth: maxImageWidth,
                     aspectRatio: aspectRatio
                 )
-                .clipShape(.rect(cornerRadius: 8))
+                .clipShape(.rect(cornerRadius: Radius.tile))
 
                 if let progress, progress > 0 {
                     GeometryReader { geo in

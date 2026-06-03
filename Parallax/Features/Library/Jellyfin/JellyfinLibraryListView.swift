@@ -5,6 +5,7 @@ struct JellyfinLibraryListView: View {
     let session: Session
 
     @Environment(AppDependencies.self) private var deps
+    @Environment(\.horizontalSizeClass) private var hSize
     @State private var viewModel: JellyfinLibraryListViewModel?
 
     var body: some View {
@@ -14,8 +15,18 @@ struct JellyfinLibraryListView: View {
                 case .idle, .loading:
                     ProgressView().padding(40)
                 case .loaded:
-                    List(vm.collections) { coll in
-                        row(for: coll)
+                    ScrollView {
+                        let cols = hSize == .regular ? 3 : 2
+                        LazyVGrid(
+                            columns: Array(repeating: GridItem(.flexible(), spacing: Space.s12), count: cols),
+                            spacing: Space.s12
+                        ) {
+                            ForEach(vm.collections.filter { isSupported($0.collectionType) }) { coll in
+                                NavigationLink(value: coll.id) { libraryCard(coll) }
+                                    .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(Space.s18)
                     }
                 case .failed(let message):
                     ContentUnavailableView(
@@ -41,51 +52,41 @@ struct JellyfinLibraryListView: View {
     }
 
     @ViewBuilder
-    private func row(for coll: MediaCollection) -> some View {
-        let isBrowsable = isSupported(coll.collectionType)
-        if isBrowsable {
-            NavigationLink(value: coll.id) {
-                rowContent(coll, dim: false)
+    private func libraryCard(_ coll: MediaCollection) -> some View {
+        ZStack(alignment: .bottomLeading) {
+            JellyfinImage(ref: coll.imageRef(.primary), kind: .primary, session: session,
+                          maxWidth: 600, aspectRatio: 16.0 / 10.0)
+            LinearGradient(colors: [.black.opacity(0.0), .black.opacity(0.7)],
+                           startPoint: .top, endPoint: .bottom)
+            VStack(alignment: .leading) {
+                HStack {
+                    Image(systemName: icon(for: coll.collectionType))
+                        .font(.system(size: 16, weight: .semibold)).foregroundStyle(.white)
+                        .frame(width: 36, height: 36)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    Spacer(minLength: 0)
+                }
+                Spacer(minLength: 0)
+                Text(coll.name).font(.headline.weight(.bold)).foregroundStyle(.white).lineLimit(1)
             }
-        } else {
-            rowContent(coll, dim: true)
+            .padding(Space.s14)
         }
+        .clipShape(.rect(cornerRadius: Radius.card))
+        .shadow(color: .black.opacity(0.2), radius: 8, y: 4)
     }
 
-    @ViewBuilder
-    private func rowContent(_ coll: MediaCollection, dim: Bool) -> some View {
-        HStack(spacing: 12) {
-            JellyfinImage(
-                ref: coll.imageRef(.primary),
-                kind: .primary,
-                session: session,
-                maxWidth: 80
-            )
-            .frame(width: 60, height: 90)
-            .clipShape(.rect(cornerRadius: 6))
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(coll.name)
-                Text(label(for: coll.collectionType))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+    private func icon(for type: CollectionType) -> String {
+        switch type {
+        case .movies: return "film.fill"
+        case .tvShows: return "tv.fill"
+        case .other: return "folder.fill"
         }
-        .opacity(dim ? 0.5 : 1.0)
     }
 
     private func isSupported(_ type: CollectionType) -> Bool {
         switch type {
         case .movies, .tvShows: return true
         case .other: return false
-        }
-    }
-
-    private func label(for type: CollectionType) -> String {
-        switch type {
-        case .movies: return "Movies"
-        case .tvShows: return "TV Shows"
-        case .other(let raw): return "Not browsable in v1 (\(raw))"
         }
     }
 }
