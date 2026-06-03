@@ -10,6 +10,8 @@ struct JellyfinSearchView: View {
     // finishes its async construction aren't dropped on the floor (the old
     // `viewModel?.query = $0` was a silent no-op while viewModel was nil).
     @State private var query = ""
+    @State private var scope: SearchScope = .all
+    @Environment(\.horizontalSizeClass) private var hSize
 
     var body: some View {
         Group {
@@ -21,9 +23,16 @@ struct JellyfinSearchView: View {
         }
         .navigationTitle("Search")
         .searchable(text: $query)
+        .searchScopes($scope) {
+            Text("All").tag(SearchScope.all)
+            Text("Movies").tag(SearchScope.movies)
+            Text("Shows").tag(SearchScope.series)
+            Text("Episodes").tag(SearchScope.episodes)
+        }
         .onChange(of: query) { _, newValue in
             viewModel?.query = newValue
         }
+        .onChange(of: scope) { _, newValue in viewModel?.scope = newValue }
         .navigationDestination(for: ItemNavigation.self) { nav in
             switch nav {
             case .movie(let id, let s): MovieDetailView(itemID: id, session: s)
@@ -57,50 +66,37 @@ struct JellyfinSearchView: View {
             if results.movies.isEmpty && results.series.isEmpty && results.episodes.isEmpty {
                 ContentUnavailableView.search
             } else {
-                List {
-                    if !results.series.isEmpty {
-                        Section("Series") {
-                            ForEach(results.series) { s in
-                                NavigationLink(value: ItemNavigation.series(s.id, session)) {
-                                    posterRow(
-                                        title: s.title,
-                                        subtitle: s.year.map(String.init),
-                                        imageRef: s.imageRef(.primary),
-                                        session: session
-                                    )
+                ScrollView {
+                    VStack(alignment: .leading, spacing: Space.s26) {
+                        if !results.series.isEmpty {
+                            gridSection("Shows", count: results.series.count, cols: posterCols) {
+                                ForEach(results.series) { s in
+                                    NavigationLink(value: ItemNavigation.series(s.id, session)) {
+                                        MediaTile(title: s.title, subtitle: s.year.map(String.init), imageRef: s.imageRef(.primary), imageKind: .primary, session: session, progress: nil, aspectRatio: JellyfinImage.poster, maxImageWidth: 400)
+                                    }.buttonStyle(.plain)
+                                }
+                            }
+                        }
+                        if !results.movies.isEmpty {
+                            gridSection("Movies", count: results.movies.count, cols: posterCols) {
+                                ForEach(results.movies) { m in
+                                    NavigationLink(value: ItemNavigation.movie(m.id, session)) {
+                                        MediaTile(title: m.title, subtitle: m.year.map(String.init), imageRef: m.imageRef(.primary), imageKind: .primary, session: session, progress: nil, aspectRatio: JellyfinImage.poster, maxImageWidth: 400)
+                                    }.buttonStyle(.plain)
+                                }
+                            }
+                        }
+                        if !results.episodes.isEmpty {
+                            gridSection("Episodes", count: results.episodes.count, cols: landscapeCols) {
+                                ForEach(results.episodes) { e in
+                                    Button { playback.play(e.id, in: session) } label: {
+                                        MediaTile(title: e.name, subtitle: episodeSubtitle(e), imageRef: e.imageRef(.primary), imageKind: .primary, session: session, progress: nil, aspectRatio: JellyfinImage.landscape, maxImageWidth: 500)
+                                    }.buttonStyle(.plain)
                                 }
                             }
                         }
                     }
-                    if !results.movies.isEmpty {
-                        Section("Movies") {
-                            ForEach(results.movies) { m in
-                                NavigationLink(value: ItemNavigation.movie(m.id, session)) {
-                                    posterRow(
-                                        title: m.title,
-                                        subtitle: m.year.map(String.init),
-                                        imageRef: m.imageRef(.primary),
-                                        session: session
-                                    )
-                                }
-                            }
-                        }
-                    }
-                    if !results.episodes.isEmpty {
-                        Section("Episodes") {
-                            ForEach(results.episodes) { e in
-                                Button { playback.play(e.id, in: session) } label: {
-                                    landscapeRow(
-                                        title: e.name,
-                                        subtitle: episodeSubtitle(e),
-                                        imageRef: e.imageRef(.primary),
-                                        session: session
-                                    )
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                    }
+                    .padding(Space.s18)
                 }
             }
         case .failed(let message):
@@ -112,44 +108,18 @@ struct JellyfinSearchView: View {
         }
     }
 
-    @ViewBuilder
-    private func posterRow(title: String, subtitle: String?, imageRef: ImageRef?, session: Session) -> some View {
-        HStack(spacing: 12) {
-            JellyfinImage(
-                ref: imageRef,
-                kind: .primary,
-                session: session,
-                maxWidth: 160,
-                aspectRatio: JellyfinImage.poster
-            )
-            .frame(width: 44, height: 66)
-            .clipShape(.rect(cornerRadius: 4))
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).lineLimit(2)
-                if let subtitle {
-                    Text(subtitle).font(.caption).foregroundStyle(.secondary)
-                }
-            }
-        }
-    }
+    private var posterCols: Int { hSize == .regular ? 6 : 3 }
+    private var landscapeCols: Int { hSize == .regular ? 3 : 2 }
 
     @ViewBuilder
-    private func landscapeRow(title: String, subtitle: String?, imageRef: ImageRef?, session: Session) -> some View {
-        HStack(spacing: 12) {
-            JellyfinImage(
-                ref: imageRef,
-                kind: .primary,
-                session: session,
-                maxWidth: 240,
-                aspectRatio: JellyfinImage.landscape
-            )
-            .frame(width: 96, height: 54)
-            .clipShape(.rect(cornerRadius: 4))
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).lineLimit(2)
-                if let subtitle {
-                    Text(subtitle).font(.caption).foregroundStyle(.secondary)
-                }
+    private func gridSection<Content: View>(_ title: String, count: Int, cols: Int, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: Space.s12) {
+            HStack(spacing: 6) {
+                Text(title).font(.title3.weight(.bold))
+                Text("\(count)").font(.subheadline).foregroundStyle(Color.secondaryLabel)
+            }
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: Space.s12), count: cols), spacing: Space.s18) {
+                content()
             }
         }
     }
