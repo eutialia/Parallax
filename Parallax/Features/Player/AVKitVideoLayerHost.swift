@@ -9,6 +9,8 @@ import ParallaxPlayback
 /// App target (UIKit/AVKit allowed here).
 struct AVKitVideoLayerHost: UIViewRepresentable {
     let engine: any PlaybackEngine
+    /// Aspect-fill (crop to fill) vs fit. Driven by the player's expand chip.
+    var fillMode: Bool = false
     var onPiPReady: (@MainActor (@escaping @MainActor () -> Void, @escaping @MainActor () -> Void) -> Void)?
 
     func makeUIView(context: Context) -> PlayerLayerView {
@@ -17,7 +19,7 @@ struct AVKitVideoLayerHost: UIViewRepresentable {
         if let hosting = engine as? AVPlayerHosting {
             view.playerLayer.player = hosting.avPlayer
         }
-        view.playerLayer.videoGravity = .resizeAspect
+        view.playerLayer.videoGravity = fillMode ? .resizeAspectFill : .resizeAspect
         context.coordinator.attach(to: view)
         if let onPiPReady {
             let coordinator = context.coordinator
@@ -30,6 +32,10 @@ struct AVKitVideoLayerHost: UIViewRepresentable {
         if let hosting = engine as? AVPlayerHosting,
            uiView.playerLayer.player !== hosting.avPlayer {
             uiView.playerLayer.player = hosting.avPlayer
+        }
+        let gravity: AVLayerVideoGravity = fillMode ? .resizeAspectFill : .resizeAspect
+        if uiView.playerLayer.videoGravity != gravity {
+            uiView.playerLayer.videoGravity = gravity
         }
     }
 

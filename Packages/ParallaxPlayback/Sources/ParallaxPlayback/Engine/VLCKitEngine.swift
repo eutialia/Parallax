@@ -111,6 +111,10 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         emitPausedIfReady()
     }
 
+    public func setRate(_ rate: Float) async {
+        player.rate = rate
+    }
+
     public func seek(to time: CMTime) async {
         let seconds = CMTimeGetSeconds(time)
         guard seconds.isFinite else { return }

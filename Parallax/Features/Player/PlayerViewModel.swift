@@ -57,6 +57,52 @@ final class PlayerViewModel {
     /// must read this — not `phase` — or it shows "pause" forever and can never resume.
     private(set) var isPlaying: Bool = false
 
+    // MARK: - Player chrome (P4)
+
+    /// The playing item's title — surfaced in the player's top bar.
+    var title: String { itemTitle }
+
+    /// User-selected playback speed (1.0 = normal). Drives the speed chip.
+    private(set) var playbackRate: Float = 1
+
+    /// A concise format summary for the top bar, e.g. "4K · Dolby Vision · 7.1".
+    /// Derived from the resolved media streams, so it works on every method.
+    var mediaSummary: String? {
+        guard let resolved else { return nil }
+        var parts: [String] = []
+        if let video = resolved.mediaStreams.first(where: { $0.kind == .video }) {
+            if let q = Self.qualityLabel(width: video.width, height: video.height) { parts.append(q) }
+            if let r = Self.hdrLabel(video.videoRangeType ?? video.videoRange) { parts.append(r) }
+        }
+        let audioIndex = currentAudioStreamIndex ?? resolved.defaultAudioStreamIndex
+        let audio = resolved.mediaStreams.first { $0.kind == .audio && $0.index == audioIndex }
+            ?? resolved.mediaStreams.first { $0.kind == .audio }
+        if let channels = audio?.channels { parts.append(Self.channelLayout(channels)) }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// Engine + delivery label for the top-bar badge, e.g. "AVKit · Direct Play".
+    var engineLabel: String? {
+        guard let engine else { return nil }
+        let name = engine.id == .avKit ? "AVKit" : "VLCKit"
+        guard let method = resolved?.method else { return name }
+        let delivery: String
+        switch method {
+        case .directPlay: delivery = "Direct Play"
+        case .directStream: delivery = "Direct Stream"
+        case .transcode: delivery = "Transcode"
+        @unknown default: delivery = "Streaming"
+        }
+        return "\(name) · \(delivery)"
+    }
+
+    /// Set the playback speed and apply it to the live engine. Persists across
+    /// pause/resume; re-applied to a fresh engine in `beginPlayback`.
+    func setPlaybackRate(_ rate: Float) async {
+        playbackRate = rate
+        await engine?.setRate(rate)
+    }
+
     private let deviceProfileBuilder: DeviceProfileBuilder
     private let playbackInfo: any PlaybackReporting
     private let resolve: ResolveCall
@@ -256,6 +302,11 @@ final class PlayerViewModel {
             throw error
         }
         await engine.play()
+        // A freshly-built engine starts at 1.0×; re-apply the chosen speed so it
+        // survives an engine rebuild (track switch / first play after a speed change).
+        if playbackRate != 1 {
+            await engine.setRate(playbackRate)
+        }
     }
 
     /// Cancels the engine's state subscription and tears the engine down, clearing
@@ -294,6 +345,7 @@ final class PlayerViewModel {
         currentPosition = .zero
         currentDuration = .zero
         isPlaying = false
+        playbackRate = 1
     }
 
     /// Sends the final PlaybackStopped beat for the current session exactly once.
@@ -538,45 +590,91 @@ final class PlayerViewModel {
     private func populateTranscodeMenus(from resolved: ResolvedPlayback) {
         availableAudioTracks = resolved.mediaStreams
             .filter { $0.kind == .audio }
-            .map { AudioTrack(id: .jellyfinStream($0.index), displayName: Self.transcodeAudioLabel(for: $0), languageCode: $0.language) }
+            .map { stream in
+                // Mirrors DeviceProfileTranslator.transcodingProfile()'s audioCodec
+                // ("aac,ac3,eac3") — exactly the codecs the HLS transcode stream-COPIES;
+                // anything else is re-encoded to AAC (capped at 7.1). Keep in sync by hand.
+                let copyCodecs: Set<String> = ["aac", "ac3", "eac3"]
+                let isTranscode = !copyCodecs.contains((stream.codec ?? "").lowercased())
+                return AudioTrack(
+                    id: .jellyfinStream(stream.index),
+                    displayName: Self.trackLanguageLabel(stream),
+                    languageCode: stream.language,
+                    codecLabel: Self.audioCodecLabel(stream),
+                    isTranscode: isTranscode,
+                    transcodeTarget: isTranscode
+                        ? "AAC · \(Self.channelLayout(min(stream.channels ?? 2, 8)))"
+                        : nil
+                )
+            }
         availableSubtitleTracks = resolved.mediaStreams
             .filter { $0.kind == .subtitle && !$0.isImageSubtitle }
-            .map { SubtitleTrack(id: .jellyfinStream($0.index), displayName: $0.menuLabel, languageCode: $0.language, isForced: $0.isForced) }
+            .map { stream in
+                SubtitleTrack(
+                    id: .jellyfinStream(stream.index),
+                    displayName: Self.trackLanguageLabel(stream),
+                    languageCode: stream.language,
+                    isForced: stream.isForced,
+                    sourceLabel: stream.isExternal ? "External" : "Embedded",
+                    formatLabel: stream.codec?.uppercased(),
+                    isSDH: false
+                )
+            }
 
         selectedAudioTrack = availableAudioTracks.first { $0.id == currentAudioStreamIndex.map(TrackID.jellyfinStream) }
         selectedSubtitleTrack = availableSubtitleTracks.first { $0.id == currentSubtitleStreamIndex.map(TrackID.jellyfinStream) }
     }
 
-    /// Rough delivered-format label for the transcode audio menu. The track's
-    /// `menuLabel` names the SOURCE mix (e.g. "English - TrueHD 7.1"), but on the
-    /// HLS transcode/remux the server only stream-COPIES audio whose codec is in
-    /// the device profile's transcode set (aac/ac3/eac3) — that arrives untouched,
-    /// channels and any DD+ Atmos intact, so the source label is already honest.
-    /// Anything else (TrueHD, DTS-HD, FLAC…) is re-encoded to AAC capped at 7.1, so
-    /// we annotate the delivered format and the menu doesn't promise a lossless /
-    /// Atmos track we can't actually deliver. Placeholder presentation baked into
-    /// the label — slated for a proper redesign.
-    private static func transcodeAudioLabel(for stream: MediaStreamInfo) -> String {
-        // Must mirror DeviceProfileTranslator.transcodingProfile()'s `audioCodec`
-        // ("aac,ac3,eac3") — those are exactly the codecs the HLS transcode stream-
-        // COPIES; anything else is re-encoded. The translator is internal to
-        // ParallaxJellyfin, so the set can't be shared without leaking transcode
-        // policy into Core; keep the two in sync by hand until the label is rebuilt.
-        let copyCodecs: Set<String> = ["aac", "ac3", "eac3"]
-        if copyCodecs.contains((stream.codec ?? "").lowercased()) {
-            return stream.menuLabel
+    /// A human language name ("English"), falling back to the server's full menu
+    /// label when the language code is missing or unresolvable.
+    private static func trackLanguageLabel(_ stream: MediaStreamInfo) -> String {
+        if let code = stream.language,
+           let name = Locale.current.localizedString(forLanguageCode: code) {
+            return name.capitalized
         }
-        // 8 = the transcode's maxAudioChannels (DeviceProfileTranslator); keep in sync.
-        let channels = min(stream.channels ?? 2, 8)
-        let layout: String
-        switch channels {
-        case ...1: layout = "Mono"
-        case 2:    layout = "Stereo"
-        case 6:    layout = "5.1"
-        case 8:    layout = "7.1"
-        default:   layout = "\(channels)ch"
+        return stream.menuLabel
+    }
+
+    /// Source codec + channel layout, e.g. "TrueHD · 7.1" — the SECONDARY detail
+    /// line under the language. Nil when neither is known.
+    private static func audioCodecLabel(_ stream: MediaStreamInfo) -> String? {
+        let parts = [stream.codec?.uppercased(), stream.channels.map { channelLayout($0) }].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// Resolution bucket from pixel dimensions. Nil when unknown.
+    private static func qualityLabel(width: Int?, height: Int?) -> String? {
+        let h = height ?? 0, w = width ?? 0
+        if h >= 2000 || w >= 3800 { return "4K" }
+        if h >= 1400 || w >= 2000 { return "1440p" }
+        if h >= 1060 || w >= 1900 { return "1080p" }
+        if h >= 700  || w >= 1200 { return "720p" }
+        if h > 0 { return "\(h)p" }
+        return nil
+    }
+
+    /// Jellyfin VideoRangeType/VideoRange → short HDR label; nil for SDR (omitted
+    /// to keep the summary uncluttered).
+    private static func hdrLabel(_ range: String?) -> String? {
+        guard let range = range?.uppercased() else { return nil }
+        if range.contains("DOVI") || range.contains("DOLBY") { return "Dolby Vision" }
+        if range.contains("HDR10+") || range.contains("HDR10PLUS") { return "HDR10+" }
+        if range.contains("HDR") { return "HDR" }
+        if range.contains("HLG") { return "HLG" }
+        return nil
+    }
+
+    /// Channel count → layout label. Shared by the summary and the transcode menu.
+    static func channelLayout(_ channels: Int?) -> String {
+        switch channels ?? 2 {
+        case ...1: return "Mono"
+        case 2:    return "Stereo"
+        case 3:    return "2.1"
+        case 6:    return "5.1"
+        case 7:    return "6.1"
+        case 8:    return "7.1"
+        default:   return "\(channels ?? 2)ch"
         }
-        return "\(stream.menuLabel) → AAC \(layout)"
     }
 
     private static func makeAsset(from resolved: ResolvedPlayback) -> PlayableAsset {

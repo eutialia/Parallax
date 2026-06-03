@@ -52,6 +52,10 @@ public protocol PlaybackEngine: AnyObject, Sendable {
     /// Nudge the subtitle timing by `milliseconds` (VLC live-corrects subtitle
     /// sync; AVKit has no such control and ignores it). Positive = subtitles later.
     func setSubtitleDelay(milliseconds: Int) async
+
+    /// Set the playback rate (1.0 = normal). Persisted by the engine so a
+    /// later `play()` resumes at the chosen speed.
+    func setRate(_ rate: Float) async
 }
 
 public extension PlaybackEngine {
@@ -60,4 +64,7 @@ public extension PlaybackEngine {
 
     /// Default: no-op. Only engines that can retime subtitles (VLC) override.
     func setSubtitleDelay(milliseconds: Int) async {}
+
+    /// Default: no-op. Engines that support variable-speed playback override.
+    func setRate(_ rate: Float) async {}
 }

@@ -22,6 +22,9 @@ struct PlayerView: View {
     @Environment(AppDependencies.self) private var deps
     @Environment(\.dismiss) private var dismiss
     @State private var viewModel: PlayerViewModel?
+    /// Aspect-fill (fill the screen, cropping) vs fit. Toggled by the player's
+    /// expand chip; honored by the AVKit host's `videoGravity`.
+    @State private var fillMode = false
     #if DEBUG
     @State private var showDebugHUD = false
     #endif
@@ -37,7 +40,7 @@ struct PlayerView: View {
                 case .playing:
                     videoHost(vm)
                     SubtitleOverlayView(vm: vm)
-                    PlayerControlsView(vm: vm) { dismiss() }
+                    PlayerControlsView(vm: vm, isFilled: fillMode, onToggleFill: { fillMode.toggle() }) { dismiss() }
                 case .failed(let error):
                     errorOverlay(error, vm: vm)
                 }
@@ -128,7 +131,7 @@ struct PlayerView: View {
         if let engine = vm.engine {
             switch engine.id {
             case .avKit:
-                AVKitVideoLayerHost(engine: engine, onPiPReady: { start, stop in
+                AVKitVideoLayerHost(engine: engine, fillMode: fillMode, onPiPReady: { start, stop in
                     vm.startPiPAction = start
                     vm.stopPiPAction = stop
                 })
@@ -143,25 +146,47 @@ struct PlayerView: View {
         }
     }
 
+    /// Failure state. White-on-dark over the black player surface (so it ignores the
+    /// app's light/dark tint — the old `.borderedProminent` Retry rendered white-on-
+    /// white under the monochrome global tint). Solid-white "Try Again", glass "Close".
     @ViewBuilder
     private func errorOverlay(_ error: AppError, vm: PlayerViewModel) -> some View {
         VStack(spacing: 16) {
-            Image(systemName: "exclamationmark.triangle")
-                .font(.largeTitle)
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 40, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 84, height: 84)
+                .glassEffect(.regular, in: Circle())
+            Text("Playback failed")
+                .font(.title3.weight(.bold))
                 .foregroundStyle(.white)
             Text(error.userMessage)
-                .foregroundStyle(.white)
+                .font(.callout)
+                .foregroundStyle(.white.opacity(0.72))
                 .multilineTextAlignment(.center)
             HStack(spacing: 12) {
-                Button("Retry") {
-                    Task { await vm.retry() }
+                Button { Task { await vm.retry() } } label: {
+                    Text("Try Again")
+                        .font(.headline)
+                        .foregroundStyle(.black)
+                        .padding(.horizontal, 24)
+                        .frame(height: 46)
+                        .background(.white, in: Capsule())
                 }
-                .buttonStyle(.borderedProminent)
-                Button("Close") { dismiss() }
-                    .buttonStyle(.bordered)
-                    .tint(.white)
+                .buttonStyle(.plain)
+                Button { dismiss() } label: {
+                    Text("Close")
+                        .font(.headline)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 22)
+                        .frame(height: 46)
+                        .glassEffect(.regular, in: Capsule())
+                }
+                .buttonStyle(.plain)
             }
+            .padding(.top, 6)
         }
         .padding(40)
+        .frame(maxWidth: 460)
     }
 }

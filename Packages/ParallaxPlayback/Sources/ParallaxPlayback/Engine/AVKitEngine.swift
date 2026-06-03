@@ -21,6 +21,9 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
 
     private var currentItem: AVPlayerItem?
     private var pendingStartTime: CMTime?
+    /// The user-selected playback speed. Stored so `play()` (which resumes at
+    /// `defaultRate`) honors it, and so a mid-playback change applies immediately.
+    private var desiredRate: Float = 1
     private var statusObservation: NSKeyValueObservation?
     private var timeObserverToken: Any?
     private var endObserver: NSObjectProtocol?
@@ -90,12 +93,23 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         player.replaceCurrentItem(with: item)
     }
 
-    public func play() async { player.play() }
+    public func play() async { player.playImmediately(atRate: desiredRate) }
 
     public func pause() async {
         player.pause()
         if let item = currentItem, item.status == .readyToPlay {
             continuation.yield(.paused(position: player.currentTime(), duration: item.duration))
+        }
+    }
+
+    public func setRate(_ rate: Float) async {
+        desiredRate = rate
+        // defaultRate is the rate play() resumes at; rate is the live rate.
+        player.defaultRate = rate
+        // Only push the live rate when already playing — setting `rate` while
+        // paused would start playback unexpectedly.
+        if player.timeControlStatus == .playing {
+            player.rate = rate
         }
     }
 
