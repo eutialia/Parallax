@@ -9,6 +9,10 @@ struct DetailActionButton: View {
     var isActive: Bool = false
     let action: () -> Void
 
+    /// Pill height scales with Dynamic Type (relative to the `.subheadline` label) so the
+    /// icon + label never clip at larger text sizes.
+    @ScaledMetric(relativeTo: .subheadline) private var pillHeight: CGFloat = 40
+
     var body: some View {
         Button(action: action) {
             HStack(spacing: Space.s8) {
@@ -19,7 +23,7 @@ struct DetailActionButton: View {
             // across all three detail pills (Favorite / Mark-Watched / Mark-Season).
             .font(.subheadline.weight(.medium))
             .foregroundStyle(isActive ? Color.label : Color.secondaryLabel)
-            .padding(.horizontal, Space.s14).frame(height: 40)
+            .padding(.horizontal, Space.s14).frame(height: pillHeight)
             .glassPanel(cornerRadius: Radius.field)
         }
         .buttonStyle(.plain)

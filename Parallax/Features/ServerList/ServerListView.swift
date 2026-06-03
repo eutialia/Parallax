@@ -5,6 +5,9 @@ struct ServerListView: View {
     @Environment(AppDependencies.self) private var deps
     @Environment(AppRouter.self) private var router
     @State private var viewModel: ServerListViewModel?
+    /// "Add Another Server" button height scales with Dynamic Type (relative to its
+    /// `.headline` label).
+    @ScaledMetric(relativeTo: .headline) private var addServerHeight: CGFloat = 50
 
     var body: some View {
         content
@@ -39,6 +42,9 @@ struct ServerListView: View {
                     Task { await vm.dismissAddServer() }
                 }) {
                     LoginView()
+                        // Match the sheet surface to the app background so iOS doesn't
+                        // paint its default system platter as a margin around the card.
+                        .presentationBackground(Color.background)
                 }
         } else {
             ProgressView()
@@ -56,7 +62,7 @@ struct ServerListView: View {
                 if vm.sessions.isEmpty {
                     ContentUnavailableView("No servers", systemImage: "server.rack",
                         description: Text("Add a Jellyfin server to get started."))
-                        .padding(.top, 60)
+                        .padding(.top, Space.s60)
                 } else {
                     ForEach(vm.sessions) { session in
                         serverCard(session, vm: vm)
@@ -67,7 +73,7 @@ struct ServerListView: View {
                 } label: {
                     Label("Add Another Server", systemImage: "plus")
                         .font(.headline).foregroundStyle(Color.label)
-                        .frame(maxWidth: .infinity).frame(height: 50)
+                        .frame(maxWidth: .infinity).frame(height: addServerHeight)
                 }
                 .glassPanel(cornerRadius: Radius.field)
                 .padding(.top, Space.s8)

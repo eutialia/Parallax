@@ -7,12 +7,12 @@ struct MetadataRow<Item: Identifiable & Hashable, Content: View>: View {
     @ViewBuilder let content: (Item) -> Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: Space.s8) {
             Text(title)
                 .font(.headline)
                 .padding(.horizontal, AppLayout.contentHMargin)
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(alignment: .top, spacing: 12) {
+                HStack(alignment: .top, spacing: Space.s12) {
                     ForEach(items) { item in
                         content(item)
                             .frame(width: tileWidth)

@@ -61,7 +61,7 @@ struct JellyfinLibraryListView: View {
             VStack(alignment: .leading) {
                 HStack {
                     Image(systemName: icon(for: coll.collectionType))
-                        .font(.system(size: 16, weight: .semibold)).foregroundStyle(.white)
+                        .scaledFont(16, relativeTo: .headline, weight: .semibold).foregroundStyle(.white)
                         .frame(width: 36, height: 36)
                         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                     Spacer(minLength: 0)
@@ -71,7 +71,12 @@ struct JellyfinLibraryListView: View {
             }
             .padding(Space.s14)
         }
+        // Pin the card to a poster aspect so a library with no Primary image (e.g.
+        // "Anime") keeps full height instead of collapsing to the text line — which,
+        // with the missing contentShape, left only the label tappable.
+        .aspectRatio(2.0 / 3.0, contentMode: .fit)
         .clipShape(.rect(cornerRadius: Radius.card))
+        .contentShape(.rect(cornerRadius: Radius.card))
         .shadow(color: .black.opacity(0.2), radius: 8, y: 4)
     }
 
