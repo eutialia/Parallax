@@ -281,6 +281,7 @@ final class PlayerViewModel {
         await audioSession.deactivate()
         engine = nil
         playingItem = nil
+        pendingItemID = nil
         currentAudioStreamIndex = nil
         currentSubtitleStreamIndex = nil
         availableAudioTracks = []
@@ -319,6 +320,7 @@ final class PlayerViewModel {
         lastPosition = .zero
         if let item { await start(item: item) }
         else if let id { await start(itemID: id) }
+        else { Log.playback.error("retry() had no item or id to replay") }
     }
 
     func selectAudioTrack(_ track: AudioTrack) async {

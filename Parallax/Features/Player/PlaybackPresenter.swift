@@ -18,6 +18,11 @@ final class PlaybackPresenter {
     var request: Request?
 
     func play(_ itemID: ItemID, in session: Session) {
+        // Ignore a second play() while a player is already presented: a fresh
+        // Request.id would make the fullScreenCover dismiss + re-present (flicker +
+        // duplicate stop). The cover is full-screen, so a second call can only come
+        // from a race (rapid double-tap before it presents) — drop it.
+        guard request == nil else { return }
         request = Request(itemID: itemID, session: session)
     }
 }
