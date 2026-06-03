@@ -20,14 +20,17 @@ struct ServerListView: View {
                 }
             }
             .task {
+                // Build + refresh together inside the guard so the .task re-firing
+                // when `content`'s identity flips (ProgressView → list once the VM
+                // loads) doesn't trigger a second redundant refresh on first open.
                 if viewModel == nil {
                     viewModel = ServerListViewModel(
                         sessionManager: deps.sessionManager,
                         serverStore: deps.serverStore,
                         router: router
                     )
+                    await viewModel?.refresh()
                 }
-                await viewModel?.refresh()
             }
     }
 

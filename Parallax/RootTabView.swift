@@ -28,12 +28,12 @@ struct RootTabView: View {
         .tabViewSidebarHeader {
             HStack(spacing: Space.s12) {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color.fill)
+                    .fill(Color.label)
                     .frame(width: 30, height: 30)
                     .overlay {
                         Image(systemName: "hexagon.fill")
                             .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(Color.label)
+                            .foregroundStyle(Color.background)
                     }
                 Text("Parallax")
                     .font(.title3.weight(.bold))
