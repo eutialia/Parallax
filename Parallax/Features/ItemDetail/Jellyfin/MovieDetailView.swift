@@ -28,17 +28,17 @@ struct MovieDetailView: View {
                             PrimaryPlayButton(title: "Play") {
                                 playerItem = .movie(md)
                             }
-                            .padding(.horizontal, 20)
+                            .padding(.horizontal, Space.s18)
 
                             if let tagline = md.tagline {
                                 Text(tagline)
                                     .italic()
-                                    .foregroundStyle(.secondary)
-                                    .padding(.horizontal, 20)
+                                    .foregroundStyle(Color.secondaryLabel)
+                                    .padding(.horizontal, Space.s18)
                             }
                             if let overview = md.movie.overview {
                                 Text(overview)
-                                    .padding(.horizontal, 20)
+                                    .padding(.horizontal, Space.s18)
                             }
                             if !md.studios.isEmpty {
                                 metadataLine(label: "Studios", value: md.studios.joined(separator: ", "))
@@ -64,7 +64,7 @@ struct MovieDetailView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(.systemBackground))
+        .background(Color.background)
         .fullScreenCover(item: $playerItem) { detail in
             PlayerView(item: detail, session: session)
         }
@@ -80,10 +80,10 @@ struct MovieDetailView: View {
     @ViewBuilder
     private func metadataLine(label: String, value: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(label).font(.caption).foregroundStyle(.secondary)
-            Text(value).font(.callout)
+            Text(label).font(.caption).foregroundStyle(Color.secondaryLabel)
+            Text(value).font(.callout).foregroundStyle(Color.label)
         }
-        .padding(.horizontal, 20)
+        .padding(.horizontal, Space.s18)
     }
 
     private func subtitle(_ md: MovieDetail) -> String? {
