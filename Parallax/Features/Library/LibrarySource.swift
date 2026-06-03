@@ -19,5 +19,4 @@ enum LibrarySource: Hashable {
 enum ItemNavigation: Hashable {
     case movie(ItemID, Session)
     case series(ItemID, Session)
-    case season(ItemID, Session)
 }

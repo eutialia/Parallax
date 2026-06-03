@@ -30,7 +30,6 @@ struct JellyfinLibraryGridView: View {
             switch nav {
             case .movie(let id, let s): MovieDetailView(itemID: id, session: s)
             case .series(let id, let s): SeriesDetailView(itemID: id, session: s)
-            case .season(let id, let s): SeasonDetailView(itemID: id, session: s)
             }
         }
         .task {
