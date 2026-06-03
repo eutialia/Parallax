@@ -7,30 +7,28 @@ struct ServerListView: View {
     @State private var viewModel: ServerListViewModel?
 
     var body: some View {
-        NavigationStack {
-            content
-                .navigationTitle("Servers")
-                .toolbar {
-                    ToolbarItem(placement: .primaryAction) {
-                        Button {
-                            viewModel?.presentAddServer()
-                        } label: {
-                            Image(systemName: "plus")
-                        }
-                        .disabled(viewModel == nil)
+        content
+            .navigationTitle("Servers")
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        viewModel?.presentAddServer()
+                    } label: {
+                        Image(systemName: "plus")
                     }
+                    .disabled(viewModel == nil)
                 }
-        }
-        .task {
-            if viewModel == nil {
-                viewModel = ServerListViewModel(
-                    sessionManager: deps.sessionManager,
-                    serverStore: deps.serverStore,
-                    router: router
-                )
             }
-            await viewModel?.refresh()
-        }
+            .task {
+                if viewModel == nil {
+                    viewModel = ServerListViewModel(
+                        sessionManager: deps.sessionManager,
+                        serverStore: deps.serverStore,
+                        router: router
+                    )
+                }
+                await viewModel?.refresh()
+            }
     }
 
     @ViewBuilder
