@@ -8,6 +8,9 @@ struct LoginView: View {
     @Environment(AppRouter.self) private var router
     @State private var viewModel: LoginViewModel?
     @State private var showPassword = false
+    /// Shared height for the form's tap targets (fields + Connect + Quick Connect),
+    /// scaling with Dynamic Type so labels never clip at larger text sizes.
+    @ScaledMetric(relativeTo: .headline) private var controlHeight: CGFloat = 50
 
     var body: some View {
         ZStack {
@@ -37,20 +40,27 @@ struct LoginView: View {
     @ViewBuilder
     private var content: some View {
         if let vm = viewModel {
-            switch vm.mode {
-            case .password:
-                ScrollView {
-                    card(vm: vm)
-                        .frame(maxWidth: 444)
-                        .frame(maxWidth: .infinity)
-                        .padding(.horizontal, Space.s18)
-                        .padding(.vertical, Space.s40)
-                }
-            case .quickConnect:
-                QuickConnectView(serverURLInput: vm.serverURLInput) {
-                    vm.switchToPassword()
+            Group {
+                switch vm.mode {
+                case .password:
+                    ScrollView {
+                        card(vm: vm)
+                            .frame(maxWidth: 444)
+                            .frame(maxWidth: .infinity)
+                            .padding(.horizontal, Space.s18)
+                            .padding(.vertical, Space.s40)
+                    }
+                case .quickConnect:
+                    QuickConnectView(serverURLInput: vm.serverURLInput) {
+                        vm.switchToPassword()
+                    }
                 }
             }
+            // Identity tied to the mode so the swap is a real insert/remove that the
+            // transition animates (a transition on a stable wrapper wouldn't fire);
+            // driven by the withAnimation at the toggle sites.
+            .id(vm.mode)
+            .transition(.blurReplace)
         } else {
             ProgressView()
         }
@@ -62,16 +72,16 @@ struct LoginView: View {
         VStack(spacing: Space.s22) {
             // Brand
             VStack(spacing: Space.s12) {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
                     .fill(Color.label)
                     .frame(width: 64, height: 64)
                     .overlay {
                         Image(systemName: "hexagon.fill")
-                            .font(.system(size: 30, weight: .semibold))
+                            .scaledFont(30, relativeTo: .title, weight: .semibold)
                             .foregroundStyle(Color.background)
                     }
                 Text("Parallax")
-                    .font(.system(size: 30, weight: .bold))
+                    .scaledFont(30, relativeTo: .title, weight: .bold)
                     .foregroundStyle(Color.label)
                 Text("Sign in to your Jellyfin server")
                     .font(.subheadline)
@@ -145,7 +155,7 @@ struct LoginView: View {
                     if vm.isWorking { ProgressView().tint(Color.buttonLabel) }
                     else { Text("Connect").font(.headline) }
                 }
-                .frame(maxWidth: .infinity).frame(height: 50)
+                .frame(maxWidth: .infinity).frame(height: controlHeight)
             }
             .foregroundStyle(Color.buttonLabel)
             .background(Color.buttonFill, in: RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
@@ -160,11 +170,11 @@ struct LoginView: View {
 
             // Quick Connect (glass)
             Button {
-                vm.switchToQuickConnect()
+                withAnimation(.smooth) { vm.switchToQuickConnect() }
             } label: {
                 Label("Use Quick Connect", systemImage: "bolt.fill")
                     .font(.headline).foregroundStyle(Color.label)
-                    .frame(maxWidth: .infinity).frame(height: 48)
+                    .frame(maxWidth: .infinity).frame(height: controlHeight)
             }
             .glassPanel(cornerRadius: Radius.field)
         }
@@ -183,7 +193,7 @@ struct LoginView: View {
             content()
         }
         .padding(.horizontal, Space.s14)
-        .frame(height: 50)
+        .frame(height: controlHeight)
     }
 
     private func handleSuccess() {

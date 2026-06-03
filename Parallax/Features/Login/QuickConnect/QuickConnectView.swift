@@ -15,7 +15,7 @@ struct QuickConnectView: View {
         VStack(spacing: 24) {
             HStack {
                 Button {
-                    onSwitchToPassword()
+                    withAnimation(.smooth) { onSwitchToPassword() }
                 } label: {
                     Label("Back", systemImage: "chevron.left").font(.body.weight(.medium))
                 }
@@ -26,12 +26,17 @@ struct QuickConnectView: View {
             content
             Spacer(minLength: 0)
             Button("Use username and password instead") {
-                onSwitchToPassword()
+                withAnimation(.smooth) { onSwitchToPassword() }
             }
             .font(.subheadline)
             .foregroundStyle(Color.secondaryLabel)
         }
-        .padding()
+        // Same centered column as the password card so the Back button aligns to the
+        // content edge (not the raw sheet corner) and clears the grabber.
+        .frame(maxWidth: 444)
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, Space.s18)
+        .padding(.vertical, Space.s40)
         .task(id: retryToken) {
             // .task(id:) cancels the previous Task and starts a new one each
             // time the id changes, so the stream lifetime is bound to view
@@ -51,7 +56,7 @@ struct QuickConnectView: View {
         if let vm = viewModel {
             switch vm.uiState {
             case .idle, .starting, .awaitingCode:
-                VStack(spacing: 12) {
+                VStack(spacing: Space.s12) {
                     ProgressView()
                     Text("Requesting a pairing code…")
                         .font(.callout)
@@ -62,8 +67,10 @@ struct QuickConnectView: View {
                     Text("Open Jellyfin on the web, go to your user menu → Quick Connect, and enter this code:")
                         .multilineTextAlignment(.center)
                     Text(code)
-                        .font(.system(size: 56, weight: .bold, design: .monospaced))
+                        .scaledFont(56, relativeTo: .largeTitle, weight: .bold, design: .monospaced)
                         .tracking(8)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.5)
                         .padding(.horizontal, 24)
                         .padding(.vertical, 16)
                         .background(.tertiary, in: .rect(cornerRadius: 16))
@@ -73,12 +80,12 @@ struct QuickConnectView: View {
                         .foregroundStyle(.secondary)
                 }
             case .signingIn:
-                VStack(spacing: 12) {
+                VStack(spacing: Space.s12) {
                     ProgressView()
                     Text("Signing you in…")
                 }
             case .failure(let message):
-                VStack(spacing: 12) {
+                VStack(spacing: Space.s12) {
                     Image(systemName: "exclamationmark.triangle")
                         .font(.largeTitle)
                         .foregroundStyle(.red)
