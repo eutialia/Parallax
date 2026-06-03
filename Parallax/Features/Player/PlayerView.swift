@@ -107,7 +107,6 @@ struct PlayerView: View {
             if viewModel == nil {
                 let info = await deps.playbackInfoFactory(session)
                 let repo = await deps.libraryRepoFactory(session)
-                let engineFactory = deps.playbackEngineFactory
                 let vm = PlayerViewModel(
                     deviceProfileBuilder: deps.deviceProfileBuilder,
                     playbackInfo: info,
@@ -120,7 +119,7 @@ struct PlayerView: View {
                             subtitleStreamIndex: subtitleIndex
                         )
                     },
-                    engineFactory: { id in engineFactory(id) },
+                    engineFactory: deps.playbackEngineFactory,
                     audioSession: deps.audioSession,
                     fetchDetail: { try await repo.detail(for: $0) }
                 )

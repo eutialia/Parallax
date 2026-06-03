@@ -119,7 +119,7 @@ final class PlayerViewModel {
     private let deviceProfileBuilder: DeviceProfileBuilder
     private let playbackInfo: any PlaybackReporting
     private let resolve: ResolveCall
-    private let engineFactory: @Sendable (PlaybackEngineID) -> any PlaybackEngine
+    private let engineFactory: @MainActor @Sendable (PlaybackEngineID) -> any PlaybackEngine
     private let audioSession: any AudioSessionControlling
     /// Fetches an item's full detail (`ItemDetail`) from its id — used by the
     /// direct-play entry `start(itemID:)`. Defaulted so existing `start(item:)`
@@ -165,7 +165,7 @@ final class PlayerViewModel {
         deviceProfileBuilder: DeviceProfileBuilder,
         playbackInfo: any PlaybackReporting,
         resolve: @escaping ResolveCall,
-        engineFactory: @escaping @Sendable (PlaybackEngineID) -> any PlaybackEngine,
+        engineFactory: @escaping @MainActor @Sendable (PlaybackEngineID) -> any PlaybackEngine,
         audioSession: any AudioSessionControlling,
         fetchDetail: @escaping @Sendable (ItemID) async throws -> ItemDetail = { _ in
             throw AppError.playback(.unsupportedFormat)
