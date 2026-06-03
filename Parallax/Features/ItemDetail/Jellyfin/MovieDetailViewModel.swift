@@ -14,6 +14,8 @@ final class MovieDetailViewModel {
     private(set) var state: LoadState = .idle
     private(set) var isFavorite = false
     private(set) var isPlayed = false
+    private var favoriteInFlight = false
+    private var playedInFlight = false
     private let repo: LibraryRepository
     private let itemID: ItemID
 
@@ -42,17 +44,26 @@ final class MovieDetailViewModel {
         }
     }
 
+    // The in-flight guard drops a second tap while a toggle is mid-request, and the
+    // catch reverts to the captured `original` (not `!target`) — under interleaving
+    // `!target` is stale and could leave the UI disagreeing with the server.
     func toggleFavorite() async {
-        let target = !isFavorite
-        isFavorite = target
-        do { try await repo.setFavorite(itemID: itemID, isFavorite: target) }
-        catch { isFavorite = !target; Log.ui.error("toggleFavorite failed: \(String(describing: type(of: error)))") }
+        guard !favoriteInFlight else { return }
+        favoriteInFlight = true
+        defer { favoriteInFlight = false }
+        let original = isFavorite
+        isFavorite = !original
+        do { try await repo.setFavorite(itemID: itemID, isFavorite: !original) }
+        catch { isFavorite = original; Log.ui.error("toggleFavorite failed: \(String(describing: type(of: error)))") }
     }
 
     func togglePlayed() async {
-        let target = !isPlayed
-        isPlayed = target
-        do { try await repo.setPlayed(itemID: itemID, isPlayed: target) }
-        catch { isPlayed = !target; Log.ui.error("togglePlayed failed: \(String(describing: type(of: error)))") }
+        guard !playedInFlight else { return }
+        playedInFlight = true
+        defer { playedInFlight = false }
+        let original = isPlayed
+        isPlayed = !original
+        do { try await repo.setPlayed(itemID: itemID, isPlayed: !original) }
+        catch { isPlayed = original; Log.ui.error("togglePlayed failed: \(String(describing: type(of: error)))") }
     }
 }

@@ -17,6 +17,7 @@ final class SeriesDetailViewModel {
     private(set) var episodesLoading = false
     private(set) var isFavorite = false
     private(set) var resumeEpisode: Episode?
+    private var favoriteInFlight = false
 
     private let repo: LibraryRepository
     private let itemID: ItemID
@@ -31,6 +32,10 @@ final class SeriesDetailViewModel {
         do {
             async let detailTask = repo.detail(for: itemID)
             async let seasonsTask = repo.seasons(of: itemID)
+            // Resume runs in parallel from the top — it's an independent /Shows/NextUp
+            // call, so it must NOT serialize ahead of the episode-list fetch below
+            // (that delayed the episodes by a full extra round-trip).
+            async let resumeTask = repo.resumeEpisode(forSeries: itemID)
             let (detail, seasons) = try await (detailTask, seasonsTask)
             guard case .series(let sd) = detail else {
                 state = .failed("Unexpected item type for this screen.")
@@ -38,10 +43,11 @@ final class SeriesDetailViewModel {
             }
             state = .loaded(sd, seasons)
             isFavorite = sd.series.userData.isFavorite
-            resumeEpisode = try? await repo.resumeEpisode(forSeries: itemID)
             if let first = seasons.first {
                 await selectSeason(first.id)
             }
+            // resumeTask already ran concurrently; awaiting it here adds no latency.
+            resumeEpisode = try? await resumeTask
         } catch let error as AppError {
             Log.ui.error("SeriesDetail load failed: \(error.userMessage)")
             state = .failed(error.userMessage)
@@ -52,10 +58,13 @@ final class SeriesDetailViewModel {
     }
 
     func toggleFavorite() async {
-        let target = !isFavorite
-        isFavorite = target
-        do { try await repo.setFavorite(itemID: itemID, isFavorite: target) }
-        catch { isFavorite = !target; Log.ui.error("series toggleFavorite failed: \(String(describing: type(of: error)))") }
+        guard !favoriteInFlight else { return }
+        favoriteInFlight = true
+        defer { favoriteInFlight = false }
+        let original = isFavorite
+        isFavorite = !original
+        do { try await repo.setFavorite(itemID: itemID, isFavorite: !original) }
+        catch { isFavorite = original; Log.ui.error("series toggleFavorite failed: \(String(describing: type(of: error)))") }
     }
 
     /// Mark the currently-selected season played (Jellyfin cascades to its episodes).

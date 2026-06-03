@@ -117,10 +117,12 @@ final class PlayerViewModel {
         }
     }
 
-    /// Seek to a chapter's start. Chapter offsets are second-granular, so a default-
-    /// tolerance seek (the same one the scrubber uses) is right.
+    /// Seek to a chapter's start. Reconstruct the full sub-second offset (the
+    /// fractional part lives in `attoseconds`) — `.seconds` alone would land a
+    /// chapter with a fractional start up to ~1s early, inside the prior chapter.
     func seekToChapter(_ chapter: Chapter) async {
-        let seconds = Double(chapter.start.components.seconds)
+        let c = chapter.start.components
+        let seconds = Double(c.seconds) + Double(c.attoseconds) / 1e18
         await engine?.seek(to: CMTime(seconds: seconds, preferredTimescale: 600))
     }
 
@@ -659,27 +661,21 @@ final class PlayerViewModel {
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
-    /// Resolution bucket from pixel dimensions. Nil when unknown.
+    /// Resolution bucket. Delegates the 1080p+ tiers to the shared `QualityBadge`
+    /// (single source with the poster badges), keeping the player-only sub-1080p
+    /// fallback the grid intentionally omits.
     private static func qualityLabel(width: Int?, height: Int?) -> String? {
+        if let badge = QualityBadge.resolution(width: width, height: height) { return badge }
         let h = height ?? 0, w = width ?? 0
-        if h >= 2000 || w >= 3800 { return "4K" }
-        if h >= 1400 || w >= 2000 { return "1440p" }
-        if h >= 1060 || w >= 1900 { return "1080p" }
-        if h >= 700  || w >= 1200 { return "720p" }
+        if h >= 700 || w >= 1200 { return "720p" }
         if h > 0 { return "\(h)p" }
         return nil
     }
 
-    /// Jellyfin VideoRangeType/VideoRange → short HDR label; nil for SDR (omitted
-    /// to keep the summary uncluttered).
+    /// HDR label — delegated to the shared `QualityBadge.hdr` (single source with the
+    /// poster badges; also gets the DOVIInvalid exclusion for free).
     private static func hdrLabel(_ range: String?) -> String? {
-        guard let range = range?.uppercased() else { return nil }
-        if range.contains("DOVI") || range.contains("DOLBY") { return "Dolby Vision" }
-        if range.contains("HDR10+") || range.contains("HDR10PLUS") { return "HDR10+" }
-        if range.contains("HDR10") { return "HDR10" }
-        if range.contains("HDR") { return "HDR" }
-        if range.contains("HLG") { return "HLG" }
-        return nil
+        QualityBadge.hdr(range)
     }
 
     /// Channel count → layout label. Shared by the summary and the transcode menu.

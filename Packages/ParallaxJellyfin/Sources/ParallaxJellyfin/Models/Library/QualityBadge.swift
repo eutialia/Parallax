@@ -15,6 +15,11 @@ public enum QualityBadge {
     /// HDR flavour from Jellyfin VideoRangeType ("DOVI"/"HDR10"/"HDR10+"/"HLG"); nil for SDR.
     public static func hdr(_ videoRangeType: String?) -> String? {
         guard let r = videoRangeType?.uppercased() else { return nil }
+        // "DOVIInvalid" is a DISTINCT VideoRangeType — corrupt/non-conformant DV
+        // metadata that AVKit can't deliver as Dolby Vision (it falls back to the
+        // HDR10 base layer). Must be excluded BEFORE the substring DOVI match below,
+        // or it would mislabel as "Dolby Vision".
+        if r == "DOVIINVALID" { return "HDR" }
         if r.contains("DOVI") || r.contains("DOLBY") { return "Dolby Vision" }
         if r.contains("HDR10+") || r.contains("HDR10PLUS") { return "HDR10+" }
         if r.contains("HDR10") { return "HDR10" }

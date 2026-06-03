@@ -21,6 +21,8 @@ final class FakeJellyfinLibraryClient: JellyfinLibraryClient, @unchecked Sendabl
     var searchResultsByScope: [SearchScope: Result<[BaseItemDto], Error>] = [:]
     var seriesNextUpResult: Result<BaseItemDto?, Error> = .success(nil)
     var genresResult: Result<[String], Error> = .success([])
+    var setFavoriteResult: Result<Void, Error> = .success(())
+    var setPlayedResult: Result<Void, Error> = .success(())
 
     // Call records.
     private(set) var collectionsCallCount = 0
@@ -87,10 +89,12 @@ final class FakeJellyfinLibraryClient: JellyfinLibraryClient, @unchecked Sendabl
 
     func setFavorite(itemID: String, isFavorite: Bool) async throws {
         setFavoriteCalls.append((itemID: itemID, isFavorite: isFavorite))
+        try setFavoriteResult.get()
     }
 
     func setPlayed(itemID: String, isPlayed: Bool) async throws {
         setPlayedCalls.append((itemID: itemID, isPlayed: isPlayed))
+        try setPlayedResult.get()
     }
 
     func seriesNextUp(seriesID: String) async throws -> BaseItemDto? {

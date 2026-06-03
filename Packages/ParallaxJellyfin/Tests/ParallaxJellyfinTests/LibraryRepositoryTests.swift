@@ -190,6 +190,15 @@ struct LibraryRepositoryUserActionTests {
         #expect(client.setFavoriteCalls.last?.isFavorite == true)
     }
 
+    @Test("setFavorite propagates a client failure (so the VM's optimistic revert fires)")
+    func setFavoritePropagatesError() async throws {
+        let (repo, client) = make()
+        client.setFavoriteResult = .failure(FakeJellyfinLibraryClient.FakeError.notConfigured)
+        await #expect(throws: (any Error).self) {
+            try await repo.setFavorite(itemID: ItemID(rawValue: "item-1"), isFavorite: true)
+        }
+    }
+
     @Test("setFavorite(false) forwards itemID and flag to client")
     func setFavoriteFalse() async throws {
         let (repo, client) = make()
