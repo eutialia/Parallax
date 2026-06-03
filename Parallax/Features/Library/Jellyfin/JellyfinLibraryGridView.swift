@@ -7,7 +7,6 @@ struct JellyfinLibraryGridView: View {
 
     @Environment(AppDependencies.self) private var deps
     @Environment(PlaybackPresenter.self) private var playback
-    @Environment(\.horizontalSizeClass) private var hSize
     @State private var viewModel: JellyfinLibraryGridViewModel?
 
     var body: some View {
@@ -73,7 +72,7 @@ struct JellyfinLibraryGridView: View {
                     ProgressView().padding()
                 }
             }
-            .contentMargins(.horizontal, ContentInset.horizontal(hSize), for: .scrollContent)
+            .contentMargins(.horizontal, AppLayout.contentHMargin, for: .scrollContent)
         }
     }
 
