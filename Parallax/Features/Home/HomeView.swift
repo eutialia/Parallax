@@ -4,6 +4,7 @@ import ParallaxJellyfin
 struct HomeView: View {
     @Environment(AppDependencies.self) private var deps
     @Environment(PlaybackPresenter.self) private var playback
+    @Environment(\.horizontalSizeClass) private var hSize
     @State private var viewModel: HomeViewModel?
     @State private var session: Session?
 
@@ -14,8 +15,9 @@ struct HomeView: View {
         // Solid floor under the scroll content so the floating iPadOS 26
         // sidebar's translucent material blurs over the app background
         // instead of letting tile imagery bleed through.
-        .background(Color(.systemBackground))
+        .background(Color.background)
         .navigationTitle("Home")
+        .toolbar(.hidden, for: .navigationBar)
         .navigationDestination(for: ItemNavigation.self) { nav in
             destinationView(for: nav)
         }
@@ -38,31 +40,25 @@ struct HomeView: View {
             case .idle, .loading:
                 ProgressView().padding(40)
             case .loaded:
-                VStack(alignment: .leading, spacing: 24) {
+                LazyVStack(alignment: .leading, spacing: Space.s30) {
+                    if let featured = vm.continueWatching.first ?? vm.nextUp.first {
+                        heroSection(featured: featured, session: session)
+                    }
                     if !vm.continueWatching.isEmpty {
-                        MetadataRow(
-                            title: "Continue Watching",
-                            items: vm.continueWatching,
-                            tileWidth: 240
-                        ) { item in
+                        MetadataRow(title: "Continue Watching", items: vm.continueWatching, tileWidth: 240) { item in
                             itemTile(item: item, session: session, showProgress: true)
                         }
                     }
                     if !vm.nextUp.isEmpty {
-                        MetadataRow(
-                            title: "Next Up",
-                            items: vm.nextUp,
-                            tileWidth: 240
-                        ) { item in
+                        MetadataRow(title: "Next Up", items: vm.nextUp, tileWidth: 240) { item in
                             itemTile(item: item, session: session, showProgress: false)
                         }
                     }
                     if vm.continueWatching.isEmpty && vm.nextUp.isEmpty {
-                        ContentUnavailableView("Nothing to resume", systemImage: "play.slash")
-                            .padding(.top, 60)
+                        ContentUnavailableView("Nothing to resume", systemImage: "play.slash").padding(.top, 60)
                     }
                 }
-                .padding(.vertical)
+                .padding(.bottom, Space.s30)
             case .failed(let message):
                 ContentUnavailableView(
                     "Couldn't load Home",
@@ -165,6 +161,65 @@ struct HomeView: View {
             if s.imageRef(.backdrop(index: 0)) != nil { return .backdrop(index: 0) }
             return .primary
         case .episode: return .primary
+        }
+    }
+
+    @ViewBuilder
+    private func heroSection(featured: Item, session: Session) -> some View {
+        let aspect: CGFloat = hSize == .regular ? 16.0 / 9.0 : 4.0 / 3.0
+        ZStack(alignment: .bottomLeading) {
+            JellyfinImage(
+                ref: landscapeImage(featured),
+                kind: landscapeImageKind(featured),
+                session: session,
+                maxWidth: 1600,
+                aspectRatio: aspect
+            )
+            LinearGradient(
+                stops: [
+                    .init(color: .black.opacity(0.0), location: 0.0),
+                    .init(color: .black.opacity(0.45), location: 0.55),
+                    .init(color: .black.opacity(0.85), location: 1.0),
+                ],
+                startPoint: .top, endPoint: .bottom
+            )
+            VStack(alignment: .leading, spacing: Space.s12) {
+                Text("FEATURED")
+                    .font(.caption.weight(.bold)).tracking(1.5)
+                    .foregroundStyle(.white.opacity(0.7))
+                Text(tileTitle(featured))
+                    .font(.system(size: hSize == .regular ? 52 : 32, weight: .heavy))
+                    .foregroundStyle(.white).lineLimit(2)
+                if let meta = heroMeta(featured) {
+                    Text(meta).font(.subheadline).foregroundStyle(.white.opacity(0.85))
+                }
+                Button {
+                    playback.play(featured.id, in: session)
+                } label: {
+                    Label("Play", systemImage: "play.fill")
+                        .font(.headline).foregroundStyle(Color.buttonLabel)
+                        .padding(.horizontal, Space.s22).frame(height: 46)
+                        .background(Color.buttonFill, in: Capsule())
+                }
+                .padding(.top, Space.s8)
+            }
+            .padding(hSize == .regular ? Space.s40 : Space.s22)
+        }
+        .clipped()
+        .ignoresSafeArea(edges: .top)
+    }
+
+    private func heroMeta(_ item: Item) -> String? {
+        switch item {
+        case .movie(let m):
+            var parts: [String] = []
+            if let y = m.year { parts.append(String(y)) }
+            if let r = m.runtime { parts.append("\(Int(r.components.seconds / 60)) min") }
+            return parts.isEmpty ? nil : parts.joined(separator: " · ")
+        case .series(let s): return s.year.map(String.init)
+        case .episode(let e):
+            if let season = e.parentIndexNumber, let idx = e.indexNumber { return "S\(season) · E\(idx)" }
+            return nil
         }
     }
 
