@@ -59,8 +59,7 @@ extension Color {
 //
 // "native+" call: radii are custom (the concentric system is the brand "feel"
 // lever); native List/Form keep their own system insets; typography is native
-// Dynamic Type (added per-screen in later phases). Content insets land in P2,
-// replacing AppLayout.contentHMargin (kept as one source until then).
+// Dynamic Type (added per-screen in later phases). Content insets are size-class-aware (iPad 40 / iPhone 18); AppLayout is retired.
 enum Radius {
     static let panel: CGFloat = 24    // sidebar, large bars, modals
     static let card: CGFloat = 18     // cards, list groups, info cards
@@ -80,4 +79,15 @@ enum Space {
     static let s30: CGFloat = 30
     static let s40: CGFloat = 40
     static let s60: CGFloat = 60
+}
+
+enum ContentInset {
+    static let phone: CGFloat = 18    // iOS content inset
+    static let pad: CGFloat = 40      // iPad content inset
+
+    /// The horizontal content inset for the given horizontal size class
+    /// (regular = iPad/sidebar layout → pad; else iPhone → phone).
+    static func horizontal(_ sizeClass: UserInterfaceSizeClass?) -> CGFloat {
+        sizeClass == .regular ? pad : phone
+    }
 }

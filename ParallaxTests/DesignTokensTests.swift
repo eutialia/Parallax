@@ -52,5 +52,7 @@ struct DesignTokensTests {
     func metricScales() {
         #expect(Radius.panel == 24 && Radius.card == 18 && Radius.field == 14 && Radius.tile == 12)
         #expect(Space.s8 == 8 && Space.s22 == 22 && Space.s40 == 40)
+        #expect(ContentInset.phone == 18 && ContentInset.pad == 40)
+        #expect(ContentInset.horizontal(.regular) == 40 && ContentInset.horizontal(.compact) == 18 && ContentInset.horizontal(nil) == 18)
     }
 }

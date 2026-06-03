@@ -6,11 +6,13 @@ struct MetadataRow<Item: Identifiable & Hashable, Content: View>: View {
     let tileWidth: CGFloat
     @ViewBuilder let content: (Item) -> Content
 
+    @Environment(\.horizontalSizeClass) private var hSize
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title)
                 .font(.headline)
-                .padding(.horizontal, AppLayout.contentHMargin)
+                .padding(.horizontal, ContentInset.horizontal(hSize))
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(alignment: .top, spacing: 12) {
                     ForEach(items) { item in
@@ -18,7 +20,7 @@ struct MetadataRow<Item: Identifiable & Hashable, Content: View>: View {
                             .frame(width: tileWidth)
                     }
                 }
-                .padding(.horizontal, AppLayout.contentHMargin)
+                .padding(.horizontal, ContentInset.horizontal(hSize))
             }
         }
     }
