@@ -6,6 +6,7 @@ struct JellyfinLibraryGridView: View {
     let session: Session
 
     @Environment(AppDependencies.self) private var deps
+    @Environment(PlaybackPresenter.self) private var playback
     @State private var viewModel: JellyfinLibraryGridViewModel?
 
     var body: some View {
@@ -30,7 +31,6 @@ struct JellyfinLibraryGridView: View {
             case .movie(let id, let s): MovieDetailView(itemID: id, session: s)
             case .series(let id, let s): SeriesDetailView(itemID: id, session: s)
             case .season(let id, let s): SeasonDetailView(itemID: id, session: s)
-            case .episode(let id, let s): EpisodeDetailView(itemID: id, session: s)
             }
         }
         .task {
@@ -59,19 +59,14 @@ struct JellyfinLibraryGridView: View {
                     columnMinWidth: 140,
                     onAppearLast: { Task { await vm.loadMore() } }
                 ) { item in
-                    NavigationLink(value: nav(for: item)) {
-                        MediaTile(
-                            title: title(for: item),
-                            subtitle: subtitle(for: item),
-                            imageRef: image(for: item),
-                            imageKind: .primary,
-                            session: session,
-                            progress: nil,
-                            aspectRatio: JellyfinImage.poster,
-                            maxImageWidth: 600
-                        )
+                    switch item {
+                    case .episode(let e):
+                        Button { playback.play(e.id, in: session) } label: { tile(for: item) }
+                            .buttonStyle(.plain)
+                    default:
+                        NavigationLink(value: nav(for: item)) { tile(for: item) }
+                            .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
                 if vm.isLoadingMore {
                     ProgressView().padding()
@@ -115,11 +110,25 @@ struct JellyfinLibraryGridView: View {
         }
     }
 
+    @ViewBuilder
+    private func tile(for item: Item) -> some View {
+        MediaTile(
+            title: title(for: item),
+            subtitle: subtitle(for: item),
+            imageRef: image(for: item),
+            imageKind: .primary,
+            session: session,
+            progress: nil,
+            aspectRatio: JellyfinImage.poster,
+            maxImageWidth: 600
+        )
+    }
+
     private func nav(for item: Item) -> ItemNavigation {
         switch item {
         case .movie(let m): return .movie(m.id, session)
         case .series(let s): return .series(s.id, session)
-        case .episode(let e): return .episode(e.id, session)
+        case .episode(let e): return .series(e.id, session)  // unreachable: episodes play directly
         }
     }
 

@@ -6,6 +6,7 @@ struct SeasonDetailView: View {
     let session: Session
 
     @Environment(AppDependencies.self) private var deps
+    @Environment(PlaybackPresenter.self) private var playback
     @State private var viewModel: SeasonDetailViewModel?
 
     var body: some View {
@@ -35,9 +36,10 @@ struct SeasonDetailView: View {
                         }
                         Section("Episodes") {
                             ForEach(episodes) { ep in
-                                NavigationLink(value: ItemNavigation.episode(ep.id, session)) {
+                                Button { playback.play(ep.id, in: session) } label: {
                                     episodeRow(ep)
                                 }
+                                .buttonStyle(.plain)
                             }
                         }
                     }

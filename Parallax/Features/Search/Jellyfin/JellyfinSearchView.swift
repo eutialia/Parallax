@@ -3,6 +3,7 @@ import ParallaxJellyfin
 
 struct JellyfinSearchView: View {
     @Environment(AppDependencies.self) private var deps
+    @Environment(PlaybackPresenter.self) private var playback
     @State private var viewModel: JellyfinSearchViewModel?
     @State private var session: Session?
     // Bind the search field to local state so keystrokes typed before the VM
@@ -28,7 +29,6 @@ struct JellyfinSearchView: View {
             case .movie(let id, let s): MovieDetailView(itemID: id, session: s)
             case .series(let id, let s): SeriesDetailView(itemID: id, session: s)
             case .season(let id, let s): SeasonDetailView(itemID: id, session: s)
-            case .episode(let id, let s): EpisodeDetailView(itemID: id, session: s)
             }
         }
         .task {
@@ -89,7 +89,7 @@ struct JellyfinSearchView: View {
                     if !results.episodes.isEmpty {
                         Section("Episodes") {
                             ForEach(results.episodes) { e in
-                                NavigationLink(value: ItemNavigation.episode(e.id, session)) {
+                                Button { playback.play(e.id, in: session) } label: {
                                     landscapeRow(
                                         title: e.name,
                                         subtitle: episodeSubtitle(e),
@@ -97,6 +97,7 @@ struct JellyfinSearchView: View {
                                         session: session
                                     )
                                 }
+                                .buttonStyle(.plain)
                             }
                         }
                     }

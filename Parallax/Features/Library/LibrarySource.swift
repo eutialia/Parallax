@@ -20,5 +20,4 @@ enum ItemNavigation: Hashable {
     case movie(ItemID, Session)
     case series(ItemID, Session)
     case season(ItemID, Session)
-    case episode(ItemID, Session)
 }
