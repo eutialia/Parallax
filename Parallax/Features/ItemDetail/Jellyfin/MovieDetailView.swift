@@ -6,6 +6,7 @@ struct MovieDetailView: View {
     let session: Session
 
     @Environment(AppDependencies.self) private var deps
+    @Environment(\.horizontalSizeClass) private var hSize
     @State private var viewModel: MovieDetailViewModel?
     @State private var playerItem: ItemDetail?
 
@@ -17,33 +18,42 @@ struct MovieDetailView: View {
                     ProgressView().padding(40)
                 case .loaded(let md):
                     ScrollView {
-                        VStack(alignment: .leading, spacing: 16) {
-                            DetailHeader(
-                                title: md.movie.title,
-                                subtitle: subtitle(md),
-                                backdropRef: md.movie.imageRef(.backdrop(index: 0)),
-                                session: session
-                            )
-
-                            PrimaryPlayButton(title: "Play") {
-                                playerItem = .movie(md)
+                        VStack(alignment: .leading, spacing: Space.s18) {
+                            HeroBackdrop(height: hSize == .regular ? 540 : 380) {
+                                JellyfinImage(
+                                    ref: md.movie.imageRef(.backdrop(index: 0)),
+                                    kind: .backdrop(index: 0),
+                                    session: session,
+                                    maxWidth: 1600,
+                                    aspectRatio: JellyfinImage.landscape,
+                                    fillsProposedFrame: true
+                                )
+                            } foreground: {
+                                VStack(alignment: .leading, spacing: Space.s12) {
+                                    Text(md.movie.title)
+                                        .scaledFont(hSize == .regular ? 48 : 30, relativeTo: .largeTitle, weight: .heavy)
+                                        .foregroundStyle(.white).lineLimit(2).minimumScaleFactor(0.7)
+                                    if let sub = subtitle(md) {
+                                        Text(sub).font(.subheadline).foregroundStyle(.white.opacity(0.85))
+                                    }
+                                    HStack(spacing: Space.s12) {
+                                        PrimaryPlayButton(title: "Play", fillWidth: false) {
+                                            playerItem = .movie(md)
+                                        }
+                                        CircleGlassButton(
+                                            systemImage: vm.isFavorite ? "heart.fill" : "heart",
+                                            isActive: vm.isFavorite,
+                                            accessibilityLabel: "Favorite"
+                                        ) { Task { await vm.toggleFavorite() } }
+                                        CircleGlassButton(
+                                            systemImage: vm.isPlayed ? "checkmark.circle.fill" : "checkmark.circle",
+                                            isActive: vm.isPlayed,
+                                            accessibilityLabel: vm.isPlayed ? "Watched" : "Mark Watched"
+                                        ) { Task { await vm.togglePlayed() } }
+                                    }
+                                    .padding(.top, Space.s8)
+                                }
                             }
-                            .padding(.horizontal, Space.s18)
-
-                            HStack(spacing: Space.s12) {
-                                DetailActionButton(
-                                    systemImage: vm.isFavorite ? "heart.fill" : "heart",
-                                    label: "Favorite",
-                                    isActive: vm.isFavorite
-                                ) { Task { await vm.toggleFavorite() } }
-                                DetailActionButton(
-                                    systemImage: vm.isPlayed ? "checkmark.circle.fill" : "checkmark.circle",
-                                    label: vm.isPlayed ? "Watched" : "Mark Watched",
-                                    isActive: vm.isPlayed
-                                ) { Task { await vm.togglePlayed() } }
-                                Spacer(minLength: 0)
-                            }
-                            .padding(.horizontal, Space.s18)
 
                             if let tagline = md.tagline {
                                 Text(tagline)
@@ -65,7 +75,7 @@ struct MovieDetailView: View {
                                 DetailMetadataLine(label: "Genres", value: md.movie.genres.joined(separator: ", "))
                             }
                         }
-                        .padding(.vertical)
+                        .padding(.bottom, Space.s30)
                     }
                 case .failed(let message):
                     ContentUnavailableView(

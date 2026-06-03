@@ -7,6 +7,7 @@ struct SeriesDetailView: View {
 
     @Environment(AppDependencies.self) private var deps
     @Environment(PlaybackPresenter.self) private var playback
+    @Environment(\.horizontalSizeClass) private var hSize
     @State private var viewModel: SeriesDetailViewModel?
 
     var body: some View {
@@ -18,27 +19,39 @@ struct SeriesDetailView: View {
                 case .loaded(let sd, let seasons):
                     ScrollView {
                         VStack(alignment: .leading, spacing: Space.s22) {
-                            DetailHeader(
-                                title: sd.series.title,
-                                subtitle: subtitle(sd),
-                                backdropRef: sd.series.imageRef(.backdrop(index: 0)),
-                                session: session
-                            )
-                            if let ep = vm.resumeEpisode {
-                                PrimaryPlayButton(title: resumeLabel(ep)) {
-                                    playback.play(ep.id, in: session)
+                            HeroBackdrop(height: hSize == .regular ? 540 : 380) {
+                                JellyfinImage(
+                                    ref: sd.series.imageRef(.backdrop(index: 0)),
+                                    kind: .backdrop(index: 0),
+                                    session: session,
+                                    maxWidth: 1600,
+                                    aspectRatio: JellyfinImage.landscape,
+                                    fillsProposedFrame: true
+                                )
+                            } foreground: {
+                                VStack(alignment: .leading, spacing: Space.s12) {
+                                    Text(sd.series.title)
+                                        .scaledFont(hSize == .regular ? 48 : 30, relativeTo: .largeTitle, weight: .heavy)
+                                        .foregroundStyle(.white).lineLimit(2).minimumScaleFactor(0.7)
+                                    if let sub = subtitle(sd) {
+                                        Text(sub).font(.subheadline).foregroundStyle(.white.opacity(0.85))
+                                    }
+                                    HStack(spacing: Space.s12) {
+                                        if let ep = vm.resumeEpisode {
+                                            PrimaryPlayButton(title: resumeLabel(ep), fillWidth: false) {
+                                                playback.play(ep.id, in: session)
+                                            }
+                                        }
+                                        CircleGlassButton(
+                                            systemImage: vm.isFavorite ? "heart.fill" : "heart",
+                                            isActive: vm.isFavorite,
+                                            accessibilityLabel: "Favorite"
+                                        ) { Task { await vm.toggleFavorite() } }
+                                    }
+                                    .padding(.top, Space.s8)
                                 }
-                                .padding(.horizontal, Space.s18)
                             }
-                            HStack(spacing: Space.s12) {
-                                DetailActionButton(
-                                    systemImage: vm.isFavorite ? "heart.fill" : "heart",
-                                    label: "Favorite",
-                                    isActive: vm.isFavorite
-                                ) { Task { await vm.toggleFavorite() } }
-                                Spacer(minLength: 0)
-                            }
-                            .padding(.horizontal, Space.s18)
+
                             if let overview = sd.series.overview {
                                 Text(overview).padding(.horizontal, Space.s18)
                             }
@@ -55,7 +68,7 @@ struct SeriesDetailView: View {
                                 DetailMetadataLine(label: "Genres", value: sd.series.genres.joined(separator: ", "))
                             }
                         }
-                        .padding(.vertical)
+                        .padding(.bottom, Space.s30)
                     }
                 case .failed(let message):
                     ContentUnavailableView("Couldn't load this series", systemImage: "exclamationmark.triangle", description: Text(message))
@@ -87,9 +100,13 @@ struct SeriesDetailView: View {
             HStack(spacing: Space.s8) {
                 Text(current?.name ?? "Season").font(.headline).foregroundStyle(Color.label)
                 Image(systemName: "chevron.down").font(.subheadline).foregroundStyle(Color.secondaryLabel)
-                Spacer(minLength: 0)
             }
-            .padding(.horizontal, Space.s14).frame(height: 44)
+            .padding(.horizontal, Space.s14)
+            // Explicit full width (not a trailing Spacer) so the Menu doesn't
+            // re-measure the label to its intrinsic size and snap it to the right
+            // edge when it opens.
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .contentShape(.rect)
             .glassPanel(cornerRadius: Radius.field)
         }
     }

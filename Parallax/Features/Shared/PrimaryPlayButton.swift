@@ -6,15 +6,22 @@ import SwiftUI
 struct PrimaryPlayButton: View {
     let title: String
     var systemImage: String = "play.fill"
+    /// Full-width pill (the default, used as a standalone row) vs an intrinsic-width
+    /// pill (used inline in the hero's action row, beside the glass buttons).
+    var fillWidth: Bool = true
     let action: () -> Void
+
+    /// Pill height scales with Dynamic Type (relative to the `.headline` label) so the
+    /// label never clips at larger text sizes.
+    @ScaledMetric(relativeTo: .headline) private var playHeight: CGFloat = 46
 
     var body: some View {
         Button(action: action) {
             Label(title, systemImage: systemImage)
                 .font(.headline)
-                .frame(height: 46)
+                .frame(height: playHeight)
                 .padding(.horizontal, Space.s22)
-                .frame(maxWidth: .infinity)
+                .frame(maxWidth: fillWidth ? .infinity : nil)
         }
         .buttonStyle(PrimaryPlayButtonStyle())
     }

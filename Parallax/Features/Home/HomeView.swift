@@ -7,6 +7,8 @@ struct HomeView: View {
     @Environment(\.horizontalSizeClass) private var hSize
     @State private var viewModel: HomeViewModel?
     @State private var session: Session?
+    /// Hero CTA height scales with Dynamic Type (relative to its `.headline` label).
+    @ScaledMetric(relativeTo: .headline) private var heroButtonHeight: CGFloat = 46
 
     var body: some View {
         ScrollView {
@@ -36,7 +38,7 @@ struct HomeView: View {
         if let vm = viewModel, let session {
             switch vm.state {
             case .idle, .loading:
-                ProgressView().padding(40)
+                ProgressView().padding(Space.s40)
             case .loaded:
                 LazyVStack(alignment: .leading, spacing: Space.s30) {
                     if let featured = vm.continueWatching.first ?? vm.nextUp.first {
@@ -53,7 +55,7 @@ struct HomeView: View {
                         }
                     }
                     if vm.continueWatching.isEmpty && vm.nextUp.isEmpty {
-                        ContentUnavailableView("Nothing to resume", systemImage: "play.slash").padding(.top, 60)
+                        ContentUnavailableView("Nothing to resume", systemImage: "play.slash").padding(.top, Space.s60)
                     }
                 }
                 .padding(.bottom, Space.s30)
@@ -63,10 +65,10 @@ struct HomeView: View {
                     systemImage: "exclamationmark.triangle",
                     description: Text(message)
                 )
-                .padding(.top, 60)
+                .padding(.top, Space.s60)
             }
         } else {
-            ProgressView().padding(40)
+            ProgressView().padding(Space.s40)
         }
     }
 
@@ -131,39 +133,30 @@ struct HomeView: View {
 
     @ViewBuilder
     private func heroSection(featured: Item, session: Session) -> some View {
-        let aspect: CGFloat = hSize == .regular ? 16.0 / 9.0 : 4.0 / 3.0
-        ZStack(alignment: .bottomLeading) {
+        HeroBackdrop(height: hSize == .regular ? 540 : 380) {
             JellyfinImage(
                 ref: landscapeImage(featured),
                 kind: landscapeImageKind(featured),
                 session: session,
                 maxWidth: 1600,
-                aspectRatio: aspect
+                aspectRatio: JellyfinImage.landscape,
+                fillsProposedFrame: true
             )
-            LinearGradient(
-                stops: [
-                    .init(color: .black.opacity(0.0), location: 0.0),
-                    .init(color: .black.opacity(0.45), location: 0.55),
-                    .init(color: .black.opacity(0.85), location: 1.0),
-                ],
-                startPoint: .top, endPoint: .bottom
-            )
+        } foreground: {
             VStack(alignment: .leading, spacing: Space.s12) {
                 Text("FEATURED")
                     .font(.caption.weight(.bold)).tracking(1.5)
                     .foregroundStyle(.white.opacity(0.7))
                 Text(featured.displayTitle)
-                    .font(.system(size: hSize == .regular ? 52 : 32, weight: .heavy))
-                    .foregroundStyle(.white).lineLimit(2)
+                    .scaledFont(hSize == .regular ? 52 : 32, relativeTo: .largeTitle, weight: .heavy)
+                    .foregroundStyle(.white).lineLimit(2).minimumScaleFactor(0.7)
                 if let meta = heroMeta(featured) {
                     Text(meta).font(.subheadline).foregroundStyle(.white.opacity(0.85))
                 }
                 heroPlayButton(featured: featured, session: session)
                     .padding(.top, Space.s8)
             }
-            .padding(hSize == .regular ? Space.s40 : Space.s22)
         }
-        .clipped()
     }
 
     private func heroMeta(_ item: Item) -> String? {
@@ -199,7 +192,7 @@ struct HomeView: View {
     private func heroButtonLabel(_ title: String, icon: String) -> some View {
         Label(title, systemImage: icon)
             .font(.headline).foregroundStyle(Color.buttonLabel)
-            .padding(.horizontal, Space.s22).frame(height: 46)
+            .padding(.horizontal, Space.s22).frame(height: heroButtonHeight)
             .background(Color.buttonFill, in: Capsule())
     }
 

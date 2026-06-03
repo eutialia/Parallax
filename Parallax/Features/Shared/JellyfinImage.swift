@@ -8,6 +8,11 @@ struct JellyfinImage: View {
     let session: Session
     let maxWidth: Int
     let aspectRatio: CGFloat
+    /// When true the image fills the frame the CALLER proposes (`scaledToFill` +
+    /// clip) instead of imposing its own aspect-ratio box. The full-bleed hero band
+    /// uses this to fill a fixed-height strip; grids/rows keep the default aspect box
+    /// (which pins uniform cell sizes regardless of image-load state — see below).
+    let fillsProposedFrame: Bool
 
     static let poster: CGFloat = 2.0 / 3.0
     static let landscape: CGFloat = 16.0 / 9.0
@@ -18,13 +23,15 @@ struct JellyfinImage: View {
         kind: ImageKind,
         session: Session,
         maxWidth: Int,
-        aspectRatio: CGFloat = 2.0 / 3.0
+        aspectRatio: CGFloat = 2.0 / 3.0,
+        fillsProposedFrame: Bool = false
     ) {
         self.ref = ref
         self.kind = kind
         self.session = session
         self.maxWidth = maxWidth
         self.aspectRatio = aspectRatio
+        self.fillsProposedFrame = fillsProposedFrame
     }
 
     var body: some View {
@@ -36,14 +43,18 @@ struct JellyfinImage: View {
         // inter-item spacing (device smoke-test #6/#7). Pin the box first, then
         // fill it with the image and clip the overflow — every cell stays
         // uniform regardless of image-load state.
-        Color(white: 0.15)
+        let base = Color(white: 0.15)
             .overlay {
                 if let ref, let url = ImageURLBuilder.url(serverURL: session.serverURL, ref: ref, maxWidth: maxWidth) {
                     LazyImageRenderer(url: url, session: session)
                 }
             }
-            .aspectRatio(aspectRatio, contentMode: .fit)
-            .clipped()
+        if fillsProposedFrame {
+            // Caller owns the frame (e.g. a fixed-height hero band): just fill + clip.
+            base.clipped()
+        } else {
+            base.aspectRatio(aspectRatio, contentMode: .fit).clipped()
+        }
     }
 }
 
