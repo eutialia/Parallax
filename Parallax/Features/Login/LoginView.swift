@@ -18,6 +18,19 @@ struct LoginView: View {
             if viewModel == nil {
                 viewModel = LoginViewModel(sessionManager: deps.sessionManager)
             }
+            // Auto-fill the server URL from LAN discovery when the field is empty
+            // (most networks have a single Jellyfin server).
+            if let vm = viewModel, vm.serverURLInput.isEmpty,
+               let first = deps.lanDiscovery.discovered.first {
+                vm.serverURLInput = first.address.absoluteString
+            }
+        }
+        // Discovery usually completes AFTER the view appears (it races the Local
+        // Network permission prompt), so fill the URL in when it lands.
+        .onChange(of: deps.lanDiscovery.discovered.first?.address) { _, address in
+            if let address, let vm = viewModel, vm.serverURLInput.isEmpty {
+                vm.serverURLInput = address.absoluteString
+            }
         }
     }
 

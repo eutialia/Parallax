@@ -13,11 +13,23 @@ struct QuickConnectView: View {
 
     var body: some View {
         VStack(spacing: 24) {
+            HStack {
+                Button {
+                    onSwitchToPassword()
+                } label: {
+                    Label("Back", systemImage: "chevron.left").font(.body.weight(.medium))
+                }
+                .foregroundStyle(Color.label)
+                Spacer(minLength: 0)
+            }
+            Spacer(minLength: 0)
             content
+            Spacer(minLength: 0)
             Button("Use username and password instead") {
                 onSwitchToPassword()
             }
-            .padding(.top, 16)
+            .font(.subheadline)
+            .foregroundStyle(Color.secondaryLabel)
         }
         .padding()
         .task(id: retryToken) {
