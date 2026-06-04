@@ -14,6 +14,7 @@ final class FakeJellyfinLibraryClient: JellyfinLibraryClient, @unchecked Sendabl
     var episodesResult: Result<[BaseItemDto], Error> = .success([])
     var continueWatchingResult: Result<[BaseItemDto], Error> = .success([])
     var nextUpResult: Result<[BaseItemDto], Error> = .success([])
+    var recentlyAddedResult: Result<[BaseItemDto], Error> = .success([])
     var searchResult: Result<[BaseItemDto], Error> = .success([])
     // Per-scope override — used by tests that need to verify the repository
     // routes per-type searches independently (scope .all fans out into three
@@ -21,7 +22,9 @@ final class FakeJellyfinLibraryClient: JellyfinLibraryClient, @unchecked Sendabl
     var searchResultsByScope: [SearchScope: Result<[BaseItemDto], Error>] = [:]
     var seriesNextUpResult: Result<BaseItemDto?, Error> = .success(nil)
     var genresResult: Result<[String], Error> = .success([])
-    var setFavoriteResult: Result<Void, Error> = .success(())
+    var setFavoriteResult: Result<UserItemData, Error> = .success(
+        UserItemData(played: false, playbackPositionTicks: 0, playCount: 0, isFavorite: true)
+    )
     var setPlayedResult: Result<Void, Error> = .success(())
 
     // Call records.
@@ -32,6 +35,7 @@ final class FakeJellyfinLibraryClient: JellyfinLibraryClient, @unchecked Sendabl
     private(set) var episodesCalls: [String] = []
     private(set) var continueWatchingCallCount = 0
     private(set) var nextUpCallCount = 0
+    private(set) var recentlyAddedCalls: [Int] = []
     private(set) var searchCalls: [(query: String, scope: SearchScope)] = []
     private(set) var setFavoriteCalls: [(itemID: String, isFavorite: Bool)] = []
     private(set) var setPlayedCalls: [(itemID: String, isPlayed: Bool)] = []
@@ -79,6 +83,11 @@ final class FakeJellyfinLibraryClient: JellyfinLibraryClient, @unchecked Sendabl
         return try nextUpResult.get()
     }
 
+    func getRecentlyAdded(limit: Int) async throws -> [BaseItemDto] {
+        recentlyAddedCalls.append(limit)
+        return try recentlyAddedResult.get()
+    }
+
     func search(query: String, scope: SearchScope) async throws -> [BaseItemDto] {
         searchCalls.append((query, scope))
         if let perScope = searchResultsByScope[scope] {
@@ -87,9 +96,15 @@ final class FakeJellyfinLibraryClient: JellyfinLibraryClient, @unchecked Sendabl
         return try searchResult.get()
     }
 
-    func setFavorite(itemID: String, isFavorite: Bool) async throws {
+    func setFavorite(itemID: String, isFavorite: Bool) async throws -> UserItemData {
         setFavoriteCalls.append((itemID: itemID, isFavorite: isFavorite))
-        try setFavoriteResult.get()
+        let resolved = try setFavoriteResult.get()
+        return UserItemData(
+            played: resolved.played,
+            playbackPositionTicks: resolved.playbackPositionTicks,
+            playCount: resolved.playCount,
+            isFavorite: isFavorite
+        )
     }
 
     func setPlayed(itemID: String, isPlayed: Bool) async throws {

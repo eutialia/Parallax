@@ -137,6 +137,21 @@ public final class DefaultJellyfinLibraryClient: JellyfinLibraryClient, @uncheck
         return response.value.items ?? []
     }
 
+    public func getRecentlyAdded(limit: Int) async throws -> [BaseItemDto] {
+        var params = Paths.GetLatestMediaParameters()
+        params.userID = userID
+        params.limit = limit
+        params.includeItemTypes = [.movie, .series]
+        params.fields = [.primaryImageAspectRatio]
+        params.imageTypeLimit = 1
+        params.enableImageTypes = [.primary, .backdrop, .logo, .thumb]
+        params.enableUserData = true
+        params.isGroupItems = false
+        let request = Paths.getLatestMedia(parameters: params)
+        let response = try await client().send(request)
+        return response.value
+    }
+
     public func search(query: String, scope: SearchScope) async throws -> [BaseItemDto] {
         var params = Paths.GetItemsParameters()
         params.userID = userID
@@ -150,11 +165,12 @@ public final class DefaultJellyfinLibraryClient: JellyfinLibraryClient, @uncheck
         return response.value.items ?? []
     }
 
-    public func setFavorite(itemID: String, isFavorite: Bool) async throws {
+    public func setFavorite(itemID: String, isFavorite: Bool) async throws -> UserItemData {
         let request = isFavorite
             ? Paths.markFavoriteItem(itemID: itemID, userID: userID)
             : Paths.unmarkFavoriteItem(itemID: itemID, userID: userID)
-        _ = try await client().send(request)
+        let response = try await client().send(request)
+        return response.value.toUserItemData()
     }
 
     public func setPlayed(itemID: String, isPlayed: Bool) async throws {

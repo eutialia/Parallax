@@ -98,9 +98,18 @@ public actor LibraryRepository {
         }
     }
 
-    public func setFavorite(itemID: ItemID, isFavorite: Bool) async throws {
+    public func recentlyAdded(limit: Int = 12) async throws -> [Item] {
         do {
-            try await client.setFavorite(itemID: itemID.rawValue, isFavorite: isFavorite)
+            let dtos = try await client.getRecentlyAdded(limit: limit)
+            return dtos.compactMap(Self.dtoToItem)
+        } catch {
+            throw ErrorMapping.appError(from: error)
+        }
+    }
+
+    public func setFavorite(itemID: ItemID, isFavorite: Bool) async throws -> UserItemData {
+        do {
+            return try await client.setFavorite(itemID: itemID.rawValue, isFavorite: isFavorite)
         } catch {
             throw ErrorMapping.appError(from: error)
         }

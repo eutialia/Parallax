@@ -181,13 +181,25 @@ struct LibraryRepositoryUserActionTests {
         return dto
     }
 
+    private func sampleMovieDto(id: String) -> BaseItemDto {
+        var dto = BaseItemDto()
+        dto.id = id
+        dto.name = "Movie \(id)"
+        dto.type = .movie
+        return dto
+    }
+
     @Test("setFavorite(true) forwards itemID and flag to client")
     func setFavoriteTrue() async throws {
         let (repo, client) = make()
-        try await repo.setFavorite(itemID: ItemID(rawValue: "item-42"), isFavorite: true)
+        client.setFavoriteResult = .success(
+            UserItemData(played: false, playbackPositionTicks: 0, playCount: 0, isFavorite: true)
+        )
+        let userData = try await repo.setFavorite(itemID: ItemID(rawValue: "item-42"), isFavorite: true)
         #expect(client.setFavoriteCalls.count == 1)
         #expect(client.setFavoriteCalls.last?.itemID == "item-42")
         #expect(client.setFavoriteCalls.last?.isFavorite == true)
+        #expect(userData.isFavorite == true)
     }
 
     @Test("setFavorite propagates a client failure (so the VM's optimistic revert fires)")
@@ -242,6 +254,16 @@ struct LibraryRepositoryUserActionTests {
         let episode = try await repo.resumeEpisode(forSeries: ItemID(rawValue: "ser-1"))
         #expect(episode == nil)
         #expect(client.seriesNextUpCalls == ["ser-1"])
+    }
+
+    @Test("recentlyAdded forwards limit and maps movies/series")
+    func recentlyAdded() async throws {
+        let (repo, client) = make()
+        client.recentlyAddedResult = .success([sampleMovieDto(id: "new-1")])
+        let items = try await repo.recentlyAdded(limit: 8)
+        #expect(client.recentlyAddedCalls == [8])
+        #expect(items.count == 1)
+        #expect(items.first?.id == ItemID(rawValue: "new-1"))
     }
 
     @Test("genres forwards parentID and returns client list")

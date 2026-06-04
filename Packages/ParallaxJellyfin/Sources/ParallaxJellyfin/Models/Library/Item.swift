@@ -36,4 +36,33 @@ public enum Item: Sendable, Hashable, Identifiable {
         case .episode(let e): return e.userData
         }
     }
+
+    public func withUserData(_ userData: UserItemData) -> Item {
+        switch self {
+        case .movie(let m):
+            return .movie(Movie(
+                id: m.id, title: m.title, overview: m.overview, year: m.year, runtime: m.runtime,
+                communityRating: m.communityRating, officialRating: m.officialRating, genres: m.genres,
+                primaryTag: m.primaryTag, backdropTags: m.backdropTags, logoTag: m.logoTag, thumbTag: m.thumbTag,
+                userData: userData, width: m.width, height: m.height, videoRangeType: m.videoRangeType
+            ))
+        case .series(let s):
+            return .series(Series(
+                id: s.id, title: s.title, overview: s.overview, year: s.year, status: s.status,
+                genres: s.genres, primaryTag: s.primaryTag, backdropTags: s.backdropTags,
+                logoTag: s.logoTag, thumbTag: s.thumbTag, bannerTag: s.bannerTag, userData: userData,
+                width: s.width, height: s.height, videoRangeType: s.videoRangeType
+            ))
+        case .episode(let e):
+            return .episode(Episode(
+                id: e.id, seriesID: e.seriesID, seasonID: e.seasonID, name: e.name,
+                indexNumber: e.indexNumber, parentIndexNumber: e.parentIndexNumber,
+                overview: e.overview, runtime: e.runtime, primaryTag: e.primaryTag, userData: userData
+            ))
+        }
+    }
+
+    public func withFavorite(_ isFavorite: Bool) -> Item {
+        withUserData(userData.withFavorite(isFavorite))
+    }
 }

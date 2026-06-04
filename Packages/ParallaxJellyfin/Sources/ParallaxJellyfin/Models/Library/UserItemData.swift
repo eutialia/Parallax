@@ -20,4 +20,13 @@ public struct UserItemData: Sendable, Hashable, Codable {
         guard let runtimeTicks, runtimeTicks > 0 else { return nil }
         return Double(playbackPositionTicks) / Double(runtimeTicks)
     }
+
+    public func withFavorite(_ isFavorite: Bool) -> UserItemData {
+        UserItemData(
+            played: played,
+            playbackPositionTicks: playbackPositionTicks,
+            playCount: playCount,
+            isFavorite: isFavorite
+        )
+    }
 }
