@@ -37,7 +37,7 @@ struct JellyfinSearchView: View {
             viewModel?.query = newValue
         }
         .onChange(of: scope) { _, newValue in viewModel?.scope = newValue }
-        .itemNavigationDestination()
+        .itemZoomNavigation()
         .task {
             if session == nil {
                 session = await deps.serverStore.active
@@ -69,18 +69,18 @@ struct JellyfinSearchView: View {
                         if !results.series.isEmpty {
                             gridSection("Shows", count: results.series.count, cols: posterCols) {
                                 ForEach(results.series) { s in
-                                    NavigationLink(value: ItemNavigation.series(s.id, session)) {
+                                    ItemNavigator(item: .series(s), session: session) {
                                         MediaTile(title: s.title, subtitle: s.year.map(String.init), imageRef: s.imageRef(.primary), imageKind: .primary, session: session, progress: nil, aspectRatio: JellyfinImage.poster, maxImageWidth: 400)
-                                    }.buttonStyle(.plain)
+                                    }
                                 }
                             }
                         }
                         if !results.movies.isEmpty {
                             gridSection("Movies", count: results.movies.count, cols: posterCols) {
                                 ForEach(results.movies) { m in
-                                    NavigationLink(value: ItemNavigation.movie(m.id, session)) {
+                                    ItemNavigator(item: .movie(m), session: session) {
                                         MediaTile(title: m.title, subtitle: m.year.map(String.init), imageRef: m.imageRef(.primary), imageKind: .primary, session: session, progress: nil, aspectRatio: JellyfinImage.poster, maxImageWidth: 400)
-                                    }.buttonStyle(.plain)
+                                    }
                                 }
                             }
                         }

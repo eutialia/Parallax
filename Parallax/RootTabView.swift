@@ -59,7 +59,6 @@ struct RootTabView: View {
             }
         }
         .tabViewStyle(.sidebarAdaptable)
-        .tabViewSidebarHeader { brand }
         .tabViewSidebarBottomBar { userFooter }
         // Remount every tab when the active server changes. `activeServerID` is owned
         // by AppRouter and updated by every site that switches/adds/signs-out a server,
@@ -75,32 +74,6 @@ struct RootTabView: View {
     }
 
     // MARK: - Sidebar chrome
-
-    private var brand: some View {
-        HStack(spacing: Space.s12) {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.label)
-                .frame(width: 30, height: 30)
-                .overlay {
-                    Image(systemName: "hexagon.fill")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(Color.background)
-                }
-            Text("Parallax")
-                .font(.title3.weight(.bold))
-                .foregroundStyle(Color.label)
-            Spacer(minLength: 0)
-        }
-        // The header is the first row BELOW the system sidebar collapse toggle — the
-        // toggle owns the nav-bar band and `tabViewSidebarHeader` content can't enter
-        // it (no public API on a `.sidebarAdaptable` sidebar; only NavigationSplitView
-        // exposes that toolbar, which the project forbids as a root). Inset the leading
-        // edge to line up with the tab-row labels and give it room to read as a
-        // deliberate brand row rather than a cell jammed under the toggle.
-        .padding(.horizontal, Space.s12)
-        .padding(.top, Space.s8)
-        .padding(.bottom, Space.s12)
-    }
 
     /// Pinned account footer (avatar · name · server) — the design's sidebar foot.
     /// Tapping it opens this server's settings page.

@@ -5,25 +5,27 @@ import ParallaxJellyfin
 /// movie/series detail header. It is built from two layers that deliberately share
 /// **no** modifiers, which is the whole point:
 ///
-///  • **Backdrop** — the artwork, full-bleed across the content width and flush to the
-///    leading edge, carrying `.backgroundExtensionEffect()`. On iPadOS the floating
-///    glass sidebar leaves a leading safe-area inset; that modifier mirror-flips + blurs
-///    a strip of the image's leading edge the width of the inset and tucks it *under* the
-///    glass — so only a soft blurred reflection sits under the sidebar, never the crisp
-///    pixels and never a control. It reads the **live** inset, so it reflows on its own
-///    when the sidebar collapses. There is no hardcoded sidebar width anywhere.
+///  • **Backdrop** — full-bleed artwork flush to the detail column’s leading edge.
+///    On iPad regular width it uses Apple’s `backgroundExtensionEffect()` (same approach
+///    as the Landmarks sample and HIG “Adopting Liquid Glass”): the leading strip is
+///    mirrored + blurred under the floating sidebar — **not** real content scrolled
+///    underneath. The image is `.clipped()` before the effect with a **hard bottom**
+///    edge (no bottom fade on the artwork layer — fading there bleeds into the
+///    mirrored strip and exaggerates the sidebar seam). Legibility is foreground-only.
 ///
-///  • **Foreground** — kicker, title, metadata, Play + glass actions. An ordinary column
-///    that is *not* given the effect and carries its own horizontal `safeAreaPadding`, so
-///    its tap targets always stay in the readable area, clear of the sidebar.
+///  • **Foreground** — kicker, title, metadata, Play + glass actions, inset with
+///    `safeAreaPadding` so controls stay in the readable column.
 ///
-/// This replaces the old `AmbientBackdrop`-as-a-fixed-aspect-box, whose controls were
-/// glued bottom-leading *inside* the full-width image and therefore landed under the
-/// floating sidebar (unclickable), and whose fixed box reflowed the whole hero whenever
-/// the sidebar collapsed.
-///
-/// The backdrop is a generic slot so the app passes a `JellyfinImage` while the preview
-/// harness passes a plain gradient (no live session needed to eyeball the bleed).
+/// Parent `ScrollView`s should use `.scrollClipDisabled(true)` and
+/// `.ignoresSafeArea(edges: .top)`. That — not any offset math here — is what makes
+/// the hero paint under the status bar / sidebar: the parent drops the top content
+/// inset, so this fixed-height band sits at y=0 and its artwork fills up to the screen
+/// edge. The band itself is deliberately a *stable* fixed height that reads no live
+/// geometry, so scrolling can't reflow it (an earlier `onGeometryChange`-driven
+/// `topBleed`/`offset` fed the safe-area inset back into the band's height, and because
+/// that inset varies with scroll offset it opened a rubber-band gap that snapped shut a
+/// frame later). Keep the hero flush to the leading edge (no horizontal padding on its
+/// container).
 struct HeroBackdrop<Backdrop: View, Foreground: View>: View {
     /// Fixed band height (~520–560pt per the design). A predictable height keeps the
     /// content below it starting on a stable line and the foreground rhythm consistent.
@@ -33,57 +35,39 @@ struct HeroBackdrop<Backdrop: View, Foreground: View>: View {
 
     @Environment(\.horizontalSizeClass) private var hSize
 
+    private var usesSidebarExtension: Bool { hSize == .regular }
+
     var body: some View {
         ZStack(alignment: .bottomLeading) {
             backdrop()
-                .frame(height: height)
-                .frame(maxWidth: .infinity)
+                .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+                .frame(height: height, alignment: .bottom)
                 .clipped()
-                // Scrim is part of the effect SOURCE (applied before the modifier) so the
-                // mirrored under-sidebar strip fades to the page colour too — no hard
-                // blurred band peeking out at the bottom under the glass.
-                .overlay { scrim }
-                .backgroundExtensionEffect()
-                // Decorative only: never let the backdrop swallow taps meant for the
-                // foreground's Play / Favorite buttons.
+                .backgroundExtensionEffect(isEnabled: usesSidebarExtension)
                 .allowsHitTesting(false)
 
             foreground()
-                // Cap to a readable column width; lead-align within it.
                 .frame(maxWidth: Self.contentMaxWidth, alignment: .leading)
-                // The ONE inset that keeps controls clear of the sidebar. `safeAreaPadding`
-                // composes with the live sidebar inset (so it reflows on collapse) and adds
-                // the design's content margin on top (iPad 40 / iPhone 22) — NOT a hardcoded
-                // leading constant.
+                .modifier(HeroForegroundLegibility())
                 .safeAreaPadding(.horizontal, hSize == .regular ? Space.s40 : Space.s22)
                 .padding(.bottom, Space.s30)
         }
+        .frame(height: height, alignment: .bottom)
     }
 
     static var contentMaxWidth: CGFloat { 720 }
+}
 
-    /// Top-transparent → darkened lower third (text contrast) → page colour (so the band
-    /// dissolves into the page instead of meeting it at a hard edge).
-    private var scrim: some View {
-        LinearGradient(
-            stops: [
-                .init(color: .clear, location: 0.0),
-                .init(color: .black.opacity(0.55), location: 0.72),
-                .init(color: Color.background, location: 1.0),
-            ],
-            startPoint: .top, endPoint: .bottom
-        )
-        .allowsHitTesting(false)
+/// Keeps hero labels readable over bright artwork without a boxed background.
+private struct HeroForegroundLegibility: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .shadow(color: .black.opacity(0.7), radius: 2, x: 0, y: 1)
+            .shadow(color: .black.opacity(0.35), radius: 14, x: 0, y: 0)
     }
 }
 
 // MARK: - Preview harness
-//
-// Embeds HeroBackdrop in a `.tabViewStyle(.sidebarAdaptable)` TabView with a GRADIENT
-// backdrop (no live Session), so the floating-sidebar bleed + foreground clearance can be
-// eyeballed on an iPad destination without a Jellyfin login. Render this on an iPad sim
-// (regular width) to confirm: (a) the gradient bleeds a blurred edge UNDER the sidebar,
-// (b) the title + Play button never tuck under it, (c) collapsing the sidebar reflows.
 
 #Preview("HeroBackdrop · sidebar bleed") {
     TabView {
@@ -123,8 +107,10 @@ struct HeroBackdrop<Backdrop: View, Foreground: View>: View {
                         }
                     }
                 }
+                .scrollClipDisabled(true)
                 .background(Color.background)
                 .toolbar(.hidden, for: .navigationBar)
+                .ignoresSafeArea(edges: .top)
             }
         }
         Tab("Library", systemImage: "rectangle.stack") { Color.background }

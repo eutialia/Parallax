@@ -70,6 +70,8 @@ struct SeriesDetailView: View {
                         }
                         .padding(.bottom, Space.s30)
                     }
+                    .scrollClipDisabled(true)
+                    .scrollEdgeEffectHidden(true, for: .top)
                 case .failed(let message):
                     ContentUnavailableView("Couldn't load this series", systemImage: "exclamationmark.triangle", description: Text(message))
                 }
@@ -79,7 +81,9 @@ struct SeriesDetailView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.background)
+        .ignoresSafeArea(edges: .top)
         .toolbar(.visible, for: .navigationBar)
+        .toolbarBackground(.hidden, for: .navigationBar)
         .task {
             if viewModel == nil {
                 let repo = await deps.libraryRepoFactory(session)

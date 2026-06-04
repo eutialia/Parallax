@@ -50,8 +50,11 @@ struct JellyfinImage: View {
                 }
             }
         if fillsProposedFrame {
-            // Caller owns the frame (e.g. a fixed-height hero band): just fill + clip.
-            base.clipped()
+            // Caller owns the frame (e.g. a fixed-height hero band): fill the proposed
+            // box so backgroundExtensionEffect samples edge-to-edge (no letterboxing).
+            base
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
         } else {
             base.aspectRatio(aspectRatio, contentMode: .fit).clipped()
         }

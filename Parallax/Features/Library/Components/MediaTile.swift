@@ -2,6 +2,8 @@ import SwiftUI
 import ParallaxJellyfin
 
 struct MediaTile: View {
+    @Environment(\.itemZoomNavigationValue) private var itemZoomNavigation
+
     let title: String
     let subtitle: String?
     let imageRef: ImageRef?
@@ -37,14 +39,7 @@ struct MediaTile: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             ZStack(alignment: .bottom) {
-                JellyfinImage(
-                    ref: imageRef,
-                    kind: imageKind,
-                    session: session,
-                    maxWidth: maxImageWidth,
-                    aspectRatio: aspectRatio
-                )
-                .clipShape(.rect(cornerRadius: Radius.tile))
+                artwork
 
                 if let progress, progress > 0 {
                     GeometryReader { geo in
@@ -91,6 +86,24 @@ struct MediaTile: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1, reservesSpace: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    @ViewBuilder
+    private var artwork: some View {
+        let image = JellyfinImage(
+            ref: imageRef,
+            kind: imageKind,
+            session: session,
+            maxWidth: maxImageWidth,
+            aspectRatio: aspectRatio
+        )
+        .clipShape(.rect(cornerRadius: Radius.tile))
+
+        if let itemZoomNavigation {
+            image.itemZoomTransitionSource(itemZoomNavigation)
+        } else {
+            image
         }
     }
 }

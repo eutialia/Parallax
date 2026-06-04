@@ -36,7 +36,7 @@ struct JellyfinLibraryGridView: View {
                 }
             }
         }
-        .itemNavigationDestination()
+        .itemZoomNavigation()
         .task {
             if viewModel == nil {
                 let repo = await deps.libraryRepoFactory(session)

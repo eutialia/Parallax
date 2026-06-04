@@ -14,6 +14,7 @@ struct HomeView: View {
         ScrollView {
             content
         }
+        .scrollClipDisabled(true)
         // Fill the detail width even while the loading state's content is small —
         // otherwise on a cold launch the ScrollView collapses to its content's ideal
         // width (~100pt for the loading spinner) until a later layout pass, showing a
@@ -23,9 +24,10 @@ struct HomeView: View {
         // sidebar's translucent material blurs over the app background
         // instead of letting tile imagery bleed through.
         .background(Color.background)
+        .ignoresSafeArea(edges: .top)
         .navigationTitle("Home")
         .toolbar(.hidden, for: .navigationBar)
-        .itemNavigationDestination()
+        .itemZoomNavigation()
         .task {
             if session == nil {
                 session = await deps.serverStore.active
@@ -139,6 +141,11 @@ struct HomeView: View {
     @ViewBuilder
     private func heroSection(featured: Item, session: Session) -> some View {
         HeroBackdrop(height: hSize == .regular ? 540 : 380) {
+            // No `matchedTransitionSource` here: `featured` is always the first
+            // tile of a visible Continue Watching / Next Up row, and that tile
+            // already registers the zoom source. Two views with the same source
+            // id in one namespace is undefined per Apple, so the hero defers to
+            // the row tile (which sits directly below it) as the single source.
             JellyfinImage(
                 ref: landscapeImage(featured),
                 kind: landscapeImageKind(featured),
@@ -184,7 +191,8 @@ struct HomeView: View {
     private func heroPlayButton(featured: Item, session: Session) -> some View {
         switch featured {
         case .series(let s):
-            NavigationLink(value: ItemNavigation.series(s.id, session)) {
+            let nav = ItemNavigation.series(s.id, session)
+            NavigationLink(value: nav) {
                 heroButtonLabel("View", icon: "chevron.right")
             }
         case .movie, .episode:

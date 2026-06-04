@@ -77,6 +77,8 @@ struct MovieDetailView: View {
                         }
                         .padding(.bottom, Space.s30)
                     }
+                    .scrollClipDisabled(true)
+                    .scrollEdgeEffectHidden(true, for: .top)
                 case .failed(let message):
                     ContentUnavailableView(
                         "Couldn't load this title",
@@ -90,7 +92,9 @@ struct MovieDetailView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.background)
+        .ignoresSafeArea(edges: .top)
         .toolbar(.visible, for: .navigationBar)
+        .toolbarBackground(.hidden, for: .navigationBar)
         .fullScreenCover(item: $playerItem) { detail in
             PlayerView(item: detail, session: session)
         }
