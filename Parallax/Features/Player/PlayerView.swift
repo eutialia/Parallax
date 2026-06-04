@@ -134,6 +134,15 @@ struct PlayerView: View {
             let vm = viewModel
             Task { await vm?.stop() }
         }
+        // The player is an immersive "screening room": pin the whole surface (video
+        // host, controls, subtitle/loader/error/debug overlays) to dark appearance so
+        // every bare `.glassEffect(.regular)` resolves to the same dark frosted
+        // material regardless of the app's light/dark setting. Without this, in light
+        // mode the large bottom scrubber panel picks up the light glass variant while
+        // the small circle buttons barely show it, so they read as different palettes.
+        // Outermost so `.overlay(...)` content (loader orb, debug HUD) inherits it;
+        // matches the dark pin already on the track menus (`trackMenuChrome`).
+        .environment(\.colorScheme, .dark)
     }
 
     /// True only while actively playing — gates the chrome-visibility reset above.

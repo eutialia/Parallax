@@ -7,10 +7,13 @@ import ParallaxPlayback
 /// state and drives transport, scrubbing, track selection, speed, and aspect-fill.
 ///
 /// The chrome is always white-on-dark (the player surface is an immersive "screening
-/// room" over video, regardless of the app's light/dark appearance), so it uses
-/// explicit `.white` and Liquid Glass materials rather than the light/dark color
-/// tokens. The presented track menus DO follow the tokens — see `TrackMenu.swift` —
-/// pinned to a dark scheme so they stay immersive.
+/// room" over video, regardless of the app's light/dark appearance). It uses explicit
+/// `.white` and bare Liquid Glass materials rather than the light/dark color tokens —
+/// and because a bare `.glassEffect(.regular)` resolves its frosted tint from the
+/// environment's `colorScheme`, `PlayerView` pins the whole surface to `.dark` (see
+/// `PlayerView.body`) so the glass stays consistently dark even when the app is in
+/// light mode. The presented track menus pin `.dark` themselves (`trackMenuChrome`),
+/// since a popover/sheet presents in a fresh environment.
 ///
 /// Controls auto-hide after 3s of inactivity; tap anywhere to toggle. The auto-hide
 /// is suspended while a track menu (popover/sheet) is open.
