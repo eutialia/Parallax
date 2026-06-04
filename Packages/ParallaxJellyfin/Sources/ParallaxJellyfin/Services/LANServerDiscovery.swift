@@ -3,8 +3,9 @@ import Observation
 import Darwin
 import ParallaxCore
 
-/// Broadcasts Jellyfin's discovery probe (`who is JellyfinServer?`) to
-/// `255.255.255.255:7359` and collects JSON responses for a fixed window.
+/// Broadcasts Jellyfin's discovery probe (`who is JellyfinServer?`) to each
+/// active interface's subnet-directed broadcast on port `7359` and collects JSON
+/// responses for a fixed window.
 ///
 /// Side effect: starting a UDP broadcast is treated by iOS as local-network
 /// activity, so it surfaces the system Local Network permission prompt at the
@@ -123,23 +124,43 @@ public final class LANServerDiscovery {
         var tv = timeval(tv_sec: 0, tv_usec: 250_000)
         setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
 
-        var dest = sockaddr_in()
-        dest.sin_family = sa_family_t(AF_INET)
-        dest.sin_port = UInt16(7359).bigEndian
-        dest.sin_addr.s_addr = INADDR_BROADCAST.bigEndian
-
-        let payload = Array("who is JellyfinServer?".utf8)
-        let sent = payload.withUnsafeBufferPointer { buf -> Int in
-            withUnsafePointer(to: &dest) { dPtr in
-                dPtr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
-                    sendto(sock, buf.baseAddress, buf.count, 0, sockPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
-                }
-            }
-        }
-        guard sent == payload.count else {
-            Log.network.error("LANServerDiscovery: sendto returned \(sent) errno=\(errno)")
+        let targets = broadcastTargets()
+        guard !targets.isEmpty else {
+            Log.network.error("LANServerDiscovery: no broadcast-capable interfaces found")
             return []
         }
+
+        let payload = Array("who is JellyfinServer?".utf8)
+        var sentCount = 0
+        for target in targets {
+            // Pin the send to this interface. An unscoped send to 255.255.255.255 lets the
+            // kernel pick a route; when the default route is a VPN/secondary link that
+            // can't carry the limited broadcast it returns EHOSTUNREACH (errno 65) — the
+            // same errno iOS raises when Local Network access is denied. Binding to the LAN
+            // interface and using its subnet-directed broadcast removes the ambiguity
+            // (Apple DTS guidance). Physical devices still need the multicast entitlement.
+            var ifIndex = target.index
+            setsockopt(sock, IPPROTO_IP, IP_BOUND_IF, &ifIndex, socklen_t(MemoryLayout<UInt32>.size))
+
+            var dest = sockaddr_in()
+            dest.sin_family = sa_family_t(AF_INET)
+            dest.sin_port = UInt16(7359).bigEndian
+            dest.sin_addr = target.broadcast
+
+            let sent = payload.withUnsafeBufferPointer { buf -> Int in
+                withUnsafePointer(to: &dest) { dPtr in
+                    dPtr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
+                        sendto(sock, buf.baseAddress, buf.count, 0, sockPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
+                    }
+                }
+            }
+            if sent == payload.count {
+                sentCount += 1
+            } else {
+                Log.network.error("LANServerDiscovery: sendto via \(target.name) returned \(sent) errno=\(errno)")
+            }
+        }
+        guard sentCount > 0 else { return [] }
 
         var responses: [Data] = []
         var buffer = [UInt8](repeating: 0, count: 4096)
@@ -161,6 +182,37 @@ public final class LANServerDiscovery {
             }
         }
         return responses
+    }
+
+    /// Up, broadcast-capable, non-loopback IPv4 interfaces with their subnet-directed
+    /// broadcast address and BSD interface index (for `IP_BOUND_IF`). One entry per
+    /// interface — a host with Wi-Fi + a VPN yields the real LAN interface so the probe
+    /// goes out the link that can actually reach the server.
+    nonisolated private static func broadcastTargets() -> [(name: String, index: UInt32, broadcast: in_addr)] {
+        var head: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&head) == 0, let head else { return [] }
+        defer { freeifaddrs(head) }
+
+        var targets: [(name: String, index: UInt32, broadcast: in_addr)] = []
+        var seen = Set<UInt32>()
+        for ifa in sequence(first: head, next: { $0.pointee.ifa_next }) {
+            let flags = Int32(ifa.pointee.ifa_flags)
+            guard flags & IFF_UP != 0,
+                  flags & IFF_BROADCAST != 0,
+                  flags & IFF_LOOPBACK == 0,
+                  let sa = ifa.pointee.ifa_addr,
+                  sa.pointee.sa_family == sa_family_t(AF_INET),
+                  // For IFF_BROADCAST interfaces this union member is the broadcast address.
+                  let broad = ifa.pointee.ifa_dstaddr else { continue }
+
+            let name = String(cString: ifa.pointee.ifa_name)
+            let index = if_nametoindex(name)
+            guard index != 0, seen.insert(index).inserted else { continue }
+
+            let addr = broad.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee.sin_addr }
+            targets.append((name, index, addr))
+        }
+        return targets
     }
 }
 
