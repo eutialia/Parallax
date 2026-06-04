@@ -14,6 +14,11 @@ struct HomeView: View {
         ScrollView {
             content
         }
+        // Fill the detail width even while the loading state's content is small —
+        // otherwise on a cold launch the ScrollView collapses to its content's ideal
+        // width (~100pt for the loading spinner) until a later layout pass, showing a
+        // narrow strip. Greedy frame pins it to the proposed width from the first pass.
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         // Solid floor under the scroll content so the floating iPadOS 26
         // sidebar's translucent material blurs over the app background
         // instead of letting tile imagery bleed through.
