@@ -1,18 +1,18 @@
 import SwiftUI
 import ParallaxJellyfin
 
-/// Per-server settings detail — the design handoff's `screen-settings`. Reached by
-/// tapping a card on the Servers list or the sidebar account footer. This is the
-/// reuse-only build: a connected-server header plus the "This Server" actions that
-/// already exist (make active, sign out). The Playback section (engine / quality /
-/// bitrate / subtitle appearance), Quick Connect authorizing, Manage Devices, and the
-/// live stats strip are deferred until their settings/persistence plumbing lands.
+/// Per-server settings detail — the design handoff's `screen-settings`. Pushed from a
+/// server card in the floating `SettingsView`. This is the reuse-only build: a connected-
+/// server header plus the "This Server" actions that already exist (make active, sign out).
+/// The Playback section (engine / quality / bitrate / subtitle appearance), Quick Connect
+/// authorizing, Manage Devices, and the live stats strip are deferred until their
+/// settings/persistence plumbing lands.
 ///
-/// Actions reuse `ServerListViewModel` (passed in from the list) so there's a single
+/// Actions reuse `SettingsViewModel` (passed in from the panel) so there's a single
 /// implementation of set-active / sign-out with their router side effects.
 struct ServerSettingsView: View {
     let session: Session
-    let vm: ServerListViewModel
+    let vm: SettingsViewModel
 
     @Environment(\.dismiss) private var dismiss
 
@@ -51,7 +51,7 @@ struct ServerSettingsView: View {
                     .font(.title3.weight(.bold))
                     .foregroundStyle(Color.label)
                     .lineLimit(1)
-                Text(session.serverURL.host() ?? session.serverURL.absoluteString)
+                Text(session.displayHost)
                     .font(.subheadline)
                     .foregroundStyle(Color.secondaryLabel)
                     .lineLimit(1)
@@ -99,9 +99,11 @@ struct ServerSettingsView: View {
             ) {
                 Task {
                     await vm.signOut(session)
-                    // Pop back to the list on success; on failure stay so the error
-                    // message (surfaced by the shared vm) is visible here.
-                    if vm.signOutErrorMessage == nil { dismiss() }
+                    // On success pop back to the list — unless that was the last server,
+                    // in which case the router already routed to login and tore this whole
+                    // panel down (calling dismiss() on the vanishing sheet would warn). On
+                    // failure stay so the error message (surfaced by the shared vm) shows.
+                    if vm.signOutErrorMessage == nil, !vm.sessions.isEmpty { dismiss() }
                 }
             }
         }

@@ -3,6 +3,7 @@ import ParallaxJellyfin
 
 struct HomeView: View {
     @Environment(AppDependencies.self) private var deps
+    @Environment(AppRouter.self) private var router
     @Environment(PlaybackPresenter.self) private var playback
     @Environment(\.horizontalSizeClass) private var hSize
     @State private var viewModel: HomeViewModel?
@@ -28,7 +29,10 @@ struct HomeView: View {
         .navigationTitle("Home")
         .toolbar(.hidden, for: .navigationBar)
         .itemZoomNavigation()
-        .task {
+        .task(id: router.activeServerID) {
+            // Skeleton-only until bootstrap sets `activeServerID` — avoids a fetch that
+            // `RootTabView`'s `.id` remount would cancel when the session becomes active.
+            guard router.activeServerID != nil else { return }
             if session == nil {
                 session = await deps.serverStore.active
             }
@@ -45,7 +49,7 @@ struct HomeView: View {
         if let vm = viewModel, let session {
             switch vm.state {
             case .idle, .loading:
-                ProgressView().padding(Space.s40)
+                HomeLoadingSkeleton()
             case .loaded:
                 LazyVStack(alignment: .leading, spacing: Space.s30) {
                     if let featured = vm.continueWatching.first ?? vm.nextUp.first {
@@ -75,7 +79,7 @@ struct HomeView: View {
                 .padding(.top, Space.s60)
             }
         } else {
-            ProgressView().padding(Space.s40)
+            HomeLoadingSkeleton()
         }
     }
 

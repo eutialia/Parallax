@@ -17,6 +17,12 @@ struct AppRouterTests {
         )
     }
 
+    @Test("initial destination is bootstrapping until sessions are loaded")
+    func startsBootstrapping() {
+        let router = AppRouter()
+        #expect(router.destination == .bootstrapping)
+    }
+
     @Test("updateForCurrentSession routes to home and tracks the active server id")
     func tracksActiveServer() {
         let router = AppRouter()
@@ -51,5 +57,21 @@ struct AppRouterTests {
         router.updateForCurrentSession(session("alpha"))
         router.goToLogin()
         #expect(router.activeServerID == nil)
+    }
+
+    // The floating settings panel is presented from the stable RootView; it must not be
+    // left floating over the bare login root once the last server signs out.
+    @Test("dropping to login dismisses the settings panel")
+    func loginDismissesSettings() {
+        let router = AppRouter()
+        router.updateForCurrentSession(session("alpha"))
+        router.presentingSettings = true
+        router.updateForCurrentSession(nil)
+        #expect(router.presentingSettings == false)
+
+        router.updateForCurrentSession(session("beta"))
+        router.presentingSettings = true
+        router.goToLogin()
+        #expect(router.presentingSettings == false)
     }
 }

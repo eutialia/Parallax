@@ -2,8 +2,11 @@ import SwiftUI
 import ParallaxJellyfin
 
 struct LoginView: View {
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.isPresented) private var isPresented
+    /// Called after a successful sign-in. When nil (the logged-out root) the view drives
+    /// the router itself; the settings add-server flow passes a closure to refresh + pop.
+    var onSignedIn: (() -> Void)?
+
+    @Environment(\.scenePhase) private var scenePhase
     @Environment(AppDependencies.self) private var deps
     @Environment(AppRouter.self) private var router
     @State private var viewModel: LoginViewModel?
@@ -16,6 +19,23 @@ struct LoginView: View {
         ZStack {
             Color.background.ignoresSafeArea()
             content
+        }
+        .onAppear {
+            // Discovery runs only while this screen is visible. Triggers the iOS
+            // Local Network permission prompt here (not mid-library browse) and
+            // fills the server URL / LAN list below. Retries catch a late grant
+            // during the permission alert; stop() on disappear cancels in-flight
+            // passes once the user leaves sign-in.
+            deps.lanDiscovery.start(retries: 3, retryInterval: .seconds(2))
+        }
+        .onDisappear {
+            deps.lanDiscovery.stop()
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            // iOS exposes no Local Network authorization API — rescan when the
+            // scene becomes active again (e.g. user tapped Allow then returned).
+            guard newPhase == .active else { return }
+            deps.lanDiscovery.start()
         }
         .task {
             if viewModel == nil {
@@ -43,17 +63,13 @@ struct LoginView: View {
             Group {
                 switch vm.mode {
                 case .password:
-                    ScrollView {
-                        card(vm: vm)
-                            .frame(maxWidth: 444)
-                            .frame(maxWidth: .infinity)
-                            .padding(.horizontal, Space.s18)
-                            .padding(.vertical, Space.s40)
-                    }
+                    AuthScreenScaffold { card(vm: vm) }
                 case .quickConnect:
-                    QuickConnectView(serverURLInput: vm.serverURLInput) {
-                        vm.switchToPassword()
-                    }
+                    QuickConnectView(
+                        serverURLInput: vm.serverURLInput,
+                        onSwitchToPassword: { vm.switchToPassword() },
+                        onSignedIn: { Task { await handleSuccess() } }
+                    )
                 }
             }
             // Identity tied to the mode so the swap is a real insert/remove that the
@@ -62,7 +78,7 @@ struct LoginView: View {
             .id(vm.mode)
             .transition(.blurReplace)
         } else {
-            ProgressView()
+            AuthScreenScaffold { LoginCardLoadingSkeleton() }
         }
     }
 
@@ -70,23 +86,11 @@ struct LoginView: View {
     private func card(vm: LoginViewModel) -> some View {
         @Bindable var vm = vm
         VStack(spacing: Space.s22) {
-            // Brand
-            VStack(spacing: Space.s12) {
-                RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
-                    .fill(Color.label)
-                    .frame(width: 64, height: 64)
-                    .overlay {
-                        Image(systemName: "hexagon.fill")
-                            .scaledFont(30, relativeTo: .title, weight: .semibold)
-                            .foregroundStyle(Color.background)
-                    }
-                Text("Parallax")
-                    .scaledFont(30, relativeTo: .title, weight: .bold)
-                    .foregroundStyle(Color.label)
-                Text("Sign in to your Jellyfin server")
-                    .font(.subheadline)
-                    .foregroundStyle(Color.secondaryLabel)
-            }
+            AuthBrandHeader(
+                icon: "hexagon.fill",
+                title: "Parallax",
+                subtitle: "Sign in to your Jellyfin server"
+            )
 
             // LAN-discovered servers (relocated): tap to quick-fill the URL.
             if !deps.lanDiscovery.discovered.isEmpty {
@@ -116,7 +120,7 @@ struct LoginView: View {
             // Field stack
             VStack(spacing: 0) {
                 fieldRow(icon: "globe") {
-                    TextField("https://jellyfin.example.com", text: $vm.serverURLInput)
+                    TextField("", text: $vm.serverURLInput, prompt: Self.urlPrompt)
                         .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
                 }
                 hairline
@@ -147,9 +151,9 @@ struct LoginView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            // Connect (solid primary)
+            // Connect (solid primary) — needs all three fields before it's tappable.
             Button {
-                Task { if await vm.signIn() { handleSuccess() } }
+                Task { if await vm.signIn() { await handleSuccess() } }
             } label: {
                 Group {
                     if vm.isWorking { ProgressView().tint(Color.buttonLabel) }
@@ -159,7 +163,8 @@ struct LoginView: View {
             }
             .foregroundStyle(Color.buttonLabel)
             .background(Color.buttonFill, in: RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
-            .disabled(vm.isWorking)
+            .opacity(vm.canSubmitPassword ? 1 : 0.4)
+            .disabled(vm.isWorking || !vm.canSubmitPassword)
 
             // OR divider
             HStack(spacing: Space.s12) {
@@ -168,7 +173,7 @@ struct LoginView: View {
                 Rectangle().fill(Color.separator).frame(height: 1)
             }
 
-            // Quick Connect (glass)
+            // Quick Connect (glass) — needs a server URL to pair against.
             Button {
                 withAnimation(.smooth) { vm.switchToQuickConnect() }
             } label: {
@@ -177,9 +182,20 @@ struct LoginView: View {
                     .frame(maxWidth: .infinity).frame(height: controlHeight)
             }
             .glassPanel(cornerRadius: Radius.field)
+            .opacity(vm.canUseQuickConnect ? 1 : 0.4)
+            .disabled(!vm.canUseQuickConnect)
         }
         .padding(32)
         .glassBar(cornerRadius: 26)
+    }
+
+    /// URL-shaped placeholders get auto-styled as blue links, which ignores `.tint`
+    /// and `.foregroundStyle`. Feeding the example as an `AttributedString` with an
+    /// explicit color renders it in the normal placeholder gray instead.
+    private static var urlPrompt: Text {
+        var prompt = AttributedString("https://jellyfin.example.com")
+        prompt.foregroundColor = Color.tertiaryLabel
+        return Text(prompt)
     }
 
     private var hairline: some View {
@@ -196,7 +212,18 @@ struct LoginView: View {
         .frame(height: controlHeight)
     }
 
-    private func handleSuccess() {
-        if isPresented { dismiss() } else { router.goToHome() }
+    private func handleSuccess() async {
+        if let onSignedIn {
+            // Settings add-server flow: the caller refreshes its list, re-points the
+            // router, and pops this view off the settings stack.
+            onSignedIn()
+        } else {
+            // First sign-in (logged-out root): set destination AND activeServerID together.
+            // The per-server tasks (Home/Library/Search/RootTabView) are gated on
+            // `activeServerID != nil`, so routing through `updateForCurrentSession` is what
+            // actually lets them fetch — setting only `destination` would strand every tab
+            // on its loading skeleton.
+            router.updateForCurrentSession(await deps.serverStore.active)
+        }
     }
 }

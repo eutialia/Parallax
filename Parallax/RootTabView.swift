@@ -8,14 +8,9 @@ struct RootTabView: View {
     @State private var selectedTab: AppTab = .home
     @State private var session: Session?
     @State private var libraries: [MediaCollection] = []
-    /// Navigation path for the Servers tab's stack. Owned here (not inside
-    /// `ServerListView`) so the sidebar account footer — which lives in the tab-view
-    /// chrome, outside every per-tab `NavigationStack` — can push a server's settings
-    /// page by switching to the Servers tab and setting this path.
-    @State private var serversPath: [Session] = []
 
     enum AppTab: Hashable {
-        case home, library, search, servers
+        case home, library, search
         /// A specific library surfaced directly in the sidebar's "Libraries" section.
         case collection(CollectionID)
     }
@@ -23,19 +18,22 @@ struct RootTabView: View {
     var body: some View {
         TabView(selection: $selectedTab) {
             Tab("Home", systemImage: "house", value: AppTab.home) {
+                // Home hides its nav bar for the full-bleed hero, so the compact account
+                // entry floats over the top-trailing corner instead of living in a toolbar.
                 NavigationStack { HomeView() }
+                    .overlay(alignment: .topTrailing) { homeAccountButton }
             }
             Tab("Library", systemImage: "rectangle.stack", value: AppTab.library) {
-                NavigationStack { LibraryHostView() }
+                NavigationStack { LibraryHostView().toolbar { accountToolbar } }
             }
             Tab("Search", systemImage: "magnifyingglass", value: AppTab.search, role: .search) {
-                NavigationStack { JellyfinSearchView() }
+                NavigationStack { JellyfinSearchView().toolbar { accountToolbar } }
             }
 
             // The user's actual libraries, as a titled sidebar section (the design's
             // "Libraries" group) — each drills straight to its grid. Sidebar only:
             // gated to regular width so the compact tab bar (iPhone / split view)
-            // keeps its four primary tabs instead of spilling every library into it.
+            // keeps its primary tabs instead of spilling every library into it.
             if hSize == .regular, let session, !libraries.isEmpty {
                 TabSection("Libraries") {
                     ForEach(libraries) { library in
@@ -53,10 +51,6 @@ struct RootTabView: View {
                     }
                 }
             }
-
-            Tab("Servers", systemImage: "server.rack", value: AppTab.servers) {
-                NavigationStack(path: $serversPath) { ServerListView() }
-            }
         }
         .tabViewStyle(.sidebarAdaptable)
         .tabViewSidebarBottomBar { userFooter }
@@ -65,7 +59,8 @@ struct RootTabView: View {
         // so a switch tears down + rebuilds the tabs (and reloads the sidebar libraries)
         // against the new server instead of leaving them on the previous one's content.
         .id(router.activeServerID)
-        .task {
+        .task(id: router.activeServerID) {
+            guard router.activeServerID != nil else { return }
             session = await deps.serverStore.active
             guard let session else { libraries = []; return }
             let repo = await deps.libraryRepoFactory(session)
@@ -73,32 +68,56 @@ struct RootTabView: View {
         }
     }
 
+    // MARK: - Account entry (compact width)
+    //
+    // On iPad the sidebar footer opens settings; iPhone has no sidebar, so the primary
+    // tabs carry an account button instead. Both just flip `router.presentingSettings`,
+    // which RootView turns into the floating panel.
+
+    /// Floating account button over the Home hero (Home hides its nav bar, so it can't
+    /// host a toolbar item). Empty on regular width — the sidebar footer is the entry there.
+    @ViewBuilder
+    private var homeAccountButton: some View {
+        if hSize == .compact, let session {
+            accountButton(session)
+                .padding(.trailing, Space.s18)
+                .padding(.top, Space.s8)
+        }
+    }
+
+    /// Account button for the bar-bearing tabs (Library, Search). Empty on regular width.
+    @ToolbarContentBuilder
+    private var accountToolbar: some ToolbarContent {
+        if hSize == .compact, let session {
+            ToolbarItem(placement: .topBarTrailing) {
+                accountButton(session)
+            }
+        }
+    }
+
+    private func accountButton(_ session: Session) -> some View {
+        Button {
+            router.presentingSettings = true
+        } label: {
+            AccountAvatar(name: session.user.name, size: 30)
+        }
+        .accessibilityLabel("Account and settings")
+        .accessibilityHint("Opens settings")
+    }
+
     // MARK: - Sidebar chrome
 
     /// Pinned account footer (avatar · name · server) — the design's sidebar foot.
-    /// Tapping it opens this server's settings page.
+    /// Tapping it opens the floating settings panel.
     @ViewBuilder
     private var userFooter: some View {
         if let session {
-            let host = session.serverURL.host() ?? session.serverName
+            let host = session.displayHost
             Button {
-                // The footer lives in the tab-view chrome, outside the per-tab stacks,
-                // so navigate by switching to the Servers tab and pushing the settings
-                // page onto its path directly.
-                selectedTab = .servers
-                serversPath = [session]
+                router.presentingSettings = true
             } label: {
                 HStack(spacing: Space.s12) {
-                    Circle()
-                        .fill(Color.fill)
-                        .frame(width: 34, height: 34)
-                        .overlay {
-                            Text(initial(session.user.name))
-                                // Fixed so the initial stays inside the 34pt circle at
-                                // large Dynamic Type sizes.
-                                .font(.system(size: 15, weight: .semibold))
-                                .foregroundStyle(Color.label)
-                        }
+                    AccountAvatar(name: session.user.name, size: 34)
                     VStack(alignment: .leading, spacing: 1) {
                         Text(session.user.name)
                             .font(.subheadline.weight(.semibold))
@@ -110,9 +129,6 @@ struct RootTabView: View {
                             .lineLimit(1)
                     }
                     Spacer(minLength: 0)
-                    Image(systemName: "chevron.right")
-                        .scaledFont(13, relativeTo: .footnote, weight: .semibold)
-                        .foregroundStyle(Color.tertiaryLabel)
                 }
                 // Inset to align the avatar's leading edge with the sidebar tab-row
                 // labels (the system insets the row pills; the bottom-bar closure is
@@ -123,15 +139,10 @@ struct RootTabView: View {
             }
             .buttonStyle(.plain)
             // Explicit label (replaces the children-derived one, which leaked the avatar
-            // initial) + a hint, since the chevron is the only sighted "opens settings" cue.
+            // initial) + a hint that this opens settings.
             .accessibilityLabel("\(session.user.name), \(host)")
-            .accessibilityHint("Opens server settings")
+            .accessibilityHint("Opens settings")
         }
-    }
-
-    private func initial(_ name: String) -> String {
-        guard let first = name.first else { return "?" }
-        return String(first).uppercased()
     }
 
     /// SF Symbol for a library, by Jellyfin collection type.

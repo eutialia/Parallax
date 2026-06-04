@@ -3,6 +3,7 @@ import ParallaxJellyfin
 
 struct JellyfinSearchView: View {
     @Environment(AppDependencies.self) private var deps
+    @Environment(AppRouter.self) private var router
     @Environment(PlaybackPresenter.self) private var playback
     @State private var viewModel: JellyfinSearchViewModel?
     @State private var session: Session?
@@ -18,7 +19,7 @@ struct JellyfinSearchView: View {
             if let vm = viewModel, let session {
                 content(vm: vm, session: session)
             } else {
-                ProgressView()
+                searchLoadingPlaceholder
             }
         }
         .navigationTitle("Search")
@@ -38,7 +39,8 @@ struct JellyfinSearchView: View {
         }
         .onChange(of: scope) { _, newValue in viewModel?.scope = newValue }
         .itemZoomNavigation()
-        .task {
+        .task(id: router.activeServerID) {
+            guard router.activeServerID != nil else { return }
             if session == nil {
                 session = await deps.serverStore.active
             }
@@ -59,7 +61,7 @@ struct JellyfinSearchView: View {
         case .idle:
             ContentUnavailableView("Search your library", systemImage: "magnifyingglass")
         case .loading:
-            ProgressView().padding(40)
+            searchLoadingPlaceholder
         case .loaded(let results):
             if results.movies.isEmpty && results.series.isEmpty && results.episodes.isEmpty {
                 ContentUnavailableView.search
@@ -100,10 +102,7 @@ struct JellyfinSearchView: View {
                 // so the results don't shift down/up on every debounced keystroke.
                 .overlay(alignment: .top) {
                     if vm.isSearching {
-                        ProgressView()
-                            .padding(10)
-                            .background(.regularMaterial, in: Capsule())
-                            .padding(.top, Space.s8)
+                        SearchRefiningSkeleton()
                     }
                 }
             }
@@ -114,6 +113,13 @@ struct JellyfinSearchView: View {
                 description: Text(message)
             )
         }
+    }
+
+    private var searchLoadingPlaceholder: some View {
+        ScrollView {
+            PosterGridLoadingSkeleton(columns: posterCols, rows: 2)
+        }
+        .scrollDisabled(true)
     }
 
     private var posterCols: Int { hSize == .regular ? 4 : 3 }

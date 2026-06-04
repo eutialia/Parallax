@@ -30,8 +30,13 @@ final class HomeViewModel {
             self.continueWatching = cw
             self.nextUp = nu
             self.state = .loaded
+        } catch is CancellationError {
+            return
         } catch let error as AppError {
-            Log.ui.error("HomeViewModel load failed: \(error.userMessage)")
+            if case .network(let urlError) = error, urlError.code == .cancelled {
+                return
+            }
+            Log.ui.error("HomeViewModel load failed: \(error.userMessage) (\(error.networkDiagnostic))")
             state = .failed(error.userMessage)
         } catch {
             Log.ui.error("HomeViewModel load unexpected: \(String(describing: type(of: error)))")

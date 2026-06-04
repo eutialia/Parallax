@@ -22,9 +22,24 @@ final class LoginViewModel {
         self.sessionManager = sessionManager
     }
 
-    /// Returns true on successful sign-in. The caller decides what to do with
-    /// the success — dismiss the sheet if presented, or push the router to
-    /// .home if running as the root view.
+    /// Connect needs all three fields. (Jellyfin allows blank passwords, but the
+    /// form gates on a filled one as the user's explicit "I'm ready" signal.)
+    var canSubmitPassword: Bool {
+        hasServerURL
+            && !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !password.isEmpty
+    }
+
+    /// Quick Connect only needs to know which server to pair with.
+    var canUseQuickConnect: Bool { hasServerURL }
+
+    private var hasServerURL: Bool {
+        !serverURLInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Returns true on successful sign-in. The caller decides what to do with the
+    /// success — `LoginView` either drives the router (logged-out root) or runs the
+    /// `onSignedIn` closure (settings add-server flow).
     @discardableResult
     func signIn() async -> Bool {
         errorMessage = nil
