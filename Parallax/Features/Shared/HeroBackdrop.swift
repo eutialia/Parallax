@@ -1,9 +1,8 @@
 import SwiftUI
 import ParallaxJellyfin
 
-/// The Apple-TV / Infuse-style hero band shared by the Home featured hero and the
-/// movie/series detail header. It is built from two layers that deliberately share
-/// **no** modifiers, which is the whole point:
+/// The Apple-TV / Infuse-style hero band used by the movie/series detail header. It is
+/// built from two layers that deliberately share **no** modifiers, which is the whole point:
 ///
 ///  • **Backdrop** — full-bleed artwork flush to the detail column’s leading edge.
 ///    On iPad regular width it uses Apple’s `backgroundExtensionEffect()` (same approach
@@ -21,15 +20,15 @@ import ParallaxJellyfin
 /// the hero paint under the status bar / sidebar: the parent drops the top content
 /// inset, so this fixed-height band sits at y=0 and its artwork fills up to the screen
 /// edge. The band itself is deliberately a *stable* fixed height that reads no live
-/// geometry, so scrolling can't reflow it (an earlier `onGeometryChange`-driven
-/// `topBleed`/`offset` fed the safe-area inset back into the band's height, and because
-/// that inset varies with scroll offset it opened a rubber-band gap that snapped shut a
-/// frame later). Keep the hero flush to the leading edge (no horizontal padding on its
-/// container).
+/// geometry, so scrolling can't reflow it. Keep the hero flush to the leading edge
+/// (no horizontal padding on its container).
+///
+/// The recently-added Home hero is `HomeHeroCarousel` (a SwiftUI crossfade), not this band;
+/// both share `HeroMetrics` so their geometry stays in lockstep.
 struct HeroBackdrop<Backdrop: View, Foreground: View>: View {
     /// Fixed band height (~520–560pt per the design). A predictable height keeps the
     /// content below it starting on a stable line and the foreground rhythm consistent.
-    var height: CGFloat = 540
+    var height: CGFloat = HeroMetrics.height(regularWidth: true)
     @ViewBuilder var backdrop: () -> Backdrop
     @ViewBuilder var foreground: () -> Foreground
 
@@ -47,19 +46,28 @@ struct HeroBackdrop<Backdrop: View, Foreground: View>: View {
                 .allowsHitTesting(false)
 
             foreground()
-                .frame(maxWidth: Self.contentMaxWidth, alignment: .leading)
+                .frame(maxWidth: HeroMetrics.contentMaxWidth, alignment: .leading)
                 .modifier(HeroForegroundLegibility())
                 .safeAreaPadding(.horizontal, hSize == .regular ? Space.s40 : Space.s22)
                 .padding(.bottom, Space.s30)
         }
         .frame(height: height, alignment: .bottom)
     }
-
-    static var contentMaxWidth: CGFloat { 720 }
 }
 
-/// Keeps hero labels readable over bright artwork without a boxed background.
-private struct HeroForegroundLegibility: ViewModifier {
+/// Shared hero geometry so the Home `HomeHeroCarousel` and the detail `HeroBackdrop` can't
+/// drift apart. A plain namespace (not a static on the generic `HeroBackdrop`, which would
+/// force callers to spell out its two type parameters just to read a constant).
+enum HeroMetrics {
+    /// Readable column width for hero foreground content (title, meta, actions).
+    static let contentMaxWidth: CGFloat = 720
+    /// Band height by horizontal size class — taller on iPad regular width.
+    static func height(regularWidth: Bool) -> CGFloat { regularWidth ? 540 : 380 }
+}
+
+/// Keeps hero labels readable over bright artwork without a boxed background. Shared by the
+/// detail `HeroBackdrop` and the Home `HeroForeground` so the treatment stays identical.
+struct HeroForegroundLegibility: ViewModifier {
     func body(content: Content) -> some View {
         content
             .shadow(color: .black.opacity(0.7), radius: 2, x: 0, y: 1)

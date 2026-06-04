@@ -14,7 +14,6 @@ final class MovieDetailViewModel {
     private(set) var state: LoadState = .idle
     private(set) var isFavorite = false
     private(set) var isPlayed = false
-    private var favoriteInFlight = false
     private var playedInFlight = false
     private let repo: LibraryRepository
     private let itemID: ItemID
@@ -44,17 +43,18 @@ final class MovieDetailViewModel {
         }
     }
 
-    // The in-flight guard drops a second tap while a toggle is mid-request, and the
-    // catch reverts to the captured `original` (not `!target`) — under interleaving
-    // `!target` is stale and could leave the UI disagreeing with the server.
     func toggleFavorite() async {
-        guard !favoriteInFlight else { return }
-        favoriteInFlight = true
-        defer { favoriteInFlight = false }
         let original = isFavorite
         isFavorite = !original
-        do { try await repo.setFavorite(itemID: itemID, isFavorite: !original) }
-        catch { isFavorite = original; Log.ui.error("toggleFavorite failed: \(String(describing: type(of: error)))") }
+        switch await FavoriteToggle.perform(itemID: itemID, currentlyFavorite: original, via: repo) {
+        case .success(let server):
+            isFavorite = server.isFavorite
+        case .skipped:
+            isFavorite = original
+        case .failure(let error):
+            isFavorite = original
+            Log.ui.error("toggleFavorite failed: \(error.userMessage) (\(error.networkDiagnostic))")
+        }
     }
 
     func togglePlayed() async {

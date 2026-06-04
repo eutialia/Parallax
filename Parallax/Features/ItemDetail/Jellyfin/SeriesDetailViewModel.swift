@@ -17,7 +17,6 @@ final class SeriesDetailViewModel {
     private(set) var episodesLoading = false
     private(set) var isFavorite = false
     private(set) var resumeEpisode: Episode?
-    private var favoriteInFlight = false
 
     private let repo: LibraryRepository
     private let itemID: ItemID
@@ -58,13 +57,17 @@ final class SeriesDetailViewModel {
     }
 
     func toggleFavorite() async {
-        guard !favoriteInFlight else { return }
-        favoriteInFlight = true
-        defer { favoriteInFlight = false }
         let original = isFavorite
         isFavorite = !original
-        do { try await repo.setFavorite(itemID: itemID, isFavorite: !original) }
-        catch { isFavorite = original; Log.ui.error("series toggleFavorite failed: \(String(describing: type(of: error)))") }
+        switch await FavoriteToggle.perform(itemID: itemID, currentlyFavorite: original, via: repo) {
+        case .success(let server):
+            isFavorite = server.isFavorite
+        case .skipped:
+            isFavorite = original
+        case .failure(let error):
+            isFavorite = original
+            Log.ui.error("series toggleFavorite failed: \(error.userMessage) (\(error.networkDiagnostic))")
+        }
     }
 
     /// Mark the currently-selected season played (Jellyfin cascades to its episodes).

@@ -19,14 +19,14 @@ struct SeriesDetailView: View {
                 case .loaded(let sd, let seasons):
                     ScrollView {
                         VStack(alignment: .leading, spacing: Space.s22) {
-                            HeroBackdrop(height: hSize == .regular ? 540 : 380) {
+                            HeroBackdrop(height: HeroMetrics.height(regularWidth: hSize == .regular)) {
                                 JellyfinImage(
                                     ref: sd.series.imageRef(.backdrop(index: 0)),
                                     kind: .backdrop(index: 0),
                                     session: session,
                                     maxWidth: 1600,
                                     aspectRatio: JellyfinImage.landscape,
-                                    fillsProposedFrame: true
+                                    style: .fill
                                 )
                             } foreground: {
                                 VStack(alignment: .leading, spacing: Space.s12) {
@@ -38,15 +38,17 @@ struct SeriesDetailView: View {
                                     }
                                     HStack(spacing: Space.s12) {
                                         if let ep = vm.resumeEpisode {
-                                            PrimaryPlayButton(title: resumeLabel(ep), fillWidth: false) {
+                                            PrimaryPlayButton(
+                                                title: resumeLabel(ep),
+                                                fillWidth: false,
+                                                layoutReserveTitle: ItemPlayButtonLabel.layoutReserveTitle
+                                            ) {
                                                 playback.play(ep.id, in: session)
                                             }
                                         }
-                                        CircleGlassButton(
-                                            systemImage: vm.isFavorite ? "heart.fill" : "heart",
-                                            isActive: vm.isFavorite,
-                                            accessibilityLabel: "Favorite"
-                                        ) { Task { await vm.toggleFavorite() } }
+                                        FavoriteActionButton(isFavorite: vm.isFavorite) {
+                                            Task { await vm.toggleFavorite() }
+                                        }
                                     }
                                     .padding(.top, Space.s8)
                                 }

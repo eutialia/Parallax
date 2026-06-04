@@ -19,14 +19,14 @@ struct MovieDetailView: View {
                 case .loaded(let md):
                     ScrollView {
                         VStack(alignment: .leading, spacing: Space.s18) {
-                            HeroBackdrop(height: hSize == .regular ? 540 : 380) {
+                            HeroBackdrop(height: HeroMetrics.height(regularWidth: hSize == .regular)) {
                                 JellyfinImage(
                                     ref: md.movie.imageRef(.backdrop(index: 0)),
                                     kind: .backdrop(index: 0),
                                     session: session,
                                     maxWidth: 1600,
                                     aspectRatio: JellyfinImage.landscape,
-                                    fillsProposedFrame: true
+                                    style: .fill
                                 )
                             } foreground: {
                                 VStack(alignment: .leading, spacing: Space.s12) {
@@ -37,14 +37,16 @@ struct MovieDetailView: View {
                                         Text(sub).font(.subheadline).foregroundStyle(.white.opacity(0.85))
                                     }
                                     HStack(spacing: Space.s12) {
-                                        PrimaryPlayButton(title: "Play", fillWidth: false) {
+                                        PrimaryPlayButton(
+                                            title: "Play",
+                                            fillWidth: false,
+                                            layoutReserveTitle: ItemPlayButtonLabel.layoutReserveTitle
+                                        ) {
                                             playerItem = .movie(md)
                                         }
-                                        CircleGlassButton(
-                                            systemImage: vm.isFavorite ? "heart.fill" : "heart",
-                                            isActive: vm.isFavorite,
-                                            accessibilityLabel: "Favorite"
-                                        ) { Task { await vm.toggleFavorite() } }
+                                        FavoriteActionButton(isFavorite: vm.isFavorite) {
+                                            Task { await vm.toggleFavorite() }
+                                        }
                                         CircleGlassButton(
                                             systemImage: vm.isPlayed ? "checkmark.circle.fill" : "checkmark.circle",
                                             isActive: vm.isPlayed,

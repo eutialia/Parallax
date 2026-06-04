@@ -8,15 +8,23 @@ struct JellyfinImage: View {
     let session: Session
     let maxWidth: Int
     let aspectRatio: CGFloat
-    /// When true the image fills the frame the CALLER proposes (`scaledToFill` +
-    /// clip) instead of imposing its own aspect-ratio box. The full-bleed hero band
-    /// uses this to fill a fixed-height strip; grids/rows keep the default aspect box
-    /// (which pins uniform cell sizes regardless of image-load state — see below).
-    let fillsProposedFrame: Bool
+    let style: Style
 
     static let poster: CGFloat = 2.0 / 3.0
     static let landscape: CGFloat = 16.0 / 9.0
     static let banner: CGFloat = 1000.0 / 185.0
+
+    /// How the image sizes and backs its frame. One value picks the whole layout path
+    /// (sizing + content mode + background) instead of inferring it from a flag combo.
+    enum Style {
+        /// Default: impose an `aspectRatio` box, gray placeholder, fill + crop. Grids and rows.
+        case boxed
+        /// Fill the caller's proposed frame edge-to-edge, gray placeholder, fill + crop. Hero
+        /// bands — so `backgroundExtensionEffect` samples to the edges with no letterboxing.
+        case fill
+        /// Letterbox-fit over a transparent background, leading-aligned. Transparent title logos.
+        case logo
+    }
 
     init(
         ref: ImageRef?,
@@ -24,39 +32,48 @@ struct JellyfinImage: View {
         session: Session,
         maxWidth: Int,
         aspectRatio: CGFloat = 2.0 / 3.0,
-        fillsProposedFrame: Bool = false
+        style: Style = .boxed
     ) {
         self.ref = ref
         self.kind = kind
         self.session = session
         self.maxWidth = maxWidth
         self.aspectRatio = aspectRatio
-        self.fillsProposedFrame = fillsProposedFrame
+        self.style = style
     }
 
     var body: some View {
-        // The cell size derives from the proposed WIDTH and the aspect ratio
-        // alone — never from the loaded image's intrinsic size. The old
-        // `.aspectRatio(.fill)` over a flexible ZStack let a loaded image leak
-        // its natural dimensions into layout: grid/row cells grew row-to-row
-        // once the image arrived and overflowed their column, swallowing the
-        // inter-item spacing (device smoke-test #6/#7). Pin the box first, then
-        // fill it with the image and clip the overflow — every cell stays
-        // uniform regardless of image-load state.
-        let base = Color(white: 0.15)
-            .overlay {
-                if let ref, let url = ImageURLBuilder.url(serverURL: session.serverURL, ref: ref, maxWidth: maxWidth) {
-                    LazyImageRenderer(url: url, session: session)
-                }
-            }
-        if fillsProposedFrame {
-            // Caller owns the frame (e.g. a fixed-height hero band): fill the proposed
-            // box so backgroundExtensionEffect samples edge-to-edge (no letterboxing).
-            base
+        switch style {
+        case .logo:
+            // Transparent PNG over a backdrop: no placeholder fill, fit + leading.
+            Color.clear
+                .overlay(alignment: .leading) { imageOverlay }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        case .fill:
+            // Caller owns the frame (e.g. a fixed-height hero band): fill the proposed box.
+            placeholder
+                .overlay { imageOverlay }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .clipped()
-        } else {
-            base.aspectRatio(aspectRatio, contentMode: .fit).clipped()
+        case .boxed:
+            // The cell size derives from the proposed WIDTH and the aspect ratio alone —
+            // never from the loaded image's intrinsic size. Otherwise a loaded image leaks
+            // its natural dimensions into layout and grid/row cells grow once the image
+            // arrives, swallowing inter-item spacing. Pin the box, fill it, clip the
+            // overflow — every cell stays uniform regardless of image-load state.
+            placeholder
+                .overlay { imageOverlay }
+                .aspectRatio(aspectRatio, contentMode: .fit)
+                .clipped()
+        }
+    }
+
+    private var placeholder: Color { Color(white: 0.15) }
+
+    @ViewBuilder
+    private var imageOverlay: some View {
+        if let ref, let url = ImageURLBuilder.url(serverURL: session.serverURL, ref: ref, maxWidth: maxWidth) {
+            LazyImageRenderer(url: url, session: session, contentMode: style == .logo ? .fit : .fill)
         }
     }
 }
@@ -67,6 +84,7 @@ struct JellyfinImage: View {
 private struct LazyImageRenderer: View {
     let url: URL
     let session: Session
+    var contentMode: ContentMode = .fill
 
     @Environment(AppDependencies.self) private var deps
     @State private var pipeline: ImagePipeline?
@@ -76,7 +94,7 @@ private struct LazyImageRenderer: View {
             if let pipeline {
                 LazyImage(url: url) { state in
                     if let image = state.image {
-                        image.resizable().scaledToFill()
+                        image.resizable().aspectRatio(contentMode: contentMode)
                     }
                 }
                 .pipeline(pipeline)

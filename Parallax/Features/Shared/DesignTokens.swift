@@ -48,6 +48,8 @@ extension Color {
     static let glassBorder        = Color(light: 0xFFFDF7, lightAlpha: 0.80, dark: 0xFFFFFF, darkAlpha: 0.14)
     static let glassHighlight     = Color(light: 0xFFFFFF, lightAlpha: 0.95, dark: 0xFFFFFF, darkAlpha: 0.22)
 
+    // Bright pill in dark mode (white fill / ink label), dark pill in light mode
+    // (espresso fill / cream label) — used everywhere including over hero photography.
     static let buttonFill         = Color(light: 0x2A241D, dark: 0xFFFFFF)
     static let buttonLabel        = Color(light: 0xF7F2EA, dark: 0x0A0A0C)
     static let chipSelectedFill   = Color(light: 0x2A241D, dark: 0xFFFFFF, darkAlpha: 0.92)
