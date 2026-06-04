@@ -13,6 +13,10 @@ struct HomeView: View {
             content
         }
         .scrollClipDisabled(true)
+        // Suppress iOS 26's automatic top scroll-edge fade — the hero paints flush under the
+        // status bar (`.ignoresSafeArea(.top)`), so the soft edge effect reads as a stray fade
+        // on the artwork. Matches the movie/series detail screens.
+        .scrollEdgeEffectHidden(true, for: .top)
         // Fill the detail width even while the loading state's content is small —
         // otherwise on a cold launch the ScrollView collapses to its content's ideal
         // width (~100pt for the loading spinner) until a later layout pass, showing a

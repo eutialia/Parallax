@@ -66,7 +66,16 @@ struct HomeHeroCarousel: View {
             .padding(.bottom, Space.s12)
         }
         .contentShape(Rectangle())
-        .gesture(dragGesture(width: width), including: count > 1 ? .all : .subviews)
+        // A horizontal-only UIKit pan: vertical swipes fall through to the Home ScrollView,
+        // taps fall through to the Play/Favorite buttons. (A SwiftUI DragGesture can't do
+        // both inside a ScrollView on iOS 18+.) No-op for a lone item.
+        .gesture(
+            HorizontalPanGesture(
+                onChanged: { panChanged(translationX: $0, width: width) },
+                onEnded: { panEnded(translationX: $0, velocityX: $1, width: width) },
+                isEnabled: count > 1
+            )
+        )
     }
 
     private func foregroundLayer(page: Int) -> some View {
@@ -85,25 +94,26 @@ struct HomeHeroCarousel: View {
         .padding(.bottom, Space.s30)
     }
 
-    private func dragGesture(width: CGFloat) -> some Gesture {
-        DragGesture(minimumDistance: 10)
-            .onChanged { value in
-                let start = gestureStart ?? position
-                gestureStart = start
-                // Hide the foreground the moment the drag begins — any travel, not
-                // distance-based. It stays hidden until release fades the page back in.
-                if !isDragging { withAnimation(.easeOut(duration: 0.15)) { isDragging = true } }
-                // Clamp to ±1 page: one drag crossfades between exactly two items.
-                let raw = start - Double(value.translation.width) / Double(width)
-                position = min(start + 1, max(start - 1, raw))
-            }
-            .onEnded { value in
-                let start = gestureStart ?? position
-                gestureStart = nil
-                // Project with velocity so a flick commits; one page per gesture.
-                let projected = start - Double(value.predictedEndTranslation.width) / Double(width)
-                commit(to: Int(min(start + 1, max(start - 1, projected.rounded()))))
-            }
+    private func panChanged(translationX: CGFloat, width: CGFloat) {
+        let start = gestureStart ?? position
+        gestureStart = start
+        // Hide the foreground the moment the drag begins — any travel, not distance-based.
+        // It stays hidden until release fades the page back in.
+        if !isDragging { withAnimation(.easeOut(duration: 0.15)) { isDragging = true } }
+        position = clampedPage(start - Double(translationX) / Double(width), around: start)
+    }
+
+    private func panEnded(translationX: CGFloat, velocityX: CGFloat, width: CGFloat) {
+        let start = gestureStart ?? position
+        gestureStart = nil
+        // Project with velocity so a flick commits (UIScrollView-style); one page per gesture.
+        let projectedX = translationX + velocityX * 0.3
+        commit(to: Int(clampedPage(start - Double(projectedX) / Double(width), around: start).rounded()))
+    }
+
+    /// One drag or flick moves at most one page: clamp the target to ±1 around where it began.
+    private func clampedPage(_ raw: Double, around start: Double) -> Double {
+        min(start + 1, max(start - 1, raw))
     }
 
     /// Settle on `target`: spring the artwork there, and show the foreground for that page —
