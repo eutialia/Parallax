@@ -15,7 +15,7 @@ struct MovieDetailView: View {
             if let vm = viewModel {
                 switch vm.state {
                 case .idle, .loading:
-                    ProgressView().padding(40)
+                    DetailLoadingSkeleton()
                 case .loaded(let md):
                     ScrollView {
                         VStack(alignment: .leading, spacing: Space.s18) {
@@ -87,7 +87,7 @@ struct MovieDetailView: View {
                     )
                 }
             } else {
-                ProgressView().padding(40)
+                DetailLoadingSkeleton()
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

@@ -13,7 +13,7 @@ struct JellyfinLibraryListView: View {
             if let vm = viewModel {
                 switch vm.state {
                 case .idle, .loading:
-                    ProgressView().padding(40)
+                    LibraryListLoadingPlaceholder()
                 case .loaded:
                     ScrollView {
                         let cols = hSize == .regular ? 3 : 2
@@ -36,7 +36,7 @@ struct JellyfinLibraryListView: View {
                     )
                 }
             } else {
-                ProgressView().padding(40)
+                LibraryListLoadingPlaceholder()
             }
         }
         .navigationDestination(for: MediaCollection.self) { coll in

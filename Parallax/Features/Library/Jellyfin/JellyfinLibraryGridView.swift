@@ -17,7 +17,7 @@ struct JellyfinLibraryGridView: View {
             if let vm = viewModel {
                 gridContent(vm: vm)
             } else {
-                ProgressView().padding(40)
+                libraryGridLoadingPlaceholder
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -49,7 +49,7 @@ struct JellyfinLibraryGridView: View {
     @ViewBuilder
     private func gridContent(vm: JellyfinLibraryGridViewModel) -> some View {
         if (vm.state == .idle || vm.state == .loading) && vm.items.isEmpty {
-            ProgressView().padding(40)
+            libraryGridLoadingPlaceholder
         } else if case .failed(let message) = vm.state, vm.items.isEmpty {
             ContentUnavailableView(
                 "Couldn't load library",
@@ -73,11 +73,25 @@ struct JellyfinLibraryGridView: View {
                         ItemNavigator(item: item, session: session) { tile(for: item) }
                     }
                     if vm.isLoadingMore {
-                        ProgressView().padding()
+                        AdaptivePosterGridLoadingSkeleton(tileCount: 3)
+                            .padding(.vertical, Space.s12)
                     }
                 }
                 .contentMargins(.horizontal, AppLayout.contentHMargin, for: .scrollContent)
             }
+        }
+    }
+
+    /// Full-screen first-load placeholder: genre-pill row above a poster-grid skeleton,
+    /// laid out to match the loaded grid so content doesn't shift in when it arrives.
+    private var libraryGridLoadingPlaceholder: some View {
+        VStack(spacing: 0) {
+            genrePlaceholder
+            ScrollView {
+                AdaptivePosterGridLoadingSkeleton(tileCount: 12)
+            }
+            .scrollDisabled(true)
+            .contentMargins(.horizontal, AppLayout.contentHMargin, for: .scrollContent)
         }
     }
 

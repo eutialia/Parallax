@@ -15,7 +15,7 @@ struct SeriesDetailView: View {
             if let vm = viewModel {
                 switch vm.state {
                 case .idle, .loading:
-                    ProgressView().padding(40)
+                    DetailLoadingSkeleton()
                 case .loaded(let sd, let seasons):
                     ScrollView {
                         VStack(alignment: .leading, spacing: Space.s22) {
@@ -76,7 +76,7 @@ struct SeriesDetailView: View {
                     ContentUnavailableView("Couldn't load this series", systemImage: "exclamationmark.triangle", description: Text(message))
                 }
             } else {
-                ProgressView().padding(40)
+                DetailLoadingSkeleton()
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -118,7 +118,7 @@ struct SeriesDetailView: View {
     @ViewBuilder
     private func episodeList(vm: SeriesDetailViewModel) -> some View {
         if vm.episodesLoading {
-            ProgressView().padding(.vertical, Space.s22).frame(maxWidth: .infinity)
+            EpisodeListLoadingSkeleton()
         } else {
             VStack(spacing: 0) {
                 ForEach(vm.episodes) { ep in
