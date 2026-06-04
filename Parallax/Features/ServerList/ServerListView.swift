@@ -12,6 +12,16 @@ struct ServerListView: View {
     var body: some View {
         content
             .navigationTitle("Servers")
+            // Registered on the always-present container (not gated on the loaded vm)
+            // so a footer-initiated push from RootTabView resolves even before the
+            // list's view model finishes loading.
+            .navigationDestination(for: Session.self) { session in
+                if let vm = viewModel {
+                    ServerSettingsView(session: session, vm: vm)
+                } else {
+                    ProgressView()
+                }
+            }
             .background(Color.background)
             .task {
                 // Build + refresh together inside the guard so the .task re-firing
@@ -84,47 +94,38 @@ struct ServerListView: View {
 
     @ViewBuilder
     private func serverCard(_ session: Session, vm: ServerListViewModel) -> some View {
-        HStack(spacing: Space.s14) {
-            // The card body (tap to make active) is its own Button so it doesn't
-            // compete with the trailing Menu's gesture — a card-wide onTapGesture
-            // would swallow the ellipsis tap and switch servers instead.
-            Button {
-                Task { await vm.setActive(session.id) }
-            } label: {
-                HStack(spacing: Space.s14) {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color.fill)
-                        .frame(width: 44, height: 44)
-                        .overlay { Image(systemName: "server.rack").foregroundStyle(Color.label) }
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(session.serverName).font(.headline).foregroundStyle(Color.label)
-                        Text(session.serverURL.host ?? session.serverURL.absoluteString)
-                            .font(.caption).foregroundStyle(Color.secondaryLabel).lineLimit(1)
-                        Text(session.user.name).font(.caption2).foregroundStyle(Color.tertiaryLabel)
-                    }
-                    Spacer(minLength: 0)
-                    if session.id == vm.activeID {
-                        HStack(spacing: 5) {
-                            Circle().fill(.green).frame(width: 8, height: 8)
-                            Text("Active").font(.caption).foregroundStyle(Color.secondaryLabel)
-                        }
+        let host = session.serverURL.host() ?? session.serverURL.absoluteString
+        let isActive = session.id == vm.activeID
+        let a11yBase = "\(session.serverName), \(host), \(session.user.name)"
+        // The whole card pushes the server's settings page (make-active / sign-out now
+        // live there). The active server keeps its green status pill for a quick glance.
+        NavigationLink(value: session) {
+            HStack(spacing: Space.s14) {
+                IconTile(systemImage: "server.rack", size: 44, cornerRadius: 10, glyphSize: 18, glyphWeight: .regular)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(session.serverName).font(.headline).foregroundStyle(Color.label)
+                    Text(host)
+                        .font(.caption).foregroundStyle(Color.secondaryLabel).lineLimit(1)
+                    Text(session.user.name).font(.caption2).foregroundStyle(Color.tertiaryLabel)
+                }
+                Spacer(minLength: 0)
+                if isActive {
+                    HStack(spacing: 5) {
+                        Circle().fill(.green).frame(width: 8, height: 8)
+                        Text("Active").font(.caption).foregroundStyle(Color.secondaryLabel)
                     }
                 }
-                .contentShape(.rect)
+                Image(systemName: "chevron.right")
+                    .scaledFont(13, relativeTo: .footnote, weight: .semibold)
+                    .foregroundStyle(Color.tertiaryLabel)
             }
-            .buttonStyle(.plain)
-
-            Menu {
-                if session.id != vm.activeID {
-                    Button("Make Active") { Task { await vm.setActive(session.id) } }
-                }
-                Button("Sign Out", role: .destructive) { Task { await vm.signOut(session) } }
-            } label: {
-                Image(systemName: "ellipsis")
-                    .foregroundStyle(Color.secondaryLabel)
-                    .frame(width: 32, height: 32).contentShape(.rect)
-            }
+            .contentShape(.rect)
         }
+        .buttonStyle(.plain)
+        // One self-describing element with a navigation hint (the chevron is decorative
+        // and the "Active" pill would otherwise read as a loose trailing word).
+        .accessibilityLabel(isActive ? "\(a11yBase), active server" : a11yBase)
+        .accessibilityHint("Opens server settings")
         .padding(Space.s14)
         .glassPanel(cornerRadius: Radius.card)
     }

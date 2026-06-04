@@ -8,6 +8,11 @@ struct RootTabView: View {
     @State private var selectedTab: AppTab = .home
     @State private var session: Session?
     @State private var libraries: [MediaCollection] = []
+    /// Navigation path for the Servers tab's stack. Owned here (not inside
+    /// `ServerListView`) so the sidebar account footer — which lives in the tab-view
+    /// chrome, outside every per-tab `NavigationStack` — can push a server's settings
+    /// page by switching to the Servers tab and setting this path.
+    @State private var serversPath: [Session] = []
 
     enum AppTab: Hashable {
         case home, library, search, servers
@@ -36,8 +41,9 @@ struct RootTabView: View {
                     ForEach(libraries) { library in
                         Tab(library.name, systemImage: icon(for: library.collectionType), value: AppTab.collection(library.id)) {
                             NavigationStack {
-                                JellyfinLibraryGridView(collectionID: library.id, session: session)
-                                    .navigationTitle(library.name)
+                                // Title is owned by the grid (from the collection) so
+                                // this matches the Library-list drill-down exactly.
+                                JellyfinLibraryGridView(collection: library, session: session)
                             }
                         }
                         // Sidebar-only: don't also crowd the collapsed top tab bar with
@@ -49,7 +55,7 @@ struct RootTabView: View {
             }
 
             Tab("Servers", systemImage: "server.rack", value: AppTab.servers) {
-                NavigationStack { ServerListView() }
+                NavigationStack(path: $serversPath) { ServerListView() }
             }
         }
         .tabViewStyle(.sidebarAdaptable)
@@ -85,35 +91,68 @@ struct RootTabView: View {
                 .foregroundStyle(Color.label)
             Spacer(minLength: 0)
         }
-        .padding(.vertical, Space.s8)
+        // The header is the first row BELOW the system sidebar collapse toggle — the
+        // toggle owns the nav-bar band and `tabViewSidebarHeader` content can't enter
+        // it (no public API on a `.sidebarAdaptable` sidebar; only NavigationSplitView
+        // exposes that toolbar, which the project forbids as a root). Inset the leading
+        // edge to line up with the tab-row labels and give it room to read as a
+        // deliberate brand row rather than a cell jammed under the toggle.
+        .padding(.horizontal, Space.s12)
+        .padding(.top, Space.s8)
+        .padding(.bottom, Space.s12)
     }
 
     /// Pinned account footer (avatar · name · server) — the design's sidebar foot.
+    /// Tapping it opens this server's settings page.
     @ViewBuilder
     private var userFooter: some View {
         if let session {
-            HStack(spacing: Space.s12) {
-                Circle()
-                    .fill(Color.fill)
-                    .frame(width: 34, height: 34)
-                    .overlay {
-                        Text(initial(session.user.name))
+            let host = session.serverURL.host() ?? session.serverName
+            Button {
+                // The footer lives in the tab-view chrome, outside the per-tab stacks,
+                // so navigate by switching to the Servers tab and pushing the settings
+                // page onto its path directly.
+                selectedTab = .servers
+                serversPath = [session]
+            } label: {
+                HStack(spacing: Space.s12) {
+                    Circle()
+                        .fill(Color.fill)
+                        .frame(width: 34, height: 34)
+                        .overlay {
+                            Text(initial(session.user.name))
+                                // Fixed so the initial stays inside the 34pt circle at
+                                // large Dynamic Type sizes.
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(Color.label)
+                        }
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(session.user.name)
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(Color.label)
+                            .lineLimit(1)
+                        Text(host)
+                            .font(.caption)
+                            .foregroundStyle(Color.secondaryLabel)
+                            .lineLimit(1)
                     }
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(session.user.name)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(Color.label)
-                        .lineLimit(1)
-                    Text(session.serverURL.host() ?? session.serverName)
-                        .font(.caption)
-                        .foregroundStyle(Color.secondaryLabel)
-                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right")
+                        .scaledFont(13, relativeTo: .footnote, weight: .semibold)
+                        .foregroundStyle(Color.tertiaryLabel)
                 }
-                Spacer(minLength: 0)
+                // Inset to align the avatar's leading edge with the sidebar tab-row
+                // labels (the system insets the row pills; the bottom-bar closure is
+                // handed the full sidebar width, so without this it butts the glass edge).
+                .padding(.horizontal, Space.s12)
+                .padding(.vertical, Space.s8)
+                .contentShape(.rect)
             }
-            .padding(.vertical, Space.s8)
+            .buttonStyle(.plain)
+            // Explicit label (replaces the children-derived one, which leaked the avatar
+            // initial) + a hint, since the chevron is the only sighted "opens settings" cue.
+            .accessibilityLabel("\(session.user.name), \(host)")
+            .accessibilityHint("Opens server settings")
         }
     }
 
