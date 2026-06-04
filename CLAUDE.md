@@ -2,7 +2,9 @@
 
 Jellyfin (primary) + SMB/local (v2) media player, **Apple platforms only** — iOS/iPadOS first (single `iphoneos` target), tvOS later; macOS/visionOS out of scope. App = `Parallax.xcodeproj`; all logic in local SwiftPM packages under `Packages/` (`ParallaxCore` no-deps, `ParallaxJellyfin`, `ParallaxFileBrowse`, `ParallaxPlayback`). Deeper scope lives in Claude memory.
 
-## Xcode MCP — preferred build/test/diagnose loop
+## Xcode MCP — query it for ground truth, don't reason from memory
+
+**On every Swift/SwiftUI change, the Xcode MCP is your source of truth — not recall.** Swift 6.2 / iOS 26 APIs move fast and trained knowledge is stale: `DocumentationSearch` any Apple API you're not certain of *before* writing it, and after *every* edit run `XcodeRefreshCodeIssuesInFile` (or `BuildProject`+`GetBuildLog`) for real compiler diagnostics instead of eyeballing. The MCP's output overrides your guess.
 
 Apple's Xcode MCP (`xcode` = `xcrun mcpbridge`) is wired in. **When Xcode is open on Parallax, use it instead of `xcodebuild`** — it drives the running Xcode and reuses its build+index (structured results, real diagnostics, no second indexer). `swift-lsp`/`sourcekit-lsp` is **disabled on purpose** (re-indexed the whole graph every session for nothing); `XcodeRefreshCodeIssuesInFile` replaces it — **don't re-enable it**.
 
@@ -33,5 +35,6 @@ Schemes: `Parallax` (app), `ParallaxCore`, `ParallaxFileBrowse`, `ParallaxJellyf
 - **Packages import no SwiftUI/Combine:** state crosses as `AsyncStream<PlaybackState>`, wrapped `@Observable @MainActor` in the app. Playback is URL-agnostic: `play(url:headers:hints:)`.
 - **Navigation:** iPad = `TabView` `.tabViewStyle(.sidebarAdaptable)` + `TabSection` (iPadOS 26 side panel, like Music/Apple TV); iPhone = bottom `TabView`; **never** a fixed-column `NavigationSplitView` root; drill-downs use `NavigationStack`.
 - **Skills first:** before SwiftUI work or review, read & apply this repo's `.claude/skills/` (`swiftui-pro`, `apple-platform-references`).
+- **MCP first, not memory:** any Swift/SwiftUI work starts by querying the Xcode MCP for ground truth — `DocumentationSearch` for unfamiliar Apple APIs, `XcodeRefreshCodeIssuesInFile`/`BuildProject` to verify after editing. Apple-API analog of the context7-before-coding rule; don't guess from recall.
 - **Function before polish:** don't block functional work on rough layout; note UI debt, move on.
 - **Commits:** conventional; understand the diff. After a fix, **wait for the user's sim/device confirmation** before committing (clean build ≠ approval); commit/push only when asked.
