@@ -22,7 +22,7 @@ struct JellyfinLibraryListView: View {
                             spacing: Space.s12
                         ) {
                             ForEach(vm.collections.filter { isSupported($0.collectionType) }) { coll in
-                                NavigationLink(value: coll.id) { libraryCard(coll) }
+                                NavigationLink(value: coll) { libraryCard(coll) }
                                     .buttonStyle(.plain)
                             }
                         }
@@ -39,8 +39,8 @@ struct JellyfinLibraryListView: View {
                 ProgressView().padding(40)
             }
         }
-        .navigationDestination(for: CollectionID.self) { id in
-            JellyfinLibraryGridView(collectionID: id, session: session)
+        .navigationDestination(for: MediaCollection.self) { coll in
+            JellyfinLibraryGridView(collection: coll, session: session)
         }
         .task {
             if viewModel == nil {

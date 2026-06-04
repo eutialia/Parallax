@@ -2,7 +2,7 @@ import SwiftUI
 import ParallaxJellyfin
 
 struct JellyfinLibraryGridView: View {
-    let collectionID: CollectionID
+    let collection: MediaCollection
     let session: Session
 
     @Environment(AppDependencies.self) private var deps
@@ -22,6 +22,13 @@ struct JellyfinLibraryGridView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.background)
+        // The grid owns its own title (the library name) so BOTH entry points — the
+        // sidebar's direct library tab and the Library-list drill-down — show it
+        // identically, without each call site re-specifying it. Inline so the name
+        // shares the bar row with the sort/filter button instead of dropping to its
+        // own large-title row.
+        .navigationTitle(collection.name)
+        .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 if let vm = viewModel {
@@ -33,7 +40,7 @@ struct JellyfinLibraryGridView: View {
         .task {
             if viewModel == nil {
                 let repo = await deps.libraryRepoFactory(session)
-                viewModel = JellyfinLibraryGridViewModel(repo: repo, collectionID: collectionID)
+                viewModel = JellyfinLibraryGridViewModel(repo: repo, collectionID: collection.id)
                 await viewModel?.load()
             }
         }
