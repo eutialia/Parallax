@@ -168,9 +168,9 @@ struct LibraryListLoadingSkeleton: View {
             columns: Array(repeating: GridItem(.flexible(), spacing: Space.s12), count: columns),
             spacing: Space.s12
         ) {
-            ForEach(0..<(columns * 2), id: \.self) { _ in
+            ForEach(0..<(columns * 3), id: \.self) { _ in
                 SkeletonBlock(cornerRadius: Radius.card)
-                    .aspectRatio(2.0 / 3.0, contentMode: .fit)
+                    .aspectRatio(JellyfinImage.landscape, contentMode: .fit)
             }
         }
         .padding(Space.s18)
@@ -186,7 +186,7 @@ struct LibraryListLoadingPlaceholder: View {
 
     var body: some View {
         ScrollView {
-            LibraryListLoadingSkeleton(columns: hSize == .regular ? 3 : 2)
+            LibraryListLoadingSkeleton(columns: hSize == .regular ? 2 : 1)
         }
         .scrollDisabled(true)
     }

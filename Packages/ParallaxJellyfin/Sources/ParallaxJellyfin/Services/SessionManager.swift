@@ -186,7 +186,12 @@ public actor SessionManager {
             id: ServerID(rawValue: serverID),
             serverURL: server,
             serverName: serverName,
-            user: UserSnapshot(id: userID, name: userName, serverLastUpdatedAt: user.lastActivityDate)
+            user: UserSnapshot(
+                id: userID,
+                name: userName,
+                primaryImageTag: user.primaryImageTag,
+                serverLastUpdatedAt: user.lastActivityDate
+            )
         )
         return Session(persisted: persisted, accessToken: accessToken)
     }

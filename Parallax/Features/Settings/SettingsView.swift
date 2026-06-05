@@ -95,7 +95,7 @@ struct SettingsView: View {
     /// Active-account identity at the top of the panel (avatar · name · host).
     private func accountHeader(_ session: Session) -> some View {
         HStack(spacing: Space.s14) {
-            AccountAvatar(name: session.user.name, size: 52)
+            AccountAvatar(session: session, size: 52)
             VStack(alignment: .leading, spacing: 3) {
                 Text(session.user.name)
                     .font(.title3.weight(.bold))

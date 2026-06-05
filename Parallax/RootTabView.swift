@@ -37,7 +37,7 @@ struct RootTabView: View {
             if hSize == .regular, let session, !libraries.isEmpty {
                 TabSection("Libraries") {
                     ForEach(libraries) { library in
-                        Tab(library.name, systemImage: icon(for: library.collectionType), value: AppTab.collection(library.id)) {
+                        Tab(library.name, systemImage: library.collectionType.symbolName, value: AppTab.collection(library.id)) {
                             NavigationStack {
                                 // Title is owned by the grid (from the collection) so
                                 // this matches the Library-list drill-down exactly.
@@ -82,6 +82,9 @@ struct RootTabView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 accountButton(session)
             }
+            // The avatar is already a circle; the system's shared Liquid Glass capsule was
+            // wrapping it into an oval "bordered" pill. Drop it so the avatar floats round.
+            .sharedBackgroundVisibility(.hidden)
         }
     }
 
@@ -89,7 +92,7 @@ struct RootTabView: View {
         Button {
             router.presentingSettings = true
         } label: {
-            AccountAvatar(name: session.user.name, size: 30)
+            AccountAvatar(session: session, size: 36)
         }
         .accessibilityLabel("Account and settings")
         .accessibilityHint("Opens settings")
@@ -107,7 +110,7 @@ struct RootTabView: View {
                 router.presentingSettings = true
             } label: {
                 HStack(spacing: Space.s12) {
-                    AccountAvatar(name: session.user.name, size: 34)
+                    AccountAvatar(session: session, size: 34)
                     VStack(alignment: .leading, spacing: 1) {
                         Text(session.user.name)
                             .font(.subheadline.weight(.semibold))
@@ -120,10 +123,11 @@ struct RootTabView: View {
                     }
                     Spacer(minLength: 0)
                 }
-                // Inset to align the avatar's leading edge with the sidebar tab-row
-                // labels (the system insets the row pills; the bottom-bar closure is
-                // handed the full sidebar width, so without this it butts the glass edge).
-                .padding(.horizontal, Space.s12)
+                // Aligns the footer under the sidebar tab-row glyphs. One shared knob
+                // (`AppLayout.sidebarLeadingInset`) so every custom sidebar element keeps
+                // the same left spacing as the rows — see AppLayout for why it's manual.
+                .padding(.leading, AppLayout.sidebarLeadingInset)
+                .padding(.trailing, Space.s12)
                 .padding(.vertical, Space.s8)
                 .contentShape(.rect)
             }
@@ -132,20 +136,6 @@ struct RootTabView: View {
             // initial) + a hint that this opens settings.
             .accessibilityLabel("\(session.user.name), \(host)")
             .accessibilityHint("Opens settings")
-        }
-    }
-
-    /// SF Symbol for a library, by Jellyfin collection type.
-    private func icon(for type: CollectionType) -> String {
-        switch type {
-        case .movies: return "film"
-        case .tvShows: return "tv"
-        case .other(let raw):
-            let kind = raw.lowercased()
-            if kind.contains("music") { return "music.note" }
-            if kind.contains("book") { return "books.vertical" }
-            if kind.contains("photo") || kind.contains("home") { return "photo" }
-            return "rectangle.stack"
         }
     }
 }

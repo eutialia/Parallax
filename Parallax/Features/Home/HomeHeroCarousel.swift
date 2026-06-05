@@ -71,7 +71,9 @@ struct HomeHeroCarousel: View {
                 onAdvance: { commit(to: displayedPage + 1) }
             )
             .frame(maxWidth: .infinity)
-            .padding(.bottom, Space.s12)
+            // iPhone's shorter hero crowds the dots against the Play/Favorite buttons, so
+            // drop them toward the artwork's bottom edge there; iPad's taller band is fine.
+            .padding(.bottom, regularWidth ? Space.s12 : Space.s3)
         }
         .contentShape(Rectangle())
         // A horizontal-only UIKit pan: vertical swipes fall through to the Home ScrollView,

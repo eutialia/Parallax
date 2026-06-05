@@ -14,4 +14,12 @@ import CoreGraphics
 enum AppLayout {
     /// Horizontal inset for primary scrollable content (grids, rows, sections).
     static let contentHMargin: CGFloat = 20
+
+    /// Leading inset for custom chrome inside the iPadOS sidebar — today just the account
+    /// footer. The `.tabViewSidebarBottomBar` closure is handed the full sidebar width with
+    /// no row-pill inset, and the system never exposes the inset it gives its own tab rows,
+    /// so custom content can't inherit it. This is the single knob that lines such content
+    /// up under the row glyphs: matched to the system rows by eye, tune here if the
+    /// on-device gap drifts. Any future sidebar header/footer should use this same value.
+    static let sidebarLeadingInset: CGFloat = 30
 }
