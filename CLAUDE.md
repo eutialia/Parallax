@@ -34,7 +34,7 @@ Schemes: `Parallax` (app), `ParallaxCore`, `ParallaxFileBrowse`, `ParallaxJellyf
 - **Zero platform drift:** `#if os(...)` only in app target `Parallax/`, never `Packages/` (pre-commit + CI enforced). UI may differ per platform; logic must not.
 - **Packages import no SwiftUI/Combine:** state crosses as `AsyncStream<PlaybackState>`, wrapped `@Observable @MainActor` in the app. Playback is URL-agnostic: `play(url:headers:hints:)`.
 - **Navigation:** iPad = `TabView` `.tabViewStyle(.sidebarAdaptable)` + `TabSection` (iPadOS 26 side panel, like Music/Apple TV); iPhone = bottom `TabView`; **never** a fixed-column `NavigationSplitView` root; drill-downs use `NavigationStack`.
-- **Skills first:** before SwiftUI work or review, read & apply this repo's `.claude/skills/` (`swiftui-pro`, `apple-platform-references`).
+- **Skills first:** read & apply `.claude/skills/` (`swiftui-pro`, `apple-platform-references`) before SwiftUI work — and run `swiftui-pro` again as a review pass *after* writing/changing SwiftUI, before committing.
 - **MCP first, not memory:** any Swift/SwiftUI work starts by querying the Xcode MCP for ground truth — `DocumentationSearch` for unfamiliar Apple APIs, `XcodeRefreshCodeIssuesInFile`/`BuildProject` to verify after editing. Apple-API analog of the context7-before-coding rule; don't guess from recall.
 - **Function before polish:** don't block functional work on rough layout; note UI debt, move on.
 - **Commits:** conventional; understand the diff. After a fix, **wait for the user's sim/device confirmation** before committing (clean build ≠ approval); commit/push only when asked.
