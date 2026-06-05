@@ -7,10 +7,19 @@ struct HomeView: View {
     @Environment(\.horizontalSizeClass) private var hSize
     @State private var viewModel: HomeViewModel?
     @State private var session: Session?
+    @State private var heroOverscroll: CGFloat = 0
 
     var body: some View {
         ScrollView {
             content
+        }
+        // Feed the hero its pull-down overscroll for the stretchy zoom. `contentOffset +
+        // contentInsets.top` is 0 at rest regardless of safe-area/nav-bar insets, so this
+        // self-calibrates — only a downward rubber-band past the top yields a positive value.
+        .onScrollGeometryChange(for: CGFloat.self) { geo in
+            max(0, -(geo.contentOffset.y + geo.contentInsets.top))
+        } action: { _, newValue in
+            heroOverscroll = newValue
         }
         .scrollClipDisabled(true)
         // Suppress iOS 26's automatic top scroll-edge fade — the hero paints flush under the
@@ -27,8 +36,12 @@ struct HomeView: View {
         // instead of letting tile imagery bleed through.
         .background(Color.background)
         .ignoresSafeArea(edges: .top)
-        .navigationTitle("Home")
-        .toolbar(.hidden, for: .navigationBar)
+        // Keep a (transparent, title-less) navigation bar rather than hiding it: the
+        // hero still bleeds under it via `ignoresSafeArea` + `scrollEdgeEffectHidden`,
+        // but the bar gives the pushed detail's back button a shared bar to cross-fade
+        // with. Without it (bar hidden) the zoom-transition back button has no
+        // counterpart and slides across the screen on dismiss.
+        .toolbarBackground(.hidden, for: .navigationBar)
         .itemZoomNavigation()
         .task(id: router.activeServerID) {
             // Skeleton-only until bootstrap sets `activeServerID` — avoids a fetch that
@@ -59,7 +72,8 @@ struct HomeView: View {
                         HomeHeroCarousel(
                             items: vm.recentlyAdded,
                             session: session,
-                            viewModel: vm
+                            viewModel: vm,
+                            overscroll: heroOverscroll
                         )
                     }
                     if !vm.continueWatching.isEmpty {
@@ -107,7 +121,6 @@ struct HomeView: View {
         ItemNavigator(item: item, session: session) {
             MediaTile(
                 title: item.displayTitle,
-                subtitle: nil,
                 imageRef: item.homeShelfImageRef,
                 imageKind: item.homeShelfImageKind,
                 session: session,

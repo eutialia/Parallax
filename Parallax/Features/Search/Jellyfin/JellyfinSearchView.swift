@@ -72,7 +72,7 @@ struct JellyfinSearchView: View {
                             gridSection("Shows", count: results.series.count, cols: posterCols) {
                                 ForEach(results.series) { s in
                                     ItemNavigator(item: .series(s), session: session) {
-                                        MediaTile(title: s.title, subtitle: s.year.map(String.init), imageRef: s.imageRef(.primary), imageKind: .primary, session: session, progress: nil, aspectRatio: JellyfinImage.poster, maxImageWidth: 400)
+                                        MediaTile(title: s.title, imageRef: s.imageRef(.primary), imageKind: .primary, session: session, progress: nil, aspectRatio: JellyfinImage.poster, maxImageWidth: 400)
                                     }
                                 }
                             }
@@ -81,7 +81,7 @@ struct JellyfinSearchView: View {
                             gridSection("Movies", count: results.movies.count, cols: posterCols) {
                                 ForEach(results.movies) { m in
                                     ItemNavigator(item: .movie(m), session: session) {
-                                        MediaTile(title: m.title, subtitle: m.year.map(String.init), imageRef: m.imageRef(.primary), imageKind: .primary, session: session, progress: nil, aspectRatio: JellyfinImage.poster, maxImageWidth: 400)
+                                        MediaTile(title: m.title, imageRef: m.imageRef(.primary), imageKind: .primary, session: session, progress: nil, aspectRatio: JellyfinImage.poster, maxImageWidth: 400)
                                     }
                                 }
                             }
@@ -90,7 +90,7 @@ struct JellyfinSearchView: View {
                             gridSection("Episodes", count: results.episodes.count, cols: landscapeCols) {
                                 ForEach(results.episodes) { e in
                                     Button { playback.play(e.id, in: session) } label: {
-                                        MediaTile(title: e.name, subtitle: e.seasonEpisodeLabel, imageRef: e.imageRef(.primary), imageKind: .primary, session: session, progress: nil, aspectRatio: JellyfinImage.landscape, maxImageWidth: 500)
+                                        MediaTile(title: e.name, imageRef: e.imageRef(.primary), imageKind: .primary, session: session, progress: nil, aspectRatio: JellyfinImage.landscape, maxImageWidth: 500)
                                     }.buttonStyle(.plain)
                                 }
                             }

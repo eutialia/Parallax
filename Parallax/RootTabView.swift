@@ -18,10 +18,10 @@ struct RootTabView: View {
     var body: some View {
         TabView(selection: $selectedTab) {
             Tab("Home", systemImage: "house", value: AppTab.home) {
-                // Home hides its nav bar for the full-bleed hero, so the compact account
-                // entry floats over the top-trailing corner instead of living in a toolbar.
-                NavigationStack { HomeView() }
-                    .overlay(alignment: .topTrailing) { homeAccountButton }
+                // Home keeps a transparent nav bar (see HomeView) so the account entry can
+                // live in the toolbar like the other tabs, and so the pushed detail's back
+                // button shares a bar to cross-fade with instead of sliding off on dismiss.
+                NavigationStack { HomeView().toolbar { accountToolbar } }
             }
             Tab("Library", systemImage: "rectangle.stack", value: AppTab.library) {
                 NavigationStack { LibraryHostView().toolbar { accountToolbar } }
@@ -74,18 +74,8 @@ struct RootTabView: View {
     // tabs carry an account button instead. Both just flip `router.presentingSettings`,
     // which RootView turns into the floating panel.
 
-    /// Floating account button over the Home hero (Home hides its nav bar, so it can't
-    /// host a toolbar item). Empty on regular width — the sidebar footer is the entry there.
-    @ViewBuilder
-    private var homeAccountButton: some View {
-        if hSize == .compact, let session {
-            accountButton(session)
-                .padding(.trailing, Space.s18)
-                .padding(.top, Space.s8)
-        }
-    }
-
-    /// Account button for the bar-bearing tabs (Library, Search). Empty on regular width.
+    /// Account button for the primary tabs (Home, Library, Search). Empty on regular
+    /// width — the sidebar footer is the account entry there.
     @ToolbarContentBuilder
     private var accountToolbar: some ToolbarContent {
         if hSize == .compact, let session {

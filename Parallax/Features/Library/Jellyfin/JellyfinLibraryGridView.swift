@@ -6,6 +6,10 @@ struct JellyfinLibraryGridView: View {
     let session: Session
 
     @Environment(AppDependencies.self) private var deps
+    @Environment(\.horizontalSizeClass) private var hSize
+    /// Fixed poster columns — shared by the grid, its first-load placeholder, and the
+    /// load-more strip so all three stay aligned. Denser on regular width (iPad).
+    private var columns: Int { hSize == .regular ? 5 : 3 }
     @State private var viewModel: JellyfinLibraryGridViewModel?
     /// Genre-chip height scales with Dynamic Type (relative to the chip's `.subheadline`
     /// label). Shared by the real chip and its loading placeholder so the swap stays
@@ -67,13 +71,13 @@ struct JellyfinLibraryGridView: View {
                 ScrollView {
                     MediaGrid(
                         items: vm.items,
-                        columnMinWidth: 140,
+                        fixedColumns: columns,
                         onAppearLast: { Task { await vm.loadMore() } }
                     ) { item in
                         ItemNavigator(item: item, session: session) { tile(for: item) }
                     }
                     if vm.isLoadingMore {
-                        AdaptivePosterGridLoadingSkeleton(tileCount: 3)
+                        AdaptivePosterGridLoadingSkeleton(tileCount: columns, fixedColumns: columns)
                             .padding(.vertical, Space.s12)
                     }
                 }
@@ -88,7 +92,7 @@ struct JellyfinLibraryGridView: View {
         VStack(spacing: 0) {
             genrePlaceholder
             ScrollView {
-                AdaptivePosterGridLoadingSkeleton(tileCount: 12)
+                AdaptivePosterGridLoadingSkeleton(tileCount: columns * 3, fixedColumns: columns)
             }
             .scrollDisabled(true)
             .contentMargins(.horizontal, AppLayout.contentHMargin, for: .scrollContent)
@@ -190,7 +194,6 @@ struct JellyfinLibraryGridView: View {
     private func tile(for item: Item) -> some View {
         MediaTile(
             title: item.displayTitle,
-            subtitle: subtitle(for: item),
             imageRef: image(for: item),
             imageKind: .primary,
             session: session,
@@ -206,14 +209,6 @@ struct JellyfinLibraryGridView: View {
         case .movie(let m): return m.posterBadges
         case .series(let s): return s.posterBadges
         case .episode: return []
-        }
-    }
-
-    private func subtitle(for item: Item) -> String? {
-        switch item {
-        case .movie(let m): return m.year.map(String.init)
-        case .series(let s): return s.year.map(String.init)
-        case .episode(let e): return e.seasonEpisodeLabel
         }
     }
 

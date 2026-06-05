@@ -9,7 +9,7 @@ struct MetadataRow<Item: Identifiable & Hashable, Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Space.s8) {
             Text(title)
-                .font(.headline)
+                .font(.title2.weight(.bold))
                 .padding(.horizontal, AppLayout.contentHMargin)
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(alignment: .top, spacing: Space.s12) {

@@ -5,7 +5,6 @@ struct MediaTile: View {
     @Environment(\.itemZoomNavigationValue) private var itemZoomNavigation
 
     let title: String
-    let subtitle: String?
     let imageRef: ImageRef?
     let imageKind: ImageKind
     let session: Session
@@ -17,7 +16,6 @@ struct MediaTile: View {
 
     init(
         title: String,
-        subtitle: String?,
         imageRef: ImageRef?,
         imageKind: ImageKind,
         session: Session,
@@ -28,7 +26,6 @@ struct MediaTile: View {
         badges: [String] = []
     ) {
         self.title = title
-        self.subtitle = subtitle
         self.imageRef = imageRef
         self.imageKind = imageKind
         self.session = session
@@ -39,44 +36,33 @@ struct MediaTile: View {
         self.badges = badges
     }
 
+    // Poster-only tile: the title/subtitle text under the artwork was removed —
+    // the poster carries identity, `title` survives solely as the VoiceOver label.
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            ZStack(alignment: .bottom) {
-                artwork
+        ZStack(alignment: .bottom) {
+            artwork
 
-                if showsShelfFooterOverlay {
-                    shelfArtworkFooter(caption: progressCaption ?? "", progress: progress)
-                }
-
-                if !badges.isEmpty {
-                    HStack(spacing: 4) {
-                        ForEach(badges, id: \.self) { badge in
-                            Text(badge)
-                                .font(.caption2.weight(.bold))
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 6).padding(.vertical, 3)
-                                .background(.black.opacity(0.55), in: Capsule())
-                        }
-                    }
-                    .padding(6)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                }
+            if showsShelfFooterOverlay {
+                shelfArtworkFooter(caption: progressCaption ?? "", progress: progress)
             }
-            .clipShape(.rect(cornerRadius: Radius.tile))
-            Text(title)
-                .font(.caption)
-                .lineLimit(2, reservesSpace: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            // Always render the subtitle line (empty when absent) and reserve
-            // both lines' height so every tile is identical — otherwise mixed
-            // 1-/2-line titles and present/absent subtitles make a row's (and
-            // grid's) thumbnails misalign (smoke-test #6/#7).
-            Text(subtitle ?? "")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(1, reservesSpace: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
+
+            if !badges.isEmpty {
+                HStack(spacing: 4) {
+                    ForEach(badges, id: \.self) { badge in
+                        Text(badge)
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 6).padding(.vertical, 3)
+                            .background(.black.opacity(0.55), in: Capsule())
+                    }
+                }
+                .padding(6)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+            }
         }
+        .clipShape(.rect(cornerRadius: Radius.tile))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(title)
     }
 
     private var showsShelfFooterOverlay: Bool {

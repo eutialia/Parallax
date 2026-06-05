@@ -16,6 +16,9 @@ struct HomeHeroCarousel: View {
     let items: [Item]
     let session: Session
     let viewModel: HomeViewModel
+    /// Pull-down overscroll (pt, ≥ 0) supplied by the Home `ScrollView`'s geometry. Drives
+    /// the stretchy zoom; 0 at rest or while scrolling up.
+    var overscroll: CGFloat = 0
 
     @Environment(PlaybackPresenter.self) private var playback
     @Environment(\.horizontalSizeClass) private var hSize
@@ -45,6 +48,11 @@ struct HomeHeroCarousel: View {
     private func content(width: CGFloat) -> some View {
         ZStack(alignment: .bottomLeading) {
             CrossfadeArtwork(position: position, items: items, session: session, regularWidth: regularWidth)
+                // Stretchy hero: a pull-down zooms the artwork up from its bottom edge to
+                // fill the rubber-band gap instead of exposing the app background. Only the
+                // artwork scales — the title/actions stay put. `scaleEffect` is a render
+                // transform, so it can't feed the geometry it's driven by back into layout.
+                .scaleEffect(1 + overscroll / heroHeight, anchor: .bottom)
 
             // Hidden while dragging (removed → fades out); on a settled page change its `.id`
             // flips and SwiftUI crossfades the new page over the old. No manual opacity state.

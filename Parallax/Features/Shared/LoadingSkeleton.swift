@@ -61,33 +61,38 @@ extension View {
 
 // MARK: - Tiles & rows
 
+/// Poster-only placeholder — mirrors `MediaTile`, which dropped its title/subtitle text.
 struct MediaTileSkeleton: View {
     var aspectRatio: CGFloat = JellyfinImage.poster
-    var showsSubtitle: Bool = true
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            SkeletonBlock(cornerRadius: Radius.tile)
-                .aspectRatio(aspectRatio, contentMode: .fit)
-            SkeletonBlock(cornerRadius: 4, height: 12)
-            if showsSubtitle {
-                SkeletonBlock(cornerRadius: 4, height: 10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.trailing, Space.s22)
-            }
-        }
+        SkeletonBlock(cornerRadius: Radius.tile)
+            .aspectRatio(aspectRatio, contentMode: .fit)
     }
 }
 
 struct MetadataRowSkeleton: View {
     let tileWidth: CGFloat
-    let tileCount: Int
     var aspectRatio: CGFloat = JellyfinImage.landscape
+
+    @State private var rowWidth: CGFloat = 0
+
+    /// Enough tiles to fill the row edge-to-edge plus one peeking past the trailing edge
+    /// (the cue that the real shelf scrolls). Derived from the live width — `onGeometryChange`
+    /// rather than a fixed count, so it fits any screen: a fixed 7 underfills an iPad in
+    /// landscape and overflows an iPhone. `.up + 1` errs toward overflow, which the disabled
+    /// ScrollView clips, so the row never falls short of the edge.
+    private var tileCount: Int {
+        guard rowWidth > 0 else { return 4 }
+        return Int((rowWidth / (tileWidth + Space.s12)).rounded(.up)) + 1
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.s8) {
-            SkeletonBlock(cornerRadius: 6, height: 18)
-                .frame(width: 148)
+            // Matches MetadataRow's `.title2.bold` header height so the loading→loaded
+            // swap doesn't jolt the shelf down.
+            SkeletonBlock(cornerRadius: 6, height: 26)
+                .frame(width: 168)
                 .padding(.horizontal, AppLayout.contentHMargin)
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(alignment: .top, spacing: Space.s12) {
@@ -100,6 +105,7 @@ struct MetadataRowSkeleton: View {
             }
             .scrollDisabled(true)
         }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { rowWidth = $0 }
     }
 }
 
@@ -111,8 +117,8 @@ struct HomeLoadingSkeleton: View {
     var body: some View {
         LazyVStack(alignment: .leading, spacing: Space.s30) {
             SkeletonBlock(cornerRadius: 0, height: hSize == .regular ? 540 : 380)
-            MetadataRowSkeleton(tileWidth: HomeShelf.tileWidth, tileCount: 4, aspectRatio: JellyfinImage.poster)
-            MetadataRowSkeleton(tileWidth: HomeShelf.tileWidth, tileCount: 4, aspectRatio: JellyfinImage.poster)
+            MetadataRowSkeleton(tileWidth: HomeShelf.tileWidth, aspectRatio: JellyfinImage.poster)
+            MetadataRowSkeleton(tileWidth: HomeShelf.tileWidth, aspectRatio: JellyfinImage.poster)
         }
         .padding(.bottom, Space.s30)
         .skeletonShimmer()
@@ -140,9 +146,11 @@ struct PosterGridLoadingSkeleton: View {
 struct AdaptivePosterGridLoadingSkeleton: View {
     let tileCount: Int
     var columnMinWidth: CGFloat = 140
+    /// Fixed column count; when nil the grid adapts by `columnMinWidth`. Mirrors `MediaGrid`.
+    var fixedColumns: Int? = nil
 
     var body: some View {
-        let columns = [GridItem(.adaptive(minimum: columnMinWidth), spacing: Space.s12, alignment: .top)]
+        let columns = posterGridColumns(fixedColumns: fixedColumns, columnMinWidth: columnMinWidth)
         LazyVGrid(columns: columns, spacing: 16) {
             ForEach(0..<tileCount, id: \.self) { _ in
                 MediaTileSkeleton()
