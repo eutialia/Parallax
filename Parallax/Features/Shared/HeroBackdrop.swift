@@ -122,7 +122,9 @@ struct HeroForegroundLegibility: ViewModifier {
             }
         }
         Tab("Library", systemImage: "rectangle.stack") { Color.background }
-        Tab("Search", systemImage: "magnifyingglass", role: .search) { Color.background }
+        // Role-less to match the real Search tab (see RootTabView) — `role: .search`
+        // hoists the field into the iPadOS 26 sidebar chrome, which the app avoids.
+        Tab("Search", systemImage: "magnifyingglass") { Color.background }
     }
     .tabViewStyle(.sidebarAdaptable)
 }

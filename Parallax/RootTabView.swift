@@ -26,7 +26,13 @@ struct RootTabView: View {
             Tab("Library", systemImage: "rectangle.stack", value: AppTab.library) {
                 NavigationStack { LibraryHostView().toolbar { accountToolbar } }
             }
-            Tab("Search", systemImage: "magnifyingglass", value: AppTab.search, role: .search) {
+            // Deliberately NOT `role: .search`, and JellyfinSearchView uses its own
+            // in-content SearchBar rather than `.searchable`. In iPadOS 26 the system
+            // search field (role-search tab or `.searchable`) gets hoisted into the
+            // top-trailing Liquid Glass slot on focus, reflows the layout, and lets the
+            // search presentation seize the sidebar toggle (it flips to "Hide Sidebar"
+            // while the keyboard is up). A plain tab + custom field sidesteps all of it.
+            Tab("Search", systemImage: "magnifyingglass", value: AppTab.search) {
                 NavigationStack { JellyfinSearchView().toolbar { accountToolbar } }
             }
 
