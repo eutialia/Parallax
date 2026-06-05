@@ -59,6 +59,14 @@ struct LibraryPrimitivesTests {
         #expect(data.playedFraction(runtimeTicks: 0) == nil)
     }
 
+    @Test("UserItemData.remainingMinutes rounds up from playback position")
+    func remainingMinutes() {
+        // 30 min into a 60 min item → 30 min left.
+        let data = UserItemData(played: false, playbackPositionTicks: 18_000_000_000, playCount: 0, isFavorite: false)
+        #expect(data.remainingMinutes(runtime: .seconds(3600)) == 30)
+        #expect(data.remainingMinutes(runtime: nil) == nil)
+    }
+
     @Test("Movie.imageRef returns nil when the relevant tag is missing")
     func movieImageRefNil() {
         let movie = Movie(

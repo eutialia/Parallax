@@ -213,7 +213,7 @@ struct JellyfinLibraryGridView: View {
         switch item {
         case .movie(let m): return m.year.map(String.init)
         case .series(let s): return s.year.map(String.init)
-        case .episode(let e): return e.episodeCode
+        case .episode(let e): return e.seasonEpisodeLabel
         }
     }
 

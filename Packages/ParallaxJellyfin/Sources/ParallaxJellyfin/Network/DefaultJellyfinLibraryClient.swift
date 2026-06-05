@@ -69,6 +69,19 @@ public final class DefaultJellyfinLibraryClient: JellyfinLibraryClient, @uncheck
         return (response.value.items ?? [], response.value.totalRecordCount ?? 0)
     }
 
+    public func getItemsByIDs(_ ids: [String]) async throws -> [BaseItemDto] {
+        guard !ids.isEmpty else { return [] }
+        var params = Paths.GetItemsParameters()
+        params.userID = userID
+        params.ids = ids
+        params.fields = [.primaryImageAspectRatio]
+        params.imageTypeLimit = 1
+        params.enableImageTypes = [.primary, .thumb]
+        let request = Paths.getItems(parameters: params)
+        let response = try await client().send(request)
+        return response.value.items ?? []
+    }
+
     public func getItemDetail(itemID: String) async throws -> BaseItemDto {
         // `Paths.getItem` takes no `fields` parameter, so chapters (and other
         // optional fields like taglines/studios/people) may be absent. Switch to

@@ -57,12 +57,28 @@ public enum Item: Sendable, Hashable, Identifiable {
             return .episode(Episode(
                 id: e.id, seriesID: e.seriesID, seasonID: e.seasonID, name: e.name,
                 indexNumber: e.indexNumber, parentIndexNumber: e.parentIndexNumber,
-                overview: e.overview, runtime: e.runtime, primaryTag: e.primaryTag, userData: userData
+                overview: e.overview, runtime: e.runtime, primaryTag: e.primaryTag,
+                seasonImageRef: e.seasonImageRef, seriesImageRef: e.seriesImageRef,
+                userData: userData
             ))
         }
     }
 
     public func withFavorite(_ isFavorite: Bool) -> Item {
         withUserData(userData.withFavorite(isFavorite))
+    }
+
+    public func withSeasonImageRef(_ seasonImageRef: ImageRef?) -> Item {
+        switch self {
+        case .movie, .series: return self
+        case .episode(let e): return .episode(e.withSeasonImageRef(seasonImageRef))
+        }
+    }
+
+    public func withSeriesImageRef(_ seriesImageRef: ImageRef?) -> Item {
+        switch self {
+        case .movie, .series: return self
+        case .episode(let e): return .episode(e.withSeriesImageRef(seriesImageRef))
+        }
     }
 }

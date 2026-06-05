@@ -90,7 +90,7 @@ struct JellyfinSearchView: View {
                             gridSection("Episodes", count: results.episodes.count, cols: landscapeCols) {
                                 ForEach(results.episodes) { e in
                                     Button { playback.play(e.id, in: session) } label: {
-                                        MediaTile(title: e.name, subtitle: e.episodeCode, imageRef: e.imageRef(.primary), imageKind: .primary, session: session, progress: nil, aspectRatio: JellyfinImage.landscape, maxImageWidth: 500)
+                                        MediaTile(title: e.name, subtitle: e.seasonEpisodeLabel, imageRef: e.imageRef(.primary), imageKind: .primary, session: session, progress: nil, aspectRatio: JellyfinImage.landscape, maxImageWidth: 500)
                                     }.buttonStyle(.plain)
                                 }
                             }

@@ -21,6 +21,17 @@ public struct UserItemData: Sendable, Hashable, Codable {
         return Double(playbackPositionTicks) / Double(runtimeTicks)
     }
 
+    /// Whole minutes left in the item; nil when runtime is unknown or fully watched.
+    public func remainingMinutes(runtime: Duration?) -> Int? {
+        guard let runtime else { return nil }
+        let totalSeconds = runtime.components.seconds
+        guard totalSeconds > 0 else { return nil }
+        let positionSeconds = playbackPositionTicks / 10_000_000
+        let remaining = max(0, totalSeconds - positionSeconds)
+        guard remaining > 0 else { return nil }
+        return Int((remaining + 59) / 60)
+    }
+
     public func withFavorite(_ isFavorite: Bool) -> UserItemData {
         UserItemData(
             played: played,

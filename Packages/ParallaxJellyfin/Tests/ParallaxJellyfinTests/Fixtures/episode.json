@@ -9,6 +9,9 @@
     "Overview": "A high school teacher...",
     "RunTimeTicks": 34020000000,
     "ImageTags": { "Primary": "episode-primary-1" },
+    "ParentPrimaryImageItemId": "season-uuid-1",
+    "ParentPrimaryImageTag": "season-primary-1",
+    "SeriesPrimaryImageTag": "series-primary-1",
     "UserData": {
         "Played": true,
         "PlaybackPositionTicks": 0,

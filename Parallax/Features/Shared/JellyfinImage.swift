@@ -10,6 +10,7 @@ struct JellyfinImage: View {
     let aspectRatio: CGFloat
     let style: Style
 
+    /// Width ÷ height — matches Jellyfin season/series/movie primary posters.
     static let poster: CGFloat = 2.0 / 3.0
     static let landscape: CGFloat = 16.0 / 9.0
     static let banner: CGFloat = 1000.0 / 185.0
@@ -70,10 +71,27 @@ struct JellyfinImage: View {
 
     private var placeholder: Color { Color(white: 0.15) }
 
+    /// When the layout box is poster-shaped, ask Jellyfin for a matching height so
+    /// the scaler doesn't squeeze width-only thumbs into a tall cell.
+    private var requestMaxHeight: Int? {
+        guard style == .boxed else { return nil }
+        return Int((Double(maxWidth) / aspectRatio).rounded())
+    }
+
     @ViewBuilder
     private var imageOverlay: some View {
-        if let ref, let url = ImageURLBuilder.url(serverURL: session.serverURL, ref: ref, maxWidth: maxWidth) {
-            LazyImageRenderer(url: url, session: session, contentMode: style == .logo ? .fit : .fill)
+        if let ref, let url = ImageURLBuilder.url(
+            serverURL: session.serverURL,
+            ref: ref,
+            maxWidth: maxWidth,
+            maxHeight: requestMaxHeight
+        ) {
+            LazyImageRenderer(
+                url: url,
+                session: session,
+                contentMode: style == .logo ? .fit : .fill
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 }

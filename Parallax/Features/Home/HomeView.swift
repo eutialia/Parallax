@@ -63,13 +63,13 @@ struct HomeView: View {
                         )
                     }
                     if !vm.continueWatching.isEmpty {
-                        MetadataRow(title: "Continue Watching", items: vm.continueWatching, tileWidth: 240) { item in
-                            itemTile(item: item, session: session, showProgress: true)
+                        MetadataRow(title: "Continue Watching", items: vm.continueWatching, tileWidth: HomeShelf.tileWidth) { item in
+                            homeShelfTile(item: item, session: session, showProgress: true)
                         }
                     }
                     if !vm.nextUp.isEmpty {
-                        MetadataRow(title: "Next Up", items: vm.nextUp, tileWidth: 240) { item in
-                            itemTile(item: item, session: session, showProgress: false)
+                        MetadataRow(title: "Next Up", items: vm.nextUp, tileWidth: HomeShelf.tileWidth) { item in
+                            homeShelfTile(item: item, session: session, showProgress: false)
                         }
                     }
                     if vm.recentlyAdded.isEmpty && vm.continueWatching.isEmpty && vm.nextUp.isEmpty {
@@ -100,44 +100,38 @@ struct HomeView: View {
         }
     }
 
-    @ViewBuilder
-    private func landscapeTile(item: Item, session: Session, showProgress: Bool) -> some View {
-        MediaTile(
-            title: item.displayTitle,
-            subtitle: tileSubtitle(item),
-            imageRef: item.landscapeImageRef,
-            imageKind: item.landscapeImageKind,
-            session: session,
-            progress: showProgress ? tileProgress(item) : nil,
-            aspectRatio: JellyfinImage.landscape,
-            maxImageWidth: 600
-        )
-    }
-
     // MARK: - Item rendering helpers
+
     @ViewBuilder
-    private func itemTile(item: Item, session: Session, showProgress: Bool) -> some View {
+    private func homeShelfTile(item: Item, session: Session, showProgress: Bool) -> some View {
         ItemNavigator(item: item, session: session) {
-            landscapeTile(item: item, session: session, showProgress: showProgress)
+            MediaTile(
+                title: item.displayTitle,
+                subtitle: nil,
+                imageRef: item.homeShelfImageRef,
+                imageKind: item.homeShelfImageKind,
+                session: session,
+                progress: showProgress ? tileProgress(item) : nil,
+                progressCaption: homeShelfCaption(item, showProgress: showProgress),
+                aspectRatio: JellyfinImage.poster,
+                maxImageWidth: HomeShelf.imageMaxWidth
+            )
         }
     }
 
-    private func tileSubtitle(_ item: Item) -> String? {
-        switch item {
-        // Home rows show only the title for movies/series; episodes get a
-        // compact SxxExx so the tile reads "name / S01E04" (smoke-test #7).
-        case .movie, .series: return nil
-        case .episode(let e): return e.episodeCode
+    private func homeShelfCaption(_ item: Item, showProgress: Bool) -> String? {
+        var parts: [String] = []
+        if case .episode(let e) = item, let label = e.seasonEpisodeLabel {
+            parts.append(label)
         }
+        if showProgress, let minutes = item.userData.remainingMinutes(runtime: item.runtime) {
+            parts.append("\(minutes) min left")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     private func tileProgress(_ item: Item) -> Double? {
-        let runtimeTicks: Int64?
-        switch item {
-        case .movie(let m): runtimeTicks = m.runtime.map { Int64($0.components.seconds) * 10_000_000 }
-        case .series: runtimeTicks = nil
-        case .episode(let e): runtimeTicks = e.runtime.map { Int64($0.components.seconds) * 10_000_000 }
-        }
+        let runtimeTicks = item.runtime.map { Int64($0.components.seconds) * 10_000_000 }
         return item.userData.playedFraction(runtimeTicks: runtimeTicks)
     }
 }

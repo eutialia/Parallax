@@ -10,6 +10,7 @@ struct MediaTile: View {
     let imageKind: ImageKind
     let session: Session
     let progress: Double?   // 0.0–1.0; nil hides the bar
+    let progressCaption: String?
     let aspectRatio: CGFloat
     let maxImageWidth: Int
     var badges: [String]
@@ -21,6 +22,7 @@ struct MediaTile: View {
         imageKind: ImageKind,
         session: Session,
         progress: Double?,
+        progressCaption: String? = nil,
         aspectRatio: CGFloat = JellyfinImage.poster,
         maxImageWidth: Int = 600,
         badges: [String] = []
@@ -31,6 +33,7 @@ struct MediaTile: View {
         self.imageKind = imageKind
         self.session = session
         self.progress = progress
+        self.progressCaption = progressCaption
         self.aspectRatio = aspectRatio
         self.maxImageWidth = maxImageWidth
         self.badges = badges
@@ -41,22 +44,8 @@ struct MediaTile: View {
             ZStack(alignment: .bottom) {
                 artwork
 
-                if let progress, progress > 0 {
-                    GeometryReader { geo in
-                        ZStack(alignment: .leading) {
-                            // Dark track + white fill reads on any artwork in both
-                            // appearances; the handoff's white-on-scrim treatment
-                            // arrives with the MediaTile redesign (P3).
-                            Rectangle().fill(Color.black.opacity(0.5))    // track
-                            Rectangle()
-                                .fill(Color.white)                        // played portion — monochrome
-                                .frame(width: geo.size.width * progress)
-                        }
-                    }
-                    .frame(height: 4)
-                    .clipShape(.rect(cornerRadius: 2))
-                    .padding(.horizontal, 4)
-                    .padding(.bottom, 4)
+                if showsShelfFooterOverlay {
+                    shelfArtworkFooter(caption: progressCaption ?? "", progress: progress)
                 }
 
                 if !badges.isEmpty {
@@ -73,6 +62,7 @@ struct MediaTile: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                 }
             }
+            .clipShape(.rect(cornerRadius: Radius.tile))
             Text(title)
                 .font(.caption)
                 .lineLimit(2, reservesSpace: true)
@@ -89,6 +79,45 @@ struct MediaTile: View {
         }
     }
 
+    private var showsShelfFooterOverlay: Bool {
+        let hasCaption = progressCaption.map { !$0.isEmpty } ?? false
+        let hasProgress = (progress ?? 0) > 0
+        return hasCaption || hasProgress
+    }
+
+    @ViewBuilder
+    private func shelfArtworkFooter(caption: String, progress: Double?) -> some View {
+        VStack(spacing: 0) {
+            Color.clear.frame(height: HomeShelf.footerBlurFeatherBleed)
+            VStack(alignment: .leading, spacing: 5) {
+                if !caption.isEmpty {
+                    Text(caption)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                }
+                if let progress, progress > 0 {
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            Rectangle().fill(.white.opacity(0.28))
+                            Rectangle()
+                                .fill(.white)
+                                .frame(width: geo.size.width * progress)
+                        }
+                    }
+                    .frame(height: 5)
+                    .clipShape(.rect(cornerRadius: 2.5))
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.bottom, 7)
+        }
+        .frame(maxWidth: .infinity)
+        .shelfTileFooterGlass()
+        .allowsHitTesting(false)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+    }
+
     @ViewBuilder
     private var artwork: some View {
         let image = JellyfinImage(
@@ -98,7 +127,6 @@ struct MediaTile: View {
             maxWidth: maxImageWidth,
             aspectRatio: aspectRatio
         )
-        .clipShape(.rect(cornerRadius: Radius.tile))
 
         if let itemZoomNavigation {
             image.itemZoomTransitionSource(itemZoomNavigation)

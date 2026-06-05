@@ -42,6 +42,13 @@ struct LibraryRepositoryDrillInTests {
         return d
     }
 
+    private func dtoSeries(_ id: String) -> BaseItemDto {
+        var d = BaseItemDto()
+        d.id = id; d.name = "Series \(id)"; d.type = .series
+        d.imageTags = ["Primary": "series-poster"]
+        return d
+    }
+
     @Test("seasons(of:) translates and forwards seriesID")
     func seasons() async throws {
         let (repo, client) = make()
@@ -74,10 +81,40 @@ struct LibraryRepositoryDrillInTests {
             dtoMovie("m1"),
             dtoEpisode("e1", seriesID: "ser1", seasonID: "se1"),
         ])
+        var season = dtoSeason("se1", seriesID: "ser1")
+        season.imageTags = ["Primary": "season-folder-art"]
+        client.itemsByIDsResult = .success([season])
         let items = try await repo.continueWatching()
         #expect(items.count == 2)
         if case .movie = items.first { } else { Issue.record("first should be .movie") }
-        if case .episode = items.last { } else { Issue.record("last should be .episode") }
+        guard case .episode(let ep) = items.last else {
+            Issue.record("last should be .episode")
+            return
+        }
+        #expect(ep.seasonImageRef?.itemID.rawValue == "se1")
+        #expect(ep.seasonImageRef?.tag.rawValue == "season-folder-art")
+        #expect(Set(client.itemsByIDsCalls.last ?? []) == Set(["se1", "ser1"]))
+    }
+
+    @Test("continueWatching() uses series poster when season has no primary")
+    func continueWatchingSeriesFallback() async throws {
+        let (repo, client) = make()
+        client.continueWatchingResult = .success([
+            dtoEpisode("e1", seriesID: "ser1", seasonID: "se1"),
+        ])
+        client.itemsByIDsResult = .success([
+            dtoSeason("se1", seriesID: "ser1"),
+            dtoSeries("ser1"),
+        ])
+        let items = try await repo.continueWatching()
+        guard case .episode(let ep) = items.first else {
+            Issue.record("expected .episode")
+            return
+        }
+        #expect(ep.seasonImageRef == nil)
+        #expect(ep.seriesImageRef?.itemID.rawValue == "ser1")
+        #expect(ep.seriesImageRef?.tag.rawValue == "series-poster")
+        #expect(Set(client.itemsByIDsCalls.last ?? []) == Set(["se1", "ser1"]))
     }
 
     @Test("nextUp() returns Episode items")
@@ -86,9 +123,17 @@ struct LibraryRepositoryDrillInTests {
         client.nextUpResult = .success([
             dtoEpisode("e1", seriesID: "ser1", seasonID: "se1"),
         ])
+        var season = dtoSeason("se1", seriesID: "ser1")
+        season.imageTags = ["Primary": "season-folder-art"]
+        client.itemsByIDsResult = .success([season])
         let items = try await repo.nextUp()
         #expect(items.count == 1)
-        if case .episode = items.first { } else { Issue.record("expected .episode") }
+        guard case .episode(let ep) = items.first else {
+            Issue.record("expected .episode")
+            return
+        }
+        #expect(ep.seasonImageRef?.tag.rawValue == "season-folder-art")
+        #expect(Set(client.itemsByIDsCalls.last ?? []) == Set(["se1", "ser1"]))
     }
 
     @Test("search(.all) fans out to three per-type calls and merges results")

@@ -10,19 +10,47 @@ public struct Episode: Sendable, Hashable, Identifiable {
     public let overview: String?
     public let runtime: Duration?
     public let primaryTag: ImageTag?
+    /// Season folder art from Jellyfin's parent-primary fields (e.g. `season.jpg`).
+    public let seasonImageRef: ImageRef?
+    /// Series poster when season art is missing (DTO hint or repository fetch).
+    public let seriesImageRef: ImageRef?
     public let userData: UserItemData
 
     public init(
         id: ItemID, seriesID: ItemID, seasonID: ItemID, name: String,
         indexNumber: Int?, parentIndexNumber: Int?,
         overview: String?, runtime: Duration?,
-        primaryTag: ImageTag?, userData: UserItemData
+        primaryTag: ImageTag?, seasonImageRef: ImageRef? = nil,
+        seriesImageRef: ImageRef? = nil,
+        userData: UserItemData
     ) {
         self.id = id; self.seriesID = seriesID; self.seasonID = seasonID
         self.name = name; self.indexNumber = indexNumber
         self.parentIndexNumber = parentIndexNumber
         self.overview = overview; self.runtime = runtime
-        self.primaryTag = primaryTag; self.userData = userData
+        self.primaryTag = primaryTag; self.seasonImageRef = seasonImageRef
+        self.seriesImageRef = seriesImageRef
+        self.userData = userData
+    }
+
+    public func withSeasonImageRef(_ ref: ImageRef?) -> Episode {
+        Episode(
+            id: id, seriesID: seriesID, seasonID: seasonID, name: name,
+            indexNumber: indexNumber, parentIndexNumber: parentIndexNumber,
+            overview: overview, runtime: runtime, primaryTag: primaryTag,
+            seasonImageRef: ref, seriesImageRef: seriesImageRef,
+            userData: userData
+        )
+    }
+
+    public func withSeriesImageRef(_ ref: ImageRef?) -> Episode {
+        Episode(
+            id: id, seriesID: seriesID, seasonID: seasonID, name: name,
+            indexNumber: indexNumber, parentIndexNumber: parentIndexNumber,
+            overview: overview, runtime: runtime, primaryTag: primaryTag,
+            seasonImageRef: seasonImageRef, seriesImageRef: ref,
+            userData: userData
+        )
     }
 
     public func imageRef(_ kind: ImageKind) -> ImageRef? {
@@ -39,9 +67,9 @@ public struct Episode: Sendable, Hashable, Identifiable {
 }
 
 public extension Episode {
-    /// Compact "S01E04" code, or nil when the season/episode index is unknown.
-    var episodeCode: String? {
+    /// Season/episode label, e.g. "S1, E2" — nil when either index is unknown.
+    var seasonEpisodeLabel: String? {
         guard let season = parentIndexNumber, let index = indexNumber else { return nil }
-        return "S\(String(format: "%02d", season))E\(String(format: "%02d", index))"
+        return "S\(season), E\(index)"
     }
 }

@@ -10,6 +10,7 @@ final class FakeJellyfinLibraryClient: JellyfinLibraryClient, @unchecked Sendabl
     var itemsResult: Result<(items: [BaseItemDto], total: Int), Error> = .success(([], 0))
     var itemsPagedResults: [Result<(items: [BaseItemDto], total: Int), Error>] = []  // consumed in order
     var detailResult: Result<BaseItemDto, Error> = .failure(FakeError.notConfigured)
+    var itemsByIDsResult: Result<[BaseItemDto], Error> = .success([])
     var seasonsResult: Result<[BaseItemDto], Error> = .success([])
     var episodesResult: Result<[BaseItemDto], Error> = .success([])
     var continueWatchingResult: Result<[BaseItemDto], Error> = .success([])
@@ -31,6 +32,7 @@ final class FakeJellyfinLibraryClient: JellyfinLibraryClient, @unchecked Sendabl
     private(set) var collectionsCallCount = 0
     private(set) var itemsCalls: [(parentID: String, filter: ParallaxJellyfin.ItemFilter, sort: ParallaxJellyfin.ItemSort, startIndex: Int, limit: Int)] = []
     private(set) var detailCalls: [String] = []
+    private(set) var itemsByIDsCalls: [[String]] = []
     private(set) var seasonsCalls: [String] = []
     private(set) var episodesCalls: [String] = []
     private(set) var continueWatchingCallCount = 0
@@ -61,6 +63,11 @@ final class FakeJellyfinLibraryClient: JellyfinLibraryClient, @unchecked Sendabl
     func getItemDetail(itemID: String) async throws -> BaseItemDto {
         detailCalls.append(itemID)
         return try detailResult.get()
+    }
+
+    func getItemsByIDs(_ ids: [String]) async throws -> [BaseItemDto] {
+        itemsByIDsCalls.append(ids)
+        return try itemsByIDsResult.get()
     }
 
     func getSeasons(seriesID: String) async throws -> [BaseItemDto] {

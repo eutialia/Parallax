@@ -11,6 +11,8 @@ public protocol JellyfinLibraryClient: Sendable {
     func getCollections() async throws -> [BaseItemDto]
     func getItems(parentID: String, filter: ItemFilter, sort: ItemSort, startIndex: Int, limit: Int) async throws -> (items: [BaseItemDto], total: Int)
     func getItemDetail(itemID: String) async throws -> BaseItemDto
+    /// Batch lookup by item id (e.g. season folders for home-shelf artwork).
+    func getItemsByIDs(_ ids: [String]) async throws -> [BaseItemDto]
     func getSeasons(seriesID: String) async throws -> [BaseItemDto]
     func getEpisodes(seasonID: String) async throws -> [BaseItemDto]
     func getContinueWatching() async throws -> [BaseItemDto]

@@ -48,6 +48,12 @@ extension Color {
     static let glassBorder        = Color(light: 0xFFFDF7, lightAlpha: 0.80, dark: 0xFFFFFF, darkAlpha: 0.14)
     static let glassHighlight     = Color(light: 0xFFFFFF, lightAlpha: 0.95, dark: 0xFFFFFF, darkAlpha: 0.22)
 
+    /// Hero/detail circular glass actions (Favorite, Watched, …). Fixed dark frosted
+    /// chrome over photography — not theme-adaptive, so bright artwork and Matinee mode
+    /// don't wash the control out or flip it to the light-glass variant.
+    static let heroGlass          = Color(red: 0.08, green: 0.08, blue: 0.10).opacity(0.62)
+    static let heroGlassBorder    = Color.white.opacity(0.28)
+
     // Bright pill in dark mode (white fill / ink label), dark pill in light mode
     // (espresso fill / cream label) — used everywhere including over hero photography.
     static let buttonFill         = Color(light: 0x2A241D, dark: 0xFFFFFF)
@@ -69,6 +75,17 @@ enum Radius {
     static let field: CGFloat = 14    // text fields, form buttons
     static let tile: CGFloat = 12     // posters, thumbs, small tiles
     static let navItem: CGFloat = 12  // sidebar/tab item pills (panel − 12 inset)
+}
+
+/// Continue Watching / Next Up horizontal shelves (2:3 poster tiles).
+enum HomeShelf {
+    static let tileWidth: CGFloat = 172
+    /// Jellyfin thumb width for @3x at `tileWidth` (avoids soft upscaling).
+    static let imageMaxWidth: Int = 520
+    /// Height the frosted blur feathers up from the caption into the poster (TV-style).
+    static let footerBlurFeatherBleed: CGFloat = 56
+    /// Darkening under the caption for text legibility on bright artwork.
+    static let footerScrimOpacity: Double = 0.55
 }
 
 enum Space {

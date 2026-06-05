@@ -83,7 +83,8 @@ public actor LibraryRepository {
     public func continueWatching() async throws -> [Item] {
         do {
             let dtos = try await client.getContinueWatching()
-            return dtos.compactMap(Self.dtoToItem)
+            let items = dtos.compactMap(Self.dtoToItem)
+            return try await enrichHomeShelfItems(items)
         } catch {
             throw ErrorMapping.appError(from: error)
         }
@@ -92,7 +93,8 @@ public actor LibraryRepository {
     public func nextUp() async throws -> [Item] {
         do {
             let dtos = try await client.getNextUp()
-            return dtos.compactMap(Self.dtoToItem)
+            let items = dtos.compactMap(Self.dtoToItem)
+            return try await enrichHomeShelfItems(items)
         } catch {
             throw ErrorMapping.appError(from: error)
         }
@@ -179,6 +181,50 @@ public actor LibraryRepository {
         case .series: return dto.toSeries().map(Item.series)
         case .episode: return dto.toEpisode().map(Item.episode)
         default: return nil
+        }
+    }
+
+    /// Resume/next-up episode DTOs often omit parent image tags. Batch-fetch
+    /// missing season folder art, then series posters as fallback.
+    private func enrichHomeShelfItems(_ items: [Item]) async throws -> [Item] {
+        let seasonIDs = Set(
+            items.compactMap { item -> ItemID? in
+                guard case .episode(let e) = item, e.seasonImageRef == nil else { return nil }
+                return e.seasonID
+            }
+        )
+        let seriesIDs = Set(
+            items.compactMap { item -> ItemID? in
+                guard case .episode(let e) = item,
+                      e.seasonImageRef == nil, e.seriesImageRef == nil else { return nil }
+                return e.seriesID
+            }
+        )
+        let fetchIDs = Array(Set(seasonIDs.map(\.rawValue) + seriesIDs.map(\.rawValue)))
+        guard !fetchIDs.isEmpty else { return items }
+
+        let dtos = try await client.getItemsByIDs(fetchIDs)
+        var artBySeasonID: [ItemID: ImageRef] = [:]
+        var artBySeriesID: [ItemID: ImageRef] = [:]
+        for dto in dtos {
+            if let season = dto.toSeason(), let ref = season.imageRef(.primary) {
+                artBySeasonID[season.id] = ref
+            } else if let series = dto.toSeries(), let ref = series.imageRef(.primary) {
+                artBySeriesID[series.id] = ref
+            }
+        }
+
+        return items.map { item in
+            guard case .episode(let e) = item, e.seasonImageRef == nil else { return item }
+            // Season folder art wins; series poster is the fallback when the
+            // season has no primary and the episode carries no series hint.
+            if let ref = artBySeasonID[e.seasonID] {
+                return item.withSeasonImageRef(ref)
+            }
+            if e.seriesImageRef == nil, let ref = artBySeriesID[e.seriesID] {
+                return item.withSeriesImageRef(ref)
+            }
+            return item
         }
     }
 }

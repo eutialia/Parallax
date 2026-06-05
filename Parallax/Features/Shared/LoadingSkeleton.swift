@@ -111,8 +111,8 @@ struct HomeLoadingSkeleton: View {
     var body: some View {
         LazyVStack(alignment: .leading, spacing: Space.s30) {
             SkeletonBlock(cornerRadius: 0, height: hSize == .regular ? 540 : 380)
-            MetadataRowSkeleton(tileWidth: 240, tileCount: 4, aspectRatio: JellyfinImage.landscape)
-            MetadataRowSkeleton(tileWidth: 240, tileCount: 4, aspectRatio: JellyfinImage.landscape)
+            MetadataRowSkeleton(tileWidth: HomeShelf.tileWidth, tileCount: 4, aspectRatio: JellyfinImage.poster)
+            MetadataRowSkeleton(tileWidth: HomeShelf.tileWidth, tileCount: 4, aspectRatio: JellyfinImage.poster)
         }
         .padding(.bottom, Space.s30)
         .skeletonShimmer()
