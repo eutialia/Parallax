@@ -86,12 +86,17 @@ struct JellyfinImage: View {
             maxWidth: maxWidth,
             maxHeight: requestMaxHeight
         ) {
-            LazyImageRenderer(
+            let renderer = LazyImageRenderer(
                 url: url,
                 session: session,
                 contentMode: style == .logo ? .fit : .fill
             )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // Logo titles must stay leading-aligned; an infinite frame makes `.fit` letterbox
+            // inside the full column width and reads as centered. Fill/boxed need it to cover cells.
+            switch style {
+            case .logo: renderer
+            case .fill, .boxed: renderer.frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
     }
 }
