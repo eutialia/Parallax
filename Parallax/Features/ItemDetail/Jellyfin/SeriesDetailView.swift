@@ -19,14 +19,12 @@ struct SeriesDetailView: View {
                 case .loaded(let sd, let seasons):
                     ScrollView {
                         VStack(alignment: .leading, spacing: Space.s22) {
-                            HeroBackdrop(height: HeroMetrics.height(regularWidth: hSize == .regular)) {
-                                JellyfinImage(
-                                    ref: sd.series.imageRef(.backdrop(index: 0)),
-                                    kind: .backdrop(index: 0),
+                            HeroBackdrop {
+                                HeroBandImage(
+                                    landscapeRef: sd.series.imageRef(.backdrop(index: 0)),
+                                    posterRef: sd.series.imageRef(.primary),
                                     session: session,
-                                    maxWidth: 1600,
-                                    aspectRatio: JellyfinImage.landscape,
-                                    style: .fill
+                                    regularWidth: hSize == .regular
                                 )
                             } foreground: {
                                 VStack(alignment: .leading, spacing: Space.s12) {

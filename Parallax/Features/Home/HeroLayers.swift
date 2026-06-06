@@ -1,20 +1,24 @@
 import SwiftUI
 import ParallaxJellyfin
 
-/// Full-bleed landscape artwork for one hero item — the crossfading layers inside
-/// `CrossfadeArtwork`, which stacks two of these and carries the iPad sidebar
-/// `backgroundExtensionEffect` over the pair.
+/// Full-bleed artwork for one hero item — the crossfading layers inside `CrossfadeArtwork`,
+/// which stacks two of these and carries the iPad sidebar `backgroundExtensionEffect`.
 struct HeroArtwork: View {
     let item: Item
     let session: Session
+    let regularWidth: Bool
+
+    private var artwork: (ref: ImageRef?, kind: ImageKind) {
+        item.heroArtwork(regularWidth: regularWidth)
+    }
 
     var body: some View {
         JellyfinImage(
-            ref: item.landscapeImageRef,
-            kind: item.landscapeImageKind,
+            ref: artwork.ref,
+            kind: artwork.kind,
             session: session,
             maxWidth: 1600,
-            aspectRatio: JellyfinImage.landscape,
+            aspectRatio: HeroMetrics.bandAspectRatio(regularWidth: regularWidth),
             style: .fill
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)

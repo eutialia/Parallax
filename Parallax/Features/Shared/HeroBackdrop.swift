@@ -18,31 +18,26 @@ import ParallaxJellyfin
 /// Parent `ScrollView`s should use `.scrollClipDisabled(true)` and
 /// `.ignoresSafeArea(edges: .top)`. That — not any offset math here — is what makes
 /// the hero paint under the status bar / sidebar: the parent drops the top content
-/// inset, so this fixed-height band sits at y=0 and its artwork fills up to the screen
-/// edge. The band itself is deliberately a *stable* fixed height that reads no live
-/// geometry, so scrolling can't reflow it. Keep the hero flush to the leading edge
-/// (no horizontal padding on its container).
+/// inset, so this band sits at y=0 and its artwork fills up to the screen edge.
+/// iPhone uses a 2:3 poster band; iPad uses 16:9 landscape. Keep the hero flush to
+/// the leading edge (no horizontal padding on its container).
 ///
 /// The recently-added Home hero is `HomeHeroCarousel` (a SwiftUI crossfade), not this band;
 /// both share `HeroMetrics` so their geometry stays in lockstep.
 struct HeroBackdrop<Backdrop: View, Foreground: View>: View {
-    /// Fixed band height (~520–560pt per the design). A predictable height keeps the
-    /// content below it starting on a stable line and the foreground rhythm consistent.
-    var height: CGFloat = HeroMetrics.height(regularWidth: true)
     @ViewBuilder var backdrop: () -> Backdrop
     @ViewBuilder var foreground: () -> Foreground
 
     @Environment(\.horizontalSizeClass) private var hSize
 
-    private var usesSidebarExtension: Bool { hSize == .regular }
+    private var regularWidth: Bool { hSize == .regular }
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
             backdrop()
                 .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
-                .frame(height: height, alignment: .bottom)
                 .clipped()
-                .backgroundExtensionEffect(isEnabled: usesSidebarExtension)
+                .backgroundExtensionEffect(isEnabled: regularWidth)
                 .allowsHitTesting(false)
 
             foreground()
@@ -51,7 +46,7 @@ struct HeroBackdrop<Backdrop: View, Foreground: View>: View {
                 .safeAreaPadding(.horizontal, hSize == .regular ? Space.s40 : Space.s22)
                 .padding(.bottom, Space.s30)
         }
-        .frame(height: height, alignment: .bottom)
+        .heroBandFrame(regularWidth: regularWidth)
     }
 }
 
@@ -61,8 +56,31 @@ struct HeroBackdrop<Backdrop: View, Foreground: View>: View {
 enum HeroMetrics {
     /// Readable column width for hero foreground content (title, meta, actions).
     static let contentMaxWidth: CGFloat = 720
-    /// Band height by horizontal size class — taller on iPad regular width.
-    static func height(regularWidth: Bool) -> CGFloat { regularWidth ? 540 : 380 }
+    /// Band aspect ratio (width ÷ height): 2:3 poster on iPhone, 16:9 landscape on iPad.
+    static func bandAspectRatio(regularWidth: Bool) -> CGFloat {
+        regularWidth ? JellyfinImage.landscape : JellyfinImage.poster
+    }
+    /// Band height for layout math (overscroll zoom, etc.).
+    static func height(containerWidth: CGFloat, regularWidth: Bool) -> CGFloat {
+        containerWidth / bandAspectRatio(regularWidth: regularWidth)
+    }
+}
+
+/// Sizes the hero band from container width and the platform aspect ratio.
+struct HeroBandFrame: ViewModifier {
+    let regularWidth: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .frame(maxWidth: .infinity)
+            .aspectRatio(HeroMetrics.bandAspectRatio(regularWidth: regularWidth), contentMode: .fit)
+    }
+}
+
+extension View {
+    func heroBandFrame(regularWidth: Bool) -> some View {
+        modifier(HeroBandFrame(regularWidth: regularWidth))
+    }
 }
 
 /// Keeps hero labels readable over bright artwork without a boxed background. Shared by the

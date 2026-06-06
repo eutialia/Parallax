@@ -30,14 +30,13 @@ struct HomeHeroCarousel: View {
     @State private var isDragging = false
 
     private var regularWidth: Bool { hSize == .regular }
-    private var heroHeight: CGFloat { HeroMetrics.height(regularWidth: regularWidth) }
     private var count: Int { items.count }
 
     var body: some View {
         GeometryReader { proxy in
             content(width: proxy.size.width)
         }
-        .frame(height: heroHeight)
+        .heroBandFrame(regularWidth: regularWidth)
         // Compare ids (not items) so a favorite toggle doesn't reset the page; only a
         // changed item set snaps back to the first page.
         .onChange(of: items.map(\.id)) {
@@ -52,7 +51,10 @@ struct HomeHeroCarousel: View {
                 // fill the rubber-band gap instead of exposing the app background. Only the
                 // artwork scales — the title/actions stay put. `scaleEffect` is a render
                 // transform, so it can't feed the geometry it's driven by back into layout.
-                .scaleEffect(1 + overscroll / heroHeight, anchor: .bottom)
+                .scaleEffect(
+                    1 + overscroll / HeroMetrics.height(containerWidth: width, regularWidth: regularWidth),
+                    anchor: .bottom
+                )
 
             // Hidden while dragging (removed → fades out); on a settled page change its `.id`
             // flips and SwiftUI crossfades the new page over the old. No manual opacity state.
@@ -71,8 +73,8 @@ struct HomeHeroCarousel: View {
                 onAdvance: { commit(to: displayedPage + 1) }
             )
             .frame(maxWidth: .infinity)
-            // iPhone's shorter hero crowds the dots against the Play/Favorite buttons, so
-            // drop them toward the artwork's bottom edge there; iPad's taller band is fine.
+            // Tuck the dots toward the artwork bottom edge on iPhone's poster band so they
+            // stay clear of the foreground controls; iPad's landscape band has more room.
             .padding(.bottom, regularWidth ? Space.s12 : Space.s3)
         }
         .contentShape(Rectangle())
@@ -145,7 +147,7 @@ struct HomeHeroCarousel: View {
 /// Just the artwork crossfade. `Animatable` on `position` is the crux: during a
 /// `withAnimation` `position` change, SwiftUI interpolates `animatableData` and re-evaluates
 /// `body` at each step, so the two images crossfade continuously rather than cutting between
-/// the start and end states. Carries `backgroundExtensionEffect`, so it paints the bleed too.
+/// the start and end states. Carries the iPad sidebar `backgroundExtensionEffect`.
 private struct CrossfadeArtwork: View, Animatable {
     var position: Double
     let items: [Item]
@@ -161,8 +163,9 @@ private struct CrossfadeArtwork: View, Animatable {
         let lower = Int(floor(position))
         let frac = position - Double(lower)
         return ZStack {
-            HeroArtwork(item: items[wrapping: lower], session: session)
-            HeroArtwork(item: items[wrapping: lower + 1], session: session).opacity(frac)
+            HeroArtwork(item: items[wrapping: lower], session: session, regularWidth: regularWidth)
+            HeroArtwork(item: items[wrapping: lower + 1], session: session, regularWidth: regularWidth)
+                .opacity(frac)
         }
         .backgroundExtensionEffect(isEnabled: regularWidth)
     }

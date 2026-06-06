@@ -116,7 +116,11 @@ struct HomeLoadingSkeleton: View {
 
     var body: some View {
         LazyVStack(alignment: .leading, spacing: Space.s30) {
-            SkeletonBlock(cornerRadius: 0, height: hSize == .regular ? 540 : 380)
+            SkeletonBlock(cornerRadius: 0)
+                .aspectRatio(
+                    HeroMetrics.bandAspectRatio(regularWidth: hSize == .regular),
+                    contentMode: .fit
+                )
             MetadataRowSkeleton(tileWidth: HomeShelf.tileWidth, aspectRatio: JellyfinImage.poster)
             MetadataRowSkeleton(tileWidth: HomeShelf.tileWidth, aspectRatio: JellyfinImage.poster)
         }
@@ -198,7 +202,11 @@ struct DetailLoadingSkeleton: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Space.s18) {
-                SkeletonBlock(cornerRadius: 0, height: hSize == .regular ? 540 : 380)
+                SkeletonBlock(cornerRadius: 0)
+                    .aspectRatio(
+                        HeroMetrics.bandAspectRatio(regularWidth: hSize == .regular),
+                        contentMode: .fit
+                    )
                 VStack(alignment: .leading, spacing: Space.s12) {
                     SkeletonBlock(cornerRadius: 8, height: hSize == .regular ? 36 : 28)
                         .padding(.trailing, Space.s40)

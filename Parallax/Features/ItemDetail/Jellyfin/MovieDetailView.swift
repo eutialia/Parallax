@@ -19,14 +19,12 @@ struct MovieDetailView: View {
                 case .loaded(let md):
                     ScrollView {
                         VStack(alignment: .leading, spacing: Space.s18) {
-                            HeroBackdrop(height: HeroMetrics.height(regularWidth: hSize == .regular)) {
-                                JellyfinImage(
-                                    ref: md.movie.imageRef(.backdrop(index: 0)),
-                                    kind: .backdrop(index: 0),
+                            HeroBackdrop {
+                                HeroBandImage(
+                                    landscapeRef: md.movie.imageRef(.backdrop(index: 0)),
+                                    posterRef: md.movie.imageRef(.primary),
                                     session: session,
-                                    maxWidth: 1600,
-                                    aspectRatio: JellyfinImage.landscape,
-                                    style: .fill
+                                    regularWidth: hSize == .regular
                                 )
                             } foreground: {
                                 VStack(alignment: .leading, spacing: Space.s12) {
