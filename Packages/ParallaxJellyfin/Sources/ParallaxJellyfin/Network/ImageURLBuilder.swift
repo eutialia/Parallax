@@ -17,22 +17,7 @@ public enum ImageURLBuilder {
                        maxWidth: maxWidth, maxHeight: maxHeight, quality: quality)
     }
 
-    /// A user's Jellyfin profile image. It lives under `/Users/{id}` — a different root
-    /// from item images — so it can't be expressed as an `ImageRef` and routed through
-    /// `url(ref:)`; it gets its own entry point sharing the same query assembly.
-    public static func userImageURL(
-        serverURL: URL,
-        userID: String,
-        tag: String,
-        maxWidth: Int? = nil,
-        quality: Int = 90
-    ) -> URL? {
-        guard let encodedID = percentEncoded(userID) else { return nil }
-        return makeURL(serverURL: serverURL, path: "/Users/\(encodedID)/Images/Primary",
-                       tag: tag, maxWidth: maxWidth, quality: quality)
-    }
-
-    /// Percent-encodes an item/user ID for path interpolation. IDs are unconstrained
+    /// Percent-encodes an item ID for path interpolation. IDs are unconstrained
     /// `String` wrappers, so a stray "/" or "?" would corrupt the URL. Jellyfin uses UUIDs
     /// in practice; this is defense-in-depth.
     private static func percentEncoded(_ id: String) -> String? {

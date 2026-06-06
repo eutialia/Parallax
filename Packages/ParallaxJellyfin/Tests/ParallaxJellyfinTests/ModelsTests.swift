@@ -27,6 +27,18 @@ struct ModelsTests {
         #expect(decoded == session)
     }
 
+    @Test("PersistedSession decodes legacy user primaryImageTag without failing")
+    func persistedSessionIgnoresLegacyProfileImageTag() throws {
+        let json = """
+        {"id":"server-1","serverURL":"https:\\/\\/jellyfin.example.com","serverName":"Home",\
+        "user":{"id":"user-1","name":"alice","primaryImageTag":"abc123","serverLastUpdatedAt":null}}
+        """
+        let data = Data(json.utf8)
+        let decoded = try JSONDecoder().decode(PersistedSession.self, from: data)
+        #expect(decoded.user.name == "alice")
+        #expect(decoded.user.id == "user-1")
+    }
+
     @Test("Session combines PersistedSession with a token")
     func sessionAttachesToken() {
         let persisted = PersistedSession(

@@ -4,9 +4,8 @@ import ParallaxJellyfin
 
 /// Loads a raw image URL through the per-`Session` Nuke pipeline. Split out as its own
 /// view so the pipeline lookup happens inside a body with a stable identity, avoiding
-/// repeated actor hops on every outer parent redraw. Shared by `JellyfinImage` (item
-/// art) and `AccountAvatar` (user profile photo) — both render Jellyfin images that need
-/// the session-scoped pipeline, so this is the one place that resolves it.
+/// repeated actor hops on every outer parent redraw. Used by `JellyfinImage` for item art
+/// that needs the session-scoped pipeline — this is the one place that resolves it.
 struct LazyImageRenderer: View {
     let url: URL
     let session: Session

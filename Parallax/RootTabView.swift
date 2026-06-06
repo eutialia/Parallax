@@ -5,6 +5,7 @@ struct RootTabView: View {
     @Environment(AppRouter.self) private var router
     @Environment(AppDependencies.self) private var deps
     @Environment(\.horizontalSizeClass) private var hSize
+    @Environment(\.colorScheme) private var colorScheme
     @State private var selectedTab: AppTab = .home
     @State private var session: Session?
     @State private var libraries: [MediaCollection] = []
@@ -34,19 +35,19 @@ struct RootTabView: View {
     private var tabView: some View {
         TabView(selection: $selectedTab) {
             Tab("Home", systemImage: "house", value: AppTab.home) {
-                // Home keeps a transparent nav bar (see HomeView) so the account entry can
+                // Home keeps a transparent nav bar (see HomeView) so the settings button can
                 // live in the toolbar like the other tabs, and so the pushed detail's back
                 // button shares a bar to cross-fade with instead of sliding off on dismiss.
                 NavigationStack {
                     HomeView()
-                        .toolbar { accountToolbar }
+                        .toolbar { settingsToolbar }
                         .appScreenBackground()
                 }
             }
             Tab("Library", systemImage: "rectangle.stack", value: AppTab.library) {
                 NavigationStack {
                     LibraryHostView()
-                        .toolbar { accountToolbar }
+                        .toolbar { settingsToolbar }
                         .appScreenBackground()
                 }
             }
@@ -59,7 +60,7 @@ struct RootTabView: View {
             Tab("Search", systemImage: "magnifyingglass", value: AppTab.search) {
                 NavigationStack {
                     JellyfinSearchView()
-                        .toolbar { accountToolbar }
+                        .toolbar { settingsToolbar }
                         .appScreenBackground()
                 }
             }
@@ -88,80 +89,62 @@ struct RootTabView: View {
             }
         }
         .tabViewStyle(.sidebarAdaptable)
-        // Behind the tab chrome (incl. iPadOS 26 sidebar material) — content tabs
-        // get their own floor via `.appScreenBackground()` inside each stack.
-        .background(Color.background, ignoresSafeAreaEdges: .all)
-        .tabViewSidebarBottomBar { userFooter }
+        // Matinee lives on tab *content* only (`.appScreenBackground()` inside each stack).
+        // Tab chrome — iPad sidebar, bottom bar, and `tabViewSidebarBottomBar` — keeps the
+        // system's Liquid Glass so hierarchical label styles match native tab rows.
+        .tabViewSidebarBottomBar { settingsFooter }
     }
 
-    // MARK: - Account entry (compact width)
+    // MARK: - Settings entry
     //
-    // On iPad the sidebar footer opens settings; iPhone has no sidebar, so the primary
-    // tabs carry an account button instead. Both just flip `router.presentingSettings`,
-    // which RootView turns into the floating panel.
+    // iPad: pinned below the tab list via `tabViewSidebarBottomBar` (not mixed in with
+    // Home / Library / Search). iPhone: nav-bar button — no sidebar to host a footer.
 
-    /// Account button for the primary tabs (Home, Library, Search). Empty on regular
-    /// width — the sidebar footer is the account entry there.
+    /// Settings for the primary tabs (Home, Library, Search). Empty on regular width —
+    /// the sidebar bottom bar is the settings entry there.
     @ToolbarContentBuilder
-    private var accountToolbar: some ToolbarContent {
-        if hSize == .compact, let session {
+    private var settingsToolbar: some ToolbarContent {
+        if hSize == .compact {
             ToolbarItem(placement: .topBarTrailing) {
-                accountButton(session)
+                settingsButton
             }
-            // The avatar is already a circle; the system's shared Liquid Glass capsule was
-            // wrapping it into an oval "bordered" pill. Drop it so the avatar floats round.
-            .sharedBackgroundVisibility(.hidden)
         }
     }
 
-    private func accountButton(_ session: Session) -> some View {
-        Button {
-            router.presentingSettings = true
-        } label: {
-            AccountAvatar(session: session, size: 36)
+    private var settingsButton: some View {
+        Button(action: openSettings) {
+            Image(systemName: "gearshape")
         }
-        .accessibilityLabel("Account and settings")
-        .accessibilityHint("Opens settings")
+        .accessibilityLabel("Settings")
     }
 
     // MARK: - Sidebar chrome
 
-    /// Pinned account footer (avatar · name · server) — the design's sidebar foot.
-    /// Tapping it opens the floating settings panel.
-    @ViewBuilder
-    private var userFooter: some View {
-        if let session {
-            let host = session.displayHost
-            Button {
-                router.presentingSettings = true
-            } label: {
-                HStack(spacing: Space.s12) {
-                    AccountAvatar(session: session, size: 34)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(session.user.name)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(Color.label)
-                            .lineLimit(1)
-                        Text(host)
-                            .font(.caption)
-                            .foregroundStyle(Color.secondaryLabel)
-                            .lineLimit(1)
-                    }
-                    Spacer(minLength: 0)
-                }
-                // Aligns the footer under the sidebar tab-row glyphs. One shared knob
-                // (`AppLayout.sidebarLeadingInset`) so every custom sidebar element keeps
-                // the same left spacing as the rows — see AppLayout for why it's manual.
+    /// Pinned settings row at the bottom of the iPad sidebar — separate from the tab
+    /// list above. Dark mode uses hierarchical styles to match native rows on glass; light
+    /// mode uses Matinee tokens because hierarchical `.primary` washes out on the light
+    /// sidebar material.
+    private var settingsFooter: some View {
+        Button(action: openSettings) {
+            Label("Settings", systemImage: "gearshape")
+                .font(.body)
+                .foregroundStyle(sidebarChromeLabel)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                // Aligns under the sidebar tab-row glyphs — see AppLayout.
                 .padding(.leading, AppLayout.sidebarLeadingInset)
                 .padding(.trailing, Space.s12)
                 .padding(.vertical, Space.s8)
                 .contentShape(.rect)
-            }
-            .buttonStyle(.plain)
-            // Explicit label (replaces the children-derived one, which leaked the avatar
-            // initial) + a hint that this opens settings.
-            .accessibilityLabel("\(session.user.name), \(host)")
-            .accessibilityHint("Opens settings")
         }
+        .buttonStyle(.plain)
+        .accessibilityHint("Opens settings")
+    }
+
+    private var sidebarChromeLabel: AnyShapeStyle {
+        colorScheme == .dark ? AnyShapeStyle(.primary) : AnyShapeStyle(Color.label)
+    }
+
+    private func openSettings() {
+        router.presentingSettings = true
     }
 }

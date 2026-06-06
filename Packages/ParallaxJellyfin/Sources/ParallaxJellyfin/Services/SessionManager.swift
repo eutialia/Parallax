@@ -189,7 +189,6 @@ public actor SessionManager {
             user: UserSnapshot(
                 id: userID,
                 name: userName,
-                primaryImageTag: user.primaryImageTag,
                 serverLastUpdatedAt: user.lastActivityDate
             )
         )

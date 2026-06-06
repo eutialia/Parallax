@@ -2,8 +2,8 @@ import SwiftUI
 import ParallaxJellyfin
 
 /// The app's floating settings panel — a centered form sheet presented from the sidebar
-/// account footer (regular width) or the nav-bar account button (compact). It owns the
-/// server list (switch / sign out) and the add-server → sign-in flow, so all account
+/// settings footer (regular width) or the nav-bar gear button (compact). It owns the
+/// server list (switch / sign out) and the add-server → sign-in flow, so server
 /// management lives in one floating place instead of a full-page tab (the Apple TV pattern).
 ///
 /// Presented from the stable `RootView`, above `RootTabView`'s `.id(activeServerID)` remount,
@@ -68,9 +68,6 @@ struct SettingsView: View {
         if let vm = viewModel {
             ScrollView {
                 VStack(spacing: Space.s22) {
-                    if let active = vm.sessions.first(where: { $0.id == vm.activeID }) {
-                        accountHeader(active)
-                    }
                     serversSection(vm)
                     if let message = vm.signOutErrorMessage {
                         Text(message)
@@ -88,26 +85,6 @@ struct SettingsView: View {
             ScrollView { ServerListLoadingSkeleton() }
                 .scrollDisabled(true)
         }
-    }
-
-    /// Active-account identity at the top of the panel (avatar · name · host).
-    private func accountHeader(_ session: Session) -> some View {
-        HStack(spacing: Space.s14) {
-            AccountAvatar(session: session, size: 52)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(session.user.name)
-                    .font(.title3.weight(.bold))
-                    .foregroundStyle(Color.label)
-                    .lineLimit(1)
-                Text(session.displayHost)
-                    .font(.subheadline)
-                    .foregroundStyle(Color.secondaryLabel)
-                    .lineLimit(1)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(Space.s18)
-        .glassBar(cornerRadius: Radius.card)
     }
 
     // MARK: - Servers
