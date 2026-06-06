@@ -13,6 +13,7 @@ public struct Movie: Sendable, Hashable, Identifiable {
     public let backdropTags: [ImageTag]
     public let logoTag: ImageTag?
     public let thumbTag: ImageTag?
+    public let dateAdded: Date?
     public let userData: UserItemData
     public let width: Int?
     public let height: Int?
@@ -26,6 +27,7 @@ public struct Movie: Sendable, Hashable, Identifiable {
         id: ItemID, title: String, overview: String?, year: Int?, runtime: Duration?,
         communityRating: Double?, officialRating: String?, genres: [String],
         primaryTag: ImageTag?, backdropTags: [ImageTag], logoTag: ImageTag?, thumbTag: ImageTag?,
+        dateAdded: Date? = nil,
         userData: UserItemData,
         width: Int? = nil, height: Int? = nil, videoRangeType: String? = nil
     ) {
@@ -34,6 +36,7 @@ public struct Movie: Sendable, Hashable, Identifiable {
         self.officialRating = officialRating; self.genres = genres
         self.primaryTag = primaryTag; self.backdropTags = backdropTags
         self.logoTag = logoTag; self.thumbTag = thumbTag
+        self.dateAdded = dateAdded
         self.userData = userData
         self.width = width; self.height = height; self.videoRangeType = videoRangeType
     }

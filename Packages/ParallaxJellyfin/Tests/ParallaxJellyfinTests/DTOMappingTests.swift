@@ -229,6 +229,33 @@ struct DTOMappingTests {
         #expect(m?.posterBadges == [])
     }
 
+    @Test("Episode maps dateCreated to dateAdded")
+    func episodeDateAdded() throws {
+        var dto = try loadDto("episode")
+        let fixed = ISO8601DateFormatter().date(from: "2026-06-01T12:00:00Z")!
+        dto.dateCreated = fixed
+        let episode = dto.toEpisode()
+        #expect(episode?.dateAdded == fixed)
+    }
+
+    @Test("Series maps dateCreated to dateAdded")
+    func seriesDateAdded() throws {
+        var dto = try loadDto("series")
+        let fixed = ISO8601DateFormatter().date(from: "2025-01-15T08:00:00Z")!
+        dto.dateCreated = fixed
+        let series = dto.toSeries()
+        #expect(series?.dateAdded == fixed)
+    }
+
+    @Test("Movie maps dateCreated to dateAdded")
+    func movieDateAdded() throws {
+        var dto = try loadDto("movie")
+        let fixed = ISO8601DateFormatter().date(from: "2024-03-20T18:30:00Z")!
+        dto.dateCreated = fixed
+        let movie = dto.toMovie()
+        #expect(movie?.dateAdded == fixed)
+    }
+
     @Test("Unknown item type returns nil from toItemDetail")
     func unknownDetailType() {
         // Nil type → guard let type rejects

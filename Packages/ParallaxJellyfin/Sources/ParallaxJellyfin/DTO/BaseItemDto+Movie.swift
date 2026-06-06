@@ -28,6 +28,7 @@ extension BaseItemDto {
             backdropTags: backdrops,
             logoTag: imageTags?["Logo"].map(ImageTag.init(rawValue:)),
             thumbTag: imageTags?["Thumb"].map(ImageTag.init(rawValue:)),
+            dateAdded: dateCreated,
             userData: userData?.toUserItemData() ?? .absent,
             width: video?.width,
             height: video?.height,

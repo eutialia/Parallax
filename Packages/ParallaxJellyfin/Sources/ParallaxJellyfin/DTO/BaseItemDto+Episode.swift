@@ -24,6 +24,7 @@ extension BaseItemDto {
             primaryTag: imageTags?["Primary"].map(ImageTag.init(rawValue:)),
             seasonImageRef: Self.seasonImageRef(from: self),
             seriesImageRef: Self.seriesImageRef(from: self),
+            dateAdded: dateCreated,
             userData: userData?.toUserItemData() ?? .absent
         )
     }

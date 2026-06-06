@@ -12,6 +12,7 @@ public struct Series: Sendable, Hashable, Identifiable {
     public let logoTag: ImageTag?
     public let thumbTag: ImageTag?
     public let bannerTag: ImageTag?
+    public let dateAdded: Date?
     public let userData: UserItemData
     public let width: Int?
     public let height: Int?
@@ -26,6 +27,7 @@ public struct Series: Sendable, Hashable, Identifiable {
         genres: [String],
         primaryTag: ImageTag?, backdropTags: [ImageTag], logoTag: ImageTag?,
         thumbTag: ImageTag?, bannerTag: ImageTag?,
+        dateAdded: Date? = nil,
         userData: UserItemData,
         width: Int? = nil, height: Int? = nil, videoRangeType: String? = nil
     ) {
@@ -33,6 +35,7 @@ public struct Series: Sendable, Hashable, Identifiable {
         self.status = status; self.genres = genres
         self.primaryTag = primaryTag; self.backdropTags = backdropTags
         self.logoTag = logoTag; self.thumbTag = thumbTag; self.bannerTag = bannerTag
+        self.dateAdded = dateAdded
         self.userData = userData
         self.width = width; self.height = height; self.videoRangeType = videoRangeType
     }

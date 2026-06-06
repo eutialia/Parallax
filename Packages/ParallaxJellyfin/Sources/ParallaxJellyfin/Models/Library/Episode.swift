@@ -14,6 +14,7 @@ public struct Episode: Sendable, Hashable, Identifiable {
     public let seasonImageRef: ImageRef?
     /// Series poster when season art is missing (DTO hint or repository fetch).
     public let seriesImageRef: ImageRef?
+    public let dateAdded: Date?
     public let userData: UserItemData
 
     public init(
@@ -22,6 +23,7 @@ public struct Episode: Sendable, Hashable, Identifiable {
         overview: String?, runtime: Duration?,
         primaryTag: ImageTag?, seasonImageRef: ImageRef? = nil,
         seriesImageRef: ImageRef? = nil,
+        dateAdded: Date? = nil,
         userData: UserItemData
     ) {
         self.id = id; self.seriesID = seriesID; self.seasonID = seasonID
@@ -30,6 +32,7 @@ public struct Episode: Sendable, Hashable, Identifiable {
         self.overview = overview; self.runtime = runtime
         self.primaryTag = primaryTag; self.seasonImageRef = seasonImageRef
         self.seriesImageRef = seriesImageRef
+        self.dateAdded = dateAdded
         self.userData = userData
     }
 
@@ -39,6 +42,7 @@ public struct Episode: Sendable, Hashable, Identifiable {
             indexNumber: indexNumber, parentIndexNumber: parentIndexNumber,
             overview: overview, runtime: runtime, primaryTag: primaryTag,
             seasonImageRef: ref, seriesImageRef: seriesImageRef,
+            dateAdded: dateAdded,
             userData: userData
         )
     }
@@ -49,6 +53,7 @@ public struct Episode: Sendable, Hashable, Identifiable {
             indexNumber: indexNumber, parentIndexNumber: parentIndexNumber,
             overview: overview, runtime: runtime, primaryTag: primaryTag,
             seasonImageRef: seasonImageRef, seriesImageRef: ref,
+            dateAdded: dateAdded,
             userData: userData
         )
     }

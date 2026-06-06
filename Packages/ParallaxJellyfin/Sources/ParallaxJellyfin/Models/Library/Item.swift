@@ -44,13 +44,16 @@ public enum Item: Sendable, Hashable, Identifiable {
                 id: m.id, title: m.title, overview: m.overview, year: m.year, runtime: m.runtime,
                 communityRating: m.communityRating, officialRating: m.officialRating, genres: m.genres,
                 primaryTag: m.primaryTag, backdropTags: m.backdropTags, logoTag: m.logoTag, thumbTag: m.thumbTag,
+                dateAdded: m.dateAdded,
                 userData: userData, width: m.width, height: m.height, videoRangeType: m.videoRangeType
             ))
         case .series(let s):
             return .series(Series(
                 id: s.id, title: s.title, overview: s.overview, year: s.year, status: s.status,
                 genres: s.genres, primaryTag: s.primaryTag, backdropTags: s.backdropTags,
-                logoTag: s.logoTag, thumbTag: s.thumbTag, bannerTag: s.bannerTag, userData: userData,
+                logoTag: s.logoTag, thumbTag: s.thumbTag, bannerTag: s.bannerTag,
+                dateAdded: s.dateAdded,
+                userData: userData,
                 width: s.width, height: s.height, videoRangeType: s.videoRangeType
             ))
         case .episode(let e):
@@ -59,6 +62,7 @@ public enum Item: Sendable, Hashable, Identifiable {
                 indexNumber: e.indexNumber, parentIndexNumber: e.parentIndexNumber,
                 overview: e.overview, runtime: e.runtime, primaryTag: e.primaryTag,
                 seasonImageRef: e.seasonImageRef, seriesImageRef: e.seriesImageRef,
+                dateAdded: e.dateAdded,
                 userData: userData
             ))
         }
