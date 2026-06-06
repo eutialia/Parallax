@@ -11,9 +11,21 @@ final class JellyfinLibraryGridViewModel {
         case idle, loading, loaded, failed(String)
     }
 
+    private struct ReloadSnapshot {
+        let items: [Item]
+        let cursor: PageCursor?
+        let state: LoadState
+    }
+
     private(set) var state: LoadState = .idle
     private(set) var items: [Item] = []
     private(set) var isLoadingMore: Bool = false
+    /// True while a sort/filter change is in flight but stale items are still shown.
+    private(set) var isRefreshing: Bool = false
+    /// Bumped only after a successful reset fetch — drives grid crossfade without O(n) ID scans.
+    private(set) var refreshGeneration: UInt = 0
+    /// Non-blocking error when a sort/filter refresh fails but stale items remain visible.
+    private(set) var refreshErrorMessage: String?
     private(set) var availableGenres: [String] = []
     /// True while the genre list is in flight on first load — drives the placeholder
     /// row so the grid below doesn't shift when genres arrive.
@@ -29,6 +41,9 @@ final class JellyfinLibraryGridViewModel {
     private var cursor: PageCursor?
     private var inFlight: Task<Void, Never>?
     private var genreTask: Task<Void, Never>?
+    private var reloadSnapshot: ReloadSnapshot?
+    /// Monotonic token so only the latest reset fetch may mutate refresh UI state.
+    private var fetchGeneration: UInt = 0
     private let repo: LibraryRepository
     private let collectionID: CollectionID
 
@@ -39,13 +54,17 @@ final class JellyfinLibraryGridViewModel {
 
     func load() async {
         guard state != .loading else { return }
+        refreshErrorMessage = nil
+        reloadSnapshot = nil
         state = .loading
-        // Genres load on their OWN task and write the moment they resolve — NOT gated
-        // behind the page fetch (sequencing the assignment after `await fetchPage`
-        // would withhold already-arrived genres until the slower page finished,
-        // re-creating the beat-late row shift). Concurrent with the page either way.
+        let generation = beginResetFetch()
         loadGenres()
-        await fetchPage(reset: true)
+        await fetchPage(reset: true, generation: generation)
+    }
+
+    func retryRefresh() async {
+        guard refreshErrorMessage != nil else { return }
+        await reload()
     }
 
     private func loadGenres() {
@@ -60,7 +79,7 @@ final class JellyfinLibraryGridViewModel {
     }
 
     func loadMore() async {
-        guard !isLoadingMore, cursor != nil, state == .loaded else { return }
+        guard !isLoadingMore, !isRefreshing, cursor != nil, state == .loaded else { return }
         isLoadingMore = true
         await fetchPage(reset: false)
         isLoadingMore = false
@@ -73,13 +92,38 @@ final class JellyfinLibraryGridViewModel {
         // would then bail, leaving the grid stuck on the spinner forever.
         // We've already cancelled the in-flight task, so a fresh fetch is safe.
         inFlight?.cancel()
+        refreshErrorMessage = nil
+        let generation = beginResetFetch()
+
+        if items.isEmpty {
+            reloadSnapshot = nil
+            state = .loading
+        } else {
+            reloadSnapshot = ReloadSnapshot(items: items, cursor: cursor, state: state)
+            isRefreshing = true
+        }
         cursor = nil
-        items = []
-        state = .loading
-        await fetchPage(reset: true)
+        await fetchPage(reset: true, generation: generation)
     }
 
-    private func fetchPage(reset: Bool) async {
+    private func beginResetFetch() -> UInt {
+        fetchGeneration &+= 1
+        return fetchGeneration
+    }
+
+    private func restoreSnapshotIfNeeded() {
+        guard let snapshot = reloadSnapshot else { return }
+        items = snapshot.items
+        cursor = snapshot.cursor
+        state = snapshot.state
+        reloadSnapshot = nil
+    }
+
+    private func isCurrentResetFetch(_ generation: UInt) -> Bool {
+        generation == fetchGeneration
+    }
+
+    private func fetchPage(reset: Bool, generation: UInt? = nil) async {
         let snapshotSort = sort
         let snapshotFilter = filter
         let snapshotCursor = cursor
@@ -92,27 +136,53 @@ final class JellyfinLibraryGridViewModel {
                     cursor: snapshotCursor
                 )
                 guard !Task.isCancelled else { return }
+                if let generation, !isCurrentResetFetch(generation) { return }
+
                 if reset {
-                    self.items = page.items
+                    items = page.items
+                    refreshGeneration &+= 1
+                    reloadSnapshot = nil
                 } else {
-                    self.items.append(contentsOf: page.items)
+                    items.append(contentsOf: page.items)
                 }
-                self.cursor = page.nextCursor
-                self.state = .loaded
+                cursor = page.nextCursor
+                state = .loaded
+                isRefreshing = false
+                refreshErrorMessage = nil
             } catch let error as AppError {
                 if !Task.isCancelled {
-                    Log.ui.error("JellyfinLibraryGrid load failed: \(error.userMessage)")
-                    self.state = .failed(error.userMessage)
+                    handleFetchFailure(error.userMessage, reset: reset, generation: generation)
                 }
             } catch is CancellationError {
-                // expected on sort/filter change; reload() takes over
+                if let generation, isCurrentResetFetch(generation) {
+                    restoreSnapshotIfNeeded()
+                    isRefreshing = false
+                }
             } catch {
                 if !Task.isCancelled {
                     Log.ui.error("JellyfinLibraryGrid load unexpected: \(String(describing: type(of: error)))")
-                    self.state = .failed("Something went wrong.")
+                    handleFetchFailure("Something went wrong.", reset: reset, generation: generation)
                 }
             }
         }
         await inFlight?.value
+    }
+
+    private func handleFetchFailure(_ message: String, reset: Bool, generation: UInt?) {
+        if let generation, !isCurrentResetFetch(generation) { return }
+
+        Log.ui.error("JellyfinLibraryGrid load failed: \(message)")
+        isRefreshing = false
+
+        if reset {
+            restoreSnapshotIfNeeded()
+            if items.isEmpty {
+                state = .failed(message)
+            } else {
+                refreshErrorMessage = message
+            }
+        } else if items.isEmpty {
+            state = .failed(message)
+        }
     }
 }

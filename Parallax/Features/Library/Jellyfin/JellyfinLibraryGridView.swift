@@ -1,12 +1,18 @@
 import SwiftUI
 import ParallaxJellyfin
 
+private struct LibraryGridAnimationTrigger: Equatable {
+    var isRefreshing: Bool
+    var refreshGeneration: UInt
+}
+
 struct JellyfinLibraryGridView: View {
     let collection: MediaCollection
     let session: Session
 
     @Environment(AppDependencies.self) private var deps
     @Environment(\.horizontalSizeClass) private var hSize
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Fixed poster columns — shared by the grid, its first-load placeholder, and the
     /// load-more strip so all three stay aligned. Denser on regular width (iPad).
     private var columns: Int { hSize == .regular ? 5 : 3 }
@@ -52,7 +58,7 @@ struct JellyfinLibraryGridView: View {
 
     @ViewBuilder
     private func gridContent(vm: JellyfinLibraryGridViewModel) -> some View {
-        if (vm.state == .idle || vm.state == .loading) && vm.items.isEmpty {
+        if isInitialLoad(vm) {
             libraryGridLoadingPlaceholder
         } else if case .failed(let message) = vm.state, vm.items.isEmpty {
             ContentUnavailableView(
@@ -67,21 +73,70 @@ struct JellyfinLibraryGridView: View {
                 // animation smooths the one place this can still move: a library that
                 // turns out to have NO genres collapses the placeholder gently.
                 genreSection(vm: vm)
-                    .animation(.smooth, value: vm.isLoadingGenres)
+                    .animation(reduceMotion ? nil : .smooth, value: vm.isLoadingGenres)
+                if let message = vm.refreshErrorMessage {
+                    refreshErrorBanner(message: message, vm: vm)
+                }
                 ScrollView {
-                    MediaGrid(
-                        items: vm.items,
-                        fixedColumns: columns,
-                        onAppearLast: { Task { await vm.loadMore() } }
-                    ) { item in
-                        ItemNavigator(item: item, session: session) { tile(for: item) }
-                    }
-                    if vm.isLoadingMore {
-                        AdaptivePosterGridLoadingSkeleton(tileCount: columns, fixedColumns: columns)
-                            .padding(.vertical, Space.s12)
-                    }
+                    gridScrollContent(vm: vm)
                 }
                 .contentMargins(.horizontal, AppLayout.contentHMargin, for: .scrollContent)
+            }
+        }
+    }
+
+    /// Full-screen placeholder only on the very first load — while genres are still
+    /// in flight. Sort/filter/genre changes reload the grid but keep the genre bar.
+    private func isInitialLoad(_ vm: JellyfinLibraryGridViewModel) -> Bool {
+        vm.items.isEmpty && (vm.state == .idle || (vm.state == .loading && vm.isLoadingGenres))
+    }
+
+    private var gridAnimation: Animation? { reduceMotion ? nil : .smooth }
+
+    private func gridAnimationTrigger(_ vm: JellyfinLibraryGridViewModel) -> LibraryGridAnimationTrigger {
+        LibraryGridAnimationTrigger(isRefreshing: vm.isRefreshing, refreshGeneration: vm.refreshGeneration)
+    }
+
+    private func gridDimmed(_ vm: JellyfinLibraryGridViewModel) -> Double {
+        vm.isRefreshing && !reduceMotion ? 0.45 : 1
+    }
+
+    private func refreshErrorBanner(message: String, vm: JellyfinLibraryGridViewModel) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: Space.s8) {
+            Label(message, systemImage: "exclamationmark.triangle")
+                .font(.subheadline)
+                .foregroundStyle(Color.secondaryLabel)
+                .lineLimit(2)
+            Spacer(minLength: Space.s8)
+            Button("Try Again") { Task { await vm.retryRefresh() } }
+                .font(.subheadline.weight(.semibold))
+        }
+        .padding(.horizontal, AppLayout.contentHMargin)
+        .padding(.vertical, Space.s8)
+        .background(Color.fill)
+        .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder
+    private func gridScrollContent(vm: JellyfinLibraryGridViewModel) -> some View {
+        if vm.items.isEmpty, vm.state == .loading {
+            AdaptivePosterGridLoadingSkeleton(tileCount: columns * 3, fixedColumns: columns)
+        } else {
+            MediaGrid(
+                items: vm.items,
+                fixedColumns: columns,
+                onAppearLast: { Task { await vm.loadMore() } }
+            ) { item in
+                ItemNavigator(item: item, session: session) { tile(for: item) }
+            }
+            // Stale-while-revalidate: dim the outgoing page during the API round-trip,
+            // then crossfade back to full opacity when refreshGeneration bumps.
+            .opacity(gridDimmed(vm))
+            .allowsHitTesting(!vm.isRefreshing)
+            .animation(gridAnimation, value: gridAnimationTrigger(vm))
+            if vm.isLoadingMore {
+                AdaptivePosterGridLoadingSkeleton(tileCount: columns, fixedColumns: columns)
+                    .padding(.vertical, Space.s12)
             }
         }
     }
