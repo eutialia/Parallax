@@ -154,8 +154,8 @@ public final class DefaultJellyfinLibraryClient: JellyfinLibraryClient, @uncheck
         var params = Paths.GetLatestMediaParameters()
         params.userID = userID
         params.limit = limit
-        params.includeItemTypes = [.movie, .series]
-        params.fields = [.primaryImageAspectRatio]
+        params.includeItemTypes = [.movie, .episode]
+        params.fields = [.primaryImageAspectRatio, .dateCreated]
         params.imageTypeLimit = 1
         params.enableImageTypes = [.primary, .backdrop, .logo, .thumb]
         params.enableUserData = true
