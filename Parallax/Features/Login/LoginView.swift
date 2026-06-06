@@ -16,10 +16,7 @@ struct LoginView: View {
     @ScaledMetric(relativeTo: .headline) private var controlHeight: CGFloat = 50
 
     var body: some View {
-        ZStack {
-            Color.background.ignoresSafeArea()
-            content
-        }
+        content
         .onAppear {
             // Discovery runs only while this screen is visible. Triggers the iOS
             // Local Network permission prompt here (not mid-library browse) and

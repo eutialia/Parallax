@@ -31,10 +31,6 @@ struct HomeView: View {
         // width (~100pt for the loading spinner) until a later layout pass, showing a
         // narrow strip. Greedy frame pins it to the proposed width from the first pass.
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // Solid floor under the scroll content so the floating iPadOS 26
-        // sidebar's translucent material blurs over the app background
-        // instead of letting tile imagery bleed through.
-        .background(Color.background)
         .ignoresSafeArea(edges: .top)
         // Keep a (transparent, title-less) navigation bar rather than hiding it: the
         // hero still bleeds under it via `ignoresSafeArea` + `scrollEdgeEffectHidden`,

@@ -84,11 +84,9 @@ struct SettingsView: View {
                 .frame(maxWidth: 560)
                 .frame(maxWidth: .infinity)
             }
-            .background(Color.background)
         } else {
             ScrollView { ServerListLoadingSkeleton() }
                 .scrollDisabled(true)
-                .background(Color.background)
         }
     }
 

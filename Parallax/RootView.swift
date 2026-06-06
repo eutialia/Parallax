@@ -14,7 +14,11 @@ struct RootView: View {
                 // doesn't tear down tabs mid-flight (that cancelled Home's first request).
                 RootTabView()
             case .login:
+                // Login sits outside `RootTabView`, so it carries its own floor.
+                // (`.containerBackground(for: .window)` is macOS-only; tabs use `.tabView`.)
                 LoginView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color.background)
             }
         }
         // Monochrome chrome: no brand accent anywhere. This overrides the system

@@ -47,6 +47,7 @@ private struct ItemZoomNavigationModifier: ViewModifier {
             .environment(\.itemZoomNamespace, namespace)
             .navigationDestination(for: ItemNavigation.self) { nav in
                 itemDetailDestination(nav)
+                    .appScreenBackground()
                     .navigationTransition(.zoom(sourceID: nav, in: namespace))
             }
     }

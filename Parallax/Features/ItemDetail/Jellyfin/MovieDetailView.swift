@@ -93,7 +93,6 @@ struct MovieDetailView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.background)
         .ignoresSafeArea(edges: .top)
         .toolbar(.visible, for: .navigationBar)
         .toolbarBackground(.hidden, for: .navigationBar)

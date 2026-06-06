@@ -36,7 +36,6 @@ struct ServerSettingsView: View {
             .frame(maxWidth: 720)
             .frame(maxWidth: .infinity)
         }
-        .background(Color.background)
         .navigationTitle(session.serverName)
         .navigationBarTitleDisplayMode(.inline)
     }

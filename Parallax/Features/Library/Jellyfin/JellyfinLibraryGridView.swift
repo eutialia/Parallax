@@ -30,8 +30,7 @@ struct JellyfinLibraryGridView: View {
                 libraryGridLoadingPlaceholder
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.background)
+        .appScreenBackground()
         // The grid owns its own title (the library name) so BOTH entry points — the
         // sidebar's direct library tab and the Library-list drill-down — show it
         // identically, without each call site re-specifying it. Inline so the name

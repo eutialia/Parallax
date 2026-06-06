@@ -16,15 +16,39 @@ struct RootTabView: View {
     }
 
     var body: some View {
+        tabView
+        // Remount every tab when the active server changes. `activeServerID` is owned
+        // by AppRouter and updated by every site that switches/adds/signs-out a server,
+        // so a switch tears down + rebuilds the tabs (and reloads the sidebar libraries)
+        // against the new server instead of leaving them on the previous one's content.
+        .id(router.activeServerID)
+        .task(id: router.activeServerID) {
+            guard router.activeServerID != nil else { return }
+            session = await deps.serverStore.active
+            guard let session else { libraries = []; return }
+            let repo = await deps.libraryRepoFactory(session)
+            libraries = (try? await repo.collections()) ?? []
+        }
+    }
+
+    private var tabView: some View {
         TabView(selection: $selectedTab) {
             Tab("Home", systemImage: "house", value: AppTab.home) {
                 // Home keeps a transparent nav bar (see HomeView) so the account entry can
                 // live in the toolbar like the other tabs, and so the pushed detail's back
                 // button shares a bar to cross-fade with instead of sliding off on dismiss.
-                NavigationStack { HomeView().toolbar { accountToolbar } }
+                NavigationStack {
+                    HomeView()
+                        .toolbar { accountToolbar }
+                        .appScreenBackground()
+                }
             }
             Tab("Library", systemImage: "rectangle.stack", value: AppTab.library) {
-                NavigationStack { LibraryHostView().toolbar { accountToolbar } }
+                NavigationStack {
+                    LibraryHostView()
+                        .toolbar { accountToolbar }
+                        .appScreenBackground()
+                }
             }
             // Deliberately NOT `role: .search`, and JellyfinSearchView uses its own
             // in-content SearchBar rather than `.searchable`. In iPadOS 26 the system
@@ -33,7 +57,11 @@ struct RootTabView: View {
             // search presentation seize the sidebar toggle (it flips to "Hide Sidebar"
             // while the keyboard is up). A plain tab + custom field sidesteps all of it.
             Tab("Search", systemImage: "magnifyingglass", value: AppTab.search) {
-                NavigationStack { JellyfinSearchView().toolbar { accountToolbar } }
+                NavigationStack {
+                    JellyfinSearchView()
+                        .toolbar { accountToolbar }
+                        .appScreenBackground()
+                }
             }
 
             // The user's actual libraries, as a titled sidebar section (the design's
@@ -48,6 +76,7 @@ struct RootTabView: View {
                                 // Title is owned by the grid (from the collection) so
                                 // this matches the Library-list drill-down exactly.
                                 JellyfinLibraryGridView(collection: library, session: session)
+                                    .appScreenBackground()
                             }
                         }
                         // Sidebar-only: don't also crowd the collapsed top tab bar with
@@ -59,19 +88,10 @@ struct RootTabView: View {
             }
         }
         .tabViewStyle(.sidebarAdaptable)
+        // Behind the tab chrome (incl. iPadOS 26 sidebar material) — content tabs
+        // get their own floor via `.appScreenBackground()` inside each stack.
+        .background(Color.background, ignoresSafeAreaEdges: .all)
         .tabViewSidebarBottomBar { userFooter }
-        // Remount every tab when the active server changes. `activeServerID` is owned
-        // by AppRouter and updated by every site that switches/adds/signs-out a server,
-        // so a switch tears down + rebuilds the tabs (and reloads the sidebar libraries)
-        // against the new server instead of leaving them on the previous one's content.
-        .id(router.activeServerID)
-        .task(id: router.activeServerID) {
-            guard router.activeServerID != nil else { return }
-            session = await deps.serverStore.active
-            guard let session else { libraries = []; return }
-            let repo = await deps.libraryRepoFactory(session)
-            libraries = (try? await repo.collections()) ?? []
-        }
     }
 
     // MARK: - Account entry (compact width)
