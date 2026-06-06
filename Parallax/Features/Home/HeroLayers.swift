@@ -30,17 +30,18 @@ struct HeroArtwork: View {
 /// overlay (it isn't part of the crossfading artwork) so the Play / Favorite buttons stay
 /// anchored and just re-bind to whichever item is settled — chrome, not page content.
 struct HeroForeground: View {
-    let item: Item
+    let entry: HomeHeroFeedEntry
     let session: Session
     let regularWidth: Bool
-    let resumeEpisode: Episode?
     let isFavorite: Bool
     let onPlay: () -> Void
     let onToggleFavorite: () -> Void
 
+    private var item: Item { entry.presentation }
+
     var body: some View {
         VStack(alignment: .leading, spacing: Space.s12) {
-            Text("NEWLY ADDED")
+            Text(entry.eyebrow.rawValue)
                 .font(.caption.weight(.bold)).tracking(1.5)
                 .foregroundStyle(.white.opacity(0.7))
             title
@@ -49,7 +50,7 @@ struct HeroForeground: View {
             }
             HStack(spacing: Space.s12) {
                 PrimaryPlayButton(
-                    title: ItemPlayButtonLabel.title(for: item, resumeEpisode: resumeEpisode),
+                    title: entry.playButtonTitle,
                     fillWidth: false,
                     layoutReserveTitle: ItemPlayButtonLabel.layoutReserveTitle,
                     action: onPlay

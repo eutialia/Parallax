@@ -64,9 +64,9 @@ struct HomeView: View {
                 HomeLoadingSkeleton()
             case .loaded:
                 LazyVStack(alignment: .leading, spacing: Space.s30) {
-                    if !vm.recentlyAdded.isEmpty {
+                    if !vm.heroFeed.isEmpty {
                         HomeHeroCarousel(
-                            items: vm.recentlyAdded,
+                            entries: vm.heroFeed,
                             session: session,
                             viewModel: vm,
                             overscroll: heroOverscroll
@@ -82,7 +82,7 @@ struct HomeView: View {
                             homeShelfTile(item: item, session: session, showProgress: false)
                         }
                     }
-                    if vm.recentlyAdded.isEmpty && vm.continueWatching.isEmpty && vm.nextUp.isEmpty {
+                    if vm.heroFeed.isEmpty && vm.continueWatching.isEmpty && vm.nextUp.isEmpty {
                         ContentUnavailableView("Nothing here yet", systemImage: "play.slash").padding(.top, Space.s60)
                     }
                 }

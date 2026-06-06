@@ -2,13 +2,10 @@ import Foundation
 import ParallaxJellyfin
 
 enum ItemPlayButtonLabel {
-    /// Widest hero CTA copy — sizes the play pill so Play / Resume S# E# don't reflow.
+    /// Widest play CTA copy — sizes the play pill so Play / Resume S# E# don't reflow.
     static let layoutReserveTitle = "Resume S9 E9"
 
-    /// Primary hero CTA copy. The hero only surfaces series with a playable next-up
-    /// episode (see `HomeViewModel.load()`), so a series reads "Play" for a fresh start
-    /// (first episode, no progress) or "Resume S# E#" once it's underway. No "View" —
-    /// the hero always plays something.
+    /// Series detail play CTA copy from the resume/next-up episode.
     static func title(for item: Item, resumeEpisode: Episode?) -> String {
         switch item {
         case .series:

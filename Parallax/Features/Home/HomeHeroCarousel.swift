@@ -1,7 +1,7 @@
 import SwiftUI
 import ParallaxJellyfin
 
-/// Recently-added hero — an Apple-TV-style crossfade carousel.
+/// Home hero — an Apple-TV-style crossfade carousel.
 ///
 /// The artwork crossfades on a continuous `position` (integers = settled pages). The
 /// foreground's behaviour mirrors the Apple TV app — stateful, not distance-based, and it
@@ -13,7 +13,7 @@ import ParallaxJellyfin
 ///
 /// Infinite both ways via modular indexing; native dots + pill in `HeroPageIndicator`.
 struct HomeHeroCarousel: View {
-    let items: [Item]
+    let entries: [HomeHeroFeedEntry]
     let session: Session
     let viewModel: HomeViewModel
     /// Pull-down overscroll (pt, ≥ 0) supplied by the Home `ScrollView`'s geometry. Drives
@@ -30,23 +30,23 @@ struct HomeHeroCarousel: View {
     @State private var isDragging = false
 
     private var regularWidth: Bool { hSize == .regular }
-    private var count: Int { items.count }
+    private var count: Int { entries.count }
 
     var body: some View {
         GeometryReader { proxy in
             content(width: proxy.size.width)
         }
         .heroBandFrame(regularWidth: regularWidth)
-        // Compare ids (not items) so a favorite toggle doesn't reset the page; only a
-        // changed item set snaps back to the first page.
-        .onChange(of: items.map(\.id)) {
+        // Compare ids (not entries) so a favorite toggle doesn't reset the page; only a
+        // changed entry set snaps back to the first page.
+        .onChange(of: entries.map(\.id)) {
             position = 0; displayedPage = 0; gestureStart = nil; isDragging = false
         }
     }
 
     private func content(width: CGFloat) -> some View {
         ZStack(alignment: .bottomLeading) {
-            CrossfadeArtwork(position: position, items: items, session: session, regularWidth: regularWidth)
+            CrossfadeArtwork(position: position, entries: entries, session: session, regularWidth: regularWidth)
                 // Stretchy hero: a pull-down zooms the artwork up from its bottom edge to
                 // fill the rubber-band gap instead of exposing the app background. Only the
                 // artwork scales — the title/actions stay put. `scaleEffect` is a render
@@ -103,15 +103,14 @@ struct HomeHeroCarousel: View {
     }
 
     private func foregroundLayer(page: Int) -> some View {
-        let pageItem = items[wrapping: page]
+        let entry = entries[wrapping: page]
         return HeroForeground(
-            item: pageItem,
+            entry: entry,
             session: session,
             regularWidth: regularWidth,
-            resumeEpisode: viewModel.resumeEpisode(for: pageItem),
-            isFavorite: pageItem.userData.isFavorite,
-            onPlay: { playback.play(playTargetID(for: pageItem), in: session) },
-            onToggleFavorite: { Task { await viewModel.toggleFavorite(for: pageItem.id) } }
+            isFavorite: entry.presentation.userData.isFavorite,
+            onPlay: { playback.play(entry.playTarget.id, in: session) },
+            onToggleFavorite: { Task { await viewModel.toggleFavorite(for: entry.presentation.id) } }
         )
         .frame(maxWidth: .infinity, alignment: .leading)
         .safeAreaPadding(.horizontal, regularWidth ? Space.s40 : Space.s22)
@@ -149,11 +148,6 @@ struct HomeHeroCarousel: View {
             displayedPage = target
         }
     }
-
-    private func playTargetID(for item: Item) -> ItemID {
-        if case .series = item, let episode = viewModel.resumeEpisode(for: item) { return episode.id }
-        return item.id
-    }
 }
 
 /// Just the artwork crossfade. `Animatable` on `position` is the crux: during a
@@ -162,7 +156,7 @@ struct HomeHeroCarousel: View {
 /// the start and end states. Carries the iPad sidebar `backgroundExtensionEffect`.
 private struct CrossfadeArtwork: View, Animatable {
     var position: Double
-    let items: [Item]
+    let entries: [HomeHeroFeedEntry]
     let session: Session
     let regularWidth: Bool
 
@@ -175,8 +169,8 @@ private struct CrossfadeArtwork: View, Animatable {
         let lower = Int(floor(position))
         let frac = position - Double(lower)
         return ZStack {
-            HeroArtwork(item: items[wrapping: lower], session: session, regularWidth: regularWidth)
-            HeroArtwork(item: items[wrapping: lower + 1], session: session, regularWidth: regularWidth)
+            HeroArtwork(item: entries[wrapping: lower].presentation, session: session, regularWidth: regularWidth)
+            HeroArtwork(item: entries[wrapping: lower + 1].presentation, session: session, regularWidth: regularWidth)
                 .opacity(frac)
         }
         .backgroundExtensionEffect(isEnabled: regularWidth)

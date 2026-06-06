@@ -12,11 +12,9 @@ final class HomeViewModel {
     }
 
     private(set) var state: LoadState = .idle
-    private(set) var recentlyAdded: [Item] = []
+    private(set) var heroFeed: [HomeHeroFeedEntry] = []
     private(set) var continueWatching: [Item] = []
     private(set) var nextUp: [Item] = []
-    /// Next-up episode per series id for hero resume on newly-added series.
-    private(set) var resumeEpisodeBySeriesID: [ItemID: Episode] = [:]
     private(set) var favoriteErrorMessage: String?
 
     /// Drives the favorite-failure alert. The view binds `$vm.isShowingFavoriteError`;
@@ -35,22 +33,12 @@ final class HomeViewModel {
     func load() async {
         state = .loading
         do {
-            async let recentTask = repo.recentlyAdded(limit: 12)
+            async let heroTask = repo.homeHeroFeed(limit: 12)
             async let cwTask = repo.continueWatching()
             async let nuTask = repo.nextUp()
-            let (recent, cw, nu) = try await (recentTask, cwTask, nuTask)
-            let resume = await Self.loadResumeEpisodes(for: recent, repo: repo)
-            // The resume-episode fetch awaits after the main load; bail if the view's
-            // task was cancelled meanwhile so we don't flip a torn-down screen to `.loaded`.
+            let (hero, cw, nu) = try await (heroTask, cwTask, nuTask)
             try Task.checkCancellation()
-            self.resumeEpisodeBySeriesID = resume
-            // Opinionated: only surface newly-added series we can actually press Play on.
-            // A series with no next-up episode has no imported media yet (or is fully
-            // watched), so drop it from the hero. Movies are always playable.
-            self.recentlyAdded = recent.filter { item in
-                guard case .series(let s) = item else { return true }
-                return resume[s.id] != nil
-            }
+            self.heroFeed = hero
             self.continueWatching = cw
             self.nextUp = nu
             self.state = .loaded
@@ -66,11 +54,6 @@ final class HomeViewModel {
             Log.ui.error("HomeViewModel load unexpected: \(String(describing: type(of: error)))")
             state = .failed("Something went wrong.")
         }
-    }
-
-    func resumeEpisode(for item: Item) -> Episode? {
-        guard case .series(let s) = item else { return nil }
-        return resumeEpisodeBySeriesID[s.id]
     }
 
     func toggleFavorite(for itemID: ItemID) async {
@@ -92,8 +75,11 @@ final class HomeViewModel {
     }
 
     private func currentItem(_ itemID: ItemID) -> Item? {
-        recentlyAdded.first { $0.id == itemID }
-            ?? continueWatching.first { $0.id == itemID }
+        for entry in heroFeed {
+            if entry.presentation.id == itemID { return entry.presentation }
+            if entry.playTarget.id == itemID { return entry.playTarget }
+        }
+        return continueWatching.first { $0.id == itemID }
             ?? nextUp.first { $0.id == itemID }
     }
 
@@ -102,31 +88,13 @@ final class HomeViewModel {
     /// so a reload that lands mid-toggle keeps its fresh metadata — only the favorite flag
     /// (or the server's `UserItemData`) is swapped.
     private func mutate(_ itemID: ItemID, _ transform: (Item) -> Item) {
-        recentlyAdded = recentlyAdded.map { $0.id == itemID ? transform($0) : $0 }
+        heroFeed = heroFeed.map { entry in
+            let presentation = entry.presentation.id == itemID ? transform(entry.presentation) : entry.presentation
+            let playTarget = entry.playTarget.id == itemID ? transform(entry.playTarget) : entry.playTarget
+            guard presentation != entry.presentation || playTarget != entry.playTarget else { return entry }
+            return HomeHeroFeedEntry(presentation: presentation, playTarget: playTarget, eyebrow: entry.eyebrow)
+        }
         continueWatching = continueWatching.map { $0.id == itemID ? transform($0) : $0 }
         nextUp = nextUp.map { $0.id == itemID ? transform($0) : $0 }
-    }
-
-    /// Fetch the resume/next-up episode for every newly-added series concurrently — one
-    /// `/Shows/NextUp` round-trip each, fanned out so the slowest single call (not their
-    /// sum) gates Home. A missing episode for any series is fine (dropped); cancellation
-    /// surfaces via `Task.checkCancellation()` in `load()`.
-    private static func loadResumeEpisodes(for items: [Item], repo: LibraryRepository) async -> [ItemID: Episode] {
-        let seriesIDs = items.compactMap { item -> ItemID? in
-            guard case .series(let s) = item else { return nil }
-            return s.id
-        }
-        guard !seriesIDs.isEmpty else { return [:] }
-
-        return await withTaskGroup(of: (ItemID, Episode?).self) { group in
-            for id in seriesIDs {
-                group.addTask { (id, try? await repo.resumeEpisode(forSeries: id)) }
-            }
-            var out: [ItemID: Episode] = [:]
-            for await (id, episode) in group where episode != nil {
-                out[id] = episode
-            }
-            return out
-        }
     }
 }
