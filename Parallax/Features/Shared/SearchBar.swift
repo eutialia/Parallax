@@ -11,7 +11,7 @@ import SwiftUI
 struct SearchBar: View {
     @Binding var text: String
     var prompt: String = "Search"
-    /// Focus is owned by the parent so the screen can auto-focus on appear.
+    /// Focus is owned by the parent so the screen can dismiss the keyboard on tap/scroll.
     var focus: FocusState<Bool>.Binding
     var onSubmit: () -> Void = {}
 
@@ -23,6 +23,7 @@ struct SearchBar: View {
 
             TextField(prompt, text: $text)
                 .textFieldStyle(.plain)
+                .keyboardType(.webSearch)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .submitLabel(.search)
