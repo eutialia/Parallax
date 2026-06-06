@@ -154,6 +154,31 @@ struct LibraryRepositoryTests {
             _ = try await repo.detail(for: ItemID(rawValue: "missing"))
         }
     }
+
+    @Test("homeHeroFeed fetches series metadata and builds entries")
+    func homeHeroFeed() async throws {
+        let (repo, client, _) = make()
+        let epDate = Date(timeIntervalSince1970: 5_000_000)
+        var epDto = sampleEpisodeDto(id: "e2", seriesID: "ser-1", seasonID: "sea-1")
+        epDto.dateCreated = epDate
+        epDto.parentIndexNumber = 1
+        epDto.indexNumber = 2
+        client.recentlyAddedResult = .success([epDto])
+
+        var seriesDto = BaseItemDto()
+        seriesDto.id = "ser-1"
+        seriesDto.name = "Show"
+        seriesDto.type = .series
+        seriesDto.dateCreated = Date(timeIntervalSince1970: 1_000_000)
+        client.itemsByIDsResult = .success([seriesDto])
+
+        let feed = try await repo.homeHeroFeed(limit: 12)
+        #expect(feed.count == 1)
+        #expect(feed[0].eyebrow == .newEpisodeAvailable)
+        #expect(feed[0].presentation.id == ItemID(rawValue: "ser-1"))
+        #expect(feed[0].playTarget.id == ItemID(rawValue: "e2"))
+        #expect(client.itemsByIDsCalls.last == ["ser-1"])
+    }
 }
 
 @Suite("LibraryRepository — setFavorite, setPlayed, resumeEpisode, genres")
