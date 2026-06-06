@@ -17,8 +17,8 @@ public protocol JellyfinLibraryClient: Sendable {
     func getEpisodes(seasonID: String) async throws -> [BaseItemDto]
     func getContinueWatching() async throws -> [BaseItemDto]
     func getNextUp() async throws -> [BaseItemDto]
-    /// Latest movies/series added across libraries (`GET /Items/Latest`).
-    func getRecentlyAdded(limit: Int) async throws -> [BaseItemDto]
+    /// Latest items added across libraries (`GET /Items/Latest`).
+    func getRecentlyAdded(limit: Int, includeItemTypes: [BaseItemKind]) async throws -> [BaseItemDto]
     func search(query: String, scope: SearchScope) async throws -> [BaseItemDto]
     /// POST/DELETE the item's favorite flag for the current user (`/UserFavoriteItems/{id}`).
     func setFavorite(itemID: String, isFavorite: Bool) async throws -> UserItemData

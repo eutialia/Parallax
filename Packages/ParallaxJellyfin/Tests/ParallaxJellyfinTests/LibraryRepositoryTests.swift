@@ -163,7 +163,7 @@ struct LibraryRepositoryTests {
         epDto.dateCreated = epDate
         epDto.parentIndexNumber = 1
         epDto.indexNumber = 2
-        client.recentlyAddedResult = .success([epDto])
+        client.recentlyAddedResultsByTypes = [.episode: .success([epDto])]
 
         var seriesDto = BaseItemDto()
         seriesDto.id = "ser-1"
@@ -178,6 +178,32 @@ struct LibraryRepositoryTests {
         #expect(feed[0].presentation.id == ItemID(rawValue: "ser-1"))
         #expect(feed[0].playTarget.id == ItemID(rawValue: "e2"))
         #expect(client.itemsByIDsCalls.last == ["ser-1"])
+        #expect(client.recentlyAddedCalls.count == 2)
+        let movieCall = client.recentlyAddedCalls.first { $0.types == [.movie] }
+        let episodeCall = client.recentlyAddedCalls.first { $0.types == [.episode] }
+        #expect(movieCall?.limit == 12)
+        #expect(episodeCall?.limit == 48)
+    }
+
+    @Test("homeHeroFeed retains series logo from batch metadata")
+    func homeHeroFeedSeriesLogo() async throws {
+        let (repo, client, _) = make()
+        client.recentlyAddedResultsByTypes = [.episode: .success([sampleEpisodeDto(id: "e1", seriesID: "ser-1")])]
+
+        var seriesDto = BaseItemDto()
+        seriesDto.id = "ser-1"
+        seriesDto.name = "Show"
+        seriesDto.type = .series
+        seriesDto.imageTags = ["Logo": "logo-tag"]
+        client.itemsByIDsResult = .success([seriesDto])
+
+        let feed = try await repo.homeHeroFeed(limit: 12)
+        #expect(feed.count == 1)
+        guard case .series(let series) = feed[0].presentation else {
+            Issue.record("Expected series presentation")
+            return
+        }
+        #expect(series.imageRef(.logo)?.tag.rawValue == "logo-tag")
     }
 }
 

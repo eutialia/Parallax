@@ -74,9 +74,9 @@ public final class DefaultJellyfinLibraryClient: JellyfinLibraryClient, @uncheck
         var params = Paths.GetItemsParameters()
         params.userID = userID
         params.ids = ids
-        params.fields = [.primaryImageAspectRatio]
+        params.fields = [.primaryImageAspectRatio, .dateCreated]
         params.imageTypeLimit = 1
-        params.enableImageTypes = [.primary, .thumb]
+        params.enableImageTypes = [.primary, .backdrop, .logo, .thumb]
         let request = Paths.getItems(parameters: params)
         let response = try await client().send(request)
         return response.value.items ?? []
@@ -150,11 +150,11 @@ public final class DefaultJellyfinLibraryClient: JellyfinLibraryClient, @uncheck
         return response.value.items ?? []
     }
 
-    public func getRecentlyAdded(limit: Int) async throws -> [BaseItemDto] {
+    public func getRecentlyAdded(limit: Int, includeItemTypes: [BaseItemKind]) async throws -> [BaseItemDto] {
         var params = Paths.GetLatestMediaParameters()
         params.userID = userID
         params.limit = limit
-        params.includeItemTypes = [.movie, .episode]
+        params.includeItemTypes = includeItemTypes
         params.fields = [.primaryImageAspectRatio, .dateCreated]
         params.imageTypeLimit = 1
         params.enableImageTypes = [.primary, .backdrop, .logo, .thumb]

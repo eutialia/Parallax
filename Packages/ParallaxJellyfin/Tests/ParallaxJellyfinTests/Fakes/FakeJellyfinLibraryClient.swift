@@ -16,6 +16,7 @@ final class FakeJellyfinLibraryClient: JellyfinLibraryClient, @unchecked Sendabl
     var continueWatchingResult: Result<[BaseItemDto], Error> = .success([])
     var nextUpResult: Result<[BaseItemDto], Error> = .success([])
     var recentlyAddedResult: Result<[BaseItemDto], Error> = .success([])
+    var recentlyAddedResultsByTypes: [BaseItemKind: Result<[BaseItemDto], Error>] = [:]
     var searchResult: Result<[BaseItemDto], Error> = .success([])
     // Per-scope override — used by tests that need to verify the repository
     // routes per-type searches independently (scope .all fans out into three
@@ -37,7 +38,7 @@ final class FakeJellyfinLibraryClient: JellyfinLibraryClient, @unchecked Sendabl
     private(set) var episodesCalls: [String] = []
     private(set) var continueWatchingCallCount = 0
     private(set) var nextUpCallCount = 0
-    private(set) var recentlyAddedCalls: [Int] = []
+    private(set) var recentlyAddedCalls: [(limit: Int, types: [BaseItemKind])] = []
     private(set) var searchCalls: [(query: String, scope: SearchScope)] = []
     private(set) var setFavoriteCalls: [(itemID: String, isFavorite: Bool)] = []
     private(set) var setPlayedCalls: [(itemID: String, isPlayed: Bool)] = []
@@ -90,8 +91,12 @@ final class FakeJellyfinLibraryClient: JellyfinLibraryClient, @unchecked Sendabl
         return try nextUpResult.get()
     }
 
-    func getRecentlyAdded(limit: Int) async throws -> [BaseItemDto] {
-        recentlyAddedCalls.append(limit)
+    func getRecentlyAdded(limit: Int, includeItemTypes: [BaseItemKind]) async throws -> [BaseItemDto] {
+        recentlyAddedCalls.append((limit, includeItemTypes))
+        if includeItemTypes.count == 1, let type = includeItemTypes.first,
+           let perType = recentlyAddedResultsByTypes[type] {
+            return try perType.get()
+        }
         return try recentlyAddedResult.get()
     }
 

@@ -102,13 +102,20 @@ public actor LibraryRepository {
 
     public func homeHeroFeed(limit: Int = 12) async throws -> [HomeHeroFeedEntry] {
         do {
-            let dtos = try await client.getRecentlyAdded(limit: limit)
-            let items = dtos.compactMap(Self.dtoToItem)
+            let episodeLimit = HomeHeroFeedBuilder.episodeLatestFetchLimit(presentationLimit: limit)
+            async let movieDtos = client.getRecentlyAdded(limit: limit, includeItemTypes: [.movie])
+            async let episodeDtos = client.getRecentlyAdded(limit: episodeLimit, includeItemTypes: [.episode])
+            async let cwDtosTask = client.getContinueWatching()
+            let (movies, episodes, cwDtos) = try await (movieDtos, episodeDtos, cwDtosTask)
+            let continueWatching = cwDtos.compactMap(Self.dtoToItem)
+            let items = (movies + episodes).compactMap(Self.dtoToItem)
 
-            let seriesIDs = Set(items.compactMap { item -> String? in
-                guard case .episode(let episode) = item else { return nil }
-                return episode.seriesID.rawValue
-            })
+            var episodesBySeriesID: [String: [Episode]] = [:]
+            for item in items {
+                guard case .episode(let episode) = item else { continue }
+                episodesBySeriesID[episode.seriesID.rawValue, default: []].append(episode)
+            }
+            let seriesIDs = Set(episodesBySeriesID.keys)
 
             var seriesByID: [String: Series] = [:]
             if !seriesIDs.isEmpty {
@@ -121,30 +128,23 @@ public actor LibraryRepository {
             }
 
             var firstEpisodeBySeriesID: [String: Episode] = [:]
-            for seriesID in seriesIDs {
-                let episodesInBatch = items.compactMap { item -> Episode? in
-                    guard case .episode(let episode) = item, episode.seriesID.rawValue == seriesID else {
-                        return nil
-                    }
-                    return episode
+            for seriesID in seriesIDs.sorted() {
+                guard let episodesInBatch = episodesBySeriesID[seriesID], !episodesInBatch.isEmpty else {
+                    continue
                 }
-                guard !episodesInBatch.isEmpty else { continue }
-
                 let hasS1E1 = episodesInBatch.contains {
                     ($0.parentIndexNumber ?? -1) == 1 && ($0.indexNumber ?? -1) == 1
                 }
-                guard !hasS1E1 else { continue }
+                if hasS1E1 { continue }
 
-                guard let series = seriesByID[seriesID] else { continue }
-                let newest = episodesInBatch.max(by: {
-                    ($0.dateAdded ?? .distantPast) < ($1.dateAdded ?? .distantPast)
-                })!
-                let newestDate = newest.dateAdded ?? .distantPast
-                guard Self.isLikelyNewlyAdded(seriesDate: series.dateAdded, newestEpisodeDate: newestDate) else {
-                    continue
-                }
+                guard let series = seriesByID[seriesID],
+                      HomeHeroFeedBuilder.isNewlyAdded(
+                          seriesDate: series.dateAdded,
+                          episodes: episodesInBatch
+                      ) else { continue }
 
-                if let dto = try await client.seriesNextUp(seriesID: seriesID), let episode = dto.toEpisode() {
+                if let dto = try await client.seriesNextUp(seriesID: seriesID),
+                   let episode = dto.toEpisode() {
                     firstEpisodeBySeriesID[seriesID] = episode
                 }
             }
@@ -153,7 +153,8 @@ public actor LibraryRepository {
                 latestItems: items,
                 seriesByID: seriesByID,
                 firstEpisodeBySeriesID: firstEpisodeBySeriesID,
-                limit: limit
+                limit: limit,
+                continueWatching: continueWatching
             )
         } catch {
             throw ErrorMapping.appError(from: error)
@@ -224,15 +225,6 @@ public actor LibraryRepository {
         } catch {
             throw ErrorMapping.appError(from: error)
         }
-    }
-
-    private static func isLikelyNewlyAdded(
-        seriesDate: Date?,
-        newestEpisodeDate: Date,
-        window: TimeInterval = HomeHeroFeedBuilder.defaultImportWindow
-    ) -> Bool {
-        guard let seriesDate else { return false }
-        return abs(newestEpisodeDate.timeIntervalSince(seriesDate)) <= window
     }
 
     private static func dtoToItem(_ dto: BaseItemDto) -> Item? {
