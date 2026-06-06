@@ -100,15 +100,6 @@ public actor LibraryRepository {
         }
     }
 
-    public func recentlyAdded(limit: Int = 12) async throws -> [Item] {
-        do {
-            let dtos = try await client.getRecentlyAdded(limit: limit)
-            return dtos.compactMap(Self.dtoToItem)
-        } catch {
-            throw ErrorMapping.appError(from: error)
-        }
-    }
-
     public func homeHeroFeed(limit: Int = 12) async throws -> [HomeHeroFeedEntry] {
         do {
             let dtos = try await client.getRecentlyAdded(limit: limit)

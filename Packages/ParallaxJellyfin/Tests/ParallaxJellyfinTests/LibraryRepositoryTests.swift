@@ -281,16 +281,6 @@ struct LibraryRepositoryUserActionTests {
         #expect(client.seriesNextUpCalls == ["ser-1"])
     }
 
-    @Test("recentlyAdded forwards limit and maps movies/series")
-    func recentlyAdded() async throws {
-        let (repo, client) = make()
-        client.recentlyAddedResult = .success([sampleMovieDto(id: "new-1")])
-        let items = try await repo.recentlyAdded(limit: 8)
-        #expect(client.recentlyAddedCalls == [8])
-        #expect(items.count == 1)
-        #expect(items.first?.id == ItemID(rawValue: "new-1"))
-    }
-
     @Test("genres forwards parentID and returns client list")
     func genresForwards() async throws {
         let (repo, client) = make()

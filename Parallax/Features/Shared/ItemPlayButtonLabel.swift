@@ -5,7 +5,8 @@ enum ItemPlayButtonLabel {
     /// Widest play CTA copy — sizes the play pill so Play / Resume S# E# don't reflow.
     static let layoutReserveTitle = "Resume S9 E9"
 
-    /// Series detail play CTA copy from the resume/next-up episode.
+    /// Detail-page play CTA copy from the resume/next-up episode.
+    /// Home hero labels live on `HomeHeroFeedEntry.playButtonTitle` instead.
     static func title(for item: Item, resumeEpisode: Episode?) -> String {
         switch item {
         case .series:
