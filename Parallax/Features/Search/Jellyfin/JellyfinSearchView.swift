@@ -48,7 +48,9 @@ struct JellyfinSearchView: View {
         }
         // Keep a (title-less) nav bar so the .zoom push into item detail still has a
         // shared bar to hand its back button to — never `.toolbar(.hidden)` here.
+        #if !os(tvOS)
         .navigationBarTitleDisplayMode(.inline)
+        #endif
         .onChange(of: query) { _, newValue in
             viewModel?.query = newValue
         }

@@ -37,7 +37,9 @@ struct ServerSettingsView: View {
             .frame(maxWidth: .infinity)
         }
         .navigationTitle(session.serverName)
+        #if !os(tvOS)
         .navigationBarTitleDisplayMode(.inline)
+        #endif
     }
 
     // MARK: - Header

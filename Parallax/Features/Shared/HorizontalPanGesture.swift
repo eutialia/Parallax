@@ -1,4 +1,5 @@
 import SwiftUI
+#if !os(tvOS)
 import UIKit
 
 /// A horizontal-only pan bridged into SwiftUI via `UIGestureRecognizerRepresentable` (iOS 18+).
@@ -66,3 +67,4 @@ struct HorizontalPanGesture: UIGestureRecognizerRepresentable {
         }
     }
 }
+#endif

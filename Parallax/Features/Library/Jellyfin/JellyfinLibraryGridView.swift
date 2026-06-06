@@ -37,7 +37,9 @@ struct JellyfinLibraryGridView: View {
         // shares the bar row with the sort/filter button instead of dropping to its
         // own large-title row.
         .navigationTitle(collection.name)
+        #if !os(tvOS)
         .navigationBarTitleDisplayMode(.inline)
+        #endif
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 if let vm = viewModel {

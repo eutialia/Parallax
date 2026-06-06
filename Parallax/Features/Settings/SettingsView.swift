@@ -27,7 +27,9 @@ struct SettingsView: View {
         NavigationStack(path: $path) {
             root
                 .navigationTitle("Settings")
+                #if !os(tvOS)
                 .navigationBarTitleDisplayMode(.inline)
+                #endif
                 .toolbar {
                     ToolbarItem(placement: .confirmationAction) {
                         Button("Done") { dismiss() }
@@ -42,7 +44,9 @@ struct SettingsView: View {
                     case .addServer:
                         LoginView(onSignedIn: { handleAddedServer() })
                             .navigationTitle("Add Server")
+                            #if !os(tvOS)
                             .navigationBarTitleDisplayMode(.inline)
+                            #endif
                     }
                 }
         }

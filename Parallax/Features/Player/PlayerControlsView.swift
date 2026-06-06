@@ -214,6 +214,17 @@ struct PlayerControlsView: View {
                 .foregroundStyle(.white)
                 .frame(width: 66, alignment: .leading)
 
+            #if os(tvOS)
+            // Read-only bar — tvOS has no Slider; ±10s skip buttons handle seeking.
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(.white.opacity(0.25))
+                    Capsule().fill(.white)
+                        .frame(width: geo.size.width * displayed)
+                }
+            }
+            .frame(height: 4)
+            #else
             Slider(
                 value: Binding(get: { displayed }, set: { scrubProgress = $0 }),
                 in: 0...1,
@@ -240,6 +251,7 @@ struct PlayerControlsView: View {
                 }
             )
             .tint(.white)
+            #endif
 
             Text(remaining > 0 ? "-\(formatTime(remaining))" : formatTime(durSeconds))
                 .font(.subheadline.weight(.semibold).monospacedDigit())
@@ -526,6 +538,13 @@ private struct TrackPresentation<MenuContent: View>: ViewModifier {
     @Environment(\.horizontalSizeClass) private var hSize
 
     func body(content: Content) -> some View {
+        #if os(tvOS)
+        content
+            .sheet(isPresented: $isPresented) {
+                menu()
+                    .presentationDetents(detents)
+            }
+        #else
         content
             .popover(isPresented: gated(whenRegular: true)) { menu() }
             .sheet(isPresented: gated(whenRegular: false)) {
@@ -534,6 +553,7 @@ private struct TrackPresentation<MenuContent: View>: ViewModifier {
                     .presentationDragIndicator(.visible)
                     .presentationBackground(.regularMaterial)
             }
+        #endif
     }
 
     /// A binding that only fires for the matching width class, so the popover and the

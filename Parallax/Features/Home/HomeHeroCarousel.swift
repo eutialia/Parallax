@@ -81,6 +81,17 @@ struct HomeHeroCarousel: View {
         // A horizontal-only UIKit pan: vertical swipes fall through to the Home ScrollView,
         // taps fall through to the Play/Favorite buttons. (A SwiftUI DragGesture can't do
         // both inside a ScrollView on iOS 18+.) No-op for a lone item.
+        #if os(tvOS)
+        .focusable(count > 1)
+        .onMoveCommand { direction in
+            guard count > 1 else { return }
+            switch direction {
+            case .left: commit(to: displayedPage - 1)
+            case .right: commit(to: displayedPage + 1)
+            default: break
+            }
+        }
+        #else
         .gesture(
             HorizontalPanGesture(
                 onChanged: { panChanged(translationX: $0, width: width) },
@@ -88,6 +99,7 @@ struct HomeHeroCarousel: View {
                 isEnabled: count > 1
             )
         )
+        #endif
     }
 
     private func foregroundLayer(page: Int) -> some View {

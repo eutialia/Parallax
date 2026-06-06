@@ -17,7 +17,9 @@ struct LibraryHostView: View {
                         // Server name sits under the title (was a truncated "cort…"
                         // caption crammed into the top-left). Becomes a source-switcher
                         // Menu in v2 when SMB/Local sources arrive.
+                        #if !os(tvOS)
                         .navigationSubtitle(source.displayName)
+                        #endif
                 }
             } else if isResolvingSource {
                 LibraryListLoadingPlaceholder()

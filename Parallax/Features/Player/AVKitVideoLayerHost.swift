@@ -55,7 +55,9 @@ struct AVKitVideoLayerHost: UIViewRepresentable {
             guard AVPictureInPictureController.isPictureInPictureSupported() else { return }
             guard let controller = AVPictureInPictureController(playerLayer: view.playerLayer) else { return }
             controller.delegate = self
+            #if !os(tvOS)
             controller.canStartPictureInPictureAutomaticallyFromInline = true
+            #endif
             pip = controller
         }
 

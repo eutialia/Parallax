@@ -102,7 +102,9 @@ struct PlayerView: View {
         // cover each opt into full-bleed individually (see above), while the chrome
         // (top bar, scrubber) and status bar respect the safe area. The status bar
         // hides in lockstep with the chrome.
+        #if !os(tvOS)
         .statusBarHidden(!chromeVisible)
+        #endif
         .persistentSystemOverlays(chromeVisible ? .automatic : .hidden)
         .animation(.easeInOut(duration: 0.2), value: chromeVisible)
         // The controls (which restore chromeVisible) only exist in .playing. If the

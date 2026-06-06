@@ -167,7 +167,9 @@ struct DebugInfoOverlay: View {
                 .frame(width: 78, alignment: .leading)
             Text(value)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                #if !os(tvOS)
                 .textSelection(.enabled)
+                #endif
         }
     }
 
