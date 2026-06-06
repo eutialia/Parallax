@@ -7,7 +7,6 @@ public struct PlayableAsset: Sendable {
     public let headers: [String: String]?         // nil for AVKit (auth via api_key query param)
     public let hints: PlaybackHints
     public let startTime: CMTime?
-    public let externalSubtitles: [ExternalSubtitle]   // empty in Phase 4
     /// Authoritative server-side track metadata used to label the engine's
     /// tracks (a transcode manifest often omits names/languages).
     public let mediaStreams: [MediaStreamInfo]
@@ -15,24 +14,36 @@ public struct PlayableAsset: Sendable {
     /// so the engine can name the one track the manifest carries.
     public let defaultAudioStreamIndex: Int?
     public let defaultSubtitleStreamIndex: Int?
+    /// A font file for VLC's *simple* (SRT) text renderer (`:freetype-font=`). iOS has
+    /// no font provider, so without this that renderer draws nothing. The app
+    /// materializes a system font via CoreText. Nil = let the engine try its default
+    /// (and on AVKit it is unused — AVFoundation renders subtitles itself).
+    public let subtitleFontURL: URL?
+    /// A directory of font files for VLC's libass (ASS/SSA) renderer (`:ssa-fontsdir=`).
+    /// libass is a *separate* subsystem from the simple renderer and ignores
+    /// `freetype-font`; on iOS it holds no fonts unless pointed at a directory to scan.
+    /// The app materializes the CJK system faces here. Unused by AVKit.
+    public let subtitleFontsDirectoryURL: URL?
 
     public init(
         url: URL,
         headers: [String: String]?,
         hints: PlaybackHints,
         startTime: CMTime?,
-        externalSubtitles: [ExternalSubtitle],
         mediaStreams: [MediaStreamInfo] = [],
         defaultAudioStreamIndex: Int? = nil,
-        defaultSubtitleStreamIndex: Int? = nil
+        defaultSubtitleStreamIndex: Int? = nil,
+        subtitleFontURL: URL? = nil,
+        subtitleFontsDirectoryURL: URL? = nil
     ) {
         self.url = url
         self.headers = headers
         self.hints = hints
         self.startTime = startTime
-        self.externalSubtitles = externalSubtitles
         self.mediaStreams = mediaStreams
         self.defaultAudioStreamIndex = defaultAudioStreamIndex
         self.defaultSubtitleStreamIndex = defaultSubtitleStreamIndex
+        self.subtitleFontURL = subtitleFontURL
+        self.subtitleFontsDirectoryURL = subtitleFontsDirectoryURL
     }
 }

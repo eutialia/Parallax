@@ -24,7 +24,7 @@ struct FakePlaybackEngineTests {
         let fake = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         let url = URL(string: "https://example.com/stream.mp4")!
         let hints = PlaybackHints(scheme: "https", container: .mp4, videoCodec: .h264, audioCodec: .aac, subtitleFormats: [])
-        let asset = PlayableAsset(url: url, headers: nil, hints: hints, startTime: nil, externalSubtitles: [])
+        let asset = PlayableAsset(url: url, headers: nil, hints: hints, startTime: nil)
 
         var received: [PlaybackState] = []
         let task = Task {

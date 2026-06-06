@@ -44,11 +44,11 @@ final class PlayerViewModel {
     private(set) var availableSubtitleTracks: [SubtitleTrack] = []
     private(set) var selectedAudioTrack: AudioTrack? = nil
     private(set) var selectedSubtitleTrack: SubtitleTrack? = nil
-    /// Parsed cues for a client-rendered subtitle (transcode path): the
-    /// correctly-timed sidecar WebVTT that `SubtitleOverlayView` draws. Empty
-    /// when no text subtitle is active, or on direct-play where the engine
-    /// renders subtitles itself. This is how we sidestep the in-manifest WebVTT
-    /// drift (jellyfin/jellyfin#16647).
+    /// Parsed cues for a client-rendered subtitle that `SubtitleOverlayView` draws: the
+    /// correctly-timed sidecar WebVTT used by the transcode path AND by direct-play
+    /// EXTERNAL subs (VLC can't shape sidecar VTT on iOS). Empty when no such subtitle is
+    /// active — including direct-play EMBEDDED subs, which the engine renders itself. This
+    /// is how we sidestep the in-manifest WebVTT drift (jellyfin/jellyfin#16647).
     private(set) var activeSubtitleCues: [SubtitleCue] = []
     private(set) var currentPosition: CMTime = .zero
     private(set) var currentDuration: CMTime = .zero
@@ -428,9 +428,19 @@ final class PlayerViewModel {
                 currentSubtitleStreamIndex = -1   // Jellyfin's "no subtitle" sentinel
                 clearSidecarSubtitle()
             }
+        } else if let index = track?.id.jellyfinStreamIndex {
+            // Direct-play EXTERNAL sidecar: render client-side like transcode. Deselect any
+            // engine subtitle so VLC isn't also drawing one, then fetch + parse the VTT.
+            await engine?.setSubtitleTrack(nil)
+            currentSubtitleStreamIndex = index
+            selectedSubtitleTrack = track
+            loadSidecarSubtitle(streamIndex: index)
         } else {
+            // Direct-play EMBEDDED track (or Off): the engine renders it. Clear any
+            // client-side sidecar that a prior external selection left up.
             guard let engine else { return }
             await engine.setSubtitleTrack(track)
+            clearSidecarSubtitle()
             selectedSubtitleTrack = track
         }
     }
@@ -545,7 +555,10 @@ final class PlayerViewModel {
             // .loading, or the spinner would reappear over a playing video.
             if resolved.method != .transcode {
                 availableAudioTracks = tracks.audio
-                availableSubtitleTracks = tracks.subtitles
+                // Embedded subs come from the engine; external sidecar subs are appended
+                // from the server list and rendered client-side (the engine can't shape
+                // sidecar VTT on iOS). Both share the chip menu.
+                availableSubtitleTracks = tracks.subtitles + Self.externalSubtitleTracks(from: resolved)
                 // Reflect the engine's default selection so the menus show a
                 // checkmark on the track that's actually playing. Don't clobber
                 // a choice the user already made (a late/duplicate .ready).
@@ -575,7 +588,12 @@ final class PlayerViewModel {
             currentPosition = position
             currentDuration = duration
             nowPlaying.update(position: position, duration: duration, isPlaying: false, title: itemTitle)
-            await playbackInfo.reportProgress(beat(position: position, isPaused: true, from: resolved))
+            // Never report progress for a session that never reported start (a remote/PiP
+            // pause can land during buffering, before the first .playing beat) — Jellyfin
+            // expects PlaybackStart before any Progress. Mirrors the .playing branch's gate.
+            if didReportStart {
+                await playbackInfo.reportProgress(beat(position: position, isPaused: true, from: resolved))
+            }
         case .ended:
             isPlaying = false
             await reportStoppedIfNeeded()
@@ -630,17 +648,7 @@ final class PlayerViewModel {
             }
         availableSubtitleTracks = resolved.mediaStreams
             .filter { $0.kind == .subtitle && !$0.isImageSubtitle }
-            .map { stream in
-                SubtitleTrack(
-                    id: .jellyfinStream(stream.index),
-                    displayName: stream.menuLabel,
-                    languageCode: stream.language,
-                    isForced: stream.isForced,
-                    sourceLabel: stream.isExternal ? "External" : "Embedded",
-                    formatLabel: stream.codec?.uppercased(),
-                    isSDH: stream.isHearingImpaired
-                )
-            }
+            .map(Self.subtitleTrack(from:))
 
         selectedAudioTrack = availableAudioTracks.first { $0.id == currentAudioStreamIndex.map(TrackID.jellyfinStream) }
         selectedSubtitleTrack = availableSubtitleTracks.first { $0.id == currentSubtitleStreamIndex.map(TrackID.jellyfinStream) }
@@ -696,12 +704,46 @@ final class PlayerViewModel {
             // every transcode — first-play resume and post-track-switch — restart
             // at 0:00.)
             startTime: resolved.startTime,
-            externalSubtitles: [],
             // Authoritative track names/languages — the engine uses these to
-            // label tracks a transcode manifest left unnamed.
+            // label tracks a transcode manifest left unnamed. (External subs aren't
+            // passed to the engine at all — they're rendered client-side via
+            // `externalSubtitleTracks` + `loadSidecarSubtitle`, like the transcode path.)
             mediaStreams: resolved.mediaStreams,
             defaultAudioStreamIndex: resolved.defaultAudioStreamIndex,
-            defaultSubtitleStreamIndex: resolved.defaultSubtitleStreamIndex
+            defaultSubtitleStreamIndex: resolved.defaultSubtitleStreamIndex,
+            // System fonts for VLC's text renderers (unused by AVKit). Materialized via
+            // CoreText so we render with the OS fonts instead of bundling one: a font
+            // directory for libass (ASS/SSA) and a single file for the simple renderer.
+            subtitleFontURL: SubtitleFontLocator.fonts?.primaryFile,
+            subtitleFontsDirectoryURL: SubtitleFontLocator.fonts?.directory
+        )
+    }
+
+    /// External (sidecar) text subtitles from the server, as direct-play menu entries
+    /// with `.jellyfinStream` ids. These render client-side (`SubtitleOverlayView`, fed by
+    /// `loadSidecarSubtitle`) rather than through the engine — VLC can't shape sidecar VTT
+    /// on iOS, and embedded subs already come from the engine's own inventory. Image subs
+    /// are excluded (no client renderer for them yet). Labels come from the server, so they
+    /// read "English" etc. instead of VLC's generic "Track N".
+    private static func externalSubtitleTracks(from resolved: ResolvedPlayback) -> [SubtitleTrack] {
+        resolved.mediaStreams
+            .filter { $0.kind == .subtitle && $0.isExternal && !$0.isImageSubtitle }
+            .map(Self.subtitleTrack(from:))
+    }
+
+    /// Maps a server subtitle stream to a menu `SubtitleTrack` with a `.jellyfinStream` id
+    /// (fed straight back to the server as `SubtitleStreamIndex` / to the sidecar loader).
+    /// Shared by the transcode menu (all text subs) and the direct-play external-subs
+    /// append (external only) so the two never drift in how a track is labeled.
+    private static func subtitleTrack(from stream: MediaStreamInfo) -> SubtitleTrack {
+        SubtitleTrack(
+            id: .jellyfinStream(stream.index),
+            displayName: stream.menuLabel,
+            languageCode: stream.language,
+            isForced: stream.isForced,
+            sourceLabel: stream.isExternal ? "External" : "Embedded",
+            formatLabel: stream.codec?.uppercased(),
+            isSDH: stream.isHearingImpaired
         )
     }
 

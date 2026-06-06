@@ -36,11 +36,20 @@ struct PlayerView: View {
             Color.black.ignoresSafeArea()
 
             if let vm = viewModel {
+                // The video host is mounted ONCE with stable identity across
+                // .loading→.playing. Previously it lived inside both switch branches,
+                // so the phase flip gave it a new identity and SwiftUI tore it down and
+                // rebuilt it — which re-homed VLC's drawable mid-playback and left the
+                // VLC path audio-only (AVKit survives the churn because AVPlayerLayer
+                // reattaches seamlessly; VLC's injected render view does not). The
+                // reload cover (showsReloadCover) hides it until the first frame.
+                if showsVideoHost {
+                    videoHost(vm)
+                }
                 switch vm.phase {
                 case .idle, .loading:
-                    videoHost(vm)
+                    EmptyView()
                 case .playing:
-                    videoHost(vm)
                     SubtitleOverlayView(vm: vm)
                     PlayerControlsView(vm: vm, controlsVisible: $chromeVisible, isFilled: fillMode, onToggleFill: { fillMode.toggle() }) { dismiss() }
                 case .failed(let error):
@@ -149,6 +158,15 @@ struct PlayerView: View {
     private var isPlaybackActive: Bool {
         if case .playing = viewModel?.phase { return true }
         return false
+    }
+
+    /// Whether the persistent video host is mounted. Shown for every phase except
+    /// `.failed` (which replaces the surface with the error overlay) — kept stable
+    /// across .loading→.playing so VLC's drawable isn't rebuilt mid-playback.
+    private var showsVideoHost: Bool {
+        guard let vm = viewModel else { return false }
+        if case .failed = vm.phase { return false }
+        return true
     }
 
     /// Whether to show the frosted reload cover: before the VM exists and while it's

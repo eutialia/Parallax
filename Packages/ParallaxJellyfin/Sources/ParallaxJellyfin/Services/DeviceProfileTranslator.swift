@@ -143,14 +143,12 @@ enum DeviceProfileTranslator {
         // as a correctly-timed sidecar VTT (see PlaybackInfoService.subtitleStreamURLs).
         var profiles: [SubtitleProfile] = [
             SubtitleProfile(format: "vtt", method: .external),
-            // SRT external: SubtitleResolver delivers sidecar URLs via
-            // addPlaybackSlave on VLC; AVKit receives SRT via existing sidecar path.
             SubtitleProfile(format: "srt", method: .external),
         ]
 
-        // VLC subtitle formats — external delivery; VLC parses inline via libass/libavcodec.
-        // These tell the server to expose the subtitle stream as an external sidecar URL
-        // which SubtitleResolver feeds to addPlaybackSlave.
+        // Advertise the remaining text/image formats as external too, so the server
+        // exposes each as a sidecar stream URL. Every engine renders them client-side
+        // (fetched + drawn over the video), so the delivery method is uniform here.
         profiles.append(SubtitleProfile(format: "ass", method: .external))
         profiles.append(SubtitleProfile(format: "pgs", method: .external))
         profiles.append(SubtitleProfile(format: "vobsub", method: .external))

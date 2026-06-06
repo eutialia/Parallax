@@ -12,6 +12,11 @@ public protocol PlaybackEngine: AnyObject, Sendable {
     /// Static capabilities that do not change at runtime.
     nonisolated var capabilities: PlaybackEngineCapabilities { get }
 
+    /// The live playback clock, smooth enough for sub-second cue timing (the `state`
+    /// stream's ~0.5s beats are too coarse). Read directly by the client-side subtitle
+    /// overlay so it can sync cues against any engine. `.zero` when nothing is loaded.
+    nonisolated var currentTime: CMTime { get }
+
     /// Single-consumer state stream. Only `PlayerViewModel` iterates this.
     /// Terminal delivery is NOT idempotent at the engine layer: an engine may
     /// emit `.ended`, and `teardown()` separately finishes the continuation, so
@@ -59,6 +64,9 @@ public protocol PlaybackEngine: AnyObject, Sendable {
 }
 
 public extension PlaybackEngine {
+    /// Default: zero. Real engines override with their live clock.
+    nonisolated var currentTime: CMTime { .zero }
+
     /// Default: no debug info. Concrete engines override with real telemetry.
     func debugSnapshot() async -> PlaybackDebugInfo { .empty }
 

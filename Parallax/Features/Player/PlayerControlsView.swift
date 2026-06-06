@@ -60,6 +60,15 @@ struct PlayerControlsView: View {
         .onChange(of: menuOpen) { _, open in
             if open { hideTask?.cancel() } else { scheduleHide() }
         }
+        // When the chrome hides, the views anchoring the track popovers/sheets are
+        // removed — SwiftUI can strand a presentation's `isPresented` binding at true.
+        // A stuck flag makes `menuOpen` permanently true, which `toggleControls` treats
+        // as "a menu is open" and refuses to show the chrome, locking the user out
+        // (can't reach Close). Clear the flags whenever the chrome hides so they can't
+        // strand. See also the self-heal in `toggleControls`.
+        .onChange(of: controlsVisible) { _, visible in
+            if !visible { closeAllMenus() }
+        }
     }
 
     @ViewBuilder
@@ -391,10 +400,28 @@ struct PlayerControlsView: View {
     // MARK: - Auto-hide
 
     private func toggleControls() {
-        // A tap should never pull the chrome out from under an open popover/sheet.
-        guard !menuOpen else { return }
+        // If this tap reached the toggle layer while a menu is *flagged* open, no
+        // popover/sheet is actually presented — a live one would have captured the tap.
+        // The flag is stale (SwiftUI stranded it when the chrome was removed), so clear
+        // it and show the chrome rather than `guard`-returning forever. This guarantees
+        // a phantom menu can never lock the user out of the controls.
+        if menuOpen {
+            closeAllMenus()
+            controlsVisible = true
+            scheduleHide()
+            return
+        }
         controlsVisible.toggle()
         if controlsVisible { scheduleHide() }
+    }
+
+    /// Resets every track-menu presentation flag. Keeps `menuOpen` from stranding true
+    /// when the chrome is removed out from under a popover/sheet.
+    private func closeAllMenus() {
+        audioMenu = false
+        subtitleMenu = false
+        chapterMenu = false
+        speedMenu = false
     }
 
     private func resetHideTimer() {

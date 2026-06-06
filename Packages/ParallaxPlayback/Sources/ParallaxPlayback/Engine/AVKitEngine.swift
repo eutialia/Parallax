@@ -19,6 +19,9 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     private let player = AVPlayer()
     public nonisolated var avPlayer: AVPlayer { player }
 
+    /// Live playback clock for the client-side subtitle overlay.
+    public nonisolated var currentTime: CMTime { player.currentTime() }
+
     private var currentItem: AVPlayerItem?
     private var pendingStartTime: CMTime?
     /// The user-selected playback speed. Stored so `play()` (which resumes at

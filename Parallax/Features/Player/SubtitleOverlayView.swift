@@ -1,19 +1,19 @@
 import SwiftUI
-import AVFoundation
 import CoreMedia
 import ParallaxPlayback
 
-/// Draws client-rendered subtitle cues over the AVKit video surface.
+/// Draws client-rendered subtitle cues over the video surface, synced to the engine
+/// clock (`PlaybackEngine.currentTime`, so it works for AVKit and VLC alike).
 ///
-/// On the transcode path we fetch the subtitle as a separately-delivered,
-/// correctly-timed WebVTT sidecar (`PlayerViewModel.activeSubtitleCues`) instead
-/// of the in-manifest HLS WebVTT, whose `X-TIMESTAMP-MAP` drifts on fMP4 segments
-/// (jellyfin/jellyfin#16647). We bypass AVPlayer's own legible rendering for that
-/// stream, so we paint the cues here, synced to the player clock.
+/// Used whenever `PlayerViewModel.activeSubtitleCues` is non-empty:
+/// - Transcode: the correctly-timed WebVTT sidecar instead of the in-manifest HLS
+///   WebVTT, whose `X-TIMESTAMP-MAP` drifts on fMP4 segments (jellyfin/jellyfin#16647).
+/// - Direct-play external subs: VLC's simple text renderer can't shape sidecar VTT on
+///   iOS (HarfBuzz "Runs count 0"), so we fetch + render them here instead of slaving
+///   them to the engine.
 ///
-/// AVKit-only by construction: VLC renders its own subtitles and its engine is
-/// not an `AVPlayerHosting`, so the clock lookup returns nil and nothing is drawn
-/// (and `activeSubtitleCues` is empty on that path anyway).
+/// Embedded subs (rendered by the engine itself — AVKit legible / VLC libass) leave
+/// `activeSubtitleCues` empty, so this overlay draws nothing for them.
 struct SubtitleOverlayView: View {
     let vm: PlayerViewModel
 
@@ -44,10 +44,9 @@ struct SubtitleOverlayView: View {
         .task { await drive() }
     }
 
-    /// Polls the player clock ~15×/s and shows whichever cue(s) contain "now".
+    /// Polls the engine clock ~15×/s and shows whichever cue(s) contain "now".
     /// 0.5s playback-state beats are far too coarse for sub-second cues, so we
-    /// read the AVPlayer clock directly rather than going through the engine's
-    /// state stream.
+    /// read `engine.currentTime` directly rather than going through the state stream.
     private func drive() async {
         while !Task.isCancelled {
             text = currentCueText()
@@ -56,10 +55,11 @@ struct SubtitleOverlayView: View {
     }
 
     private func currentCueText() -> String? {
-        guard let hosting = vm.engine as? AVPlayerHosting else { return nil }
         let cues = vm.activeSubtitleCues
-        guard !cues.isEmpty else { return nil }
-        let now = hosting.avPlayer.currentTime()
+        // `.invalid` is VLC's "clock not ready" signal (buffering/seek); skip so a transient
+        // unknown time doesn't flash the 0:00 cue. AVKit always reports a valid time (0 at the
+        // start), so a genuine 0:00 cue still shows.
+        guard !cues.isEmpty, let now = vm.engine?.currentTime, now.isValid else { return nil }
         let active = cues.filter {
             CMTimeCompare(now, $0.start) >= 0 && CMTimeCompare(now, $0.end) < 0
         }

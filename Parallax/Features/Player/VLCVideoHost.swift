@@ -49,6 +49,14 @@ struct VLCVideoHost: UIViewRepresentable {
         /// tradeoff as the engine's own player handle.
         nonisolated(unsafe) private var player: VLCMediaPlayer?
 
+        /// The owning engine, captured in `attach`. PiP transport (`play()`/`pause()`)
+        /// routes through it instead of the raw `player`, so a pause/play from VLC's PiP
+        /// overlay emits the same `PlaybackState` beats the main UI and progress reporting
+        /// consume (the raw player emits none — the engine's delegate `.paused`/`.playing`
+        /// cases are ignored). `PlaybackEngine` is `Sendable`; same off-thread confinement
+        /// as `player`.
+        nonisolated(unsafe) private var engine: (any PlaybackEngine)?
+
         /// The view VLC injects its render subview into. Touched from `addSubview`
         /// / `bounds`, which VLC drives on its drawable callback (in practice on
         /// the main thread for view mutation); held weakly so it follows the
@@ -56,13 +64,44 @@ struct VLCVideoHost: UIViewRepresentable {
         nonisolated(unsafe) private weak var hostView: UIView?
 
         /// VLC's PiP activation controller, handed to us via `pictureInPictureReady`.
-        /// Read when invalidating playback state; written once when PiP becomes ready.
+        /// Assigned on the main actor (the PiP-ready callback hops there) and nil'd by the
+        /// `@MainActor` `detach()`, so the off-thread callback can't race teardown's nil-write;
+        /// the invalidate timer (created in the `@MainActor` `attach`) resumes on the main
+        /// actor to read it too.
         nonisolated(unsafe) private var windowControl: (any VLCPictureInPictureWindowControlling)?
 
-        /// Drains the engine state stream to invalidate VLC's PiP playback state.
-        private var stateTask: Task<Void, Never>?
+        /// Set by `detach()` so the off-thread `pictureInPictureReady` callback can't
+        /// resurrect `windowControl` (or fire `onPiPReady`) after the host is torn down.
+        nonisolated(unsafe) private var isDetached = false
 
-        deinit { stateTask?.cancel() }
+        /// Periodically nudges VLC's PiP overlay to refresh its playback state.
+        private var pipInvalidateTask: Task<Void, Never>?
+
+        /// Last known media duration (ms). VLCKit 4.x's `player.media` getter retains
+        /// the libvlc media WITHOUT a null check, so reading it while no media is set
+        /// (before load / during teardown) aborts in `libvlc_media_retain`. `mediaLength()`
+        /// only refreshes this from the getter when `hasVideoOut` proves a media is open,
+        /// and returns the cached value otherwise.
+        nonisolated(unsafe) private var cachedLengthMs: Int64 = 0
+
+        deinit { pipInvalidateTask?.cancel() }
+
+        /// Tear the drawable + PiP bridge down on the main thread when SwiftUI
+        /// removes the host (`dismantleUIView`). Stops the invalidate timer and drops
+        /// the player/window references so a late, off-thread PiP query short-circuits
+        /// to its nil-coalesced default instead of racing the engine freeing the media.
+        /// Belt-and-suspenders to the engine's own `drawable = nil` in `teardown()`.
+        @MainActor
+        func detach() {
+            isDetached = true
+            pipInvalidateTask?.cancel()
+            pipInvalidateTask = nil
+            player?.drawable = nil
+            windowControl = nil
+            player = nil
+            engine = nil
+            hostView = nil
+        }
 
         /// Wire the drawable + PiP bridge. Runs on the main actor (called from
         /// `makeUIView`, which sets `onPiPReady` first). Order matters: VLC reads
@@ -72,6 +111,7 @@ struct VLCVideoHost: UIViewRepresentable {
         @MainActor
         func attach(to view: UIView, engine: any PlaybackEngine) {
             hostView = view
+            self.engine = engine
             guard let hosting = engine as? any VLCPlayerHosting else { return }
             let vlcPlayer = hosting.vlcPlayer
             player = vlcPlayer
@@ -80,11 +120,17 @@ struct VLCVideoHost: UIViewRepresentable {
             // off self when it binds the drawable, so self must be fully configured first.
             vlcPlayer.drawable = self
 
-            // Whenever playback state changes, tell VLC's PiP window so its
-            // overlay (play/pause, scrubber) stays in sync.
-            let stream = engine.state
-            stateTask = Task { [weak self] in
-                for await _ in stream {
+            // Keep VLC's PiP overlay (play/pause, scrubber) in sync. The engine's
+            // PlaybackState stream is a *unicast* AsyncStream already consumed by
+            // PlayerViewModel — a second `for await` here would steal beats from the
+            // view model (it swallowed the `.ready` track inventory, so the track
+            // menus came up empty, and split the position beats). Nudge PiP on a
+            // timer instead; it only does anything once PiP is active (windowControl
+            // set), and `invalidatePlaybackState` just asks VLC to re-read the
+            // mediaController, so a 1s cadence is plenty for the overlay.
+            pipInvalidateTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(1))
                     self?.windowControl?.invalidatePlaybackState()
                 }
             }
@@ -120,6 +166,13 @@ struct VLCVideoHost: UIViewRepresentable {
     func updateUIView(_ uiView: DrawableView, context: Context) {
         // VLC manages its own render subview layout — no frame sync needed.
     }
+
+    /// SwiftUI removed the representable: detach the PiP bridge synchronously on the
+    /// main thread so its off-thread media queries stop before the engine's teardown
+    /// frees the media.
+    static func dismantleUIView(_ uiView: DrawableView, coordinator: Coordinator) {
+        coordinator.detach()
+    }
 }
 
 // MARK: - VLCDrawable
@@ -149,17 +202,18 @@ extension VLCVideoHost.Coordinator: VLCPictureInPictureDrawable {
     func pictureInPictureReady() -> (((any VLCPictureInPictureWindowControlling)?) -> Void)? {
         { [weak self] window in
             guard let self, let window else { return }
-            self.windowControl = window
-            guard let onPiPReady = self.onPiPReady else { return }
-            // VLC may invoke this off its own thread; hop to the main actor before
-            // touching the VM/UIKit. `window` (owned by VLC's serialised PiP
-            // controller) is non-Sendable, so carry it across the Task boundary
-            // through a `nonisolated(unsafe)` local — the same thread-confinement
-            // contract as the engine's player handle. `onPiPReady` is a MainActor-
-            // isolated closure (implicitly Sendable) and crosses safely as-is.
+            // VLC may invoke this off its own thread; hop to the main actor before touching
+            // any state. `window` (owned by VLC's serialised PiP controller) and `self` are
+            // non-Sendable, so carry them across the Task boundary through `nonisolated(unsafe)`
+            // locals — the same thread-confinement contract as the engine's player handle.
+            // Assigning `windowControl` here (rather than off-thread) serialises it with
+            // detach()'s nil-write, and the `isDetached` guard stops a late callback
+            // resurrecting it — or firing `onPiPReady` — after the host is torn down.
             nonisolated(unsafe) let unsafeWindow = window
             Task { @MainActor in
-                onPiPReady(
+                guard !self.isDetached else { return }
+                self.windowControl = unsafeWindow
+                self.onPiPReady?(
                     { unsafeWindow.startPictureInPicture() },
                     { unsafeWindow.stopPictureInPicture() }
                 )
@@ -172,8 +226,17 @@ extension VLCVideoHost.Coordinator: VLCPictureInPictureDrawable {
 
 extension VLCVideoHost.Coordinator: VLCPictureInPictureMediaControlling {
     /// Media duration in milliseconds (PiP expects `int64_t`).
+    ///
+    /// PiP polls this off the main thread. VLCKit 4.x's `player.media` getter retains
+    /// the libvlc media without a null check, so it must only be touched when a media is
+    /// actually open — `hasVideoOut` is the safe gate (true ⇒ media set & rendering).
+    /// Outside that window (before load, during/after teardown) we return the cached
+    /// length instead of risking `libvlc_media_retain(NULL)`.
     func mediaLength() -> Int64 {
-        Int64(player?.media?.length.intValue ?? 0)
+        if let player, player.hasVideoOut, let length = player.media?.length.intValue {
+            cachedLengthMs = Int64(length)
+        }
+        return cachedLengthMs
     }
 
     /// Current playback time in milliseconds.
@@ -185,9 +248,16 @@ extension VLCVideoHost.Coordinator: VLCPictureInPictureMediaControlling {
 
     func isMediaPlaying() -> Bool { player?.isPlaying ?? false }
 
-    func play() { player?.play() }
+    /// Route PiP transport through the engine (not the raw player) so a pause/play from
+    /// VLC's PiP overlay emits the same `PlaybackState` beats the main UI and progress
+    /// reporting consume; the engine still drives the same player underneath.
+    func play() {
+        if let engine { Task { await engine.play() } } else { player?.play() }
+    }
 
-    func pause() { player?.pause() }
+    func pause() {
+        if let engine { Task { await engine.pause() } } else { player?.pause() }
+    }
 
     /// Seek by a millisecond offset, then signal completion. `VLCTime(int:)`
     /// takes `Int32`, so clamp the resulting absolute time.

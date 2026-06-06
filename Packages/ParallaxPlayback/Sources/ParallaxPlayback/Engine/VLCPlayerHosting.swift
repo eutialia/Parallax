@@ -5,8 +5,8 @@ import VLCKitSPM
 /// leaking VLC types. Mirrors the `AVPlayerHosting` pattern for `AVKitEngine`.
 ///
 /// The app target casts `any PlaybackEngine` to `any VLCPlayerHosting` at the
-/// `VLCVideoHost` UIViewRepresentable boundary to set
-/// `vlcPlayer.drawable = coordinator` and call `addPlaybackSlave(...)`.
+/// `VLCVideoHost` UIViewRepresentable boundary to set `vlcPlayer.drawable = coordinator`
+/// and wire VLC's Picture-in-Picture controller.
 public protocol VLCPlayerHosting: AnyObject {
     /// The underlying `VLCMediaPlayer`. Accessed `nonisolated` so
     /// `UIViewRepresentable` make/update contexts (off-main or synchronous)

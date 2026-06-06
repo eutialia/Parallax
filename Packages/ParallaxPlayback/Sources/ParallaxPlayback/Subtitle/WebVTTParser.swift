@@ -25,8 +25,8 @@ public struct SubtitleCue: Sendable, Hashable {
 /// header: applying it is exactly the segmented-WebVTT drift bug
 /// (jellyfin/jellyfin#16647) this whole path exists to avoid.
 ///
-/// Lives in `ParallaxPlayback` (no SwiftUI/Combine, no platform conditionals)
-/// beside `SubtitleResolver`, so it's unit-testable on the iOS simulator.
+/// Lives in `ParallaxPlayback` (no SwiftUI/Combine, no platform conditionals),
+/// so it's unit-testable on the iOS simulator.
 public enum WebVTTParser {
 
     public static func parse(data: Data) -> [SubtitleCue] {
