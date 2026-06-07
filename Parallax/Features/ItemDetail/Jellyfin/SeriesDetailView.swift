@@ -7,7 +7,7 @@ struct SeriesDetailView: View {
 
     @Environment(AppDependencies.self) private var deps
     @Environment(PlaybackPresenter.self) private var playback
-    @Environment(\.horizontalSizeClass) private var hSize
+    @Environment(\.appIdiom) private var idiom
     @State private var viewModel: SeriesDetailViewModel?
 
     var body: some View {
@@ -24,14 +24,14 @@ struct SeriesDetailView: View {
                                     landscapeRef: sd.series.imageRef(.backdrop(index: 0)),
                                     posterRef: sd.series.imageRef(.primary),
                                     session: session,
-                                    regularWidth: hSize == .regular
+                                    regularWidth: idiom.usesLandscapeHeroBand
                                 )
                             } foreground: {
                                 VStack(alignment: .leading, spacing: Space.s12) {
                                     HeroTitle(
                                         item: .series(sd.series),
                                         session: session,
-                                        regularWidth: hSize == .regular,
+                                        regularWidth: idiom.usesLandscapeHeroBand,
                                         scale: .detail
                                     )
                                     let meta = DetailMetadata(series: sd.series)
@@ -68,7 +68,9 @@ struct SeriesDetailView: View {
                         .padding(.bottom, Space.s30)
                     }
                     .scrollClipDisabled(true)
+                    #if !os(tvOS)
                     .scrollEdgeEffectHidden(true, for: .top)
+                    #endif
                 case .failed(let message):
                     ContentUnavailableView("Couldn't load this series", systemImage: "exclamationmark.triangle", description: Text(message))
                 }

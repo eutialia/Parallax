@@ -29,9 +29,9 @@ struct HeroBackdrop<Backdrop: View, Foreground: View>: View {
     @ViewBuilder var backdrop: () -> Backdrop
     @ViewBuilder var foreground: () -> Foreground
 
-    @Environment(\.horizontalSizeClass) private var hSize
+    @Environment(\.appIdiom) private var idiom
 
-    private var regularWidth: Bool { hSize == .regular }
+    private var regularWidth: Bool { idiom.usesLandscapeHeroBand }
 
     var body: some View {
         GeometryReader { geo in
@@ -39,7 +39,7 @@ struct HeroBackdrop<Backdrop: View, Foreground: View>: View {
                 backdrop()
                     .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
                     .clipped()
-                    .backgroundExtensionEffect(isEnabled: regularWidth)
+                    .tvPlatformGated { $0.backgroundExtensionEffect(isEnabled: regularWidth) }
                     .allowsHitTesting(false)
 
                 heroBandScrim(

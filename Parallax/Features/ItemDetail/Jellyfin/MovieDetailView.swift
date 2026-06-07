@@ -6,7 +6,7 @@ struct MovieDetailView: View {
     let session: Session
 
     @Environment(AppDependencies.self) private var deps
-    @Environment(\.horizontalSizeClass) private var hSize
+    @Environment(\.appIdiom) private var idiom
     @State private var viewModel: MovieDetailViewModel?
     @State private var playerItem: ItemDetail?
 
@@ -24,14 +24,14 @@ struct MovieDetailView: View {
                                     landscapeRef: md.movie.imageRef(.backdrop(index: 0)),
                                     posterRef: md.movie.imageRef(.primary),
                                     session: session,
-                                    regularWidth: hSize == .regular
+                                    regularWidth: idiom.usesLandscapeHeroBand
                                 )
                             } foreground: {
                                 VStack(alignment: .leading, spacing: Space.s12) {
                                     HeroTitle(
                                         item: .movie(md.movie),
                                         session: session,
-                                        regularWidth: hSize == .regular,
+                                        regularWidth: idiom.usesLandscapeHeroBand,
                                         scale: .detail
                                     )
                                     let meta = DetailMetadata(movie: md.movie)
@@ -82,7 +82,9 @@ struct MovieDetailView: View {
                         .padding(.bottom, Space.s30)
                     }
                     .scrollClipDisabled(true)
+                    #if !os(tvOS)
                     .scrollEdgeEffectHidden(true, for: .top)
+                    #endif
                 case .failed(let message):
                     ContentUnavailableView(
                         "Couldn't load this title",

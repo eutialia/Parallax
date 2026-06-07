@@ -112,13 +112,13 @@ struct MetadataRowSkeleton: View {
 // MARK: - Screen layouts
 
 struct HomeLoadingSkeleton: View {
-    @Environment(\.horizontalSizeClass) private var hSize
+    @Environment(\.appIdiom) private var idiom
 
     var body: some View {
         LazyVStack(alignment: .leading, spacing: Space.s30) {
             SkeletonBlock(cornerRadius: 0)
                 .aspectRatio(
-                    HeroMetrics.bandAspectRatio(regularWidth: hSize == .regular),
+                    HeroMetrics.bandAspectRatio(regularWidth: idiom.usesLandscapeHeroBand),
                     contentMode: .fit
                 )
             MetadataRowSkeleton(tileWidth: HomeShelf.tileWidth, aspectRatio: JellyfinImage.poster)
@@ -197,6 +197,7 @@ struct LibraryListLoadingPlaceholder: View {
 }
 
 struct DetailLoadingSkeleton: View {
+    @Environment(\.appIdiom) private var idiom
     @Environment(\.horizontalSizeClass) private var hSize
 
     var body: some View {
@@ -204,7 +205,7 @@ struct DetailLoadingSkeleton: View {
             VStack(alignment: .leading, spacing: Space.s18) {
                 SkeletonBlock(cornerRadius: 0)
                     .aspectRatio(
-                        HeroMetrics.bandAspectRatio(regularWidth: hSize == .regular),
+                        HeroMetrics.bandAspectRatio(regularWidth: idiom.usesLandscapeHeroBand),
                         contentMode: .fit
                     )
                 VStack(alignment: .leading, spacing: Space.s12) {

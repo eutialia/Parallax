@@ -21,7 +21,7 @@ struct HomeHeroCarousel: View {
     var overscroll: CGFloat = 0
 
     @Environment(PlaybackPresenter.self) private var playback
-    @Environment(\.horizontalSizeClass) private var hSize
+    @Environment(\.appIdiom) private var idiom
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var position: Double = 0     // continuous artwork crossfade driver
@@ -29,7 +29,7 @@ struct HomeHeroCarousel: View {
     @State private var gestureStart: Double?
     @State private var isDragging = false
 
-    private var regularWidth: Bool { hSize == .regular }
+    private var regularWidth: Bool { idiom.usesLandscapeHeroBand }
     private var count: Int { entries.count }
 
     var body: some View {
@@ -179,7 +179,7 @@ private struct CrossfadeArtwork: View, Animatable {
             HeroArtwork(item: entries[wrapping: lower + 1].presentation, session: session, regularWidth: regularWidth)
                 .opacity(frac)
         }
-        .backgroundExtensionEffect(isEnabled: regularWidth)
+        .tvPlatformGated { $0.backgroundExtensionEffect(isEnabled: regularWidth) }
     }
 }
 
