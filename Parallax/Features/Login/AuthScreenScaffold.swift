@@ -15,7 +15,11 @@ struct AuthScreenScaffold<Content: View>: View {
         GeometryReader { proxy in
             ScrollView {
                 content
+                    #if os(tvOS)
+                    .frame(maxWidth: 600)
+                    #else
                     .frame(maxWidth: 444)
+                    #endif
                     .frame(maxWidth: .infinity)
                     .padding(.horizontal, Space.s18)
                     .padding(.vertical, Space.s40)

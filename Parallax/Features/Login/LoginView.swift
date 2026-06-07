@@ -17,6 +17,7 @@ struct LoginView: View {
 
     var body: some View {
         content
+        #if !os(tvOS)
         .onAppear {
             // Discovery runs only while this screen is visible. Triggers the iOS
             // Local Network permission prompt here (not mid-library browse) and
@@ -34,17 +35,21 @@ struct LoginView: View {
             guard newPhase == .active else { return }
             deps.lanDiscovery.start()
         }
+        #endif
         .task {
             if viewModel == nil {
                 viewModel = LoginViewModel(sessionManager: deps.sessionManager)
             }
+            #if !os(tvOS)
             // Auto-fill the server URL from LAN discovery when the field is empty
             // (most networks have a single Jellyfin server).
             if let vm = viewModel, vm.serverURLInput.isEmpty,
                let first = deps.lanDiscovery.discovered.first {
                 vm.serverURLInput = first.address.absoluteString
             }
+            #endif
         }
+        #if !os(tvOS)
         // Discovery usually completes AFTER the view appears (it races the Local
         // Network permission prompt), so fill the URL in when it lands.
         .onChange(of: deps.lanDiscovery.discovered.first?.address) { _, address in
@@ -52,6 +57,7 @@ struct LoginView: View {
                 vm.serverURLInput = address.absoluteString
             }
         }
+        #endif
     }
 
     @ViewBuilder
@@ -89,6 +95,7 @@ struct LoginView: View {
                 subtitle: "Sign in to your Jellyfin server"
             )
 
+            #if !os(tvOS)
             // LAN-discovered servers (relocated): tap to quick-fill the URL.
             if !deps.lanDiscovery.discovered.isEmpty {
                 VStack(spacing: 0) {
@@ -113,6 +120,7 @@ struct LoginView: View {
                 }
                 .background(Color.fill, in: RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
             }
+            #endif
 
             // Field stack
             VStack(spacing: 0) {
