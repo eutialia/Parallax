@@ -45,3 +45,19 @@ jobs:
             -project Parallax.xcodeproj \
             -scheme Parallax \
             -destination 'generic/platform=iOS Simulator'
+
+  tvos-build:
+    runs-on: macos-15
+    needs: [drift-check, package-tests]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode 26
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '26.0'
+      - name: Build app for tvOS Simulator
+        run: |
+          xcodebuild build \
+            -project Parallax.xcodeproj \
+            -scheme Parallax \
+            -destination 'generic/platform=tvOS Simulator'

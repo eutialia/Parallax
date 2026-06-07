@@ -5,6 +5,7 @@ let package = Package(
     name: "ParallaxJellyfin",
     platforms: [
         .iOS(.v26),
+        .tvOS(.v26),
         .macOS(.v15), // swift-test baseline only; not a shipping target.
     ],
     products: [

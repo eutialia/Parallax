@@ -5,6 +5,7 @@ let package = Package(
     name: "ParallaxCore",
     platforms: [
         .iOS(.v26),
+        .tvOS(.v26),
         // macOS baseline exists only so `swift test` works on the dev host
         // and on macos-15 CI runners. macOS is NOT a shipping target —
         // Pinned high (.v15) to minimize the iOS/macOS API-availability gap.
