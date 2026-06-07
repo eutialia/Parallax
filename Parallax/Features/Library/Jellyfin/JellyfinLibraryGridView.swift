@@ -11,12 +11,11 @@ struct JellyfinLibraryGridView: View {
     let session: Session
 
     @Environment(AppDependencies.self) private var deps
-    @Environment(\.horizontalSizeClass) private var hSize
     @Environment(\.appIdiom) private var idiom
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Fixed poster columns — shared by the grid, its first-load placeholder, and the
     /// load-more strip so all three stay aligned. Denser on regular width (iPad).
-    private var columns: Int { hSize == .regular ? 5 : 3 }
+    private var columns: Int { AppLayout.posterGridColumns(idiom: idiom) }
     @State private var viewModel: JellyfinLibraryGridViewModel?
     /// Genre-chip height scales with Dynamic Type (relative to the chip's `.subheadline`
     /// label). Shared by the real chip and its loading placeholder so the swap stays
@@ -201,6 +200,7 @@ struct JellyfinLibraryGridView: View {
                             .background(isSelected ? Color.chipSelectedFill : Color.fill, in: Capsule())
                     }
                     .buttonStyle(.plain)
+                    .tvChipButton()
                 }
             }
             .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
@@ -245,6 +245,7 @@ struct JellyfinLibraryGridView: View {
         } label: {
             Image(systemName: "line.3.horizontal.decrease.circle")
         }
+        .tvChipButton()
     }
 
     @ViewBuilder
