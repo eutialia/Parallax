@@ -51,7 +51,9 @@ struct SettingsView: View {
                 }
         }
         // Centered floating card on iPad (regular width); a standard sheet on iPhone.
+        #if !os(tvOS)
         .presentationSizing(.form)
+        #endif
         .presentationBackground(Color.background)
         .task {
             if viewModel == nil {
@@ -137,6 +139,7 @@ struct SettingsView: View {
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
+        .tvPosterButton()
         // One self-describing element with a navigation hint (the chevron is decorative
         // and the "Active" pill would otherwise read as a loose trailing word).
         .accessibilityLabel(isActive ? "\(a11yBase), active server" : a11yBase)
@@ -152,6 +155,7 @@ struct SettingsView: View {
                 .frame(maxWidth: .infinity).frame(height: addServerHeight)
         }
         .buttonStyle(.plain)
+        .tvPosterButton()
         .glassPanel(cornerRadius: Radius.field)
         .padding(.top, Space.s8)
     }
