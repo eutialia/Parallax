@@ -59,7 +59,9 @@ struct PlayerControlsView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: controlsVisible)
+        #if !os(tvOS)
         .onAppear { scheduleHide() }
+        #endif
         // Resume the auto-hide once every menu closes; keep controls pinned while open.
         .onChange(of: menuOpen) { _, open in
             if open { hideTask?.cancel() } else { scheduleHide() }
@@ -165,6 +167,7 @@ struct PlayerControlsView: View {
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)
+            .tvChipButton()
 
             GlassCircleButton(systemImage: "goforward.10", size: 62, iconSize: 28) { skip(10) }
         }
@@ -463,6 +466,10 @@ struct PlayerControlsView: View {
 
     private func scheduleHide() {
         hideTask?.cancel()
+        #if os(tvOS)
+        // Siri Remote has no touch-to-reveal — keep chrome visible.
+        return
+        #else
         // Don't start the timer while a menu is open — it would hide the chrome the
         // menu is anchored to.
         guard !menuOpen else { return }
@@ -472,6 +479,7 @@ struct PlayerControlsView: View {
                 controlsVisible = false
             }
         }
+        #endif
     }
 }
 
@@ -532,6 +540,7 @@ private struct CtlChip: View {
             ChipLabel(systemImage: systemImage, label: label, sub: sub, isActive: isActive)
         }
         .buttonStyle(.plain)
+        .tvChipButton()
         .accessibilityLabel(accessibilityLabel)
     }
 }
@@ -556,6 +565,7 @@ private struct GlassCircleButton: View {
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
+        .tvChipButton()
     }
 }
 
