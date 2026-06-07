@@ -93,18 +93,21 @@ struct ItemNavigator<Label: View>: View {
         case .episode(let e):
             Button { playback.play(e.id, in: session) } label: { label() }
                 .buttonStyle(.plain)
+                .tvPosterButton()
         case .movie(let m):
             let nav = ItemNavigation.movie(m.id, session)
             NavigationLink(value: nav) {
                 label().environment(\.itemZoomNavigationValue, nav)
             }
             .buttonStyle(.plain)
+            .tvPosterButton()
         case .series(let s):
             let nav = ItemNavigation.series(s.id, session)
             NavigationLink(value: nav) {
                 label().environment(\.itemZoomNavigationValue, nav)
             }
             .buttonStyle(.plain)
+            .tvPosterButton()
         }
     }
 }

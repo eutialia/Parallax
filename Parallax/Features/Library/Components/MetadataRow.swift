@@ -6,6 +6,8 @@ struct MetadataRow<Item: Identifiable & Hashable, Content: View>: View {
     let tileWidth: CGFloat
     @ViewBuilder let content: (Item) -> Content
 
+    @Environment(\.appIdiom) private var idiom
+
     var body: some View {
         VStack(alignment: .leading, spacing: Space.s8) {
             Text(title)
@@ -16,10 +18,14 @@ struct MetadataRow<Item: Identifiable & Hashable, Content: View>: View {
                     ForEach(items) { item in
                         content(item)
                             .frame(width: tileWidth)
+                            .tvShelfItem()
                     }
                 }
                 .padding(.horizontal, AppLayout.contentHMargin)
             }
         }
+        #if os(tvOS)
+        .focusSection()
+        #endif
     }
 }

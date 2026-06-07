@@ -5,6 +5,7 @@ struct HomeView: View {
     @Environment(AppDependencies.self) private var deps
     @Environment(AppRouter.self) private var router
     @Environment(\.horizontalSizeClass) private var hSize
+    @Environment(\.appIdiom) private var idiom
     @State private var viewModel: HomeViewModel?
     @State private var session: Session?
     @State private var heroOverscroll: CGFloat = 0
@@ -75,12 +76,12 @@ struct HomeView: View {
                         )
                     }
                     if !vm.continueWatching.isEmpty {
-                        MetadataRow(title: "Continue Watching", items: vm.continueWatching, tileWidth: HomeShelf.tileWidth) { item in
+                        MetadataRow(title: "Continue Watching", items: vm.continueWatching, tileWidth: AppLayout.shelfTileWidth(idiom: idiom)) { item in
                             homeShelfTile(item: item, session: session, showProgress: true)
                         }
                     }
                     if !vm.nextUp.isEmpty {
-                        MetadataRow(title: "Next Up", items: vm.nextUp, tileWidth: HomeShelf.tileWidth) { item in
+                        MetadataRow(title: "Next Up", items: vm.nextUp, tileWidth: AppLayout.shelfTileWidth(idiom: idiom)) { item in
                             homeShelfTile(item: item, session: session, showProgress: false)
                         }
                     }
