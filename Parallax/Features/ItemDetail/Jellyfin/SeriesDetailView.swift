@@ -34,10 +34,9 @@ struct SeriesDetailView: View {
                                         regularWidth: hSize == .regular,
                                         scale: .detail
                                     )
-                                    if let sub = subtitle(sd) {
-                                        Text(sub)
-                                            .font(.subheadline)
-                                            .foregroundStyle(.white)
+                                    let meta = DetailMetadata(series: sd.series)
+                                    if !meta.isEmpty {
+                                        DetailHeroMetadataRow(metadata: meta)
                                     }
                                     HStack(spacing: Space.s12) {
                                         if let ep = vm.resumeEpisode {
@@ -154,13 +153,6 @@ struct SeriesDetailView: View {
             Spacer(minLength: 0)
         }
         .padding(.horizontal, Space.s18).padding(.vertical, Space.s8)
-    }
-
-    private func subtitle(_ sd: SeriesDetail) -> String? {
-        var parts: [String] = []
-        if let y = sd.series.year { parts.append(String(y)) }
-        if let s = sd.series.status { parts.append(s) }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     private func resumeLabel(_ ep: Episode) -> String {

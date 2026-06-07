@@ -81,7 +81,8 @@ struct HomeHeroFeedBuilderTests {
     private func series(id: String, date: Date?) -> Series {
         Series(
             id: ItemID(rawValue: id), title: "Series \(id)", overview: nil, year: 2020,
-            status: nil, genres: [], primaryTag: nil, backdropTags: [], logoTag: nil,
+            status: nil, communityRating: nil, officialRating: nil,
+            genres: [], primaryTag: nil, backdropTags: [], logoTag: nil,
             thumbTag: nil, bannerTag: nil, dateAdded: date, userData: .absent
         )
     }

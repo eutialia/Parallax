@@ -105,7 +105,8 @@ struct LibraryPrimitivesTests {
     func seriesImageRefSupportedKinds() {
         let series = Series(
             id: ItemID(rawValue: "s1"), title: "T",
-            overview: nil, year: nil, status: nil, genres: [],
+            overview: nil, year: nil, status: nil,
+            communityRating: nil, officialRating: nil, genres: [],
             primaryTag: ImageTag(rawValue: "p"),
             backdropTags: [ImageTag(rawValue: "b0")],
             logoTag: ImageTag(rawValue: "l"),
@@ -153,6 +154,23 @@ struct LibraryPrimitivesTests {
         #expect(ep.imageRef(.logo) == nil)
         #expect(ep.imageRef(.thumb) == nil)
         #expect(ep.imageRef(.banner) == nil)
+    }
+
+    @Test("QualityBadge resolution returns 4K only for UHD dimensions")
+    func qualityBadgeResolution() {
+        #expect(QualityBadge.resolution(width: 3840, height: 2160) == "4K")
+        #expect(QualityBadge.resolution(width: 1920, height: 1080) == nil)
+        #expect(QualityBadge.resolution(width: nil, height: nil) == nil)
+    }
+
+    @Test("QualityBadge hdr collapses HDR flavours and handles DOVIInvalid")
+    func qualityBadgeHDR() {
+        #expect(QualityBadge.hdr("DOVI") == "HDR")
+        #expect(QualityBadge.hdr("DOVIInvalid") == "HDR")
+        #expect(QualityBadge.hdr("HDR10+") == "HDR")
+        #expect(QualityBadge.hdr("HLG") == "HDR")
+        #expect(QualityBadge.hdr("SDR") == nil)
+        #expect(QualityBadge.hdr(nil) == nil)
     }
 
     @Test("Item enum exposes id regardless of concrete case")

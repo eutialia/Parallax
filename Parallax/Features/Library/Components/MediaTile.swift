@@ -12,7 +12,6 @@ struct MediaTile: View {
     let progressCaption: String?
     let aspectRatio: CGFloat
     let maxImageWidth: Int
-    var badges: [String]
 
     init(
         title: String,
@@ -22,8 +21,7 @@ struct MediaTile: View {
         progress: Double?,
         progressCaption: String? = nil,
         aspectRatio: CGFloat = JellyfinImage.poster,
-        maxImageWidth: Int = 600,
-        badges: [String] = []
+        maxImageWidth: Int = 600
     ) {
         self.title = title
         self.imageRef = imageRef
@@ -33,7 +31,6 @@ struct MediaTile: View {
         self.progressCaption = progressCaption
         self.aspectRatio = aspectRatio
         self.maxImageWidth = maxImageWidth
-        self.badges = badges
     }
 
     // Poster-only tile: the title/subtitle text under the artwork was removed —
@@ -44,20 +41,6 @@ struct MediaTile: View {
 
             if showsShelfFooterOverlay {
                 shelfArtworkFooter(caption: progressCaption ?? "", progress: progress)
-            }
-
-            if !badges.isEmpty {
-                HStack(spacing: 4) {
-                    ForEach(badges, id: \.self) { badge in
-                        Text(badge)
-                            .font(.caption2.weight(.bold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 6).padding(.vertical, 3)
-                            .background(.black.opacity(0.55), in: Capsule())
-                    }
-                }
-                .padding(6)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             }
         }
         .clipShape(.rect(cornerRadius: Radius.tile))

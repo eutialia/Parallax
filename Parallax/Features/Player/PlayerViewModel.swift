@@ -70,7 +70,7 @@ final class PlayerViewModel {
     /// User-selected playback speed (1.0 = normal). Drives the speed chip.
     private(set) var playbackRate: Float = 1
 
-    /// A concise format summary for the top bar, e.g. "4K · Dolby Vision · 7.1".
+    /// A concise format summary for the top bar, e.g. "4K · HDR · 7.1".
     /// Cached, not computed-per-read: `body` re-evaluates ~twice a second off the
     /// periodic time observer, and the derivation scans `resolved.mediaStreams`.
     /// Recomputed only when the stream resolves (`recomputeMediaSummary`).
@@ -661,9 +661,8 @@ final class PlayerViewModel {
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
-    /// Resolution bucket. Delegates the 1080p+ tiers to the shared `QualityBadge`
-    /// (single source with the poster badges), keeping the player-only sub-1080p
-    /// fallback the grid intentionally omits.
+    /// Resolution bucket. Delegates 4K to the shared `QualityBadge`, keeping the
+    /// player-only sub-4K fallback detail hero metadata omits.
     private static func qualityLabel(width: Int?, height: Int?) -> String? {
         if let badge = QualityBadge.resolution(width: width, height: height) { return badge }
         let h = height ?? 0, w = width ?? 0
@@ -672,8 +671,8 @@ final class PlayerViewModel {
         return nil
     }
 
-    /// HDR label — delegated to the shared `QualityBadge.hdr` (single source with the
-    /// poster badges; also gets the DOVIInvalid exclusion for free).
+    /// HDR label — delegated to `QualityBadge.hdr`, which maps all HDR flavours
+    /// (including `DOVIInvalid`) to `"HDR"`.
     private static func hdrLabel(_ range: String?) -> String? {
         QualityBadge.hdr(range)
     }

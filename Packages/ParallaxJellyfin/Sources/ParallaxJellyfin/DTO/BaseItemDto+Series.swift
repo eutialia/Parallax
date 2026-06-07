@@ -5,13 +5,14 @@ extension BaseItemDto {
     func toSeries() -> Series? {
         guard type == .series, let id, let name else { return nil }
         let backdrops = (backdropImageTags ?? []).map(ImageTag.init(rawValue:))
-        let video = mediaStreams?.first { $0.type == .video }
         return Series(
             id: ItemID(rawValue: id),
             title: name,
             overview: overview,
             year: productionYear,
             status: status,
+            communityRating: communityRating.map(Double.init),
+            officialRating: officialRating,
             genres: genres ?? [],
             primaryTag: imageTags?["Primary"].map(ImageTag.init(rawValue:)),
             backdropTags: backdrops,
@@ -19,10 +20,7 @@ extension BaseItemDto {
             thumbTag: imageTags?["Thumb"].map(ImageTag.init(rawValue:)),
             bannerTag: imageTags?["Banner"].map(ImageTag.init(rawValue:)),
             dateAdded: dateCreated,
-            userData: userData?.toUserItemData() ?? .absent,
-            width: video?.width,
-            height: video?.height,
-            videoRangeType: video?.videoRangeType?.rawValue
+            userData: userData?.toUserItemData() ?? .absent
         )
     }
 }

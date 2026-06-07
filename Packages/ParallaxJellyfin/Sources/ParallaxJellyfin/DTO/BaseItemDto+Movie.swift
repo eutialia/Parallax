@@ -32,7 +32,8 @@ extension BaseItemDto {
             userData: userData?.toUserItemData() ?? .absent,
             width: video?.width,
             height: video?.height,
-            videoRangeType: video?.videoRangeType?.rawValue
+            videoRangeType: video?.videoRangeType?.rawValue,
+            hasSubtitles: hasSubtitleTracks
         )
     }
 }

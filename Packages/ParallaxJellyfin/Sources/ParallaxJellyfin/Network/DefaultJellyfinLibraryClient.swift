@@ -50,11 +50,7 @@ public final class DefaultJellyfinLibraryClient: JellyfinLibraryClient, @uncheck
         params.isRecursive = true
         params.sortBy = [sort.wireFormat]
         params.sortOrder = [sort.direction.wireFormat]
-        // NOTE: .mediaStreams is requested here to populate poster quality badges (4K / HDR /
-        // Dolby Vision). It is the heaviest field on this list query — each item returns audio,
-        // subtitle, and video streams. Keep this the only list call that requests it; detail/
-        // continue-watching/next-up queries do not need badges.
-        params.fields = [.primaryImageAspectRatio, .mediaSourceCount, .mediaStreams]
+        params.fields = [.primaryImageAspectRatio, .mediaSourceCount]
         params.imageTypeLimit = 1
         params.enableImageTypes = [.primary, .backdrop, .logo, .thumb]
         params.filters = filter.wireFormat
@@ -93,8 +89,18 @@ public final class DefaultJellyfinLibraryClient: JellyfinLibraryClient, @uncheck
         params.fields = [.overview, .genres, .taglines, .studios, .people, .chapters]
         let request = Paths.getItems(parameters: params)
         let response = try await client().send(request)
-        guard let dto = response.value.items?.first else {
+        guard var dto = response.value.items?.first else {
             throw AppError.unexpected("getItemDetail: no item returned for id \(itemID)", underlying: nil)
+        }
+        // Quality badges and subtitle detection need media streams; series folders
+        // don't carry a single video stream, so skip the heavy field for them.
+        if dto.type == .movie {
+            var streamParams = Paths.GetItemsParameters()
+            streamParams.userID = userID
+            streamParams.ids = [itemID]
+            streamParams.fields = [.mediaStreams]
+            let streamResponse = try await client().send(Paths.getItems(parameters: streamParams))
+            dto.mediaStreams = streamResponse.value.items?.first?.mediaStreams
         }
         return dto
     }

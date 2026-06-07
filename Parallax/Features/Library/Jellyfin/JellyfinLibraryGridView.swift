@@ -255,17 +255,8 @@ struct JellyfinLibraryGridView: View {
             session: session,
             progress: nil,
             aspectRatio: JellyfinImage.poster,
-            maxImageWidth: 600,
-            badges: badges(for: item)
+            maxImageWidth: 600
         )
-    }
-
-    private func badges(for item: Item) -> [String] {
-        switch item {
-        case .movie(let m): return m.posterBadges
-        case .series(let s): return s.posterBadges
-        case .episode: return []
-        }
     }
 
     private func image(for item: Item) -> ImageRef? {

@@ -53,16 +53,17 @@ public enum Item: Sendable, Hashable, Identifiable {
                 communityRating: m.communityRating, officialRating: m.officialRating, genres: m.genres,
                 primaryTag: m.primaryTag, backdropTags: m.backdropTags, logoTag: m.logoTag, thumbTag: m.thumbTag,
                 dateAdded: m.dateAdded,
-                userData: userData, width: m.width, height: m.height, videoRangeType: m.videoRangeType
+                userData: userData, width: m.width, height: m.height, videoRangeType: m.videoRangeType,
+                hasSubtitles: m.hasSubtitles
             ))
         case .series(let s):
             return .series(Series(
                 id: s.id, title: s.title, overview: s.overview, year: s.year, status: s.status,
+                communityRating: s.communityRating, officialRating: s.officialRating,
                 genres: s.genres, primaryTag: s.primaryTag, backdropTags: s.backdropTags,
                 logoTag: s.logoTag, thumbTag: s.thumbTag, bannerTag: s.bannerTag,
                 dateAdded: s.dateAdded,
-                userData: userData,
-                width: s.width, height: s.height, videoRangeType: s.videoRangeType
+                userData: userData
             ))
         case .episode(let e):
             return .episode(Episode(

@@ -34,10 +34,9 @@ struct MovieDetailView: View {
                                         regularWidth: hSize == .regular,
                                         scale: .detail
                                     )
-                                    if let sub = subtitle(md) {
-                                        Text(sub)
-                                            .font(.subheadline)
-                                            .foregroundStyle(.white)
+                                    let meta = DetailMetadata(movie: md.movie)
+                                    if !meta.isEmpty {
+                                        DetailHeroMetadataRow(metadata: meta)
                                     }
                                     HStack(spacing: Space.s12) {
                                         PrimaryPlayButton(
@@ -111,19 +110,4 @@ struct MovieDetailView: View {
         }
     }
 
-    private func subtitle(_ md: MovieDetail) -> String? {
-        var parts: [String] = []
-        if let y = md.movie.year { parts.append(String(y)) }
-        if let r = md.movie.runtime {
-            let mins = Int(r.components.seconds / 60)
-            parts.append("\(mins) min")
-        }
-        if let cr = md.movie.communityRating {
-            parts.append(String(format: "★ %.1f", cr))
-        }
-        if let or = md.movie.officialRating {
-            parts.append(or)
-        }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
-    }
 }

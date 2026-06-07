@@ -6,6 +6,8 @@ public struct Series: Sendable, Hashable, Identifiable {
     public let overview: String?
     public let year: Int?
     public let status: String?
+    public let communityRating: Double?
+    public let officialRating: String?
     public let genres: [String]
     public let primaryTag: ImageTag?
     public let backdropTags: [ImageTag]
@@ -14,30 +16,24 @@ public struct Series: Sendable, Hashable, Identifiable {
     public let bannerTag: ImageTag?
     public let dateAdded: Date?
     public let userData: UserItemData
-    public let width: Int?
-    public let height: Int?
-    public let videoRangeType: String?
-
-    public var posterBadges: [String] {
-        QualityBadge.badges(width: width, height: height, videoRangeType: videoRangeType)
-    }
 
     public init(
         id: ItemID, title: String, overview: String?, year: Int?, status: String?,
+        communityRating: Double?, officialRating: String?,
         genres: [String],
         primaryTag: ImageTag?, backdropTags: [ImageTag], logoTag: ImageTag?,
         thumbTag: ImageTag?, bannerTag: ImageTag?,
         dateAdded: Date? = nil,
-        userData: UserItemData,
-        width: Int? = nil, height: Int? = nil, videoRangeType: String? = nil
+        userData: UserItemData
     ) {
         self.id = id; self.title = title; self.overview = overview; self.year = year
-        self.status = status; self.genres = genres
+        self.status = status
+        self.communityRating = communityRating; self.officialRating = officialRating
+        self.genres = genres
         self.primaryTag = primaryTag; self.backdropTags = backdropTags
         self.logoTag = logoTag; self.thumbTag = thumbTag; self.bannerTag = bannerTag
         self.dateAdded = dateAdded
         self.userData = userData
-        self.width = width; self.height = height; self.videoRangeType = videoRangeType
     }
 
     public func imageRef(_ kind: ImageKind) -> ImageRef? {

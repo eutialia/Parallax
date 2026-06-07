@@ -202,31 +202,79 @@ struct DTOMappingTests {
         #expect(ed.chapters[1].start == .seconds(90))
     }
 
-    @Test("3840×2160 DOVI video stream → posterBadges == [\"4K\", \"Dolby Vision\"]")
-    func moviePosterBadges4kDovi() {
+    @Test("3840×2160 DOVI video stream → detailMetadata includes quality labels")
+    func movieDetailMetadataQuality() {
         var dto = BaseItemDto()
         dto.id = "movie-badge-4k"
         dto.name = "Badge Movie"
         dto.type = .movie
+        dto.productionYear = 2020
         var stream = MediaStream()
         stream.type = .video
         stream.width = 3840
         stream.height = 2160
         stream.videoRangeType = .dovi
         dto.mediaStreams = [stream]
-        let m = dto.toMovie()
-        #expect(m?.posterBadges == ["4K", "Dolby Vision"])
+        let meta = dto.toMovie().map { DetailMetadata(movie: $0) }
+        #expect(meta?.textParts == ["2020"])
+        #expect(meta?.qualityLabels == ["4K", "HDR"])
     }
 
-    @Test("No video stream → posterBadges == []")
-    func moviePosterBadgesNoStream() {
+    @Test("No video stream → detailMetadata omits quality labels")
+    func movieDetailMetadataNoStream() {
         var dto = BaseItemDto()
         dto.id = "movie-badge-empty"
         dto.name = "No Stream Movie"
         dto.type = .movie
+        dto.productionYear = 1999
         dto.mediaStreams = nil
-        let m = dto.toMovie()
-        #expect(m?.posterBadges == [])
+        let meta = dto.toMovie().map { DetailMetadata(movie: $0) }
+        #expect(meta?.textParts == ["1999"])
+        #expect(meta?.qualityLabels.isEmpty == true)
+    }
+
+    @Test("Subtitle stream → hasSubtitles is true")
+    func movieHasSubtitlesFromStream() {
+        var dto = BaseItemDto()
+        dto.id = "movie-subs"
+        dto.name = "Subtitled Movie"
+        dto.type = .movie
+        var sub = MediaStream()
+        sub.type = .subtitle
+        dto.mediaStreams = [sub]
+        #expect(dto.toMovie()?.hasSubtitles == true)
+        #expect(dto.toMovie().map { DetailMetadata(movie: $0).hasSubtitles } == true)
+    }
+
+    @Test("hasSubtitles DTO flag without streams → hasSubtitles is true")
+    func movieHasSubtitlesFromFlag() {
+        var dto = BaseItemDto()
+        dto.id = "movie-subs-flag"
+        dto.name = "Sidecar Subs Movie"
+        dto.type = .movie
+        dto.hasSubtitles = true
+        dto.mediaStreams = nil
+        let movie = dto.toMovie()
+        #expect(movie?.hasSubtitles == true)
+        #expect(movie.map { DetailMetadata(movie: $0).hasSubtitles } == true)
+    }
+
+    @Test("series maps communityRating and officialRating")
+    func seriesRatings() {
+        var dto = BaseItemDto()
+        dto.id = "series-rated"
+        dto.name = "Rated Show"
+        dto.type = .series
+        dto.communityRating = 9.1
+        dto.officialRating = "TV-MA"
+        let series = dto.toSeries()
+        let meta = series.map { DetailMetadata(series: $0) }
+        #expect(abs((series?.communityRating ?? 0) - 9.1) < 0.001)
+        #expect(series?.officialRating == "TV-MA")
+        #expect(meta?.textParts.contains("★ 9.1") == true)
+        #expect(meta?.textParts.contains("TV-MA") == true)
+        #expect(meta?.qualityLabels.isEmpty == true)
+        #expect(meta?.hasSubtitles == false)
     }
 
     @Test("Episode maps dateCreated to dateAdded")
