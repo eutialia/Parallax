@@ -74,7 +74,7 @@ public final class DefaultJellyfinLibraryClient: JellyfinLibraryClient, @uncheck
         var params = Paths.GetItemsParameters()
         params.userID = userID
         params.ids = ids
-        params.fields = [.primaryImageAspectRatio, .dateCreated]
+        params.fields = [.overview, .primaryImageAspectRatio, .dateCreated]
         params.imageTypeLimit = 1
         params.enableImageTypes = [.primary, .backdrop, .logo, .thumb]
         let request = Paths.getItems(parameters: params)
@@ -155,7 +155,7 @@ public final class DefaultJellyfinLibraryClient: JellyfinLibraryClient, @uncheck
         params.userID = userID
         params.limit = limit
         params.includeItemTypes = includeItemTypes
-        params.fields = [.primaryImageAspectRatio, .dateCreated]
+        params.fields = [.overview, .primaryImageAspectRatio, .dateCreated]
         params.imageTypeLimit = 1
         params.enableImageTypes = [.primary, .backdrop, .logo, .thumb]
         params.enableUserData = true

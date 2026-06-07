@@ -56,6 +56,12 @@ struct HomeHeroCarousel: View {
                     anchor: .bottom
                 )
 
+            heroBandScrim(
+                regularWidth: regularWidth,
+                bandWidth: width,
+                bandHeight: HeroMetrics.height(containerWidth: width, regularWidth: regularWidth)
+            )
+
             // Hidden while dragging (removed → fades out); on a settled page change its `.id`
             // flips and SwiftUI crossfades the new page over the old. No manual opacity state.
             if !isDragging {
@@ -113,8 +119,8 @@ struct HomeHeroCarousel: View {
             onToggleFavorite: { Task { await viewModel.toggleFavorite(for: entry.presentation.id) } }
         )
         .frame(maxWidth: .infinity, alignment: .leading)
-        .safeAreaPadding(.horizontal, regularWidth ? Space.s40 : Space.s22)
-        .padding(.bottom, Space.s30)
+        .safeAreaPadding(.horizontal, HeroMetrics.foregroundHorizontalInset(regularWidth: regularWidth))
+        .padding(.bottom, HeroMetrics.foregroundBottomInset)
     }
 
     private func panChanged(translationX: CGFloat, width: CGFloat) {

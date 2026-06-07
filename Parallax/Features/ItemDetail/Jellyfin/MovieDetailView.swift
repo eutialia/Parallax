@@ -28,11 +28,16 @@ struct MovieDetailView: View {
                                 )
                             } foreground: {
                                 VStack(alignment: .leading, spacing: Space.s12) {
-                                    Text(md.movie.title)
-                                        .scaledFont(hSize == .regular ? 48 : 30, relativeTo: .largeTitle, weight: .heavy)
-                                        .foregroundStyle(.white).lineLimit(2).minimumScaleFactor(0.7)
+                                    HeroTitle(
+                                        item: .movie(md.movie),
+                                        session: session,
+                                        regularWidth: hSize == .regular,
+                                        scale: .detail
+                                    )
                                     if let sub = subtitle(md) {
-                                        Text(sub).font(.subheadline).foregroundStyle(.white.opacity(0.85))
+                                        Text(sub)
+                                            .font(.subheadline)
+                                            .foregroundStyle(.white)
                                     }
                                     HStack(spacing: Space.s12) {
                                         PrimaryPlayButton(
@@ -62,7 +67,7 @@ struct MovieDetailView: View {
                                     .padding(.horizontal, Space.s18)
                             }
                             if let overview = md.movie.overview {
-                                Text(overview)
+                                DetailOverview(text: overview)
                                     .padding(.horizontal, Space.s18)
                             }
                             if !md.studios.isEmpty {

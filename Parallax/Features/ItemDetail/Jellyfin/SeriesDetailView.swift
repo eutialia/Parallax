@@ -28,11 +28,16 @@ struct SeriesDetailView: View {
                                 )
                             } foreground: {
                                 VStack(alignment: .leading, spacing: Space.s12) {
-                                    Text(sd.series.title)
-                                        .scaledFont(hSize == .regular ? 48 : 30, relativeTo: .largeTitle, weight: .heavy)
-                                        .foregroundStyle(.white).lineLimit(2).minimumScaleFactor(0.7)
+                                    HeroTitle(
+                                        item: .series(sd.series),
+                                        session: session,
+                                        regularWidth: hSize == .regular,
+                                        scale: .detail
+                                    )
                                     if let sub = subtitle(sd) {
-                                        Text(sub).font(.subheadline).foregroundStyle(.white.opacity(0.85))
+                                        Text(sub)
+                                            .font(.subheadline)
+                                            .foregroundStyle(.white)
                                     }
                                     HStack(spacing: Space.s12) {
                                         if let ep = vm.resumeEpisode {
@@ -53,7 +58,8 @@ struct SeriesDetailView: View {
                             }
 
                             if let overview = sd.series.overview {
-                                Text(overview).padding(.horizontal, Space.s18)
+                                DetailOverview(text: overview)
+                                    .padding(.horizontal, Space.s18)
                             }
                             if !seasons.isEmpty {
                                 seasonPicker(seasons: seasons, vm: vm)

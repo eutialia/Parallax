@@ -42,11 +42,20 @@ struct HeroForeground: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Space.s12) {
             Text(entry.eyebrow.rawValue)
-                .font(.caption.weight(.bold)).tracking(1.5)
-                .foregroundStyle(.white.opacity(0.7))
-            title
-            if let meta {
-                Text(meta).font(.subheadline).foregroundStyle(.white.opacity(0.85))
+                .font(.caption.weight(.bold))
+                .tracking(1.5)
+                .foregroundStyle(.white)
+                .padding(.horizontal, Space.s12)
+                .padding(.vertical, Space.s3)
+                .background(.black.opacity(0.5), in: Capsule())
+                .overlay(Capsule().strokeBorder(.white.opacity(0.35), lineWidth: 1))
+            HeroTitle(item: item, session: session, regularWidth: regularWidth)
+            if let overview = HeroOverview(item: item, regularWidth: regularWidth) {
+                overview
+            } else if let meta = item.heroMetadataLine {
+                Text(meta)
+                    .font(.subheadline)
+                    .foregroundStyle(.white)
             }
             HStack(spacing: Space.s12) {
                 PrimaryPlayButton(
@@ -60,43 +69,6 @@ struct HeroForeground: View {
             .padding(.top, Space.s8)
         }
         .frame(maxWidth: HeroMetrics.contentMaxWidth, alignment: .leading)
-        // Legibility over bright artwork without a boxed background (shared with HeroBackdrop).
-        .modifier(HeroForegroundLegibility())
     }
 
-    @ViewBuilder
-    private var title: some View {
-        if let ref = logoImageRef {
-            JellyfinImage(ref: ref, kind: .logo, session: session, maxWidth: 800, style: .logo)
-                .frame(height: regularWidth ? 96 : 60, alignment: .leading)
-                .frame(maxWidth: HeroMetrics.contentMaxWidth, alignment: .leading)
-                .accessibilityLabel(item.displayTitle)
-        } else {
-            Text(item.displayTitle)
-                .scaledFont(regularWidth ? 52 : 32, relativeTo: .largeTitle, weight: .heavy)
-                .foregroundStyle(.white).lineLimit(2).minimumScaleFactor(0.7)
-        }
-    }
-
-    private var logoImageRef: ImageRef? {
-        switch item {
-        case .movie(let m): return m.imageRef(.logo)
-        case .series(let s): return s.imageRef(.logo)
-        case .episode: return nil
-        }
-    }
-
-    private var meta: String? {
-        switch item {
-        case .movie(let m):
-            var parts: [String] = []
-            if let y = m.year { parts.append(String(y)) }
-            if let r = m.runtime { parts.append("\(Int(r.components.seconds / 60)) min") }
-            return parts.isEmpty ? nil : parts.joined(separator: " · ")
-        case .series(let s): return s.year.map(String.init)
-        case .episode(let e):
-            if let season = e.parentIndexNumber, let idx = e.indexNumber { return "S\(season) · E\(idx)" }
-            return nil
-        }
-    }
 }

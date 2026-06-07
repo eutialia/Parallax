@@ -21,6 +21,14 @@ public enum Item: Sendable, Hashable, Identifiable {
         }
     }
 
+    public var overview: String? {
+        switch self {
+        case .movie(let m): return m.overview
+        case .series(let s): return s.overview
+        case .episode(let e): return e.overview
+        }
+    }
+
     public var runtime: Duration? {
         switch self {
         case .movie(let m): return m.runtime
