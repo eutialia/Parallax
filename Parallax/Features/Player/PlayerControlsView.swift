@@ -12,8 +12,12 @@ import ParallaxPlayback
 /// and because a bare `.glassEffect(.regular)` resolves its frosted tint from the
 /// environment's `colorScheme`, `PlayerView` pins the whole surface to `.dark` (see
 /// `PlayerView.body`) so the glass stays consistently dark even when the app is in
-/// light mode. The presented track menus pin `.dark` themselves (`trackMenuChrome`),
-/// since a popover/sheet presents in a fresh environment.
+/// light mode. Track menus reuse the same `.glassEffect(.regular)` as the bottom bar
+/// (`trackMenuChrome`), pinned `.dark` via `preferredColorScheme` since a popover/sheet
+/// presents in a fresh environment and design tokens read UIKit traits.
+///
+/// Track chips (audio, subtitles, speed, chapters) show icon-only on iPhone (compact
+/// width); iPad keeps icon + label.
 ///
 /// Controls auto-hide after 3s of inactivity; tap anywhere to toggle. The auto-hide
 /// is suspended while a track menu (popover/sheet) is open.
@@ -267,6 +271,7 @@ struct PlayerControlsView: View {
                 CtlChip(
                     systemImage: "waveform",
                     label: vm.selectedAudioTrack?.displayName ?? "Audio",
+                    accessibilityLabel: "Audio, \(vm.selectedAudioTrack?.displayName ?? "default")",
                     isActive: audioMenu
                 ) {
                     resetHideTimer()
@@ -280,6 +285,7 @@ struct PlayerControlsView: View {
                     systemImage: "captions.bubble",
                     label: "Subtitles",
                     sub: vm.selectedSubtitleTrack?.displayName ?? "Off",
+                    accessibilityLabel: "Subtitles, \(vm.selectedSubtitleTrack?.displayName ?? "Off")",
                     isActive: subtitleMenu
                 ) {
                     resetHideTimer()
@@ -293,7 +299,12 @@ struct PlayerControlsView: View {
             Spacer(minLength: 0)
 
             if !vm.chapters.isEmpty {
-                CtlChip(systemImage: "list.bullet", label: "Chapters", isActive: chapterMenu) {
+                CtlChip(
+                    systemImage: "list.bullet",
+                    label: "Chapters",
+                    accessibilityLabel: "Chapters",
+                    isActive: chapterMenu
+                ) {
                     resetHideTimer()
                     chapterMenu = true
                 }
@@ -323,6 +334,7 @@ struct PlayerControlsView: View {
         CtlChip(
             systemImage: "timer",
             label: SpeedMenu.label(Double(vm.playbackRate)),
+            accessibilityLabel: "Playback speed, \(SpeedMenu.label(Double(vm.playbackRate)))",
             isActive: speedMenu
         ) {
             resetHideTimer()
@@ -383,10 +395,14 @@ struct PlayerControlsView: View {
         }
     }
 
-    /// Shared presentation wrapper: scrollable, dark-pinned (so tokens resolve to the
-    /// immersive dark palette), width-bounded for the popover (the sheet ignores width).
+    /// Shared presentation wrapper: scrollable Liquid Glass panel (same `.regular`
+    /// variant + white hairline as `bottomBar`), dark-pinned so design tokens resolve
+    /// to the immersive palette. `preferredColorScheme` is required alongside the
+    /// environment override — `Color.label` et al. read UIKit traits, not SwiftUI's
+    /// `colorScheme`, so environment alone leaves menus white-ish in Matinee mode.
     @ViewBuilder
     private func trackMenuChrome<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: Radius.panel, style: .continuous)
         ScrollView {
             content()
                 .padding(8)
@@ -394,6 +410,10 @@ struct PlayerControlsView: View {
         .scrollBounceBehavior(.basedOnSize)
         .frame(idealWidth: 360)
         .frame(maxHeight: 520)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .glassEffect(.regular, in: shape)
+        .overlay(shape.strokeBorder(.white.opacity(0.12), lineWidth: 1))
+        .preferredColorScheme(.dark)
         .environment(\.colorScheme, .dark)
     }
 
@@ -457,31 +477,42 @@ struct PlayerControlsView: View {
 
 // MARK: - Chrome primitives
 
-/// The styled pill content rendered by `CtlChip` (its sole caller now that the speed
-/// control is a `CtlChip` + popover/sheet rather than a `Menu`).
+/// The styled pill content rendered by `CtlChip`. On iPhone (compact width) only the
+/// icon is shown; iPad keeps the full label so the wider bar has room.
 private struct ChipLabel: View {
     let systemImage: String
     let label: String
     var sub: String? = nil
     var isActive: Bool = false
 
+    @Environment(\.horizontalSizeClass) private var hSize
+
+    private var iconOnly: Bool { hSize == .compact }
+
     var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: systemImage)
-                .font(.system(size: 16, weight: .semibold))
-            Text(label)
-                .font(.subheadline.weight(.medium))
-                .lineLimit(1)
-            if let sub {
-                Text(sub)
-                    .font(.subheadline)
-                    .foregroundStyle(.white.opacity(0.6))
-                    .lineLimit(1)
+        Group {
+            if iconOnly {
+                Image(systemName: systemImage)
+                    .font(.system(size: 16, weight: .semibold))
+            } else {
+                HStack(spacing: 8) {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 16, weight: .semibold))
+                    Text(label)
+                        .font(.subheadline.weight(.medium))
+                        .lineLimit(1)
+                    if let sub {
+                        Text(sub)
+                            .font(.subheadline)
+                            .foregroundStyle(.white.opacity(0.6))
+                            .lineLimit(1)
+                    }
+                }
             }
         }
         .foregroundStyle(.white)
-        .padding(.horizontal, 14)
-        .frame(height: 36)
+        .padding(.horizontal, iconOnly ? 0 : 14)
+        .frame(width: iconOnly ? 36 : nil, height: 36)
         .background(.white.opacity(isActive ? 0.22 : 0.12), in: Capsule())
         .overlay(Capsule().strokeBorder(.white.opacity(0.18), lineWidth: 1))
         .contentShape(Capsule())
@@ -492,6 +523,7 @@ private struct CtlChip: View {
     let systemImage: String
     let label: String
     var sub: String? = nil
+    let accessibilityLabel: String
     var isActive: Bool = false
     let action: () -> Void
 
@@ -500,6 +532,7 @@ private struct CtlChip: View {
             ChipLabel(systemImage: systemImage, label: label, sub: sub, isActive: isActive)
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(accessibilityLabel)
     }
 }
 
@@ -546,12 +579,17 @@ private struct TrackPresentation<MenuContent: View>: ViewModifier {
             }
         #else
         content
-            .popover(isPresented: gated(whenRegular: true)) { menu() }
+            .popover(isPresented: gated(whenRegular: true)) {
+                menu()
+                    .preferredColorScheme(.dark)
+                    .presentationBackground(.clear)
+            }
             .sheet(isPresented: gated(whenRegular: false)) {
                 menu()
+                    .preferredColorScheme(.dark)
                     .presentationDetents(detents)
                     .presentationDragIndicator(.visible)
-                    .presentationBackground(.regularMaterial)
+                    .presentationBackground(.clear)
             }
         #endif
     }
