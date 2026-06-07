@@ -129,18 +129,30 @@ struct HomeView: View {
     }
 
     private func homeShelfCaption(_ item: Item, showProgress: Bool) -> String? {
-        var parts: [String] = []
-        if case .episode(let e) = item, let label = e.seasonEpisodeLabel {
-            parts.append(label)
+        switch item {
+        case .episode(let e):
+            if showProgress {
+                // Continue Watching — time remaining only; no total runtime fallback.
+                return e.shelfFooterCaption(showRuntimeLength: false)
+            }
+            // Next Up — episode index + total runtime.
+            return e.shelfFooterCaption(showTimeRemaining: false)
+        case .movie, .series:
+            guard showProgress,
+                  let minutes = item.userData.remainingMinutes(runtime: item.runtime) else { return nil }
+            return "\(minutes) min left"
         }
-        if showProgress, let minutes = item.userData.remainingMinutes(runtime: item.runtime) {
-            parts.append("\(minutes) min left")
-        }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     private func tileProgress(_ item: Item) -> Double? {
-        let runtimeTicks = item.runtime.map { Int64($0.components.seconds) * 10_000_000 }
-        return item.userData.playedFraction(runtimeTicks: runtimeTicks)
+        switch item {
+        case .episode(let e):
+            return e.shelfPlaybackProgress
+        case .movie:
+            let runtimeTicks = item.runtime.map { Int64($0.components.seconds) * 10_000_000 }
+            return item.userData.playedFraction(runtimeTicks: runtimeTicks)
+        case .series:
+            return nil
+        }
     }
 }

@@ -64,6 +64,7 @@ struct MediaTile: View {
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.white)
                         .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 if let progress, progress > 0 {
                     GeometryReader { geo in

@@ -12,8 +12,7 @@ final class SeriesDetailViewModel {
     }
 
     private(set) var state: LoadState = .idle
-    private(set) var selectedSeasonID: ItemID?
-    private(set) var episodes: [Episode] = []
+    private(set) var episodesBySeasonID: [ItemID: [Episode]] = [:]
     private(set) var episodesLoading = false
     private(set) var isFavorite = false
     private(set) var resumeEpisode: Episode?
@@ -42,8 +41,8 @@ final class SeriesDetailViewModel {
             }
             state = .loaded(sd, seasons)
             isFavorite = sd.series.userData.isFavorite
-            if let first = seasons.first {
-                await selectSeason(first.id)
+            if !seasons.isEmpty {
+                await loadEpisodes(for: seasons)
             }
             // resumeTask already ran concurrently; awaiting it here adds no latency.
             resumeEpisode = try? await resumeTask
@@ -54,6 +53,10 @@ final class SeriesDetailViewModel {
             Log.ui.error("SeriesDetail load unexpected: \(String(describing: type(of: error)))")
             state = .failed("Something went wrong.")
         }
+    }
+
+    func episodes(for seasonID: ItemID) -> [Episode] {
+        episodesBySeasonID[seasonID] ?? []
     }
 
     func toggleFavorite() async {
@@ -70,28 +73,27 @@ final class SeriesDetailViewModel {
         }
     }
 
-    /// Mark the currently-selected season played (Jellyfin cascades to its episodes).
-    func markSelectedSeasonWatched() async {
-        guard let seasonID = selectedSeasonID else { return }
-        do { try await repo.setPlayed(itemID: seasonID, isPlayed: true) }
-        catch { Log.ui.error("markSeasonWatched failed: \(String(describing: type(of: error)))") }
-    }
-
-    func selectSeason(_ id: ItemID) async {
-        selectedSeasonID = id
+    private func loadEpisodes(for seasons: [Season]) async {
         episodesLoading = true
-        do {
-            let result = try await repo.episodes(of: id)
-            // Drop a stale response: the user moved to another season (or the
-            // auto-select raced a tap) while this fetch was in flight, so a
-            // slower earlier fetch must not overwrite the newer season's list.
-            guard selectedSeasonID == id else { return }
-            episodes = result
-        } catch {
-            Log.ui.error("Season episodes load failed: \(String(describing: type(of: error)))")
-            guard selectedSeasonID == id else { return }
-            episodes = []
+        var bySeason: [ItemID: [Episode]] = [:]
+        await withTaskGroup(of: (ItemID, [Episode]).self) { group in
+            for season in seasons {
+                let seasonID = season.id
+                group.addTask {
+                    do {
+                        let episodes = try await self.repo.episodes(of: seasonID)
+                        return (seasonID, episodes)
+                    } catch {
+                        Log.ui.error("Season episodes load failed: \(String(describing: type(of: error)))")
+                        return (seasonID, [])
+                    }
+                }
+            }
+            for await (seasonID, episodes) in group {
+                bySeason[seasonID] = episodes
+            }
         }
-        if selectedSeasonID == id { episodesLoading = false }
+        episodesBySeasonID = bySeason
+        episodesLoading = false
     }
 }

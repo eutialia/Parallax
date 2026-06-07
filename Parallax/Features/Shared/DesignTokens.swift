@@ -88,6 +88,13 @@ enum HomeShelf {
     static let footerScrimOpacity: Double = 0.55
 }
 
+/// Series detail episode shelves (16:9 landscape — matches Jellyfin episode primary).
+enum SeriesShelf {
+    static let episodeTileWidth: CGFloat = 240
+    /// Jellyfin thumb width for @3x at `episodeTileWidth` (avoids soft upscaling).
+    static let imageMaxWidth: Int = 720
+}
+
 enum Space {
     static let s3: CGFloat = 3
     static let s8: CGFloat = 8

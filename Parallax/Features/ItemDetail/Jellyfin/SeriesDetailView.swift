@@ -60,15 +60,7 @@ struct SeriesDetailView: View {
                                 DetailOverview(text: overview)
                                     .padding(.horizontal, Space.s18)
                             }
-                            if !seasons.isEmpty {
-                                seasonPicker(seasons: seasons, vm: vm)
-                                    .padding(.horizontal, Space.s18)
-                                DetailActionButton(systemImage: "checkmark.circle", label: "Mark Season Watched") {
-                                    Task { await vm.markSelectedSeasonWatched() }
-                                }
-                                .padding(.horizontal, Space.s18)
-                            }
-                            episodeList(vm: vm)
+                            seasonEpisodeShelves(seasons: seasons, vm: vm)
                             if !sd.series.genres.isEmpty {
                                 DetailMetadataLine(label: "Genres", value: sd.series.genres.joined(separator: ", "))
                             }
@@ -98,61 +90,44 @@ struct SeriesDetailView: View {
     }
 
     @ViewBuilder
-    private func seasonPicker(seasons: [Season], vm: SeriesDetailViewModel) -> some View {
-        let current = seasons.first { $0.id == vm.selectedSeasonID } ?? seasons.first
-        Menu {
-            ForEach(seasons) { season in
-                Button(season.name) { Task { await vm.selectSeason(season.id) } }
-            }
-        } label: {
-            HStack(spacing: Space.s8) {
-                Text(current?.name ?? "Season").font(.headline).foregroundStyle(Color.label)
-                Image(systemName: "chevron.down").font(.subheadline).foregroundStyle(Color.secondaryLabel)
-            }
-            .padding(.horizontal, Space.s14)
-            // Explicit full width (not a trailing Spacer) so the Menu doesn't
-            // re-measure the label to its intrinsic size and snap it to the right
-            // edge when it opens.
-            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-            .contentShape(.rect)
-            .glassPanel(cornerRadius: Radius.field)
-        }
-    }
-
-    @ViewBuilder
-    private func episodeList(vm: SeriesDetailViewModel) -> some View {
+    private func seasonEpisodeShelves(seasons: [Season], vm: SeriesDetailViewModel) -> some View {
         if vm.episodesLoading {
             EpisodeListLoadingSkeleton()
         } else {
-            VStack(spacing: 0) {
-                ForEach(vm.episodes) { ep in
-                    Button { playback.play(ep.id, in: session) } label: {
-                        episodeRow(ep)
+            VStack(alignment: .leading, spacing: Space.s22) {
+                ForEach(seasons) { season in
+                    let episodes = vm.episodes(for: season.id)
+                    if !episodes.isEmpty {
+                        MetadataRow(
+                            title: season.name,
+                            items: episodes,
+                            tileWidth: SeriesShelf.episodeTileWidth
+                        ) { episode in
+                            Button {
+                                playback.play(episode.id, in: session)
+                            } label: {
+                                episodeCard(episode)
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
-                    .buttonStyle(.plain)
                 }
             }
         }
     }
 
     @ViewBuilder
-    private func episodeRow(_ ep: Episode) -> some View {
-        HStack(alignment: .top, spacing: Space.s12) {
-            JellyfinImage(ref: ep.imageRef(.primary), kind: .primary, session: session, maxWidth: 320, aspectRatio: JellyfinImage.landscape)
-                .frame(width: 120, height: 68)
-                .clipShape(.rect(cornerRadius: Radius.tile))
-            VStack(alignment: .leading, spacing: 4) {
-                if let n = ep.indexNumber {
-                    Text("Episode \(n)").font(.caption).foregroundStyle(Color.secondaryLabel)
-                }
-                Text(ep.name).font(.body).foregroundStyle(Color.label).lineLimit(2)
-                if let runtime = ep.runtime {
-                    Text("\(Int(runtime.components.seconds / 60)) min").font(.caption2).foregroundStyle(Color.secondaryLabel)
-                }
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, Space.s18).padding(.vertical, Space.s8)
+    private func episodeCard(_ episode: Episode) -> some View {
+        MediaTile(
+            title: episode.name,
+            imageRef: episode.imageRef(.primary),
+            imageKind: .primary,
+            session: session,
+            progress: episode.shelfPlaybackProgress,
+            progressCaption: episode.shelfFooterCaption(),
+            aspectRatio: JellyfinImage.landscape,
+            maxImageWidth: SeriesShelf.imageMaxWidth
+        )
     }
 
     private func resumeLabel(_ ep: Episode) -> String {

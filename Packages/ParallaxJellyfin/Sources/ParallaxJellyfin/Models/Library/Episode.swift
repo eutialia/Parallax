@@ -77,4 +77,37 @@ public extension Episode {
         guard let season = parentIndexNumber, let index = indexNumber else { return nil }
         return "S\(season), E\(index)"
     }
+
+    /// Whole-minute runtime for shelf captions, e.g. Next Up's `"S1, E2 · 45 min"`.
+    var runtimeLengthMinutes: Int? {
+        guard let runtime else { return nil }
+        let minutes = Int(runtime.components.seconds / 60)
+        return minutes > 0 ? minutes : nil
+    }
+
+    /// Shelf footer caption — episode index plus optional time metadata.
+    /// In progress: `"S1, E2 · 22 min left"`. Unwatched / Next Up: `"S1, E2 · 45 min"`.
+    func shelfFooterCaption(showTimeRemaining: Bool = true, showRuntimeLength: Bool = true) -> String? {
+        var parts: [String] = []
+        if let label = seasonEpisodeLabel {
+            parts.append(label)
+        } else if let index = indexNumber {
+            parts.append("E\(index)")
+        }
+        if showTimeRemaining, userData.playbackPositionTicks > 0 {
+            if let minutes = userData.remainingMinutes(runtime: runtime) {
+                parts.append("\(minutes) min left")
+            }
+        } else if showRuntimeLength, let minutes = runtimeLengthMinutes {
+            parts.append("\(minutes) min")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// Playback fraction for shelf progress bars; nil when not started or runtime unknown.
+    var shelfPlaybackProgress: Double? {
+        guard userData.playbackPositionTicks > 0 else { return nil }
+        let runtimeTicks = runtime.map { Int64($0.components.seconds) * 10_000_000 }
+        return userData.playedFraction(runtimeTicks: runtimeTicks)
+    }
 }

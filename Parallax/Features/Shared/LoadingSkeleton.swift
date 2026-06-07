@@ -241,19 +241,25 @@ struct DetailLoadingSkeleton: View {
 
 struct EpisodeListLoadingSkeleton: View {
     var body: some View {
-        VStack(spacing: 0) {
-            ForEach(0..<5, id: \.self) { _ in
-                HStack(alignment: .top, spacing: Space.s14) {
-                    SkeletonBlock(cornerRadius: Radius.tile)
-                        .frame(width: 120, height: 68)
-                    VStack(alignment: .leading, spacing: Space.s8) {
-                        SkeletonBlock(cornerRadius: 6, height: 16)
-                        SkeletonBlock(cornerRadius: 4, height: 12)
-                            .frame(width: 88)
+        VStack(alignment: .leading, spacing: Space.s22) {
+            ForEach(0..<2, id: \.self) { _ in
+                VStack(alignment: .leading, spacing: Space.s8) {
+                    SkeletonBlock(cornerRadius: 6, height: 22)
+                        .frame(width: 120)
+                        .padding(.horizontal, AppLayout.contentHMargin)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: Space.s12) {
+                            ForEach(0..<5, id: \.self) { _ in
+                                SkeletonBlock(cornerRadius: Radius.tile)
+                                    .frame(
+                                        width: SeriesShelf.episodeTileWidth,
+                                        height: SeriesShelf.episodeTileWidth / JellyfinImage.landscape
+                                    )
+                            }
+                        }
+                        .padding(.horizontal, AppLayout.contentHMargin)
                     }
                 }
-                .padding(.horizontal, Space.s18)
-                .padding(.vertical, Space.s12)
             }
         }
         .skeletonShimmer()

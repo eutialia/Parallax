@@ -67,6 +67,72 @@ struct LibraryPrimitivesTests {
         #expect(data.remainingMinutes(runtime: nil) == nil)
     }
 
+    @Test("Episode shelf footer caption and progress for in-progress playback")
+    func episodeShelfFooter() {
+        let episode = Episode(
+            id: ItemID(rawValue: "e1"),
+            seriesID: ItemID(rawValue: "s1"),
+            seasonID: ItemID(rawValue: "se1"),
+            name: "Pilot",
+            indexNumber: 2,
+            parentIndexNumber: 1,
+            overview: nil,
+            runtime: .seconds(3600),
+            primaryTag: nil,
+            userData: UserItemData(
+                played: false,
+                playbackPositionTicks: 18_000_000_000,
+                playCount: 0,
+                isFavorite: false
+            )
+        )
+        #expect(episode.shelfFooterCaption() == "S1, E2 · 30 min left")
+        #expect(episode.shelfFooterCaption(showTimeRemaining: false) == "S1, E2 · 60 min")
+        #expect(episode.shelfPlaybackProgress == 0.5)
+    }
+
+    @Test("Episode shelf footer shows runtime without progress when unwatched")
+    func episodeShelfFooterUnwatchedShowsRuntimeNotProgress() {
+        let episode = Episode(
+            id: ItemID(rawValue: "e1"),
+            seriesID: ItemID(rawValue: "s1"),
+            seasonID: ItemID(rawValue: "se1"),
+            name: "Pilot",
+            indexNumber: 2,
+            parentIndexNumber: 1,
+            overview: nil,
+            runtime: .seconds(3600),
+            primaryTag: nil,
+            userData: .absent
+        )
+        #expect(episode.shelfFooterCaption() == "S1, E2 · 60 min")
+        #expect(episode.shelfFooterCaption(showRuntimeLength: false) == "S1, E2")
+        #expect(episode.shelfPlaybackProgress == nil)
+    }
+
+    @Test("Episode shelf footer shows label only when playback is near end")
+    func episodeShelfFooterNearEnd() {
+        let episode = Episode(
+            id: ItemID(rawValue: "e1"),
+            seriesID: ItemID(rawValue: "s1"),
+            seasonID: ItemID(rawValue: "se1"),
+            name: "Pilot",
+            indexNumber: 2,
+            parentIndexNumber: 1,
+            overview: nil,
+            runtime: .seconds(3600),
+            primaryTag: nil,
+            userData: UserItemData(
+                played: false,
+                playbackPositionTicks: 36_000_000_000,
+                playCount: 0,
+                isFavorite: false
+            )
+        )
+        #expect(episode.shelfFooterCaption() == "S1, E2")
+        #expect(episode.shelfPlaybackProgress == 1.0)
+    }
+
     @Test("Movie.imageRef returns nil when the relevant tag is missing")
     func movieImageRefNil() {
         let movie = Movie(
