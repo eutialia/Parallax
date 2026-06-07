@@ -10,12 +10,6 @@ struct RootTabView: View {
     @State private var session: Session?
     @State private var libraries: [MediaCollection] = []
 
-    enum AppTab: Hashable {
-        case home, library, search
-        /// A specific library surfaced directly in the sidebar's "Libraries" section.
-        case collection(CollectionID)
-    }
-
     var body: some View {
         tabView
         // Remount every tab when the active server changes. `activeServerID` is owned
