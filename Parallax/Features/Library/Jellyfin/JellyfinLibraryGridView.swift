@@ -12,6 +12,7 @@ struct JellyfinLibraryGridView: View {
 
     @Environment(AppDependencies.self) private var deps
     @Environment(\.horizontalSizeClass) private var hSize
+    @Environment(\.appIdiom) private var idiom
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Fixed poster columns — shared by the grid, its first-load placeholder, and the
     /// load-more strip so all three stay aligned. Denser on regular width (iPad).
@@ -81,7 +82,7 @@ struct JellyfinLibraryGridView: View {
                 ScrollView {
                     gridScrollContent(vm: vm)
                 }
-                .contentMargins(.horizontal, AppLayout.contentHMargin, for: .scrollContent)
+                .contentMargins(.horizontal, AppLayout.contentHMargin(idiom: idiom), for: .scrollContent)
             }
         }
     }
@@ -112,7 +113,7 @@ struct JellyfinLibraryGridView: View {
             Button("Try Again") { Task { await vm.retryRefresh() } }
                 .font(.subheadline.weight(.semibold))
         }
-        .padding(.horizontal, AppLayout.contentHMargin)
+        .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
         .padding(.vertical, Space.s8)
         .background(Color.fill)
         .accessibilityElement(children: .combine)
@@ -151,7 +152,7 @@ struct JellyfinLibraryGridView: View {
                 AdaptivePosterGridLoadingSkeleton(tileCount: columns * 3, fixedColumns: columns)
             }
             .scrollDisabled(true)
-            .contentMargins(.horizontal, AppLayout.contentHMargin, for: .scrollContent)
+            .contentMargins(.horizontal, AppLayout.contentHMargin(idiom: idiom), for: .scrollContent)
         }
     }
 
@@ -177,7 +178,7 @@ struct JellyfinLibraryGridView: View {
                         .frame(width: CGFloat(width), height: genreChipHeight)
                 }
             }
-            .padding(.horizontal, AppLayout.contentHMargin)
+            .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
             .padding(.vertical, Space.s8)
         }
         .scrollDisabled(true)
@@ -202,7 +203,7 @@ struct JellyfinLibraryGridView: View {
                     .buttonStyle(.plain)
                 }
             }
-            .padding(.horizontal, AppLayout.contentHMargin)
+            .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
             .padding(.vertical, Space.s8)
         }
     }

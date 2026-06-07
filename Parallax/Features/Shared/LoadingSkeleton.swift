@@ -186,11 +186,11 @@ struct LibraryListLoadingSkeleton: View {
 /// disabled `ScrollView` lets it fill the screen like the loaded grid. Shared by the
 /// Library list, its bootstrap host, and the per-server task gate.
 struct LibraryListLoadingPlaceholder: View {
-    @Environment(\.horizontalSizeClass) private var hSize
+    @Environment(\.appIdiom) private var idiom
 
     var body: some View {
         ScrollView {
-            LibraryListLoadingSkeleton(columns: hSize == .regular ? 2 : 1)
+            LibraryListLoadingSkeleton(columns: AppLayout.libraryListColumns(idiom: idiom))
         }
         .scrollDisabled(true)
     }

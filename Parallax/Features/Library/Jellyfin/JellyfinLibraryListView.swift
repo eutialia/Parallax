@@ -5,7 +5,7 @@ struct JellyfinLibraryListView: View {
     let session: Session
 
     @Environment(AppDependencies.self) private var deps
-    @Environment(\.horizontalSizeClass) private var hSize
+    @Environment(\.appIdiom) private var idiom
     @State private var viewModel: JellyfinLibraryListViewModel?
 
     var body: some View {
@@ -17,8 +17,8 @@ struct JellyfinLibraryListView: View {
                 case .loaded:
                     ScrollView {
                         // Jellyfin renders library art at 16:9 with the name baked in, so
-                        // these are wide banners: two-up on iPad, one-up on iPhone.
-                        let cols = hSize == .regular ? 2 : 1
+                        // these are wide banners: two-up on iPad, one-up on iPhone/tvOS.
+                        let cols = AppLayout.libraryListColumns(idiom: idiom)
                         LazyVGrid(
                             columns: Array(repeating: GridItem(.flexible(), spacing: Space.s12), count: cols),
                             spacing: Space.s12
@@ -26,9 +26,10 @@ struct JellyfinLibraryListView: View {
                             ForEach(vm.collections.filter { isSupported($0.collectionType) }) { coll in
                                 NavigationLink(value: coll) { LibraryCard(collection: coll, session: session) }
                                     .buttonStyle(.plain)
+                                    .tvPosterButton()
                             }
                         }
-                        .padding(Space.s18)
+                        .padding(AppLayout.contentHMargin(idiom: idiom))
                     }
                 case .failed(let message):
                     ContentUnavailableView(

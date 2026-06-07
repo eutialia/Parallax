@@ -12,7 +12,7 @@ struct MetadataRow<Item: Identifiable & Hashable, Content: View>: View {
         VStack(alignment: .leading, spacing: Space.s8) {
             Text(title)
                 .font(.title2.weight(.bold))
-                .padding(.horizontal, AppLayout.contentHMargin)
+                .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(alignment: .top, spacing: Space.s12) {
                     ForEach(items) { item in
@@ -21,7 +21,7 @@ struct MetadataRow<Item: Identifiable & Hashable, Content: View>: View {
                             .tvShelfItem()
                     }
                 }
-                .padding(.horizontal, AppLayout.contentHMargin)
+                .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
             }
         }
         #if os(tvOS)
