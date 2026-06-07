@@ -1,3 +1,4 @@
+#if !os(tvOS)
 import SwiftUI
 import ParallaxJellyfin
 
@@ -77,9 +78,7 @@ struct RootTabView: View {
                         // Sidebar-only: don't also crowd the collapsed top tab bar with
                         // every library — they're a sidebar convenience (the Library tab
                         // remains the primary browse-all entry).
-                        #if !os(tvOS)
                         .defaultVisibility(.hidden, for: .tabBar)
-                        #endif
                     }
                 }
             }
@@ -88,9 +87,8 @@ struct RootTabView: View {
         // Matinee lives on tab *content* only (`.appScreenBackground()` inside each stack).
         // Tab chrome — iPad sidebar, bottom bar, and `tabViewSidebarBottomBar` — keeps the
         // system's Liquid Glass so hierarchical label styles match native tab rows.
-        #if !os(tvOS)
         .tabViewSidebarBottomBar { settingsFooter }
-        #endif
+        .environment(\.appIdiom, hSize == .regular ? .regular : .compact)
     }
 
     // MARK: - Settings entry
@@ -102,17 +100,11 @@ struct RootTabView: View {
     /// the sidebar bottom bar is the settings entry there.
     @ToolbarContentBuilder
     private var settingsToolbar: some ToolbarContent {
-        #if os(tvOS)
-        ToolbarItem(placement: .topBarTrailing) {
-            settingsButton
-        }
-        #else
         if hSize == .compact {
             ToolbarItem(placement: .topBarTrailing) {
                 settingsButton
             }
         }
-        #endif
     }
 
     private var settingsButton: some View {
@@ -152,3 +144,4 @@ struct RootTabView: View {
         router.presentingSettings = true
     }
 }
+#endif
