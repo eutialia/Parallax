@@ -12,7 +12,7 @@ struct JellyfinSearchView: View {
     @State private var query = ""
     @State private var scope: SearchScope = .all
     @FocusState private var searchFocused: Bool
-    @Environment(\.horizontalSizeClass) private var hSize
+    @Environment(\.appIdiom) private var idiom
 
     var body: some View {
         VStack(spacing: 0) {
@@ -32,7 +32,7 @@ struct JellyfinSearchView: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
                 }
             }
-            .padding(.horizontal, Space.s18)
+            .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
             .padding(.top, Space.s8)
             .padding(.bottom, Space.s12)
             .animation(.easeInOut(duration: 0.2), value: query.isEmpty)
@@ -79,14 +79,20 @@ struct JellyfinSearchView: View {
         switch vm.state {
         case .idle:
             ContentUnavailableView("Search your library", systemImage: "magnifyingglass")
+                #if !os(tvOS)
                 .tapToDismissKeyboard($searchFocused)
+                #endif
         case .loading:
             searchLoadingPlaceholder
+                #if !os(tvOS)
                 .tapToDismissKeyboard($searchFocused)
+                #endif
         case .loaded(let results):
             if results.movies.isEmpty && results.series.isEmpty && results.episodes.isEmpty {
                 ContentUnavailableView.search
+                    #if !os(tvOS)
                     .tapToDismissKeyboard($searchFocused)
+                    #endif
             } else {
                 // The grid is an `.equatable()` child so a per-keystroke `query` change
                 // can't re-render the tiles (see JellyfinSearchResultsView). The dismiss
@@ -98,6 +104,7 @@ struct JellyfinSearchView: View {
                     landscapeCols: landscapeCols
                 )
                 .equatable()
+                #if !os(tvOS)
                 // Drive dismissal ourselves so scrolling drops the keyboard with the SAME
                 // animation as the tap below (`.scrollDismissesKeyboard`'s built-in dismiss
                 // uses a different curve). `.never` disables the system's version; then any
@@ -107,6 +114,7 @@ struct JellyfinSearchView: View {
                     if newPhase == .interacting { searchFocused = false }
                 }
                 .simultaneousGesture(TapGesture().onEnded { searchFocused = false })
+                #endif
                 // Floating indicator while refining — an overlay (not an inline row)
                 // so the results don't shift down/up on every debounced keystroke.
                 .overlay(alignment: .top) {
@@ -121,7 +129,9 @@ struct JellyfinSearchView: View {
                 systemImage: "exclamationmark.triangle",
                 description: Text(message)
             )
+            #if !os(tvOS)
             .tapToDismissKeyboard($searchFocused)
+            #endif
         }
     }
 
@@ -132,8 +142,8 @@ struct JellyfinSearchView: View {
         .scrollDisabled(true)
     }
 
-    private var posterCols: Int { hSize == .regular ? 4 : 3 }
-    private var landscapeCols: Int { hSize == .regular ? 3 : 2 }
+    private var posterCols: Int { AppLayout.searchPosterColumns(idiom: idiom) }
+    private var landscapeCols: Int { AppLayout.searchLandscapeColumns(idiom: idiom) }
 }
 
 private extension View {
