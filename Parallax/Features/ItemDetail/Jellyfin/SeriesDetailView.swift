@@ -47,10 +47,12 @@ struct SeriesDetailView: View {
                                             ) {
                                                 playback.play(ep.id, in: session)
                                             }
+                                            .tvChipButton()
                                         }
                                         FavoriteActionButton(isFavorite: vm.isFavorite) {
                                             Task { await vm.toggleFavorite() }
                                         }
+                                        .tvChipButton()
                                     }
                                     .padding(.top, Space.s8)
                                 }
@@ -58,7 +60,7 @@ struct SeriesDetailView: View {
 
                             if let overview = sd.series.overview {
                                 DetailOverview(text: overview)
-                                    .padding(.horizontal, Space.s18)
+                                    .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
                             }
                             seasonEpisodeShelves(seasons: seasons, vm: vm)
                             if !sd.series.genres.isEmpty {
@@ -103,7 +105,7 @@ struct SeriesDetailView: View {
                         MetadataRow(
                             title: season.name,
                             items: episodes,
-                            tileWidth: SeriesShelf.episodeTileWidth
+                            tileWidth: AppLayout.seriesEpisodeTileWidth(idiom: idiom)
                         ) { episode in
                             Button {
                                 playback.play(episode.id, in: session)

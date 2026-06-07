@@ -46,14 +46,17 @@ struct MovieDetailView: View {
                                         ) {
                                             playerItem = .movie(md)
                                         }
+                                        .tvChipButton()
                                         FavoriteActionButton(isFavorite: vm.isFavorite) {
                                             Task { await vm.toggleFavorite() }
                                         }
+                                        .tvChipButton()
                                         CircleGlassButton(
                                             systemImage: vm.isPlayed ? "checkmark.circle.fill" : "checkmark.circle",
                                             isActive: vm.isPlayed,
                                             accessibilityLabel: vm.isPlayed ? "Watched" : "Mark Watched"
                                         ) { Task { await vm.togglePlayed() } }
+                                        .tvChipButton()
                                     }
                                     .padding(.top, Space.s8)
                                 }
@@ -63,11 +66,11 @@ struct MovieDetailView: View {
                                 Text(tagline)
                                     .italic()
                                     .foregroundStyle(Color.secondaryLabel)
-                                    .padding(.horizontal, Space.s18)
+                                    .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
                             }
                             if let overview = md.movie.overview {
                                 DetailOverview(text: overview)
-                                    .padding(.horizontal, Space.s18)
+                                    .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
                             }
                             if !md.studios.isEmpty {
                                 DetailMetadataLine(label: "Studios", value: md.studios.joined(separator: ", "))

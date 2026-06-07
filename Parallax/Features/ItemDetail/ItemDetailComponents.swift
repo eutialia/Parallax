@@ -118,11 +118,13 @@ struct DetailMetadataLine: View {
     let label: String
     let value: String
 
+    @Environment(\.appIdiom) private var idiom
+
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label).font(.caption).foregroundStyle(Color.secondaryLabel)
             Text(value).font(.callout).foregroundStyle(Color.label)
         }
-        .padding(.horizontal, Space.s18)
+        .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
     }
 }
