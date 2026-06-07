@@ -12,9 +12,6 @@ import CoreGraphics
 /// the raw screen edge. If the on-device gap still needs tuning, this is the
 /// single knob.
 enum AppLayout {
-    /// Horizontal inset for primary scrollable content (grids, rows, sections).
-    static let contentHMargin: CGFloat = 20
-
     /// Leading inset for custom chrome inside the iPadOS sidebar — today the settings
     /// bottom bar. The `.tabViewSidebarBottomBar` closure is handed the full sidebar width with
     /// no row-pill inset, and the system never exposes the inset it gives its own tab rows,
@@ -22,4 +19,58 @@ enum AppLayout {
     /// up under the row glyphs: matched to the system rows by eye, tune here if the
     /// on-device gap drifts. Any future sidebar header/footer should use this same value.
     static let sidebarLeadingInset: CGFloat = 30
+
+    static func contentHMargin(idiom: AppIdiom) -> CGFloat {
+        switch idiom {
+        case .compact: 18
+        case .regular: 20
+        case .tv: 60
+        }
+    }
+
+    static func posterGridColumns(idiom: AppIdiom) -> Int {
+        switch idiom {
+        case .compact: 3
+        case .regular: 5
+        case .tv: 4
+        }
+    }
+
+    static func shelfTileWidth(idiom: AppIdiom) -> CGFloat {
+        switch idiom {
+        case .compact, .regular: HomeShelf.tileWidth
+        case .tv: 220
+        }
+    }
+
+    static func libraryListColumns(idiom: AppIdiom) -> Int {
+        switch idiom {
+        case .compact, .tv: 1
+        case .regular: 2
+        }
+    }
+
+    static func searchPosterColumns(idiom: AppIdiom) -> Int {
+        switch idiom {
+        case .compact: 3
+        case .regular, .tv: 4
+        }
+    }
+
+    static func searchLandscapeColumns(idiom: AppIdiom) -> Int {
+        switch idiom {
+        case .compact: 2
+        case .regular, .tv: 3
+        }
+    }
+
+    static func seriesEpisodeTileWidth(idiom: AppIdiom) -> CGFloat {
+        switch idiom {
+        case .compact, .regular: SeriesShelf.episodeTileWidth
+        case .tv: 280
+        }
+    }
+
+    /// Bridge during migration — remove once all call sites use `appIdiom`.
+    static let contentHMargin: CGFloat = 20
 }
