@@ -1,14 +1,19 @@
 import SwiftUI
 import ParallaxJellyfin
 
-/// The app's floating settings panel — a centered form sheet presented from the sidebar
-/// settings footer (regular width) or the nav-bar gear button (compact). It owns the
-/// server list (switch / sign out) and the add-server → sign-in flow, so server
-/// management lives in one floating place instead of a full-page tab (the Apple TV pattern).
+/// The app's settings surface — the server list (switch / sign out) plus the add-server →
+/// sign-in flow, so server management lives in one place. Shown two ways: a centered form sheet
+/// on iPad (from the sidebar footer; `isModal` adds a Done button to dismiss it), and an inline
+/// tab on iPhone and tvOS (the tab bar is the exit, so no Done button).
 ///
-/// Presented from the stable `RootView`, above `RootTabView`'s `.id(activeServerID)` remount,
-/// so switching or adding a server (which re-points the router) doesn't tear the panel down.
+/// The iPad sheet is presented from the stable `RootView`, above `RootTabView`'s
+/// `.id(activeServerID)` remount, so switching or adding a server (which re-points the router)
+/// doesn't tear the panel down.
 struct SettingsView: View {
+    /// Presented modally as a sheet (iPad) vs. embedded as a tab (iPhone / tvOS). Modal gets a
+    /// Done button to dismiss; the tab relies on the tab bar as its exit.
+    var isModal: Bool = false
+
     @Environment(AppDependencies.self) private var deps
     @Environment(AppRouter.self) private var router
     @Environment(\.dismiss) private var dismiss
@@ -30,8 +35,12 @@ struct SettingsView: View {
                 .navigationBarTitleDisplayMode(.inline)
                 #endif
                 .toolbar {
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Done") { dismiss() }
+                    // Only the modal sheet (iPad) needs a dismiss affordance; the tab (iPhone /
+                    // tvOS) is left via the tab bar.
+                    if isModal {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { dismiss() }
+                        }
                     }
                 }
                 .navigationDestination(for: Route.self) { route in

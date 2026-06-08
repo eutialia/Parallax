@@ -25,23 +25,31 @@ struct RootTabView: View {
             let repo = await deps.libraryRepoFactory(session)
             libraries = (try? await repo.collections()) ?? []
         }
+        // Some tabs only exist at one width — Settings is compact-only (regular hosts it in the
+        // sidebar footer), the Libraries section is regular-only. Crossing the size-class boundary
+        // (iPad Split View / Stage Manager resize) removes the selected tab and would leave the
+        // selection dangling on a blank pane, so snap back to one that exists at the new width.
+        .onChange(of: hSize) { _, newValue in
+            if newValue == .regular, selectedTab == .settings {
+                selectedTab = .home
+            } else if newValue == .compact, case .collection = selectedTab {
+                selectedTab = .library
+            }
+        }
     }
 
     private var tabView: some View {
         TabView(selection: $selectedTab) {
             Tab("Home", systemImage: "house", value: AppTab.home) {
-                // Home keeps a transparent nav bar (see HomeView) so the settings button can
-                // live in the toolbar like the other tabs, and so the pushed detail's back
+                // Home keeps a transparent nav bar (see HomeView) so a pushed detail's back
                 // button shares a bar to cross-fade with instead of sliding off on dismiss.
                 NavigationStack {
                     HomeView()
-                        .toolbar { settingsToolbar }
                 }
             }
             Tab("Library", systemImage: "rectangle.stack", value: AppTab.library) {
                 NavigationStack {
                     LibraryHostView()
-                        .toolbar { settingsToolbar }
                 }
             }
             // Deliberately NOT `role: .search`, and JellyfinSearchView uses its own
@@ -53,7 +61,17 @@ struct RootTabView: View {
             Tab("Search", systemImage: "magnifyingglass", value: AppTab.search) {
                 NavigationStack {
                     JellyfinSearchView()
-                        .toolbar { settingsToolbar }
+                }
+            }
+
+            // iPhone only: Settings rides the bottom tab bar — there's no sidebar to host the
+            // footer entry iPad uses. It's an inline tab in its own NavigationStack; iPad instead
+            // opens the modal sheet from `RootView` via its sidebar footer.
+            if hSize == .compact {
+                Tab("Settings", systemImage: "gearshape", value: AppTab.settings) {
+                    NavigationStack {
+                        SettingsView()
+                    }
                 }
             }
 
@@ -92,25 +110,8 @@ struct RootTabView: View {
     // MARK: - Settings entry
     //
     // iPad: pinned below the tab list via `tabViewSidebarBottomBar` (not mixed in with
-    // Home / Library / Search). iPhone: nav-bar button — no sidebar to host a footer.
-
-    /// Settings for the primary tabs (Home, Library, Search). Empty on regular width —
-    /// the sidebar bottom bar is the settings entry there.
-    @ToolbarContentBuilder
-    private var settingsToolbar: some ToolbarContent {
-        if hSize == .compact {
-            ToolbarItem(placement: .topBarTrailing) {
-                settingsButton
-            }
-        }
-    }
-
-    private var settingsButton: some View {
-        Button(action: openSettings) {
-            Image(systemName: "gearshape")
-        }
-        .accessibilityLabel("Settings")
-    }
+    // Home / Library / Search), opening the modal sheet. iPhone: a tab on the bottom bar
+    // (added in `tabView`) — no sidebar to host a footer.
 
     // MARK: - Sidebar chrome
 
