@@ -20,9 +20,13 @@ struct PrimaryPlayButton: View {
     /// Pill height scales with Dynamic Type (relative to the `.headline` label) so the
     /// label never clips at larger text sizes.
     @ScaledMetric(relativeTo: .headline) private var playHeight: CGFloat = 46
+    /// tvOS pill height. The label is `.headline` on both platforms (the system sizes it per
+    /// platform — ~38pt on tvOS, 17pt on iOS), so the tvOS pill just needs more resting height
+    /// than iOS's 46. `minHeight` (below) still lets a taller Dynamic Type label grow it.
+    @ScaledMetric(relativeTo: .headline) private var tvPlayHeight: CGFloat = 56
 
     private var resolvedPlayHeight: CGFloat {
-        idiom == .tv ? max(playHeight, 64) : playHeight
+        idiom == .tv ? tvPlayHeight : playHeight
     }
 
     var body: some View {
@@ -51,9 +55,11 @@ struct PrimaryPlayButton: View {
 
     private func sizedLabel(_ text: String) -> some View {
         Label(text, systemImage: systemImage)
-            .font(idiom == .tv ? .title2.weight(.semibold) : .headline)
-            .frame(height: resolvedPlayHeight)
-            .padding(.horizontal, idiom == .tv ? Space.s30 : Space.s22)
+            .font(.headline)
+            // minHeight, not a fixed height: a label taller than the metric (large Dynamic
+            // Type) grows the pill instead of being clipped.
+            .frame(minHeight: resolvedPlayHeight)
+            .padding(.horizontal, Space.s22)
     }
 }
 

@@ -82,6 +82,9 @@ struct JellyfinLibraryGridView: View {
                     gridScrollContent(vm: vm)
                 }
                 .contentMargins(.horizontal, AppLayout.contentHMargin(idiom: idiom), for: .scrollContent)
+                // Let a focused poster's pop/lift paint past the scroll bounds instead of
+                // being clipped at the top row / edges.
+                .tvScrollClipDisabled()
             }
         }
     }

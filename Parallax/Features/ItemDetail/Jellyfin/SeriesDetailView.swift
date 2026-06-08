@@ -115,9 +115,10 @@ struct SeriesDetailView: View {
                             items: episodes,
                             tileWidth: AppLayout.seriesEpisodeTileWidth(idiom: idiom)
                         ) { episode in
-                            // Bare button — `MetadataRow` applies `.tvShelfItem()` (.card on
-                            // tvOS / .plain on iOS) to every item, so it focuses like the
-                            // poster cards. A local `.buttonStyle` here would override that.
+                            // Bare button — `MetadataRow` applies `.tvShelfItem()` (the custom
+                            // uniform-lift `TVPosterButtonStyle` on tvOS / `.plain` on iOS) to every
+                            // item, so it focuses like the poster cards. A local `.buttonStyle`
+                            // here would override that.
                             Button {
                                 playback.play(episode.id, in: session)
                             } label: {

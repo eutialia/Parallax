@@ -40,14 +40,17 @@ enum AppLayout {
     static func posterGridColumnSpacing(idiom: AppIdiom) -> CGFloat {
         switch idiom {
         case .compact, .regular: Space.s12
-        case .tv: 24
+        // 40pt is Apple's canonical focusable-tile spacing on tvOS (WWDC24 "Migrate
+        // your TVML app to SwiftUI"): wide enough that a focused poster's lift/specular
+        // doesn't crowd its neighbours.
+        case .tv: Space.s40
         }
     }
 
     static func posterGridRowSpacing(idiom: AppIdiom) -> CGFloat {
         switch idiom {
         case .compact, .regular: 16
-        case .tv: 28
+        case .tv: Space.s40
         }
     }
 
@@ -68,8 +71,11 @@ enum AppLayout {
 
     static func libraryListColumns(idiom: AppIdiom) -> Int {
         switch idiom {
-        case .compact, .tv: 1
+        case .compact: 1
         case .regular: 2
+        // The TV has the width for a denser wall of 16:9 library banners — one-up
+        // wasted most of the screen and made each card oversized.
+        case .tv: 3
         }
     }
 

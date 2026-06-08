@@ -17,7 +17,8 @@ struct JellyfinLibraryListView: View {
                 case .loaded:
                     ScrollView {
                         // Jellyfin renders library art at 16:9 with the name baked in, so
-                        // these are wide banners: two-up on iPad, one-up on iPhone/tvOS.
+                        // these are wide banners: three-up on tvOS, two-up on iPad, one-up
+                        // on iPhone.
                         let cols = AppLayout.libraryListColumns(idiom: idiom)
                         LazyVGrid(
                             columns: Array(repeating: GridItem(.flexible(), spacing: Space.s12), count: cols),
@@ -30,6 +31,8 @@ struct JellyfinLibraryListView: View {
                         }
                         .padding(AppLayout.contentHMargin(idiom: idiom))
                     }
+                    // Don't clip a focused card's lift at the scroll bounds.
+                    .tvScrollClipDisabled()
                 case .failed(let message):
                     ContentUnavailableView(
                         "Couldn't load libraries",

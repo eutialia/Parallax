@@ -29,14 +29,27 @@ struct HomeHeroCarousel: View {
     @State private var gestureStart: Double?
     @State private var isDragging = false
 
+    // Pulls tvOS launch focus onto the hero's Play button instead of the `.sidebarAdaptable`
+    // menu. Home loads async (skeleton first), so the menu claims focus on cold launch before
+    // the hero exists; setting this `@FocusState` when the carousel mounts yanks focus across
+    // from the system sidebar (a declarative `prefersDefaultFocus`/`resetFocus` can't — it only
+    // re-resolves *within* its own scope). Unused on iOS — `.focused` is tvOS-gated below.
+    @FocusState private var heroPlayFocused: Bool
+
     private var regularWidth: Bool { idiom.usesLandscapeHeroBand }
     private var count: Int { entries.count }
 
     var body: some View {
         GeometryReader { proxy in
-            content(width: proxy.size.width)
+            content(size: proxy.size)
         }
         .heroBandFrame(regularWidth: regularWidth)
+        #if os(tvOS)
+        // The carousel only mounts once the feed has loaded, so this fires after the menu's
+        // cold-launch focus claim — moving focus onto the hero's Play button (collapsing the
+        // menu). Deferred a runloop so the focus system has settled the menu's claim first.
+        .onAppear { Task { @MainActor in heroPlayFocused = true } }
+        #endif
         // Compare ids (not entries) so a favorite toggle doesn't reset the page; only a
         // changed entry set snaps back to the first page.
         .onChange(of: entries.map(\.id)) {
@@ -44,30 +57,37 @@ struct HomeHeroCarousel: View {
         }
     }
 
-    private func content(width: CGFloat) -> some View {
+    private func content(size: CGSize) -> some View {
         ZStack(alignment: .bottomLeading) {
             CrossfadeArtwork(position: position, entries: entries, session: session, regularWidth: regularWidth)
                 // Stretchy hero: a pull-down zooms the artwork up from its bottom edge to
                 // fill the rubber-band gap instead of exposing the app background. Only the
                 // artwork scales — the title/actions stay put. `scaleEffect` is a render
                 // transform, so it can't feed the geometry it's driven by back into layout.
-                .scaleEffect(
-                    1 + overscroll / HeroMetrics.height(containerWidth: width, regularWidth: regularWidth),
-                    anchor: .bottom
-                )
+                .scaleEffect(1 + overscroll / size.height, anchor: .bottom)
 
+            // Use the band's real laid-out height (the geometry proxy), not a width-derived
+            // value — on tvOS the band is a viewport fraction, not `width / aspectRatio`.
             heroBandScrim(
                 regularWidth: regularWidth,
-                bandWidth: width,
-                bandHeight: HeroMetrics.height(containerWidth: width, regularWidth: regularWidth)
+                bandWidth: size.width,
+                bandHeight: size.height
             )
 
             // Hidden while dragging (removed → fades out); on a settled page change its `.id`
             // flips and SwiftUI crossfades the new page over the old. No manual opacity state.
             if !isDragging {
+                #if os(tvOS)
+                // No `.id` flip on tvOS: a changed identity would tear down the focused Play
+                // button on every page, dropping focus so the next left/right couldn't page.
+                // Keeping it stable retains focus and updates the content in place — the
+                // artwork still crossfades via `CrossfadeArtwork`.
+                foregroundLayer(page: displayedPage)
+                #else
                 foregroundLayer(page: displayedPage)
                     .id(displayedPage)
                     .transition(.opacity)
+                #endif
             }
 
             HeroPageIndicator(
@@ -81,14 +101,8 @@ struct HomeHeroCarousel: View {
             .frame(maxWidth: .infinity)
             // Tuck the dots toward the artwork bottom edge on iPhone's poster band so they
             // stay clear of the foreground controls; iPad's landscape band has more room. tvOS
-            // lifts them clear of the bottom overscan (the band fills the whole screen there).
+            // lifts them off the band's bottom edge so they sit above the peeking shelf.
             .padding(.bottom, idiom == .tv ? Space.s60 : (regularWidth ? Space.s12 : Space.s3))
-
-            #if os(tvOS)
-            if count > 1 {
-                heroPageNavigation
-            }
-            #endif
         }
         .contentShape(Rectangle())
         // A horizontal-only UIKit pan: vertical swipes fall through to the Home ScrollView,
@@ -97,31 +111,30 @@ struct HomeHeroCarousel: View {
         #if !os(tvOS)
         .gesture(
             HorizontalPanGesture(
-                onChanged: { panChanged(translationX: $0, width: width) },
-                onEnded: { panEnded(translationX: $0, velocityX: $1, width: width) },
+                onChanged: { panChanged(translationX: $0, width: size.width) },
+                onEnded: { panEnded(translationX: $0, velocityX: $1, width: size.width) },
                 isEnabled: count > 1
             )
         )
         #endif
-    }
-
-    #if os(tvOS)
-    private var heroPageNavigation: some View {
-        HStack(spacing: Space.s12) {
-            CircleGlassButton(systemImage: "chevron.left", accessibilityLabel: "Previous") {
-                commit(to: displayedPage - 1)
-            }
-            CircleGlassButton(systemImage: "chevron.right", accessibilityLabel: "Next") {
-                commit(to: displayedPage + 1)
+        #if os(tvOS)
+        // Page the hero with the Siri Remote's left/right — replaces the old on-screen chevrons.
+        // The focus engine consumes a directional press only when there's an adjacent focusable
+        // in that direction, so this fires from the action row's OUTER edges (`HeroForeground`):
+        // left while Play (leftmost) is focused, or right while Favorite (rightmost) is focused,
+        // has no horizontal neighbour and lands here. Pressing toward the centre just moves focus
+        // between the two buttons; up/down fall through to the focus engine / shelves below.
+        // (Apple: focus navigation wins over `onMoveCommand`.)
+        .onMoveCommand { direction in
+            guard count > 1 else { return }
+            switch direction {
+            case .left:  commit(to: displayedPage - 1)
+            case .right: commit(to: displayedPage + 1)
+            default: break   // up/down fall through to the focus engine / scroll view
             }
         }
-        .padding(.trailing, HeroMetrics.foregroundHorizontalInset(idiom: idiom))
-        // Clear the bottom overscan — the full-bleed band reaches the screen edge on tvOS.
-        .padding(.bottom, Space.s60 + Space.s30)
-        .frame(maxWidth: .infinity, alignment: .trailing)
-        .focusSection()
+        #endif
     }
-    #endif
 
     private func foregroundLayer(page: Int) -> some View {
         let entry = entries[wrapping: page]
@@ -130,6 +143,7 @@ struct HomeHeroCarousel: View {
             session: session,
             regularWidth: regularWidth,
             isFavorite: entry.presentation.userData.isFavorite,
+            playFocus: $heroPlayFocused,
             onPlay: { playback.play(entry.playTarget.id, in: session) },
             onToggleFavorite: { Task { await viewModel.toggleFavorite(for: entry.presentation.id) } }
         )

@@ -20,6 +20,10 @@ struct HeroPageIndicator: UIViewRepresentable {
         let pc = UIPageControl()
         pc.currentPageIndicatorTintColor = .white
         pc.pageIndicatorTintColor = UIColor.white.withAlphaComponent(0.45)
+        // tvOS resolves `.automatic` to `.prominent`, wrapping the dots in a bright glass
+        // capsule that fights the artwork. `.minimal` drops it to bare dots — and it's already
+        // the iOS default, so this stays platform-neutral (no `#if`).
+        pc.backgroundStyle = .minimal
         pc.hidesForSinglePage = true
         // Display-only: never steal taps meant for the leading Play/Favorite buttons.
         pc.isUserInteractionEnabled = false

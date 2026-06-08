@@ -34,8 +34,13 @@ struct HeroForeground: View {
     let session: Session
     let regularWidth: Bool
     let isFavorite: Bool
+    /// Bound to the carousel's `@FocusState` so it can pull tvOS launch focus onto Play
+    /// (out of the `.sidebarAdaptable` menu). Only consumed on tvOS; inert on iOS.
+    var playFocus: FocusState<Bool>.Binding
     let onPlay: () -> Void
     let onToggleFavorite: () -> Void
+
+    @Environment(\.appIdiom) private var idiom
 
     private var item: Item { entry.presentation }
 
@@ -57,18 +62,40 @@ struct HeroForeground: View {
                     .font(.subheadline)
                     .foregroundStyle(.white)
             }
-            HStack(spacing: Space.s12) {
-                PrimaryPlayButton(
-                    title: entry.playButtonTitle,
-                    fillWidth: false,
-                    layoutReserveTitle: ItemPlayButtonLabel.layoutReserveTitle,
-                    action: onPlay
-                )
-                FavoriteActionButton(isFavorite: isFavorite, action: onToggleFavorite)
-            }
-            .padding(.top, Space.s8)
+            actionRow
         }
         .frame(maxWidth: HeroMetrics.contentMaxWidth, alignment: .leading)
+    }
+
+    /// Play + Favorite, side by side on every idiom. On tvOS the remote pages the carousel from
+    /// the row's OUTER edges: pressing left while Play (leftmost) is focused, or right while
+    /// Favorite (rightmost) is focused, has no focus neighbour in that direction, so the move
+    /// falls through to `HomeHeroCarousel.onMoveCommand`. Pressing toward the centre just moves
+    /// focus between the two buttons. iPhone/iPad page via the pan gesture instead.
+    ///
+    /// No `layoutReserveTitle` here (unlike the detail screens): each hero entry carries its own
+    /// title, so the pill hugs it rather than reserving the widest "Resume S9 E9" width — the
+    /// carousel's settle animation smooths the small per-page width change.
+    private var actionRow: some View {
+        HStack(spacing: idiom == .tv ? Space.s18 : Space.s12) {
+            primaryPlay
+            FavoriteActionButton(isFavorite: isFavorite, action: onToggleFavorite)
+        }
+        .padding(.top, Space.s8)
+    }
+
+    @ViewBuilder
+    private var primaryPlay: some View {
+        let button = PrimaryPlayButton(
+            title: entry.playButtonTitle,
+            fillWidth: false,
+            action: onPlay
+        )
+        #if os(tvOS)
+        button.focused(playFocus)
+        #else
+        button
+        #endif
     }
 
 }

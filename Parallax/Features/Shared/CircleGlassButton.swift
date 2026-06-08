@@ -15,12 +15,14 @@ struct CircleGlassButton: View {
 
     @Environment(\.appIdiom) private var idiom
 
-    private var controlSize: CGFloat { idiom == .tv ? 76 : 46 }
+    /// Matches the `PrimaryPlayButton` pill height per platform (tvOS 56, iOS 46) so the two
+    /// sit as an even-height row in the hero / detail action bar.
+    private var controlSize: CGFloat { idiom == .tv ? 56 : 46 }
 
     var body: some View {
         Button(action: action) {
             Image(systemName: systemImage)
-                .scaledFont(idiom == .tv ? 30 : 18, relativeTo: .headline, weight: .semibold)
+                .scaledFont(idiom == .tv ? 26 : 18, relativeTo: .headline, weight: .semibold)
                 .foregroundStyle(.white.opacity(isActive ? 1 : 0.9))
                 .frame(width: controlSize, height: controlSize)
                 .glassEffect(.regular.tint(Color.heroGlass), in: Circle())

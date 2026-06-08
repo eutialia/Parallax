@@ -6,9 +6,17 @@ struct HomeView: View {
     @Environment(AppRouter.self) private var router
     @Environment(\.horizontalSizeClass) private var hSize
     @Environment(\.appIdiom) private var idiom
+    /// Supplied by the tvOS launch gate (`FocusRootView`), which loads the feed up front so the
+    /// hero is on screen — and focusable — the instant the sidebar appears. When set, the view
+    /// skips its own fetch. iOS leaves this nil and self-loads in `.task` as before.
+    private let preloaded: (session: Session, viewModel: HomeViewModel)?
     @State private var viewModel: HomeViewModel?
     @State private var session: Session?
     @State private var heroOverscroll: CGFloat = 0
+
+    init(preloaded: (session: Session, viewModel: HomeViewModel)? = nil) {
+        self.preloaded = preloaded
+    }
 
     var body: some View {
         ScrollView {
@@ -45,6 +53,12 @@ struct HomeView: View {
         .toolbarBackground(.hidden, for: .navigationBar)
         .itemZoomNavigation()
         .task(id: router.activeServerID) {
+            // tvOS launch gate already fetched the feed — adopt it and skip the redundant load.
+            if let preloaded {
+                session = preloaded.session
+                viewModel = preloaded.viewModel
+                return
+            }
             // Skeleton-only until bootstrap sets `activeServerID` — avoids a fetch that
             // `RootTabView`'s `.id` remount would cancel when the session becomes active.
             guard router.activeServerID != nil else { return }

@@ -29,6 +29,7 @@ struct PlayerView: View {
     @State private var chromeVisible = true
     #if DEBUG
     @State private var showDebugHUD = false
+    @Environment(\.appIdiom) private var idiom
     #endif
 
     var body: some View {
@@ -91,8 +92,11 @@ struct PlayerView: View {
                     showDebugHUD.toggle()
                 }
                 .labelStyle(.iconOnly)
-                .font(.title3)
+                // `.title3` is oversized on the tvOS canvas; step it down and drop the
+                // default tvOS button platter for a clean focus lift.
+                .font(idiom == .tv ? .body : .title3)
                 .foregroundStyle(.white.opacity(0.55))
+                .tvChipButton()
                 .padding(12)
             }
         }

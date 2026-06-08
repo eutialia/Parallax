@@ -32,6 +32,8 @@ struct PlayerControlsView: View {
     let onToggleFill: () -> Void
     let onDismiss: () -> Void
 
+    @Environment(\.appIdiom) private var idiom
+
     @State private var hideTask: Task<Void, Never>? = nil
     @State private var isScrubbing = false
     @State private var scrubProgress: Double = 0
@@ -39,6 +41,11 @@ struct PlayerControlsView: View {
     /// `isScrubbing` if no newer drag began while its (possibly slow) seek was in
     /// flight — otherwise a rapid re-grab would snap the thumb to live playback.
     @State private var scrubGeneration = 0
+    #if os(tvOS)
+    /// Whether the scrub bar holds focus. Drives the scrub head's visibility and the bar's
+    /// thicken-on-focus, and gates remote left/right into seek steps.
+    @FocusState private var scrubberFocused: Bool
+    #endif
     @State private var audioMenu = false
     @State private var subtitleMenu = false
     @State private var chapterMenu = false
@@ -99,14 +106,23 @@ struct PlayerControlsView: View {
             // bar doesn't hide the chrome).
             .allowsHitTesting(false)
         )
+        #if os(tvOS)
+        // The Siri Remote's dedicated play/pause button toggles playback no matter which
+        // control holds focus (e.g. while the scrub bar is focused).
+        .onPlayPauseCommand { togglePlayPause() }
+        #endif
     }
 
     // MARK: - Top bar
 
     @ViewBuilder
     private var topBar: some View {
+        // tvOS sizes the top-bar glass circles up: at 40–46pt they were tiny across a
+        // living room. ~64pt matches the system control footprint at 10-foot distance.
+        let circleSize: CGFloat = idiom == .tv ? 64 : 46
+        let pipSize: CGFloat = idiom == .tv ? 64 : 40
         HStack(alignment: .top, spacing: Space.s14) {
-            GlassCircleButton(systemImage: "chevron.down", size: 46, iconSize: 20) { onDismiss() }
+            GlassCircleButton(systemImage: "chevron.down", size: circleSize, iconSize: idiom == .tv ? 28 : 20) { onDismiss() }
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(vm.title)
@@ -126,11 +142,11 @@ struct PlayerControlsView: View {
 
             if vm.isVideoAirPlayAvailable {
                 AVRoutePickerViewRepresentable()
-                    .frame(width: 40, height: 40)
+                    .frame(width: pipSize, height: pipSize)
                     .glassEffect(.regular, in: Circle())
             }
             if vm.isPiPAvailable {
-                GlassCircleButton(systemImage: "pip.enter", size: 40, iconSize: 18) {
+                GlassCircleButton(systemImage: "pip.enter", size: pipSize, iconSize: idiom == .tv ? 26 : 18) {
                     resetHideTimer()
                     vm.startPiP()
                 }
@@ -150,11 +166,7 @@ struct PlayerControlsView: View {
             GlassCircleButton(systemImage: "gobackward.10", size: 62, iconSize: 28) { skip(-10) }
 
             Button {
-                resetHideTimer()
-                Task {
-                    if isPlaying { await vm.engine?.pause() }
-                    else { await vm.engine?.play() }
-                }
+                togglePlayPause()
             } label: {
                 Image(systemName: isPlaying ? "pause.fill" : "play.fill")
                     .font(.system(size: 40, weight: .semibold))
@@ -179,6 +191,14 @@ struct PlayerControlsView: View {
             let posSeconds = CMTimeGetSeconds(vm.currentPosition)
             let target = CMTime(seconds: max(0, posSeconds + seconds), preferredTimescale: 600)
             await engine.seek(to: target)
+        }
+    }
+
+    private func togglePlayPause() {
+        resetHideTimer()
+        Task {
+            if isPlaying { await vm.engine?.pause() }
+            else { await vm.engine?.play() }
         }
     }
 
@@ -216,20 +236,66 @@ struct PlayerControlsView: View {
 
         HStack(spacing: 14) {
             Text(formatTime(shownSeconds))
-                .font(.subheadline.weight(.semibold).monospacedDigit())
+                .font((idiom == .tv ? Font.footnote : .subheadline).weight(.semibold).monospacedDigit())
                 .foregroundStyle(.white)
-                .frame(width: 66, alignment: .leading)
+                .frame(width: idiom == .tv ? 104 : 66, alignment: .leading)
 
             #if os(tvOS)
-            // Read-only bar — tvOS has no Slider; ±10s skip buttons handle seeking.
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(.white.opacity(0.25))
-                    Capsule().fill(.white)
-                        .frame(width: geo.size.width * displayed)
+            // tvOS has no interactive Slider, so the bar is a focusable Button. While focused,
+            // the remote's left/right step a scrub head (±10s) — they reach `onMoveCommand`
+            // because the bar has no horizontal focusable neighbour (the time labels aren't
+            // focusable) — and pressing Select commits the seek. Up/down still move focus to the
+            // transport / chip rows. The head shows only while focused (AVPlayerViewController
+            // convention); the bar thickens so the focused state reads at 10 feet.
+            Button {
+                guard let engine = vm.engine, durSeconds > 0, isScrubbing else { return }
+                let gen = scrubGeneration
+                let target = CMTime(seconds: scrubProgress * durSeconds, preferredTimescale: 600)
+                Task {
+                    await engine.seek(to: target)
+                    // Keep showing the scrubbed head until the seek lands, unless a newer
+                    // scrub began meanwhile (same guard the iOS Slider path uses).
+                    if scrubGeneration == gen { isScrubbing = false }
+                }
+            } label: {
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(.white.opacity(0.25))
+                        Capsule().fill(.white)
+                            .frame(width: geo.size.width * displayed)
+                        if scrubberFocused {
+                            Circle().fill(.white)
+                                .frame(width: 22, height: 22)
+                                .offset(x: geo.size.width * displayed - 11)
+                                .shadow(color: .black.opacity(0.4), radius: 6, y: 2)
+                        }
+                    }
+                }
+                .frame(height: scrubberFocused ? 8 : 4)
+                .animation(.easeOut(duration: 0.15), value: scrubberFocused)
+            }
+            .buttonStyle(.plain)
+            .focused($scrubberFocused)
+            .onMoveCommand { direction in
+                guard durSeconds > 0 else { return }
+                // Enter scrub mode on the first step, seeding the head from live playback.
+                if !isScrubbing {
+                    scrubProgress = liveProgress
+                    isScrubbing = true
+                    scrubGeneration += 1
+                }
+                let step = 10.0 / durSeconds
+                switch direction {
+                case .left:  scrubProgress = max(0, scrubProgress - step)
+                case .right: scrubProgress = min(1, scrubProgress + step)
+                default: break   // up/down → focus engine moves to transport / chips
                 }
             }
-            .frame(height: 4)
+            .onChange(of: scrubberFocused) { _, focused in
+                // Left the bar without committing (Select) — drop the preview so it snaps
+                // back to live playback.
+                if !focused && isScrubbing { isScrubbing = false }
+            }
             #else
             Slider(
                 value: Binding(get: { displayed }, set: { scrubProgress = $0 }),
@@ -260,15 +326,16 @@ struct PlayerControlsView: View {
             #endif
 
             Text(remaining > 0 ? "-\(formatTime(remaining))" : formatTime(durSeconds))
-                .font(.subheadline.weight(.semibold).monospacedDigit())
+                .font((idiom == .tv ? Font.footnote : .subheadline).weight(.semibold).monospacedDigit())
                 .foregroundStyle(.white.opacity(0.7))
-                .frame(width: 66, alignment: .trailing)
+                .frame(width: idiom == .tv ? 104 : 66, alignment: .trailing)
         }
     }
 
     @ViewBuilder
     private var chipRow: some View {
-        HStack(spacing: 10) {
+        // Wider gaps on tvOS so a focused chip's lift doesn't crowd its neighbours.
+        HStack(spacing: idiom == .tv ? Space.s22 : 10) {
             if !vm.availableAudioTracks.isEmpty {
                 CtlChip(
                     systemImage: "waveform",
@@ -315,8 +382,8 @@ struct PlayerControlsView: View {
 
             GlassCircleButton(
                 systemImage: isFilled ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
-                size: 36,
-                iconSize: 16
+                size: idiom == .tv ? 56 : 36,
+                iconSize: idiom == .tv ? 24 : 16
             ) {
                 resetHideTimer()
                 onToggleFill()

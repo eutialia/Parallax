@@ -76,6 +76,14 @@ enum HeroMetrics {
     static func height(containerWidth: CGFloat, regularWidth: Bool) -> CGFloat {
         containerWidth / bandAspectRatio(regularWidth: regularWidth)
     }
+    /// tvOS hero height as a fraction of the viewport — deliberately NOT width-derived. A
+    /// width-derived (`aspectRatio`) band grows taller when the `.sidebarAdaptable` menu
+    /// collapses and the content widens; that shoves the bottom-anchored Play button down, and
+    /// the focus engine scrolls the band's top off-screen with nothing focusable up there to
+    /// scroll back. A constant viewport fraction holds the height steady across the sidebar
+    /// collapse and leaves the first shelf peeking (Apple-TV Home convention), giving the focused
+    /// controls room so tvOS has no reason to scroll at all.
+    static let tvHeroHeightFraction: CGFloat = 0.82
     static let foregroundBottomInset: CGFloat = Space.s30
     /// On tvOS the full-bleed hero fills the whole viewport, so its bottom-anchored controls
     /// must clear the ~60pt bottom overscan or a real TV clips the Play button. iPhone/iPad have
@@ -115,9 +123,19 @@ struct HeroBandFrame: ViewModifier {
     let regularWidth: Bool
 
     func body(content: Content) -> some View {
+        #if os(tvOS)
+        // Constant viewport fraction, not width-derived — see `HeroMetrics.tvHeroHeightFraction`.
+        // `containerRelativeFrame(.vertical)` measures the enclosing ScrollView's height, which
+        // the sidebar collapse doesn't change, so the band height stays put and the focused
+        // controls never get scrolled out of reach.
+        content
+            .frame(maxWidth: .infinity)
+            .containerRelativeFrame(.vertical) { height, _ in height * HeroMetrics.tvHeroHeightFraction }
+        #else
         content
             .frame(maxWidth: .infinity)
             .aspectRatio(HeroMetrics.bandAspectRatio(regularWidth: regularWidth), contentMode: .fit)
+        #endif
     }
 }
 

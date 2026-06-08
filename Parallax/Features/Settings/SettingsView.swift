@@ -138,7 +138,9 @@ struct SettingsView: View {
             }
             .contentShape(.rect)
         }
-        .tvPosterButton()
+        // A glass-panel row is chrome, not poster art — use the gentle chrome lift, not the
+        // poster `.borderless` focus.
+        .tvChipButton()
         // One self-describing element with a navigation hint (the chevron is decorative
         // and the "Active" pill would otherwise read as a loose trailing word).
         .accessibilityLabel(isActive ? "\(a11yBase), active server" : a11yBase)
@@ -153,7 +155,7 @@ struct SettingsView: View {
                 .font(.headline).foregroundStyle(Color.label)
                 .frame(maxWidth: .infinity).frame(height: addServerHeight)
         }
-        .tvPosterButton()
+        .tvChipButton()
         .glassPanel(cornerRadius: Radius.field)
         .padding(.top, Space.s8)
     }

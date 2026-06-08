@@ -1,38 +1,50 @@
 import SwiftUI
 
 extension View {
-    /// Poster/card button style: `.card` (system focus lift) on tvOS, `.plain` on iOS.
-    /// This OWNS the button style for the control — do NOT pair it with a separate
-    /// `.buttonStyle(.plain)` at the call site. A nearer (inner) `.buttonStyle` wins over a
-    /// farther one, so an inner `.plain` would silently defeat `.card` and leave the card
-    /// focus-dead on Apple TV. One style, set here, per control.
+    /// Poster/artwork button style. On tvOS a custom uniform-lift style (`TVPosterButtonStyle`):
+    /// it scales + drop-shadows the WHOLE clipped tile on focus, so the entire card grows and
+    /// elevates as one piece. We deliberately do NOT use `.card`/`.borderless`: `.borderless`
+    /// applies the system's image-ONLY focus motion (the inner art tilts/zooms while the
+    /// container never lifts) and masks that highlight to a system corner radius that mismatches
+    /// our `Radius.tile`/`Radius.card`, leaving dark corners poking out past the rounded art.
+    /// `.card` drew a light platter that bled past the corners as a white halo. The custom style
+    /// introduces no second shape — it scales the already-clipped tile, so its own corners stay
+    /// intact. `.plain` on iOS. OWNS the button style — do NOT pair it with a separate
+    /// `.buttonStyle(.plain)` at the call site: a nearer (inner) style wins and kills the focus
+    /// effect, leaving the tile focus-dead on Apple TV. One style, set here, per control.
     @ViewBuilder
     func tvPosterButton() -> some View {
         #if os(tvOS)
-        self.buttonStyle(.card)
+        self.buttonStyle(TVPosterButtonStyle())
         #else
         self.buttonStyle(.plain)
         #endif
     }
 
-    /// Horizontal shelf-item button style: `.card` on tvOS, `.plain` on iOS. Owns the button
-    /// style — see `tvPosterButton()` for why a paired inner `.buttonStyle(.plain)` must not be
-    /// added (it wins over `.card` and kills tvOS focus).
+    /// Horizontal shelf-item button style: the same custom uniform-lift `TVPosterButtonStyle` as
+    /// `tvPosterButton()` on tvOS (whole-tile scale + shadow, not the system image-only parallax),
+    /// `.plain` on iOS. Owns the button style; don't pair an inner `.buttonStyle(.plain)` (it wins
+    /// and kills tvOS focus).
     @ViewBuilder
     func tvShelfItem() -> some View {
         #if os(tvOS)
-        self.buttonStyle(.card)
+        self.buttonStyle(TVPosterButtonStyle())
         #else
         self.buttonStyle(.plain)
         #endif
     }
 
-    /// Chip/transport button style: `.card` on tvOS, `.plain` on iOS. Owns the button style —
-    /// see `tvPosterButton()` for why a paired inner `.buttonStyle(.plain)` must not be added.
+    /// Chip/transport button style for controls that carry their OWN chrome (glass capsule,
+    /// glass circle). On tvOS a custom style that lifts via `tvFocusEffect()` — the same gentle
+    /// scale+brightness+shadow `CircleGlassButton`/`PrimaryPlayButton` use — instead of the
+    /// system `.card` platter, which drew a bright rounded box around the control and read as a
+    /// "super white" focus highlight that overlapped neighbours. `.plain` on iOS. Owns the
+    /// button style — see `tvPosterButton()` for why a paired inner `.buttonStyle(.plain)` must
+    /// not be added.
     @ViewBuilder
     func tvChipButton() -> some View {
         #if os(tvOS)
-        self.buttonStyle(.card)
+        self.buttonStyle(TVGlassChipButtonStyle())
         #else
         self.buttonStyle(.plain)
         #endif
@@ -77,23 +89,65 @@ extension View {
 }
 
 #if os(tvOS)
-/// Reads the enclosing Button's focus and applies the standard tvOS lift + scale. It lives on
-/// the button's label (a descendant of the focusable Button), so `isFocused` reports the
-/// Button's state — `ButtonStyleConfiguration` exposes only `isPressed`, never focus, which is
-/// why a press-only custom style appears dead as focus moves across it on Apple TV.
+/// Chip/transport button style: lifts the label with `tvFocusEffect()` (gentle
+/// scale+brightness+shadow) and dims slightly on press — no system `.card` platter. Applying
+/// `tvFocusEffect()` to `configuration.label` works because the label is a descendant of the
+/// focusable Button, so its `@Environment(\.isFocused)` reports the Button's focus (the same
+/// reason `PrimaryPlayButtonStyle` can lift this way).
+struct TVGlassChipButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(configuration.isPressed ? 0.85 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+            .tvFocusEffect()
+    }
+}
+
+/// Poster/artwork button style: scales + drop-shadows the WHOLE clipped tile on focus — a
+/// uniform Apple-TV "pop" where the entire card grows and lifts as one. Reads the focusable
+/// Button's focus through the same `@Environment(\.isFocused)` path as the chip style. There's
+/// no system platter or image-only parallax, so the already-rounded tile scales as a single unit
+/// with its own `Radius.tile`/`Radius.card` corners intact — no second shape, no dark-corner
+/// mismatch. Dims slightly on press for Select feedback.
+struct TVPosterButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(configuration.isPressed ? 0.9 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+            .modifier(TVFocusEffect(
+                scale: 1.1,
+                brightness: 0,
+                shadowRadius: 22,
+                shadowY: 16,
+                animation: .spring(response: 0.34, dampingFraction: 0.72)
+            ))
+    }
+}
+
+/// Reads the enclosing Button's focus and applies a uniform lift (scale + drop shadow, optional
+/// brightness). It lives on the button's label (a descendant of the focusable Button), so
+/// `isFocused` reports the Button's state — `ButtonStyleConfiguration` exposes only `isPressed`,
+/// never focus, which is why a press-only custom style appears dead as focus moves across it on
+/// Apple TV. Defaults are the gentle chip lift; posters pass a larger scale + shadow + spring.
 private struct TVFocusEffect: ViewModifier {
+    var scale: CGFloat = 1.06
+    var brightness: Double = 0.06
+    var shadowRadius: CGFloat = 18
+    var shadowY: CGFloat = 12
+    var animation: Animation = .easeOut(duration: 0.18)
+
     @Environment(\.isFocused) private var isFocused
 
     func body(content: Content) -> some View {
         content
-            .scaleEffect(isFocused ? 1.06 : 1)
-            .brightness(isFocused ? 0.06 : 0)
+            .scaleEffect(isFocused ? scale : 1)
+            .brightness(isFocused ? brightness : 0)
             .shadow(
                 color: .black.opacity(isFocused ? 0.4 : 0),
-                radius: isFocused ? 18 : 0,
-                y: isFocused ? 12 : 0
+                radius: isFocused ? shadowRadius : 0,
+                y: isFocused ? shadowY : 0
             )
-            .animation(.easeOut(duration: 0.18), value: isFocused)
+            .animation(animation, value: isFocused)
     }
 }
 #endif

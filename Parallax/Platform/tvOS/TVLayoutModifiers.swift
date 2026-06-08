@@ -35,4 +35,15 @@ extension View {
         self
         #endif
     }
+
+    /// Let a focused tile's lift/shadow paint past a horizontal scroll view's bounds instead of
+    /// being clipped at the row/edge. tvOS only — there's no focus lift to spill on iOS.
+    @ViewBuilder
+    func tvScrollClipDisabled() -> some View {
+        #if os(tvOS)
+        self.scrollClipDisabled()
+        #else
+        self
+        #endif
+    }
 }
