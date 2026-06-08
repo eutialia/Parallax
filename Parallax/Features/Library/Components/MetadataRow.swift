@@ -24,6 +24,9 @@ struct MetadataRow<Item: Identifiable & Hashable, Content: View>: View {
                         content(item)
                             .frame(width: tileWidth)
                             .tvShelfItem()
+                            // Float the focused tile above its neighbours so its lift isn't painted
+                            // under the cells to its right in the row. No-op on iOS.
+                            .tvFocusElevated()
                     }
                 }
                 .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))

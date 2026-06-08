@@ -1,11 +1,6 @@
 import SwiftUI
 import ParallaxJellyfin
 
-private struct LibraryGridAnimationTrigger: Equatable {
-    var isRefreshing: Bool
-    var refreshGeneration: UInt
-}
-
 struct JellyfinLibraryGridView: View {
     let collection: MediaCollection
     let session: Session
@@ -17,10 +12,16 @@ struct JellyfinLibraryGridView: View {
     /// load-more strip so all three stay aligned. Denser on regular width (iPad).
     private var columns: Int { AppLayout.posterGridColumns(idiom: idiom) }
     @State private var viewModel: JellyfinLibraryGridViewModel?
-    /// Genre-chip height scales with Dynamic Type (relative to the chip's `.subheadline`
-    /// label). Shared by the real chip and its loading placeholder so the swap stays
-    /// height-neutral.
-    @ScaledMetric(relativeTo: .subheadline) private var genreChipHeight: CGFloat = 34
+    /// Header capsule height, Dynamic-Type-scaled for iPhone/iPad. Shared by the real controls and
+    /// their loading placeholder so the swap stays height-neutral.
+    @ScaledMetric(relativeTo: .subheadline) private var compactControlHeight: CGFloat = 46
+    /// Header capsule height. Fixed-taller on tvOS (10-foot legibility — the SF Symbol needs
+    /// vertical breathing room that 34pt didn't give at tvOS's larger `.subheadline`).
+    private var headerControlHeight: CGFloat { idiom == .tv ? 56 : compactControlHeight }
+    /// Skeleton capsule widths for the header's loading state — shared by the first-load
+    /// placeholder and the genre-loading branch so both match the real chips' footprint.
+    private let genreChipWidth: CGFloat = 140
+    private let sortChipWidth: CGFloat = 150
 
     var body: some View {
         Group {
@@ -40,13 +41,10 @@ struct JellyfinLibraryGridView: View {
         #if !os(tvOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                if let vm = viewModel {
-                    sortFilterMenu(vm: vm)
-                }
-            }
-        }
+        // Genre + Sort live INLINE in the content header (see `gridContent`), not the system
+        // toolbar — on tvOS toolbar items don't join the focus engine (the drawn UINavigationBar
+        // sits outside the content focus context), and keeping one layout across platforms is
+        // simpler than a tvOS/iOS split. The nav bar just carries the library title.
         .itemZoomNavigation()
         .task {
             if viewModel == nil {
@@ -68,37 +66,52 @@ struct JellyfinLibraryGridView: View {
                 description: Text(message)
             )
         } else {
-            VStack(spacing: 0) {
-                // Reserve the genre row from the first paint so the grid doesn't
-                // "drop" when genres (loaded concurrently) land a beat later. The
-                // animation smooths the one place this can still move: a library that
-                // turns out to have NO genres collapses the placeholder gently.
-                genreSection(vm: vm)
-                    .animation(reduceMotion ? nil : .smooth, value: vm.isLoadingGenres)
-                if let message = vm.refreshErrorMessage {
-                    refreshErrorBanner(message: message, vm: vm)
+            ScrollView {
+                gridScrollContent(vm: vm)
+            }
+            .contentMargins(.horizontal, AppLayout.contentHMargin(idiom: idiom), for: .scrollContent)
+            // Overscan room so a focused poster's lift/shadow at the grid's top or bottom edge
+            // has space to grow WITHIN the clip — the title-safe-margin approach, instead of
+            // disabling the scroll clip (which let scrolled rows bleed up over the genre/nav
+            // chrome). tvOS only; iOS has no focus lift. See `safeAreaInset` below.
+            .contentMargins(.vertical, idiom == .tv ? Space.s40 : 0, for: .scrollContent)
+            // Genre + Sort as real top chrome: pinned above the grid, clipped scroll content slides
+            // UNDER it (and stops at its edge), so posters never paint over the controls. Both are
+            // focusable in-content menus sitting side by side (Genre ⇄ Sort is left/right, row ⇄
+            // grid is up/down — all cardinal moves the tvOS focus engine handles cleanly). The
+            // refresh-error banner rides along as part of the header.
+            .safeAreaInset(edge: .top, spacing: 0) {
+                VStack(spacing: 0) {
+                    headerControls(vm: vm)
+                    if let message = vm.refreshErrorMessage {
+                        refreshErrorBanner(message: message, vm: vm)
+                    }
                 }
-                ScrollView {
-                    gridScrollContent(vm: vm)
-                }
-                .contentMargins(.horizontal, AppLayout.contentHMargin(idiom: idiom), for: .scrollContent)
-                // Let a focused poster's pop/lift paint past the scroll bounds instead of
-                // being clipped at the top row / edges.
-                .tvScrollClipDisabled()
+                // Opaque screen-floor backing so rows scrolling UNDER the header are hidden by it
+                // (the scroll view's bounds extend up behind the inset; the clip alone doesn't hide
+                // them). Matches `appScreenBackground` so the band reads as the screen, not a bar.
+                .background(Color.background)
             }
         }
     }
 
     /// Full-screen placeholder only on the very first load — while genres are still
-    /// in flight. Sort/filter/genre changes reload the grid but keep the genre bar.
+    /// in flight. Sort/filter/genre changes reload the grid but keep the header controls.
     private func isInitialLoad(_ vm: JellyfinLibraryGridViewModel) -> Bool {
         vm.items.isEmpty && (vm.state == .idle || (vm.state == .loading && vm.isLoadingGenres))
     }
 
-    private var gridAnimation: Animation? { reduceMotion ? nil : .smooth }
-
-    private func gridAnimationTrigger(_ vm: JellyfinLibraryGridViewModel) -> LibraryGridAnimationTrigger {
-        LibraryGridAnimationTrigger(isRefreshing: vm.isRefreshing, refreshGeneration: vm.refreshGeneration)
+    private var gridAnimation: Animation? {
+        if reduceMotion { return nil }
+        #if os(tvOS)
+        // Instant swap on tvOS: a crossfade replacing the grid's focusable content makes the focus
+        // engine re-evaluate for the animation's whole duration, parking focus off the header's
+        // Genre/Sort button until it settles. No animation window → focus stays put. iOS has no
+        // focus to lose, so it keeps the crossfade.
+        return nil
+        #else
+        return .smooth
+        #endif
     }
 
     private func gridDimmed(_ vm: JellyfinLibraryGridViewModel) -> Double {
@@ -133,11 +146,14 @@ struct JellyfinLibraryGridView: View {
             ) { item in
                 ItemNavigator(item: item, session: session) { tile(for: item) }
             }
-            // Stale-while-revalidate: dim the outgoing page during the API round-trip,
-            // then crossfade back to full opacity when refreshGeneration bumps.
+            // Stale-while-revalidate: dim the outgoing page (`gridDimmed` tracks `isRefreshing`)
+            // during the API round-trip, then crossfade back when it clears. Keyed on `isRefreshing`
+            // — the only input the opacity derives from — so iOS crossfades in BOTH directions. tvOS
+            // gets the instant swap for free: `gridAnimation` is nil there, so no animation window
+            // opens to hold the focus/input system and block re-opening the menu at the pick moment.
             .opacity(gridDimmed(vm))
             .allowsHitTesting(!vm.isRefreshing)
-            .animation(gridAnimation, value: gridAnimationTrigger(vm))
+            .animation(gridAnimation, value: vm.isRefreshing)
             if vm.isLoadingMore {
                 AdaptivePosterGridLoadingSkeleton(tileCount: columns, fixedColumns: columns)
                     .padding(.vertical, Space.s12)
@@ -148,66 +164,98 @@ struct JellyfinLibraryGridView: View {
     /// Full-screen first-load placeholder: genre-pill row above a poster-grid skeleton,
     /// laid out to match the loaded grid so content doesn't shift in when it arrives.
     private var libraryGridLoadingPlaceholder: some View {
-        VStack(spacing: 0) {
-            genrePlaceholder
-            ScrollView {
-                AdaptivePosterGridLoadingSkeleton(tileCount: columns * 3, fixedColumns: columns)
-            }
-            .scrollDisabled(true)
-            .contentMargins(.horizontal, AppLayout.contentHMargin(idiom: idiom), for: .scrollContent)
-        }
-    }
-
-    /// Genre row that holds a stable height across loading → loaded so the grid
-    /// below never shifts. While genres load it shows placeholder pills; once loaded
-    /// it shows the real chips, or collapses if the library has no genres.
-    @ViewBuilder
-    private func genreSection(vm: JellyfinLibraryGridViewModel) -> some View {
-        if vm.isLoadingGenres {
-            genrePlaceholder
-        } else if !vm.availableGenres.isEmpty {
-            genreBar(vm: vm)
-        }
-    }
-
-    private var genrePlaceholder: some View {
-        // Same geometry as genreBar (34pt pills + Space.s8 vertical padding) so the
-        // swap to real chips is height-neutral.
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: Space.s8) {
-                ForEach([64, 52, 78, 60, 70, 56], id: \.self) { width in
-                    Capsule().fill(Color.fill)
-                        .frame(width: CGFloat(width), height: genreChipHeight)
-                }
-            }
-            .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
-            .padding(.vertical, Space.s8)
+        ScrollView {
+            AdaptivePosterGridLoadingSkeleton(tileCount: columns * 3, fixedColumns: columns)
         }
         .scrollDisabled(true)
-    }
-
-    @ViewBuilder
-    private func genreBar(vm: JellyfinLibraryGridViewModel) -> some View {
-        @Bindable var vm = vm
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: Space.s8) {
-                ForEach(vm.availableGenres, id: \.self) { genre in
-                    let isSelected = vm.filter.genres == [genre]
-                    Button {
-                        vm.filter.genres = isSelected ? [] : [genre]
-                    } label: {
-                        Text(genre)
-                            .font(.subheadline.weight(.medium))
-                            .foregroundStyle(isSelected ? Color.chipSelectedLabel : Color.secondaryLabel)
-                            .padding(.horizontal, Space.s14).frame(height: genreChipHeight)
-                            .background(isSelected ? Color.chipSelectedFill : Color.fill, in: Capsule())
-                    }
-                    .tvChipButton()
-                }
+        .contentMargins(.horizontal, AppLayout.contentHMargin(idiom: idiom), for: .scrollContent)
+        // Match the loaded grid's vertical overscan (line up `gridContent`) so the first poster row
+        // lands at the same y when the skeleton swaps out — no 40pt jump on tvOS load.
+        .contentMargins(.vertical, idiom == .tv ? Space.s40 : 0, for: .scrollContent)
+        // Match the loaded grid's header geometry (two centered capsules, opaque so content scrolls
+        // under) so the swap to the real Genre/Sort controls is shift-free.
+        .safeAreaInset(edge: .top, spacing: 0) {
+            HStack(spacing: Space.s12) {
+                Spacer(minLength: 0)
+                Capsule().fill(Color.fill).frame(width: genreChipWidth, height: headerControlHeight)
+                Capsule().fill(Color.fill).frame(width: sortChipWidth, height: headerControlHeight)
+                Spacer(minLength: 0)
             }
             .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
             .padding(.vertical, Space.s8)
+            .background(Color.background)
         }
+    }
+
+    /// Centered Genre + Sort control row. Holds a stable height across loading → loaded so the
+    /// grid below never shifts. Genre collapses out when the library has no genres.
+    @ViewBuilder
+    private func headerControls(vm: JellyfinLibraryGridViewModel) -> some View {
+        HStack(spacing: Space.s12) {
+            Spacer(minLength: 0)
+            if vm.isLoadingGenres {
+                Capsule().fill(Color.fill).frame(width: genreChipWidth, height: headerControlHeight)
+            } else if !vm.availableGenres.isEmpty {
+                genreMenu(vm: vm)
+            }
+            sortFilterMenu(vm: vm)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
+        .padding(.vertical, Space.s8)
+        .animation(reduceMotion ? nil : .smooth, value: vm.isLoadingGenres)
+    }
+
+    /// Single-select genre filter, collapsed from a scrolling chip bar into one menu: the inline
+    /// `Picker` gives each genre the system's leading checkmark, with "All Genres" to clear.
+    @ViewBuilder
+    private func genreMenu(vm: JellyfinLibraryGridViewModel) -> some View {
+        @Bindable var vm = vm
+        // Lens between the repo's `[String]` genre filter and the menu's single optional selection
+        // (nil = no filter). One genre at a time — a title can carry several, so this is "show me
+        // everything tagged X", not a mutually-exclusive bucket.
+        let selection = Binding<String?>(
+            get: { vm.filter.genres.first },
+            set: { vm.filter.genres = $0.map { [$0] } ?? [] }
+        )
+        Menu {
+            Picker("Genre", selection: selection) {
+                Text("All Genres").tag(String?.none)
+                ForEach(vm.availableGenres, id: \.self) { genre in
+                    Text(genre).tag(String?.some(genre))
+                }
+            }
+            .pickerStyle(.inline)
+        } label: {
+            headerChip(
+                vm.filter.genres.first ?? "Genre",
+                systemImage: "theatermasks",
+                isSelected: !vm.filter.genres.isEmpty
+            )
+        }
+        .tvChipButton()
+        .accessibilityLabel("Genre")
+    }
+
+    /// Shared Liquid Glass capsule for the header's menu buttons so Genre and Sort read
+    /// identically — the same `.glassEffect(.regular…)` + hairline language as `GlassSurface`'s
+    /// `glassPanel`/`glassBar`. The hairline is the theme-adaptive `glassBorder` (NOT the
+    /// dark-pinned `heroGlassBorder` the photo-context controls use): this header floats over the
+    /// solid screen, so the border must track light/dark like the rest of the chrome. Selected
+    /// genre tints the glass to stand out; the focus lift comes from `.tvChipButton()` on the Menu
+    /// (tvOS has no touch/pointer, so glass `.interactive()` wouldn't fire — the focus effect is
+    /// what responds to the remote).
+    private func headerChip(_ title: String, systemImage: String, isSelected: Bool = false) -> some View {
+        HStack(spacing: Space.s8) {
+            Image(systemName: systemImage)
+            Text(title)
+        }
+        .font(.subheadline.weight(.medium))
+        .foregroundStyle(isSelected ? Color.chipSelectedLabel : Color.secondaryLabel)
+        .padding(.horizontal, Space.s14)
+        .frame(height: headerControlHeight)
+        .glassEffect(isSelected ? .regular.tint(Color.chipSelectedFill) : .regular, in: Capsule())
+        .overlay(Capsule().strokeBorder(Color.glassBorder, lineWidth: 1))
     }
 
     @ViewBuilder
@@ -245,9 +293,10 @@ struct JellyfinLibraryGridView: View {
                 Toggle("Favorites only", isOn: $vm.filter.favoritesOnly)
             }
         } label: {
-            Image(systemName: "line.3.horizontal.decrease.circle")
+            headerChip("Sort & Filter", systemImage: "line.3.horizontal.decrease")
         }
         .tvChipButton()
+        .accessibilityLabel("Sort and Filter")
     }
 
     @ViewBuilder

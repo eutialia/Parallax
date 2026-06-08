@@ -58,7 +58,7 @@ enum AppLayout {
         switch idiom {
         case .compact: 3
         case .regular: 5
-        case .tv: 4
+        case .tv: 6
         }
     }
 
@@ -76,6 +76,17 @@ enum AppLayout {
         // The TV has the width for a denser wall of 16:9 library banners — one-up
         // wasted most of the screen and made each card oversized.
         case .tv: 3
+        }
+    }
+
+    /// Inter-card gap (both axes) for the library-banner grid. On tvOS the cards take the same
+    /// 1.1× focus lift as posters, so they need the same 40pt canonical spacing — at 12pt a
+    /// focused 16:9 banner's lift grew wider than the gap and overlapped its neighbour. iPhone/iPad
+    /// have no focus lift, so they keep the tight 12pt wall.
+    static func libraryListSpacing(idiom: AppIdiom) -> CGFloat {
+        switch idiom {
+        case .compact, .regular: Space.s12
+        case .tv: Space.s40
         }
     }
 

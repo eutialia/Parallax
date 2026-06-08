@@ -176,12 +176,16 @@ struct AdaptivePosterGridLoadingSkeleton: View {
 }
 
 struct LibraryListLoadingSkeleton: View {
-    let columns: Int
+    @Environment(\.appIdiom) private var idiom
 
     var body: some View {
+        // Mirror the loaded grid's column count AND spacing so the swap to real cards doesn't
+        // shift them (tvOS uses the wider 40pt focus-safe gap; see `AppLayout.libraryListSpacing`).
+        let columns = AppLayout.libraryListColumns(idiom: idiom)
+        let gap = AppLayout.libraryListSpacing(idiom: idiom)
         LazyVGrid(
-            columns: Array(repeating: GridItem(.flexible(), spacing: Space.s12), count: columns),
-            spacing: Space.s12
+            columns: Array(repeating: GridItem(.flexible(), spacing: gap), count: columns),
+            spacing: gap
         ) {
             ForEach(0..<(columns * 3), id: \.self) { _ in
                 SkeletonBlock(cornerRadius: Radius.card)
@@ -197,11 +201,9 @@ struct LibraryListLoadingSkeleton: View {
 /// disabled `ScrollView` lets it fill the screen like the loaded grid. Shared by the
 /// Library list, its bootstrap host, and the per-server task gate.
 struct LibraryListLoadingPlaceholder: View {
-    @Environment(\.appIdiom) private var idiom
-
     var body: some View {
         ScrollView {
-            LibraryListLoadingSkeleton(columns: AppLayout.libraryListColumns(idiom: idiom))
+            LibraryListLoadingSkeleton()
         }
         .scrollDisabled(true)
     }

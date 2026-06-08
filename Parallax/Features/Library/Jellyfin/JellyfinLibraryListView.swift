@@ -20,13 +20,20 @@ struct JellyfinLibraryListView: View {
                         // these are wide banners: three-up on tvOS, two-up on iPad, one-up
                         // on iPhone.
                         let cols = AppLayout.libraryListColumns(idiom: idiom)
+                        let gap = AppLayout.libraryListSpacing(idiom: idiom)
+                        // Filter once per body pass, not inside `ForEach` (which would re-run it on
+                        // every grid re-evaluation).
+                        let supported = vm.collections.filter { isSupported($0.collectionType) }
                         LazyVGrid(
-                            columns: Array(repeating: GridItem(.flexible(), spacing: Space.s12), count: cols),
-                            spacing: Space.s12
+                            columns: Array(repeating: GridItem(.flexible(), spacing: gap), count: cols),
+                            spacing: gap
                         ) {
-                            ForEach(vm.collections.filter { isSupported($0.collectionType) }) { coll in
+                            ForEach(supported) { coll in
                                 NavigationLink(value: coll) { LibraryCard(collection: coll, session: session) }
                                     .tvPosterButton()
+                                    // Float the focused banner above its neighbours so its lift
+                                    // paints over them, not under the next cell. No-op on iOS.
+                                    .tvFocusElevated()
                             }
                         }
                         .padding(AppLayout.contentHMargin(idiom: idiom))
