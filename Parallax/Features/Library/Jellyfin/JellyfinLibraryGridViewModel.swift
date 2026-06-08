@@ -38,6 +38,25 @@ final class JellyfinLibraryGridViewModel {
         didSet { if filter != oldValue { Task { await reload() } } }
     }
 
+    // Picker lenses over the value-type `sort`/`filter`, so the views bind straight to these
+    // (`$vm.selectedGenre`, `$vm.sortField`, `$vm.sortDirection`) instead of hand-rolling
+    // `Binding(get:set:)` per call site. Each setter writes back through `sort`/`filter`, so their
+    // `didSet` reload still fires; each getter reads the stored value, so `@Observable` tracks it.
+    var selectedGenre: String? {
+        // One genre at a time — a title can carry several, so this is "show me everything tagged X",
+        // not a mutually-exclusive bucket. nil clears the filter.
+        get { filter.genres.first }
+        set { filter.genres = newValue.map { [$0] } ?? [] }
+    }
+    var sortField: ItemSort.Field {
+        get { sort.field }
+        set { sort = ItemSort(field: newValue, direction: sort.direction) }
+    }
+    var sortDirection: ItemSort.Direction {
+        get { sort.direction }
+        set { sort = ItemSort(field: sort.field, direction: newValue) }
+    }
+
     private var cursor: PageCursor?
     private var inFlight: Task<Void, Never>?
     private var genreTask: Task<Void, Never>?
