@@ -55,7 +55,7 @@ struct JellyfinSearchView: View {
             viewModel?.query = newValue
         }
         .onChange(of: scope) { _, newValue in viewModel?.scope = newValue }
-        .itemZoomNavigation()
+        .itemDetailNavigation()
         .task(id: router.activeServerID) {
             guard router.activeServerID != nil else { return }
             if session == nil {

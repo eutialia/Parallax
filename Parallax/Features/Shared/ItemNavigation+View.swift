@@ -1,45 +1,47 @@
 import SwiftUI
 import ParallaxJellyfin
 
-// MARK: - Zoom navigation (Apple TV–style card → full-screen detail)
-
-private enum ItemZoomNamespaceKey: EnvironmentKey {
-    static let defaultValue: Namespace.ID? = nil
-}
-
-/// Set on `NavigationLink` labels so `MediaTile` can mark its artwork (not the title row) as the zoom source.
-private enum ItemZoomNavigationValueKey: EnvironmentKey {
-    static let defaultValue: ItemNavigation? = nil
-}
+// MARK: - Detail navigation transition
+//
+// Movie/series detail is a NavigationStack push on every platform.
+//
+// iOS/iPadOS: a fluid zoom — the tapped card artwork expands into the detail layer
+// (`.navigationTransition(.zoom)` + `matchedTransitionSource`).
+//
+// tvOS: no animated transition. SwiftUI won't animate a NavigationStack push/pop on tvOS (it's an
+// instant cut) and `.zoom` is a no-op there. A state-driven crossfade *was* tried — it dissolved
+// correctly but couldn't hold focus (the detail opens on a loading skeleton with no focusable view,
+// so focus went nil: ~80% of the time Menu escaped the whole screen and the detail's buttons were
+// dead). The system stack push manages focus and Menu-back for free, so we use it — the instant cut
+// matches the rest of tvOS navigation (e.g. the library list → grid push) until Apple gives us an
+// animatable stack transition there.
 
 extension EnvironmentValues {
     /// Namespace for `matchedTransitionSource` / `.navigationTransition(.zoom)` in this stack.
-    var itemZoomNamespace: Namespace.ID? {
-        get { self[ItemZoomNamespaceKey.self] }
-        set { self[ItemZoomNamespaceKey.self] = newValue }
-    }
+    /// iOS/iPadOS-only effect; the key stays cross-platform because `MediaTile` reads it
+    /// unconditionally (it's simply never honored on tvOS, where there's no zoom).
+    @Entry var itemZoomNamespace: Namespace.ID? = nil
 
-    /// When set by `ItemNavigator`, `MediaTile` uses this to mark its artwork as the zoom source.
-    var itemZoomNavigationValue: ItemNavigation? {
-        get { self[ItemZoomNavigationValueKey.self] }
-        set { self[ItemZoomNavigationValueKey.self] = newValue }
-    }
+    /// Set on `NavigationLink` labels so `MediaTile` can mark its artwork (not the title row) as
+    /// the zoom source. Inert on tvOS — the source modifier ignores it there.
+    @Entry var itemZoomNavigationValue: ItemNavigation? = nil
 }
 
 extension View {
-    /// Registers movie/series detail destinations and wires the fluid zoom transition
-    /// (card artwork expands into the detail layer instead of sliding in from the trailing edge).
-    func itemZoomNavigation() -> some View {
-        modifier(ItemZoomNavigationModifier())
+    /// Registers movie/series detail destinations and wires the transition: a zoom push on
+    /// iOS/iPadOS, a plain push on tvOS (see the header).
+    func itemDetailNavigation() -> some View {
+        modifier(ItemDetailNavigationModifier())
     }
 
-    /// Marks artwork (or a tile) as the zoom source for the given navigation value.
+    /// Marks artwork (or a tile) as the zoom source for the given navigation value. iOS-only
+    /// effect; inert on tvOS, but called unconditionally by `MediaTile`.
     func itemZoomTransitionSource(_ navigation: ItemNavigation) -> some View {
         modifier(ItemZoomTransitionSourceModifier(navigation: navigation))
     }
 }
 
-private struct ItemZoomNavigationModifier: ViewModifier {
+private struct ItemDetailNavigationModifier: ViewModifier {
     @Namespace private var namespace
 
     func body(content: Content) -> some View {
@@ -47,8 +49,9 @@ private struct ItemZoomNavigationModifier: ViewModifier {
             .environment(\.itemZoomNamespace, namespace)
             .navigationDestination(for: ItemNavigation.self) { nav in
                 itemDetailDestination(nav)
-                    .appScreenBackground()
+                    #if !os(tvOS)
                     .navigationTransition(.zoom(sourceID: nav, in: namespace))
+                    #endif
             }
     }
 
@@ -63,9 +66,21 @@ private struct ItemZoomNavigationModifier: ViewModifier {
 
 private struct ItemZoomTransitionSourceModifier: ViewModifier {
     let navigation: ItemNavigation
-    @Environment(\.itemZoomNamespace) private var namespace
 
     func body(content: Content) -> some View {
+        #if os(tvOS)
+        // No zoom on tvOS (see header) — marking a source would be inert, so skip it.
+        content
+        #else
+        sourced(content)
+        #endif
+    }
+
+    #if !os(tvOS)
+    @Environment(\.itemZoomNamespace) private var namespace
+
+    @ViewBuilder
+    private func sourced(_ content: Content) -> some View {
         if let namespace {
             content.matchedTransitionSource(id: navigation, in: namespace) { source in
                 source.clipShape(.rect(cornerRadius: Radius.tile))
@@ -74,13 +89,14 @@ private struct ItemZoomTransitionSourceModifier: ViewModifier {
             content
         }
     }
+    #endif
 }
 
 // MARK: - Item navigator
 
-/// Wraps a tile with the right tap behavior for its item kind: an episode plays
-/// directly (via the PlaybackPresenter); a movie/series pushes its detail screen.
-/// Single source for the play-vs-navigate dispatch duplicated in Home + Library.
+/// Wraps a tile with the right tap behavior for its item kind: an episode plays directly (via the
+/// PlaybackPresenter); a movie/series pushes its detail screen. Single source for the
+/// play-vs-navigate dispatch reused across Home / Library / Search.
 struct ItemNavigator<Label: View>: View {
     let item: Item
     let session: Session
@@ -94,17 +110,16 @@ struct ItemNavigator<Label: View>: View {
             Button { playback.play(e.id, in: session) } label: { label() }
                 .tvPosterButton()
         case .movie(let m):
-            let nav = ItemNavigation.movie(m.id, session)
-            NavigationLink(value: nav) {
-                label().environment(\.itemZoomNavigationValue, nav)
-            }
-            .tvPosterButton()
+            detailLink(.movie(m.id, session))
         case .series(let s):
-            let nav = ItemNavigation.series(s.id, session)
-            NavigationLink(value: nav) {
-                label().environment(\.itemZoomNavigationValue, nav)
-            }
-            .tvPosterButton()
+            detailLink(.series(s.id, session))
         }
+    }
+
+    private func detailLink(_ nav: ItemNavigation) -> some View {
+        NavigationLink(value: nav) {
+            label().environment(\.itemZoomNavigationValue, nav)
+        }
+        .tvPosterButton()
     }
 }

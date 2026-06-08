@@ -12,11 +12,20 @@ struct RootView: View {
             case .bootstrapping, .home:
                 // One `RootTabView` for bootstrap + home so finishing `ServerStore.load()`
                 // doesn't tear down tabs mid-flight (that cancelled Home's first request).
-                #if os(tvOS)
-                FocusRootView()
-                #else
-                RootTabView()
-                #endif
+                //
+                // The single screen floor lives HERE, behind the whole tab host — not sprayed
+                // per-screen inside each NavigationStack. It sits under the sidebar/tab-bar glass
+                // too, so the chrome reads as a solid tinted bar (there's nothing but a flat color
+                // to refract anyway). Content stacks on top of this one constant floor, which is
+                // what lets the tvOS detail crossfade dissolve over a background that never moves.
+                Group {
+                    #if os(tvOS)
+                    FocusRootView()
+                    #else
+                    RootTabView()
+                    #endif
+                }
+                .background(Color.background.ignoresSafeArea())
             case .login:
                 // Login sits outside `RootTabView`, so it carries its own floor.
                 // (`.containerBackground(for: .window)` is macOS-only; tabs use `.tabView`.)

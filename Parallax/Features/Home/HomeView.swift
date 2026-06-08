@@ -51,7 +51,7 @@ struct HomeView: View {
         // with. Without it (bar hidden) the zoom-transition back button has no
         // counterpart and slides across the screen on dismiss.
         .toolbarBackground(.hidden, for: .navigationBar)
-        .itemZoomNavigation()
+        .itemDetailNavigation()
         .task(id: router.activeServerID) {
             // tvOS launch gate already fetched the feed — adopt it and skip the redundant load.
             if let preloaded {

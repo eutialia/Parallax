@@ -53,19 +53,16 @@ struct FocusRootView: View {
             Tab("Home", systemImage: "house", value: AppTab.home) {
                 NavigationStack {
                     HomeView(preloaded: (session, homeViewModel))
-                        .appScreenBackground()
                 }
             }
             Tab("Library", systemImage: "rectangle.stack", value: AppTab.library) {
                 NavigationStack {
                     LibraryHostView()
-                        .appScreenBackground()
                 }
             }
             Tab("Search", systemImage: "magnifyingglass", value: AppTab.search) {
                 NavigationStack {
                     JellyfinSearchView()
-                        .appScreenBackground()
                 }
             }
 
@@ -75,7 +72,6 @@ struct FocusRootView: View {
                         Tab(library.name, systemImage: library.collectionType.symbolName, value: AppTab.collection(library.id)) {
                             NavigationStack {
                                 JellyfinLibraryGridView(collection: library, session: session)
-                                    .appScreenBackground()
                             }
                         }
                     }
@@ -85,7 +81,6 @@ struct FocusRootView: View {
             Tab("Settings", systemImage: "gearshape", value: AppTab.settings) {
                 NavigationStack {
                     SettingsView()
-                        .appScreenBackground()
                 }
             }
         }

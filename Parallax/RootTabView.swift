@@ -36,14 +36,12 @@ struct RootTabView: View {
                 NavigationStack {
                     HomeView()
                         .toolbar { settingsToolbar }
-                        .appScreenBackground()
                 }
             }
             Tab("Library", systemImage: "rectangle.stack", value: AppTab.library) {
                 NavigationStack {
                     LibraryHostView()
                         .toolbar { settingsToolbar }
-                        .appScreenBackground()
                 }
             }
             // Deliberately NOT `role: .search`, and JellyfinSearchView uses its own
@@ -56,7 +54,6 @@ struct RootTabView: View {
                 NavigationStack {
                     JellyfinSearchView()
                         .toolbar { settingsToolbar }
-                        .appScreenBackground()
                 }
             }
 
@@ -72,7 +69,6 @@ struct RootTabView: View {
                                 // Title is owned by the grid (from the collection) so
                                 // this matches the Library-list drill-down exactly.
                                 JellyfinLibraryGridView(collection: library, session: session)
-                                    .appScreenBackground()
                             }
                         }
                         // Sidebar-only: don't also crowd the collapsed top tab bar with
@@ -84,9 +80,11 @@ struct RootTabView: View {
             }
         }
         .tabViewStyle(.sidebarAdaptable)
-        // Matinee lives on tab *content* only (`.appScreenBackground()` inside each stack).
-        // Tab chrome — iPad sidebar, bottom bar, and `tabViewSidebarBottomBar` — keeps the
-        // system's Liquid Glass so hierarchical label styles match native tab rows.
+        // The screen floor is a single `Color.background` behind the whole tab host (see
+        // `RootView`); tabs no longer paint their own. The sidebar / bottom-bar glass now tints
+        // from that floor and reads as a solid bar — fine, there's only a flat color to refract.
+        // The one hand-styled chrome row is `settingsFooter` below: its label color is picked to
+        // match the system tab rows on this floor.
         .tabViewSidebarBottomBar { settingsFooter }
         .environment(\.appIdiom, hSize == .regular ? .regular : .compact)
     }

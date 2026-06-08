@@ -14,13 +14,6 @@ enum AppIdiom: Equatable {
     }
 }
 
-private enum AppIdiomKey: EnvironmentKey {
-    static let defaultValue: AppIdiom = .compact
-}
-
 extension EnvironmentValues {
-    var appIdiom: AppIdiom {
-        get { self[AppIdiomKey.self] }
-        set { self[AppIdiomKey.self] = newValue }
-    }
+    @Entry var appIdiom: AppIdiom = .compact
 }

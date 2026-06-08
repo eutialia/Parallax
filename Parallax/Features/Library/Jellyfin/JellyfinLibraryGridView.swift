@@ -31,7 +31,6 @@ struct JellyfinLibraryGridView: View {
                 libraryGridLoadingPlaceholder
             }
         }
-        .appScreenBackground()
         // The grid owns its own title (the library name) so BOTH entry points — the
         // sidebar's direct library tab and the Library-list drill-down — show it
         // identically, without each call site re-specifying it. Inline so the name
@@ -45,7 +44,7 @@ struct JellyfinLibraryGridView: View {
         // toolbar — on tvOS toolbar items don't join the focus engine (the drawn UINavigationBar
         // sits outside the content focus context), and keeping one layout across platforms is
         // simpler than a tvOS/iOS split. The nav bar just carries the library title.
-        .itemZoomNavigation()
+        .itemDetailNavigation()
         .task {
             if viewModel == nil {
                 let repo = await deps.libraryRepoFactory(session)
@@ -89,7 +88,8 @@ struct JellyfinLibraryGridView: View {
                 }
                 // Opaque screen-floor backing so rows scrolling UNDER the header are hidden by it
                 // (the scroll view's bounds extend up behind the inset; the clip alone doesn't hide
-                // them). Matches `appScreenBackground` so the band reads as the screen, not a bar.
+                // them). Same `Color.background` as the screen floor, so the band reads as the
+                // screen, not a bar.
                 .background(Color.background)
             }
         }
