@@ -186,7 +186,10 @@ struct JellyfinLibraryGridView: View {
                         Capsule().fill(Color.fill).frame(width: sortChipWidth, height: headerControlHeight)
                         Spacer(minLength: 0)
                     }
-                    .padding(.vertical, Space.s8)
+                    // Matches `headerControls`' padding so the skeleton→real-controls swap doesn't
+                    // shift the grid down (8pt top + 30pt bottom gap to the first poster row).
+                    .padding(.top, Space.s8)
+                    .padding(.bottom, Space.s30)
                 }
                 AdaptivePosterGridLoadingSkeleton(tileCount: columns * 3, fixedColumns: columns)
             }
@@ -214,7 +217,18 @@ struct JellyfinLibraryGridView: View {
             sortFilterMenu(vm: vm)
             Spacer(minLength: 0)
         }
-        .padding(.vertical, Space.s8)
+        .padding(.top, Space.s8)
+        // Clear the first poster row at 10-foot distance: 8pt crowded the chips against the grid
+        // and let their focus lift collide with row 1's. iOS carries these controls in the nav bar,
+        // never in-content, so this gap is tvOS-only by construction. Keep in sync with the
+        // loading placeholder's header padding so the skeleton→real swap stays shift-free.
+        .padding(.bottom, Space.s30)
+        // The two chips are centered, so they only sit above the middle columns. The tvOS focus
+        // engine searches straight UP from the focused poster, so from the outer columns there's no
+        // chip in line and pressing Up does nothing. `focusSection()` turns the row's full width
+        // into one focus target that diverts to the nearest chip — Up from ANY column now reaches
+        // Genre/Sort. (Apple's tvOS catalog sample applies it for this exact above-the-fold case.)
+        .tvFocusSection()
         .animation(reduceMotion ? nil : .smooth, value: vm.isLoadingGenres)
     }
 
