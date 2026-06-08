@@ -45,6 +45,10 @@ struct HomeView: View {
         // tvOS bleeds the hero horizontally too (overscan); the shelves re-inset via
         // `tvContentInset()` below. iOS only drops the top inset (status-bar bleed).
         .heroScreenSafeArea()
+        // Paint the screen floor in the content so the scroll region matches the chrome and lifts
+        // with the system when the iPad window is elevated (see `screenFloor`). The hero draws
+        // opaque artwork on top, so this only shows in the loading state and under any gaps.
+        .screenFloor()
         // Keep a (transparent, title-less) navigation bar rather than hiding it: the
         // hero still bleeds under it via `ignoresSafeArea` + `scrollEdgeEffectHidden`,
         // but the bar gives the pushed detail's back button a shared bar to cross-fade

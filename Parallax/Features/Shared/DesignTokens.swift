@@ -10,15 +10,20 @@ extension Color {
     init(light: UInt32, lightAlpha: Double = 1, dark: UInt32, darkAlpha: Double = 1) {
         self = Color(uiColor: UIColor { traits in
             let isDark = traits.userInterfaceStyle == .dark
-            let hex = isDark ? dark : light
-            let alpha = isDark ? darkAlpha : lightAlpha
-            return UIColor(
-                red:   CGFloat((hex >> 16) & 0xFF) / 255,
-                green: CGFloat((hex >> 8) & 0xFF) / 255,
-                blue:  CGFloat(hex & 0xFF) / 255,
-                alpha: CGFloat(alpha)
-            )
+            return UIColor(hex: isDark ? dark : light, alpha: isDark ? darkAlpha : lightAlpha)
         })
+    }
+}
+
+private extension UIColor {
+    /// Solid (or alpha-tinted) UIColor from a `0xRRGGBB` literal.
+    convenience init(hex: UInt32, alpha: Double = 1) {
+        self.init(
+            red:   CGFloat((hex >> 16) & 0xFF) / 255,
+            green: CGFloat((hex >> 8) & 0xFF) / 255,
+            blue:  CGFloat(hex & 0xFF) / 255,
+            alpha: CGFloat(alpha)
+        )
     }
 }
 
@@ -31,8 +36,17 @@ extension Color {
 // unqualified `.fill` / `.background` / `.separator` in a modifier resolve to SwiftUI's
 // built-in ShapeStyle, not these tokens.
 extension Color {
-    static let background         = Color(light: 0xD0C8BA, dark: 0x07070B)
-    static let backgroundElevated = Color(light: 0xDCD5C8, dark: 0x101016)
+    /// Single screen floor — one FIXED value per appearance, deliberately constant across window
+    /// size. Light = Matinee paper; dark = a deep blue-gray that tames vibrant poster artwork (true
+    /// `#000` makes it bloom), kept just below `surface` so cards still read above it.
+    ///
+    /// We intentionally do NOT use a system background here: `systemBackground` / `secondarySystem…`
+    /// lift to a lighter value when the scene is "elevated" (iPad multitasking / scaled window /
+    /// modal — Apple's dark-mode depth cue), which reads as the background changing color when you
+    /// resize the window. A flat custom color ignores `userInterfaceLevel`, and `screenFloor()`
+    /// paints it OVER the system's own lifting content backing — so the floor stays put at every
+    /// window size. (Light has no lift to defeat; that's a dark-mode-only mechanism.)
+    static let background = Color(light: 0xD0C8BA, dark: 0x16161C)
     static let surface            = Color(light: 0xFAF7F0, lightAlpha: 0.92, dark: 0x1A1A22)  // dark tile opaque, light 0.92 — per handoff
 
     static let label              = Color(light: 0x221E17, dark: 0xFFFFFF)

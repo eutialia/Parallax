@@ -108,6 +108,7 @@ struct MovieDetailView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .heroScreenSafeArea()
+        .screenFloor()
         .toolbar(.visible, for: .navigationBar)
         .toolbarBackground(.hidden, for: .navigationBar)
         .fullScreenCover(item: $playerItem) { detail in

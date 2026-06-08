@@ -90,6 +90,7 @@ struct SeriesDetailView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .heroScreenSafeArea()
+        .screenFloor()
         .toolbar(.visible, for: .navigationBar)
         .toolbarBackground(.hidden, for: .navigationBar)
         .task {

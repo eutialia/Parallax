@@ -55,6 +55,7 @@ struct JellyfinSearchView: View {
             viewModel?.query = newValue
         }
         .onChange(of: scope) { _, newValue in viewModel?.scope = newValue }
+        .screenFloor()
         .itemDetailNavigation()
         .task(id: router.activeServerID) {
             guard router.activeServerID != nil else { return }

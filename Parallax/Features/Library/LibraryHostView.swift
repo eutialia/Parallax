@@ -32,6 +32,7 @@ struct LibraryHostView: View {
                 )
             }
         }
+        .screenFloor()
         .task(id: router.activeServerID) {
             guard router.activeServerID != nil else { return }
             defer { isResolvingSource = false }

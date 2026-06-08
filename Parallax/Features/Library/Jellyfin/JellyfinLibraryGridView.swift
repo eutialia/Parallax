@@ -45,6 +45,7 @@ struct JellyfinLibraryGridView: View {
         // sits outside the content focus context), and keeping one layout across platforms is
         // simpler than a tvOS/iOS split. The nav bar just carries the library title.
         .itemDetailNavigation()
+        .screenFloor()
         .task {
             if viewModel == nil {
                 let repo = await deps.libraryRepoFactory(session)
