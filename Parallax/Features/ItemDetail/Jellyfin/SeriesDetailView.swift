@@ -47,26 +47,34 @@ struct SeriesDetailView: View {
                                             ) {
                                                 playback.play(ep.id, in: session)
                                             }
-                                            .tvChipButton()
                                         }
                                         FavoriteActionButton(isFavorite: vm.isFavorite) {
                                             Task { await vm.toggleFavorite() }
                                         }
-                                        .tvChipButton()
                                     }
                                     .padding(.top, Space.s8)
+                                    // One focus group so the action row is a coherent focus
+                                    // target (Resume default) on tvOS.
+                                    .tvFocusSection()
                                 }
                             }
 
-                            if let overview = sd.series.overview {
-                                DetailOverview(text: overview)
-                                    .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
+                            // Body + episode shelves stay inside the tvOS title-safe region
+                            // while the hero bleeds full-width.
+                            VStack(alignment: .leading, spacing: Space.s22) {
+                                if let overview = sd.series.overview {
+                                    DetailOverview(text: overview)
+                                        .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
+                                }
+                                seasonEpisodeShelves(seasons: seasons, vm: vm)
+                                if !sd.series.genres.isEmpty {
+                                    DetailMetadataLine(label: "Genres", value: sd.series.genres.joined(separator: ", "))
+                                }
                             }
-                            seasonEpisodeShelves(seasons: seasons, vm: vm)
-                            if !sd.series.genres.isEmpty {
-                                DetailMetadataLine(label: "Genres", value: sd.series.genres.joined(separator: ", "))
-                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .tvContentInset()
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.bottom, Space.s30)
                     }
                     .scrollClipDisabled(true)
@@ -81,7 +89,7 @@ struct SeriesDetailView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .ignoresSafeArea(edges: .top)
+        .heroScreenSafeArea()
         .toolbar(.visible, for: .navigationBar)
         .toolbarBackground(.hidden, for: .navigationBar)
         .task {
@@ -107,12 +115,14 @@ struct SeriesDetailView: View {
                             items: episodes,
                             tileWidth: AppLayout.seriesEpisodeTileWidth(idiom: idiom)
                         ) { episode in
+                            // Bare button — `MetadataRow` applies `.tvShelfItem()` (.card on
+                            // tvOS / .plain on iOS) to every item, so it focuses like the
+                            // poster cards. A local `.buttonStyle` here would override that.
                             Button {
                                 playback.play(episode.id, in: session)
                             } label: {
                                 episodeCard(episode)
                             }
-                            .buttonStyle(.plain)
                         }
                     }
                 }

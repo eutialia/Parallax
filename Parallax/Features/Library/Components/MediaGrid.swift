@@ -3,11 +3,15 @@ import SwiftUI
 /// Column layout for poster grids: a fixed count of flexible columns, or — when `fixedColumns`
 /// is nil — adaptive by `columnMinWidth`. Shared by `MediaGrid` and the poster loading
 /// skeletons so the loading and loaded grids stay column-for-column aligned.
-func posterGridColumns(fixedColumns: Int?, columnMinWidth: CGFloat) -> [GridItem] {
+func posterGridColumns(
+    fixedColumns: Int?,
+    columnMinWidth: CGFloat,
+    columnSpacing: CGFloat = Space.s12
+) -> [GridItem] {
     if let fixedColumns {
-        return Array(repeating: GridItem(.flexible(), spacing: Space.s12, alignment: .top), count: fixedColumns)
+        return Array(repeating: GridItem(.flexible(), spacing: columnSpacing, alignment: .top), count: fixedColumns)
     }
-    return [GridItem(.adaptive(minimum: columnMinWidth), spacing: Space.s12, alignment: .top)]
+    return [GridItem(.adaptive(minimum: columnMinWidth), spacing: columnSpacing, alignment: .top)]
 }
 
 struct MediaGrid<Item: Identifiable & Hashable, Content: View>: View {
@@ -17,6 +21,8 @@ struct MediaGrid<Item: Identifiable & Hashable, Content: View>: View {
     let fixedColumns: Int?
     @ViewBuilder let content: (Item) -> Content
     let onAppearLast: (() -> Void)?
+
+    @Environment(\.appIdiom) private var idiom
 
     init(
         items: [Item],
@@ -33,8 +39,12 @@ struct MediaGrid<Item: Identifiable & Hashable, Content: View>: View {
     }
 
     var body: some View {
-        let columns = posterGridColumns(fixedColumns: fixedColumns, columnMinWidth: columnMinWidth)
-        LazyVGrid(columns: columns, spacing: 16) {
+        let columns = posterGridColumns(
+            fixedColumns: fixedColumns,
+            columnMinWidth: columnMinWidth,
+            columnSpacing: AppLayout.posterGridColumnSpacing(idiom: idiom)
+        )
+        LazyVGrid(columns: columns, spacing: AppLayout.posterGridRowSpacing(idiom: idiom)) {
             ForEach(items) { item in
                 content(item)
                     .onAppear {

@@ -80,24 +80,21 @@ struct HomeHeroCarousel: View {
             )
             .frame(maxWidth: .infinity)
             // Tuck the dots toward the artwork bottom edge on iPhone's poster band so they
-            // stay clear of the foreground controls; iPad's landscape band has more room.
-            .padding(.bottom, regularWidth ? Space.s12 : Space.s3)
+            // stay clear of the foreground controls; iPad's landscape band has more room. tvOS
+            // lifts them clear of the bottom overscan (the band fills the whole screen there).
+            .padding(.bottom, idiom == .tv ? Space.s60 : (regularWidth ? Space.s12 : Space.s3))
+
+            #if os(tvOS)
+            if count > 1 {
+                heroPageNavigation
+            }
+            #endif
         }
         .contentShape(Rectangle())
         // A horizontal-only UIKit pan: vertical swipes fall through to the Home ScrollView,
         // taps fall through to the Play/Favorite buttons. (A SwiftUI DragGesture can't do
         // both inside a ScrollView on iOS 18+.) No-op for a lone item.
-        #if os(tvOS)
-        .focusable(count > 1)
-        .onMoveCommand { direction in
-            guard count > 1 else { return }
-            switch direction {
-            case .left: commit(to: displayedPage - 1)
-            case .right: commit(to: displayedPage + 1)
-            default: break
-            }
-        }
-        #else
+        #if !os(tvOS)
         .gesture(
             HorizontalPanGesture(
                 onChanged: { panChanged(translationX: $0, width: width) },
@@ -107,6 +104,24 @@ struct HomeHeroCarousel: View {
         )
         #endif
     }
+
+    #if os(tvOS)
+    private var heroPageNavigation: some View {
+        HStack(spacing: Space.s12) {
+            CircleGlassButton(systemImage: "chevron.left", accessibilityLabel: "Previous") {
+                commit(to: displayedPage - 1)
+            }
+            CircleGlassButton(systemImage: "chevron.right", accessibilityLabel: "Next") {
+                commit(to: displayedPage + 1)
+            }
+        }
+        .padding(.trailing, HeroMetrics.foregroundHorizontalInset(idiom: idiom))
+        // Clear the bottom overscan — the full-bleed band reaches the screen edge on tvOS.
+        .padding(.bottom, Space.s60 + Space.s30)
+        .frame(maxWidth: .infinity, alignment: .trailing)
+        .focusSection()
+    }
+    #endif
 
     private func foregroundLayer(page: Int) -> some View {
         let entry = entries[wrapping: page]
@@ -119,8 +134,9 @@ struct HomeHeroCarousel: View {
             onToggleFavorite: { Task { await viewModel.toggleFavorite(for: entry.presentation.id) } }
         )
         .frame(maxWidth: .infinity, alignment: .leading)
-        .safeAreaPadding(.horizontal, HeroMetrics.foregroundHorizontalInset(regularWidth: regularWidth))
-        .padding(.bottom, HeroMetrics.foregroundBottomInset)
+        .safeAreaPadding(.horizontal, HeroMetrics.foregroundHorizontalInset(idiom: idiom))
+        .padding(.bottom, HeroMetrics.foregroundBottomInset(idiom: idiom))
+        .tvFocusSection()
     }
 
     private func panChanged(translationX: CGFloat, width: CGFloat) {

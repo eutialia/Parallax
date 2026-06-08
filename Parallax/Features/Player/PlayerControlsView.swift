@@ -166,7 +166,6 @@ struct PlayerControlsView: View {
                     // through to the toggle layer. Make the whole disc hittable.
                     .contentShape(Circle())
             }
-            .buttonStyle(.plain)
             .tvChipButton()
 
             GlassCircleButton(systemImage: "goforward.10", size: 62, iconSize: 28) { skip(10) }
@@ -539,7 +538,6 @@ private struct CtlChip: View {
         Button(action: action) {
             ChipLabel(systemImage: systemImage, label: label, sub: sub, isActive: isActive)
         }
-        .buttonStyle(.plain)
         .tvChipButton()
         .accessibilityLabel(accessibilityLabel)
     }
@@ -564,7 +562,6 @@ private struct GlassCircleButton: View {
                 // and the tap falls through to the chrome-toggle layer beneath.
                 .contentShape(Circle())
         }
-        .buttonStyle(.plain)
         .tvChipButton()
     }
 }

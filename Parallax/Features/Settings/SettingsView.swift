@@ -138,7 +138,6 @@ struct SettingsView: View {
             }
             .contentShape(.rect)
         }
-        .buttonStyle(.plain)
         .tvPosterButton()
         // One self-describing element with a navigation hint (the chevron is decorative
         // and the "Active" pill would otherwise read as a loose trailing word).
@@ -154,7 +153,6 @@ struct SettingsView: View {
                 .font(.headline).foregroundStyle(Color.label)
                 .frame(maxWidth: .infinity).frame(height: addServerHeight)
         }
-        .buttonStyle(.plain)
         .tvPosterButton()
         .glassPanel(cornerRadius: Radius.field)
         .padding(.top, Space.s8)

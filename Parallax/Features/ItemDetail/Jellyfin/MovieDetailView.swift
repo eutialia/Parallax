@@ -46,42 +46,49 @@ struct MovieDetailView: View {
                                         ) {
                                             playerItem = .movie(md)
                                         }
-                                        .tvChipButton()
                                         FavoriteActionButton(isFavorite: vm.isFavorite) {
                                             Task { await vm.toggleFavorite() }
                                         }
-                                        .tvChipButton()
                                         CircleGlassButton(
                                             systemImage: vm.isPlayed ? "checkmark.circle.fill" : "checkmark.circle",
                                             isActive: vm.isPlayed,
                                             accessibilityLabel: vm.isPlayed ? "Watched" : "Mark Watched"
                                         ) { Task { await vm.togglePlayed() } }
-                                        .tvChipButton()
                                     }
                                     .padding(.top, Space.s8)
+                                    // One focus group so the focus engine prefers the action row
+                                    // as a unit (Play default) over scattered geometry hits.
+                                    .tvFocusSection()
                                 }
                             }
 
-                            if let tagline = md.tagline {
-                                Text(tagline)
-                                    .italic()
-                                    .foregroundStyle(Color.secondaryLabel)
-                                    .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
+                            // Body stays inside the tvOS title-safe region while the hero above
+                            // bleeds full-width (`heroScreenSafeArea()` + `tvContentInset()`).
+                            VStack(alignment: .leading, spacing: Space.s18) {
+                                if let tagline = md.tagline {
+                                    Text(tagline)
+                                        .italic()
+                                        .foregroundStyle(Color.secondaryLabel)
+                                        .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
+                                }
+                                if let overview = md.movie.overview {
+                                    DetailOverview(text: overview)
+                                        .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
+                                }
+                                if !md.studios.isEmpty {
+                                    DetailMetadataLine(label: "Studios", value: md.studios.joined(separator: ", "))
+                                }
+                                if !md.people.isEmpty {
+                                    DetailMetadataLine(label: "Cast & Crew", value: md.people.prefix(10).joined(separator: ", "))
+                                }
+                                if !md.movie.genres.isEmpty {
+                                    DetailMetadataLine(label: "Genres", value: md.movie.genres.joined(separator: ", "))
+                                }
                             }
-                            if let overview = md.movie.overview {
-                                DetailOverview(text: overview)
-                                    .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
-                            }
-                            if !md.studios.isEmpty {
-                                DetailMetadataLine(label: "Studios", value: md.studios.joined(separator: ", "))
-                            }
-                            if !md.people.isEmpty {
-                                DetailMetadataLine(label: "Cast & Crew", value: md.people.prefix(10).joined(separator: ", "))
-                            }
-                            if !md.movie.genres.isEmpty {
-                                DetailMetadataLine(label: "Genres", value: md.movie.genres.joined(separator: ", "))
-                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .tvContentInset()
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.bottom, Space.s30)
                     }
                     .scrollClipDisabled(true)
@@ -100,7 +107,7 @@ struct MovieDetailView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .ignoresSafeArea(edges: .top)
+        .heroScreenSafeArea()
         .toolbar(.visible, for: .navigationBar)
         .toolbarBackground(.hidden, for: .navigationBar)
         .fullScreenCover(item: $playerItem) { detail in

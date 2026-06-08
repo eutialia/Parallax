@@ -31,11 +31,7 @@ struct RootView: View {
         // The floating settings panel lives at the stable root — ABOVE RootTabView's
         // `.id(activeServerID)` remount — so switching/adding a server from inside it
         // (which re-points the router) doesn't tear the open panel down.
-        #if os(tvOS)
-        .fullScreenCover(isPresented: $router.presentingSettings) {
-            SettingsView()
-        }
-        #else
+        #if !os(tvOS)
         .sheet(isPresented: $router.presentingSettings) {
             SettingsView()
         }

@@ -25,7 +25,6 @@ struct JellyfinLibraryListView: View {
                         ) {
                             ForEach(vm.collections.filter { isSupported($0.collectionType) }) { coll in
                                 NavigationLink(value: coll) { LibraryCard(collection: coll, session: session) }
-                                    .buttonStyle(.plain)
                                     .tvPosterButton()
                             }
                         }

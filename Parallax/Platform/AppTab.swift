@@ -1,6 +1,6 @@
 import ParallaxJellyfin
 
 enum AppTab: Hashable {
-    case home, library, search
+    case home, library, search, settings
     case collection(CollectionID)
 }

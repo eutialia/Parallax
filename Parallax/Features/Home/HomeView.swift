@@ -34,7 +34,9 @@ struct HomeView: View {
         // width (~100pt for the loading spinner) until a later layout pass, showing a
         // narrow strip. Greedy frame pins it to the proposed width from the first pass.
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .ignoresSafeArea(edges: .top)
+        // tvOS bleeds the hero horizontally too (overscan); the shelves re-inset via
+        // `tvContentInset()` below. iOS only drops the top inset (status-bar bleed).
+        .heroScreenSafeArea()
         // Keep a (transparent, title-less) navigation bar rather than hiding it: the
         // hero still bleeds under it via `ignoresSafeArea` + `scrollEdgeEffectHidden`,
         // but the bar gives the pushed detail's back button a shared bar to cross-fade
@@ -75,20 +77,28 @@ struct HomeView: View {
                             overscroll: heroOverscroll
                         )
                     }
-                    if !vm.continueWatching.isEmpty {
-                        MetadataRow(title: "Continue Watching", items: vm.continueWatching, tileWidth: AppLayout.shelfTileWidth(idiom: idiom)) { item in
-                            homeShelfTile(item: item, session: session, showProgress: true)
+                    // Everything below the full-bleed hero stays inside the tvOS title-safe
+                    // region (`tvContentInset()`), so focusable shelf cards aren't clipped by
+                    // overscan. No-op on iOS.
+                    VStack(alignment: .leading, spacing: Space.s30) {
+                        if !vm.continueWatching.isEmpty {
+                            MetadataRow(title: "Continue Watching", items: vm.continueWatching, tileWidth: AppLayout.shelfTileWidth(idiom: idiom)) { item in
+                                homeShelfTile(item: item, session: session, showProgress: true)
+                            }
+                        }
+                        if !vm.nextUp.isEmpty {
+                            MetadataRow(title: "Next Up", items: vm.nextUp, tileWidth: AppLayout.shelfTileWidth(idiom: idiom)) { item in
+                                homeShelfTile(item: item, session: session, showProgress: false)
+                            }
+                        }
+                        if vm.heroFeed.isEmpty && vm.continueWatching.isEmpty && vm.nextUp.isEmpty {
+                            ContentUnavailableView("Nothing here yet", systemImage: "play.slash").padding(.top, Space.s60)
                         }
                     }
-                    if !vm.nextUp.isEmpty {
-                        MetadataRow(title: "Next Up", items: vm.nextUp, tileWidth: AppLayout.shelfTileWidth(idiom: idiom)) { item in
-                            homeShelfTile(item: item, session: session, showProgress: false)
-                        }
-                    }
-                    if vm.heroFeed.isEmpty && vm.continueWatching.isEmpty && vm.nextUp.isEmpty {
-                        ContentUnavailableView("Nothing here yet", systemImage: "play.slash").padding(.top, Space.s60)
-                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .tvContentInset()
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.bottom, Space.s30)
             case .failed(let message):
                 ContentUnavailableView(

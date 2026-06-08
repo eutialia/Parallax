@@ -75,6 +75,7 @@ struct MetadataRowSkeleton: View {
     let tileWidth: CGFloat
     var aspectRatio: CGFloat = JellyfinImage.landscape
 
+    @Environment(\.appIdiom) private var idiom
     @State private var rowWidth: CGFloat = 0
 
     /// Enough tiles to fill the row edge-to-edge plus one peeking past the trailing edge
@@ -93,7 +94,7 @@ struct MetadataRowSkeleton: View {
             // swap doesn't jolt the shelf down.
             SkeletonBlock(cornerRadius: 6, height: 26)
                 .frame(width: 168)
-                .padding(.horizontal, AppLayout.contentHMargin)
+                .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(alignment: .top, spacing: Space.s12) {
                     ForEach(0..<tileCount, id: \.self) { _ in
@@ -101,7 +102,7 @@ struct MetadataRowSkeleton: View {
                             .frame(width: tileWidth)
                     }
                 }
-                .padding(.horizontal, AppLayout.contentHMargin)
+                .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
             }
             .scrollDisabled(true)
         }
@@ -116,13 +117,17 @@ struct HomeLoadingSkeleton: View {
 
     var body: some View {
         LazyVStack(alignment: .leading, spacing: Space.s30) {
+            // Hero placeholder bleeds full-width like the real carousel; shelves stay title-safe.
             SkeletonBlock(cornerRadius: 0)
                 .aspectRatio(
                     HeroMetrics.bandAspectRatio(regularWidth: idiom.usesLandscapeHeroBand),
                     contentMode: .fit
                 )
-            MetadataRowSkeleton(tileWidth: HomeShelf.tileWidth, aspectRatio: JellyfinImage.poster)
-            MetadataRowSkeleton(tileWidth: HomeShelf.tileWidth, aspectRatio: JellyfinImage.poster)
+            VStack(alignment: .leading, spacing: Space.s30) {
+                MetadataRowSkeleton(tileWidth: HomeShelf.tileWidth, aspectRatio: JellyfinImage.poster)
+                MetadataRowSkeleton(tileWidth: HomeShelf.tileWidth, aspectRatio: JellyfinImage.poster)
+            }
+            .tvContentInset()
         }
         .padding(.bottom, Space.s30)
         .skeletonShimmer()
@@ -153,9 +158,15 @@ struct AdaptivePosterGridLoadingSkeleton: View {
     /// Fixed column count; when nil the grid adapts by `columnMinWidth`. Mirrors `MediaGrid`.
     var fixedColumns: Int? = nil
 
+    @Environment(\.appIdiom) private var idiom
+
     var body: some View {
-        let columns = posterGridColumns(fixedColumns: fixedColumns, columnMinWidth: columnMinWidth)
-        LazyVGrid(columns: columns, spacing: 16) {
+        let columns = posterGridColumns(
+            fixedColumns: fixedColumns,
+            columnMinWidth: columnMinWidth,
+            columnSpacing: AppLayout.posterGridColumnSpacing(idiom: idiom)
+        )
+        LazyVGrid(columns: columns, spacing: AppLayout.posterGridRowSpacing(idiom: idiom)) {
             ForEach(0..<tileCount, id: \.self) { _ in
                 MediaTileSkeleton()
             }
@@ -224,6 +235,7 @@ struct DetailLoadingSkeleton: View {
                 }
                 .padding(.horizontal, Space.s18)
                 .padding(.top, -Space.s60)
+                .tvContentInset()
 
                 VStack(alignment: .leading, spacing: Space.s8) {
                     ForEach(0..<4, id: \.self) { i in
@@ -232,6 +244,7 @@ struct DetailLoadingSkeleton: View {
                     }
                 }
                 .padding(.horizontal, Space.s18)
+                .tvContentInset()
             }
             .padding(.bottom, Space.s30)
             .skeletonShimmer()
@@ -241,13 +254,15 @@ struct DetailLoadingSkeleton: View {
 }
 
 struct EpisodeListLoadingSkeleton: View {
+    @Environment(\.appIdiom) private var idiom
+
     var body: some View {
         VStack(alignment: .leading, spacing: Space.s22) {
             ForEach(0..<2, id: \.self) { _ in
                 VStack(alignment: .leading, spacing: Space.s8) {
                     SkeletonBlock(cornerRadius: 6, height: 22)
                         .frame(width: 120)
-                        .padding(.horizontal, AppLayout.contentHMargin)
+                        .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: Space.s12) {
                             ForEach(0..<5, id: \.self) { _ in
@@ -258,7 +273,7 @@ struct EpisodeListLoadingSkeleton: View {
                                     )
                             }
                         }
-                        .padding(.horizontal, AppLayout.contentHMargin)
+                        .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
                     }
                 }
             }

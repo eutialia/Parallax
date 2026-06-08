@@ -13,16 +13,22 @@ struct CircleGlassButton: View {
     let accessibilityLabel: String
     let action: () -> Void
 
+    @Environment(\.appIdiom) private var idiom
+
+    private var controlSize: CGFloat { idiom == .tv ? 76 : 46 }
+
     var body: some View {
         Button(action: action) {
             Image(systemName: systemImage)
-                .scaledFont(18, relativeTo: .headline, weight: .semibold)
+                .scaledFont(idiom == .tv ? 30 : 18, relativeTo: .headline, weight: .semibold)
                 .foregroundStyle(.white.opacity(isActive ? 1 : 0.9))
-                .frame(width: 46, height: 46)
+                .frame(width: controlSize, height: controlSize)
                 .glassEffect(.regular.tint(Color.heroGlass), in: Circle())
                 .overlay(Circle().strokeBorder(Color.heroGlassBorder, lineWidth: 1))
                 .shadow(color: .black.opacity(0.32), radius: 8, y: 4)
                 .contentShape(Circle())
+                // tvOS focus lift — `.plain` carries no system focus effect on Apple TV.
+                .tvFocusEffect()
         }
         .buttonStyle(.plain)
         // Bare `.glassEffect(.regular)` follows `colorScheme`; pin dark so Matinee

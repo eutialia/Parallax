@@ -199,7 +199,6 @@ struct JellyfinLibraryGridView: View {
                             .padding(.horizontal, Space.s14).frame(height: genreChipHeight)
                             .background(isSelected ? Color.chipSelectedFill : Color.fill, in: Capsule())
                     }
-                    .buttonStyle(.plain)
                     .tvChipButton()
                 }
             }

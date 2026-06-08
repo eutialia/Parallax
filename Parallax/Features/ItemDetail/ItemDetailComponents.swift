@@ -91,9 +91,15 @@ struct DetailActionButton: View {
     var isActive: Bool = false
     let action: () -> Void
 
+    @Environment(\.appIdiom) private var idiom
+
     /// Pill height scales with Dynamic Type (relative to the `.subheadline` label) so the
     /// icon + label never clip at larger text sizes.
     @ScaledMetric(relativeTo: .subheadline) private var pillHeight: CGFloat = 40
+
+    private var resolvedPillHeight: CGFloat {
+        idiom == .tv ? max(pillHeight, 60) : pillHeight
+    }
 
     var body: some View {
         Button(action: action) {
@@ -103,10 +109,13 @@ struct DetailActionButton: View {
             }
             // Font on the HStack so the SF Symbol matches the label size — uniform
             // across all three detail pills (Favorite / Mark-Watched / Mark-Season).
-            .font(.subheadline.weight(.medium))
+            .font(idiom == .tv ? .title3.weight(.medium) : .subheadline.weight(.medium))
             .foregroundStyle(isActive ? Color.label : Color.secondaryLabel)
-            .padding(.horizontal, Space.s14).frame(height: pillHeight)
+            .padding(.horizontal, idiom == .tv ? Space.s18 : Space.s14)
+            .frame(height: resolvedPillHeight)
             .glassPanel(cornerRadius: Radius.field)
+            // tvOS focus lift — `.plain` carries no system focus effect on Apple TV.
+            .tvFocusEffect()
         }
         .buttonStyle(.plain)
     }

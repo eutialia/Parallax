@@ -50,8 +50,8 @@ struct HeroBackdrop<Backdrop: View, Foreground: View>: View {
 
                 foreground()
                     .frame(maxWidth: HeroMetrics.contentMaxWidth, alignment: .leading)
-                    .safeAreaPadding(.horizontal, HeroMetrics.foregroundHorizontalInset(regularWidth: regularWidth))
-                    .padding(.bottom, HeroMetrics.foregroundBottomInset)
+                    .safeAreaPadding(.horizontal, HeroMetrics.foregroundHorizontalInset(idiom: idiom))
+                    .padding(.bottom, HeroMetrics.foregroundBottomInset(idiom: idiom))
             }
         }
         .heroBandFrame(regularWidth: regularWidth)
@@ -77,8 +77,26 @@ enum HeroMetrics {
         containerWidth / bandAspectRatio(regularWidth: regularWidth)
     }
     static let foregroundBottomInset: CGFloat = Space.s30
+    /// On tvOS the full-bleed hero fills the whole viewport, so its bottom-anchored controls
+    /// must clear the ~60pt bottom overscan or a real TV clips the Play button. iPhone/iPad have
+    /// no overscan, so they keep the tight inset.
+    static func foregroundBottomInset(idiom: AppIdiom) -> CGFloat {
+        idiom == .tv ? Space.s60 + Space.s12 : foregroundBottomInset
+    }
     static func foregroundHorizontalInset(regularWidth: Bool) -> CGFloat {
         regularWidth ? Space.s40 : Space.s22
+    }
+
+    static func foregroundHorizontalInset(idiom: AppIdiom) -> CGFloat {
+        switch idiom {
+        case .compact: Space.s22
+        case .regular: Space.s40
+        // The hero artwork is full-bleed on tvOS (`heroScreenSafeArea()` drops the horizontal
+        // safe area), so the foreground needs the overscan inset back in ABSOLUTE terms — it
+        // isn't under the `tvContentInset()` wrapper that re-insets the shelves/body. This keeps
+        // the title/Play column aligned with the shelves at `overscan + contentHMargin`.
+        case .tv: AppLayout.tvOverscanInset + AppLayout.contentHMargin(idiom: .tv)
+        }
     }
     /// Default `PrimaryPlayButton` height at `.headline` — matches its `@ScaledMetric` base.
     static let playButtonHeight: CGFloat = 46

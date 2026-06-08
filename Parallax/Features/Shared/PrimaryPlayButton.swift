@@ -15,9 +15,15 @@ struct PrimaryPlayButton: View {
     var layoutReserveTitle: String? = nil
     let action: () -> Void
 
+    @Environment(\.appIdiom) private var idiom
+
     /// Pill height scales with Dynamic Type (relative to the `.headline` label) so the
     /// label never clips at larger text sizes.
     @ScaledMetric(relativeTo: .headline) private var playHeight: CGFloat = 46
+
+    private var resolvedPlayHeight: CGFloat {
+        idiom == .tv ? max(playHeight, 64) : playHeight
+    }
 
     var body: some View {
         Button(action: action) {
@@ -45,9 +51,9 @@ struct PrimaryPlayButton: View {
 
     private func sizedLabel(_ text: String) -> some View {
         Label(text, systemImage: systemImage)
-            .font(.headline)
-            .frame(height: playHeight)
-            .padding(.horizontal, Space.s22)
+            .font(idiom == .tv ? .title2.weight(.semibold) : .headline)
+            .frame(height: resolvedPlayHeight)
+            .padding(.horizontal, idiom == .tv ? Space.s30 : Space.s22)
     }
 }
 
@@ -59,6 +65,8 @@ private struct PrimaryPlayButtonStyle: ButtonStyle {
             .shadow(color: .black.opacity(0.24), radius: 10, y: 6)
             .opacity(configuration.isPressed ? 0.85 : 1)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+            // tvOS focus lift — a custom style gets no system focus effect on its own.
+            .tvFocusEffect()
     }
 }
 

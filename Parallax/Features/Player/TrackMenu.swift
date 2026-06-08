@@ -113,7 +113,6 @@ private struct MenuRow<Trailing: View>: View {
                 )
                 .contentShape(.rect)
         }
-        .buttonStyle(.plain)
         .tvChipButton()
     }
 }

@@ -12,6 +12,11 @@ struct FocusRootView: View {
         tabView
             .environment(\.appIdiom, .tv)
             .id(router.activeServerID)
+            .onChange(of: router.presentingSettings) { _, presenting in
+                guard presenting else { return }
+                selectedTab = .settings
+                router.presentingSettings = false
+            }
             .task(id: router.activeServerID) {
                 guard router.activeServerID != nil else { return }
                 session = await deps.serverStore.active
@@ -26,21 +31,18 @@ struct FocusRootView: View {
             Tab("Home", systemImage: "house", value: AppTab.home) {
                 NavigationStack {
                     HomeView()
-                        .toolbar { settingsToolbar }
                         .appScreenBackground()
                 }
             }
             Tab("Library", systemImage: "rectangle.stack", value: AppTab.library) {
                 NavigationStack {
                     LibraryHostView()
-                        .toolbar { settingsToolbar }
                         .appScreenBackground()
                 }
             }
             Tab("Search", systemImage: "magnifyingglass", value: AppTab.search) {
                 NavigationStack {
                     JellyfinSearchView()
-                        .toolbar { settingsToolbar }
                         .appScreenBackground()
                 }
             }
@@ -57,25 +59,14 @@ struct FocusRootView: View {
                     }
                 }
             }
+
+            Tab("Settings", systemImage: "gearshape", value: AppTab.settings) {
+                NavigationStack {
+                    SettingsView()
+                        .appScreenBackground()
+                }
+            }
         }
         .tabViewStyle(.sidebarAdaptable)
-    }
-
-    @ToolbarContentBuilder
-    private var settingsToolbar: some ToolbarContent {
-        ToolbarItem(placement: .topBarTrailing) {
-            settingsButton
-        }
-    }
-
-    private var settingsButton: some View {
-        Button(action: openSettings) {
-            Image(systemName: "gearshape")
-        }
-        .accessibilityLabel("Settings")
-    }
-
-    private func openSettings() {
-        router.presentingSettings = true
     }
 }

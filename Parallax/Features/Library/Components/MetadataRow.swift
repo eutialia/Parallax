@@ -14,7 +14,7 @@ struct MetadataRow<Item: Identifiable & Hashable, Content: View>: View {
                 .font(.title2.weight(.bold))
                 .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(alignment: .top, spacing: Space.s12) {
+                HStack(alignment: .top, spacing: idiom == .tv ? Space.s18 : Space.s12) {
                     ForEach(items) { item in
                         content(item)
                             .frame(width: tileWidth)
@@ -22,10 +22,8 @@ struct MetadataRow<Item: Identifiable & Hashable, Content: View>: View {
                     }
                 }
                 .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
+                .tvFocusSection()
             }
         }
-        #if os(tvOS)
-        .focusSection()
-        #endif
     }
 }
