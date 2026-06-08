@@ -7,13 +7,16 @@ struct LoginView: View {
     var onSignedIn: (() -> Void)?
 
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.appIdiom) private var idiom
     @Environment(AppDependencies.self) private var deps
     @Environment(AppRouter.self) private var router
     @State private var viewModel: LoginViewModel?
     @State private var showPassword = false
     /// Shared height for the form's tap targets (fields + Connect + Quick Connect),
-    /// scaling with Dynamic Type so labels never clip at larger text sizes.
-    @ScaledMetric(relativeTo: .headline) private var controlHeight: CGFloat = 50
+    /// scaling with Dynamic Type so labels never clip at larger text sizes — and taller on
+    /// tvOS via `FormControl` (the CTAs derive the same height from `.formActionLabel`).
+    @ScaledMetric(relativeTo: .headline) private var baseControlHeight: CGFloat = 50
+    private var controlHeight: CGFloat { FormControl.height(idiom: idiom, scaled: baseControlHeight) }
 
     var body: some View {
         content
@@ -146,6 +149,8 @@ struct LoginView: View {
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                         Button(showPassword ? "Hide" : "Show") { showPassword.toggle() }
                             .font(.footnote).foregroundStyle(Color.secondaryLabel)
+                            // Plain text, no system focus platter on tvOS.
+                            .tvChipButton()
                     }
                 }
             }
@@ -162,12 +167,11 @@ struct LoginView: View {
             } label: {
                 Group {
                     if vm.isWorking { ProgressView().tint(Color.buttonLabel) }
-                    else { Text("Connect").font(.headline) }
+                    else { Text("Connect") }
                 }
-                .frame(maxWidth: .infinity).frame(height: controlHeight)
+                .formActionLabel(.solid)
             }
-            .foregroundStyle(Color.buttonLabel)
-            .background(Color.buttonFill, in: RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
+            .tvChipButton()
             .opacity(vm.canSubmitPassword ? 1 : 0.4)
             .disabled(vm.isWorking || !vm.canSubmitPassword)
 
@@ -183,10 +187,9 @@ struct LoginView: View {
                 withAnimation(.smooth) { vm.switchToQuickConnect() }
             } label: {
                 Label("Use Quick Connect", systemImage: "bolt.fill")
-                    .font(.headline).foregroundStyle(Color.label)
-                    .frame(maxWidth: .infinity).frame(height: controlHeight)
+                    .formActionLabel(.glass)
             }
-            .glassPanel(cornerRadius: Radius.field)
+            .tvChipButton()
             .opacity(vm.canUseQuickConnect ? 1 : 0.4)
             .disabled(!vm.canUseQuickConnect)
         }

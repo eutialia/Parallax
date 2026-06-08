@@ -11,9 +11,6 @@ struct QuickConnectView: View {
     @Environment(AppDependencies.self) private var deps
     @State private var viewModel: QuickConnectViewModel?
     @State private var retryToken: Int = 0
-    /// Matches the sign-in card's control height so the bottom switch button lines up
-    /// with the "Use Quick Connect" button it toggles against.
-    @ScaledMetric(relativeTo: .headline) private var controlHeight: CGFloat = 50
 
     var body: some View {
         AuthScreenScaffold { card }
@@ -48,10 +45,9 @@ struct QuickConnectView: View {
                 withAnimation(.smooth) { onSwitchToPassword() }
             } label: {
                 Label("Use password instead", systemImage: "person.fill")
-                    .font(.headline).foregroundStyle(Color.label)
-                    .frame(maxWidth: .infinity).frame(height: controlHeight)
+                    .formActionLabel(.glass)
             }
-            .glassPanel(cornerRadius: Radius.field)
+            .tvChipButton()
         }
         .padding(32)
         .glassBar(cornerRadius: 26)
@@ -94,7 +90,13 @@ struct QuickConnectView: View {
                     Text(message)
                         .multilineTextAlignment(.center)
                         .foregroundStyle(Color.label)
-                    Button("Try again") { retryToken &+= 1 }
+                    Button {
+                        retryToken &+= 1
+                    } label: {
+                        Label("Try again", systemImage: "arrow.clockwise")
+                            .formActionLabel(.glass)
+                    }
+                    .tvChipButton()
                 }
             }
         } else {

@@ -15,24 +15,25 @@ struct CircleGlassButton: View {
 
     @Environment(\.appIdiom) private var idiom
 
-    /// Matches the `PrimaryPlayButton` pill height per platform (tvOS 56, iOS 46) so the two
-    /// sit as an even-height row in the hero / detail action bar.
-    private var controlSize: CGFloat { idiom == .tv ? 56 : 46 }
+    /// Matches the `PrimaryPlayButton` pill height per platform (tvOS via `AppLayout`, iOS 46)
+    /// so the two sit as an even-height row in the hero / detail action bar.
+    private var controlSize: CGFloat { idiom == .tv ? AppLayout.tvControlHeight : 46 }
 
     var body: some View {
         Button(action: action) {
             Image(systemName: systemImage)
-                .scaledFont(idiom == .tv ? 26 : 18, relativeTo: .headline, weight: .semibold)
+                .scaledFont(idiom == .tv ? 28 : 18, relativeTo: .headline, weight: .semibold)
                 .foregroundStyle(.white.opacity(isActive ? 1 : 0.9))
                 .frame(width: controlSize, height: controlSize)
                 .glassEffect(.regular.tint(Color.heroGlass), in: Circle())
                 .overlay(Circle().strokeBorder(Color.heroGlassBorder, lineWidth: 1))
                 .shadow(color: .black.opacity(0.32), radius: 8, y: 4)
                 .contentShape(Circle())
-                // tvOS focus lift — `.plain` carries no system focus effect on Apple TV.
-                .tvFocusEffect()
         }
-        .buttonStyle(.plain)
+        // The custom chip style (gentle lift, no platter) owns the tvOS focus effect — a
+        // system style (`.plain`) instead paints the focus platter that boxed the circle on
+        // Apple TV. `.plain` on iOS. Chrome lives inside the label so the lift scales it whole.
+        .tvChipButton()
         // Bare `.glassEffect(.regular)` follows `colorScheme`; pin dark so Matinee
         // doesn't resolve the light frosted variant over hero photography.
         .environment(\.colorScheme, .dark)

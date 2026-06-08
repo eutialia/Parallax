@@ -14,7 +14,6 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var viewModel: SettingsViewModel?
     @State private var path: [Route] = []
-    @ScaledMetric(relativeTo: .headline) private var addServerHeight: CGFloat = 50
 
     /// Pushed leaves of the settings stack. `.addServer` hosts `LoginView`, so the sign-in
     /// form is literally part of settings rather than a separate sheet.
@@ -136,6 +135,10 @@ struct SettingsView: View {
                     .scaledFont(13, relativeTo: .footnote, weight: .semibold)
                     .foregroundStyle(Color.tertiaryLabel)
             }
+            // Chrome lives INSIDE the link's label so the tvOS focus lift scales the glass
+            // card whole — applied outside, the content lifted while the panel stayed put.
+            .padding(Space.s14)
+            .glassPanel(cornerRadius: Radius.card)
             .contentShape(.rect)
         }
         // A glass-panel row is chrome, not poster art — use the gentle chrome lift, not the
@@ -145,18 +148,14 @@ struct SettingsView: View {
         // and the "Active" pill would otherwise read as a loose trailing word).
         .accessibilityLabel(isActive ? "\(a11yBase), active server" : a11yBase)
         .accessibilityHint("Opens server settings")
-        .padding(Space.s14)
-        .glassPanel(cornerRadius: Radius.card)
     }
 
     private var addServerButton: some View {
         NavigationLink(value: Route.addServer) {
             Label("Add Server", systemImage: "plus")
-                .font(.headline).foregroundStyle(Color.label)
-                .frame(maxWidth: .infinity).frame(height: addServerHeight)
+                .formActionLabel(.glass)
         }
         .tvChipButton()
-        .glassPanel(cornerRadius: Radius.field)
         .padding(.top, Space.s8)
     }
 

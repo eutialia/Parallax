@@ -29,6 +29,12 @@ enum AppLayout {
     /// strays outside, so cards must stay inside it. (Apple HIG "Designing for tvOS" / WWDC19.)
     static let tvOverscanInset: CGFloat = 90
 
+    /// Resting height for a tvOS button/control. The 10-foot `.headline` type (~38pt vs ~17pt
+    /// on iOS) needs far more vertical room than the iOS metrics, so every tvOS pill floors at
+    /// this — the single knob for control height across the play pill, glass circles, form CTAs,
+    /// and the player's error buttons. Pairs with `contentHMargin(.tv)` for the horizontal gutter.
+    static let tvControlHeight: CGFloat = 64
+
     static func contentHMargin(idiom: AppIdiom) -> CGFloat {
         switch idiom {
         case .compact: 18

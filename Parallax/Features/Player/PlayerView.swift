@@ -27,9 +27,9 @@ struct PlayerView: View {
     @State private var fillMode = false
     /// Chrome visibility, owned here so the status bar can hide with the controls.
     @State private var chromeVisible = true
+    @Environment(\.appIdiom) private var idiom
     #if DEBUG
     @State private var showDebugHUD = false
-    @Environment(\.appIdiom) private var idiom
     #endif
 
     var body: some View {
@@ -207,6 +207,10 @@ struct PlayerView: View {
         }
     }
 
+    /// Intrinsic-width error pills can't use `formActionLabel` (it forces full width), so they
+    /// reuse the shared tvOS control height directly.
+    private var errorPillHeight: CGFloat { idiom == .tv ? AppLayout.tvControlHeight : 46 }
+
     /// Failure state. White-on-dark over the black player surface (so it ignores the
     /// app's light/dark tint — the old `.borderedProminent` Retry rendered white-on-
     /// white under the monochrome global tint). Solid-white "Try Again", glass "Close".
@@ -230,20 +234,22 @@ struct PlayerView: View {
                     Text("Try Again")
                         .font(.headline)
                         .foregroundStyle(.black)
-                        .padding(.horizontal, 24)
-                        .frame(height: 46)
+                        .padding(.horizontal, idiom == .tv ? Space.s40 : 24)
+                        .frame(height: errorPillHeight)
                         .background(.white, in: Capsule())
                 }
-                .buttonStyle(.plain)
+                // Custom chip style: gentle lift, no system focus platter (which `.plain`
+                // paints around the pill on tvOS). Chrome is inside the label, so it scales whole.
+                .tvChipButton()
                 Button { dismiss() } label: {
                     Text("Close")
                         .font(.headline)
                         .foregroundStyle(.white)
-                        .padding(.horizontal, 22)
-                        .frame(height: 46)
+                        .padding(.horizontal, idiom == .tv ? Space.s40 : 22)
+                        .frame(height: errorPillHeight)
                         .glassEffect(.regular, in: Capsule())
                 }
-                .buttonStyle(.plain)
+                .tvChipButton()
             }
             .padding(.top, 6)
         }

@@ -41,7 +41,9 @@ struct SearchBar: View {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundStyle(Color.tertiaryLabel)
                 }
-                .buttonStyle(.plain)
+                // Custom chip style (gentle lift, no platter) instead of `.plain`, which paints
+                // the system focus platter around the glyph on tvOS. `.plain` on iOS.
+                .tvChipButton()
                 .accessibilityLabel("Clear search")
                 .transition(.opacity)
             }
