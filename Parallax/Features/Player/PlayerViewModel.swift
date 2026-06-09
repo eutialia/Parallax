@@ -107,6 +107,18 @@ final class PlayerViewModel {
         }
     }
 
+    /// Chapter start fractions (0...1) of the current duration — the progress bars'
+    /// tick positions on every platform. Empty until the duration is known.
+    var chapterFractions: [Double] {
+        let dur = CMTimeGetSeconds(currentDuration)
+        guard dur > 0 else { return [] }
+        return chapters.map { chapter in
+            let c = chapter.start.components
+            let s = Double(c.seconds) + Double(c.attoseconds) / 1e18
+            return min(max(s / dur, 0), 1)
+        }
+    }
+
     /// Seek to a chapter's start. Reconstruct the full sub-second offset (the
     /// fractional part lives in `attoseconds`) — `.seconds` alone would land a
     /// chapter with a fractional start up to ~1s early, inside the prior chapter.

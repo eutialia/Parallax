@@ -167,9 +167,20 @@ struct PlayerHUDReducerTests {
         #expect(reduce(.fullHUD, .playPause, playing) == (PlayerHUDState.fullHUD, [PlayerEffect.togglePlayPause]))
     }
 
-    @Test("fullHUD: swipe/click/select are no-ops (handled natively)")
+    @Test("fullHUD: horizontal swipe (view-gated to scrubber focus) drops into analog scrub and pauses")
+    func hudSwipeEntersScrub() {
+        let (state, fx) = reduce(.fullHUD, .swipeHorizontal(deltaProgress: 0.25), playing)
+        #expect(state == .swipeScrub(progress: 0.75, wasPlaying: true))
+        #expect(fx == [.pause])
+
+        let (pausedState, pausedFx) = reduce(.fullHUD, .swipeHorizontal(deltaProgress: -0.25), paused)
+        #expect(pausedState == .swipeScrub(progress: 0.25, wasPlaying: false))
+        #expect(pausedFx == [.pause])
+    }
+
+    @Test("fullHUD: vertical swipe/click/select are no-ops (handled natively)")
     func hudNativeNoOps() {
-        #expect(reduce(.fullHUD, .swipeHorizontal(deltaProgress: 0.3), playing) == (PlayerHUDState.fullHUD, []))
+        #expect(reduce(.fullHUD, .swipeVertical, playing) == (PlayerHUDState.fullHUD, []))
         #expect(reduce(.fullHUD, .click(.left), playing) == (PlayerHUDState.fullHUD, []))
         #expect(reduce(.fullHUD, .select, playing) == (PlayerHUDState.fullHUD, []))
     }

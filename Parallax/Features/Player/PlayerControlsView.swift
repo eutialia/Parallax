@@ -25,6 +25,12 @@ struct PlayerControlsView: View {
     @Bindable var vm: PlayerViewModel
     /// Chrome visibility, owned by `PlayerView` so it can also drive the status bar.
     @Binding var controlsVisible: Bool
+    #if os(tvOS)
+    /// Reports the scrub bar's focus to `PlayerView`, which gates window-level pans
+    /// into analog scrub only while the bar is focused. Required, not optional —
+    /// without the wiring, swipe-on-scrubber silently degrades to click-stepping.
+    let onScrubberFocusChange: (Bool) -> Void
+    #endif
     let onDismiss: () -> Void
 
     @State private var hideTask: Task<Void, Never>? = nil
@@ -154,15 +160,18 @@ struct PlayerControlsView: View {
         // Progress — anchored bottom.
         scrubber(m)
             .padding(.horizontal, m.padX)
-            .padding(.bottom, m.progressBottomNormal)
+            .padding(.bottom, m.progressBottom)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
 
         // Control row — Close + chips (no split pill here; tvOS has none, iPad's is top).
-        HStack(spacing: m.controlRowGap) {
+        // Mirrors the progress row's columns so the rows read as one grid: Close is
+        // centered in the elapsed-time column, and the first (audio) chip's left edge
+        // lands exactly on the track's left end.
+        HStack(spacing: m.progressRowGap) {
             PlayerRoundButton(systemImage: "chevron.down", size: m.closeSize, iconScale: 0.46,
                               accessibilityLabel: "Close") { onDismiss() }
+                .frame(width: m.timeLabelWidth)
             HStack(spacing: m.chipsGap) { chips(m) }
-                .padding(.leading, m.chipsOffset)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, m.padX)
@@ -210,15 +219,19 @@ struct PlayerControlsView: View {
             .padding(.bottom, 64)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
 
-        // Chip row — chips · PiP.
+        // Chip row — chips · PiP, in the progress row's columns (same as the big
+        // layout): the first chip's left edge lands on the track's left end, and PiP
+        // sits centered under the remaining-time column.
         HStack(spacing: 9) {
             chips(m)
             Spacer(minLength: 0)
             if vm.isPiPAvailable {
                 PlayerRoundButton(systemImage: "pip.enter", size: 37, iconScale: 0.5,
                                   accessibilityLabel: "Picture in Picture") { resetHideTimer(); vm.startPiP() }
+                    .frame(width: m.timeLabelWidth)
             }
         }
+        .padding(.leading, m.timeLabelWidth + m.progressRowGap)
         .padding(.horizontal, 26)
         .padding(.bottom, 18)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
@@ -290,7 +303,9 @@ struct PlayerControlsView: View {
         } label: {
             PlayerProgressBar(metrics: m, mode: scrubberFocused ? .focused : .normal,
                               played: displayed,
-                              elapsed: formatPlaybackTime(shownSeconds), remaining: remainingText)
+                              elapsed: formatPlaybackTime(shownSeconds), remaining: remainingText,
+                              elapsedSeconds: shownSeconds, remainingSeconds: remaining,
+                              chapters: vm.chapterFractions)
         }
         .buttonStyle(TVScrubberButtonStyle())
         .focused($scrubberFocused)
@@ -300,19 +315,25 @@ struct PlayerControlsView: View {
             guard durSeconds > 0 else { return }
             if !isScrubbing { scrubProgress = liveProgress; isScrubbing = true; scrubGeneration += 1 }
             let step = 10.0 / durSeconds
-            switch direction {
-            case .left: scrubProgress = max(0, scrubProgress - step)
-            case .right: scrubProgress = min(1, scrubProgress + step)
-            default: break
+            // Animated so the ±10s step glides and the time digits roll (`.numericText`).
+            withAnimation(.snappy(duration: 0.25, extraBounce: 0)) {
+                switch direction {
+                case .left: scrubProgress = max(0, scrubProgress - step)
+                case .right: scrubProgress = min(1, scrubProgress + step)
+                default: break
+                }
             }
         }
         .onChange(of: scrubberFocused) { _, focused in
+            onScrubberFocusChange(focused)
             if !focused && isScrubbing { isScrubbing = false }
         }
         #else
         PlayerProgressBar(
             metrics: m, mode: .normal, played: displayed,
             elapsed: formatPlaybackTime(shownSeconds), remaining: remainingText,
+            elapsedSeconds: shownSeconds, remainingSeconds: remaining,
+            chapters: vm.chapterFractions,
             onScrubChanged: { frac in
                 resetHideTimer()
                 if !isScrubbing { isScrubbing = true; scrubGeneration += 1 }

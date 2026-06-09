@@ -2,9 +2,10 @@
 import SwiftUI
 import UIKit
 
-/// Captures raw Siri-Remote input and classifies it into `RemoteEvent`s for the
-/// HUD reducer. The split is the documented one: **indirect-touch pans = swipes**
-/// (analog), **press-typed taps = directional clicks**.
+/// Captures raw Siri-Remote **presses** (press-typed taps = directional clicks,
+/// Select, Menu) and classifies them into `RemoteEvent`s for the HUD reducer. Analog
+/// pans live in `TVPanCatcher`, which is window-attached and stays mounted in every
+/// HUD state.
 ///
 /// This view is mounted only on the floor and during scrubbing — `PlayerView`
 /// unmounts it in `.fullHUD` so SwiftUI's focus engine owns the chips natively (a
@@ -17,20 +18,16 @@ import UIKit
 /// NOT unit-tested: focus/press behavior depends on the focus engine and physical
 /// remote, which the simulator doesn't reproduce. Verified on device.
 struct TVRemoteInputView: UIViewControllerRepresentable {
-    /// Points-of-pan → normalised-progress conversion. Tuned on device.
-    let progressPerPoint: Double
     let onEvent: (RemoteEvent) -> Void
 
     func makeUIViewController(context: Context) -> RemoteInputController {
         let controller = RemoteInputController()
         controller.onEvent = onEvent
-        controller.progressPerPoint = progressPerPoint
         return controller
     }
 
     func updateUIViewController(_ controller: RemoteInputController, context: Context) {
         controller.onEvent = onEvent
-        controller.progressPerPoint = progressPerPoint
     }
 }
 
@@ -40,6 +37,74 @@ final class RemoteCaptureView: UIView {
 }
 
 final class RemoteInputController: UIViewController {
+    var onEvent: ((RemoteEvent) -> Void)?
+
+    override func loadView() {
+        let v = RemoteCaptureView()
+        v.backgroundColor = .clear
+        view = v
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        // Directional + select + menu CLICKS (physical presses, not touches).
+        addClickTap(.leftArrow,  { [weak self] in self?.onEvent?(.click(.left)) })
+        addClickTap(.rightArrow, { [weak self] in self?.onEvent?(.click(.right)) })
+        addClickTap(.upArrow,    { [weak self] in self?.onEvent?(.click(.up)) })
+        addClickTap(.downArrow,  { [weak self] in self?.onEvent?(.click(.down)) })
+        addClickTap(.select,     { [weak self] in self?.onEvent?(.select) })
+        addClickTap(.menu,       { [weak self] in self?.onEvent?(.menu) })
+    }
+
+    private func addClickTap(_ type: UIPress.PressType, _ handler: @escaping () -> Void) {
+        let tap = ClosureTap(handler: handler)
+        tap.allowedPressTypes = [NSNumber(value: type.rawValue)]
+        view.addGestureRecognizer(tap)
+    }
+}
+
+/// A `UITapGestureRecognizer` that fires a closure (no external target needed).
+private final class ClosureTap: UITapGestureRecognizer {
+    private let handler: () -> Void
+    init(handler: @escaping () -> Void) {
+        self.handler = handler
+        super.init(target: nil, action: nil)
+        addTarget(self, action: #selector(fire))
+    }
+    @objc private func fire() { handler() }
+}
+
+// MARK: - Window-level analog pan capture
+
+/// Captures the remote's **indirect-touch pans** (analog swipes) and reports them as
+/// `RemoteEvent`s. tvOS delivers indirect touches to the *focused* view's responder
+/// chain, so a sibling overlay never sees them once SwiftUI chrome holds focus — but
+/// the window is an ancestor of every focused view, so recognizers attached there
+/// observe pans in **every** HUD state, including `.fullHUD` (that's what lets a
+/// swipe on the focused scrubber drop into analog scrub). `PlayerView` mounts this
+/// once for the whole playback surface so an in-flight pan keeps streaming deltas
+/// across floor↔scrub↔fullHUD transitions — a recognizer added mid-gesture would
+/// miss the touch that already began.
+struct TVPanCatcher: UIViewRepresentable {
+    /// Points-of-pan → normalised-progress conversion. Tuned on device.
+    let progressPerPoint: Double
+    let onEvent: (RemoteEvent) -> Void
+
+    func makeUIView(context: Context) -> PanCatcherView {
+        let v = PanCatcherView()
+        v.isHidden = true   // inert placeholder — the recognizers live on the window
+        v.onEvent = onEvent
+        v.progressPerPoint = progressPerPoint
+        return v
+    }
+
+    func updateUIView(_ v: PanCatcherView, context: Context) {
+        v.onEvent = onEvent
+        v.progressPerPoint = progressPerPoint
+    }
+}
+
+final class PanCatcherView: UIView {
     var onEvent: ((RemoteEvent) -> Void)?
     var progressPerPoint: Double = 0.0008
 
@@ -52,38 +117,28 @@ final class RemoteInputController: UIViewController {
     /// by trailing pan deltas that re-enter `swipeScrub` from the floor — and because the
     /// engine is mid-seek (isPlaying == false) at that instant, the new scrub captures
     /// `wasPlaying: false` and its confirm seeks WITHOUT resuming → video stuck paused.
-    /// So once any click fires, swallow the rest of the current pan; a genuinely new
-    /// gesture (`.began`) clears it.
+    /// So once any press fires (`PressSentinel`), swallow the rest of the current pan;
+    /// a genuinely new gesture (`.began`) clears it.
     private var panSuppressed = false
 
-    override func loadView() {
-        let v = RemoteCaptureView()
-        v.backgroundColor = .clear
-        view = v
-    }
+    private lazy var pan: UIPanGestureRecognizer = {
+        let g = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
+        g.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirect.rawValue)]
+        g.cancelsTouchesInView = false   // observe only — never starve the focus engine
+        return g
+    }()
+    private lazy var press = PressSentinel { [weak self] in self?.panSuppressed = true }
 
-    override func viewDidLoad() {
-        super.viewDidLoad()
+    private weak var attachedWindow: UIWindow?
 
-        // Analog swipe: indirect touches from the remote's touch surface.
-        let pan = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
-        pan.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirect.rawValue)]
-        view.addGestureRecognizer(pan)
-
-        // Directional + select + menu CLICKS (physical presses, not touches).
-        addClickTap(.leftArrow,  { [weak self] in self?.onEvent?(.click(.left)) })
-        addClickTap(.rightArrow, { [weak self] in self?.onEvent?(.click(.right)) })
-        addClickTap(.upArrow,    { [weak self] in self?.onEvent?(.click(.up)) })
-        addClickTap(.downArrow,  { [weak self] in self?.onEvent?(.click(.down)) })
-        addClickTap(.select,     { [weak self] in self?.onEvent?(.select) })
-        addClickTap(.menu,       { [weak self] in self?.onEvent?(.menu) })
-    }
-
-    private func addClickTap(_ type: UIPress.PressType, _ handler: @escaping () -> Void) {
-        // Any click ends the current touch's scrub authority (see `panSuppressed`).
-        let tap = ClosureTap(handler: { [weak self] in self?.panSuppressed = true; handler() })
-        tap.allowedPressTypes = [NSNumber(value: type.rawValue)]
-        view.addGestureRecognizer(tap)
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        guard attachedWindow !== window else { return }
+        attachedWindow?.removeGestureRecognizer(pan)
+        attachedWindow?.removeGestureRecognizer(press)
+        attachedWindow = window
+        window?.addGestureRecognizer(pan)
+        window?.addGestureRecognizer(press)
     }
 
     @objc private func handlePan(_ g: UIPanGestureRecognizer) {
@@ -93,7 +148,7 @@ final class RemoteInputController: UIViewController {
             panAxis = .undecided
         case .changed:
             if panSuppressed { return }   // trailing motion after a click — ignore
-            let t = g.translation(in: view)
+            let t = g.translation(in: g.view)
             if panAxis == .undecided {
                 guard abs(t.x) > 8 || abs(t.y) > 8 else { return }
                 panAxis = abs(t.x) >= abs(t.y) ? .horizontal : .vertical
@@ -102,10 +157,10 @@ final class RemoteInputController: UIViewController {
             if panAxis == .horizontal {
                 // Non-linear: scale the per-frame delta by how fast the touch is moving,
                 // so a slow drag scrubs fine and a fast flick covers ground.
-                let speed = abs(Double(g.velocity(in: view).x))   // pt/s
+                let speed = abs(Double(g.velocity(in: g.view).x))   // pt/s
                 let delta = Double(t.x) * progressPerPoint * scrubGain(forSpeed: speed)
                 onEvent?(.swipeHorizontal(deltaProgress: delta))
-                g.setTranslation(.zero, in: view)   // report incremental deltas
+                g.setTranslation(.zero, in: g.view)   // report incremental deltas
             }
         case .ended, .cancelled, .failed:
             panAxis = .undecided
@@ -131,14 +186,20 @@ final class RemoteInputController: UIViewController {
     }
 }
 
-/// A `UITapGestureRecognizer` that fires a closure (no external target needed).
-private final class ClosureTap: UITapGestureRecognizer {
-    private let handler: () -> Void
-    init(handler: @escaping () -> Void) {
-        self.handler = handler
+/// Observes every remote press without consuming it (fails immediately) — its only
+/// job is to end the current pan's scrub authority (see `panSuppressed` above).
+/// Window-attached alongside the pan, so it sees presses no matter which view holds
+/// focus (the window is always in the focused view's responder chain).
+private final class PressSentinel: UIGestureRecognizer {
+    private let onPress: () -> Void
+    init(onPress: @escaping () -> Void) {
+        self.onPress = onPress
         super.init(target: nil, action: nil)
-        addTarget(self, action: #selector(fire))
+        cancelsTouchesInView = false
     }
-    @objc private func fire() { handler() }
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent) {
+        onPress()
+        state = .failed
+    }
 }
 #endif

@@ -15,7 +15,14 @@ struct PlayerProgressBar: View {
     let played: Double
     let elapsed: String
     let remaining: String
-    /// Chapter start fractions (0...1); ticks render only in `.scrub`.
+    /// Seconds behind `elapsed`/`remaining` (and the bubble). They drive the
+    /// `.numericText` content transitions, so an animated scrub change rolls the
+    /// digits instead of cross-fading the whole label; unanimated updates (live
+    /// playback ticks) run no transition either way.
+    let elapsedSeconds: Double
+    let remainingSeconds: Double
+    /// Chapter start fractions (0...1); ticks render in every mode so the bar keeps
+    /// its chapter landmarks across the HUD↔scrub switch instead of popping them in.
     var chapters: [Double] = []
     /// Big floating time + chapter label above the handle; `.scrub` only.
     var bubbleTime: String? = nil
@@ -24,13 +31,13 @@ struct PlayerProgressBar: View {
     var onScrubChanged: ((Double) -> Void)? = nil
     var onScrubEnded: ((Double) -> Void)? = nil
 
-    private var trackH: CGFloat { mode == .scrub ? metrics.trackHeightScrub : metrics.trackHeightNormal }
-    private var labelSize: CGFloat { mode == .scrub ? metrics.timeLabelScrubSize : metrics.timeLabelSize }
-    /// Reserve the tallest handle for the current mode so the track region bounds it
-    /// (the scrub handle is `trackH + 22u`, taller than the focused circle).
+    private var trackH: CGFloat { metrics.trackHeight }
+    private var labelSize: CGFloat { metrics.timeLabelSize }
+    /// Reserve the tallest handle of ANY mode, not just the current one, so the row —
+    /// and with it the track's vertical center — is identical across normal/focused/
+    /// scrub and the HUD↔scrub switch can't shift the bar.
     private var rowHeight: CGFloat {
-        let handleH = mode == .scrub ? trackH + 22 * metrics.u : metrics.handleDiameterFocused + 6 * metrics.u
-        return max(trackH, handleH)
+        max(trackH + 22 * metrics.u, metrics.handleDiameterFocused + 6 * metrics.u)
     }
 
     private func clamp(_ v: Double) -> Double { min(max(v, 0), 1) }
@@ -39,6 +46,7 @@ struct PlayerProgressBar: View {
         HStack(spacing: metrics.progressRowGap) {
             Text(elapsed)
                 .font(.system(size: labelSize, weight: .semibold).monospacedDigit())
+                .contentTransition(.numericText(value: elapsedSeconds))
                 .foregroundStyle(.white)
                 .frame(minWidth: metrics.timeLabelWidth, alignment: .leading)
 
@@ -49,13 +57,11 @@ struct PlayerProgressBar: View {
                     Capsule().fill(.white.opacity(0.20)).frame(height: trackH)
                     Capsule().fill(.white).frame(width: w * p, height: trackH)
 
-                    if mode == .scrub {
-                        ForEach(chapters, id: \.self) { c in
-                            Rectangle()
-                                .fill(c <= p ? Color.playerInk.opacity(0.5) : .white.opacity(0.5))
-                                .frame(width: metrics.chapterTickWidth, height: trackH)
-                                .offset(x: w * clamp(c) - metrics.chapterTickWidth / 2)
-                        }
+                    ForEach(chapters, id: \.self) { c in
+                        Rectangle()
+                            .fill(c <= p ? Color.playerInk.opacity(0.5) : .white.opacity(0.5))
+                            .frame(width: metrics.chapterTickWidth, height: trackH)
+                            .offset(x: w * clamp(c) - metrics.chapterTickWidth / 2)
                     }
 
                     handle.offset(x: w * p - handleWidth / 2)
@@ -73,6 +79,7 @@ struct PlayerProgressBar: View {
 
             Text(remaining)
                 .font(.system(size: labelSize, weight: .semibold).monospacedDigit())
+                .contentTransition(.numericText(value: remainingSeconds))
                 .foregroundStyle(.white.opacity(0.62))
                 .frame(minWidth: metrics.timeLabelWidth, alignment: .trailing)
         }
@@ -115,6 +122,7 @@ struct PlayerProgressBar: View {
         VStack(spacing: 10 * metrics.u) {
             Text(time)
                 .font(.system(size: metrics.scrubBubbleSize, weight: .bold).monospacedDigit())
+                .contentTransition(.numericText(value: elapsedSeconds))
                 .foregroundStyle(.white)
                 .shadow(color: .black.opacity(0.6), radius: 20 * metrics.u, y: 2)
             if let bubbleChapter {
@@ -165,11 +173,16 @@ private struct ScrubGesture: ViewModifier {
             .ignoresSafeArea()
         VStack(spacing: 90) {
             PlayerProgressBar(metrics: .tv, mode: .normal, played: 0.5,
-                              elapsed: "1:04:18", remaining: "-1:02:42")
+                              elapsed: "1:04:18", remaining: "-1:02:42",
+                              elapsedSeconds: 3858, remainingSeconds: 3762,
+                              chapters: [0.12, 0.27, 0.41, 0.58, 0.74, 0.89])
             PlayerProgressBar(metrics: .tv, mode: .focused, played: 0.5,
-                              elapsed: "1:04:18", remaining: "-1:02:42")
+                              elapsed: "1:04:18", remaining: "-1:02:42",
+                              elapsedSeconds: 3858, remainingSeconds: 3762,
+                              chapters: [0.12, 0.27, 0.41, 0.58, 0.74, 0.89])
             PlayerProgressBar(metrics: .tv, mode: .scrub, played: 0.72,
                               elapsed: "1:31:10", remaining: "-0:35:50",
+                              elapsedSeconds: 5470, remainingSeconds: 2150,
                               chapters: [0.12, 0.27, 0.41, 0.58, 0.74, 0.89],
                               bubbleTime: "1:31:10", bubbleChapter: "Chapter 7 · The Drift")
         }

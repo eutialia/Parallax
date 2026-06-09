@@ -31,6 +31,10 @@ struct PlayerView: View {
     /// driven by `TVRemoteInputView` through `send(_:_:)`. See `PlayerHUDReducer`.
     @State private var hudState: PlayerHUDState = .floor
     @State private var idleTask: Task<Void, Never>? = nil
+    /// Mirrors the full-HUD scrubber's focus (reported by `PlayerControlsView`) —
+    /// gates window-level pans into analog scrub; on any other focused control a
+    /// swipe stays with the focus engine, same as a click.
+    @State private var scrubberHasFocus = false
     /// Debounces the click-seek: rapid ±10s clicks accumulate a target and fire ONE
     /// engine seek after they settle. Per-click seeks thrash a transcode and wedge the
     /// player in `.waitingToPlayAtSpecifiedRate` (which the engine reports as playing,
@@ -285,10 +289,18 @@ struct PlayerView: View {
     @ViewBuilder
     private func tvPlaybackSurface(_ vm: PlayerViewModel) -> some View {
         ZStack {
-            // The raw adapter owns the remote on the floor and during scrubbing. It's
-            // unmounted in `.fullHUD` so the focus engine drives the chips/scrubber.
+            // Analog pans are captured at the window level in EVERY state (one
+            // recognizer for the surface's lifetime, so an in-flight pan keeps
+            // streaming deltas across floor↔scrub↔fullHUD transitions). `onPan`
+            // gates what reaches the reducer per state.
+            TVPanCatcher(progressPerPoint: 0.00005) { onPan($0, vm) }
+                .allowsHitTesting(false)
+
+            // The raw adapter owns the remote's PRESSES on the floor and during
+            // scrubbing. It's unmounted in `.fullHUD` so the focus engine drives the
+            // chips/scrubber.
             if !isFullHUD {
-                TVRemoteInputView(progressPerPoint: 0.00005, onEvent: { send($0, vm) })
+                TVRemoteInputView(onEvent: { send($0, vm) })
                     .ignoresSafeArea()
             }
 
@@ -302,30 +314,36 @@ struct PlayerView: View {
             switch hudState {
             case .floor:
                 EmptyView()
-            case .swipeScrub(let progress, _):
+            // One pattern, one view identity: swipeScrub↔clickSeek must NOT cross-fade
+            // two bars — the shared bar just retargets its progress (animated below).
+            case .swipeScrub(let progress, _), .clickSeek(targetProgress: let progress):
                 tvScrubBar(progress: progress, vm: vm).transition(.opacity)
-            case .clickSeek(let target):
-                tvScrubBar(progress: target, vm: vm).transition(.opacity)
             case .fullHUD:
-                PlayerControlsView(vm: vm, controlsVisible: .constant(true)) { dismiss() }
+                PlayerControlsView(vm: vm, controlsVisible: .constant(true),
+                                   onScrubberFocusChange: { scrubberHasFocus = $0 }) { dismiss() }
                     .transition(.opacity)
                     .onExitCommand { send(.menu, vm) }
             }
         }
-        // Key on the whole HUD state, not just `isFullHUD`: the scrub bar's
-        // `.transition(.opacity)` fires on floor↔swipeScrub↔clickSeek changes too, which
-        // leave `isFullHUD` false — keying on it alone stranded those transitions (bar
-        // snapped while the dim faded on its own clock).
-        .animation(.easeInOut(duration: 0.2), value: hudState)
+        // Key the cross-fades on the state KIND, not the whole `hudState`: `swipeScrub`
+        // and `clickSeek` carry the scrub progress, so keying on the full value re-ran
+        // this 0.2s ease on every swipe delta — the bar chased each frame and the time
+        // text cross-faded continuously. The two flags cover every kind change
+        // (floor↔scrub flips `isScrubbing`, scrub↔HUD flips both, floor↔HUD flips
+        // `isFullHUD`), and swipeScrub↔clickSeek shares one bar identity above, so it
+        // needs no transition at all.
+        .animation(.easeInOut(duration: 0.2), value: isScrubbing)
+        .animation(.easeInOut(duration: 0.2), value: isFullHUD)
         // Dedicated Play/Pause button → reducer, in every HUD state.
         .onPlayPauseCommand { send(.playPause, vm) }
         // Start on the clean floor (chrome starts hidden).
         .onAppear { chromeVisible = false }
     }
 
-    /// The lone lifted+grown progress bar shown during swipe-scrub / click-seek: chrome
-    /// is gone, the video is dimmed, and this bar floats at the design's scrub height
-    /// with a big time bubble + chapter ticks.
+    /// The lone progress bar shown during swipe-scrub / click-seek: chrome is gone,
+    /// the video is dimmed, and a big time bubble + chapter ticks appear. It shares
+    /// the full-HUD scrubber's exact geometry (inset, track, labels, row height) so
+    /// the floor↔HUD switch reads as one persistent bar, not a jump-cut.
     @ViewBuilder
     private func tvScrubBar(progress: Double, vm: PlayerViewModel) -> some View {
         let m = PlayerMetrics.tv
@@ -337,25 +355,21 @@ struct PlayerView: View {
             metrics: m, mode: .scrub, played: p,
             elapsed: formatPlaybackTime(shown),
             remaining: remaining > 0 ? "-\(formatPlaybackTime(remaining))" : formatPlaybackTime(dur),
-            chapters: chapterFractions(vm, duration: dur),
+            elapsedSeconds: shown,
+            remainingSeconds: remaining,
+            chapters: vm.chapterFractions,
             bubbleTime: formatPlaybackTime(shown),
             bubbleChapter: chapterTitle(vm, atSeconds: shown)
         )
+        // One snappy spring for both scrub flavors: a ±10s click-seek step glides to
+        // its target instead of snapping, and swipe deltas retarget the same spring
+        // for smooth analog tracking (with rolling digits via `.numericText`).
+        .animation(.snappy(duration: 0.25, extraBounce: 0), value: p)
         .padding(.horizontal, m.padX)
-        .padding(.bottom, m.progressBottomScrub)
+        .padding(.bottom, m.progressBottom)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         .environment(\.colorScheme, .dark)
         .allowsHitTesting(false)
-    }
-
-    /// Chapter start fractions (0...1) for the scrub ticks.
-    private func chapterFractions(_ vm: PlayerViewModel, duration: Double) -> [Double] {
-        guard duration > 0 else { return [] }
-        return vm.chapters.map { chapter in
-            let c = chapter.start.components
-            let s = Double(c.seconds) + Double(c.attoseconds) / 1e18
-            return min(max(s / duration, 0), 1)
-        }
     }
 
     /// The chapter containing `atSeconds`, formatted "Chapter N · Name" for the bubble.
@@ -378,6 +392,18 @@ struct PlayerView: View {
     /// The two transient scrub-bar states; only these arm the inactivity auto-hide.
     private var isScrubbing: Bool {
         switch hudState { case .swipeScrub, .clickSeek: return true; default: return false }
+    }
+
+    /// Window-level pan events. On the floor / scrub states every pan drives the
+    /// reducer. In `.fullHUD` native focus owns navigation — only a horizontal pan
+    /// while the scrubber holds focus falls through (collapsing the chrome into
+    /// analog scrub); everything else stays with the focus engine, so a swipe on a
+    /// chip still just moves the highlight.
+    private func onPan(_ event: RemoteEvent, _ vm: PlayerViewModel) {
+        if isFullHUD {
+            guard scrubberHasFocus, case .swipeHorizontal = event else { return }
+        }
+        send(event, vm)
     }
 
     /// Feed a remote event through the reducer, apply its effects, sync the chrome
@@ -403,6 +429,10 @@ struct PlayerView: View {
         }
 
         hudState = next
+        // The focus mirror only matters in `.fullHUD`; clear it on the way out because
+        // unmounting the HUD may never fire the focus callback with `false`, and a
+        // stale `true` would route a later pan through the fullHUD gate.
+        if !isFullHUD { scrubberHasFocus = false }
         runEffects(effects, vm)
 
         // Entering or continuing `.clickSeek`: (re)arm the debounced commit.

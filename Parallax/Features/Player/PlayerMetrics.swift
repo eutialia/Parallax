@@ -5,7 +5,7 @@ import SwiftUI
 /// at `u = 1.0`, a 1366-wide iPad at `u ≈ 0.711`, so the two platforms stay visually
 /// identical — just scaled. The iPhone player is authored separately: its round-button
 /// sizes are bespoke literals at the call site, but its chips and progress bar reuse
-/// these formulas at the fixed `.phone` scale (`u ≈ 0.92`) per the handoff.
+/// these formulas at the fixed `.phone` scale.
 struct PlayerMetrics: Equatable {
     let u: CGFloat
 
@@ -17,8 +17,11 @@ struct PlayerMetrics: Equatable {
 
     private init(u: CGFloat) { self.u = u }
 
-    /// Fixed iPhone scale for chips + progress (the handoff renders both at `u ≈ 0.92`).
-    static let phone = PlayerMetrics(u: 0.92)
+    /// Fixed iPhone scale for chips + progress. 0.7 sizes the chips (`54u ≈ 38pt`) to
+    /// the phone's bespoke 37–40pt round buttons and the time labels to 14pt — the
+    /// handoff's 0.92 read oversized next to them and ate track length with ~99pt
+    /// label columns.
+    static let phone = PlayerMetrics(u: 0.7)
     /// tvOS full scale.
     static let tv = PlayerMetrics(u: 1.0)
 
@@ -26,19 +29,17 @@ struct PlayerMetrics: Equatable {
     var padX: CGFloat { 60 * u }
     var topBarTop: CGFloat { 52 * u }
     var controlRowBottom: CGFloat { 54 * u }
-    var controlRowGap: CGFloat { 14 * u }
     var chipsGap: CGFloat { 14 * u }
-    var chipsOffset: CGFloat { 22 * u }
-    var progressBottomNormal: CGFloat { 148 * u }
-    var progressBottomScrub: CGFloat { 168 * u }
+    /// One bottom inset and one track/label scale for BOTH the full-HUD scrubber and
+    /// the minimal scrub bar, so the floor↔HUD switch reads as the same bar persisting
+    /// (only the handle, bubble, and ticks change) instead of a jump-cut.
+    var progressBottom: CGFloat { 148 * u }
 
     // Progress
-    var trackHeightNormal: CGFloat { 8 * u }
-    var trackHeightScrub: CGFloat { 14 * u }
+    var trackHeight: CGFloat { 8 * u }
     var progressRowGap: CGFloat { 20 * u }
     var timeLabelWidth: CGFloat { 108 * u }
     var timeLabelSize: CGFloat { 20 * u }
-    var timeLabelScrubSize: CGFloat { 24 * u }
     var chapterTickWidth: CGFloat { 3 * u }
     var handleDiameter: CGFloat { 22 * u }
     var handleDiameterFocused: CGFloat { 26 * u }

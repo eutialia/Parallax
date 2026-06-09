@@ -17,9 +17,11 @@ nonisolated enum PlayerHUDState: Equatable {
     /// target after the clicks settle (a per-click seek burst thrashes a transcode and
     /// wedges the player). Leaving this state flushes that pending seek.
     case clickSeek(targetProgress: Double)
-    /// Full chrome (scrubber + chips). Focus is native SwiftUI here — the raw adapter
-    /// is unmounted, so swipe/click/select never reach the reducer; only the dedicated
-    /// Play/Pause button and Menu (`.onExitCommand`) do.
+    /// Full chrome (scrubber + chips). Focus is native SwiftUI here — the raw press
+    /// adapter is unmounted, so clicks/select never reach the reducer; only the
+    /// dedicated Play/Pause button, Menu (`.onExitCommand`), and — while the scrubber
+    /// holds focus — horizontal pans from the window-level catcher do (the view gates
+    /// them, collapsing the chrome into analog `swipeScrub`).
     case fullHUD
 }
 
@@ -116,11 +118,15 @@ nonisolated func reduce(_ state: PlayerHUDState, _ event: RemoteEvent, _ ctx: Re
 
     case .fullHUD:
         switch event {
+        case .swipeHorizontal(let d):
+            // Only arrives while the scrubber holds focus (`PlayerView.onPan` gates it):
+            // the chrome collapses into the same analog scrub as a floor swipe.
+            return (.swipeScrub(progress: clamp(ctx.liveProgress + d), wasPlaying: ctx.isPlaying), [.pause])
         case .menu, .idle:
             return (.floor, [])
         case .playPause:
             return (.fullHUD, [.togglePlayPause])
-        case .swipeHorizontal, .swipeVertical, .click, .select:
+        case .swipeVertical, .click, .select:
             return (.fullHUD, [])
         }
     }
