@@ -46,6 +46,16 @@ final class RemoteInputController: UIViewController {
     private enum PanAxis { case undecided, horizontal, vertical }
     private var panAxis: PanAxis = .undecided
 
+    /// On the Siri Remote a CLICK is a physical press of the trackpad while the finger
+    /// is still resting on it, so the indirect-touch pan keeps emitting `.changed` for
+    /// the rest of that touch. Without this, a Select that confirms a scrub is followed
+    /// by trailing pan deltas that re-enter `swipeScrub` from the floor — and because the
+    /// engine is mid-seek (isPlaying == false) at that instant, the new scrub captures
+    /// `wasPlaying: false` and its confirm seeks WITHOUT resuming → video stuck paused.
+    /// So once any click fires, swallow the rest of the current pan; a genuinely new
+    /// gesture (`.began`) clears it.
+    private var panSuppressed = false
+
     override func loadView() {
         let v = RemoteCaptureView()
         v.backgroundColor = .clear
@@ -70,7 +80,8 @@ final class RemoteInputController: UIViewController {
     }
 
     private func addClickTap(_ type: UIPress.PressType, _ handler: @escaping () -> Void) {
-        let tap = ClosureTap(handler: handler)
+        // Any click ends the current touch's scrub authority (see `panSuppressed`).
+        let tap = ClosureTap(handler: { [weak self] in self?.panSuppressed = true; handler() })
         tap.allowedPressTypes = [NSNumber(value: type.rawValue)]
         view.addGestureRecognizer(tap)
     }
@@ -78,8 +89,10 @@ final class RemoteInputController: UIViewController {
     @objc private func handlePan(_ g: UIPanGestureRecognizer) {
         switch g.state {
         case .began:
+            panSuppressed = false   // a fresh gesture reclaims scrub authority
             panAxis = .undecided
         case .changed:
+            if panSuppressed { return }   // trailing motion after a click — ignore
             let t = g.translation(in: view)
             if panAxis == .undecided {
                 guard abs(t.x) > 8 || abs(t.y) > 8 else { return }

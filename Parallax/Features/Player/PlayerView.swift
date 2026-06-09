@@ -353,7 +353,7 @@ struct PlayerView: View {
         }
 
         hudState = next
-        for effect in effects { apply(effect, vm) }
+        runEffects(effects, vm)
 
         // Entering or continuing `.clickSeek`: (re)arm the debounced commit.
         if case .clickSeek(let target) = next { scheduleClickSeek(to: target, vm) }
@@ -380,7 +380,7 @@ struct PlayerView: View {
         commitSeekTask?.cancel()
         guard let target = pendingClickSeek else { return }
         pendingClickSeek = nil
-        apply(.seek(progress: target), vm)
+        runEffects([.seek(progress: target)], vm)
     }
 
     /// Drop the pending click-seek without committing (analog scrub will seek instead).
@@ -395,19 +395,28 @@ struct PlayerView: View {
         return min(max(CMTimeGetSeconds(vm.currentPosition) / dur, 0), 1)
     }
 
-    private func apply(_ effect: PlayerEffect, _ vm: PlayerViewModel) {
+    /// Apply a transition's effects **in order, in a single task**, so an ordered pair
+    /// like `[.seek, .play]` can't race: as detached per-effect tasks, `play()` could
+    /// land before `seek()`, and a play-then-seek on a Jellyfin transcode parks AVPlayer
+    /// in `.waitingToPlayAtSpecifiedRate` (reported as playing) — the resume is lost.
+    private func runEffects(_ effects: [PlayerEffect], _ vm: PlayerViewModel) {
+        guard !effects.isEmpty else { return }
+        Task { for effect in effects { await apply(effect, vm) } }
+    }
+
+    private func apply(_ effect: PlayerEffect, _ vm: PlayerViewModel) async {
         switch effect {
         case .pause:
-            Task { await vm.engine?.pause() }
+            await vm.engine?.pause()
         case .play:
-            Task { await vm.engine?.play() }
+            await vm.engine?.play()
         case .seek(let p):
             let dur = CMTimeGetSeconds(vm.currentDuration)
             guard dur > 0 else { return }
             let target = CMTime(seconds: p * dur, preferredTimescale: 600)
-            Task { await vm.engine?.seek(to: target) }
+            await vm.engine?.seek(to: target)
         case .togglePlayPause:
-            Task { if vm.isPlaying { await vm.engine?.pause() } else { await vm.engine?.play() } }
+            if vm.isPlaying { await vm.engine?.pause() } else { await vm.engine?.play() }
         case .exit:
             dismiss()
         }
