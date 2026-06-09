@@ -3,47 +3,39 @@ import AVKit
 import CoreMedia
 import ParallaxPlayback
 
-/// Engine-agnostic player chrome, overlaid on the video host. Reads `PlayerViewModel`
-/// state and drives transport, scrubbing, track selection, speed, and aspect-fill.
+/// Engine-agnostic player chrome, overlaid on the video host as independent
+/// edge-anchored overlays (top bar · centre transport · progress · control row) — no
+/// wrapping glass panel; legibility comes from the scrim. Reads `PlayerViewModel` state
+/// and drives transport, scrubbing, track selection, and speed.
 ///
-/// The chrome is always white-on-dark (the player surface is an immersive "screening
-/// room" over video, regardless of the app's light/dark appearance). It uses explicit
-/// `.white` and bare Liquid Glass materials rather than the light/dark color tokens —
-/// and because a bare `.glassEffect(.regular)` resolves its frosted tint from the
-/// environment's `colorScheme`, `PlayerView` pins the whole surface to `.dark` (see
-/// `PlayerView.body`) so the glass stays consistently dark even when the app is in
-/// light mode. Track menus reuse the same `.glassEffect(.regular)` as the bottom bar
-/// (`trackMenuChrome`), pinned `.dark` via `preferredColorScheme` since a popover/sheet
-/// presents in a fresh environment and design tokens read UIKit traits.
+/// The chrome is always white-on-dark (an immersive "screening room" over video). It
+/// uses explicit `.white` and bare Liquid Glass rather than the light/dark tokens, and
+/// `PlayerView` pins the whole surface to `.dark` so the glass resolves consistently.
 ///
-/// Track chips (audio, subtitles, speed, chapters) show icon-only on iPhone (compact
-/// width); iPad keeps icon + label.
+/// Big screens (tvOS + iPad) scale every size from `PlayerMetrics(width:)`; iPhone uses
+/// the fixed `.phone` set with bespoke round-button sizes. tvOS drops the centre
+/// transport (the remote drives play/pause/skip) and the AirPlay/PiP pill (neither is
+/// available on tvOS); iPad puts the AirPlay/PiP split pill in the top bar; iPhone uses
+/// a standalone AirPlay button (top) and a PiP button (bottom).
 ///
-/// Controls auto-hide after 3s of inactivity; tap anywhere to toggle. The auto-hide
-/// is suspended while a track menu (popover/sheet) is open.
+/// Controls auto-hide after 3s of inactivity on iOS; tap anywhere to toggle. tvOS
+/// visibility is owned by the HUD reducer in `PlayerView` (this view is mounted only in
+/// `.fullHUD`). Auto-hide is suspended while a track menu is open.
 struct PlayerControlsView: View {
     @Bindable var vm: PlayerViewModel
-    /// Chrome visibility, owned by `PlayerView` so it can also drive the status bar
-    /// (hidden when the chrome is) across the whole fullScreenCover.
+    /// Chrome visibility, owned by `PlayerView` so it can also drive the status bar.
     @Binding var controlsVisible: Bool
-    /// Whether the video is filling the screen (aspect-fill) vs fit. Owned by
-    /// `PlayerView` (it owns the host); the expand chip toggles it.
-    let isFilled: Bool
-    let onToggleFill: () -> Void
     let onDismiss: () -> Void
-
-    @Environment(\.appIdiom) private var idiom
 
     @State private var hideTask: Task<Void, Never>? = nil
     @State private var isScrubbing = false
     @State private var scrubProgress: Double = 0
-    /// Bumped on every drag start. The seek Task captures it and only clears
-    /// `isScrubbing` if no newer drag began while its (possibly slow) seek was in
-    /// flight — otherwise a rapid re-grab would snap the thumb to live playback.
+    /// Bumped on every drag start so a slow seek can't clear `isScrubbing` after a newer
+    /// drag began (which would snap the thumb back to live playback mid-grab).
     @State private var scrubGeneration = 0
     #if os(tvOS)
-    /// Whether the scrub bar holds focus. Drives the scrub head's visibility and the bar's
-    /// thicken-on-focus, and gates remote left/right into seek steps.
+    /// Whether the scrub bar holds focus — drives the focused-handle ring and gates
+    /// remote left/right into ±10s seek steps.
     @FocusState private var scrubberFocused: Bool
     #endif
     @State private var audioMenu = false
@@ -52,147 +44,316 @@ struct PlayerControlsView: View {
     @State private var speedMenu = false
 
     private var menuOpen: Bool { audioMenu || subtitleMenu || chapterMenu || speedMenu }
+    /// Deliberately device-based, not `@Environment(\.appIdiom)` (which is size-class
+    /// derived): the phone layout must apply to ALL iPhones, including a regular-width
+    /// Pro Max in landscape that reports `.regular` — keying on size class would push it
+    /// into the scaled big layout. The big layout's `GeometryReader` already adapts to a
+    /// narrowed iPad window, so device idiom is the right axis here.
+    private var isPad: Bool { UIDevice.current.userInterfaceIdiom == .pad }
 
     var body: some View {
         ZStack {
             Color.clear
                 .contentShape(Rectangle())
                 .onTapGesture { toggleControls() }
-                .ignoresSafeArea()   // tap-to-show works across the whole screen
+                .ignoresSafeArea()
 
             if controlsVisible {
-                controls
-                    .transition(.opacity)
+                controls.transition(.opacity)
             }
         }
         .animation(.easeInOut(duration: 0.2), value: controlsVisible)
         #if !os(tvOS)
         .onAppear { scheduleHide() }
         #endif
-        // Resume the auto-hide once every menu closes; keep controls pinned while open.
         .onChange(of: menuOpen) { _, open in
             if open { hideTask?.cancel() } else { scheduleHide() }
         }
         // When the chrome hides, the views anchoring the track popovers/sheets are
-        // removed — SwiftUI can strand a presentation's `isPresented` binding at true.
-        // A stuck flag makes `menuOpen` permanently true, which `toggleControls` treats
-        // as "a menu is open" and refuses to show the chrome, locking the user out
-        // (can't reach Close). Clear the flags whenever the chrome hides so they can't
-        // strand. See also the self-heal in `toggleControls`.
+        // removed — SwiftUI can strand a presentation's binding at true, which makes
+        // `menuOpen` permanently true and locks the user out of the chrome. Clear them.
         .onChange(of: controlsVisible) { _, visible in
             if !visible { closeAllMenus() }
         }
     }
 
+    // MARK: - Root layout
+
     @ViewBuilder
     private var controls: some View {
-        VStack(spacing: 0) {
-            topBar
-            Spacer(minLength: 0)
-            // tvOS drops the on-screen transport: the remote drives it directly —
-            // center (Select) toggles play/pause and left/right click-seek ±10s, all
-            // routed through the HUD reducer in `PlayerView`.
-            #if !os(tvOS)
-            transport
-            Spacer(minLength: 0)
+        ZStack {
+            scrim
+            #if os(tvOS)
+            bigControls(.tv)
+            #else
+            if isPad {
+                GeometryReader { geo in bigControls(PlayerMetrics(width: geo.size.width)) }
+            } else {
+                phoneControls
+            }
             #endif
-            bottomBar
         }
-        .background(
-            LinearGradient(
-                colors: [.black.opacity(0.55), .clear, .clear, .black.opacity(0.65)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .ignoresSafeArea()
-            // Don't swallow taps: empty video-area taps must reach the Color.clear
-            // toggle layer beneath so tap-to-hide works. Buttons, the scrubber, and
-            // the bottom glass bar still absorb their own taps (so tapping a control
-            // bar doesn't hide the chrome).
-            .allowsHitTesting(false)
-        )
-        // tvOS play/pause (and the whole HUD floor) is driven by the reducer in
-        // `PlayerView.tvPlaybackSurface`; on tvOS this view is mounted only in
-        // `.fullHUD` with `controlsVisible` pinned true, and auto-hide lives in
-        // `PlayerView.restartIdleTimer()`.
         #if os(tvOS)
-        // The raw input adapter (which held focus on the floor) is unmounted when the
-        // HUD appears, so claim focus for the scrubber — the primary control — instead
-        // of letting the focus engine pick arbitrarily. Up → top bar, down → chips.
+        // The raw input adapter that held focus on the floor is unmounted when the HUD
+        // appears; claim focus for the scrubber rather than letting the engine pick.
         .defaultFocus($scrubberFocused, true)
         #endif
     }
 
-    // MARK: - Top bar
+    private var scrim: some View {
+        LinearGradient(
+            stops: [
+                .init(color: .black.opacity(0.5), location: 0),
+                .init(color: .black.opacity(0.04), location: 0.24),
+                .init(color: .black.opacity(0.04), location: 0.56),
+                .init(color: .black.opacity(0.66), location: 1)
+            ],
+            startPoint: .top, endPoint: .bottom
+        )
+        .ignoresSafeArea()
+        // Don't swallow taps: empty video-area taps must reach the toggle layer beneath.
+        .allowsHitTesting(false)
+    }
+
+    // MARK: - Big layout (tvOS + iPad)
 
     @ViewBuilder
-    private var topBar: some View {
-        // tvOS sizes the top-bar glass circles up: at 40–46pt they were tiny across a
-        // living room. ~64pt matches the system control footprint at 10-foot distance.
-        let circleSize: CGFloat = idiom == .tv ? 64 : 46
-        let pipSize: CGFloat = idiom == .tv ? 64 : 40
-        HStack(alignment: .top, spacing: Space.s14) {
-            GlassCircleButton(systemImage: "chevron.down", size: circleSize, iconSize: idiom == .tv ? 28 : 20) { onDismiss() }
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(vm.title)
-                    .font(.title3.weight(.bold))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                if let summary = vm.mediaSummary {
-                    Text(summary)
-                        .font(.footnote)
-                        .foregroundStyle(.white.opacity(0.7))
-                        .lineLimit(1)
-                }
+    private func bigControls(_ m: PlayerMetrics) -> some View {
+        // Top bar — title left; iPad AirPlay/PiP split pill right.
+        HStack(alignment: .top) {
+            Text(vm.title)
+                .font(.system(size: m.titleSize, weight: .bold))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+            Spacer(minLength: m.chipsGap)
+            #if !os(tvOS)
+            if vm.isVideoAirPlayAvailable || vm.isPiPAvailable {
+                PlayerSplitPill(metrics: m, airPlayAvailable: vm.isVideoAirPlayAvailable,
+                                pipAvailable: vm.isPiPAvailable) { resetHideTimer(); vm.startPiP() }
             }
-            .padding(.top, 2)
+            #endif
+        }
+        .padding(.horizontal, m.padX)
+        .padding(.top, m.topBarTop)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
-            Spacer(minLength: Space.s8)
+        #if !os(tvOS)
+        // Centre transport (iPad only — tvOS uses the remote).
+        HStack(spacing: m.transportGap) {
+            PlayerRoundButton(systemImage: "gobackward.10", size: m.transportSkip, iconScale: 0.48,
+                              accessibilityLabel: "Skip back 10 seconds") { skip(-10) }
+            PlayerRoundButton(systemImage: vm.isPlaying ? "pause.fill" : "play.fill", size: m.transportPlay,
+                              iconScale: 0.42, primary: true,
+                              accessibilityLabel: vm.isPlaying ? "Pause" : "Play") { togglePlayPause() }
+            PlayerRoundButton(systemImage: "goforward.10", size: m.transportSkip, iconScale: 0.48,
+                              accessibilityLabel: "Skip forward 10 seconds") { skip(10) }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        #endif
 
+        // Progress — anchored bottom.
+        scrubber(m)
+            .padding(.horizontal, m.padX)
+            .padding(.bottom, m.progressBottomNormal)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+
+        // Control row — Close + chips (no split pill here; tvOS has none, iPad's is top).
+        HStack(spacing: m.controlRowGap) {
+            PlayerRoundButton(systemImage: "chevron.down", size: m.closeSize, iconScale: 0.46,
+                              accessibilityLabel: "Close") { onDismiss() }
+            HStack(spacing: m.chipsGap) { chips(m) }
+                .padding(.leading, m.chipsOffset)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, m.padX)
+        .padding(.bottom, m.controlRowBottom)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+    }
+
+    // MARK: - Phone layout (iPhone landscape)
+
+    @ViewBuilder
+    private var phoneControls: some View {
+        let m = PlayerMetrics.phone
+        // Top bar — Close · title · AirPlay.
+        HStack(spacing: 14) {
+            PlayerRoundButton(systemImage: "chevron.down", size: 40, iconScale: 0.46,
+                              accessibilityLabel: "Close") { onDismiss() }
+            Text(vm.title).font(.system(size: 17, weight: .bold)).foregroundStyle(.white).lineLimit(1)
+            Spacer(minLength: 8)
             if vm.isVideoAirPlayAvailable {
-                AVRoutePickerViewRepresentable()
-                    .frame(width: pipSize, height: pipSize)
+                AirPlayRouteButton()
+                    .frame(width: 36, height: 36)
                     .glassEffect(.regular, in: Circle())
-            }
-            if vm.isPiPAvailable {
-                GlassCircleButton(systemImage: "pip.enter", size: pipSize, iconSize: idiom == .tv ? 26 : 18) {
-                    resetHideTimer()
-                    vm.startPiP()
-                }
+                    .overlay(Circle().strokeBorder(.white.opacity(0.20), lineWidth: 1))
             }
         }
-        .padding(.horizontal, 20)
-        .padding(.top, 12)
+        .padding(.horizontal, 26)
+        .padding(.top, 22)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+
+        // Centre transport.
+        HStack(spacing: 46) {
+            PlayerRoundButton(systemImage: "gobackward.10", size: 52, iconScale: 0.5,
+                              accessibilityLabel: "Skip back 10 seconds") { skip(-10) }
+            PlayerRoundButton(systemImage: vm.isPlaying ? "pause.fill" : "play.fill", size: 76,
+                              iconScale: 0.42, primary: true,
+                              accessibilityLabel: vm.isPlaying ? "Pause" : "Play") { togglePlayPause() }
+            PlayerRoundButton(systemImage: "goforward.10", size: 52, iconScale: 0.5,
+                              accessibilityLabel: "Skip forward 10 seconds") { skip(10) }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+
+        // Progress.
+        scrubber(m)
+            .padding(.horizontal, 26)
+            .padding(.bottom, 64)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+
+        // Chip row — chips · PiP.
+        HStack(spacing: 9) {
+            chips(m)
+            Spacer(minLength: 0)
+            if vm.isPiPAvailable {
+                PlayerRoundButton(systemImage: "pip.enter", size: 37, iconScale: 0.5,
+                                  accessibilityLabel: "Picture in Picture") { resetHideTimer(); vm.startPiP() }
+            }
+        }
+        .padding(.horizontal, 26)
+        .padding(.bottom, 18)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
     }
 
-    // MARK: - Center transport
-
-    private var isPlaying: Bool { vm.isPlaying }
+    // MARK: - Chips (shared)
 
     @ViewBuilder
-    private var transport: some View {
-        HStack(spacing: 48) {
-            GlassCircleButton(systemImage: "gobackward.10", size: 62, iconSize: 28) { skip(-10) }
-
-            Button {
-                togglePlayPause()
-            } label: {
-                Image(systemName: isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 40, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 88, height: 88)
-                    .glassEffect(.regular, in: Circle())
-                    // .glassEffect paints a material but adds no hit fill; without an
-                    // explicit shape only the glyph is tappable and edge taps fall
-                    // through to the toggle layer. Make the whole disc hittable.
-                    .contentShape(Circle())
+    private func chips(_ m: PlayerMetrics) -> some View {
+        if !vm.availableAudioTracks.isEmpty {
+            PlayerGlassChip(systemImage: "waveform",
+                            label: vm.selectedAudioTrack?.displayName ?? "Audio",
+                            isActive: audioMenu, metrics: m,
+                            accessibilityLabel: "Audio, \(vm.selectedAudioTrack?.displayName ?? "default")") {
+                resetHideTimer(); audioMenu = true
             }
-            .tvChipButton()
-
-            GlassCircleButton(systemImage: "goforward.10", size: 62, iconSize: 28) { skip(10) }
+            .trackPresentation(isPresented: $audioMenu) { audioMenuList }
+        }
+        if !vm.availableSubtitleTracks.isEmpty {
+            PlayerGlassChip(systemImage: "captions.bubble", label: "Subtitles",
+                            sub: vm.selectedSubtitleTrack?.displayName ?? "Off",
+                            isActive: subtitleMenu, metrics: m,
+                            accessibilityLabel: "Subtitles, \(vm.selectedSubtitleTrack?.displayName ?? "Off")") {
+                resetHideTimer(); subtitleMenu = true
+            }
+            .trackPresentation(isPresented: $subtitleMenu) { subtitleMenuList }
+        }
+        PlayerGlassChip(systemImage: "timer", label: SpeedMenu.label(Double(vm.playbackRate)),
+                        isActive: speedMenu, metrics: m,
+                        accessibilityLabel: "Playback speed, \(SpeedMenu.label(Double(vm.playbackRate)))") {
+            resetHideTimer(); speedMenu = true
+        }
+        .trackPresentation(isPresented: $speedMenu, detents: [.medium]) { speedMenuList }
+        if !vm.chapters.isEmpty {
+            PlayerGlassChip(systemImage: "list.bullet", label: "Chapters",
+                            isActive: chapterMenu, metrics: m, accessibilityLabel: "Chapters") {
+                resetHideTimer(); chapterMenu = true
+            }
+            .trackPresentation(isPresented: $chapterMenu) { chapterMenuList }
         }
     }
+
+    // MARK: - Scrubber (shared visual, platform interaction)
+
+    @ViewBuilder
+    private func scrubber(_ m: PlayerMetrics) -> some View {
+        let posSeconds = CMTimeGetSeconds(vm.currentPosition)
+        let durSeconds = CMTimeGetSeconds(vm.currentDuration)
+        let liveProgress = durSeconds > 0 ? min(max(posSeconds / durSeconds, 0), 1) : 0
+        let displayed = isScrubbing ? scrubProgress : liveProgress
+        let shownSeconds = isScrubbing ? scrubProgress * durSeconds : posSeconds
+        let remaining = max(0, durSeconds - shownSeconds)
+        let remainingText = remaining > 0 ? "-\(formatPlaybackTime(remaining))" : formatPlaybackTime(durSeconds)
+
+        #if os(tvOS)
+        // tvOS: a focusable Button wraps the bar. Left/right step a ±10s scrub head
+        // (they reach `onMoveCommand` because the bar has no horizontal focusable
+        // neighbour); Select commits. The head ring shows only while focused.
+        Button {
+            guard let engine = vm.engine, durSeconds > 0, isScrubbing else { return }
+            let gen = scrubGeneration
+            let target = CMTime(seconds: scrubProgress * durSeconds, preferredTimescale: 600)
+            Task {
+                await engine.seek(to: target)
+                if scrubGeneration == gen { isScrubbing = false }
+            }
+        } label: {
+            PlayerProgressBar(metrics: m, mode: scrubberFocused ? .focused : .normal,
+                              played: displayed,
+                              elapsed: formatPlaybackTime(shownSeconds), remaining: remainingText)
+        }
+        .buttonStyle(.plain)
+        .focused($scrubberFocused)
+        // Animate the thicken/handle-grow as focus lands, matching the original bar.
+        .animation(.easeOut(duration: 0.15), value: scrubberFocused)
+        .onMoveCommand { direction in
+            guard durSeconds > 0 else { return }
+            if !isScrubbing { scrubProgress = liveProgress; isScrubbing = true; scrubGeneration += 1 }
+            let step = 10.0 / durSeconds
+            switch direction {
+            case .left: scrubProgress = max(0, scrubProgress - step)
+            case .right: scrubProgress = min(1, scrubProgress + step)
+            default: break
+            }
+        }
+        .onChange(of: scrubberFocused) { _, focused in
+            if !focused && isScrubbing { isScrubbing = false }
+        }
+        #else
+        PlayerProgressBar(
+            metrics: m, mode: .normal, played: displayed,
+            elapsed: formatPlaybackTime(shownSeconds), remaining: remainingText,
+            onScrubChanged: { frac in
+                resetHideTimer()
+                if !isScrubbing { isScrubbing = true; scrubGeneration += 1 }
+                scrubProgress = frac
+            },
+            onScrubEnded: { frac in
+                resetHideTimer()
+                scrubProgress = frac
+                guard let engine = vm.engine, durSeconds > 0 else { isScrubbing = false; return }
+                let gen = scrubGeneration
+                let target = CMTime(seconds: frac * durSeconds, preferredTimescale: 600)
+                Task {
+                    await engine.seek(to: target)
+                    if scrubGeneration == gen { isScrubbing = false }
+                }
+            }
+        )
+        // VoiceOver/Switch Control can't drive the drag gesture; expose the bar as an
+        // adjustable element so seeking survives the loss of the old UIKit Slider.
+        .accessibilityElement()
+        .accessibilityLabel("Playback position")
+        .accessibilityValue(Text("\(Int(displayed * 100)) percent"))
+        .accessibilityAdjustableAction { direction in
+            guard durSeconds > 0 else { return }
+            resetHideTimer()
+            let step = 10.0 / durSeconds
+            let target = direction == .increment ? min(1, displayed + step) : max(0, displayed - step)
+            scrubProgress = target
+            // Same generation-guarded release as the drag path — otherwise `isScrubbing`
+            // sticks true and the bar freezes at `scrubProgress`, never tracking playback.
+            if !isScrubbing { isScrubbing = true; scrubGeneration += 1 }
+            let gen = scrubGeneration
+            guard let engine = vm.engine else { isScrubbing = false; return }
+            let seekTarget = CMTime(seconds: target * durSeconds, preferredTimescale: 600)
+            Task {
+                await engine.seek(to: seekTarget)
+                if scrubGeneration == gen { isScrubbing = false }
+            }
+        }
+        #endif
+    }
+
+    // MARK: - Transport actions
 
     private func skip(_ seconds: Double) {
         resetHideTimer()
@@ -207,232 +368,19 @@ struct PlayerControlsView: View {
     private func togglePlayPause() {
         resetHideTimer()
         Task {
-            if isPlaying { await vm.engine?.pause() }
-            else { await vm.engine?.play() }
+            if vm.isPlaying { await vm.engine?.pause() } else { await vm.engine?.play() }
         }
     }
 
-    // MARK: - Bottom control bar
-
-    @ViewBuilder
-    private var bottomBar: some View {
-        VStack(spacing: 14) {
-            scrubber
-            chipRow
-        }
-        .padding(.horizontal, 22)
-        .padding(.vertical, 16)
-        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: Radius.panel, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: Radius.panel, style: .continuous)
-                .strokeBorder(.white.opacity(0.12), lineWidth: 1)
-        )
-        .padding(.horizontal, 20)
-        .padding(.bottom, 20)
-    }
-
-    @ViewBuilder
-    private var scrubber: some View {
-        let posSeconds = CMTimeGetSeconds(vm.currentPosition)
-        let durSeconds = CMTimeGetSeconds(vm.currentDuration)
-        let liveProgress = durSeconds > 0 ? min(max(posSeconds / durSeconds, 0), 1) : 0
-        // While scrubbing, the thumb follows the finger (scrubProgress); otherwise it
-        // tracks live playback. Binding the thumb directly to currentPosition made it
-        // snap back mid-drag (felt undraggable), and firing a seek on every value
-        // change floods an HLS transcode — so seek once, on release.
-        let displayed = isScrubbing ? scrubProgress : liveProgress
-        let shownSeconds = isScrubbing ? scrubProgress * durSeconds : posSeconds
-        let remaining = max(0, durSeconds - shownSeconds)
-
-        HStack(spacing: 14) {
-            Text(formatPlaybackTime(shownSeconds))
-                .font((idiom == .tv ? Font.footnote : .subheadline).weight(.semibold).monospacedDigit())
-                .foregroundStyle(.white)
-                .frame(width: idiom == .tv ? 104 : 66, alignment: .leading)
-
-            #if os(tvOS)
-            // tvOS has no interactive Slider, so the bar is a focusable Button. While focused,
-            // the remote's left/right step a scrub head (±10s) — they reach `onMoveCommand`
-            // because the bar has no horizontal focusable neighbour (the time labels aren't
-            // focusable) — and pressing Select commits the seek. Up/down still move focus to the
-            // transport / chip rows. The head shows only while focused (AVPlayerViewController
-            // convention); the bar thickens so the focused state reads at 10 feet.
-            Button {
-                guard let engine = vm.engine, durSeconds > 0, isScrubbing else { return }
-                let gen = scrubGeneration
-                let target = CMTime(seconds: scrubProgress * durSeconds, preferredTimescale: 600)
-                Task {
-                    await engine.seek(to: target)
-                    // Keep showing the scrubbed head until the seek lands, unless a newer
-                    // scrub began meanwhile (same guard the iOS Slider path uses).
-                    if scrubGeneration == gen { isScrubbing = false }
-                }
-            } label: {
-                GeometryReader { geo in
-                    ZStack(alignment: .leading) {
-                        Capsule().fill(.white.opacity(0.25))
-                        Capsule().fill(.white)
-                            .frame(width: geo.size.width * displayed)
-                        if scrubberFocused {
-                            Circle().fill(.white)
-                                .frame(width: 22, height: 22)
-                                .offset(x: geo.size.width * displayed - 11)
-                                .shadow(color: .black.opacity(0.4), radius: 6, y: 2)
-                        }
-                    }
-                }
-                .frame(height: scrubberFocused ? 8 : 4)
-                .animation(.easeOut(duration: 0.15), value: scrubberFocused)
-            }
-            .buttonStyle(.plain)
-            .focused($scrubberFocused)
-            .onMoveCommand { direction in
-                guard durSeconds > 0 else { return }
-                // Enter scrub mode on the first step, seeding the head from live playback.
-                if !isScrubbing {
-                    scrubProgress = liveProgress
-                    isScrubbing = true
-                    scrubGeneration += 1
-                }
-                let step = 10.0 / durSeconds
-                switch direction {
-                case .left:  scrubProgress = max(0, scrubProgress - step)
-                case .right: scrubProgress = min(1, scrubProgress + step)
-                default: break   // up/down → focus engine moves to transport / chips
-                }
-            }
-            .onChange(of: scrubberFocused) { _, focused in
-                // Left the bar without committing (Select) — drop the preview so it snaps
-                // back to live playback.
-                if !focused && isScrubbing { isScrubbing = false }
-            }
-            #else
-            Slider(
-                value: Binding(get: { displayed }, set: { scrubProgress = $0 }),
-                in: 0...1,
-                onEditingChanged: { editing in
-                    resetHideTimer()
-                    if editing {
-                        scrubProgress = liveProgress
-                        isScrubbing = true
-                        scrubGeneration += 1
-                    } else {
-                        guard let engine = vm.engine, durSeconds > 0 else {
-                            isScrubbing = false
-                            return
-                        }
-                        let gen = scrubGeneration
-                        let target = CMTime(seconds: scrubProgress * durSeconds, preferredTimescale: 600)
-                        Task {
-                            await engine.seek(to: target)
-                            // Skip the clear if the user already started another drag
-                            // while this (possibly multi-second transcode) seek ran.
-                            if scrubGeneration == gen { isScrubbing = false }
-                        }
-                    }
-                }
-            )
-            .tint(.white)
-            #endif
-
-            Text(remaining > 0 ? "-\(formatPlaybackTime(remaining))" : formatPlaybackTime(durSeconds))
-                .font((idiom == .tv ? Font.footnote : .subheadline).weight(.semibold).monospacedDigit())
-                .foregroundStyle(.white.opacity(0.7))
-                .frame(width: idiom == .tv ? 104 : 66, alignment: .trailing)
-        }
-    }
-
-    @ViewBuilder
-    private var chipRow: some View {
-        // Wider gaps on tvOS so a focused chip's lift doesn't crowd its neighbours.
-        HStack(spacing: idiom == .tv ? Space.s22 : 10) {
-            if !vm.availableAudioTracks.isEmpty {
-                CtlChip(
-                    systemImage: "waveform",
-                    label: vm.selectedAudioTrack?.displayName ?? "Audio",
-                    accessibilityLabel: "Audio, \(vm.selectedAudioTrack?.displayName ?? "default")",
-                    isActive: audioMenu
-                ) {
-                    resetHideTimer()
-                    audioMenu = true
-                }
-                .trackPresentation(isPresented: $audioMenu) { audioMenuList }
-            }
-
-            if !vm.availableSubtitleTracks.isEmpty {
-                CtlChip(
-                    systemImage: "captions.bubble",
-                    label: "Subtitles",
-                    sub: vm.selectedSubtitleTrack?.displayName ?? "Off",
-                    accessibilityLabel: "Subtitles, \(vm.selectedSubtitleTrack?.displayName ?? "Off")",
-                    isActive: subtitleMenu
-                ) {
-                    resetHideTimer()
-                    subtitleMenu = true
-                }
-                .trackPresentation(isPresented: $subtitleMenu) { subtitleMenuList }
-            }
-
-            speedChip
-
-            Spacer(minLength: 0)
-
-            if !vm.chapters.isEmpty {
-                CtlChip(
-                    systemImage: "list.bullet",
-                    label: "Chapters",
-                    accessibilityLabel: "Chapters",
-                    isActive: chapterMenu
-                ) {
-                    resetHideTimer()
-                    chapterMenu = true
-                }
-                .trackPresentation(isPresented: $chapterMenu) { chapterMenuList }
-            }
-
-            GlassCircleButton(
-                systemImage: isFilled ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
-                size: idiom == .tv ? 56 : 36,
-                iconSize: idiom == .tv ? 24 : 16
-            ) {
-                resetHideTimer()
-                onToggleFill()
-            }
-        }
-    }
-
-    // MARK: - Speed
+    // MARK: - Speed options + track menus
 
     private let speedOptions: [Double] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
-
-    // Speed is a CtlChip + popover/sheet like audio/subtitles/chapters, so it joins
-    // `menuOpen` and the auto-hide suppression covers it uniformly — no more system
-    // `Menu` (which emitted the UIContextMenuInteraction warning) and no fragile pin.
-    @ViewBuilder
-    private var speedChip: some View {
-        CtlChip(
-            systemImage: "timer",
-            label: SpeedMenu.label(Double(vm.playbackRate)),
-            accessibilityLabel: "Playback speed, \(SpeedMenu.label(Double(vm.playbackRate)))",
-            isActive: speedMenu
-        ) {
-            resetHideTimer()
-            speedMenu = true
-        }
-        .trackPresentation(isPresented: $speedMenu, detents: [.medium]) { speedMenuList }
-    }
-
-    // MARK: - Track menus (popover on iPad, sheet on iPhone)
 
     @ViewBuilder
     private var audioMenuList: some View {
         trackMenuChrome {
-            AudioTrackMenu(
-                tracks: vm.availableAudioTracks,
-                selectedID: vm.selectedAudioTrack?.id
-            ) { track in
-                audioMenu = false   // dismiss the popover/sheet on selection
-                resetHideTimer()
+            AudioTrackMenu(tracks: vm.availableAudioTracks, selectedID: vm.selectedAudioTrack?.id) { track in
+                audioMenu = false; resetHideTimer()
                 Task { await vm.selectAudioTrack(track) }
             }
         }
@@ -441,12 +389,8 @@ struct PlayerControlsView: View {
     @ViewBuilder
     private var subtitleMenuList: some View {
         trackMenuChrome {
-            SubtitleTrackMenu(
-                tracks: vm.availableSubtitleTracks,
-                selectedID: vm.selectedSubtitleTrack?.id
-            ) { track in
-                subtitleMenu = false   // dismiss the popover/sheet on selection
-                resetHideTimer()
+            SubtitleTrackMenu(tracks: vm.availableSubtitleTracks, selectedID: vm.selectedSubtitleTrack?.id) { track in
+                subtitleMenu = false; resetHideTimer()
                 Task { await vm.selectSubtitleTrack(track) }
             }
         }
@@ -456,8 +400,7 @@ struct PlayerControlsView: View {
     private var chapterMenuList: some View {
         trackMenuChrome {
             ChapterMenu(chapters: vm.chapters) { chapter in
-                chapterMenu = false   // dismiss the popover/sheet on selection
-                resetHideTimer()
+                chapterMenu = false; resetHideTimer()
                 Task { await vm.seekToChapter(chapter) }
             }
         }
@@ -467,24 +410,19 @@ struct PlayerControlsView: View {
     private var speedMenuList: some View {
         trackMenuChrome {
             SpeedMenu(options: speedOptions, selected: Double(vm.playbackRate)) { rate in
-                speedMenu = false   // dismiss the popover/sheet on selection
-                resetHideTimer()
+                speedMenu = false; resetHideTimer()
                 Task { await vm.setPlaybackRate(Float(rate)) }
             }
         }
     }
 
-    /// Shared presentation wrapper: scrollable Liquid Glass panel (same `.regular`
-    /// variant + white hairline as `bottomBar`), dark-pinned so design tokens resolve
-    /// to the immersive palette. `preferredColorScheme` is required alongside the
-    /// environment override — `Color.label` et al. read UIKit traits, not SwiftUI's
-    /// `colorScheme`, so environment alone leaves menus white-ish in Matinee mode.
+    /// Scrollable Liquid Glass panel (same `.regular` + white hairline as the chips),
+    /// dark-pinned so design tokens resolve to the immersive palette.
     @ViewBuilder
     private func trackMenuChrome<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: Radius.panel, style: .continuous)
         ScrollView {
-            content()
-                .padding(8)
+            content().padding(8)
         }
         .scrollBounceBehavior(.basedOnSize)
         .frame(idealWidth: 360)
@@ -499,28 +437,15 @@ struct PlayerControlsView: View {
     // MARK: - Auto-hide
 
     private func toggleControls() {
-        // If this tap reached the toggle layer while a menu is *flagged* open, no
-        // popover/sheet is actually presented — a live one would have captured the tap.
-        // The flag is stale (SwiftUI stranded it when the chrome was removed), so clear
-        // it and show the chrome rather than `guard`-returning forever. This guarantees
-        // a phantom menu can never lock the user out of the controls.
         if menuOpen {
-            closeAllMenus()
-            controlsVisible = true
-            scheduleHide()
-            return
+            closeAllMenus(); controlsVisible = true; scheduleHide(); return
         }
         controlsVisible.toggle()
         if controlsVisible { scheduleHide() }
     }
 
-    /// Resets every track-menu presentation flag. Keeps `menuOpen` from stranding true
-    /// when the chrome is removed out from under a popover/sheet.
     private func closeAllMenus() {
-        audioMenu = false
-        subtitleMenu = false
-        chapterMenu = false
-        speedMenu = false
+        audioMenu = false; subtitleMenu = false; chapterMenu = false; speedMenu = false
     }
 
     private func resetHideTimer() {
@@ -531,110 +456,21 @@ struct PlayerControlsView: View {
     private func scheduleHide() {
         hideTask?.cancel()
         #if os(tvOS)
-        // Siri Remote has no touch-to-reveal — keep chrome visible.
-        return
+        return   // Siri Remote has no touch-to-reveal — chrome visibility is reducer-owned.
         #else
-        // Don't start the timer while a menu is open — it would hide the chrome the
-        // menu is anchored to.
         guard !menuOpen else { return }
         hideTask = Task {
             try? await Task.sleep(for: .seconds(3))
-            if !Task.isCancelled {
-                controlsVisible = false
-            }
+            if !Task.isCancelled { controlsVisible = false }
         }
         #endif
     }
 }
 
-// MARK: - Chrome primitives
+// MARK: - Track menu presentation
 
-/// The styled pill content rendered by `CtlChip`. On iPhone (compact width) only the
-/// icon is shown; iPad keeps the full label so the wider bar has room.
-private struct ChipLabel: View {
-    let systemImage: String
-    let label: String
-    var sub: String? = nil
-    var isActive: Bool = false
-
-    @Environment(\.horizontalSizeClass) private var hSize
-
-    private var iconOnly: Bool { hSize == .compact }
-
-    var body: some View {
-        Group {
-            if iconOnly {
-                Image(systemName: systemImage)
-                    .font(.system(size: 16, weight: .semibold))
-            } else {
-                HStack(spacing: 8) {
-                    Image(systemName: systemImage)
-                        .font(.system(size: 16, weight: .semibold))
-                    Text(label)
-                        .font(.subheadline.weight(.medium))
-                        .lineLimit(1)
-                    if let sub {
-                        Text(sub)
-                            .font(.subheadline)
-                            .foregroundStyle(.white.opacity(0.6))
-                            .lineLimit(1)
-                    }
-                }
-            }
-        }
-        .foregroundStyle(.white)
-        .padding(.horizontal, iconOnly ? 0 : 14)
-        .frame(width: iconOnly ? 36 : nil, height: 36)
-        .background(.white.opacity(isActive ? 0.22 : 0.12), in: Capsule())
-        .overlay(Capsule().strokeBorder(.white.opacity(0.18), lineWidth: 1))
-        .contentShape(Capsule())
-    }
-}
-
-private struct CtlChip: View {
-    let systemImage: String
-    let label: String
-    var sub: String? = nil
-    let accessibilityLabel: String
-    var isActive: Bool = false
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            ChipLabel(systemImage: systemImage, label: label, sub: sub, isActive: isActive)
-        }
-        .tvChipButton()
-        .accessibilityLabel(accessibilityLabel)
-    }
-}
-
-private struct GlassCircleButton: View {
-    let systemImage: String
-    var size: CGFloat = 44
-    var iconSize: CGFloat = 19
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: systemImage)
-                .font(.system(size: iconSize, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: size, height: size)
-                .glassEffect(.regular, in: Circle())
-                // The whole glass circle must be tappable, not just the SF Symbol
-                // glyph: .glassEffect adds no hit region, so without this the
-                // transparent ring around small icons (return 46, zoom 36) misses
-                // and the tap falls through to the chrome-toggle layer beneath.
-                .contentShape(Circle())
-        }
-        .tvChipButton()
-    }
-}
-
-/// Presents a track/speed/chapter menu as a popover on iPad (regular width) and a
-/// bottom sheet on iPhone (compact width), gated so the two never race. One place for
-/// the presentation chrome all four chips share — the only per-chip difference is the
-/// sheet detents.
+/// Presents a track/speed/chapter menu as a popover on iPad (regular width) and a bottom
+/// sheet on iPhone (compact width), gated so the two never race.
 private struct TrackPresentation<MenuContent: View>: ViewModifier {
     @Binding var isPresented: Bool
     var detents: Set<PresentationDetent> = [.medium, .large]
@@ -644,17 +480,13 @@ private struct TrackPresentation<MenuContent: View>: ViewModifier {
 
     func body(content: Content) -> some View {
         #if os(tvOS)
-        content
-            .sheet(isPresented: $isPresented) {
-                menu()
-                    .presentationDetents(detents)
-            }
+        content.sheet(isPresented: $isPresented) {
+            menu().presentationDetents(detents)
+        }
         #else
         content
             .popover(isPresented: gated(whenRegular: true)) {
-                menu()
-                    .preferredColorScheme(.dark)
-                    .presentationBackground(.clear)
+                menu().preferredColorScheme(.dark).presentationBackground(.clear)
             }
             .sheet(isPresented: gated(whenRegular: false)) {
                 menu()
@@ -666,8 +498,6 @@ private struct TrackPresentation<MenuContent: View>: ViewModifier {
         #endif
     }
 
-    /// A binding that only fires for the matching width class, so the popover and the
-    /// sheet never present at once.
     private func gated(whenRegular: Bool) -> Binding<Bool> {
         Binding(
             get: { isPresented && (hSize == .regular) == whenRegular },
@@ -683,53 +513,5 @@ private extension View {
         @ViewBuilder menu: @escaping () -> MenuContent
     ) -> some View {
         modifier(TrackPresentation(isPresented: isPresented, detents: detents, menu: menu))
-    }
-}
-
-/// AirPlay route button. Hosts an `AVRoutePickerView` inside a child view controller
-/// whose horizontal size class we pin to `.regular` on iPad.
-///
-/// AVKit presents its route list from the nearest *presenting* view controller and
-/// adapts popover→sheet on THAT controller's size class — never the picker view's.
-/// Overriding the leaf view's `traitOverrides` (the first attempt) therefore did
-/// nothing, so inside a `.fullScreenCover` the picker sheeted up from the bottom on
-/// iPad. Wrapping the picker in a child VC and overriding *its* traits via
-/// `setOverrideTraitCollection(_:forChild:)` makes the controller the picker lives
-/// in — the one AVKit finds and presents from — report `.regular`, so the route list
-/// anchors to the button. iPhone keeps the system bottom sheet (platform convention).
-private struct AVRoutePickerViewRepresentable: UIViewControllerRepresentable {
-    func makeUIViewController(context: Context) -> RoutePickerController {
-        RoutePickerController()
-    }
-
-    func updateUIViewController(_ controller: RoutePickerController, context: Context) {
-        controller.applyTraitOverride()   // idempotent; re-asserts after any trait flip
-    }
-}
-
-/// Controller whose `view` IS the `AVRoutePickerView`, so it's the nearest view
-/// controller in the responder chain when AVKit presents the route list — i.e. the
-/// presenter whose `horizontalSizeClass` decides popover vs. bottom sheet. Pinning
-/// its `traitOverrides` to `.regular` on iPad keeps the list an anchored popover.
-private final class RoutePickerController: UIViewController {
-    override func loadView() {
-        let picker = AVRoutePickerView()
-        picker.tintColor = .white
-        picker.activeTintColor = .white
-        // Clear so the surrounding `.glassEffect(in: Circle())` is the visible backing.
-        picker.backgroundColor = .clear
-        // Rank video-capable receivers (Apple TV) above audio-only ones.
-        picker.prioritizesVideoDevices = true
-        view = picker
-    }
-
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        applyTraitOverride()
-    }
-
-    func applyTraitOverride() {
-        guard UIDevice.current.userInterfaceIdiom == .pad else { return }
-        traitOverrides.horizontalSizeClass = .regular
     }
 }

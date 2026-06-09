@@ -23,9 +23,6 @@ struct PlayerView: View {
     @Environment(AppDependencies.self) private var deps
     @Environment(\.dismiss) private var dismiss
     @State private var viewModel: PlayerViewModel?
-    /// Aspect-fill (fill the screen, cropping) vs fit. Toggled by the player's
-    /// expand chip; honored by the AVKit host's `videoGravity`.
-    @State private var fillMode = false
     /// Chrome visibility, owned here so the status bar can hide with the controls.
     /// On tvOS this mirrors `hudState == .fullHUD` (driven by `send`).
     @State private var chromeVisible = true
@@ -69,7 +66,7 @@ struct PlayerView: View {
                     #if os(tvOS)
                     tvPlaybackSurface(vm)
                     #else
-                    PlayerControlsView(vm: vm, controlsVisible: $chromeVisible, isFilled: fillMode, onToggleFill: { fillMode.toggle() }) { dismiss() }
+                    PlayerControlsView(vm: vm, controlsVisible: $chromeVisible) { dismiss() }
                     #endif
                 case .failed(let error):
                     errorOverlay(error, vm: vm)
@@ -214,7 +211,7 @@ struct PlayerView: View {
         if let engine = vm.engine {
             switch engine.id {
             case .avKit:
-                AVKitVideoLayerHost(engine: engine, fillMode: fillMode, onPiPReady: { start, stop in
+                AVKitVideoLayerHost(engine: engine, onPiPReady: { start, stop in
                     vm.startPiPAction = start
                     vm.stopPiPAction = stop
                 })
@@ -289,39 +286,92 @@ struct PlayerView: View {
     private func tvPlaybackSurface(_ vm: PlayerViewModel) -> some View {
         ZStack {
             // The raw adapter owns the remote on the floor and during scrubbing. It's
-            // unmounted in `.fullHUD` so SwiftUI's focus engine drives the chips/scrubber
-            // natively (a focusable sibling view both blocks chip focus and can't catch
-            // Menu once a chip is focused). Menu in the HUD is handled by `.onExitCommand`.
+            // unmounted in `.fullHUD` so the focus engine drives the chips/scrubber.
             if !isFullHUD {
                 TVRemoteInputView(progressPerPoint: 0.00005, onEvent: { send($0, vm) })
                     .ignoresSafeArea()
             }
 
+            // Dim the video while scrubbing so the lone progress bar reads clearly (the
+            // design's brightness drop; saturation isn't feasible on a hardware layer).
+            Color.black.opacity(isScrubbing ? 0.5 : 0)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+                .animation(.easeInOut(duration: 0.45), value: isScrubbing)
+
             switch hudState {
             case .floor:
                 EmptyView()
             case .swipeScrub(let progress, _):
-                // Analog scrub: video paused on the preview head the reducer holds.
-                ScrubBar(progress: progress, durationSeconds: CMTimeGetSeconds(vm.currentDuration))
-                    .transition(.opacity)
+                tvScrubBar(progress: progress, vm: vm).transition(.opacity)
             case .clickSeek(let target):
-                // Click ±10s: the bar previews the accumulated target while the (still
-                // playing) video jumps there once the debounced seek commits.
-                ScrubBar(progress: target, durationSeconds: CMTimeGetSeconds(vm.currentDuration))
-                    .transition(.opacity)
+                tvScrubBar(progress: target, vm: vm).transition(.opacity)
             case .fullHUD:
-                PlayerControlsView(vm: vm, controlsVisible: .constant(true), isFilled: fillMode,
-                                   onToggleFill: { fillMode.toggle() }) { dismiss() }
+                PlayerControlsView(vm: vm, controlsVisible: .constant(true)) { dismiss() }
                     .transition(.opacity)
-                    // Menu hides the HUD back to the floor instead of exiting playback.
                     .onExitCommand { send(.menu, vm) }
             }
         }
-        .animation(.easeInOut(duration: 0.2), value: isFullHUD)
+        // Key on the whole HUD state, not just `isFullHUD`: the scrub bar's
+        // `.transition(.opacity)` fires on floor↔swipeScrub↔clickSeek changes too, which
+        // leave `isFullHUD` false — keying on it alone stranded those transitions (bar
+        // snapped while the dim faded on its own clock).
+        .animation(.easeInOut(duration: 0.2), value: hudState)
         // Dedicated Play/Pause button → reducer, in every HUD state.
         .onPlayPauseCommand { send(.playPause, vm) }
         // Start on the clean floor (chrome starts hidden).
         .onAppear { chromeVisible = false }
+    }
+
+    /// The lone lifted+grown progress bar shown during swipe-scrub / click-seek: chrome
+    /// is gone, the video is dimmed, and this bar floats at the design's scrub height
+    /// with a big time bubble + chapter ticks.
+    @ViewBuilder
+    private func tvScrubBar(progress: Double, vm: PlayerViewModel) -> some View {
+        let m = PlayerMetrics.tv
+        let dur = CMTimeGetSeconds(vm.currentDuration)
+        let p = min(max(progress, 0), 1)
+        let shown = p * dur
+        let remaining = max(0, dur - shown)
+        PlayerProgressBar(
+            metrics: m, mode: .scrub, played: p,
+            elapsed: formatPlaybackTime(shown),
+            remaining: remaining > 0 ? "-\(formatPlaybackTime(remaining))" : formatPlaybackTime(dur),
+            chapters: chapterFractions(vm, duration: dur),
+            bubbleTime: formatPlaybackTime(shown),
+            bubbleChapter: chapterTitle(vm, atSeconds: shown)
+        )
+        .padding(.horizontal, m.padX)
+        .padding(.bottom, m.progressBottomScrub)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        .environment(\.colorScheme, .dark)
+        .allowsHitTesting(false)
+    }
+
+    /// Chapter start fractions (0...1) for the scrub ticks.
+    private func chapterFractions(_ vm: PlayerViewModel, duration: Double) -> [Double] {
+        guard duration > 0 else { return [] }
+        return vm.chapters.map { chapter in
+            let c = chapter.start.components
+            let s = Double(c.seconds) + Double(c.attoseconds) / 1e18
+            return min(max(s / duration, 0), 1)
+        }
+    }
+
+    /// The chapter containing `atSeconds`, formatted "Chapter N · Name" for the bubble.
+    /// Returns nil when the item has no chapters.
+    private func chapterTitle(_ vm: PlayerViewModel, atSeconds: Double) -> String? {
+        let chapters = vm.chapters
+        guard !chapters.isEmpty else { return nil }
+        func startSeconds(_ chapter: Chapter) -> Double {
+            let c = chapter.start.components
+            return Double(c.seconds) + Double(c.attoseconds) / 1e18
+        }
+        let current = chapters.last(where: { startSeconds($0) <= atSeconds }) ?? chapters[0]
+        if let name = current.name, !name.isEmpty {
+            return "Chapter \(current.index + 1) · \(name)"
+        }
+        return "Chapter \(current.index + 1)"
     }
 
     private var isFullHUD: Bool { if case .fullHUD = hudState { return true }; return false }

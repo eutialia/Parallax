@@ -1,7 +1,7 @@
 import Foundation
 
 /// `h:mm:ss` / `m:ss` playback clock. Shared by the player chrome and the
-/// minimal scrub bar so they format identically.
+/// progress bar so they format identically.
 nonisolated func formatPlaybackTime(_ seconds: Double) -> String {
     guard seconds.isFinite, seconds >= 0 else { return "0:00" }
     let total = Int(seconds)

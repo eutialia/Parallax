@@ -68,6 +68,14 @@ extension Color {
     static let heroGlass          = Color(red: 0.08, green: 0.08, blue: 0.10).opacity(0.62)
     static let heroGlassBorder    = Color.white.opacity(0.28)
 
+    /// Dark "ink" for glyphs/labels on the player's solid-white active surfaces (active
+    /// chip, primary play button). Fixed (not theme-adaptive) on purpose, like `heroGlass`:
+    /// the player is pinned `.dark` and paints explicit white/ink rather than the adaptive
+    /// label tokens, so this stays `#0a0a0c` regardless of appearance. Mirrors the dark
+    /// value of `buttonLabel`/`chipSelectedLabel`; kept as its own named token so the
+    /// player never depends on an adaptive token resolving dark.
+    static let playerInk          = Color(red: 10 / 255, green: 10 / 255, blue: 12 / 255)
+
     // Bright pill in dark mode (white fill / ink label), dark pill in light mode
     // (espresso fill / cream label) — used everywhere including over hero photography.
     static let buttonFill         = Color(light: 0x2A241D, dark: 0xFFFFFF)
