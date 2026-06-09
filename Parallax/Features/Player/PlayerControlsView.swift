@@ -276,7 +276,9 @@ struct PlayerControlsView: View {
         #if os(tvOS)
         // tvOS: a focusable Button wraps the bar. Left/right step a ±10s scrub head
         // (they reach `onMoveCommand` because the bar has no horizontal focusable
-        // neighbour); Select commits. The head ring shows only while focused.
+        // neighbour); Select commits. The head ring shows only while focused — the bar
+        // is its own focus indicator, so the style must paint no system chrome
+        // (`.plain` draws the tvOS focus platter around the whole bar).
         Button {
             guard let engine = vm.engine, durSeconds > 0, isScrubbing else { return }
             let gen = scrubGeneration
@@ -290,7 +292,7 @@ struct PlayerControlsView: View {
                               played: displayed,
                               elapsed: formatPlaybackTime(shownSeconds), remaining: remainingText)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(TVScrubberButtonStyle())
         .focused($scrubberFocused)
         // Animate the thicken/handle-grow as focus lands, matching the original bar.
         .animation(.easeOut(duration: 0.15), value: scrubberFocused)

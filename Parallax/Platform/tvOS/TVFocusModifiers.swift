@@ -122,6 +122,19 @@ struct TVGlassChipButtonStyle: ButtonStyle {
     }
 }
 
+/// Player scrubber style: renders the label with NO system focus chrome and no lift — `.plain`
+/// on tvOS paints the system focus platter (a bright rounded box) around the whole label, which
+/// swallowed the full-width progress bar. The bar communicates focus itself (`PlayerProgressBar`
+/// `.focused` mode: handle grows + soft outline ring), so the style's only job is to suppress
+/// the platter while keeping the Button focusable. Slight dim on press for Select feedback.
+struct TVScrubberButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(configuration.isPressed ? 0.9 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
+
 /// Poster/artwork button style: scales + drop-shadows the WHOLE clipped tile on focus — a
 /// uniform Apple-TV "pop" where the entire card grows and lifts as one. Reads the focusable
 /// Button's focus through the same `@Environment(\.isFocused)` path as the chip style. There's
