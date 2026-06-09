@@ -21,6 +21,10 @@ import ParallaxPlayback
 /// Controls auto-hide after 3s of inactivity on iOS; tap anywhere to toggle. tvOS
 /// visibility is owned by the HUD reducer in `PlayerView` (this view is mounted only in
 /// `.fullHUD`). Auto-hide is suspended while a track menu is open.
+///
+/// On iOS the chrome is mounted from `.loading` onward — the player is operable while
+/// the stream resolves/buffers (Close, tap-to-toggle, track chips as their lists
+/// populate). Engine-backed transport gates on `playbackReady`.
 struct PlayerControlsView: View {
     @Bindable var vm: PlayerViewModel
     /// Chrome visibility, owned by `PlayerView` so it can also drive the status bar.
@@ -60,6 +64,11 @@ struct PlayerControlsView: View {
     @State private var speedMenu = false
 
     private var menuOpen: Bool { audioMenu || subtitleMenu || chapterMenu || speedMenu }
+    /// False while the stream is still resolving/buffering. The chrome mounts from
+    /// loading onward so Close, tap-to-toggle, and the track chips work immediately;
+    /// engine-backed transport (play/pause, skip, chapter seek) gates on this — the
+    /// centre cluster is hidden outright because the loading orb owns that spot.
+    private var playbackReady: Bool { vm.phase == .playing }
     /// Deliberately device-based, not `@Environment(\.appIdiom)` (which is size-class
     /// derived): the phone layout must apply to ALL iPhones, including a regular-width
     /// Pro Max in landscape that reports `.regular` — keying on size class would push it
@@ -167,17 +176,20 @@ struct PlayerControlsView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
                 #if !os(tvOS)
-                // Centre transport (iPad only — tvOS uses the remote).
-                HStack(spacing: m.transportGap) {
-                    PlayerRoundButton(systemImage: "gobackward.10", size: m.transportSkip, iconScale: 0.48,
-                                      accessibilityLabel: "Skip back 10 seconds") { skip(-10) }
-                    PlayerRoundButton(systemImage: vm.isPlaying ? "pause.fill" : "play.fill", size: m.transportPlay,
-                                      iconScale: 0.42, primary: true,
-                                      accessibilityLabel: vm.isPlaying ? "Pause" : "Play") { togglePlayPause() }
-                    PlayerRoundButton(systemImage: "goforward.10", size: m.transportSkip, iconScale: 0.48,
-                                      accessibilityLabel: "Skip forward 10 seconds") { skip(10) }
+                // Centre transport (iPad only — tvOS uses the remote). Absent until
+                // the stream plays: the loading orb occupies this exact spot.
+                if playbackReady {
+                    HStack(spacing: m.transportGap) {
+                        PlayerRoundButton(systemImage: "gobackward.10", size: m.transportSkip, iconScale: 0.48,
+                                          accessibilityLabel: "Skip back 10 seconds") { skip(-10) }
+                        PlayerRoundButton(systemImage: vm.isPlaying ? "pause.fill" : "play.fill", size: m.transportPlay,
+                                          iconScale: 0.42, primary: true,
+                                          accessibilityLabel: vm.isPlaying ? "Pause" : "Play") { togglePlayPause() }
+                        PlayerRoundButton(systemImage: "goforward.10", size: m.transportSkip, iconScale: 0.48,
+                                          accessibilityLabel: "Skip forward 10 seconds") { skip(10) }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                 #endif
 
                 // Control row — Close + chips (no split pill here; tvOS has none, iPad's is top).
@@ -230,17 +242,20 @@ struct PlayerControlsView: View {
                 .padding(.top, 22)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
-                // Centre transport.
-                HStack(spacing: 46) {
-                    PlayerRoundButton(systemImage: "gobackward.10", size: 52, iconScale: 0.5,
-                                      accessibilityLabel: "Skip back 10 seconds") { skip(-10) }
-                    PlayerRoundButton(systemImage: vm.isPlaying ? "pause.fill" : "play.fill", size: 76,
-                                      iconScale: 0.42, primary: true,
-                                      accessibilityLabel: vm.isPlaying ? "Pause" : "Play") { togglePlayPause() }
-                    PlayerRoundButton(systemImage: "goforward.10", size: 52, iconScale: 0.5,
-                                      accessibilityLabel: "Skip forward 10 seconds") { skip(10) }
+                // Centre transport. Absent until the stream plays: the loading orb
+                // occupies this exact spot.
+                if playbackReady {
+                    HStack(spacing: 46) {
+                        PlayerRoundButton(systemImage: "gobackward.10", size: 52, iconScale: 0.5,
+                                          accessibilityLabel: "Skip back 10 seconds") { skip(-10) }
+                        PlayerRoundButton(systemImage: vm.isPlaying ? "pause.fill" : "play.fill", size: 76,
+                                          iconScale: 0.42, primary: true,
+                                          accessibilityLabel: vm.isPlaying ? "Pause" : "Play") { togglePlayPause() }
+                        PlayerRoundButton(systemImage: "goforward.10", size: 52, iconScale: 0.5,
+                                          accessibilityLabel: "Skip forward 10 seconds") { skip(10) }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
 
                 // Chip row — chips · PiP, in the progress row's columns (same as the big
                 // layout): the first chip's left edge lands on the track's left end, and PiP
@@ -298,11 +313,16 @@ struct PlayerControlsView: View {
         }
         .trackPresentation(isPresented: $speedMenu, detents: [.medium]) { speedMenuList }
         if !vm.chapters.isEmpty {
+            // Chapter seek needs a live engine — a pick mid-load would be silently
+            // lost, so the chip dims until playback starts (unlike audio/subtitles,
+            // which re-resolve server-side and work during buffering).
             PlayerGlassChip(systemImage: "list.bullet", label: "Chapters",
                             isActive: chapterMenu, metrics: m, accessibilityLabel: "Chapters") {
                 resetHideTimer(); chapterMenu = true
             }
             .trackPresentation(isPresented: $chapterMenu) { chapterMenuList }
+            .disabled(!playbackReady)
+            .opacity(playbackReady ? 1 : 0.45)
         }
     }
 

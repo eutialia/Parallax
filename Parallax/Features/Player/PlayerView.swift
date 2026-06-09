@@ -68,38 +68,44 @@ struct PlayerView: View {
                 if showsVideoHost {
                     videoHost(vm)
                 }
+                // Under the chrome, over the video: visual only (hit testing off),
+                // so loading never blocks the HUD mounted below.
+                if showsReloadCover {
+                    loadingVeil
+                }
                 switch vm.phase {
-                case .idle, .loading:
-                    EmptyView()
-                case .playing:
-                    SubtitleOverlayView(vm: vm)
+                case .idle, .loading, .playing:
+                    let playing = vm.phase == .playing
+                    if playing {
+                        SubtitleOverlayView(vm: vm)
+                    }
                     #if os(tvOS)
-                    tvPlaybackSurface(vm)
+                    if playing {
+                        tvPlaybackSurface(vm)
+                    } else {
+                        // Loading must be escapable: nothing else focusable is mounted
+                        // before playback, so this adapter holds focus and catches Menu
+                        // — Back exits immediately, cancelling the in-flight resolve.
+                        TVRemoteInputView(onEvent: { event in
+                            if case .menu = event { exitPlayer() }
+                        })
+                        .ignoresSafeArea()
+                    }
                     #else
+                    // One identity from loading through playing (the video host's
+                    // lesson above): the HUD is live the moment the player appears —
+                    // tap-to-toggle, Close in its real spot, and the track chips as
+                    // soon as their lists populate. Engine-backed transport is gated
+                    // inside on vm.phase, so nothing inert looks tappable.
                     PlayerControlsView(vm: vm, controlsVisible: $chromeVisible,
-                                       onScrubActiveChange: { scrubHUDActive = $0 }) { dismiss() }
+                                       onScrubActiveChange: { scrubHUDActive = $0 }) { exitPlayer() }
                     #endif
                 case .failed(let error):
                     errorOverlay(error, vm: vm)
                 }
-            }
-        }
-        // Loading visual: the video surface itself becomes the loader. The picture
-        // calms to a dark field and a liquid-glass orb takes center — NOT a frosted
-        // blocking pill. On a transcode track switch the engine is paused + reused, so
-        // the last frame stays under the calm scrim until the new stream plays; on a
-        // first play the field is the black floor. Fades out when playback resumes.
-        .overlay {
-            if showsReloadCover {
-                ZStack {
-                    Color.black.opacity(0.55).ignoresSafeArea()
-                    if let vm = viewModel {
-                        LoaderOrb(label: vm.loaderTitle, sublabel: vm.loaderSubtitle)
-                    } else {
-                        LoaderOrb()
-                    }
-                }
-                .transition(.opacity)
+            } else {
+                // Pre-VM beat (dependency factories resolving) — veil only.
+                loadingVeil
             }
         }
         .animation(.easeInOut(duration: 0.3), value: showsReloadCover)
@@ -172,6 +178,8 @@ struct PlayerView: View {
             }
         }
         .onDisappear {
+            // Backstop for dismissals that didn't route through exitPlayer()
+            // (e.g. the system tearing the cover down). stop() is idempotent.
             let vm = viewModel
             Task { await vm?.stop() }
             #if os(tvOS)
@@ -200,6 +208,18 @@ struct PlayerView: View {
         #endif
     }
 
+    /// Exit on user intent: halt playback NOW — `beginExit()` synchronously fences
+    /// the in-flight start path (a mid-load exit can't resurrect playback), and
+    /// stop() pauses + tears the engine down while the dismiss animation is still
+    /// running. Waiting for `onDisappear` alone meant ~half a second of audio
+    /// bleeding past the dismissal, and no cancellation at all during loading.
+    private func exitPlayer() {
+        viewModel?.beginExit()
+        let vm = viewModel
+        Task { await vm?.stop() }
+        dismiss()
+    }
+
     /// True only while actively playing — gates the chrome-visibility reset above.
     private var isPlaybackActive: Bool {
         if case .playing = viewModel?.phase { return true }
@@ -215,7 +235,26 @@ struct PlayerView: View {
         return true
     }
 
-    /// Whether to show the frosted reload cover: before the VM exists and while it's
+    /// Loading visual: the video surface itself becomes the loader. The picture calms
+    /// to a dark field and a liquid-glass orb takes center — NOT a frosted blocking
+    /// pill: hit testing is off, so the HUD layered above stays fully interactive
+    /// while the stream resolves/buffers. On a transcode track switch the engine is
+    /// paused + reused, so the last frame stays under the calm scrim until the new
+    /// stream plays; on a first play the field is the black floor.
+    private var loadingVeil: some View {
+        ZStack {
+            Color.black.opacity(0.55).ignoresSafeArea()
+            if let vm = viewModel {
+                LoaderOrb(label: vm.loaderTitle, sublabel: vm.loaderSubtitle)
+            } else {
+                LoaderOrb()
+            }
+        }
+        .allowsHitTesting(false)
+        .transition(.opacity)
+    }
+
+    /// Whether to show the loading veil: before the VM exists and while it's
     /// idle/loading (initial load and a track-switch re-buffer). Hidden once playing
     /// (the video shows) or failed (the error overlay shows).
     private var showsReloadCover: Bool {
@@ -262,6 +301,7 @@ struct PlayerView: View {
                 .foregroundStyle(.white)
                 .frame(width: 84, height: 84)
                 .glassEffect(.regular, in: Circle())
+                .accessibilityHidden(true)
             Text("Playback failed")
                 .font(.title3.weight(.bold))
                 .foregroundStyle(.white)
@@ -281,7 +321,7 @@ struct PlayerView: View {
                 // Custom chip style: gentle lift, no system focus platter (which `.plain`
                 // paints around the pill on tvOS). Chrome is inside the label, so it scales whole.
                 .tvChipButton()
-                Button { dismiss() } label: {
+                Button { exitPlayer() } label: {
                     Text("Close")
                         .font(.headline)
                         .foregroundStyle(.white)
@@ -295,6 +335,11 @@ struct PlayerView: View {
         }
         .padding(40)
         .frame(maxWidth: 460)
+        #if os(tvOS)
+        // Back mirrors the Close pill. Focus sits on the chips, so this rides the
+        // focused responder chain (a sibling input adapter would never see Menu).
+        .onExitCommand { exitPlayer() }
+        #endif
     }
 
     #if os(tvOS)
@@ -337,7 +382,7 @@ struct PlayerView: View {
                 tvScrubBar(progress: progress, vm: vm).transition(.opacity)
             case .fullHUD:
                 PlayerControlsView(vm: vm, controlsVisible: .constant(true),
-                                   onScrubberFocusChange: { scrubberHasFocus = $0 }) { dismiss() }
+                                   onScrubberFocusChange: { scrubberHasFocus = $0 }) { exitPlayer() }
                     .transition(.opacity)
                     .onExitCommand { send(.menu, vm) }
             }
@@ -499,7 +544,7 @@ struct PlayerView: View {
         case .togglePlayPause:
             if vm.isPlaying { await vm.engine?.pause() } else { await vm.engine?.play() }
         case .exit:
-            dismiss()
+            exitPlayer()
         }
     }
 

@@ -162,6 +162,16 @@ final class PlayerViewModel {
     private var resolved: ResolvedPlayback?
     private var didReportStart = false
     private var didReportStopped = false
+    /// Exit was requested (`beginExit()`/`stop()`): the in-flight start path bails
+    /// at its next checkpoint instead of resurrecting playback after dismissal.
+    private var isExiting = false
+    /// `stop()` already ran — the second caller is a no-op (exit fires it from the
+    /// dismiss trigger AND from `onDisappear` as a backstop).
+    private var didStop = false
+    /// True while `start()` is executing. The HUD is live during loading, so a track
+    /// pick could otherwise land in the sliver where `beginPlayback` is suspended
+    /// (engine.load) and race it with a second resolve/engine.
+    private var isStartingPlayback = false
     /// True only while a transcode track switch is reloading the (reused) engine.
     /// Gates `handle(_:)` so the outgoing stream's trailing beats are ignored — a
     /// stale `.playing` would otherwise claim the new session's `reportStart`.
@@ -228,7 +238,10 @@ final class PlayerViewModel {
         pendingItemID = itemID
         do {
             let detail = try await fetchDetail(itemID)
+            try checkStillActive()
             await start(item: detail)
+        } catch is CancellationError {
+            // Exit raced the detail fetch — the view is gone; nothing to surface.
         } catch let error as AppError {
             phase = .failed(error)
         } catch {
@@ -238,6 +251,8 @@ final class PlayerViewModel {
     }
 
     func start(item: ItemDetail) async {
+        isStartingPlayback = true
+        defer { isStartingPlayback = false }
         phase = .loading
         playingItem = item
         let positionTicks: Int64
@@ -275,6 +290,11 @@ final class PlayerViewModel {
                 audioStreamIndex: nil,
                 subtitleStreamIndex: nil
             )
+        } catch is CancellationError {
+            // Exit raced the start path. stop() owns the real teardown; just make
+            // sure the audio session isn't left active if stop() completed before
+            // activate() did (deactivate is idempotent).
+            await audioSession.deactivate()
         } catch let error as AppError {
             phase = .failed(error)
             await audioSession.deactivate()
@@ -300,8 +320,12 @@ final class PlayerViewModel {
         subtitleStreamIndex: Int?,
         reusingEngine: Bool = false
     ) async throws {
+        try checkStillActive()
         let caps = await deviceProfileBuilder.build()
         let resolved = try await resolve(item.id, caps, startTime, audioStreamIndex, subtitleStreamIndex)
+        // The critical fence: resolve is the long network call, so this is where an
+        // exit-during-loading usually lands. Bail BEFORE building an engine.
+        try checkStillActive()
         self.resolved = resolved
         currentAudioStreamIndex = audioStreamIndex ?? resolved.defaultAudioStreamIndex
         // Subtitle is the user's EXPLICIT choice only — never seeded from the server
@@ -311,6 +335,12 @@ final class PlayerViewModel {
         currentSubtitleStreamIndex = subtitleStreamIndex
         if resolved.method == .transcode {
             populateTranscodeMenus(from: resolved)
+        } else {
+            // Direct-play: embedded tracks only arrive with the engine's .ready, but
+            // external sidecar subs are already known here — surface them so the
+            // subtitles chip works while the stream buffers. .ready replaces this
+            // with the full engine inventory + the same external append.
+            availableSubtitleTracks = Self.externalSubtitleTracks(from: resolved)
         }
         recomputeMediaSummary()
 
@@ -338,10 +368,14 @@ final class PlayerViewModel {
 
         do {
             try await engine.load(asset)
+            // Last fence before audio starts: an exit that landed during load must
+            // not be answered with play() on a player that's already dismissed.
+            try checkStillActive()
         } catch {
-            // A load failure must not leave the engine + its state subscription
-            // dangling: tear down before propagating, so start()/switchTranscodeTrack
-            // surface .failed with no leaked Task and no open AsyncStream.
+            // A load failure (or an exit mid-load) must not leave the engine + its
+            // state subscription dangling: tear down before propagating, so
+            // start()/switchTranscodeTrack surface .failed with no leaked Task and
+            // no open AsyncStream. (Idempotent vs a stop() that already tore down.)
             await tearDownEngine()
             throw error
         }
@@ -365,7 +399,25 @@ final class PlayerViewModel {
         }
     }
 
+    /// Synchronously fences the exit before the async `stop()` gets a MainActor
+    /// turn: the dismiss trigger calls this first, so an in-flight `start()` that
+    /// resumes in between can't slip past a checkpoint and build/play an engine
+    /// for a player that's already going away.
+    func beginExit() { isExiting = true }
+
+    /// Bails the start path when the player is exiting (`beginExit()`/`stop()`) or
+    /// the hosting `.task` was cancelled (the view disappeared mid-load). Checked
+    /// after every await between "play tapped" and "engine playing" so a slow
+    /// resolve can never start audio after the player is gone.
+    private func checkStillActive() throws {
+        if isExiting { throw CancellationError() }
+        try Task.checkCancellation()
+    }
+
     func stop() async {
+        isExiting = true
+        guard !didStop else { return }
+        didStop = true
         stateTask?.cancel()
         stateTask = nil
         if let engine {
@@ -415,6 +467,10 @@ final class PlayerViewModel {
         let item = playingItem
         let id = pendingItemID
         await stop()
+        // stop() arms the exit fence; this is a restart, not an exit — disarm it
+        // so the fresh start path isn't killed at its first checkpoint.
+        isExiting = false
+        didStop = false
         phase = .idle
         didReportStart = false
         didReportStopped = false
@@ -425,6 +481,10 @@ final class PlayerViewModel {
     }
 
     func selectAudioTrack(_ track: AudioTrack) async {
+        // Dropped (not queued) while a start or a prior switch is mid-flight: the
+        // selected label is set before the re-resolve below, so accepting a pick
+        // here would show a track the reload never honors.
+        guard !isStartingPlayback, !isSwitchingTracks else { return }
         // Direct-play has every track in the stream → switch in-engine (instant).
         // Transcode carries only the baked-in rendition → re-resolve around the
         // chosen source index (track.id) and reload at the current position.
@@ -442,6 +502,10 @@ final class PlayerViewModel {
     }
 
     func selectSubtitleTrack(_ track: SubtitleTrack?) async {
+        // Same drop-don't-queue rule as selectAudioTrack: mid-switch, `resolved`
+        // still points at the outgoing session, so a sidecar fetch would read the
+        // old session's subtitle URLs.
+        guard !isStartingPlayback, !isSwitchingTracks else { return }
         if resolved?.method == .transcode {
             // Client-side rendering: the chosen text subtitle is fetched as a
             // correctly-timed sidecar VTT and drawn by SubtitleOverlayView — NO
@@ -503,7 +567,9 @@ final class PlayerViewModel {
     /// stays mounted and holds the last frame through the swap instead of blinking to
     /// black; the audio session stays active too.
     private func switchTranscodeTrack(audioStreamIndex: Int?, subtitleStreamIndex: Int?) async {
-        guard let item = playingItem else { return }
+        // The chips stay mounted through a switch's .loading phase now — a second
+        // pick mid-switch must wait for (not race) the in-flight reload.
+        guard !isSwitchingTracks, let item = playingItem else { return }
         // The transcode plays a full-timeline HLS playlist that the engine SEEKS to
         // the resume offset (Jellyfin ignores StartTimeTicks for the playlist start),
         // so currentPosition is already absolute media time — resume the new stream
@@ -536,6 +602,8 @@ final class PlayerViewModel {
                 subtitleStreamIndex: subtitleStreamIndex,
                 reusingEngine: true
             )
+        } catch is CancellationError {
+            // Exit raced the track switch — stop() already owns the teardown.
         } catch let error as AppError {
             phase = .failed(error)
             // resolve threw before the reused engine reloaded → the stale stream is

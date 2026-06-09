@@ -738,6 +738,93 @@ struct PlayerViewModelTests {
         #expect(engine.loadedAssets.isEmpty)
     }
 
+    @Test("exit during a slow resolve never builds or plays an engine")
+    func exitDuringResolveNeverStartsPlayback() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
+        let builder = DeviceProfileBuilder(probe: probe)
+
+        // A resolve that parks until the test releases it — the exit lands mid-resolve,
+        // exactly like dismissing the player while the PlaybackInfo call is in flight.
+        let (gate, gateContinuation) = AsyncStream<Void>.makeStream()
+        nonisolated(unsafe) var engineBuilt = false
+        let vm = PlayerViewModel(
+            deviceProfileBuilder: builder,
+            playbackInfo: reporting,
+            resolve: { _, _, _, _, _ in
+                for await _ in gate { break }
+                return PlayerFixtures.resolved()
+            },
+            engineFactory: { _ in engineBuilt = true; return engine },
+            audioSession: NoopAudioSession()
+        )
+
+        let startTask = Task { await vm.start(item: PlayerFixtures.movieDetail()) }
+        try await Task.sleep(for: .milliseconds(20))   // let start() reach the resolve await
+        vm.beginExit()
+        await vm.stop()
+        gateContinuation.yield(())                     // resolve returns AFTER the exit
+        await startTask.value
+
+        // The post-resolve fence must bail before the engine exists: no factory
+        // call, no load, no play — nothing to resurrect audio on a dismissed player.
+        #expect(engineBuilt == false)
+        #expect(engine.loadedAssets.isEmpty)
+        #expect(!engine.calls.contains("play"))
+    }
+
+    @Test("stop() is idempotent — exit trigger + onDisappear backstop tear down once")
+    func doubleStopTearsDownOnce() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let resolved = PlayerFixtures.resolved()
+        let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(position: CMTime(seconds: 30, preferredTimescale: 1), duration: resolved.runtime!))
+        try await Task.sleep(for: .milliseconds(50))
+
+        // exitPlayer() fires stop() immediately; onDisappear fires it again as the
+        // backstop. The second call must be a no-op.
+        await vm.stop()
+        await vm.stop()
+
+        #expect(engine.calls.filter { $0 == "teardown" }.count == 1)
+        let stoppedCount = (await reporting.events).filter { if case .stopped = $0 { return true } else { return false } }.count
+        #expect(stoppedCount == 1)
+    }
+
+    @Test("retry() after a failed start disarms the exit fence and restarts playback")
+    func retryDisarmsExitFence() async {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
+        let builder = DeviceProfileBuilder(probe: probe)
+
+        nonisolated(unsafe) var resolveCalls = 0
+        let vm = PlayerViewModel(
+            deviceProfileBuilder: builder,
+            playbackInfo: reporting,
+            resolve: { _, _, _, _, _ in
+                resolveCalls += 1
+                if resolveCalls == 1 { throw AppError.playback(.resourceUnavailable) }
+                return PlayerFixtures.resolved()
+            },
+            engineFactory: { _ in engine },
+            audioSession: NoopAudioSession()
+        )
+
+        await vm.start(item: PlayerFixtures.movieDetail())
+        #expect(vm.phase == .failed(.playback(.resourceUnavailable)))
+
+        // retry() routes through stop(), which arms the exit fence — it must be
+        // disarmed before the fresh start, or the restart dies at its first checkpoint.
+        await vm.retry()
+        #expect(resolveCalls == 2)
+        #expect(!engine.loadedAssets.isEmpty)
+        #expect(engine.calls.contains("play"))
+    }
+
     // MARK: - NowPlaying (serialized — MPNowPlayingInfoCenter is a process-wide singleton)
 
     /// All 5 tests that read/write MPNowPlayingInfoCenter.default() are grouped
