@@ -1,4 +1,5 @@
 import SwiftUI
+import CoreMedia
 import ParallaxCore
 import ParallaxJellyfin
 import ParallaxPlayback
@@ -26,7 +27,20 @@ struct PlayerView: View {
     /// expand chip; honored by the AVKit host's `videoGravity`.
     @State private var fillMode = false
     /// Chrome visibility, owned here so the status bar can hide with the controls.
+    /// On tvOS this mirrors `hudState == .fullHUD` (driven by `send`).
     @State private var chromeVisible = true
+    #if os(tvOS)
+    /// The tvOS HUD floor state machine (floor → swipeScrub → clickSeek → fullHUD),
+    /// driven by `TVRemoteInputView` through `send(_:_:)`. See `PlayerHUDReducer`.
+    @State private var hudState: PlayerHUDState = .floor
+    @State private var idleTask: Task<Void, Never>? = nil
+    /// Debounces the click-seek: rapid ±10s clicks accumulate a target and fire ONE
+    /// engine seek after they settle. Per-click seeks thrash a transcode and wedge the
+    /// player in `.waitingToPlayAtSpecifiedRate` (which the engine reports as playing,
+    /// so play/pause then sticks). `pendingClickSeek` is the un-committed target.
+    @State private var commitSeekTask: Task<Void, Never>? = nil
+    @State private var pendingClickSeek: Double? = nil
+    #endif
     @Environment(\.appIdiom) private var idiom
     #if DEBUG
     @State private var showDebugHUD = false
@@ -52,7 +66,11 @@ struct PlayerView: View {
                     EmptyView()
                 case .playing:
                     SubtitleOverlayView(vm: vm)
+                    #if os(tvOS)
+                    tvPlaybackSurface(vm)
+                    #else
                     PlayerControlsView(vm: vm, controlsVisible: $chromeVisible, isFilled: fillMode, onToggleFill: { fillMode.toggle() }) { dismiss() }
+                    #endif
                 case .failed(let error):
                     errorOverlay(error, vm: vm)
                 }
@@ -148,6 +166,10 @@ struct PlayerView: View {
         .onDisappear {
             let vm = viewModel
             Task { await vm?.stop() }
+            #if os(tvOS)
+            idleTask?.cancel()
+            commitSeekTask?.cancel()
+            #endif
         }
         // The player is an immersive "screening room": pin the whole surface (video
         // host, controls, subtitle/loader/error/debug overlays) to dark appearance so
@@ -256,4 +278,151 @@ struct PlayerView: View {
         .padding(40)
         .frame(maxWidth: 460)
     }
+
+    #if os(tvOS)
+    // MARK: - tvOS floor / swipe-scrub / full-HUD surface
+
+    /// The tvOS playback surface: a raw remote-input adapter under the HUD, which is
+    /// hidden on the floor, a minimal scrub bar while swipe-scrubbing, or the full
+    /// chrome in `.fullHUD`. All input flows adapter → `send` → reducer → `apply`.
+    @ViewBuilder
+    private func tvPlaybackSurface(_ vm: PlayerViewModel) -> some View {
+        ZStack {
+            // The raw adapter owns the remote on the floor and during scrubbing. It's
+            // unmounted in `.fullHUD` so SwiftUI's focus engine drives the chips/scrubber
+            // natively (a focusable sibling view both blocks chip focus and can't catch
+            // Menu once a chip is focused). Menu in the HUD is handled by `.onExitCommand`.
+            if !isFullHUD {
+                TVRemoteInputView(progressPerPoint: 0.00005, onEvent: { send($0, vm) })
+                    .ignoresSafeArea()
+            }
+
+            switch hudState {
+            case .floor:
+                EmptyView()
+            case .swipeScrub(let progress, _):
+                // Analog scrub: video paused on the preview head the reducer holds.
+                ScrubBar(progress: progress, durationSeconds: CMTimeGetSeconds(vm.currentDuration))
+                    .transition(.opacity)
+            case .clickSeek(let target):
+                // Click ±10s: the bar previews the accumulated target while the (still
+                // playing) video jumps there once the debounced seek commits.
+                ScrubBar(progress: target, durationSeconds: CMTimeGetSeconds(vm.currentDuration))
+                    .transition(.opacity)
+            case .fullHUD:
+                PlayerControlsView(vm: vm, controlsVisible: .constant(true), isFilled: fillMode,
+                                   onToggleFill: { fillMode.toggle() }) { dismiss() }
+                    .transition(.opacity)
+                    // Menu hides the HUD back to the floor instead of exiting playback.
+                    .onExitCommand { send(.menu, vm) }
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: isFullHUD)
+        // Dedicated Play/Pause button → reducer, in every HUD state.
+        .onPlayPauseCommand { send(.playPause, vm) }
+        // Start on the clean floor (chrome starts hidden).
+        .onAppear { chromeVisible = false }
+    }
+
+    private var isFullHUD: Bool { if case .fullHUD = hudState { return true }; return false }
+    /// The two transient scrub-bar states; only these arm the inactivity auto-hide.
+    private var isScrubbing: Bool {
+        switch hudState { case .swipeScrub, .clickSeek: return true; default: return false }
+    }
+
+    /// Feed a remote event through the reducer, apply its effects, sync the chrome
+    /// flag, and restart the inactivity timer. The click-seek debounce lives here, not
+    /// in the reducer: rapid clicks accumulate a target in `.clickSeek` and fire a
+    /// single engine seek once they settle (or when the state leaves `.clickSeek`).
+    private func send(_ event: RemoteEvent, _ vm: PlayerViewModel) {
+        let leavingTarget: Double? = { if case .clickSeek(let t) = hudState { return t } else { return nil } }()
+        let ctx = ReduceContext(
+            liveProgress: tvProgress(of: vm),
+            durationSeconds: CMTimeGetSeconds(vm.currentDuration),
+            isPlaying: vm.isPlaying
+        )
+        let (next, effects) = reduce(hudState, event, ctx)
+
+        // Commit/cancel a pending click-seek when leaving `.clickSeek`.
+        if leavingTarget != nil {
+            switch next {
+            case .clickSeek: break              // still accumulating — keep debouncing
+            case .swipeScrub: cancelClickSeek() // analog scrub takes over from the target
+            default: flushClickSeek(vm)         // land the accumulated seek now
+            }
+        }
+
+        hudState = next
+        for effect in effects { apply(effect, vm) }
+
+        // Entering or continuing `.clickSeek`: (re)arm the debounced commit.
+        if case .clickSeek(let target) = next { scheduleClickSeek(to: target, vm) }
+
+        chromeVisible = isFullHUD
+        restartIdleTimer()
+    }
+
+    /// ~0.4s of quiet after the last click before the accumulated seek commits — long
+    /// enough to fold a burst of clicks into one transcode seek, short enough to feel
+    /// responsive. Tunable on device.
+    private func scheduleClickSeek(to target: Double, _ vm: PlayerViewModel) {
+        pendingClickSeek = target
+        commitSeekTask?.cancel()
+        commitSeekTask = Task {
+            try? await Task.sleep(for: .milliseconds(400))
+            if !Task.isCancelled { flushClickSeek(vm) }
+        }
+    }
+
+    /// Fire the single accumulated seek now and clear the pending target (so a later
+    /// flush — e.g. from idle after the debounce already ran — is a no-op).
+    private func flushClickSeek(_ vm: PlayerViewModel) {
+        commitSeekTask?.cancel()
+        guard let target = pendingClickSeek else { return }
+        pendingClickSeek = nil
+        apply(.seek(progress: target), vm)
+    }
+
+    /// Drop the pending click-seek without committing (analog scrub will seek instead).
+    private func cancelClickSeek() {
+        commitSeekTask?.cancel()
+        pendingClickSeek = nil
+    }
+
+    private func tvProgress(of vm: PlayerViewModel) -> Double {
+        let dur = CMTimeGetSeconds(vm.currentDuration)
+        guard dur > 0 else { return 0 }
+        return min(max(CMTimeGetSeconds(vm.currentPosition) / dur, 0), 1)
+    }
+
+    private func apply(_ effect: PlayerEffect, _ vm: PlayerViewModel) {
+        switch effect {
+        case .pause:
+            Task { await vm.engine?.pause() }
+        case .play:
+            Task { await vm.engine?.play() }
+        case .seek(let p):
+            let dur = CMTimeGetSeconds(vm.currentDuration)
+            guard dur > 0 else { return }
+            let target = CMTime(seconds: p * dur, preferredTimescale: 600)
+            Task { await vm.engine?.seek(to: target) }
+        case .togglePlayPause:
+            Task { if vm.isPlaying { await vm.engine?.pause() } else { await vm.engine?.play() } }
+        case .exit:
+            dismiss()
+        }
+    }
+
+    /// Only the transient scrub bars auto-hide after inactivity. The floor needs no
+    /// timer, and the full HUD is navigated with native focus (whose moves never reach
+    /// `send`, so a timer there would hide the chrome mid-interaction) — Menu dismisses it.
+    private func restartIdleTimer() {
+        idleTask?.cancel()
+        guard isScrubbing else { return }
+        idleTask = Task {
+            try? await Task.sleep(for: .seconds(4))
+            if !Task.isCancelled, let vm = viewModel { send(.idle, vm) }
+        }
+    }
+    #endif
 }

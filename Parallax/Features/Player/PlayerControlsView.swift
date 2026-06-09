@@ -89,8 +89,13 @@ struct PlayerControlsView: View {
         VStack(spacing: 0) {
             topBar
             Spacer(minLength: 0)
+            // tvOS drops the on-screen transport: the remote drives it directly —
+            // center (Select) toggles play/pause and left/right click-seek ±10s, all
+            // routed through the HUD reducer in `PlayerView`.
+            #if !os(tvOS)
             transport
             Spacer(minLength: 0)
+            #endif
             bottomBar
         }
         .background(
@@ -106,10 +111,15 @@ struct PlayerControlsView: View {
             // bar doesn't hide the chrome).
             .allowsHitTesting(false)
         )
+        // tvOS play/pause (and the whole HUD floor) is driven by the reducer in
+        // `PlayerView.tvPlaybackSurface`; on tvOS this view is mounted only in
+        // `.fullHUD` with `controlsVisible` pinned true, and auto-hide lives in
+        // `PlayerView.restartIdleTimer()`.
         #if os(tvOS)
-        // The Siri Remote's dedicated play/pause button toggles playback no matter which
-        // control holds focus (e.g. while the scrub bar is focused).
-        .onPlayPauseCommand { togglePlayPause() }
+        // The raw input adapter (which held focus on the floor) is unmounted when the
+        // HUD appears, so claim focus for the scrubber — the primary control — instead
+        // of letting the focus engine pick arbitrarily. Up → top bar, down → chips.
+        .defaultFocus($scrubberFocused, true)
         #endif
     }
 
@@ -235,7 +245,7 @@ struct PlayerControlsView: View {
         let remaining = max(0, durSeconds - shownSeconds)
 
         HStack(spacing: 14) {
-            Text(formatTime(shownSeconds))
+            Text(formatPlaybackTime(shownSeconds))
                 .font((idiom == .tv ? Font.footnote : .subheadline).weight(.semibold).monospacedDigit())
                 .foregroundStyle(.white)
                 .frame(width: idiom == .tv ? 104 : 66, alignment: .leading)
@@ -325,7 +335,7 @@ struct PlayerControlsView: View {
             .tint(.white)
             #endif
 
-            Text(remaining > 0 ? "-\(formatTime(remaining))" : formatTime(durSeconds))
+            Text(remaining > 0 ? "-\(formatPlaybackTime(remaining))" : formatPlaybackTime(durSeconds))
                 .font((idiom == .tv ? Font.footnote : .subheadline).weight(.semibold).monospacedDigit())
                 .foregroundStyle(.white.opacity(0.7))
                 .frame(width: idiom == .tv ? 104 : 66, alignment: .trailing)
@@ -484,18 +494,6 @@ struct PlayerControlsView: View {
         .overlay(shape.strokeBorder(.white.opacity(0.12), lineWidth: 1))
         .preferredColorScheme(.dark)
         .environment(\.colorScheme, .dark)
-    }
-
-    // MARK: - Time
-
-    private func formatTime(_ seconds: Double) -> String {
-        guard seconds.isFinite, seconds >= 0 else { return "0:00" }
-        let total = Int(seconds)
-        let h = total / 3600
-        let m = (total % 3600) / 60
-        let s = total % 60
-        if h > 0 { return String(format: "%d:%02d:%02d", h, m, s) }
-        return String(format: "%d:%02d", m, s)
     }
 
     // MARK: - Auto-hide
