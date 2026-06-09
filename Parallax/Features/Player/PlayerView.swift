@@ -26,6 +26,12 @@ struct PlayerView: View {
     /// Chrome visibility, owned here so the status bar can hide with the controls.
     /// On tvOS this mirrors `hudState == .fullHUD` (driven by `send`).
     @State private var chromeVisible = true
+    #if !os(tvOS)
+    /// True while a finger drags the scrub bar — `PlayerControlsView` has collapsed
+    /// the chrome into the lone scrub bar (the iOS analog of tvOS swipe-scrub), so
+    /// the status bar and home indicator hide with it.
+    @State private var scrubHUDActive = false
+    #endif
     #if os(tvOS)
     /// The tvOS HUD floor state machine (floor → swipeScrub → clickSeek → fullHUD),
     /// driven by `TVRemoteInputView` through `send(_:_:)`. See `PlayerHUDReducer`.
@@ -70,7 +76,8 @@ struct PlayerView: View {
                     #if os(tvOS)
                     tvPlaybackSurface(vm)
                     #else
-                    PlayerControlsView(vm: vm, controlsVisible: $chromeVisible) { dismiss() }
+                    PlayerControlsView(vm: vm, controlsVisible: $chromeVisible,
+                                       onScrubActiveChange: { scrubHUDActive = $0 }) { dismiss() }
                     #endif
                 case .failed(let error):
                     errorOverlay(error, vm: vm)
@@ -126,9 +133,9 @@ struct PlayerView: View {
         // (top bar, scrubber) and status bar respect the safe area. The status bar
         // hides in lockstep with the chrome.
         #if !os(tvOS)
-        .statusBarHidden(!chromeVisible)
+        .statusBarHidden(!chromeVisible || scrubHUDActive)
         #endif
-        .persistentSystemOverlays(chromeVisible ? .automatic : .hidden)
+        .persistentSystemOverlays(systemOverlaysVisible ? .automatic : .hidden)
         .animation(.easeInOut(duration: 0.2), value: chromeVisible)
         // The controls (which restore chromeVisible) only exist in .playing. If the
         // stream fails after the chrome auto-hid, force it back so the status bar and
@@ -181,6 +188,16 @@ struct PlayerView: View {
         // Outermost so `.overlay(...)` content (loader orb, debug HUD) inherits it;
         // matches the dark pin already on the track menus (`trackMenuChrome`).
         .environment(\.colorScheme, .dark)
+    }
+
+    /// System overlays (home indicator) follow the chrome — and on iOS also hide
+    /// during a drag-scrub, whose collapsed HUD reads as a clean screen.
+    private var systemOverlaysVisible: Bool {
+        #if os(tvOS)
+        chromeVisible
+        #else
+        chromeVisible && !scrubHUDActive
+        #endif
     }
 
     /// True only while actively playing — gates the chrome-visibility reset above.
@@ -359,7 +376,7 @@ struct PlayerView: View {
             remainingSeconds: remaining,
             chapters: vm.chapterFractions,
             bubbleTime: formatPlaybackTime(shown),
-            bubbleChapter: chapterTitle(vm, atSeconds: shown)
+            bubbleChapter: vm.chapterTitle(atSeconds: shown)
         )
         // One snappy spring for both scrub flavors: a ±10s click-seek step glides to
         // its target instead of snapping, and swipe deltas retarget the same spring
@@ -370,22 +387,6 @@ struct PlayerView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         .environment(\.colorScheme, .dark)
         .allowsHitTesting(false)
-    }
-
-    /// The chapter containing `atSeconds`, formatted "Chapter N · Name" for the bubble.
-    /// Returns nil when the item has no chapters.
-    private func chapterTitle(_ vm: PlayerViewModel, atSeconds: Double) -> String? {
-        let chapters = vm.chapters
-        guard !chapters.isEmpty else { return nil }
-        func startSeconds(_ chapter: Chapter) -> Double {
-            let c = chapter.start.components
-            return Double(c.seconds) + Double(c.attoseconds) / 1e18
-        }
-        let current = chapters.last(where: { startSeconds($0) <= atSeconds }) ?? chapters[0]
-        if let name = current.name, !name.isEmpty {
-            return "Chapter \(current.index + 1) · \(name)"
-        }
-        return "Chapter \(current.index + 1)"
     }
 
     private var isFullHUD: Bool { if case .fullHUD = hudState { return true }; return false }

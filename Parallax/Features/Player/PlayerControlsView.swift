@@ -30,6 +30,10 @@ struct PlayerControlsView: View {
     /// into analog scrub only while the bar is focused. Required, not optional —
     /// without the wiring, swipe-on-scrubber silently degrades to click-stepping.
     let onScrubberFocusChange: (Bool) -> Void
+    #else
+    /// Reports drag-scrub activity to `PlayerView`, which hides the status bar and
+    /// home indicator while the chrome is collapsed into the lone scrub bar.
+    let onScrubActiveChange: (Bool) -> Void
     #endif
     let onDismiss: () -> Void
 
@@ -39,6 +43,12 @@ struct PlayerControlsView: View {
     /// Bumped on every drag start so a slow seek can't clear `isScrubbing` after a newer
     /// drag began (which would snap the thumb back to live playback mid-grab).
     @State private var scrubGeneration = 0
+    /// A finger is on the bar (iOS): the chrome collapses into the lone scrub bar over
+    /// a dimmed, paused frame — the touch analog of tvOS `PlayerHUDState.swipeScrub`.
+    /// Never set on tvOS, where that collapse is reducer-owned in `PlayerView`.
+    @State private var dragScrubbing = false
+    /// Whether playback was live when the drag began — the commit resumes iff true.
+    @State private var scrubWasPlaying = false
     #if os(tvOS)
     /// Whether the scrub bar holds focus — drives the focused-handle ring and gates
     /// remote left/right into ±10s seek steps.
@@ -69,6 +79,7 @@ struct PlayerControlsView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: controlsVisible)
+        .animation(.easeInOut(duration: 0.2), value: dragScrubbing)
         #if !os(tvOS)
         .onAppear { scheduleHide() }
         #endif
@@ -88,7 +99,15 @@ struct PlayerControlsView: View {
     @ViewBuilder
     private var controls: some View {
         ZStack {
-            scrim
+            // While a finger scrubs, the gradient scrim gives way to the uniform dim
+            // of tvOS swipe-scrub so the lone bar reads clearly over the paused frame.
+            if dragScrubbing {
+                Color.black.opacity(0.5)
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+            } else {
+                scrim
+            }
             #if os(tvOS)
             bigControls(.tv)
             #else
@@ -125,58 +144,65 @@ struct PlayerControlsView: View {
 
     @ViewBuilder
     private func bigControls(_ m: PlayerMetrics) -> some View {
-        // Top bar — title left; iPad AirPlay/PiP split pill right.
-        HStack(alignment: .top) {
-            Text(vm.title)
-                .font(.system(size: m.titleSize, weight: .bold))
-                .foregroundStyle(.white)
-                .lineLimit(1)
-            Spacer(minLength: m.chipsGap)
-            #if !os(tvOS)
-            if vm.isVideoAirPlayAvailable || vm.isPiPAvailable {
-                PlayerSplitPill(metrics: m, airPlayAvailable: vm.isVideoAirPlayAvailable,
-                                pipAvailable: vm.isPiPAvailable) { resetHideTimer(); vm.startPiP() }
+        // Everything but the progress row vanishes while a finger drag-scrubs, leaving
+        // the lone bar over the dim — the same collapse as tvOS swipe-scrub.
+        if !dragScrubbing {
+            Group {
+                // Top bar — title left; iPad AirPlay/PiP split pill right.
+                HStack(alignment: .top) {
+                    Text(vm.title)
+                        .font(.system(size: m.titleSize, weight: .bold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                    Spacer(minLength: m.chipsGap)
+                    #if !os(tvOS)
+                    if vm.isVideoAirPlayAvailable || vm.isPiPAvailable {
+                        PlayerSplitPill(metrics: m, airPlayAvailable: vm.isVideoAirPlayAvailable,
+                                        pipAvailable: vm.isPiPAvailable) { resetHideTimer(); vm.startPiP() }
+                    }
+                    #endif
+                }
+                .padding(.horizontal, m.padX)
+                .padding(.top, m.topBarTop)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+
+                #if !os(tvOS)
+                // Centre transport (iPad only — tvOS uses the remote).
+                HStack(spacing: m.transportGap) {
+                    PlayerRoundButton(systemImage: "gobackward.10", size: m.transportSkip, iconScale: 0.48,
+                                      accessibilityLabel: "Skip back 10 seconds") { skip(-10) }
+                    PlayerRoundButton(systemImage: vm.isPlaying ? "pause.fill" : "play.fill", size: m.transportPlay,
+                                      iconScale: 0.42, primary: true,
+                                      accessibilityLabel: vm.isPlaying ? "Pause" : "Play") { togglePlayPause() }
+                    PlayerRoundButton(systemImage: "goforward.10", size: m.transportSkip, iconScale: 0.48,
+                                      accessibilityLabel: "Skip forward 10 seconds") { skip(10) }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                #endif
+
+                // Control row — Close + chips (no split pill here; tvOS has none, iPad's is top).
+                // Mirrors the progress row's columns so the rows read as one grid: Close is
+                // centered in the elapsed-time column, and the first (audio) chip's left edge
+                // lands exactly on the track's left end.
+                HStack(spacing: m.progressRowGap) {
+                    PlayerRoundButton(systemImage: "chevron.down", size: m.closeSize, iconScale: 0.46,
+                                      accessibilityLabel: "Close") { onDismiss() }
+                        .frame(width: m.timeLabelWidth)
+                    HStack(spacing: m.chipsGap) { chips(m) }
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, m.padX)
+                .padding(.bottom, m.controlRowBottom)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
             }
-            #endif
+            .transition(.opacity)
         }
-        .padding(.horizontal, m.padX)
-        .padding(.top, m.topBarTop)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
-        #if !os(tvOS)
-        // Centre transport (iPad only — tvOS uses the remote).
-        HStack(spacing: m.transportGap) {
-            PlayerRoundButton(systemImage: "gobackward.10", size: m.transportSkip, iconScale: 0.48,
-                              accessibilityLabel: "Skip back 10 seconds") { skip(-10) }
-            PlayerRoundButton(systemImage: vm.isPlaying ? "pause.fill" : "play.fill", size: m.transportPlay,
-                              iconScale: 0.42, primary: true,
-                              accessibilityLabel: vm.isPlaying ? "Pause" : "Play") { togglePlayPause() }
-            PlayerRoundButton(systemImage: "goforward.10", size: m.transportSkip, iconScale: 0.48,
-                              accessibilityLabel: "Skip forward 10 seconds") { skip(10) }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-        #endif
-
-        // Progress — anchored bottom.
+        // Progress — anchored bottom; persists through the drag-scrub collapse.
         scrubber(m)
             .padding(.horizontal, m.padX)
             .padding(.bottom, m.progressBottom)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-
-        // Control row — Close + chips (no split pill here; tvOS has none, iPad's is top).
-        // Mirrors the progress row's columns so the rows read as one grid: Close is
-        // centered in the elapsed-time column, and the first (audio) chip's left edge
-        // lands exactly on the track's left end.
-        HStack(spacing: m.progressRowGap) {
-            PlayerRoundButton(systemImage: "chevron.down", size: m.closeSize, iconScale: 0.46,
-                              accessibilityLabel: "Close") { onDismiss() }
-                .frame(width: m.timeLabelWidth)
-            HStack(spacing: m.chipsGap) { chips(m) }
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, m.padX)
-        .padding(.bottom, m.controlRowBottom)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
     }
 
     // MARK: - Phone layout (iPhone landscape)
@@ -184,57 +210,63 @@ struct PlayerControlsView: View {
     @ViewBuilder
     private var phoneControls: some View {
         let m = PlayerMetrics.phone
-        // Top bar — Close · title · AirPlay.
-        HStack(spacing: 14) {
-            PlayerRoundButton(systemImage: "chevron.down", size: 40, iconScale: 0.46,
-                              accessibilityLabel: "Close") { onDismiss() }
-            Text(vm.title).font(.system(size: 17, weight: .bold)).foregroundStyle(.white).lineLimit(1)
-            Spacer(minLength: 8)
-            if vm.isVideoAirPlayAvailable {
-                AirPlayRouteButton()
-                    .frame(width: 36, height: 36)
-                    .glassEffect(.regular, in: Circle())
-                    .overlay(Circle().strokeBorder(.white.opacity(0.20), lineWidth: 1))
+        // Same drag-scrub collapse as the big layout: only the progress row survives.
+        if !dragScrubbing {
+            Group {
+                // Top bar — Close · title · AirPlay.
+                HStack(spacing: 14) {
+                    PlayerRoundButton(systemImage: "chevron.down", size: 40, iconScale: 0.46,
+                                      accessibilityLabel: "Close") { onDismiss() }
+                    Text(vm.title).font(.system(size: 17, weight: .bold)).foregroundStyle(.white).lineLimit(1)
+                    Spacer(minLength: 8)
+                    if vm.isVideoAirPlayAvailable {
+                        AirPlayRouteButton()
+                            .frame(width: 36, height: 36)
+                            .glassEffect(.regular, in: Circle())
+                            .overlay(Circle().strokeBorder(.white.opacity(0.20), lineWidth: 1))
+                    }
+                }
+                .padding(.horizontal, 26)
+                .padding(.top, 22)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+
+                // Centre transport.
+                HStack(spacing: 46) {
+                    PlayerRoundButton(systemImage: "gobackward.10", size: 52, iconScale: 0.5,
+                                      accessibilityLabel: "Skip back 10 seconds") { skip(-10) }
+                    PlayerRoundButton(systemImage: vm.isPlaying ? "pause.fill" : "play.fill", size: 76,
+                                      iconScale: 0.42, primary: true,
+                                      accessibilityLabel: vm.isPlaying ? "Pause" : "Play") { togglePlayPause() }
+                    PlayerRoundButton(systemImage: "goforward.10", size: 52, iconScale: 0.5,
+                                      accessibilityLabel: "Skip forward 10 seconds") { skip(10) }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+
+                // Chip row — chips · PiP, in the progress row's columns (same as the big
+                // layout): the first chip's left edge lands on the track's left end, and PiP
+                // sits centered under the remaining-time column.
+                HStack(spacing: 9) {
+                    chips(m)
+                    Spacer(minLength: 0)
+                    if vm.isPiPAvailable {
+                        PlayerRoundButton(systemImage: "pip.enter", size: 37, iconScale: 0.5,
+                                          accessibilityLabel: "Picture in Picture") { resetHideTimer(); vm.startPiP() }
+                            .frame(width: m.timeLabelWidth)
+                    }
+                }
+                .padding(.leading, m.timeLabelWidth + m.progressRowGap)
+                .padding(.horizontal, 26)
+                .padding(.bottom, 18)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
             }
+            .transition(.opacity)
         }
-        .padding(.horizontal, 26)
-        .padding(.top, 22)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
-        // Centre transport.
-        HStack(spacing: 46) {
-            PlayerRoundButton(systemImage: "gobackward.10", size: 52, iconScale: 0.5,
-                              accessibilityLabel: "Skip back 10 seconds") { skip(-10) }
-            PlayerRoundButton(systemImage: vm.isPlaying ? "pause.fill" : "play.fill", size: 76,
-                              iconScale: 0.42, primary: true,
-                              accessibilityLabel: vm.isPlaying ? "Pause" : "Play") { togglePlayPause() }
-            PlayerRoundButton(systemImage: "goforward.10", size: 52, iconScale: 0.5,
-                              accessibilityLabel: "Skip forward 10 seconds") { skip(10) }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-
-        // Progress.
+        // Progress — persists through the drag-scrub collapse.
         scrubber(m)
             .padding(.horizontal, 26)
             .padding(.bottom, 64)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-
-        // Chip row — chips · PiP, in the progress row's columns (same as the big
-        // layout): the first chip's left edge lands on the track's left end, and PiP
-        // sits centered under the remaining-time column.
-        HStack(spacing: 9) {
-            chips(m)
-            Spacer(minLength: 0)
-            if vm.isPiPAvailable {
-                PlayerRoundButton(systemImage: "pip.enter", size: 37, iconScale: 0.5,
-                                  accessibilityLabel: "Picture in Picture") { resetHideTimer(); vm.startPiP() }
-                    .frame(width: m.timeLabelWidth)
-            }
-        }
-        .padding(.leading, m.timeLabelWidth + m.progressRowGap)
-        .padding(.horizontal, 26)
-        .padding(.bottom, 18)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
     }
 
     // MARK: - Chips (shared)
@@ -329,25 +361,46 @@ struct PlayerControlsView: View {
             if !focused && isScrubbing { isScrubbing = false }
         }
         #else
+        // A finger on the bar enters drag-scrub: pause on the preview frame, collapse
+        // the chrome to the lone bar + bubble (tvOS swipe-scrub's look), then commit
+        // ONE seek at finger-up and resume iff playback was live — the same
+        // pause → [seek, play] ordering as the tvOS reducer (a per-move seek burst
+        // thrashes a transcode and wedges the player).
         PlayerProgressBar(
-            metrics: m, mode: .normal, played: displayed,
+            metrics: m, mode: dragScrubbing ? .scrub : .normal, played: displayed,
             elapsed: formatPlaybackTime(shownSeconds), remaining: remainingText,
             elapsedSeconds: shownSeconds, remainingSeconds: remaining,
             chapters: vm.chapterFractions,
+            bubbleTime: dragScrubbing ? formatPlaybackTime(shownSeconds) : nil,
+            bubbleChapter: dragScrubbing ? vm.chapterTitle(atSeconds: shownSeconds) : nil,
             onScrubChanged: { frac in
-                resetHideTimer()
-                if !isScrubbing { isScrubbing = true; scrubGeneration += 1 }
+                guard durSeconds > 0 else { return }
+                if !isScrubbing {
+                    isScrubbing = true
+                    scrubGeneration += 1
+                    scrubWasPlaying = vm.isPlaying
+                    dragScrubbing = true
+                    onScrubActiveChange(true)
+                    hideTask?.cancel()
+                    Task { await vm.engine?.pause() }
+                }
                 scrubProgress = frac
             },
             onScrubEnded: { frac in
+                dragScrubbing = false
+                onScrubActiveChange(false)
                 resetHideTimer()
                 scrubProgress = frac
                 guard let engine = vm.engine, durSeconds > 0 else { isScrubbing = false; return }
                 let gen = scrubGeneration
+                let resume = scrubWasPlaying
                 let target = CMTime(seconds: frac * durSeconds, preferredTimescale: 600)
                 Task {
                     await engine.seek(to: target)
-                    if scrubGeneration == gen { isScrubbing = false }
+                    // A newer drag owns the bar now — leave the resume to its commit.
+                    guard scrubGeneration == gen else { return }
+                    if resume { await engine.play() }
+                    isScrubbing = false
                 }
             }
         )
@@ -460,6 +513,9 @@ struct PlayerControlsView: View {
     // MARK: - Auto-hide
 
     private func toggleControls() {
+        // A second finger's tap mustn't yank the chrome out from under an active
+        // drag-scrub — unmounting the bar kills the gesture with the engine paused.
+        guard !dragScrubbing else { return }
         if menuOpen {
             closeAllMenus(); controlsVisible = true; scheduleHide(); return
         }
@@ -481,7 +537,9 @@ struct PlayerControlsView: View {
         #if os(tvOS)
         return   // Siri Remote has no touch-to-reveal — chrome visibility is reducer-owned.
         #else
-        guard !menuOpen else { return }
+        // No auto-hide while a menu is open or a finger holds the bar — hiding
+        // mid-drag would unmount the gesture's view and strand the engine paused.
+        guard !menuOpen, !dragScrubbing else { return }
         hideTask = Task {
             try? await Task.sleep(for: .seconds(3))
             if !Task.isCancelled { controlsVisible = false }

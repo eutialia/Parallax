@@ -119,6 +119,22 @@ final class PlayerViewModel {
         }
     }
 
+    /// The chapter containing `atSeconds`, formatted "Chapter N · Name" — the scrub
+    /// bubble's caption on every platform. Nil when the item has no chapters.
+    func chapterTitle(atSeconds: Double) -> String? {
+        let chapters = chapters
+        guard !chapters.isEmpty else { return nil }
+        func startSeconds(_ chapter: Chapter) -> Double {
+            let c = chapter.start.components
+            return Double(c.seconds) + Double(c.attoseconds) / 1e18
+        }
+        let current = chapters.last(where: { startSeconds($0) <= atSeconds }) ?? chapters[0]
+        if let name = current.name, !name.isEmpty {
+            return "Chapter \(current.index + 1) · \(name)"
+        }
+        return "Chapter \(current.index + 1)"
+    }
+
     /// Seek to a chapter's start. Reconstruct the full sub-second offset (the
     /// fractional part lives in `attoseconds`) — `.seconds` alone would land a
     /// chapter with a fractional start up to ~1s early, inside the prior chapter.
