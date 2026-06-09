@@ -55,17 +55,16 @@ struct FocusRootView: View {
                     HomeView(preloaded: (session, homeViewModel))
                 }
             }
-            Tab("Library", systemImage: "rectangle.stack", value: AppTab.library) {
-                NavigationStack {
-                    LibraryHostView()
-                }
-            }
             Tab("Search", systemImage: "magnifyingglass", value: AppTab.search) {
                 NavigationStack {
                     JellyfinSearchView()
                 }
             }
 
+            // No "Library" tab on tvOS: the sidebar's Libraries section IS the browser — each entry
+            // drills straight to its grid. With no list to push a drill-down from, the selected
+            // library tab's own label drives the collapsed sidebar's top-left name (the old
+            // drill-down path showed a stale "Library" there).
             if !libraries.isEmpty {
                 TabSection("Libraries") {
                     ForEach(libraries) { library in

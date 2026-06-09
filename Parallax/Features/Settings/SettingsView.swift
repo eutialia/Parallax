@@ -30,8 +30,10 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack(path: $path) {
             root
-                .navigationTitle("Settings")
+                // tvOS omits the in-content title — the sidebar's "Settings" tab label already
+                // names the screen, so a title at the top of the content just duplicates it.
                 #if !os(tvOS)
+                .navigationTitle("Settings")
                 .navigationBarTitleDisplayMode(.inline)
                 #endif
                 .toolbar {

@@ -31,13 +31,13 @@ struct JellyfinLibraryGridView: View {
                 libraryGridLoadingPlaceholder
             }
         }
-        // The grid owns its own title (the library name) so BOTH entry points — the
-        // sidebar's direct library tab and the Library-list drill-down — show it
-        // identically, without each call site re-specifying it. Inline so the name
-        // shares the bar row with the sort/filter button instead of dropping to its
-        // own large-title row.
-        .navigationTitle(collection.name)
+        // The grid owns its own title (the library name) so both iOS entry points — iPhone's
+        // Library-list drill-down and iPad's direct sidebar tab — show it identically. Inline so
+        // the name shares the bar row with the sort/filter button instead of a large-title row.
+        // tvOS deliberately omits it: the collapsed sidebar's top-left already carries the library
+        // name (from the selected tab's label), so an in-content title would just duplicate it.
         #if !os(tvOS)
+        .navigationTitle(collection.name)
         .navigationBarTitleDisplayMode(.inline)
         // iPhone + iPad carry Genre/Sort in the nav bar's trailing edge — iPhone as ONE combined
         // menu button (its bar is too narrow for two chips beside the title), iPad as two menus on
