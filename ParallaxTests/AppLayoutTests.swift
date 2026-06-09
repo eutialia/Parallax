@@ -3,14 +3,14 @@ import Testing
 @testable import Parallax
 
 struct AppLayoutTests {
-    @Test("tv idiom uses 40pt content inset and 4 poster columns")
+    @Test("tv idiom uses 40pt content inset and 6 poster columns")
     func tvMetrics() {
         #expect(AppLayout.contentHMargin(idiom: .tv) == 40)
-        #expect(AppLayout.posterGridColumns(idiom: .tv) == 4)
-        #expect(AppLayout.posterGridColumnSpacing(idiom: .tv) == 24)
-        #expect(AppLayout.posterGridRowSpacing(idiom: .tv) == 28)
+        #expect(AppLayout.posterGridColumns(idiom: .tv) == 6)
+        #expect(AppLayout.posterGridColumnSpacing(idiom: .tv) == 40)
+        #expect(AppLayout.posterGridRowSpacing(idiom: .tv) == 40)
         #expect(AppLayout.shelfTileWidth(idiom: .tv) == 220)
-        #expect(AppLayout.libraryListColumns(idiom: .tv) == 1)
+        #expect(AppLayout.libraryListColumns(idiom: .tv) == 3)
     }
 
     @Test("compact idiom preserves iPhone metrics")

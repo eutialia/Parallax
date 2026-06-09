@@ -25,17 +25,17 @@ import CoreGraphics
         #expect(m.padX == 60)
         #expect(m.chipHeight == 54)
         #expect(m.closeSize == 58)
-        #expect(m.progressBottomScrub == 168)
+        #expect(m.progressBottom == 148)
     }
 
-    @Test func phoneSetIsNinetyTwoPercent() {
-        #expect(PlayerMetrics.phone.u == 0.92)
+    @Test func phoneSetIsSeventyPercent() {
+        #expect(PlayerMetrics.phone.u == 0.7)
     }
 
     @Test func derivesScaledValuesAtPhoneScale() {
         // Confirms the transform is a plain linear `base * u`, not `u²` or similar.
-        let m = PlayerMetrics.phone   // u = 0.92
-        #expect(abs(m.chipHeight - 54 * 0.92) < 0.0001)
-        #expect(abs(m.trackHeightNormal - 8 * 0.92) < 0.0001)
+        let m = PlayerMetrics.phone   // u = 0.7
+        #expect(abs(m.chipHeight - 54 * 0.7) < 0.0001)
+        #expect(abs(m.trackHeight - 8 * 0.7) < 0.0001)
     }
 }
