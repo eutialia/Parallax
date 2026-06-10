@@ -179,14 +179,18 @@ struct PlayerControlsView: View {
                 // Centre transport (iPad only — tvOS uses the remote). Absent until
                 // the stream plays: the loading orb occupies this exact spot.
                 if playbackReady {
-                    HStack(spacing: m.transportGap) {
-                        PlayerRoundButton(systemImage: "gobackward.10", size: m.transportSkip, iconScale: 0.48,
-                                          accessibilityLabel: "Skip back 10 seconds") { skip(-10) }
-                        PlayerRoundButton(systemImage: vm.isPlaying ? "pause.fill" : "play.fill", size: m.transportPlay,
-                                          iconScale: 0.42, primary: true,
-                                          accessibilityLabel: vm.isPlaying ? "Pause" : "Play") { togglePlayPause() }
-                        PlayerRoundButton(systemImage: "goforward.10", size: m.transportSkip, iconScale: 0.48,
-                                          accessibilityLabel: "Skip forward 10 seconds") { skip(10) }
+                    GlassEffectContainer(spacing: Space.s8) {
+                        HStack(spacing: m.transportGap) {
+                            PlayerRoundButton(systemImage: "gobackward.10", size: m.transportSkip, iconScale: 0.48,
+                                              glyphOpticalYOffset: PlayerRoundButton.skipGlyphYOffset,
+                                              accessibilityLabel: "Skip back 10 seconds") { skip(-10) }
+                            PlayerRoundButton(systemImage: vm.isPlaying ? "pause.fill" : "play.fill", size: m.transportPlay,
+                                              iconScale: 0.42, primary: true,
+                                              accessibilityLabel: vm.isPlaying ? "Pause" : "Play") { togglePlayPause() }
+                            PlayerRoundButton(systemImage: "goforward.10", size: m.transportSkip, iconScale: 0.48,
+                                              glyphOpticalYOffset: PlayerRoundButton.skipGlyphYOffset,
+                                              accessibilityLabel: "Skip forward 10 seconds") { skip(10) }
+                        }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                 }
@@ -195,13 +199,20 @@ struct PlayerControlsView: View {
                 // Control row — Close + chips (no split pill here; tvOS has none, iPad's is top).
                 // Mirrors the progress row's columns so the rows read as one grid: Close is
                 // centered in the elapsed-time column, and the first (audio) chip's left edge
-                // lands exactly on the track's left end.
+                // lands exactly on the track's left end. The `GlassEffectContainer` grouping
+                // (Apple's sibling-glass guidance) is iOS-ONLY: the container renders the glass
+                // shapes in its own layer, so on tvOS a focused chip's lift (scale transform)
+                // left the container-drawn glass/dim capsule behind as an offset ghost. iOS
+                // has no focus lift, so the grouping is safe there.
                 HStack(spacing: m.progressRowGap) {
                     PlayerRoundButton(systemImage: "chevron.down", size: m.closeSize, iconScale: 0.46,
                                       accessibilityLabel: "Close") { onDismiss() }
                         .frame(width: m.timeLabelWidth)
                     HStack(spacing: m.chipsGap) { chips(m) }
                     Spacer(minLength: 0)
+                }
+                .tvPlatformGated { row in
+                    GlassEffectContainer(spacing: Space.s8) { row }
                 }
                 .padding(.horizontal, m.padX)
                 .padding(.bottom, m.controlRowBottom)
@@ -226,33 +237,39 @@ struct PlayerControlsView: View {
         if !dragScrubbing {
             Group {
                 // Top bar — Close · title · AirPlay.
-                HStack(spacing: 14) {
+                HStack(spacing: PlayerMetrics.phoneTopBarGap) {
                     PlayerRoundButton(systemImage: "chevron.down", size: 40, iconScale: 0.46,
                                       accessibilityLabel: "Close") { onDismiss() }
                     Text(vm.title).font(.system(size: 17, weight: .bold)).foregroundStyle(.white).lineLimit(1)
-                    Spacer(minLength: 8)
+                    Spacer(minLength: Space.s8)
                     if vm.isVideoAirPlayAvailable {
                         AirPlayRouteButton()
                             .frame(width: 36, height: 36)
-                            .glassEffect(.regular, in: Circle())
+                            // Clear over-video glass + dim, same as PlayerRoundButton.
+                            .glassEffect(.clear.interactive(), in: Circle())
+                            .background(.black.opacity(0.3), in: Circle())
                             .overlay(Circle().strokeBorder(.white.opacity(0.20), lineWidth: 1))
                     }
                 }
-                .padding(.horizontal, 26)
-                .padding(.top, 22)
+                .padding(.horizontal, PlayerMetrics.phonePadX)
+                .padding(.top, PlayerMetrics.phoneTopBarTop)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
                 // Centre transport. Absent until the stream plays: the loading orb
                 // occupies this exact spot.
                 if playbackReady {
-                    HStack(spacing: 46) {
-                        PlayerRoundButton(systemImage: "gobackward.10", size: 52, iconScale: 0.5,
-                                          accessibilityLabel: "Skip back 10 seconds") { skip(-10) }
-                        PlayerRoundButton(systemImage: vm.isPlaying ? "pause.fill" : "play.fill", size: 76,
-                                          iconScale: 0.42, primary: true,
-                                          accessibilityLabel: vm.isPlaying ? "Pause" : "Play") { togglePlayPause() }
-                        PlayerRoundButton(systemImage: "goforward.10", size: 52, iconScale: 0.5,
-                                          accessibilityLabel: "Skip forward 10 seconds") { skip(10) }
+                    GlassEffectContainer(spacing: Space.s8) {
+                        HStack(spacing: PlayerMetrics.phoneTransportGap) {
+                            PlayerRoundButton(systemImage: "gobackward.10", size: 52, iconScale: 0.5,
+                                              glyphOpticalYOffset: PlayerRoundButton.skipGlyphYOffset,
+                                              accessibilityLabel: "Skip back 10 seconds") { skip(-10) }
+                            PlayerRoundButton(systemImage: vm.isPlaying ? "pause.fill" : "play.fill", size: 76,
+                                              iconScale: 0.42, primary: true,
+                                              accessibilityLabel: vm.isPlaying ? "Pause" : "Play") { togglePlayPause() }
+                            PlayerRoundButton(systemImage: "goforward.10", size: 52, iconScale: 0.5,
+                                              glyphOpticalYOffset: PlayerRoundButton.skipGlyphYOffset,
+                                              accessibilityLabel: "Skip forward 10 seconds") { skip(10) }
+                        }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                 }
@@ -260,18 +277,20 @@ struct PlayerControlsView: View {
                 // Chip row — chips · PiP, in the progress row's columns (same as the big
                 // layout): the first chip's left edge lands on the track's left end, and PiP
                 // sits centered under the remaining-time column.
-                HStack(spacing: 9) {
-                    chips(m)
-                    Spacer(minLength: 0)
-                    if vm.isPiPAvailable {
-                        PlayerRoundButton(systemImage: "pip.enter", size: 37, iconScale: 0.5,
-                                          accessibilityLabel: "Picture in Picture") { resetHideTimer(); vm.startPiP() }
-                            .frame(width: m.timeLabelWidth)
+                GlassEffectContainer(spacing: Space.s3) {
+                    HStack(spacing: PlayerMetrics.phoneChipRowGap) {
+                        chips(m)
+                        Spacer(minLength: 0)
+                        if vm.isPiPAvailable {
+                            PlayerRoundButton(systemImage: "pip.enter", size: 37, iconScale: 0.5,
+                                              accessibilityLabel: "Picture in Picture") { resetHideTimer(); vm.startPiP() }
+                                .frame(width: m.timeLabelWidth)
+                        }
                     }
                 }
                 .padding(.leading, m.timeLabelWidth + m.progressRowGap)
-                .padding(.horizontal, 26)
-                .padding(.bottom, 18)
+                .padding(.horizontal, PlayerMetrics.phonePadX)
+                .padding(.bottom, PlayerMetrics.phoneChipRowBottom)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
             }
             .transition(.opacity)
@@ -279,8 +298,8 @@ struct PlayerControlsView: View {
 
         // Progress — persists through the drag-scrub collapse.
         scrubber(m)
-            .padding(.horizontal, 26)
-            .padding(.bottom, 64)
+            .padding(.horizontal, PlayerMetrics.phonePadX)
+            .padding(.bottom, PlayerMetrics.phoneProgressBottom)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
     }
 
@@ -518,7 +537,7 @@ struct PlayerControlsView: View {
     private func trackMenuChrome<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: Radius.panel, style: .continuous)
         ScrollView {
-            content().padding(8)
+            content().padding(Space.s8)
         }
         .scrollBounceBehavior(.basedOnSize)
         .frame(idealWidth: 360)

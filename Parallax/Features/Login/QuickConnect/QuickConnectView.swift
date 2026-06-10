@@ -47,10 +47,10 @@ struct QuickConnectView: View {
                 Label("Use password instead", systemImage: "person.fill")
                     .formActionLabel(.glass)
             }
-            .tvChipButton()
+            .formActionButton(.glass)
         }
-        .padding(32)
-        .glassBar(cornerRadius: 26)
+        .padding(Space.s30)
+        .glassBar()
     }
 
     @ViewBuilder
@@ -60,7 +60,7 @@ struct QuickConnectView: View {
             case .idle, .starting, .awaitingCode:
                 QuickConnectLoadingSkeleton()
             case .showingCode(let code):
-                VStack(spacing: 16) {
+                VStack(spacing: Space.s16) {
                     Text("Open Jellyfin on the web, go to your user menu → Quick Connect, and enter this code:")
                         .font(.callout)
                         .foregroundStyle(Color.secondaryLabel)
@@ -70,9 +70,9 @@ struct QuickConnectView: View {
                         .tracking(8)
                         .lineLimit(1)
                         .minimumScaleFactor(0.5)
-                        .padding(.horizontal, 24)
-                        .padding(.vertical, 16)
-                        .background(.tertiary, in: .rect(cornerRadius: 16))
+                        .padding(.horizontal, Space.s22)
+                        .padding(.vertical, Space.s16)
+                        .background(.tertiary, in: .rect(cornerRadius: Radius.card))
                     waitingIndicator
                 }
             case .signingIn:
@@ -96,7 +96,7 @@ struct QuickConnectView: View {
                         Label("Try again", systemImage: "arrow.clockwise")
                             .formActionLabel(.glass)
                     }
-                    .tvChipButton()
+                    .formActionButton(.glass)
                 }
             }
         } else {

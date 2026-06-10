@@ -52,6 +52,8 @@ struct SeriesDetailView: View {
                                             Task { await vm.toggleFavorite() }
                                         }
                                     }
+                                    // No `GlassEffectContainer` — it misrenders member glass on
+                                    // both platforms (see MovieDetailView / "Action row parity").
                                     .padding(.top, Space.s8)
                                     // One focus group so the action row is a coherent focus
                                     // target (Resume default) on tvOS.
@@ -116,9 +118,9 @@ struct SeriesDetailView: View {
                             items: episodes,
                             tileWidth: AppLayout.seriesEpisodeTileWidth(idiom: idiom)
                         ) { episode in
-                            // Bare button — `MetadataRow` applies `.tvShelfItem()` (the custom
-                            // uniform-lift `TVPosterButtonStyle` on tvOS / `.plain` on iOS) to every
-                            // item, so it focuses like the poster cards. A local `.buttonStyle`
+                            // Bare button — `MetadataRow` applies `.tvShelfItem()` (native
+                            // `.borderless` lockup on tvOS / `.plain` on iOS) to every item,
+                            // so it focuses like the poster cards. A local `.buttonStyle`
                             // here would override that.
                             Button {
                                 playback.play(episode.id, in: session)

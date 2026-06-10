@@ -12,14 +12,11 @@ struct JellyfinLibraryGridView: View {
     /// load-more strip so all three stay aligned. Denser on regular width (iPad).
     private var columns: Int { AppLayout.posterGridColumns(idiom: idiom) }
     @State private var viewModel: JellyfinLibraryGridViewModel?
-    /// Header capsule height, Dynamic-Type-scaled for iPhone/iPad. Shared by the real controls and
-    /// their loading placeholder so the swap stays height-neutral.
-    @ScaledMetric(relativeTo: .subheadline) private var compactControlHeight: CGFloat = 46
-    /// Header capsule height. Fixed-taller on tvOS (10-foot legibility — the SF Symbol needs
-    /// vertical breathing room that 34pt didn't give at tvOS's larger `.subheadline`).
-    private var headerControlHeight: CGFloat { idiom == .tv ? 56 : compactControlHeight }
-    /// Skeleton capsule widths for the header's loading state — shared by the first-load
-    /// placeholder and the genre-loading branch so both match the real chips' footprint.
+    /// Skeleton capsule metrics for the header's loading state — tvOS-only, like the
+    /// header itself. The real Genre/Sort chips are native `.glass` Menus that size
+    /// themselves from their labels, so these approximate that footprint to keep the
+    /// skeleton→real swap shift-free; the height reuses the app-wide control height.
+    private let headerControlHeight: CGFloat = AppLayout.tvControlHeight
     private let genreChipWidth: CGFloat = 140
     private let sortChipWidth: CGFloat = 150
 
@@ -207,6 +204,10 @@ struct JellyfinLibraryGridView: View {
     /// genres. Horizontal inset comes from the scroll view's `contentMargins`, not local padding.
     @ViewBuilder
     private func headerControls(vm: JellyfinLibraryGridViewModel) -> some View {
+        // No `GlassEffectContainer` here: this row only renders on tvOS (iOS puts the
+        // controls in the nav bar), and on tvOS the container re-renders native `.glass`
+        // buttons in its own layer — glyphs drift off the discs and the glass desyncs
+        // from the system focus lift (pixel-measured in the "Action row parity" preview).
         HStack(spacing: Space.s12) {
             Spacer(minLength: 0)
             if vm.isLoadingGenres {
@@ -298,19 +299,18 @@ struct JellyfinLibraryGridView: View {
     }
     #endif
 
-    /// Inline-header Genre menu (iPhone + tvOS) — the glass chip label. iPad uses the same
-    /// `genrePicker` content under a plain nav-bar label (see `libraryControlsToolbar`).
+    /// Inline-header Genre menu — only reachable on tvOS (`headerControls` is gated on
+    /// `idiom == .tv`; iPhone/iPad carry the same `genrePicker` in the nav bar via
+    /// `libraryControlsToolbar`), so the native `.glass` style applies unconditionally.
     private func genreMenu(vm: JellyfinLibraryGridViewModel) -> some View {
         Menu {
             genrePicker(vm: vm)
         } label: {
-            headerChip(
-                vm.selectedGenre ?? "Genre",
-                systemImage: "theatermasks",
-                isSelected: vm.selectedGenre != nil
-            )
+            headerChip(vm.selectedGenre ?? "Genre", systemImage: "theatermasks")
         }
-        .tvChipButton()
+        // Native `.glass` (system focus platter + lift); selected = tinted glass.
+        .buttonStyle(.glass)
+        .tint(vm.selectedGenre != nil ? Color.chipSelectedFill : nil)
         .accessibilityLabel("Genre")
     }
 
@@ -329,36 +329,26 @@ struct JellyfinLibraryGridView: View {
         .pickerStyle(.inline)
     }
 
-    /// Shared Liquid Glass capsule for the header's menu buttons so Genre and Sort read
-    /// identically — the same `.glassEffect(.regular…)` + hairline language as `GlassSurface`'s
-    /// `glassPanel`/`glassBar`. The hairline is the theme-adaptive `glassBorder` (NOT the
-    /// dark-pinned `heroGlassBorder` the photo-context controls use): this header floats over the
-    /// solid screen, so the border must track light/dark like the rest of the chrome. Selected
-    /// genre tints the glass to stand out; the focus lift comes from `.tvChipButton()` on the Menu
-    /// (tvOS has no touch/pointer, so glass `.interactive()` wouldn't fire — the focus effect is
-    /// what responds to the remote).
-    private func headerChip(_ title: String, systemImage: String, isSelected: Bool = false) -> some View {
-        HStack(spacing: Space.s8) {
-            Image(systemName: systemImage)
-            Text(title)
-        }
-        .font(.subheadline.weight(.medium))
-        .foregroundStyle(isSelected ? Color.chipSelectedLabel : Color.secondaryLabel)
-        .padding(.horizontal, Space.s14)
-        .frame(height: headerControlHeight)
-        .glassEffect(isSelected ? .regular.tint(Color.chipSelectedFill) : .regular, in: Capsule())
-        .overlay(Capsule().strokeBorder(Color.glassBorder, lineWidth: 1))
+    /// Shared label for the header's menu buttons so Genre and Sort read identically.
+    /// Bare — the enclosing Menu wears the native `.glass` style, which owns the capsule,
+    /// metrics, and label color: the focused white platter inverts the label, and a forced
+    /// `foregroundStyle` would survive that inversion and read gray-on-white. Selection
+    /// shows via the menu's tint (set at the call site), not the label.
+    private func headerChip(_ title: String, systemImage: String) -> some View {
+        Label(title, systemImage: systemImage)
+            .labelStyle(.titleAndIcon)
+            .font(.subheadline.weight(.medium))
     }
 
-    /// Inline-header Sort & Filter menu (iPhone + tvOS) — the glass chip label. iPad uses the same
-    /// `sortFilterPicker` content under a plain nav-bar label (see `libraryControlsToolbar`).
+    /// Inline-header Sort & Filter menu — tvOS-only like `genreMenu`; iPhone/iPad carry
+    /// the same `sortFilterPicker` in the nav bar (see `libraryControlsToolbar`).
     private func sortFilterMenu(vm: JellyfinLibraryGridViewModel) -> some View {
         Menu {
             sortFilterPicker(vm: vm)
         } label: {
             headerChip("Sort & Filter", systemImage: "line.3.horizontal.decrease")
         }
-        .tvChipButton()
+        .buttonStyle(.glass)
         .accessibilityLabel("Sort and Filter")
     }
 

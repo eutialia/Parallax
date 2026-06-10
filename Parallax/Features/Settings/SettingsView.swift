@@ -133,7 +133,7 @@ struct SettingsView: View {
                     Text(session.serverName).font(.headline).foregroundStyle(Color.label)
                     Text(host)
                         .font(.caption).foregroundStyle(Color.secondaryLabel).lineLimit(1)
-                    Text(session.user.name).font(.caption2).foregroundStyle(Color.tertiaryLabel)
+                    Text(session.user.name).font(.caption).foregroundStyle(Color.tertiaryLabel)
                 }
                 Spacer(minLength: 0)
                 if isActive {
@@ -166,7 +166,7 @@ struct SettingsView: View {
             Label("Add Server", systemImage: "plus")
                 .formActionLabel(.glass)
         }
-        .tvChipButton()
+        .formActionButton(.glass)
         .padding(.top, Space.s8)
     }
 

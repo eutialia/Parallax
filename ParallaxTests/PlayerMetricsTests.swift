@@ -38,4 +38,16 @@ import CoreGraphics
         #expect(abs(m.chipHeight - 54 * 0.7) < 0.0001)
         #expect(abs(m.trackHeight - 8 * 0.7) < 0.0001)
     }
+
+    @Test func phoneChromeLayoutHoldsAuthoredValues() {
+        // The iPhone HUD's edge/row layout is authored at 1× (NOT u-scaled) — these used
+        // to be scattered literals in `PlayerControlsView.phoneControls`.
+        #expect(PlayerMetrics.phonePadX == 26)
+        #expect(PlayerMetrics.phoneTopBarTop == 22)
+        #expect(PlayerMetrics.phoneTopBarGap == 14)
+        #expect(PlayerMetrics.phoneTransportGap == 46)
+        #expect(PlayerMetrics.phoneChipRowGap == 9)
+        #expect(PlayerMetrics.phoneChipRowBottom == 18)
+        #expect(PlayerMetrics.phoneProgressBottom == 64)
+    }
 }

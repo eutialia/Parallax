@@ -53,9 +53,11 @@ enum AppLayout {
         }
     }
 
+    /// Rows are deliberately wider than columns on iOS (s16 vs s12): each tile hangs a
+    /// caption below the art, so the vertical gap needs the extra breathing room.
     static func posterGridRowSpacing(idiom: AppIdiom) -> CGFloat {
         switch idiom {
-        case .compact, .regular: 16
+        case .compact, .regular: Space.s16
         case .tv: Space.s40
         }
     }

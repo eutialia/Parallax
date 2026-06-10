@@ -44,6 +44,9 @@ struct MediaTile: View {
             }
         }
         .clipShape(.rect(cornerRadius: Radius.tile))
+        // tvOS system highlight (specular + parallax) masked to the tile's own corners —
+        // pairs with the `.borderless` style the enclosing button wears (`tvPosterButton`).
+        .tvPosterHighlight(cornerRadius: Radius.tile)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(title)
     }
@@ -79,8 +82,8 @@ struct MediaTile: View {
                     .clipShape(.rect(cornerRadius: 2.5))
                 }
             }
-            .padding(.horizontal, 8)
-            .padding(.bottom, 7)
+            .padding(.horizontal, HomeShelf.footerCaptionInsetX)
+            .padding(.bottom, HomeShelf.footerCaptionInsetBottom)
         }
         .frame(maxWidth: .infinity)
         .shelfTileFooterGlass()

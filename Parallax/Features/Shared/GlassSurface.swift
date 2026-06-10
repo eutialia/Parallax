@@ -117,8 +117,8 @@ private struct ShelfFooterPreviewTile: View {
                     .frame(height: 5)
                     .clipShape(.rect(cornerRadius: 2.5))
                 }
-                .padding(.horizontal, 8)
-                .padding(.bottom, 7)
+                .padding(.horizontal, HomeShelf.footerCaptionInsetX)
+                .padding(.bottom, HomeShelf.footerCaptionInsetBottom)
             }
             .frame(maxWidth: .infinity)
             .shelfTileFooterGlass()

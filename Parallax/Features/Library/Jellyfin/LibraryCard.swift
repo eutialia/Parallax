@@ -17,7 +17,10 @@ struct LibraryCard: View {
             Image(systemName: collection.collectionType.symbolName)
                 .scaledFont(16, relativeTo: .headline, weight: .semibold).foregroundStyle(.white)
                 .frame(width: 36, height: 36)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                // Same dark frosted Liquid Glass as the hero's photo-context chrome — this
+                // chip floats on artwork too (it was the app's one `.ultraThinMaterial` chip).
+                .glassEffect(.regular.tint(Color.heroGlass), in: .rect(cornerRadius: 10, style: .continuous))
+                .environment(\.colorScheme, .dark)
                 .padding(Space.s14)
         }
         // Pin the card to the banner aspect so a library with no Primary image keeps full
@@ -25,6 +28,9 @@ struct LibraryCard: View {
         .aspectRatio(JellyfinImage.landscape, contentMode: .fit)
         .clipShape(.rect(cornerRadius: Radius.card))
         .contentShape(.rect(cornerRadius: Radius.card))
+        // tvOS system highlight masked to the banner's corners — pairs with the
+        // `.borderless` style on the enclosing NavigationLink (`tvPosterButton`).
+        .tvPosterHighlight(cornerRadius: Radius.card)
         .shadow(color: .black.opacity(0.2), radius: 8, y: 4)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(collection.name)

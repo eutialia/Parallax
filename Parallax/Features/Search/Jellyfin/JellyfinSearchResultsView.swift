@@ -32,9 +32,6 @@ struct JellyfinSearchResultsView: View, Equatable {
                             ItemNavigator(item: .series(s), session: session) {
                                 MediaTile(title: s.title, imageRef: s.imageRef(.primary), imageKind: .primary, session: session, progress: nil, aspectRatio: JellyfinImage.poster, maxImageWidth: 400)
                             }
-                            // Float the focused poster above its grid neighbours so its tvOS focus
-                            // lift isn't painted under later cells. No-op on iOS. (See MediaGrid.)
-                            .tvFocusElevated()
                         }
                     }
                 }
@@ -44,7 +41,6 @@ struct JellyfinSearchResultsView: View, Equatable {
                             ItemNavigator(item: .movie(m), session: session) {
                                 MediaTile(title: m.title, imageRef: m.imageRef(.primary), imageKind: .primary, session: session, progress: nil, aspectRatio: JellyfinImage.poster, maxImageWidth: 400)
                             }
-                            .tvFocusElevated()
                         }
                     }
                 }
@@ -54,7 +50,6 @@ struct JellyfinSearchResultsView: View, Equatable {
                             ItemNavigator(item: .episode(e), session: session) {
                                 MediaTile(title: e.name, imageRef: e.imageRef(.primary), imageKind: .primary, session: session, progress: nil, aspectRatio: JellyfinImage.landscape, maxImageWidth: 500)
                             }
-                            .tvFocusElevated()
                         }
                     }
                 }

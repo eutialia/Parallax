@@ -81,6 +81,8 @@ struct HeroForeground: View {
             primaryPlay
             FavoriteActionButton(isFavorite: isFavorite, action: onToggleFavorite)
         }
+        // No `GlassEffectContainer` — it misrenders member glass on both platforms
+        // (see MovieDetailView / "Action row parity").
         .padding(.top, Space.s8)
     }
 

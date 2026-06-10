@@ -286,16 +286,12 @@ struct PlayerView: View {
         }
     }
 
-    /// Intrinsic-width error pills can't use `formActionLabel` (it forces full width), so they
-    /// reuse the shared tvOS control height directly.
-    private var errorPillHeight: CGFloat { idiom == .tv ? AppLayout.tvControlHeight : 46 }
-
     /// Failure state. White-on-dark over the black player surface (so it ignores the
     /// app's light/dark tint — the old `.borderedProminent` Retry rendered white-on-
     /// white under the monochrome global tint). Solid-white "Try Again", glass "Close".
     @ViewBuilder
     private func errorOverlay(_ error: AppError, vm: PlayerViewModel) -> some View {
-        VStack(spacing: 16) {
+        VStack(spacing: Space.s16) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 40, weight: .semibold))
                 .foregroundStyle(.white)
@@ -309,31 +305,20 @@ struct PlayerView: View {
                 .font(.callout)
                 .foregroundStyle(.white.opacity(0.72))
                 .multilineTextAlignment(.center)
-            HStack(spacing: 12) {
-                Button { Task { await vm.retry() } } label: {
-                    Text("Try Again")
-                        .font(.headline)
-                        .foregroundStyle(.black)
-                        .padding(.horizontal, idiom == .tv ? Space.s40 : 24)
-                        .frame(height: errorPillHeight)
-                        .background(.white, in: Capsule())
-                }
-                // Custom chip style: gentle lift, no system focus platter (which `.plain`
-                // paints around the pill on tvOS). Chrome is inside the label, so it scales whole.
-                .tvChipButton()
-                Button { exitPlayer() } label: {
-                    Text("Close")
-                        .font(.headline)
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, idiom == .tv ? Space.s40 : 22)
-                        .frame(height: errorPillHeight)
-                        .glassEffect(.regular, in: Capsule())
-                }
-                .tvChipButton()
+            // Native Liquid Glass buttons: prominent white Try Again, plain glass Close.
+            // The system owns sizing and the tvOS focus treatment; the overlay pins dark,
+            // so both resolve white-on-dark regardless of the app theme.
+            HStack(spacing: Space.s12) {
+                Button("Try Again") { Task { await vm.retry() } }
+                    .buttonStyle(.glassProminent)
+                    .tint(.white)
+                Button("Close") { exitPlayer() }
+                    .buttonStyle(.glass)
             }
-            .padding(.top, 6)
+            .font(.headline)
+            .padding(.top, Space.s8)
         }
-        .padding(40)
+        .padding(Space.s40)
         .frame(maxWidth: 460)
         #if os(tvOS)
         // Back mirrors the Close pill. Focus sits on the chips, so this rides the

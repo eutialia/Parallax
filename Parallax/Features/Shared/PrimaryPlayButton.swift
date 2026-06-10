@@ -1,8 +1,11 @@
 import SwiftUI
 
-/// Solid, high-contrast primary action — the #1 "feel" lever. Monochrome: `buttonFill`
-/// (bright in dark / espresso in light), `buttonLabel` content, full pill. Same pill
-/// everywhere, including over hero photography.
+/// Primary action over hero/detail artwork — a native Liquid Glass pill on every
+/// platform (one body, system-owned behavior).
+/// - tvOS: bare `.glass` — the system owns rest/focus/platter/label colors; tinting or
+///   forcing a label color breaks the focus inversion (white label on white platter).
+/// - iOS: `.glassProminent` tinted the frozen espresso `playPillFill` + pure white
+///   label — pixel-matched to the approved row-3 prototype in "Action row parity".
 /// Label patterns: "Play", "Resume · 1h 02m left", "Resume S3 E1".
 struct PrimaryPlayButton: View {
     let title: String
@@ -15,26 +18,24 @@ struct PrimaryPlayButton: View {
     var layoutReserveTitle: String? = nil
     let action: () -> Void
 
-    @Environment(\.appIdiom) private var idiom
-
-    /// Pill height scales with Dynamic Type (relative to the `.headline` label) so the
-    /// label never clips at larger text sizes.
-    @ScaledMetric(relativeTo: .headline) private var playHeight: CGFloat = 46
-    /// tvOS pill height — the shared `AppLayout.tvControlHeight`, scaled by Dynamic Type. The
-    /// label is `.headline` on both platforms (the system sizes it per platform — ~38pt on tvOS,
-    /// 17pt on iOS), so the tvOS pill needs far more resting height than iOS's 46 to give the
-    /// 10-foot type room. `minHeight` (below) still lets a taller Dynamic Type label grow it.
-    @ScaledMetric(relativeTo: .headline) private var tvPlayHeight: CGFloat = AppLayout.tvControlHeight
-
-    private var resolvedPlayHeight: CGFloat {
-        idiom == .tv ? tvPlayHeight : playHeight
-    }
-
     var body: some View {
-        Button(action: action) {
+        // `Button { action() }`, not `Button(action: action)`: passing the stored
+        // closure directly trips Xcode's preview thunk (`__designTimeSelection` infers
+        // conflicting `() -> Void` vs `@MainActor () -> Void`), killing #Preview here.
+        Button {
+            action()
+        } label: {
             playLabel
         }
-        .buttonStyle(PrimaryPlayButtonStyle())
+        #if os(tvOS)
+        .buttonStyle(.glass)
+        #else
+        .buttonStyle(.glassProminent)
+        .tint(Color.playPillFill)
+        // controlSize is unavailable on tvOS; .extraLarge lands ~50pt at .headline,
+        // the closest native metric to the previous 46pt custom pill.
+        .controlSize(.extraLarge)
+        #endif
     }
 
     @ViewBuilder
@@ -54,28 +55,17 @@ struct PrimaryPlayButton: View {
         }
     }
 
+    /// Bare label: the native styles supply their own padding, height, and platter
+    /// metrics — hand-sizing fought the system geometry (and is ignored anyway).
     private func sizedLabel(_ text: String) -> some View {
         Label(text, systemImage: systemImage)
             .font(.headline)
-            // minHeight, not a fixed height: a label taller than the metric (large Dynamic
-            // Type) grows the pill instead of being clipped.
-            .frame(minHeight: resolvedPlayHeight)
-            // tvOS needs wider gutters: at s22 the ~38pt headline crowded the pill's rounded
-            // ends and read as a cramped, too-narrow button at 10 feet.
-            .padding(.horizontal, idiom == .tv ? Space.s40 : Space.s22)
-    }
-}
-
-private struct PrimaryPlayButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .foregroundStyle(Color.buttonLabel)
-            .background(Color.buttonFill, in: Capsule())
-            .shadow(color: .black.opacity(0.24), radius: 10, y: 6)
-            .opacity(configuration.isPressed ? 0.85 : 1)
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
-            // tvOS focus lift — a custom style gets no system focus effect on its own.
-            .tvFocusEffect()
+            #if !os(tvOS)
+            // Pure white (not the warm buttonLabel): legible on the frozen espresso
+            // tint in both schemes. On tvOS the system picks the label color so the
+            // focused platter can invert it.
+            .foregroundStyle(.white)
+            #endif
     }
 }
 

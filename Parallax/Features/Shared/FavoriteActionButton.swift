@@ -9,8 +9,8 @@ struct FavoriteActionButton: View {
     var body: some View {
         CircleGlassButton(
             systemImage: isFavorite ? "heart.fill" : "heart",
-            isActive: isFavorite,
-            accessibilityLabel: "Favorite",
+            // Stateful so VoiceOver announces what the tap will DO, not just the control's name.
+            accessibilityLabel: isFavorite ? "Remove from Favorites" : "Add to Favorites",
             action: action
         )
     }

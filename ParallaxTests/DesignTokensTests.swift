@@ -51,6 +51,17 @@ struct DesignTokensTests {
     @Test("radius + spacing scales hold the handoff values")
     func metricScales() {
         #expect(Radius.panel == 24 && Radius.card == 18 && Radius.field == 14 && Radius.tile == 12)
-        #expect(Space.s8 == 8 && Space.s22 == 22 && Space.s40 == 40)
+        #expect(Space.s8 == 8 && Space.s16 == 16 && Space.s22 == 22 && Space.s40 == 40)
+    }
+
+    @Test("chipSelectedFill stays translucent so selected chips read as glass, not flat paint")
+    func chipSelectedFillIsTranslucent() {
+        // At the old 0.92 the tint was effectively opaque — the "selected" chip read as a
+        // solid platter, which on tvOS is the FOCUSED look. Keep it clearly translucent
+        // (glass shows through) but strong enough for ink/cream label contrast.
+        for dark in [true, false] {
+            let a = rgba(.chipSelectedFill, dark: dark).a
+            #expect(a <= 0.9 && a >= 0.6)
+        }
     }
 }

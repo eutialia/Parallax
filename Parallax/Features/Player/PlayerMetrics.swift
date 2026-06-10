@@ -68,4 +68,15 @@ struct PlayerMetrics: Equatable {
 
     // Title
     var titleSize: CGFloat { 38 * u }
+
+    // iPhone chrome layout — fixed values, not u-scaled: the phone HUD is authored at 1×
+    // alongside its bespoke round-button sizes (see `PlayerControlsView.phoneControls`).
+    // Named here so the phone layout has one home instead of scattered literals.
+    static let phonePadX: CGFloat = 26
+    static let phoneTopBarTop: CGFloat = 22
+    static let phoneTopBarGap: CGFloat = 14
+    static let phoneTransportGap: CGFloat = 46
+    static let phoneChipRowGap: CGFloat = 9
+    static let phoneChipRowBottom: CGFloat = 18
+    static let phoneProgressBottom: CGFloat = 64
 }

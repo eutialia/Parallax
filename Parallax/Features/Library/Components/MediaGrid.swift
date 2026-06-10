@@ -50,9 +50,6 @@ struct MediaGrid<Item: Identifiable & Hashable, Content: View>: View {
                     .onAppear {
                         if item == items.last { onAppearLast?() }
                     }
-                    // Float the focused card above its neighbours so its tvOS focus lift isn't
-                    // painted under the cells that come after it in the grid. No-op on iOS.
-                    .tvFocusElevated()
             }
         }
         // Leading/trailing inset is applied by the host ScrollView via

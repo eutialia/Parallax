@@ -51,10 +51,14 @@ struct MovieDetailView: View {
                                         }
                                         CircleGlassButton(
                                             systemImage: vm.isPlayed ? "checkmark.circle.fill" : "checkmark.circle",
-                                            isActive: vm.isPlayed,
                                             accessibilityLabel: vm.isPlayed ? "Watched" : "Mark Watched"
                                         ) { Task { await vm.togglePlayed() } }
                                     }
+                                    // No `GlassEffectContainer`: it re-renders member glass in its
+                                    // own layer, which nudged glyphs off the discs (tvOS), desynced
+                                    // from the focus lift, and gray-washed the iOS frost — all
+                                    // pixel-measured in the "Action row parity" preview. The native
+                                    // buttons never sit close enough to want the blend anyway.
                                     .padding(.top, Space.s8)
                                     // One focus group so the focus engine prefers the action row
                                     // as a unit (Play default) over scattered geometry hits.

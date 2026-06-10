@@ -103,15 +103,31 @@ private struct MenuRow<Trailing: View>: View {
 
     var body: some View {
         Button(action: action) {
-            content()
-                .padding(.horizontal, Space.s12)
-                .padding(.vertical, 11)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(
-                    isSelected ? Color.selectionFill : Color.clear,
-                    in: RoundedRectangle(cornerRadius: Radius.tile, style: .continuous)
-                )
-                .contentShape(.rect)
+            // tvOS HIG focus contract: the focused row inverts to an opaque white platter.
+            // Flipping the row's colorScheme to .light does the content inversion for free —
+            // every token inside (label / secondaryLabel / fill) already defines its light
+            // value, so checkmarks and badges turn ink-on-white without per-view branches.
+            // iOS never focuses, so it keeps the dark-pinned palette from `trackMenuChrome`.
+            TVFocusReader { focused in
+                content()
+                    .padding(.horizontal, Space.s12)
+                    .padding(.vertical, 11)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    // Platter as a fading layer (not a style swap, which snaps): it sits
+                    // nearer than the selection fill so the crossfade runs over it.
+                    .background(
+                        RoundedRectangle(cornerRadius: Radius.tile, style: .continuous)
+                            .fill(.white.opacity(0.97))
+                            .opacity(focused ? 1 : 0)
+                    )
+                    .background(
+                        isSelected ? AnyShapeStyle(Color.selectionFill) : AnyShapeStyle(Color.clear),
+                        in: RoundedRectangle(cornerRadius: Radius.tile, style: .continuous)
+                    )
+                    .environment(\.colorScheme, focused ? .light : .dark)
+                    .contentShape(.rect)
+                    .animation(.tvFocusChrome, value: focused)
+            }
         }
         .tvChipButton()
     }

@@ -12,9 +12,10 @@ struct LoginView: View {
     @Environment(AppRouter.self) private var router
     @State private var viewModel: LoginViewModel?
     @State private var showPassword = false
-    /// Shared height for the form's tap targets (fields + Connect + Quick Connect),
-    /// scaling with Dynamic Type so labels never clip at larger text sizes — and taller on
-    /// tvOS via `FormControl` (the CTAs derive the same height from `.formActionLabel`).
+    /// Shared height for the form's text-field rows, scaling with Dynamic Type so labels
+    /// never clip at larger text sizes — and taller on tvOS via `FormControl`. The CTA
+    /// pills no longer use it: their native glass styles size themselves (~the same 50pt
+    /// for a `.headline` label at `.extraLarge` — see `formActionButton`).
     @ScaledMetric(relativeTo: .headline) private var baseControlHeight: CGFloat = 50
     private var controlHeight: CGFloat { FormControl.height(idiom: idiom, scaled: baseControlHeight) }
 
@@ -149,8 +150,8 @@ struct LoginView: View {
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                         Button(showPassword ? "Hide" : "Show") { showPassword.toggle() }
                             .font(.footnote).foregroundStyle(Color.secondaryLabel)
-                            // Plain text, no system focus platter on tvOS.
-                            .tvChipButton()
+                            // Native borderless: the system lifts/highlights it on tvOS focus.
+                            .buttonStyle(.borderless)
                     }
                 }
             }
@@ -171,7 +172,7 @@ struct LoginView: View {
                 }
                 .formActionLabel(.solid)
             }
-            .tvChipButton()
+            .formActionButton(.solid)
             .opacity(vm.canSubmitPassword ? 1 : 0.4)
             .disabled(vm.isWorking || !vm.canSubmitPassword)
 
@@ -189,12 +190,12 @@ struct LoginView: View {
                 Label("Use Quick Connect", systemImage: "bolt.fill")
                     .formActionLabel(.glass)
             }
-            .tvChipButton()
+            .formActionButton(.glass)
             .opacity(vm.canUseQuickConnect ? 1 : 0.4)
             .disabled(!vm.canUseQuickConnect)
         }
-        .padding(32)
-        .glassBar(cornerRadius: 26)
+        .padding(Space.s30)
+        .glassBar()
     }
 
     /// URL-shaped placeholders get auto-styled as blue links, which ignores `.tint`

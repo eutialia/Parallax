@@ -19,6 +19,14 @@ struct AppLayoutTests {
         #expect(AppLayout.posterGridColumns(idiom: .compact) == 3)
     }
 
+    @Test("iOS poster grids: tokenized s12 columns / s16 rows (caption breathing room)")
+    func iosPosterGridSpacing() {
+        for idiom in [AppIdiom.compact, .regular] {
+            #expect(AppLayout.posterGridColumnSpacing(idiom: idiom) == Space.s12)
+            #expect(AppLayout.posterGridRowSpacing(idiom: idiom) == Space.s16)
+        }
+    }
+
     @Test("regular idiom preserves iPad metrics")
     func regularMetrics() {
         #expect(AppLayout.contentHMargin(idiom: .regular) == 20)

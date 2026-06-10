@@ -72,7 +72,7 @@ extension Color {
     /// chip, primary play button). Fixed (not theme-adaptive) on purpose, like `heroGlass`:
     /// the player is pinned `.dark` and paints explicit white/ink rather than the adaptive
     /// label tokens, so this stays `#0a0a0c` regardless of appearance. Mirrors the dark
-    /// value of `buttonLabel`/`chipSelectedLabel`; kept as its own named token so the
+    /// value of `buttonLabel`; kept as its own named token so the
     /// player never depends on an adaptive token resolving dark.
     static let playerInk          = Color(red: 10 / 255, green: 10 / 255, blue: 12 / 255)
 
@@ -80,8 +80,16 @@ extension Color {
     // (espresso fill / cream label) — used everywhere including over hero photography.
     static let buttonFill         = Color(light: 0x2A241D, dark: 0xFFFFFF)
     static let buttonLabel        = Color(light: 0xF7F2EA, dark: 0x0A0A0C)
-    static let chipSelectedFill   = Color(light: 0x2A241D, dark: 0xFFFFFF, darkAlpha: 0.92)
-    static let chipSelectedLabel  = Color(light: 0xF7F2EA, dark: 0x0A0A0C)
+    /// The hero/detail Play pill tint on iOS — espresso in BOTH schemes. Like `heroGlass`,
+    /// it sits over artwork (a dark-pinned region), so it must not flip with the theme;
+    /// pairs with a pure-white label (approved against the "Action row parity" prototype).
+    static let playPillFill       = Color(light: 0x2A241D, dark: 0x2A241D)
+    /// Selected-chip glass tint (the library header chips' `.tint` when a genre is
+    /// applied). Translucent on purpose: at the old 0.92 the tint was effectively opaque,
+    /// so the "glass" chip read as flat paint — and on tvOS a solid white chip is the
+    /// system's FOCUSED look, which made selection ambiguous. The native `.glass` style
+    /// owns the label color against it.
+    static let chipSelectedFill   = Color(light: 0x2A241D, lightAlpha: 0.88, dark: 0xFFFFFF, darkAlpha: 0.78)
     static let selectionFill      = Color(light: 0x2D200F, lightAlpha: 0.09, dark: 0xFFFFFF, darkAlpha: 0.15)
 }
 
@@ -108,6 +116,10 @@ enum HomeShelf {
     static let footerBlurFeatherBleed: CGFloat = 56
     /// Darkening under the caption for text legibility on bright artwork.
     static let footerScrimOpacity: Double = 0.55
+    /// Caption/progress insets inside the frosted footer — shared by `MediaTile` and the
+    /// `GlassSurface` preview tile so the two can't drift apart.
+    static let footerCaptionInsetX: CGFloat = 8
+    static let footerCaptionInsetBottom: CGFloat = 7
 }
 
 /// Series detail episode shelves (16:9 landscape — matches Jellyfin episode primary).
@@ -122,6 +134,7 @@ enum Space {
     static let s8: CGFloat = 8
     static let s12: CGFloat = 12
     static let s14: CGFloat = 14
+    static let s16: CGFloat = 16
     static let s18: CGFloat = 18
     static let s22: CGFloat = 22
     static let s26: CGFloat = 26

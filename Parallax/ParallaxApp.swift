@@ -17,29 +17,46 @@ struct ParallaxApp: App {
     @State private var dependencies: AppDependencies = .live()
     @State private var router: AppRouter = .init()
     @State private var playback: PlaybackPresenter = .init()
+
+    /// Boot into the poster-tile focus spike screen (PosterFocusSpike.swift) instead of
+    /// the app — Debug-only diagnostic for on-device focus A/Bs.
+    private let posterFocusSpike = false
+
     var body: some Scene {
         WindowGroup {
-            RootView()
-                .environment(dependencies)
-                .environment(router)
-                .environment(playback)
-                .task {
-                    do {
-                        try await dependencies.serverStore.load()
-                    } catch {
-                        ParallaxCore.Log.persistence.error("ServerStore.load failed: \(error.localizedDescription)")
-                    }
-                    router.updateForCurrentSession(await dependencies.serverStore.active)
+            #if DEBUG
+            if posterFocusSpike {
+                PosterFocusSpikeScreen()
+            } else {
+                appRoot
+            }
+            #else
+            appRoot
+            #endif
+        }
+    }
 
-                    // Rebuild the device profile on the next resolve whenever
-                    // the audio route changes (e.g. AirPlay connects). Per the
-                    // spec, in-flight playback is intentionally NOT interrupted.
-                    Task {
-                        for await _ in dependencies.audioSession.routeChanges {
-                            await dependencies.deviceProfileBuilder.invalidate()
-                        }
+    private var appRoot: some View {
+        RootView()
+            .environment(dependencies)
+            .environment(router)
+            .environment(playback)
+            .task {
+                do {
+                    try await dependencies.serverStore.load()
+                } catch {
+                    ParallaxCore.Log.persistence.error("ServerStore.load failed: \(error.localizedDescription)")
+                }
+                router.updateForCurrentSession(await dependencies.serverStore.active)
+
+                // Rebuild the device profile on the next resolve whenever
+                // the audio route changes (e.g. AirPlay connects). Per the
+                // spec, in-flight playback is intentionally NOT interrupted.
+                Task {
+                    for await _ in dependencies.audioSession.routeChanges {
+                        await dependencies.deviceProfileBuilder.invalidate()
                     }
                 }
-        }
+            }
     }
 }

@@ -31,9 +31,6 @@ struct JellyfinLibraryListView: View {
                             ForEach(supported) { coll in
                                 NavigationLink(value: coll) { LibraryCard(collection: coll, session: session) }
                                     .tvPosterButton()
-                                    // Float the focused banner above its neighbours so its lift
-                                    // paints over them, not under the next cell. No-op on iOS.
-                                    .tvFocusElevated()
                             }
                         }
                         .padding(AppLayout.contentHMargin(idiom: idiom))

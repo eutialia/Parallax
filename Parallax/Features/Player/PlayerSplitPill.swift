@@ -32,7 +32,10 @@ struct PlayerSplitPill: View {
                 .accessibilityLabel("Picture in Picture")
             }
         }
-        .glassEffect(.regular, in: Capsule())
+        // `.clear` + dim layer like the round buttons/chips — over-video controls use the
+        // clear variant (regular's dark frost read as a flat tinted pill on footage).
+        .glassEffect(.clear.interactive(), in: Capsule())
+        .background(.black.opacity(0.3), in: Capsule())
         .overlay(Capsule().strokeBorder(.white.opacity(0.20), lineWidth: 1))
         .clipShape(Capsule())
     }
