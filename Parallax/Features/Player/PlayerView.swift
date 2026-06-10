@@ -100,6 +100,12 @@ struct PlayerView: View {
                     PlayerControlsView(vm: vm, controlsVisible: $chromeVisible,
                                        onScrubActiveChange: { scrubHUDActive = $0 }) { exitPlayer() }
                     #endif
+                    // A failed audio switch that fell back to the previous track:
+                    // playback continues underneath; the scrim offers retry / keep.
+                    if playing, let failure = vm.trackSwitchFailure {
+                        trackSwitchFailureOverlay(failure, vm: vm)
+                            .transition(.opacity)
+                    }
                 case .failed(let error):
                     errorOverlay(error, vm: vm)
                 }
@@ -109,6 +115,7 @@ struct PlayerView: View {
             }
         }
         .animation(.easeInOut(duration: 0.3), value: showsReloadCover)
+        .animation(.easeInOut(duration: 0.3), value: viewModel?.trackSwitchFailure != nil)
         #if DEBUG
         .overlay(alignment: .topLeading) {
             if showDebugHUD, let vm = viewModel {
@@ -193,7 +200,7 @@ struct PlayerView: View {
         // material regardless of the app's light/dark setting. Without this, in light
         // mode the large bottom scrubber panel picks up the light glass variant while
         // the small circle buttons barely show it, so they read as different palettes.
-        // Outermost so `.overlay(...)` content (loader orb, debug HUD) inherits it;
+        // Outermost so `.overlay(...)` content (loading scrim, debug HUD) inherits it;
         // matches the dark pin already on the track menus (`trackMenuChrome`).
         .environment(\.colorScheme, .dark)
     }
@@ -235,23 +242,34 @@ struct PlayerView: View {
         return true
     }
 
-    /// Loading visual: the video surface itself becomes the loader. The picture calms
-    /// to a dark field and a liquid-glass orb takes center — NOT a frosted blocking
-    /// pill: hit testing is off, so the HUD layered above stays fully interactive
-    /// while the stream resolves/buffers. On a transcode track switch the engine is
-    /// paused + reused, so the last frame stays under the calm scrim until the new
+    /// Loading visual: a calm monochrome scrim over the video surface — a dim wash
+    /// with the white indeterminate ring — NOT a frosted blocking pill: hit testing
+    /// is off, so the HUD layered above stays fully interactive while the stream
+    /// resolves/buffers. On a transcode track switch the engine is paused + reused,
+    /// so the last frame stays under the lighter audio-switch dim until the new
     /// stream plays; on a first play the field is the black floor.
     private var loadingVeil: some View {
-        ZStack {
-            Color.black.opacity(0.55).ignoresSafeArea()
-            if let vm = viewModel {
-                LoaderOrb(label: vm.loaderTitle, sublabel: vm.loaderSubtitle)
-            } else {
-                LoaderOrb()
-            }
+        GeometryReader { geo in
+            PlayerLoadingScrim(
+                mode: viewModel?.isSwitchingTracks == true ? .audioSwitch : .buffering,
+                label: viewModel?.loaderTitle ?? "Loading",
+                sublabel: viewModel?.loaderSubtitle,
+                metrics: scrimMetrics(width: geo.size.width)
+            )
         }
         .allowsHitTesting(false)
         .transition(.opacity)
+    }
+
+    /// Scrim scale: big screens derive the unit from the surface width (the same
+    /// 1920 base as the chrome); iPhone uses the fixed `.phone` scale — mirroring
+    /// `PlayerControlsView`'s device-based split.
+    private func scrimMetrics(width: CGFloat) -> PlayerMetrics {
+        #if os(tvOS)
+        return .tv
+        #else
+        return UIDevice.current.userInterfaceIdiom == .pad ? PlayerMetrics(width: width) : .phone
+        #endif
     }
 
     /// Whether to show the loading veil: before the VM exists and while it's
@@ -286,45 +304,72 @@ struct PlayerView: View {
         }
     }
 
-    /// Failure state. White-on-dark over the black player surface (so it ignores the
-    /// app's light/dark tint — the old `.borderedProminent` Retry rendered white-on-
-    /// white under the monochrome global tint). Solid-white "Try Again", glass "Close".
+    /// Fatal failure: the general playback error scrim ("Playback stopped"), with
+    /// the raw diagnostics in a monospace support block. White-on-dark over the
+    /// black player surface (the overlay pins dark, so the native Liquid Glass
+    /// buttons resolve white-on-dark regardless of the app theme).
     @ViewBuilder
     private func errorOverlay(_ error: AppError, vm: PlayerViewModel) -> some View {
-        VStack(spacing: Space.s16) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 40, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 84, height: 84)
-                .glassEffect(.regular, in: Circle())
-                .accessibilityHidden(true)
-            Text("Playback failed")
-                .font(.title3.weight(.bold))
-                .foregroundStyle(.white)
-            Text(error.userMessage)
-                .font(.callout)
-                .foregroundStyle(.white.opacity(0.72))
-                .multilineTextAlignment(.center)
-            // Native Liquid Glass buttons: prominent white Try Again, plain glass Close.
-            // The system owns sizing and the tvOS focus treatment; the overlay pins dark,
-            // so both resolve white-on-dark regardless of the app theme.
-            HStack(spacing: Space.s12) {
-                Button("Try Again") { Task { await vm.retry() } }
+        GeometryReader { geo in
+            PlayerErrorScrim(
+                title: "Playback stopped",
+                message: error.userMessage,
+                details: error.diagnosticDescription,
+                metrics: scrimMetrics(width: geo.size.width)
+            ) {
+                Button("Try again", systemImage: "arrow.clockwise") { Task { await vm.retry() } }
                     .buttonStyle(.glassProminent)
                     .tint(.white)
+                #if !os(tvOS)
+                // tvOS has no pasteboard; elsewhere the raw block is one tap from a
+                // bug report.
+                Button("Copy details") { UIPasteboard.general.string = error.diagnosticDescription }
+                    .buttonStyle(.glass)
+                #endif
                 Button("Close") { exitPlayer() }
                     .buttonStyle(.glass)
             }
-            .font(.headline)
-            .padding(.top, Space.s8)
         }
-        .padding(Space.s40)
-        .frame(maxWidth: 460)
         #if os(tvOS)
-        // Back mirrors the Close pill. Focus sits on the chips, so this rides the
+        // Back mirrors the Close pill. Focus sits on the buttons, so this rides the
         // focused responder chain (a sibling input adapter would never see Menu).
         .onExitCommand { exitPlayer() }
         #endif
+    }
+
+    /// Non-fatal failure: an audio-track switch died but playback already fell back
+    /// to the previous track (the design's silent fallback) — this scrim is the loud
+    /// part, offering a retry. Mounted ABOVE the chrome so its buttons are tappable,
+    /// but its dim passes touches through, so the scrubber and menus stay live.
+    @ViewBuilder
+    private func trackSwitchFailureOverlay(
+        _ failure: PlayerViewModel.TrackSwitchFailure, vm: PlayerViewModel
+    ) -> some View {
+        GeometryReader { geo in
+            PlayerErrorScrim(
+                title: "Couldn't switch audio",
+                message: switchFailureMessage(failure),
+                metrics: scrimMetrics(width: geo.size.width)
+            ) {
+                Button("Try again", systemImage: "arrow.clockwise") {
+                    Task { await vm.retryFailedTrackSwitch() }
+                }
+                .buttonStyle(.glassProminent)
+                .tint(.white)
+                Button("Keep current track") { vm.dismissTrackSwitchFailure() }
+                    .buttonStyle(.glass)
+            }
+        }
+        #if os(tvOS)
+        // Back = "Keep current track" — dismiss without killing playback.
+        .onExitCommand { vm.dismissTrackSwitchFailure() }
+        #endif
+    }
+
+    private func switchFailureMessage(_ failure: PlayerViewModel.TrackSwitchFailure) -> String {
+        let stayed = failure.fallback.map { "Playback stayed on \($0.displayName)" }
+            ?? "Playback continues on the previous track"
+        return "The \(failure.requested.displayName) source didn't respond. \(stayed) — nothing was lost."
     }
 
     #if os(tvOS)
@@ -345,8 +390,9 @@ struct PlayerView: View {
 
             // The raw adapter owns the remote's PRESSES on the floor and during
             // scrubbing. It's unmounted in `.fullHUD` so the focus engine drives the
-            // chips/scrubber.
-            if !isFullHUD {
+            // chips/scrubber — and while the switch-failure scrim shows, so its
+            // buttons can take focus (a mounted adapter would swallow Select/Menu).
+            if !isFullHUD && vm.trackSwitchFailure == nil {
                 TVRemoteInputView(onEvent: { send($0, vm) })
                     .ignoresSafeArea()
             }

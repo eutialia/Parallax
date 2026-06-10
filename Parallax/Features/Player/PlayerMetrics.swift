@@ -69,6 +69,40 @@ struct PlayerMetrics: Equatable {
     // Title
     var titleSize: CGFloat { 38 * u }
 
+    // Scrims — loading ring + caption (see PlayerLoadingScrim)
+    var scrimRingBuffer: CGFloat { 92 * u }
+    var scrimRingBufferStroke: CGFloat { 5.5 * u }
+    var scrimRingAudio: CGFloat { 80 * u }
+    var scrimRingAudioStroke: CGFloat { 5 * u }
+    var scrimCaptionGap: CGFloat { 26 * u }
+    var scrimCaptionLineGap: CGFloat { 6 * u }
+    var scrimLabelSize: CGFloat { 24 * u }
+    var scrimSubSizeBuffer: CGFloat { 16 * u }
+    var scrimSubSizeAudio: CGFloat { 17 * u }
+
+    // Scrims — double-tap seek flash (see PlayerSeekFlash)
+    var seekChevronSize: CGFloat { 40 * u }
+    var seekLabelSize: CGFloat { 23 * u }
+    var seekContentGap: CGFloat { 18 * u }
+
+    // Scrims — error surface (see PlayerErrorScrim)
+    var errorChipSize: CGFloat { 78 * u }
+    var errorGlyphSize: CGFloat { 38 * u }
+    var errorTitleSize: CGFloat { 28 * u }
+    var errorTitleTop: CGFloat { 24 * u }
+    var errorBodySize: CGFloat { 18 * u }
+    var errorBodyTop: CGFloat { 12 * u }
+    var errorBodyMaxWidth: CGFloat { 520 * u }
+    var errorDetailSize: CGFloat { 14 * u }
+    var errorDetailTop: CGFloat { 18 * u }
+    var errorDetailPadX: CGFloat { 16 * u }
+    var errorDetailPadY: CGFloat { 12 * u }
+    var errorDetailRadius: CGFloat { 10 * u }
+    var errorDetailMaxWidth: CGFloat { 440 * u }
+    var errorButtonSize: CGFloat { 19 * u }
+    var errorButtonGap: CGFloat { 14 * u }
+    var errorButtonsTop: CGFloat { 28 * u }
+
     // iPhone chrome layout — fixed values, not u-scaled: the phone HUD is authored at 1×
     // alongside its bespoke round-button sizes (see `PlayerControlsView.phoneControls`).
     // Named here so the phone layout has one home instead of scattered literals.

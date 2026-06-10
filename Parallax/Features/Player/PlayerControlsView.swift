@@ -18,9 +18,11 @@ import ParallaxPlayback
 /// available on tvOS); iPad puts the AirPlay/PiP split pill in the top bar; iPhone uses
 /// a standalone AirPlay button (top) and a PiP button (bottom).
 ///
-/// Controls auto-hide after 3s of inactivity on iOS; tap anywhere to toggle. tvOS
-/// visibility is owned by the HUD reducer in `PlayerView` (this view is mounted only in
-/// `.fullHUD`). Auto-hide is suspended while a track menu is open.
+/// Controls auto-hide after 3s of inactivity on iOS; tap anywhere to toggle, and
+/// double-tap the outer thirds to skip ±10s (the `PlayerSeekFlash` dome is the
+/// affordance). tvOS visibility is owned by the HUD reducer in `PlayerView` (this
+/// view is mounted only in `.fullHUD`). Auto-hide is suspended while a track menu
+/// is open.
 ///
 /// On iOS the chrome is mounted from `.loading` onward — the player is operable while
 /// the stream resolves/buffers (Close, tap-to-toggle, track chips as their lists
@@ -62,12 +64,30 @@ struct PlayerControlsView: View {
     @State private var subtitleMenu = false
     @State private var chapterMenu = false
     @State private var speedMenu = false
+    #if !os(tvOS)
+    /// The live double-tap seek flash (dome + chevrons + "N seconds"); nil when idle.
+    @State private var seekFlash: SeekFlash?
+    /// Accumulated absolute seek target for the running double-tap burst. Committed
+    /// as ONE engine seek after the taps settle — per-tap seeks thrash a transcode
+    /// and wedge the player (the tvOS click-seek lesson).
+    @State private var pendingSeekTarget: Double?
+    @State private var seekCommitTask: Task<Void, Never>?
+    @State private var seekFlashDismissTask: Task<Void, Never>?
+
+    private struct SeekFlash {
+        var direction: PlayerSeekFlash.Direction
+        var seconds: Int
+        var tapPoint: CGPoint
+        var trigger: Int
+    }
+    #endif
 
     private var menuOpen: Bool { audioMenu || subtitleMenu || chapterMenu || speedMenu }
     /// False while the stream is still resolving/buffering. The chrome mounts from
     /// loading onward so Close, tap-to-toggle, and the track chips work immediately;
-    /// engine-backed transport (play/pause, skip, chapter seek) gates on this — the
-    /// centre cluster is hidden outright because the loading orb owns that spot.
+    /// engine-backed transport (play/pause, skip, chapter seek, double-tap seek)
+    /// gates on this — the centre cluster is hidden outright because the loading
+    /// scrim's ring owns that spot.
     private var playbackReady: Bool { vm.phase == .playing }
     /// Deliberately device-based, not `@Environment(\.appIdiom)` (which is size-class
     /// derived): the phone layout must apply to ALL iPhones, including a regular-width
@@ -78,10 +98,40 @@ struct PlayerControlsView: View {
 
     var body: some View {
         ZStack {
+            #if os(tvOS)
             Color.clear
-                .contentShape(Rectangle())
+                .contentShape(.rect)
                 .onTapGesture { toggleControls() }
                 .ignoresSafeArea()
+            #else
+            // Tap surface: double-tap on the outer thirds seeks ±10s (the flash is
+            // the affordance); a single tap toggles the chrome. Exclusive pairing,
+            // so the toggle waits out the double-tap window (the YouTube trade).
+            GeometryReader { geo in
+                ZStack {
+                    Color.clear
+                        .contentShape(.rect)
+                        .gesture(
+                            doubleTapSeek(in: geo.size)
+                                .exclusively(before: TapGesture().onEnded { toggleControls() })
+                        )
+                    // Hidden the moment playback drops out (track switch → loading
+                    // scrim) instead of lingering its 0.9s tail over the new scrim.
+                    if let flash = seekFlash, playbackReady {
+                        PlayerSeekFlash(
+                            direction: flash.direction, seconds: flash.seconds,
+                            tapPoint: flash.tapPoint, trigger: flash.trigger,
+                            metrics: isPad ? PlayerMetrics(width: geo.size.width) : .phone
+                        )
+                        // A reversal is a new burst: without the identity key the
+                        // reused view keeps the old direction's burst clock, so the
+                        // opposite dome would snap in mid-march instead of rising.
+                        .id(flash.direction)
+                    }
+                }
+            }
+            .ignoresSafeArea()
+            #endif
 
             if controlsVisible {
                 controls.transition(.opacity)
@@ -91,6 +141,13 @@ struct PlayerControlsView: View {
         .animation(.easeInOut(duration: 0.2), value: dragScrubbing)
         #if !os(tvOS)
         .onAppear { scheduleHide() }
+        // The sleeping tasks outlive a dismissed player: the seek commit would fire
+        // into a mid-teardown engine, the others write to dead @State. Cancel them.
+        .onDisappear {
+            hideTask?.cancel()
+            seekCommitTask?.cancel()
+            seekFlashDismissTask?.cancel()
+        }
         #endif
         .onChange(of: menuOpen) { _, open in
             if open { hideTask?.cancel() } else { scheduleHide() }
@@ -177,7 +234,7 @@ struct PlayerControlsView: View {
 
                 #if !os(tvOS)
                 // Centre transport (iPad only — tvOS uses the remote). Absent until
-                // the stream plays: the loading orb occupies this exact spot.
+                // the stream plays: the loading scrim's ring occupies this exact spot.
                 if playbackReady {
                     GlassEffectContainer(spacing: Space.s8) {
                         HStack(spacing: m.transportGap) {
@@ -255,8 +312,8 @@ struct PlayerControlsView: View {
                 .padding(.top, PlayerMetrics.phoneTopBarTop)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
-                // Centre transport. Absent until the stream plays: the loading orb
-                // occupies this exact spot.
+                // Centre transport. Absent until the stream plays: the loading
+                // scrim's ring occupies this exact spot.
                 if playbackReady {
                     GlassEffectContainer(spacing: Space.s8) {
                         HStack(spacing: PlayerMetrics.phoneTransportGap) {
@@ -421,6 +478,7 @@ struct PlayerControlsView: View {
                     dragScrubbing = true
                     onScrubActiveChange(true)
                     hideTask?.cancel()
+                    cancelPendingSeek()
                     Task { await vm.engine?.pause() }
                 }
                 scrubProgress = frac
@@ -451,6 +509,7 @@ struct PlayerControlsView: View {
         .accessibilityAdjustableAction { direction in
             guard durSeconds > 0 else { return }
             resetHideTimer()
+            cancelPendingSeek()
             let step = 10.0 / durSeconds
             let target = direction == .increment ? min(1, displayed + step) : max(0, displayed - step)
             scrubProgress = target
@@ -468,10 +527,83 @@ struct PlayerControlsView: View {
         #endif
     }
 
+    // MARK: - Double-tap seek (touch platforms)
+
+    #if !os(tvOS)
+    private func doubleTapSeek(in size: CGSize) -> some Gesture {
+        SpatialTapGesture(count: 2, coordinateSpace: .local).onEnded { value in
+            handleDoubleTap(at: value.location, in: size)
+        }
+    }
+
+    /// YouTube-style skip: double-taps on the outer thirds accumulate ±10s steps
+    /// (10, 20, 30…) and flash the side dome; the middle third is not a seek
+    /// surface. The engine seek is debounced — the burst lands as ONE seek.
+    private func handleDoubleTap(at location: CGPoint, in size: CGSize) {
+        let durSeconds = CMTimeGetSeconds(vm.currentDuration)
+        guard playbackReady, durSeconds > 0, size.width > 0 else { return }
+        let direction: PlayerSeekFlash.Direction
+        if location.x < size.width / 3 { direction = .backward }
+        else if location.x > size.width * 2 / 3 { direction = .forward }
+        else { return }
+
+        let delta: Double = direction == .forward ? 10 : -10
+        // While a scrub's commit is still in flight (`isScrubbing` holds until the
+        // engine seek lands), the bar's target is the truth — `vm.currentPosition`
+        // only catches up on the next engine beat, so a double-tap right after a
+        // drag would accumulate from the pre-scrub position.
+        let livePosition = isScrubbing ? scrubProgress * durSeconds : CMTimeGetSeconds(vm.currentPosition)
+        let base = pendingSeekTarget ?? livePosition
+        pendingSeekTarget = min(max(base + delta, 0), durSeconds)
+
+        // The label accumulates within one direction; reversing starts a fresh count
+        // (the pending target still nets both directions out).
+        let seconds = (seekFlash?.direction == direction ? seekFlash?.seconds ?? 0 : 0) + 10
+        seekFlash = SeekFlash(direction: direction, seconds: seconds,
+                              tapPoint: location, trigger: (seekFlash?.trigger ?? 0) + 1)
+        scheduleSeekCommit()
+        scheduleSeekFlashDismissal()
+    }
+
+    /// ~0.45s of quiet after the last double-tap before the accumulated seek fires —
+    /// the same fold-a-burst-into-one-seek debounce as the tvOS click-seek.
+    private func scheduleSeekCommit() {
+        seekCommitTask?.cancel()
+        seekCommitTask = Task {
+            try? await Task.sleep(for: .milliseconds(450))
+            guard !Task.isCancelled, let target = pendingSeekTarget else { return }
+            pendingSeekTarget = nil
+            guard let engine = vm.engine else { return }
+            await engine.seek(to: CMTime(seconds: target, preferredTimescale: 600))
+        }
+    }
+
+    private func scheduleSeekFlashDismissal() {
+        seekFlashDismissTask?.cancel()
+        seekFlashDismissTask = Task {
+            try? await Task.sleep(for: .seconds(PlayerSeekFlash.duration))
+            if !Task.isCancelled { seekFlash = nil }
+        }
+    }
+
+    /// Every OTHER seek-shaped action (drag-scrub, skip button, chapter pick) and a
+    /// track reload must flush a queued double-tap burst — its debounced commit
+    /// would fire up to 450ms later and drag playback back to the stale target.
+    private func cancelPendingSeek() {
+        seekCommitTask?.cancel()
+        pendingSeekTarget = nil
+        seekFlashDismissTask?.cancel()
+        seekFlash = nil
+    }
+    #endif
+
     // MARK: - Transport actions
 
     private func skip(_ seconds: Double) {
         resetHideTimer()
+        #if !os(tvOS)
+        cancelPendingSeek()
+        #endif
         Task {
             guard let engine = vm.engine else { return }
             let posSeconds = CMTimeGetSeconds(vm.currentPosition)
@@ -496,6 +628,9 @@ struct PlayerControlsView: View {
         trackMenuChrome {
             AudioTrackMenu(tracks: vm.availableAudioTracks, selectedID: vm.selectedAudioTrack?.id) { track in
                 audioMenu = false; resetHideTimer()
+                #if !os(tvOS)
+                cancelPendingSeek()   // a queued burst would seek the mid-reload engine
+                #endif
                 Task { await vm.selectAudioTrack(track) }
             }
         }
@@ -516,6 +651,9 @@ struct PlayerControlsView: View {
         trackMenuChrome {
             ChapterMenu(chapters: vm.chapters) { chapter in
                 chapterMenu = false; resetHideTimer()
+                #if !os(tvOS)
+                cancelPendingSeek()
+                #endif
                 Task { await vm.seekToChapter(chapter) }
             }
         }

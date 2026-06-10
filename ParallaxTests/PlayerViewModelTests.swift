@@ -667,7 +667,7 @@ struct PlayerViewModelTests {
         ))
         try await Task.sleep(for: .milliseconds(50))
 
-        // Switch audio → the re-resolve throws → phase .failed.
+        // Switch audio → the re-resolve throws → silent fallback (playback resumes).
         let track = try #require(vm.availableAudioTracks.first { $0.id == .jellyfinStream(4) })
         await vm.selectAudioTrack(track)
 
@@ -677,6 +677,186 @@ struct PlayerViewModelTests {
 
         let stoppedCount = (await reporting.events).filter { if case .stopped = $0 { return true } else { return false } }.count
         #expect(stoppedCount == 1)
+    }
+
+    @Test("failed transcode switch falls back silently: playback resumes on the previous track, the failure is surfaced for retry")
+    func transcodeSwitchFailureFallsBackSilently() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
+        let builder = DeviceProfileBuilder(probe: probe)
+        let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
+
+        nonisolated(unsafe) var callCount = 0
+        let vm = PlayerViewModel(
+            deviceProfileBuilder: builder,
+            playbackInfo: reporting,
+            resolve: { _, _, _, _, _ in
+                callCount += 1
+                if callCount == 2 { throw AppError.playback(.resourceUnavailable) }  // the switch re-resolve fails
+                return resolved
+            },
+            engineFactory: { _ in engine },
+            audioSession: NoopAudioSession()
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(
+            position: CMTime(seconds: 100, preferredTimescale: 600),
+            duration: CMTime(seconds: 7200, preferredTimescale: 600)
+        ))
+        try await Task.sleep(for: .milliseconds(50))
+
+        let track = try #require(vm.availableAudioTracks.first { $0.id == .jellyfinStream(4) })
+        await vm.selectAudioTrack(track)
+
+        // Failures are loud, fallbacks are silent: the old stream (still mounted —
+        // resolve threw before the reload) resumes instead of phase going .failed.
+        #expect(vm.phase == .playing)
+        #expect(!engine.calls.contains("teardown"))
+        #expect(engine.calls.filter { $0 == "play" }.count == 2)        // initial play + fallback resume
+        // The scrim's state: the requested track is the retry target, the menu
+        // checkmark is back on the track that's actually playing.
+        #expect(vm.trackSwitchFailure?.requested.id == .jellyfinStream(4))
+        #expect(vm.trackSwitchFailure?.fallback?.id == .jellyfinStream(3))
+        #expect(vm.selectedAudioTrack?.id == .jellyfinStream(3))
+
+        // "Keep current track" clears the scrim without touching playback.
+        vm.dismissTrackSwitchFailure()
+        #expect(vm.trackSwitchFailure == nil)
+        #expect(vm.phase == .playing)
+    }
+
+    @Test("a failed switch racing an exit abandons instead of resuming audio under the dismissed player")
+    func transcodeSwitchFailureDuringExitAbandons() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
+        let builder = DeviceProfileBuilder(probe: probe)
+        let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
+
+        // The switch's re-resolve is where exit can race in: beginExit() lands while
+        // resolve is suspended, then resolve throws a REAL error — which skips every
+        // checkStillActive (those only catch CancellationError paths).
+        nonisolated(unsafe) var callCount = 0
+        nonisolated(unsafe) var triggerExit: (@MainActor () -> Void)? = nil
+        let vm = PlayerViewModel(
+            deviceProfileBuilder: builder,
+            playbackInfo: reporting,
+            resolve: { _, _, _, _, _ in
+                callCount += 1
+                if callCount == 2 {
+                    await MainActor.run { triggerExit?() }
+                    throw AppError.playback(.resourceUnavailable)
+                }
+                return resolved
+            },
+            engineFactory: { _ in engine },
+            audioSession: NoopAudioSession()
+        )
+        triggerExit = { vm.beginExit() }
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(
+            position: CMTime(seconds: 100, preferredTimescale: 600),
+            duration: CMTime(seconds: 7200, preferredTimescale: 600)
+        ))
+        try await Task.sleep(for: .milliseconds(50))
+
+        let track = try #require(vm.availableAudioTracks.first { $0.id == .jellyfinStream(4) })
+        await vm.selectAudioTrack(track)
+
+        // No fallback resume (the initial play stands alone), no scrim, selection restored.
+        #expect(engine.calls.filter { $0 == "play" }.count == 1)
+        #expect(vm.trackSwitchFailure == nil)
+        #expect(vm.selectedAudioTrack?.id == .jellyfinStream(3))
+
+        // The exit's own stop() still tears down cleanly, with no extra stop report
+        // (the switch already closed the outgoing session; the new one never started).
+        await vm.stop()
+        #expect(engine.calls.contains("teardown"))
+        let stoppedCount = (await reporting.events).filter { if case .stopped = $0 { return true } else { return false } }.count
+        #expect(stoppedCount == 1)
+    }
+
+    @Test("retryFailedTrackSwitch re-attempts the requested track and clears the failure on success")
+    func retryFailedTrackSwitchReattempts() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
+        let builder = DeviceProfileBuilder(probe: probe)
+        let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
+
+        nonisolated(unsafe) var resolveCalls: [Int?] = []
+        let vm = PlayerViewModel(
+            deviceProfileBuilder: builder,
+            playbackInfo: reporting,
+            resolve: { _, _, _, audioIdx, _ in
+                resolveCalls.append(audioIdx)
+                if resolveCalls.count == 2 { throw AppError.playback(.resourceUnavailable) }  // first switch fails
+                return resolved                                                               // retry succeeds
+            },
+            engineFactory: { _ in engine },
+            audioSession: NoopAudioSession()
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(
+            position: CMTime(seconds: 100, preferredTimescale: 600),
+            duration: CMTime(seconds: 7200, preferredTimescale: 600)
+        ))
+        try await Task.sleep(for: .milliseconds(50))
+
+        let track = try #require(vm.availableAudioTracks.first { $0.id == .jellyfinStream(4) })
+        await vm.selectAudioTrack(track)
+        #expect(vm.trackSwitchFailure != nil)
+
+        await vm.retryFailedTrackSwitch()
+
+        #expect(vm.trackSwitchFailure == nil)
+        #expect(resolveCalls.last == 4)                          // the retry re-resolved the same track
+        #expect(vm.selectedAudioTrack?.id == .jellyfinStream(4)) // and the pick stuck this time
+
+        // Phase stays .loading (the scrim) until the reloaded stream's first beat.
+        #expect(vm.phase == .loading)
+        engine.push(.playing(
+            position: CMTime(seconds: 100, preferredTimescale: 600),
+            duration: CMTime(seconds: 7200, preferredTimescale: 600)
+        ))
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(vm.phase == .playing)
+    }
+
+    @Test("stop() clears a pending trackSwitchFailure")
+    func stopClearsTrackSwitchFailure() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
+        let builder = DeviceProfileBuilder(probe: probe)
+        let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
+
+        nonisolated(unsafe) var callCount = 0
+        let vm = PlayerViewModel(
+            deviceProfileBuilder: builder,
+            playbackInfo: reporting,
+            resolve: { _, _, _, _, _ in
+                callCount += 1
+                if callCount >= 2 { throw AppError.playback(.resourceUnavailable) }
+                return resolved
+            },
+            engineFactory: { _ in engine },
+            audioSession: NoopAudioSession()
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(
+            position: CMTime(seconds: 100, preferredTimescale: 600),
+            duration: CMTime(seconds: 7200, preferredTimescale: 600)
+        ))
+        try await Task.sleep(for: .milliseconds(50))
+
+        let track = try #require(vm.availableAudioTracks.first { $0.id == .jellyfinStream(4) })
+        await vm.selectAudioTrack(track)
+        #expect(vm.trackSwitchFailure != nil)
+
+        await vm.stop()
+        #expect(vm.trackSwitchFailure == nil)
     }
 
     @Test("a .failed state clears isPlaying")

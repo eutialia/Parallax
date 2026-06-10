@@ -62,10 +62,37 @@ final class PlayerViewModel {
     /// The playing item's title — surfaced in the player's top bar.
     var title: String { itemTitle }
 
-    /// Caption for the liquid-orb loader. A transcode audio switch reloads the
+    /// Caption for the loading scrim. A transcode audio switch reloads the
     /// stream ("Switching audio · <track>"); a first play / re-buffer is "Loading".
     var loaderTitle: String { isSwitchingTracks ? "Switching audio" : "Loading" }
     var loaderSubtitle: String? { isSwitchingTracks ? selectedAudioTrack?.displayName : nil }
+
+    /// A transcode audio switch that failed AFTER playback safely resumed on the
+    /// previous track (the design's silent fallback). Drives the "Couldn't switch
+    /// audio" scrim: `retryFailedTrackSwitch()` re-attempts the same track,
+    /// `dismissTrackSwitchFailure()` keeps the current one. Nil when no failed
+    /// switch is pending. Fatal failures (engine lost mid-reload) never set this —
+    /// they go through `phase = .failed` and the general error scrim.
+    struct TrackSwitchFailure {
+        /// The track the user asked for — the retry target.
+        let requested: AudioTrack
+        /// The track playback stayed on. Nil when the previous selection is unknown.
+        let fallback: AudioTrack?
+        let error: AppError
+    }
+    private(set) var trackSwitchFailure: TrackSwitchFailure?
+
+    /// Re-attempt the failed switch with the same track.
+    func retryFailedTrackSwitch() async {
+        guard let failure = trackSwitchFailure else { return }
+        trackSwitchFailure = nil
+        await selectAudioTrack(failure.requested)
+    }
+
+    /// Keep the current (fallback) track and drop the failure scrim.
+    func dismissTrackSwitchFailure() {
+        trackSwitchFailure = nil
+    }
 
     /// User-selected playback speed (1.0 = normal). Drives the speed chip.
     private(set) var playbackRate: Float = 1
@@ -435,6 +462,7 @@ final class PlayerViewModel {
         availableSubtitleTracks = []
         selectedAudioTrack = nil
         selectedSubtitleTrack = nil
+        trackSwitchFailure = nil
         subtitleFetchTask?.cancel()
         subtitleFetchTask = nil
         activeSubtitleCues = []
@@ -492,8 +520,24 @@ final class PlayerViewModel {
             // Transcode menus carry `.jellyfinStream` ids — the source stream index
             // the server selects by. A non-jellyfin id here would be a wiring bug.
             guard let index = track.id.jellyfinStreamIndex else { return }
+            let previous = selectedAudioTrack
             selectedAudioTrack = track
-            await switchTranscodeTrack(audioStreamIndex: index, subtitleStreamIndex: currentSubtitleStreamIndex)
+            trackSwitchFailure = nil
+            switch await switchTranscodeTrack(audioStreamIndex: index, subtitleStreamIndex: currentSubtitleStreamIndex) {
+            case .completed:
+                break
+            case .abandoned:
+                // The reload never ran (re-entrant pick or exit) — quietly restore
+                // the checkmark so the menu doesn't show a track that isn't playing.
+                selectedAudioTrack = previous
+            case .fellBack(let error):
+                // Playback resumed on the previous track: restore the checkmark and
+                // surface the failure scrim (retry / keep current track).
+                selectedAudioTrack = previous
+                trackSwitchFailure = TrackSwitchFailure(requested: track, fallback: previous, error: error)
+            case .failed:
+                break   // phase == .failed — the general error scrim owns the surface
+            }
         } else {
             guard let engine else { return }
             await engine.setAudioTrack(track)
@@ -561,15 +605,30 @@ final class PlayerViewModel {
         activeSubtitleCues = []
     }
 
+    /// How a transcode track switch ended — drives `selectAudioTrack`'s selection
+    /// restore and the failure scrim.
+    private enum TrackSwitchOutcome {
+        case completed
+        /// The reload was dropped or cancelled (re-entrant pick / player exit) —
+        /// nothing changed; restore the menu selection quietly.
+        case abandoned
+        /// The re-resolve failed while the outgoing stream was still mounted:
+        /// playback resumed on the previous track (the silent fallback).
+        case fellBack(AppError)
+        /// The engine was lost mid-reload — phase is `.failed`, the general error
+        /// scrim owns the surface.
+        case failed
+    }
+
     /// Rebuilds the transcode around new stream indices, resuming at the current
     /// position. Costs a brief re-buffer — the server has to re-encode around the
     /// chosen track. The engine instance is REUSED (reloaded), so the video surface
     /// stays mounted and holds the last frame through the swap instead of blinking to
     /// black; the audio session stays active too.
-    private func switchTranscodeTrack(audioStreamIndex: Int?, subtitleStreamIndex: Int?) async {
+    private func switchTranscodeTrack(audioStreamIndex: Int?, subtitleStreamIndex: Int?) async -> TrackSwitchOutcome {
         // The chips stay mounted through a switch's .loading phase now — a second
         // pick mid-switch must wait for (not race) the in-flight reload.
-        guard !isSwitchingTracks, let item = playingItem else { return }
+        guard !isSwitchingTracks, let item = playingItem else { return .abandoned }
         // The transcode plays a full-timeline HLS playlist that the engine SEEKS to
         // the resume offset (Jellyfin ignores StartTimeTicks for the playlist start),
         // so currentPosition is already absolute media time — resume the new stream
@@ -602,21 +661,45 @@ final class PlayerViewModel {
                 subtitleStreamIndex: subtitleStreamIndex,
                 reusingEngine: true
             )
+            return .completed
         } catch is CancellationError {
             // Exit raced the track switch — stop() already owns the teardown.
+            return .abandoned
         } catch let error as AppError {
-            phase = .failed(error)
-            // resolve threw before the reused engine reloaded → the stale stream is
-            // still mounted; tear it down so it doesn't play on under the error UI,
-            // and release the audio session like start()'s failure paths do.
-            await tearDownEngine()
-            await audioSession.deactivate()
+            return await fallBackAfterFailedSwitch(error)
         } catch {
             Log.playback.error("track switch failed: \(error.networkDiagnostic, privacy: .public)")
-            phase = .failed(.unexpected("track switch failed", underlying: AnySendableError(error)))
-            await tearDownEngine()
-            await audioSession.deactivate()
+            return await fallBackAfterFailedSwitch(
+                .unexpected("track switch failed", underlying: AnySendableError(error))
+            )
         }
+    }
+
+    /// The design's "failures are loud, fallbacks are silent": when the re-resolve
+    /// failed BEFORE the reused engine reloaded, the previous stream is still
+    /// mounted — just paused — so resume it instead of killing playback, and let
+    /// the failure scrim offer a retry. The reporting flags were reset for the new
+    /// session that never started, so the resumed stream's next `.playing` beat
+    /// re-reports start against the outgoing session id (`resolved` still points at
+    /// it) — the server simply sees that session play again.
+    ///
+    /// If the failure hit at/after `engine.load`, `beginPlayback` already tore the
+    /// engine down — nothing left to resume, so surface the fatal overlay exactly
+    /// like before.
+    private func fallBackAfterFailedSwitch(_ error: AppError) async -> TrackSwitchOutcome {
+        // Exit can race the failed switch: beginExit() lands while the re-resolve is
+        // suspended, and a real (non-cancellation) error then skips beginPlayback's
+        // checkStillActive guards entirely. Resuming here would restart audio under
+        // a dismissed player — stop() owns the teardown, so just walk away.
+        guard !isExiting else { return .abandoned }
+        guard let engine else {
+            phase = .failed(error)
+            await audioSession.deactivate()
+            return .failed
+        }
+        phase = .playing
+        await engine.play()
+        return .fellBack(error)
     }
 
     // MARK: - Private
