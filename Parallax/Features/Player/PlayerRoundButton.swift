@@ -67,6 +67,15 @@ struct PlayerRoundButton: View {
             .font(.system(size: size * iconScale, weight: .semibold))
             .foregroundStyle(color)
             .offset(y: size * iconScale * glyphOpticalYOffset)
+            // Play/pause glyph swaps arrive from engine beats, not taps — after a
+            // drag-scrub the resume's .playing often lands mid HUD fade-in, and a
+            // bare string swap cut the glyph to "pause" at full opacity while the
+            // disc was still animating in. The symbol Replace keeps the swap inside
+            // the motion (and animates normal play/pause toggles too). The scoped
+            // animation is keyed on the glyph name, so static-glyph buttons (skip,
+            // Close, PiP) never get a transaction out of it.
+            .contentTransition(.symbolEffect(.replace))
+            .animation(.default, value: systemImage)
     }
 }
 
