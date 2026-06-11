@@ -60,7 +60,6 @@ extension Color {
     static let glass              = Color(light: 0xF8F4ED, lightAlpha: 0.52, dark: 0x1C1C22, darkAlpha: 0.52)
     static let glassStrong        = Color(light: 0xFAF6EF, lightAlpha: 0.74, dark: 0x1E1E26, darkAlpha: 0.74)
     static let glassBorder        = Color(light: 0xFFFDF7, lightAlpha: 0.80, dark: 0xFFFFFF, darkAlpha: 0.14)
-    static let glassHighlight     = Color(light: 0xFFFFFF, lightAlpha: 0.95, dark: 0xFFFFFF, darkAlpha: 0.22)
 
     /// Hero/detail circular glass actions (Favorite, Watched, …). Fixed dark frosted
     /// chrome over photography — not theme-adaptive, so bright artwork and Matinee mode
