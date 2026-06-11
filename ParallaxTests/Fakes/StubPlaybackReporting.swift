@@ -12,6 +12,11 @@ actor StubPlaybackReporting: PlaybackReporting {
     }
 
     private(set) var events: [Event] = []
+    /// Encoding kills and keepalive pings land in their own lists (not
+    /// `events`) so the existing exact-sequence cadence assertions stay
+    /// focused on the report beats.
+    private(set) var stoppedEncodings: [String] = []
+    private(set) var pings: [String] = []
 
     func reportStart(_ beat: ProgressBeat) async {
         events.append(.start(ticks: beat.positionTicks, isPaused: beat.isPaused, itemID: beat.itemID))
@@ -23,5 +28,13 @@ actor StubPlaybackReporting: PlaybackReporting {
 
     func reportStopped(_ beat: ProgressBeat) async {
         events.append(.stopped(ticks: beat.positionTicks, itemID: beat.itemID))
+    }
+
+    func stopEncoding(playSessionID: String) async {
+        stoppedEncodings.append(playSessionID)
+    }
+
+    func pingSession(playSessionID: String) async {
+        pings.append(playSessionID)
     }
 }

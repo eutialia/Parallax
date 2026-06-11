@@ -12,6 +12,7 @@ final class FakeJellyfinPlaybackClient: JellyfinPlaybackClient, @unchecked Senda
     var startError: Error?
     var progressError: Error?
     var stoppedError: Error?
+    var stopEncodingError: Error?
 
     // Call records.
     private(set) var playbackInfoCalls: [(itemID: String, profile: DeviceProfile, startTimeTicks: Int?, audioStreamIndex: Int?, subtitleStreamIndex: Int?)] = []
@@ -21,6 +22,9 @@ final class FakeJellyfinPlaybackClient: JellyfinPlaybackClient, @unchecked Senda
     private(set) var startInfos: [PlaybackStateInfo] = []
     private(set) var progressInfos: [PlaybackStateInfo] = []
     private(set) var stoppedInfos: [PlaybackStopInfo] = []
+    private(set) var stopEncodingSessionIDs: [String] = []
+    private(set) var pingSessionIDs: [String] = []
+    var pingError: Error?
 
     enum FakeError: Error { case reportFailed }
 
@@ -63,6 +67,16 @@ final class FakeJellyfinPlaybackClient: JellyfinPlaybackClient, @unchecked Senda
     func reportStopped(_ info: PlaybackStopInfo) async throws {
         stoppedInfos.append(info)
         if let stoppedError { throw stoppedError }
+    }
+
+    func stopEncoding(playSessionID: String) async throws {
+        stopEncodingSessionIDs.append(playSessionID)
+        if let stopEncodingError { throw stopEncodingError }
+    }
+
+    func pingSession(playSessionID: String) async throws {
+        pingSessionIDs.append(playSessionID)
+        if let pingError { throw pingError }
     }
 }
 

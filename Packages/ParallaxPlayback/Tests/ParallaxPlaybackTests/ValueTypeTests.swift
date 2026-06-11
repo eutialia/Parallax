@@ -98,19 +98,27 @@ struct ValueTypeTests {
             .idle,
             .loading,
             .ready(duration: duration, tracks: .empty),
-            .playing(position: position, duration: duration),
-            .paused(position: position, duration: duration),
+            .playing(position: position, duration: duration, buffered: nil),
+            .paused(position: position, duration: duration, buffered: nil),
+            .buffering(position: position, duration: duration, buffered: nil),
             .ended,
             .failed(.networkStalled),
         ]
-        #expect(states.count == 7)
+        #expect(states.count == 8)
         if case .ready(let d, let t) = states[2] {
             #expect(d == duration)
             #expect(t == .empty)
         } else {
             Issue.record("Expected .ready")
         }
-        if case .failed(let e) = states[6] {
+        if case .buffering(let p, let d, let b) = states[5] {
+            #expect(p == position)
+            #expect(d == duration)
+            #expect(b == nil)
+        } else {
+            Issue.record("Expected .buffering")
+        }
+        if case .failed(let e) = states[7] {
             #expect(e == .networkStalled)
         } else {
             Issue.record("Expected .failed(.networkStalled)")

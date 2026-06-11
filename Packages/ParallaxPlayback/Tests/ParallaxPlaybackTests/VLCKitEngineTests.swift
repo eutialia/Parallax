@@ -69,7 +69,7 @@ struct VLCKitEngineTests {
     @Test("positionState maps isPlaying to .playing/.paused")
     func positionStateMapping() {
         let playing = VLCKitEngine.positionState(isPlaying: true, positionMs: 1000, durationMs: 4000)
-        guard case .playing(let p, let d) = playing else {
+        guard case .playing(let p, let d, _) = playing else {
             Issue.record("expected .playing, got \(playing)"); return
         }
         #expect(CMTimeGetSeconds(p) == 1.0)

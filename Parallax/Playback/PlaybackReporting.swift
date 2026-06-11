@@ -13,6 +13,17 @@ protocol PlaybackReporting: Sendable {
     func reportStart(_ beat: ProgressBeat) async
     func reportProgress(_ beat: ProgressBeat) async
     func reportStopped(_ beat: ProgressBeat) async
+    /// Kills the session's server-side transcode job (`DELETE
+    /// /Videos/ActiveEncodings`). Fired before resolving a replacement stream
+    /// (track switch) and on player exit — distinct from `reportStopped`, which
+    /// closes the playback *session* (watch progress) but leaves killing the
+    /// *encoding* to server-side policy.
+    func stopEncoding(playSessionID: String) async
+    /// Resets the server's 60s idle kill timer for the session's transcode job
+    /// (`POST /Sessions/Playing/Ping`). The VM fires this on a timer while a
+    /// transcode session is mounted — segment requests stop when the buffer
+    /// fills during a pause, and the idle kill would delete the job + segments.
+    func pingSession(playSessionID: String) async
 }
 
 extension PlaybackInfoService: PlaybackReporting {

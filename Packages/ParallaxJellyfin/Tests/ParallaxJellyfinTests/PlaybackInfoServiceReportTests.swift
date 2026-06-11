@@ -61,6 +61,40 @@ struct PlaybackInfoServiceReportTests {
         #expect(fake.stoppedInfos.first?.playSessionID == "ps-1")
     }
 
+    @Test("stopEncoding DELETEs the session's active encoding and is best-effort")
+    func stopEncodingForwards() async {
+        let fake = FakeJellyfinPlaybackClient()
+        let service = PlaybackInfoService(client: fake)
+        await service.stopEncoding(playSessionID: "ps-1")
+        #expect(fake.stopEncodingSessionIDs == ["ps-1"])
+    }
+
+    @Test("A thrown stopEncoding is non-fatal — it does not propagate")
+    func stopEncodingFailureSwallowed() async {
+        let fake = FakeJellyfinPlaybackClient()
+        fake.stopEncodingError = FakeJellyfinPlaybackClient.FakeError.reportFailed
+        let service = PlaybackInfoService(client: fake)
+        await service.stopEncoding(playSessionID: "ps-1")
+        #expect(fake.stopEncodingSessionIDs == ["ps-1"])
+    }
+
+    @Test("pingSession POSTs the session keepalive and is best-effort")
+    func pingForwards() async {
+        let fake = FakeJellyfinPlaybackClient()
+        let service = PlaybackInfoService(client: fake)
+        await service.pingSession(playSessionID: "ps-1")
+        #expect(fake.pingSessionIDs == ["ps-1"])
+    }
+
+    @Test("A thrown ping is non-fatal — it does not propagate")
+    func pingFailureSwallowed() async {
+        let fake = FakeJellyfinPlaybackClient()
+        fake.pingError = FakeJellyfinPlaybackClient.FakeError.reportFailed
+        let service = PlaybackInfoService(client: fake)
+        await service.pingSession(playSessionID: "ps-1")
+        #expect(fake.pingSessionIDs == ["ps-1"])
+    }
+
     @Test("A thrown report is non-fatal — it does not propagate")
     func reportFailureSwallowed() async {
         let fake = FakeJellyfinPlaybackClient()

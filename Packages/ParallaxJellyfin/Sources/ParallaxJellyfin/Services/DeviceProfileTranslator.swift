@@ -107,7 +107,7 @@ enum DeviceProfileTranslator {
 
     // MARK: — Private: Transcode floor
 
-    private static func transcodingProfile() -> TranscodingProfile { 
+    private static func transcodingProfile() -> TranscodingProfile {
         TranscodingProfile(
             protocol: .hls,
             audioCodec: "aac,ac3,eac3",
@@ -117,6 +117,14 @@ enum DeviceProfileTranslator {
             // correctly-timed sidecar VTT and draw it ourselves, so the server
             // must NOT embed the mis-timed in-manifest WebVTT (jellyfin#16647).
             enableSubtitlesInManifest: false,
+            // Startup-latency knobs, matching Swiftfin's native-AVPlayer profile.
+            // BreakOnNonKeyFrames matters most on the REMUX path (MKV+HEVC →
+            // stream-copy to HLS): with no re-encode the segmenter can't force
+            // keyframes, so without this flag every segment cut waits for the
+            // source's long-GOP keyframes — the playlist (gated on MinSegments
+            // segments existing) takes several GOPs to appear on a 4K movie.
+            // AVPlayer handles segments that open mid-GOP.
+            isBreakOnNonKeyFrames: true,
             // Request up to 7.1 (8ch) on every transcode. Audio channel layout
             // is output-side: iOS/tvOS hand AVPlayer the full multichannel bed
             // and downmix for the speaker / spatialize for AirPods / re-render
@@ -126,6 +134,10 @@ enum DeviceProfileTranslator {
             // bed and let the OS adapt. Without this Jellyfin defaults the
             // transcode to 5.1 and downmixes 7.1 sources.
             maxAudioChannels: "8",
+            // Serve the playlist as soon as two segments exist instead of the
+            // server's larger default wait — AVPlayer needs about that much to
+            // start anyway, so the extra segments only delayed first frame.
+            minSegments: 2,
             type: .video,
             videoCodec: "h264,hevc"
         )
@@ -176,7 +188,26 @@ enum DeviceProfileTranslator {
         // isRequired:false matches the ecosystem; for a probed stream the
         // condition gates regardless, and false only avoids a needless transcode
         // when the server couldn't read the profile/bit depth.
-        [
+        //
+        // VideoRangeType gates which HDR flavours may be DELIVERED AS-IS
+        // (direct play / the AVKit remux tier stream-copies the source video).
+        // Dolby Vision without a decodable base layer is the killer: a DV remux
+        // passes the bit-depth gate as plain HEVC, AVPlayer accepts the manifest,
+        // then the video decoder rejects every sample. Profile 5 (`DOVI`, no
+        // fallback) and profile 7 (`DOVIWithEL`) are never decodable here; the
+        // With-HDR10/SDR/HLG variants carry a base layer AVPlayer plays.
+        // Anything outside the list (incl. `DOVIInvalid`) transcodes.
+        //
+        // The whitelist is deliberately STATIC — not conditional on probed HDR
+        // support: per TN3145 AVPlayer tone-maps HDR optimally on ANY Apple
+        // device, so HDR10/HLG are safe to deliver even to an SDR display.
+        // Gating them on the probe condemned an Apple TV running its UI in SDR
+        // to a server-side 4K tone-map re-encode that couldn't sustain realtime
+        // — endless buffering with -12889 segment timeouts (device-diagnosed
+        // 2026-06-10, `reason: VideoCodecNotSupported` on plain HDR10 content).
+        let hevcRanges = "SDR|HDR10|HDR10Plus|HLG|DOVIWithSDR|DOVIWithHDR10|DOVIWithHDR10Plus|DOVIWithHLG"
+
+        return [
             CodecProfile(
                 codec: "h264",
                 conditions: [
@@ -185,6 +216,14 @@ enum DeviceProfileTranslator {
                         isRequired: false,
                         property: .videoProfile,
                         value: "high|main|baseline|constrained baseline"
+                    ),
+                    // H.264 HDR isn't an AVPlayer thing; DV-on-AVC (profile 9)
+                    // only passes with an SDR base. Swiftfin parity.
+                    ProfileCondition(
+                        condition: .equalsAny,
+                        isRequired: false,
+                        property: .videoRangeType,
+                        value: "SDR|DOVIWithSDR"
                     ),
                 ],
                 type: .video
@@ -197,6 +236,12 @@ enum DeviceProfileTranslator {
                         isRequired: false,
                         property: .videoBitDepth,
                         value: "10"
+                    ),
+                    ProfileCondition(
+                        condition: .equalsAny,
+                        isRequired: false,
+                        property: .videoRangeType,
+                        value: hevcRanges
                     ),
                 ],
                 type: .video

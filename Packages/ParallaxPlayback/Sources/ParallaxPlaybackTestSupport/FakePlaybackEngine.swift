@@ -47,6 +47,8 @@ public final class FakePlaybackEngine: PlaybackEngine {
 
     public nonisolated(unsafe) private(set) var loadedAssets: [PlayableAsset] = []
     public nonisolated(unsafe) private(set) var calls: [String] = []
+    /// Set to make every `load` throw after recording — a failed stream load.
+    public nonisolated(unsafe) var loadError: Error? = nil
     public nonisolated(unsafe) private(set) var selectedAudioTrackID: TrackID? = nil
     public nonisolated(unsafe) private(set) var selectedSubtitleTrackID: TrackID? = nil
 
@@ -73,6 +75,7 @@ public final class FakePlaybackEngine: PlaybackEngine {
     public func load(_ asset: PlayableAsset) async throws {
         loadedAssets.append(asset)
         calls.append("load")
+        if let loadError { throw loadError }
     }
 
     public func play() async { calls.append("play") }

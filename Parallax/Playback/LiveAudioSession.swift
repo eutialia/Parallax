@@ -8,7 +8,16 @@ import ParallaxPlayback
 /// `nonisolated` AsyncStream<Void> consumed by the app's launch-time invalidate
 /// pipe. Per the spec, in-flight playback is NOT interrupted on a route change
 /// — each emission only signals "rebuild the profile on the next resolve".
-final class LiveAudioSession: AudioSessionControlling, @unchecked Sendable {
+///
+/// `nonisolated` + `@concurrent`: `setActive(true)` is a blocking IPC into the
+/// media server — it must stay off the main thread. Dispatch through the
+/// package's `any AudioSessionControlling` already lands off-main today, but
+/// only because the package compiles without NonisolatedNonsendingByDefault
+/// (its async requirements keep global-executor semantics) — a direct call on
+/// the concrete type, or the package adopting approachable concurrency, would
+/// silently pull this IPC onto the caller's (main) actor. `@concurrent` pins
+/// the guarantee instead of inheriting it by accident.
+nonisolated final class LiveAudioSession: AudioSessionControlling, @unchecked Sendable {
     let routeChanges: AsyncStream<Void>
     private let continuation: AsyncStream<Void>.Continuation
     private var observer: NSObjectProtocol?
@@ -33,7 +42,7 @@ final class LiveAudioSession: AudioSessionControlling, @unchecked Sendable {
         continuation.finish()
     }
 
-    func activate() async throws {
+    @concurrent func activate() async throws {
         let session = AVAudioSession.sharedInstance()
         // `.allowAirPlay` is only valid with `.playAndRecord`; passing it with
         // `.playback` makes setCategory throw (NSOSStatusErrorDomain -50), which
@@ -44,7 +53,7 @@ final class LiveAudioSession: AudioSessionControlling, @unchecked Sendable {
         try session.setActive(true)
     }
 
-    func deactivate() async {
+    @concurrent func deactivate() async {
         do {
             try AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
         } catch {

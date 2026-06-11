@@ -210,6 +210,12 @@ struct DeviceProfileTranslatorTests {
         #expect(trans.first?.maxAudioChannels == "8")
         // In-manifest WebVTT mis-times on fMP4 (jellyfin#16647); we fetch a sidecar.
         #expect(trans.first?.enableSubtitlesInManifest == false)
+        // Startup-latency knobs (Swiftfin-matched): on the remux path the
+        // segmenter can't force keyframes, so without BreakOnNonKeyFrames the
+        // playlist waits on the source's long-GOP keyframes; MinSegments=2
+        // serves it as soon as AVPlayer has enough to start.
+        #expect(trans.first?.isBreakOnNonKeyFrames == true)
+        #expect(trans.first?.minSegments == 2)
     }
 
     // MARK: — SubtitleProfiles
@@ -265,6 +271,29 @@ struct DeviceProfileTranslatorTests {
         let condition = hevc?.conditions?.first { $0.property == .videoBitDepth }
         #expect(condition?.condition == .lessThanEqual)
         #expect(condition?.value == "10")
+    }
+
+    @Test("HEVC range gate is static: HDR bases + DV-with-fallback always pass (AVPlayer tone-maps on SDR displays), bare DOVI/DOVIWithEL never")
+    func hevcRangeGateStatic() {
+        // tieredCaps() declares hdr: .none — the whitelist must NOT shrink for
+        // it: gating HDR10 on the probe forced an SDR-mode Apple TV into a 4K
+        // server tone-map it couldn't sustain (endless buffering, -12889).
+        let profile = DeviceProfileTranslator.deviceProfile(from: tieredCaps())
+        let hevc = (profile.codecProfiles ?? []).first { $0.codec == "hevc" && $0.type == .video }
+        let condition = hevc?.conditions?.first { $0.property == .videoRangeType }
+        #expect(condition?.condition == .equalsAny)
+        let entries = Set((condition?.value ?? "").split(separator: "|").map(String.init))
+        for allowed in ["SDR", "HDR10", "HDR10Plus", "HLG", "DOVIWithSDR", "DOVIWithHDR10", "DOVIWithHDR10Plus", "DOVIWithHLG"] {
+            #expect(entries.contains(allowed), "missing \(allowed)")
+        }
+        // The killers stay outside: no base layer AVPlayer can decode.
+        #expect(!entries.contains("DOVI"))
+        #expect(!entries.contains("DOVIWithEL"))
+        #expect(!entries.contains("DOVIInvalid"))
+
+        let h264 = (profile.codecProfiles ?? []).first { $0.codec == "h264" && $0.type == .video }
+        let h264Range = h264?.conditions?.first { $0.property == .videoRangeType }
+        #expect(h264Range?.value == "SDR|DOVIWithSDR")
     }
 
     // MARK: — Bitrate caps

@@ -391,7 +391,11 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     static func positionState(isPlaying: Bool, positionMs: Int32, durationMs: Int32) -> PlaybackState {
         let position = vlcTimeToCMTime(ms: positionMs)
         let duration = vlcTimeToCMTime(ms: durationMs)
-        return isPlaying ? .playing(position: position, duration: duration) : .paused(position: position, duration: duration)
+        // buffered: nil — libvlc exposes no loaded-range query; its small network
+        // cache wouldn't meaningfully feed the bar's instant-seek layer anyway.
+        return isPlaying
+            ? .playing(position: position, duration: duration, buffered: nil)
+            : .paused(position: position, duration: duration, buffered: nil)
     }
 
     /// `id` is VLC's own `trackId` string; it is tagged `.vlc` so it can never be

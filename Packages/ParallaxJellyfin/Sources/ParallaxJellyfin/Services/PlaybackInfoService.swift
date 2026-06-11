@@ -285,6 +285,19 @@ public actor PlaybackInfoService {
         await send("reportStopped") { try await self.client.reportStopped(info) }
     }
 
+    /// Kills the session's active transcode job. Non-fatal like the reports —
+    /// a failed kill must never block the replacement stream; the abandoned job
+    /// then just dies with the session server-side (slower, but not wrong).
+    public func stopEncoding(playSessionID: String) async {
+        await send("stopEncoding") { try await self.client.stopEncoding(playSessionID: playSessionID) }
+    }
+
+    /// Resets the server's 60s idle kill timer for the session's transcode job.
+    /// Non-fatal — a dropped ping just risks the idle kill it exists to prevent.
+    public func pingSession(playSessionID: String) async {
+        await send("pingSession") { try await self.client.pingSession(playSessionID: playSessionID) }
+    }
+
     // MARK: - Body translation + named non-fatal send
 
     private func stateInfo(from beat: ProgressBeat) -> PlaybackStateInfo {

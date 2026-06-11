@@ -28,6 +28,11 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     /// `defaultRate`) honors it, and so a mid-playback change applies immediately.
     private var desiredRate: Float = 1
     private var statusObservation: NSKeyValueObservation?
+    /// Player-level (survives reloads — installed once in `init`): flips of
+    /// `timeControlStatus` drive the `.buffering` beats. The periodic time
+    /// observer can go quiet while playback is stalled (time isn't advancing),
+    /// so a stall must be reported edge-triggered, not poll-discovered.
+    private var timeControlObservation: NSKeyValueObservation?
     private var timeObserverToken: Any?
     private var endObserver: NSObjectProtocol?
     /// Loads the media-selection inventory off the actor. Held so `teardown()`
@@ -47,6 +52,35 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         self.continuation = continuation
         super.init()
         continuation.yield(.idle)
+        // Unlike the item-status KVO (delivered on the main run loop), AVPlayer
+        // flips timeControlStatus from its own internal queue — hop to main
+        // instead of assuming isolation.
+        timeControlObservation = player.observe(\.timeControlStatus, options: [.new]) { [weak self] _, _ in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self?.handleTimeControlChange() }
+            }
+        }
+    }
+
+    /// Emits the beat matching the player's transport state the moment it flips:
+    /// `.waitingToPlayAtSpecifiedRate` → `.buffering` (mid-stream stall — a seek
+    /// past the buffer or a network underrun), `.playing` → `.playing` (snappy
+    /// stall-clear instead of waiting for the next periodic tick). `.paused` is
+    /// owned by `pause()` and the periodic observer.
+    private func handleTimeControlChange() {
+        guard let item = currentItem, item.status == .readyToPlay else { return }
+        let position = player.currentTime()
+        let buffered = Self.bufferedEnd(of: item, at: position)
+        switch player.timeControlStatus {
+        case .waitingToPlayAtSpecifiedRate:
+            continuation.yield(.buffering(position: position, duration: item.duration, buffered: buffered))
+        case .playing:
+            continuation.yield(.playing(position: position, duration: item.duration, buffered: buffered))
+        case .paused:
+            break
+        @unknown default:
+            break
+        }
     }
 
     public func load(_ asset: PlayableAsset) async throws {
@@ -94,6 +128,24 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         }
 
         player.replaceCurrentItem(with: item)
+
+        // The resume seek must land BEFORE readiness, not on .readyToPlay: a
+        // pre-ready seek queues against the item and aims the player's FIRST
+        // media request at the resume offset. Seeking only after .readyToPlay
+        // made AVPlayer load position 0 first (readiness requires media there)
+        // and then jump — but a Jellyfin transcode job is producing segments AT
+        // the resume offset, and every out-of-window segment request kills and
+        // restarts its ffmpeg job. On a 4K stream-copy each restart outran the
+        // 3s segment timeout (-12889 "no response for media file") in a
+        // kill/restart livelock: black screen, no audio, transport stuck in
+        // waiting(minimize stalls) with the buffer parked at the resume offset
+        // (device-diagnosed 2026-06-11). Default tolerance — segment-level
+        // accuracy is right for resume, and frame-exact targets can't even
+        // start on a mid-GOP stream-copied segment.
+        if let start = pendingStartTime {
+            pendingStartTime = nil
+            item.seek(to: start, completionHandler: nil)
+        }
     }
 
     public func play() async { player.playImmediately(atRate: desiredRate) }
@@ -101,7 +153,12 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     public func pause() async {
         player.pause()
         if let item = currentItem, item.status == .readyToPlay {
-            continuation.yield(.paused(position: player.currentTime(), duration: item.duration))
+            let position = player.currentTime()
+            continuation.yield(.paused(
+                position: position,
+                duration: item.duration,
+                buffered: Self.bufferedEnd(of: item, at: position)
+            ))
         }
     }
 
@@ -117,12 +174,42 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     }
 
     public func seek(to time: CMTime) async {
+        // A seek OUTSIDE the buffered range is a real media fetch, but a PAUSED
+        // player performs it without ever entering .waitingToPlayAtSpecifiedRate
+        // — and the drag-scrub flow always pauses before seeking, so on a
+        // transcode the whole multi-second fetch would otherwise read as a dead
+        // paused frame (no stall beat, no scrim). Emit the fetch explicitly.
+        if let item = currentItem, item.status == .readyToPlay,
+           Self.bufferedEnd(of: item, at: time) == nil {
+            continuation.yield(.buffering(position: time, duration: item.duration, buffered: nil))
+        }
         // Default (efficient) tolerance, not zero. Frame-exact seeking on an HLS
         // transcode is pathologically slow and can stall — it made scrubbing a 4K
         // stream feel stuck. Segment-level accuracy is right for both scrubbing and
         // the resume seek: Jellyfin's transcode is a full-timeline playlist, so
         // resume is an ordinary seek — the stream URL carries no start offset.
-        await player.seek(to: time)
+        let finished = await player.seek(to: time)
+        // A superseded seek must NOT land its post-seek beat. When a newer seek
+        // arrives, AVPlayer resumes THIS call with finished == false — but only
+        // AFTER the newer call already pre-emitted its .buffering, so the stale
+        // .paused beat below would wipe the stall and present a bare paused UI
+        // while the new fetch is still in flight (device-found: drag → buffering
+        // → re-drag before the scrim closed showed paused, no scrim). The newest
+        // seek owns every subsequent beat.
+        guard finished else { return }
+        // Land the post-seek truth for a paused player: the periodic observer is
+        // quiet while paused, so without this beat the stall above never clears
+        // until the user resumes. (Playing/waiting outcomes are covered by the
+        // timeControlStatus KVO + periodic ticks.)
+        if player.timeControlStatus == .paused,
+           let item = currentItem, item.status == .readyToPlay {
+            let position = player.currentTime()
+            continuation.yield(.paused(
+                position: position,
+                duration: item.duration,
+                buffered: Self.bufferedEnd(of: item, at: position)
+            ))
+        }
     }
 
     public func setAudioTrack(_ track: AudioTrack) async {
@@ -140,6 +227,8 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
 
     public func teardown() async {
         detachCurrentItem()
+        timeControlObservation?.invalidate()
+        timeControlObservation = nil
         player.pause()
         player.replaceCurrentItem(with: nil)
         currentItem = nil
@@ -183,17 +272,74 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
             info.indicatedBitrate = event.indicatedBitrate > 0 ? event.indicatedBitrate : nil
             info.observedBitrate = event.observedBitrate > 0 ? event.observedBitrate : nil
             info.droppedVideoFrames = event.numberOfDroppedVideoFrames >= 0 ? event.numberOfDroppedVideoFrames : nil
+            info.stallCount = event.numberOfStalls >= 0 ? event.numberOfStalls : nil
+            info.bytesTransferred = event.numberOfBytesTransferred > 0 ? event.numberOfBytesTransferred : nil
         }
+
+        // Transport truth: the discriminator for "never plays, no error".
+        info.transportState = {
+            switch player.timeControlStatus {
+            case .paused: return "paused"
+            case .playing: return "playing"
+            case .waitingToPlayAtSpecifiedRate:
+                let reason: String
+                switch player.reasonForWaitingToPlay {
+                case .toMinimizeStalls: reason = "minimize stalls"
+                case .evaluatingBufferingRate: reason = "evaluating buffer rate"
+                case .noItemToPlay: reason = "no item"
+                case .interstitialEvent: reason = "interstitial"
+                case .waitingForCoordinatedPlayback: reason = "coordinated playback"
+                default: reason = "unknown"
+                }
+                return "waiting (\(reason))"
+            @unknown default: return "unknown"
+            }
+        }()
+
+        // HLS error log: segment fetch/parse failures retry silently and never
+        // fail the item — a never-starting stream usually confesses here. The
+        // URI is reduced to its trailing path (query stripped — that's where
+        // the api_key lives) so the log names WHICH resource failed: playlist,
+        // init segment, or a specific media segment.
+        if let events = item.errorLog()?.events, !events.isEmpty {
+            info.errorLogTail = events.suffix(3).map { e in
+                let path = e.uri.flatMap(Self.redactedTail(of:)).map { " @\($0)" } ?? ""
+                return "\(e.errorDomain) \(e.errorStatusCode)\(path): \(e.errorComment ?? "—")"
+            }
+        }
+
+        info.itemStatus = {
+            switch item.status {
+            case .readyToPlay: return "ready"
+            case .failed: return "failed"
+            case .unknown: return "unknown"
+            @unknown default: return "unknown"
+            }
+        }()
 
         if let videoTrack = item.tracks.first(where: { $0.assetTrack?.mediaType == .video }) {
             let fps = Double(videoTrack.currentVideoFrameRate)
             info.renderedFrameRate = fps > 0 ? fps : nil
         }
 
-        if let range = item.loadedTimeRanges.last?.timeRangeValue {
+        // Buffered = contiguous with the playhead ONLY. The old `.last.end - now`
+        // read 1408s "buffered" while the playhead sat at 0 with nothing under
+        // it — the buffered range was parked at a resume offset the playhead
+        // never reached. loadedRanges carries every range so that state is
+        // visible instead of averaged away.
+        let now = item.currentTime()
+        if CMTimeGetSeconds(now).isFinite {
+            info.playheadSeconds = CMTimeGetSeconds(now)
+            if let end = Self.bufferedEnd(of: item, at: now) {
+                info.bufferedSeconds = max(0, CMTimeGetSeconds(end) - CMTimeGetSeconds(now))
+            }
+        }
+        info.loadedRanges = item.loadedTimeRanges.compactMap { value in
+            let range = value.timeRangeValue
+            let start = CMTimeGetSeconds(range.start)
             let end = CMTimeGetSeconds(CMTimeRangeGetEnd(range))
-            let now = CMTimeGetSeconds(item.currentTime())
-            if end.isFinite, now.isFinite { info.bufferedSeconds = max(0, end - now) }
+            guard start.isFinite, end.isFinite else { return nil }
+            return String(format: "%.1f–%.1f", start, end)
         }
 
         // The engine's TRUE selection — what's actually audible/legible right now,
@@ -216,10 +362,8 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     private func handleStatusChange(_ item: AVPlayerItem) {
         switch item.status {
         case .readyToPlay:
-            if let start = pendingStartTime {
-                pendingStartTime = nil
-                Task { await seek(to: start) }
-            }
+            // (The resume seek already happened at load time, pre-ready — see
+            // load(). Seeking here re-targeted an already-position-0 player.)
             // Media-selection groups load asynchronously: the synchronous
             // `mediaSelectionGroup(forMediaCharacteristic:)` accessor is
             // deprecated and returns nil/incomplete data before the property
@@ -264,11 +408,41 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
 
     private func emitTimeUpdate(at time: CMTime) {
         guard let item = currentItem, item.status == .readyToPlay else { return }
-        if player.timeControlStatus == .paused {
-            continuation.yield(.paused(position: time, duration: item.duration))
-        } else {
-            continuation.yield(.playing(position: time, duration: item.duration))
+        let buffered = Self.bufferedEnd(of: item, at: time)
+        switch player.timeControlStatus {
+        case .paused:
+            continuation.yield(.paused(position: time, duration: item.duration, buffered: buffered))
+        case .waitingToPlayAtSpecifiedRate:
+            continuation.yield(.buffering(position: time, duration: item.duration, buffered: buffered))
+        case .playing:
+            continuation.yield(.playing(position: time, duration: item.duration, buffered: buffered))
+        @unknown default:
+            continuation.yield(.playing(position: time, duration: item.duration, buffered: buffered))
         }
+    }
+
+    /// Trailing path of an HLS resource URI with the query dropped (the query
+    /// is where the api_key lives): "main/123.mp4". Enough to tell playlist vs
+    /// init vs media segment apart without leaking credentials.
+    private static func redactedTail(of uri: String) -> String? {
+        guard let components = URLComponents(string: uri) else { return nil }
+        let parts = components.path.split(separator: "/")
+        guard !parts.isEmpty else { return nil }
+        return parts.suffix(2).joined(separator: "/")
+    }
+
+    /// End of the loaded range containing `time` — the absolute media time the
+    /// contiguous buffer around the playhead extends to. A seek inside this range
+    /// completes without touching the network, so it feeds the progress bar's
+    /// "instant seek" layer. Nil when nothing around the playhead is buffered.
+    private static func bufferedEnd(of item: AVPlayerItem, at time: CMTime) -> CMTime? {
+        for value in item.loadedTimeRanges {
+            let range = value.timeRangeValue
+            if range.containsTime(time) {
+                return CMTimeRangeGetEnd(range)
+            }
+        }
+        return nil
     }
 
     private func loadTrackInventory(of item: AVPlayerItem) async -> TrackInventory {

@@ -28,7 +28,13 @@ import ParallaxCore
 ///
 /// Resolved once per process; files are reused across launches (the `version` tag busts
 /// the cache when this logic changes).
-enum SubtitleFontLocator {
+///
+/// `nonisolated`: under the app target's default MainActor isolation, the lazy
+/// `fonts` initializer would otherwise run its CoreText table copies, checksums,
+/// and disk writes on the main thread — mid-presentation on a first play. Callers
+/// on the start path go through `resolved()`, which forces the first touch onto
+/// the global executor.
+nonisolated enum SubtitleFontLocator {
     /// The libass font directory plus a single file for VLC's simple (SRT) text
     /// renderer, which is a separate module taking `:freetype-font=`.
     struct Fonts {
@@ -37,6 +43,11 @@ enum SubtitleFontLocator {
     }
 
     static let fonts: Fonts? = resolve()
+
+    /// Off-main access to `fonts`: the first touch materializes font files
+    /// (CTFontCopyTable over megabytes of CJK tables + atomic writes), far too
+    /// heavy for the MainActor. Later calls return the memoized value.
+    @concurrent static func resolved() async -> Fonts? { fonts }
 
     /// The family name VLC passes libass as its default on Apple platforms. Our fonts
     /// are renamed to this so libass's family-default lookup resolves to them.
@@ -252,7 +263,7 @@ enum SubtitleFontLocator {
     }
 }
 
-private extension Data {
+private nonisolated extension Data {
     mutating func appendBE(_ value: UInt32) {
         Swift.withUnsafeBytes(of: value.bigEndian) { append(contentsOf: $0) }
     }

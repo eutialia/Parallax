@@ -52,6 +52,21 @@ final class PlayerViewModel {
     private(set) var activeSubtitleCues: [SubtitleCue] = []
     private(set) var currentPosition: CMTime = .zero
     private(set) var currentDuration: CMTime = .zero
+    /// Absolute media time the contiguous buffer around the playhead extends to
+    /// (from the engine's beats). Nil when the engine doesn't report it (VLC) or
+    /// while a (re)load is buffering fresh.
+    private(set) var bufferedTo: CMTime?
+
+    /// 0...1 fraction of the duration the buffer extends to — the progress bar's
+    /// middle "instant seek" layer. Seeks landing inside it complete without a
+    /// server round-trip, so the bar shows the user where scrubbing is free.
+    var bufferedFraction: Double? {
+        guard let bufferedTo else { return nil }
+        let dur = CMTimeGetSeconds(currentDuration)
+        let end = CMTimeGetSeconds(bufferedTo)
+        guard dur > 0, end.isFinite else { return nil }
+        return min(max(end / dur, 0), 1)
+    }
     /// Whether the engine is actively playing (vs paused). `phase` stays `.playing`
     /// while paused (the video surface stays on screen), so the play/pause button
     /// must read this — not `phase` — or it shows "pause" forever and can never resume.
@@ -63,9 +78,42 @@ final class PlayerViewModel {
     var title: String { itemTitle }
 
     /// Caption for the loading scrim. A transcode audio switch reloads the
-    /// stream ("Switching audio · <track>"); a first play / re-buffer is "Loading".
-    var loaderTitle: String { isSwitchingTracks ? "Switching audio" : "Loading" }
+    /// stream ("Switching audio · <track>"); a mid-stream stall over a live frame
+    /// is "Buffering"; a first play is "Loading".
+    var loaderTitle: String {
+        if isSwitchingTracks { return "Switching audio" }
+        if showsStallScrim { return "Buffering" }
+        return "Loading"
+    }
     var loaderSubtitle: String? { isSwitchingTracks ? selectedAudioTrack?.displayName : nil }
+
+    /// Mid-stream stall (engine waiting for media while the user's intent is
+    /// "playing") — drives the light buffering scrim over the frozen frame.
+    /// Debounced ~400ms so the sub-second waits of a healthy in-buffer seek
+    /// don't flash the scrim; cleared edge-on by the next playing/paused beat.
+    private(set) var isStalled = false
+    private var stallDebounceTask: Task<Void, Never>?
+
+    /// True when the mid-stream stall scrim should show: stalled while the
+    /// surface is live (`phase == .playing`). A stall during the first load
+    /// keeps the heavy "Loading" scrim instead — same spot, different flavor.
+    var showsStallScrim: Bool { phase == .playing && isStalled }
+
+    private func armStallDebounce() {
+        guard !isStalled, stallDebounceTask == nil else { return }
+        stallDebounceTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled else { return }
+            self?.isStalled = true
+            self?.stallDebounceTask = nil
+        }
+    }
+
+    private func clearStall() {
+        stallDebounceTask?.cancel()
+        stallDebounceTask = nil
+        isStalled = false
+    }
 
     /// A transcode audio switch that failed AFTER playback safely resumed on the
     /// previous track (the design's silent fallback). Drives the "Couldn't switch
@@ -183,12 +231,29 @@ final class PlayerViewModel {
     /// Fetches sidecar subtitle bytes. Injectable so tests feed canned WebVTT
     /// without a network round-trip; production reads the authed VTT URL.
     private let subtitleFetch: @Sendable (URL) async -> Data?
+    /// Ping cadence for `keepaliveTask` — half the server's 60s idle kill
+    /// timeout in production; injectable so tests don't wait 30s for a beat.
+    private let keepaliveInterval: Duration
 
     private var stateTask: Task<Void, Never>?
     private var subtitleFetchTask: Task<Void, Never>?
+    /// Keepalive for the server's transcode job: pings the play session on a
+    /// timer so the 60s idle kill never fires while the player is mounted.
+    /// Segment requests stop once a PAUSED player's buffer fills, and progress
+    /// beats stop with them (the periodic observer is quiet at rate 0) — so a
+    /// pause >60s would otherwise get the job AND its segments deleted, and
+    /// resume would pay a cold ffmpeg respawn (the endless-buffering wedge).
+    /// Runs while playing too: redundant next to segment traffic, but immune
+    /// to the player's fetch cadence. Transcode sessions only.
+    private var keepaliveTask: Task<Void, Never>?
     private var resolved: ResolvedPlayback?
     private var didReportStart = false
     private var didReportStopped = false
+    /// Whether this session's server-side encoding was already killed. NOT
+    /// gated on `didReportStart` like the stop report — the transcode job
+    /// exists from resolve time, so a session that wedged before its first
+    /// `.playing` beat still has a job to kill on exit.
+    private var didStopEncoding = false
     /// Exit was requested (`beginExit()`/`stop()`): the in-flight start path bails
     /// at its next checkpoint instead of resurrecting playback after dismissal.
     private var isExiting = false
@@ -235,7 +300,8 @@ final class PlayerViewModel {
         fetchDetail: @escaping @Sendable (ItemID) async throws -> ItemDetail = { _ in
             throw AppError.playback(.unsupportedFormat)
         },
-        subtitleFetch: @escaping @Sendable (URL) async -> Data? = { try? await URLSession.shared.data(from: $0).0 }
+        subtitleFetch: @escaping @Sendable (URL) async -> Data? = { try? await URLSession.shared.data(from: $0).0 },
+        keepaliveInterval: Duration = .seconds(30)
     ) {
         self.deviceProfileBuilder = deviceProfileBuilder
         self.playbackInfo = playbackInfo
@@ -244,6 +310,7 @@ final class PlayerViewModel {
         self.audioSession = audioSession
         self.fetchDetail = fetchDetail
         self.subtitleFetch = subtitleFetch
+        self.keepaliveInterval = keepaliveInterval
     }
 
     isolated deinit {
@@ -254,6 +321,8 @@ final class PlayerViewModel {
         // never reached.
         stateTask?.cancel()
         subtitleFetchTask?.cancel()
+        stallDebounceTask?.cancel()
+        keepaliveTask?.cancel()
     }
 
     /// Direct-play entry: fetch the item's detail, then play. The frosted reload
@@ -348,12 +417,17 @@ final class PlayerViewModel {
         reusingEngine: Bool = false
     ) async throws {
         try checkStillActive()
+        // Kicked off alongside the profile build + network resolve: the first
+        // resolution materializes font files off-main (see SubtitleFontLocator),
+        // so it overlaps the long network call instead of stalling makeAsset.
+        async let subtitleFonts = SubtitleFontLocator.resolved()
         let caps = await deviceProfileBuilder.build()
         let resolved = try await resolve(item.id, caps, startTime, audioStreamIndex, subtitleStreamIndex)
         // The critical fence: resolve is the long network call, so this is where an
         // exit-during-loading usually lands. Bail BEFORE building an engine.
         try checkStillActive()
         self.resolved = resolved
+        startKeepalive(for: resolved)
         currentAudioStreamIndex = audioStreamIndex ?? resolved.defaultAudioStreamIndex
         // Subtitle is the user's EXPLICIT choice only — never seeded from the server
         // default. That isolates it from audio switching (an audio switch carries
@@ -371,7 +445,7 @@ final class PlayerViewModel {
         }
         recomputeMediaSummary()
 
-        let asset = Self.makeAsset(from: resolved)
+        let asset = Self.makeAsset(from: resolved, subtitleFonts: await subtitleFonts)
         let id = EngineSelector.select(hints: asset.hints)
 
         // Reuse the live engine when a transcode track switch keeps the same engine
@@ -398,6 +472,22 @@ final class PlayerViewModel {
             // Last fence before audio starts: an exit that landed during load must
             // not be answered with play() on a player that's already dismissed.
             try checkStillActive()
+            #if os(tvOS)
+            // Between load and play, never later: ask the TV to match the
+            // content's native mode (HDR / frame rate) and wait for the switch
+            // to settle behind the loading scrim. Applying this after frames
+            // render blanks/re-handshakes HDMI mid-decode and wedged the video
+            // pipeline on device (black/frozen video with live audio).
+            //
+            // Fresh content only: a track switch re-delivers the SAME video
+            // (new session, identical format), so the display is already
+            // matched and prepare() would just burn its full arm window in
+            // dead waiting before every audio switch.
+            if !reusingEngine {
+                await DisplayCriteriaMatcher.prepare(for: engine)
+                try checkStillActive()
+            }
+            #endif
         } catch {
             // A load failure (or an exit mid-load) must not leave the engine + its
             // state subscription dangling: tear down before propagating, so
@@ -415,15 +505,22 @@ final class PlayerViewModel {
     }
 
     /// Cancels the engine's state subscription and tears the engine down, clearing
-    /// the reference. The focused engine-only teardown (no session report, no UI
-    /// reset) used by a load failure and a failed track switch.
+    /// the reference. The focused teardown (no session report, no UI reset) used by
+    /// a load failure and a failed track switch. The session's keepalive and
+    /// encoding die here too: with no engine left to consume the stream, pinging
+    /// the session would keep an orphaned ffmpeg job transcoding flat-out for as
+    /// long as the user sits on the failure overlay — the exact contention
+    /// `stopEncoding` exists to prevent. Both are idempotent vs a racing `stop()`.
     private func tearDownEngine() async {
         stateTask?.cancel()
         stateTask = nil
+        keepaliveTask?.cancel()
+        keepaliveTask = nil
         if let engine {
             await engine.teardown()
             self.engine = nil
         }
+        await stopEncodingIfNeeded()
     }
 
     /// Synchronously fences the exit before the async `stop()` gets a MainActor
@@ -447,10 +544,16 @@ final class PlayerViewModel {
         didStop = true
         stateTask?.cancel()
         stateTask = nil
+        keepaliveTask?.cancel()
+        keepaliveTask = nil
         if let engine {
             await engine.teardown()
         }
         nowPlaying.clear()
+        // Exit kills the encoding explicitly (not just via the stop report):
+        // a session that wedged before its first .playing beat never reports
+        // start/stop, and its orphaned job would contend with the next play.
+        await stopEncodingIfNeeded()
         await reportStoppedIfNeeded()
         await audioSession.deactivate()
         engine = nil
@@ -468,6 +571,8 @@ final class PlayerViewModel {
         activeSubtitleCues = []
         currentPosition = .zero
         currentDuration = .zero
+        bufferedTo = nil
+        clearStall()
         isPlaying = false
         mediaSummary = nil
         // NOTE: playbackRate is deliberately NOT reset here. retry() routes through
@@ -491,6 +596,39 @@ final class PlayerViewModel {
         await playbackInfo.reportStopped(beat(position: lastPosition, isPaused: true, from: resolved))
     }
 
+    /// (Re)arms the transcode keepalive for the just-resolved session: pings
+    /// the play session every `keepaliveInterval` so the server's 60s idle
+    /// kill never reaps the job while the player is mounted (a paused player
+    /// stops requesting segments once buffered, and progress beats stop with
+    /// it). Direct play has no job — the previous task is cancelled and none
+    /// is armed.
+    private func startKeepalive(for resolved: ResolvedPlayback) {
+        keepaliveTask?.cancel()
+        keepaliveTask = nil
+        guard resolved.method == .transcode else { return }
+        let sessionID = resolved.playSessionID
+        let interval = keepaliveInterval
+        keepaliveTask = Task { [playbackInfo] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: interval) } catch { return }
+                await playbackInfo.pingSession(playSessionID: sessionID)
+            }
+        }
+    }
+
+    /// Kills the outgoing session's server-side transcode job, exactly once.
+    /// MUST run before resolving a replacement stream: with throttling off, an
+    /// abandoned 4K job keeps transcoding flat-out and starves the new job's
+    /// segment production past AVPlayer's 3s timeout — every post-switch
+    /// segment then dies with -12889 in an unrecoverable buffering livelock
+    /// (device-diagnosed 2026-06-11). jellyfin-web fires the same call before
+    /// every in-place stream change. Direct play has no job — skip.
+    private func stopEncodingIfNeeded() async {
+        guard let resolved, resolved.method == .transcode, !didStopEncoding else { return }
+        didStopEncoding = true
+        await playbackInfo.stopEncoding(playSessionID: resolved.playSessionID)
+    }
+
     func retry() async {
         let item = playingItem
         let id = pendingItemID
@@ -502,6 +640,7 @@ final class PlayerViewModel {
         phase = .idle
         didReportStart = false
         didReportStopped = false
+        didStopEncoding = false
         lastPosition = .zero
         if let item { await start(item: item) }
         else if let id { await start(itemID: id) }
@@ -646,12 +785,22 @@ final class PlayerViewModel {
         // outgoing audio instead of letting it play on under the cover.
         await engine?.pause()
         phase = .loading
-        // Close the outgoing transcode session so the server doesn't leak it,
-        // then reset BOTH reporting flags — the reload is a brand-new play session
-        // that must reportStart and reportStopped on its own terms.
+        // The outgoing stream's buffer is meaningless for the new transcode —
+        // showing it would advertise instant seeks the reload can't honor.
+        bufferedTo = nil
+        // Kill the outgoing encoding FIRST (the replacement job must not fight
+        // an abandoned one for the source file), close the outgoing session,
+        // then reset the lifecycle flags — the reload is a brand-new play
+        // session that must reportStart/reportStopped/stopEncoding on its own
+        // terms. Trade-off: if the re-resolve FAILS, the silent fallback
+        // resumes the old stream on a dead encoding — it plays out its buffer
+        // and may stall into the failure scrim, which is still strictly better
+        // than every successful switch livelocking.
+        await stopEncodingIfNeeded()
         await reportStoppedIfNeeded()
         didReportStart = false
         didReportStopped = false
+        didStopEncoding = false
 
         do {
             try await beginPlayback(
@@ -748,12 +897,14 @@ final class PlayerViewModel {
                     selectedSubtitleTrack = tracks.subtitles.first { $0.id == tracks.selectedSubtitleID }
                 }
             }
-        case .playing(let position, let duration):
+        case .playing(let position, let duration, let buffered):
             phase = .playing
             isPlaying = true
+            clearStall()
             lastPosition = position
             currentPosition = position
             currentDuration = duration
+            bufferedTo = buffered
             nowPlaying.update(position: position, duration: duration, isPlaying: true, title: itemTitle)
             if !didReportStart {
                 didReportStart = true
@@ -761,11 +912,13 @@ final class PlayerViewModel {
             } else {
                 await playbackInfo.reportProgress(beat(position: position, isPaused: false, from: resolved))
             }
-        case .paused(let position, let duration):
+        case .paused(let position, let duration, let buffered):
             isPlaying = false
+            clearStall()
             lastPosition = position
             currentPosition = position
             currentDuration = duration
+            bufferedTo = buffered
             nowPlaying.update(position: position, duration: duration, isPlaying: false, title: itemTitle)
             // Never report progress for a session that never reported start (a remote/PiP
             // pause can land during buffering, before the first .playing beat) — Jellyfin
@@ -773,11 +926,37 @@ final class PlayerViewModel {
             if didReportStart {
                 await playbackInfo.reportProgress(beat(position: position, isPaused: true, from: resolved))
             }
+        case .buffering(let position, let duration, let buffered):
+            // Phase and isPlaying are untouched: the surface stays up and the
+            // user's intent is still "playing" — only the stall flag changes,
+            // driving the light scrim. No progress report either: the position
+            // isn't advancing, and a beat here could race reportStart.
+            //
+            // A position JUMP marks a seek fetch — the engine only emits those
+            // when the target is outside the buffer, so the wait is real and the
+            // scrim shows immediately (no 400ms gap with a bare paused glyph).
+            // Contiguous-position beats (mid-stream underruns, the momentary
+            // evaluating-buffering flicker after an in-buffer resume) keep the
+            // debounce so they can't flash the scrim.
+            let isSeekFetch = abs(CMTimeGetSeconds(position) - CMTimeGetSeconds(currentPosition)) > 2
+            lastPosition = position
+            currentPosition = position
+            currentDuration = duration
+            bufferedTo = buffered
+            if isSeekFetch {
+                stallDebounceTask?.cancel()
+                stallDebounceTask = nil
+                isStalled = true
+            } else {
+                armStallDebounce()
+            }
         case .ended:
             isPlaying = false
+            clearStall()
             await reportStoppedIfNeeded()
         case .failed(let error):
             isPlaying = false
+            clearStall()
             phase = .failed(Self.map(error))
         }
     }
@@ -869,7 +1048,10 @@ final class PlayerViewModel {
         }
     }
 
-    private static func makeAsset(from resolved: ResolvedPlayback) -> PlayableAsset {
+    private static func makeAsset(
+        from resolved: ResolvedPlayback,
+        subtitleFonts: SubtitleFontLocator.Fonts?
+    ) -> PlayableAsset {
         PlayableAsset(
             url: resolved.url,
             headers: nil,
@@ -892,8 +1074,9 @@ final class PlayerViewModel {
             // System fonts for VLC's text renderers (unused by AVKit). Materialized via
             // CoreText so we render with the OS fonts instead of bundling one: a font
             // directory for libass (ASS/SSA) and a single file for the simple renderer.
-            subtitleFontURL: SubtitleFontLocator.fonts?.primaryFile,
-            subtitleFontsDirectoryURL: SubtitleFontLocator.fonts?.directory
+            // Resolved off-main by the caller (the first touch writes font files).
+            subtitleFontURL: subtitleFonts?.primaryFile,
+            subtitleFontsDirectoryURL: subtitleFonts?.directory
         )
     }
 

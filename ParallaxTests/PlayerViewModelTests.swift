@@ -64,8 +64,8 @@ struct PlayerViewModelTests {
 
         // Script ready → play → progress → ended through the single consumer.
         engine.push(.ready(duration: resolved.runtime!, tracks: .empty))
-        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!))
-        engine.push(.playing(position: CMTime(seconds: 20, preferredTimescale: 1), duration: resolved.runtime!))
+        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+        engine.push(.playing(position: CMTime(seconds: 20, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
         engine.push(.ended)
         engine.finish()
 
@@ -136,7 +136,7 @@ struct PlayerViewModelTests {
 
         let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(position: CMTime(seconds: 30, preferredTimescale: 1), duration: resolved.runtime!))
+        engine.push(.playing(position: CMTime(seconds: 30, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
         try await Task.sleep(for: .milliseconds(50))
 
         await vm.stop()
@@ -263,7 +263,8 @@ struct PlayerViewModelTests {
         // Advance playback so the switch resumes at a real position.
         engine.push(.playing(
             position: CMTime(seconds: 100, preferredTimescale: 600),
-            duration: CMTime(seconds: 7200, preferredTimescale: 600)
+            duration: CMTime(seconds: 7200, preferredTimescale: 600),
+            buffered: nil
         ))
         try await Task.sleep(for: .milliseconds(50))
 
@@ -309,7 +310,8 @@ struct PlayerViewModelTests {
         // resume THERE — not origin(600) + position(900) = 1500.
         engine.push(.playing(
             position: CMTime(seconds: 900, preferredTimescale: 600),
-            duration: CMTime(seconds: 7200, preferredTimescale: 600)
+            duration: CMTime(seconds: 7200, preferredTimescale: 600),
+            buffered: nil
         ))
         try await Task.sleep(for: .milliseconds(50))
 
@@ -348,7 +350,8 @@ struct PlayerViewModelTests {
 
         createdEngines[0].push(.playing(
             position: CMTime(seconds: 100, preferredTimescale: 600),
-            duration: CMTime(seconds: 7200, preferredTimescale: 600)
+            duration: CMTime(seconds: 7200, preferredTimescale: 600),
+            buffered: nil
         ))
         try await Task.sleep(for: .milliseconds(50))
 
@@ -386,7 +389,8 @@ struct PlayerViewModelTests {
         await vm.start(item: PlayerFixtures.movieDetail())
         engine.push(.playing(
             position: CMTime(seconds: 50, preferredTimescale: 600),
-            duration: CMTime(seconds: 7200, preferredTimescale: 600)
+            duration: CMTime(seconds: 7200, preferredTimescale: 600),
+            buffered: nil
         ))
         try await Task.sleep(for: .milliseconds(50))
 
@@ -458,16 +462,89 @@ struct PlayerViewModelTests {
         let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
         await vm.start(item: PlayerFixtures.movieDetail())
 
-        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!))
+        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
         try await Task.sleep(for: .milliseconds(50))
         #expect(vm.isPlaying == true)
 
         // The bug this guards: phase stays .playing while paused, so a phase-derived
         // button stayed "pause" forever. isPlaying must flip so resume is reachable.
-        engine.push(.paused(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!))
+        engine.push(.paused(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
         try await Task.sleep(for: .milliseconds(50))
         #expect(vm.isPlaying == false)
         #expect(vm.phase == .playing)   // video surface stays up; only isPlaying flips
+    }
+
+    @Test("buffered beat → bufferedFraction; nil beat (VLC) hides the layer; stop() clears it")
+    func bufferedFractionTracksBeats() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let resolved = PlayerFixtures.resolved()
+        let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
+        await vm.start(item: PlayerFixtures.movieDetail())
+
+        // runtime fixture is the duration; buffer extends to its midpoint.
+        let duration = resolved.runtime!
+        let half = CMTime(seconds: CMTimeGetSeconds(duration) / 2, preferredTimescale: 600)
+        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: duration, buffered: half))
+        try await Task.sleep(for: .milliseconds(50))
+        let fraction = try #require(vm.bufferedFraction)
+        #expect(abs(fraction - 0.5) < 0.001)
+
+        // A nil buffered beat (VLC path) must hide the layer, not freeze the last value.
+        engine.push(.paused(position: CMTime(seconds: 10, preferredTimescale: 1), duration: duration, buffered: nil))
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(vm.bufferedFraction == nil)
+
+        await vm.stop()
+        #expect(vm.bufferedFraction == nil)
+    }
+
+    @Test("mid-stream stall: .buffering beats raise isStalled after the debounce; playing clears it edge-on")
+    func stallDebounceLifecycle() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let resolved = PlayerFixtures.resolved()
+        let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
+        await vm.start(item: PlayerFixtures.movieDetail())
+
+        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+        try await Task.sleep(for: .milliseconds(50))
+
+        // A short blip (healthy in-buffer seek) never shows the scrim.
+        engine.push(.buffering(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(vm.isStalled == false)
+        engine.push(.playing(position: CMTime(seconds: 11, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(vm.isStalled == false)   // debounce was cancelled, not just delayed
+
+        // A real stall crosses the debounce: scrim shows, phase + intent untouched.
+        engine.push(.buffering(position: CMTime(seconds: 11, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+        try await Task.sleep(for: .milliseconds(600))
+        #expect(vm.isStalled == true)
+        #expect(vm.showsStallScrim == true)
+        #expect(vm.loaderTitle == "Buffering")
+        #expect(vm.phase == .playing)
+        #expect(vm.isPlaying == true)
+
+        // Recovery clears it immediately.
+        engine.push(.playing(position: CMTime(seconds: 12, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(vm.isStalled == false)
+        #expect(vm.showsStallScrim == false)
+
+        // Paused-seek shape (drag-scrub commits pause → seek → play): the engine
+        // surfaces the out-of-buffer fetch as .buffering with a JUMPED position,
+        // which stalls immediately (no debounce — the fetch is real by
+        // construction); the completion's .paused beat clears it, no .playing
+        // required.
+        engine.push(.buffering(position: CMTime(seconds: 300, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(vm.isStalled == true)
+        engine.push(.paused(position: CMTime(seconds: 300, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(vm.isStalled == false)
+        #expect(vm.isPlaying == false)
     }
 
     @Test("transcode track switch closes the outgoing session before opening the next")
@@ -487,7 +564,8 @@ struct PlayerViewModelTests {
         await vm.start(item: PlayerFixtures.movieDetail())
         engine.push(.playing(
             position: CMTime(seconds: 100, preferredTimescale: 600),
-            duration: CMTime(seconds: 7200, preferredTimescale: 600)
+            duration: CMTime(seconds: 7200, preferredTimescale: 600),
+            buffered: nil
         ))
         try await Task.sleep(for: .milliseconds(50))
 
@@ -499,6 +577,82 @@ struct PlayerViewModelTests {
         let events = await reporting.events
         let stoppedCount = events.filter { if case .stopped = $0 { return true } else { return false } }.count
         #expect(stoppedCount == 1)
+        // …and its ENCODING must be killed explicitly (DELETE
+        // /Videos/ActiveEncodings): with throttling off an abandoned job keeps
+        // transcoding flat-out and starves the replacement job's segments past
+        // AVPlayer's 3s timeout — the post-switch -12889 buffering livelock.
+        let killed = await reporting.stoppedEncodings
+        #expect(killed == [resolved.playSessionID])
+    }
+
+    @Test("transcode session pings its keepalive on the interval; stop() ends it; direct play never pings")
+    func transcodeKeepalive() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let builder = DeviceProfileBuilder(probe: FakeCapabilityProbe(hdr: .none, audioOutput: .stereo))
+        let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
+        let vm = PlayerViewModel(
+            deviceProfileBuilder: builder,
+            playbackInfo: reporting,
+            resolve: { _, _, _, _, _ in resolved },
+            engineFactory: { _ in engine },
+            audioSession: NoopAudioSession(),
+            keepaliveInterval: .milliseconds(20)
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+        try await Task.sleep(for: .milliseconds(120))
+        // Pings flow on the interval, addressed to the live session — they keep
+        // the server's 60s idle kill from reaping the job (and its segments)
+        // during a long pause, when segment requests and progress beats both stop.
+        let pings = await reporting.pings
+        #expect(!pings.isEmpty)
+        #expect(pings.allSatisfy { $0 == resolved.playSessionID })
+
+        await vm.stop()
+        let countAtStop = await reporting.pings.count
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(await reporting.pings.count == countAtStop)
+
+        // Direct play has no transcode job — no keepalive is armed.
+        let directReporting = StubPlaybackReporting()
+        let directVM = PlayerViewModel(
+            deviceProfileBuilder: builder,
+            playbackInfo: directReporting,
+            resolve: { _, _, _, _, _ in PlayerFixtures.resolved() },
+            engineFactory: { _ in FakePlaybackEngine(id: .avKit, capabilities: .avKit) },
+            audioSession: NoopAudioSession(),
+            keepaliveInterval: .milliseconds(20)
+        )
+        await directVM.start(item: PlayerFixtures.movieDetail())
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(await directReporting.pings.isEmpty)
+        await directVM.stop()
+    }
+
+    @Test("a failed load kills the just-resolved encoding and stops its keepalive")
+    func loadFailureTearsDownSessionLifecycle() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        engine.loadError = AppError.playback(.unsupportedFormat)
+        let builder = DeviceProfileBuilder(probe: FakeCapabilityProbe(hdr: .none, audioOutput: .stereo))
+        let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
+        let vm = PlayerViewModel(
+            deviceProfileBuilder: builder,
+            playbackInfo: reporting,
+            resolve: { _, _, _, _, _ in resolved },
+            engineFactory: { _ in engine },
+            audioSession: NoopAudioSession(),
+            keepaliveInterval: .milliseconds(20)
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+        // The keepalive arms at resolve time (the job exists from then on), so a
+        // load failure must tear BOTH down: without the explicit kill + ping
+        // cancel, the pings keep an orphaned ffmpeg job transcoding flat-out for
+        // as long as the user sits on the failure overlay.
+        #expect(await reporting.stoppedEncodings == [resolved.playSessionID])
+        let pingsAtFailure = await reporting.pings.count
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(await reporting.pings.count == pingsAtFailure)
     }
 
     @Test("selectAudioTrack forwards to the engine and updates selectedAudioTrack")
@@ -627,7 +781,7 @@ struct PlayerViewModelTests {
 
         let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(position: CMTime(seconds: 40, preferredTimescale: 1), duration: resolved.runtime!))
+        engine.push(.playing(position: CMTime(seconds: 40, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
         engine.push(.ended)
         try await Task.sleep(for: .milliseconds(50))
 
@@ -663,7 +817,8 @@ struct PlayerViewModelTests {
         await vm.start(item: PlayerFixtures.movieDetail())
         engine.push(.playing(
             position: CMTime(seconds: 100, preferredTimescale: 600),
-            duration: CMTime(seconds: 7200, preferredTimescale: 600)
+            duration: CMTime(seconds: 7200, preferredTimescale: 600),
+            buffered: nil
         ))
         try await Task.sleep(for: .milliseconds(50))
 
@@ -702,7 +857,8 @@ struct PlayerViewModelTests {
         await vm.start(item: PlayerFixtures.movieDetail())
         engine.push(.playing(
             position: CMTime(seconds: 100, preferredTimescale: 600),
-            duration: CMTime(seconds: 7200, preferredTimescale: 600)
+            duration: CMTime(seconds: 7200, preferredTimescale: 600),
+            buffered: nil
         ))
         try await Task.sleep(for: .milliseconds(50))
 
@@ -757,7 +913,8 @@ struct PlayerViewModelTests {
         await vm.start(item: PlayerFixtures.movieDetail())
         engine.push(.playing(
             position: CMTime(seconds: 100, preferredTimescale: 600),
-            duration: CMTime(seconds: 7200, preferredTimescale: 600)
+            duration: CMTime(seconds: 7200, preferredTimescale: 600),
+            buffered: nil
         ))
         try await Task.sleep(for: .milliseconds(50))
 
@@ -800,7 +957,8 @@ struct PlayerViewModelTests {
         await vm.start(item: PlayerFixtures.movieDetail())
         engine.push(.playing(
             position: CMTime(seconds: 100, preferredTimescale: 600),
-            duration: CMTime(seconds: 7200, preferredTimescale: 600)
+            duration: CMTime(seconds: 7200, preferredTimescale: 600),
+            buffered: nil
         ))
         try await Task.sleep(for: .milliseconds(50))
 
@@ -818,7 +976,8 @@ struct PlayerViewModelTests {
         #expect(vm.phase == .loading)
         engine.push(.playing(
             position: CMTime(seconds: 100, preferredTimescale: 600),
-            duration: CMTime(seconds: 7200, preferredTimescale: 600)
+            duration: CMTime(seconds: 7200, preferredTimescale: 600),
+            buffered: nil
         ))
         try await Task.sleep(for: .milliseconds(50))
         #expect(vm.phase == .playing)
@@ -847,7 +1006,8 @@ struct PlayerViewModelTests {
         await vm.start(item: PlayerFixtures.movieDetail())
         engine.push(.playing(
             position: CMTime(seconds: 100, preferredTimescale: 600),
-            duration: CMTime(seconds: 7200, preferredTimescale: 600)
+            duration: CMTime(seconds: 7200, preferredTimescale: 600),
+            buffered: nil
         ))
         try await Task.sleep(for: .milliseconds(50))
 
@@ -867,7 +1027,7 @@ struct PlayerViewModelTests {
         let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
         await vm.start(item: PlayerFixtures.movieDetail())
 
-        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!))
+        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
         try await Task.sleep(for: .milliseconds(50))
         #expect(vm.isPlaying == true)
 
@@ -961,7 +1121,7 @@ struct PlayerViewModelTests {
         let resolved = PlayerFixtures.resolved()
         let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(position: CMTime(seconds: 30, preferredTimescale: 1), duration: resolved.runtime!))
+        engine.push(.playing(position: CMTime(seconds: 30, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
         try await Task.sleep(for: .milliseconds(50))
 
         // exitPlayer() fires stop() immediately; onDisappear fires it again as the
@@ -1041,7 +1201,7 @@ struct PlayerViewModelTests {
             let resolved = PlayerFixtures.resolved()
             let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
             await vm.start(item: PlayerFixtures.movieDetailNamed("Fixture Movie"))
-            engine.push(.playing(position: CMTime(seconds: 30, preferredTimescale: 1), duration: resolved.runtime!))
+            engine.push(.playing(position: CMTime(seconds: 30, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
             try await Task.sleep(for: .milliseconds(50))
             let info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
             #expect((info[MPMediaItemPropertyTitle] as? String) == "Fixture Movie")
@@ -1057,8 +1217,8 @@ struct PlayerViewModelTests {
             let resolved = PlayerFixtures.resolved()
             let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
             await vm.start(item: PlayerFixtures.movieDetailNamed("Fixture Movie"))
-            engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!))
-            engine.push(.paused(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!))
+            engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+            engine.push(.paused(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
             try await Task.sleep(for: .milliseconds(50))
             let info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
             #expect((info[MPNowPlayingInfoPropertyPlaybackRate] as? Double) == 0.0)
@@ -1072,7 +1232,7 @@ struct PlayerViewModelTests {
             let resolved = PlayerFixtures.resolved()
             let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
             await vm.start(item: PlayerFixtures.movieDetailNamed("Fixture Movie"))
-            engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!))
+            engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
             try await Task.sleep(for: .milliseconds(50))
             await vm.stop()
             #expect(MPNowPlayingInfoCenter.default().nowPlayingInfo == nil)

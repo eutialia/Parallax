@@ -122,4 +122,16 @@ public final class DefaultJellyfinPlaybackClient: JellyfinPlaybackClient, @unche
     public func reportStopped(_ info: PlaybackStopInfo) async throws {
         try await client().send(Paths.reportPlaybackStopped(info))
     }
+
+    // MARK: - Encoding lifecycle
+
+    public func stopEncoding(playSessionID: String) async throws {
+        try await client().send(
+            Paths.stopEncodingProcess(deviceID: identity.deviceID, playSessionID: playSessionID)
+        )
+    }
+
+    public func pingSession(playSessionID: String) async throws {
+        try await client().send(Paths.pingPlaybackSession(playSessionID: playSessionID))
+    }
 }

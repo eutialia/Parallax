@@ -55,4 +55,23 @@ public protocol JellyfinPlaybackClient: Sendable {
     func reportStart(_ info: PlaybackStateInfo) async throws
     func reportProgress(_ info: PlaybackStateInfo) async throws
     func reportStopped(_ info: PlaybackStopInfo) async throws
+
+    /// Kills the server's active transcode job for a play session
+    /// (`DELETE /Videos/ActiveEncodings`). MUST be called before resolving a
+    /// replacement stream for the same item (track switch): with server-side
+    /// throttling off, an abandoned 4K job keeps transcoding flat-out and
+    /// starves the new job's segment production past AVPlayer's 3s timeout
+    /// (-12889 livelock, device-diagnosed 2026-06-11). jellyfin-web fires this
+    /// before every in-place stream change. No-op server-side if the job
+    /// already ended.
+    func stopEncoding(playSessionID: String) async throws
+
+    /// Resets the server's 60s idle kill timer for a play session's transcode
+    /// job (`POST /Sessions/Playing/Ping`). The server kills an idle job AND
+    /// deletes its segments after 60s without a segment request or ping — and
+    /// a paused AVPlayer stops requesting segments once its buffer fills (the
+    /// periodic observer also goes quiet, so progress beats stop). Without
+    /// pings, any pause >60s silently destroys the job and resume pays a cold
+    /// ffmpeg respawn that presents as the endless-buffering wedge.
+    func pingSession(playSessionID: String) async throws
 }
