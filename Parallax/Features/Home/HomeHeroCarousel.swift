@@ -16,9 +16,11 @@ struct HomeHeroCarousel: View {
     let entries: [HomeHeroFeedEntry]
     let session: Session
     let viewModel: HomeViewModel
-    /// Pull-down overscroll (pt, ≥ 0) supplied by the Home `ScrollView`'s geometry. Drives
-    /// the stretchy zoom; 0 at rest or while scrolling up.
-    var overscroll: CGFloat = 0
+    /// Signed scroll adjustment (pt) supplied by the Home `ScrollView`'s geometry:
+    /// positive = pull-down rubber-band (drives the stretchy zoom), negative =
+    /// scrolled into the feed (drives the artwork's half-speed parallax lag),
+    /// 0 at rest. The two effects are mutually exclusive by sign.
+    var scrollAdjustment: CGFloat = 0
 
     @Environment(PlaybackPresenter.self) private var playback
     @Environment(\.appIdiom) private var idiom
@@ -58,21 +60,37 @@ struct HomeHeroCarousel: View {
     }
 
     private func content(size: CGSize) -> some View {
-        ZStack(alignment: .bottomLeading) {
+        // Scrolling down lags the artwork — and its wash, like a canvas-baked gradient —
+        // at half speed behind the band; the title and actions ride the scroll 1:1, and
+        // that differential IS the parallax. Off under Reduce Motion, and on tvOS, where
+        // the hero is 82% of the viewport and scrolling is focus-driven. Both transforms
+        // are render-only, so neither can feed the scroll geometry that drives them back
+        // into layout (the trap that killed the June '26 offset-math hero: rubber-band
+        // gap, f4b64b3).
+        let parallax = (reduceMotion || idiom == .tv)
+            ? 0 : HeroMetrics.parallaxShift(forScrollAdjustment: scrollAdjustment)
+        return ZStack(alignment: .bottomLeading) {
             CrossfadeArtwork(position: position, entries: entries, session: session, regularWidth: regularWidth)
+                // Scrim + sidebar extension effect over the crossfade as ONE composite —
+                // see `heroScrimmedExtension` for why the order is load-bearing. The
+                // transforms below then move artwork and wash together.
+                .heroScrimmedExtension(regularWidth: regularWidth)
+                .offset(y: parallax)
+                // Bottom-only clip: the lagging artwork must not slide over the shelves
+                // below (the parent ScrollView is `.scrollClipDisabled`), but the top and
+                // sides stay open — the stretch zoom paints up past the band, and the iPad
+                // `backgroundExtensionEffect` bleeds under the sidebar; a plain `.clipped()`
+                // would amputate both.
+                .clipShape(BottomBoundedRect())
                 // Stretchy hero: a pull-down zooms the artwork up from its bottom edge to
                 // fill the rubber-band gap instead of exposing the app background. Only the
                 // artwork scales — the title/actions stay put. `scaleEffect` is a render
-                // transform, so it can't feed the geometry it's driven by back into layout.
-                .scaleEffect(1 + overscroll / size.height, anchor: .bottom)
-
-            // Use the band's real laid-out height (the geometry proxy), not a width-derived
-            // value — on tvOS the band is a viewport fraction, not `width / aspectRatio`.
-            heroBandScrim(
-                regularWidth: regularWidth,
-                bandWidth: size.width,
-                bandHeight: size.height
-            )
+                // transform applied AFTER the clip, so the stretch still paints past the
+                // band exactly as before (parallax is 0 whenever the stretch is non-zero).
+                .scaleEffect(
+                    HeroMetrics.stretchScale(forScrollAdjustment: scrollAdjustment, bandHeight: size.height),
+                    anchor: .bottom
+                )
 
             // Hidden while dragging (removed → fades out); on a settled page change its `.id`
             // flips and SwiftUI crossfades the new page over the old. No manual opacity state.
@@ -189,7 +207,9 @@ struct HomeHeroCarousel: View {
 /// Just the artwork crossfade. `Animatable` on `position` is the crux: during a
 /// `withAnimation` `position` change, SwiftUI interpolates `animatableData` and re-evaluates
 /// `body` at each step, so the two images crossfade continuously rather than cutting between
-/// the start and end states. Carries the iPad sidebar `backgroundExtensionEffect`.
+/// the start and end states. Scrim + sidebar extension effect are layered by the call site
+/// (`heroScrimmedExtension`), keeping this a pure crossfade — its per-tick body re-evaluation
+/// rebuilds nothing but the two images.
 private struct CrossfadeArtwork: View, Animatable {
     var position: Double
     let entries: [HomeHeroFeedEntry]
@@ -209,7 +229,16 @@ private struct CrossfadeArtwork: View, Animatable {
             HeroArtwork(item: entries[wrapping: lower + 1].presentation, session: session, regularWidth: regularWidth)
                 .opacity(frac)
         }
-        .tvPlatformGated { $0.backgroundExtensionEffect(isEnabled: regularWidth) }
+    }
+}
+
+/// The parallax clip: closed at the band's bottom edge, effectively unbounded on the
+/// top and sides. See the call-site comment — a symmetric `.clipped()` would cut the
+/// stretch zoom's upward overflow and the iPad sidebar `backgroundExtensionEffect`.
+private struct BottomBoundedRect: Shape {
+    func path(in rect: CGRect) -> Path {
+        Path(CGRect(x: rect.minX - 10_000, y: rect.minY - 10_000,
+                    width: rect.width + 20_000, height: rect.height + 10_000))
     }
 }
 

@@ -12,7 +12,7 @@ struct HomeView: View {
     private let preloaded: (session: Session, viewModel: HomeViewModel)?
     @State private var viewModel: HomeViewModel?
     @State private var session: Session?
-    @State private var heroOverscroll: CGFloat = 0
+    @State private var heroScrollAdjustment: CGFloat = 0
 
     init(preloaded: (session: Session, viewModel: HomeViewModel)? = nil) {
         self.preloaded = preloaded
@@ -22,13 +22,16 @@ struct HomeView: View {
         ScrollView {
             content
         }
-        // Feed the hero its pull-down overscroll for the stretchy zoom. `contentOffset +
-        // contentInsets.top` is 0 at rest regardless of safe-area/nav-bar insets, so this
-        // self-calibrates — only a downward rubber-band past the top yields a positive value.
+        // Feed the hero the SIGNED scroll adjustment: positive = pull-down rubber-band
+        // (stretchy zoom), negative = scrolled into the feed (artwork parallax).
+        // `contentOffset + contentInsets.top` is 0 at rest regardless of safe-area/
+        // nav-bar insets, so this self-calibrates. The negative side is floored at one
+        // viewport: past that the hero is off-screen, and pinning the value there stops
+        // per-frame state writes (and Home body re-evaluations) for the rest of the feed.
         .onScrollGeometryChange(for: CGFloat.self) { geo in
-            max(0, -(geo.contentOffset.y + geo.contentInsets.top))
+            max(-(geo.contentOffset.y + geo.contentInsets.top), -geo.containerSize.height)
         } action: { _, newValue in
-            heroOverscroll = newValue
+            heroScrollAdjustment = newValue
         }
         .scrollClipDisabled(true)
         // Suppress iOS 26's automatic top scroll-edge fade — the hero paints flush under the
@@ -92,7 +95,7 @@ struct HomeView: View {
                             entries: vm.heroFeed,
                             session: session,
                             viewModel: vm,
-                            overscroll: heroOverscroll
+                            scrollAdjustment: heroScrollAdjustment
                         )
                     }
                     // Everything below the full-bleed hero stays inside the tvOS title-safe
