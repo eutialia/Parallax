@@ -474,6 +474,56 @@ struct PlayerViewModelTests {
         #expect(vm.phase == .playing)   // video surface stays up; only isPlaying flips
     }
 
+    @Test("togglePlayPause flips isPlaying optimistically, before any engine beat")
+    func togglePlayPauseIsOptimistic() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let resolved = PlayerFixtures.resolved()
+        let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(vm.isPlaying == true)
+
+        // FakePlaybackEngine's play()/pause() push NO state beat, so the only
+        // thing that can flip isPlaying here is the optimistic write — which is
+        // what keeps the glyph from lagging the tap by an engine round-trip.
+        vm.togglePlayPause()
+        #expect(vm.isPlaying == false)   // synchronous flip, before the command lands
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(engine.calls.contains("pause"))
+
+        vm.togglePlayPause()
+        #expect(vm.isPlaying == true)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(engine.calls.contains("play"))
+    }
+
+    @Test("spammed togglePlayPause coalesces — last intent wins at the engine")
+    func togglePlayPauseSpamCoalesces() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let resolved = PlayerFixtures.resolved()
+        let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(vm.isPlaying == true)
+
+        // Three rapid presses from playing: pause → play → pause. The glyph
+        // follows parity instantly; the engine must end on the LAST intent —
+        // earlier commands are cancelled before their await (cancel-previous),
+        // so a stale play can never land after the final pause.
+        vm.togglePlayPause()
+        vm.togglePlayPause()
+        vm.togglePlayPause()
+        #expect(vm.isPlaying == false)   // parity of 3 toggles, instant
+
+        try await Task.sleep(for: .milliseconds(100))
+        let transport = engine.calls.filter { $0 == "play" || $0 == "pause" }
+        #expect(transport.last == "pause")
+    }
+
     @Test("buffered beat → bufferedFraction; nil beat (VLC) hides the layer; stop() clears it")
     func bufferedFractionTracksBeats() async throws {
         let reporting = StubPlaybackReporting()

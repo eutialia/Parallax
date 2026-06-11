@@ -219,6 +219,36 @@ final class PlayerViewModel {
         await engine?.seek(to: CMTime(seconds: seconds, preferredTimescale: 600))
     }
 
+    /// Optimistic transport toggle: flip `isPlaying` to the target NOW so the
+    /// play/pause glyph swaps on the tap itself, then command the engine. The
+    /// next engine beat (.playing/.paused) confirms or corrects — `handle()`
+    /// stays the source of truth; this only removes the tap→engine→beat
+    /// round-trip from the button (play especially: AVPlayer emits no beat
+    /// until its transport actually flips, hundreds of ms on a transcode).
+    ///
+    /// Spam-safe by cancel-previous coalescing: each tap retargets ONE
+    /// `transportTask`, so a burst of taps flips the glyph with every press
+    /// (parity — instant, like the system player) but only the LAST intent is
+    /// still alive to command the engine; stale commands die before their
+    /// `await`. The synchronous flip happens before any suspension, so intent
+    /// order can't interleave.
+    ///
+    /// The scrub and reducer pause/resume paths must KEEP commanding the
+    /// engine directly: they capture `isPlaying` as resume intent, and an
+    /// optimistic write there would corrupt the capture.
+    func togglePlayPause() {
+        guard engine != nil else { return }
+        isPlaying.toggle()
+        let target = isPlaying
+        transportTask?.cancel()
+        transportTask = Task {
+            // Re-read the engine at execution time: a pending command after
+            // stop() must no-op, not poke a torn-down engine.
+            guard !Task.isCancelled, let engine else { return }
+            if target { await engine.play() } else { await engine.pause() }
+        }
+    }
+
     private let deviceProfileBuilder: DeviceProfileBuilder
     private let playbackInfo: any PlaybackReporting
     private let resolve: ResolveCall
@@ -237,6 +267,9 @@ final class PlayerViewModel {
 
     private var stateTask: Task<Void, Never>?
     private var subtitleFetchTask: Task<Void, Never>?
+    /// The in-flight play/pause command — retargeted on every toggle so a tap
+    /// burst coalesces to the last intent (see `togglePlayPause`).
+    private var transportTask: Task<Void, Never>?
     /// Keepalive for the server's transcode job: pings the play session on a
     /// timer so the 60s idle kill never fires while the player is mounted.
     /// Segment requests stop once a PAUSED player's buffer fills, and progress
@@ -546,6 +579,8 @@ final class PlayerViewModel {
         stateTask = nil
         keepaliveTask?.cancel()
         keepaliveTask = nil
+        transportTask?.cancel()
+        transportTask = nil
         if let engine {
             await engine.teardown()
         }

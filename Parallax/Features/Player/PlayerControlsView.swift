@@ -127,6 +127,10 @@ struct PlayerControlsView: View {
     /// chrome hide): the top bar sank, the scrub bar shrank — portrait only, because
     /// landscape's max dimension is the width, which the status bar never touches.
     @State private var hudPhysicalMax: CGFloat = 0
+    /// Physical-bounds orientation, from the same full-bleed probe — feeds
+    /// `TopInsetLatch` rule 3 (the safe-bounded reader's w>h flips spuriously
+    /// when the status bar toggles in a near-square Stage Manager window).
+    @State private var hudPhysicalIsLandscape = false
     #endif
 
     // debugHUD needs no build-config fork: the binding is unconditional (only the
@@ -303,6 +307,8 @@ struct PlayerControlsView: View {
                                 topInset: hudTopInset)
                         .modifier(TopInsetLatch(inset: geo.safeAreaInsets.top,
                                                 statusBarVisible: statusBarExpectedVisible,
+                                                isLandscape: hudPhysicalIsLandscape,
+                                                adoptsLandscapeInset: false,
                                                 latched: $hudTopInset))
                 }
             } else {
@@ -310,6 +316,8 @@ struct PlayerControlsView: View {
                     phoneControls(topInset: hudTopInset)
                         .modifier(TopInsetLatch(inset: geo.safeAreaInsets.top,
                                                 statusBarVisible: statusBarExpectedVisible,
+                                                isLandscape: hudPhysicalIsLandscape,
+                                                adoptsLandscapeInset: true,
                                                 latched: $hudTopInset))
                 }
             }
@@ -336,8 +344,9 @@ struct PlayerControlsView: View {
         .background {
             GeometryReader { phys in
                 Color.clear
-                    .onChange(of: max(phys.size.width, phys.size.height), initial: true) { _, v in
-                        hudPhysicalMax = v
+                    .onChange(of: phys.size, initial: true) { _, s in
+                        hudPhysicalMax = max(s.width, s.height)
+                        hudPhysicalIsLandscape = s.width > s.height
                     }
             }
             .ignoresSafeArea()
@@ -465,7 +474,7 @@ struct PlayerControlsView: View {
                                               glyphOpticalYOffset: PlayerRoundButton.skipGlyphYOffset,
                                               accessibilityLabel: "Skip back 10 seconds") { skip(-10) }
                             PlayerRoundButton(systemImage: vm.isPlaying ? "pause.fill" : "play.fill", size: m.transportPlay,
-                                              iconScale: 0.46, primary: true,
+                                              iconScale: 0.46,
                                               accessibilityLabel: vm.isPlaying ? "Pause" : "Play") { togglePlayPause() }
                             PlayerRoundButton(systemImage: "goforward.10", size: m.transportSkip, iconScale: 0.52,
                                               glyphOpticalYOffset: PlayerRoundButton.skipGlyphYOffset,
@@ -549,7 +558,7 @@ struct PlayerControlsView: View {
                                               accessibilityLabel: "Skip back 10 seconds") { skip(-10) }
                             PlayerRoundButton(systemImage: vm.isPlaying ? "pause.fill" : "play.fill",
                                               size: PlayerMetrics.phoneTransportPlay,
-                                              iconScale: 0.46, primary: true,
+                                              iconScale: 0.46,
                                               accessibilityLabel: vm.isPlaying ? "Pause" : "Play") { togglePlayPause() }
                             PlayerRoundButton(systemImage: "goforward.10", size: PlayerMetrics.phoneTransportSkip,
                                               iconScale: 0.52,
@@ -942,9 +951,10 @@ struct PlayerControlsView: View {
 
     private func togglePlayPause() {
         resetHideTimer()
-        Task {
-            if vm.isPlaying { await vm.engine?.pause() } else { await vm.engine?.play() }
-        }
+        // Optimistic + coalescing: vm flips isPlaying synchronously (glyph and
+        // pause-pins-chrome react on the tap frame) and retargets one transport
+        // task, so spamming the button only commands the LAST intent.
+        vm.togglePlayPause()
     }
 
     // MARK: - Speed options + track menus
@@ -1110,16 +1120,29 @@ private struct TrackPresentation<MenuContent: View>: ViewModifier {
 /// 1. While the status bar is expected visible, adopt EVERY reported inset —
 ///    including 0, which is legitimate in iPhone landscape (the old `inset > 0`
 ///    ratchet rejected it and left a stale ~59pt portrait inset pushing the bar
-///    down until the next portrait rotation).
+///    down until the next portrait rotation). Safe-area changes arrive as ONE
+///    discrete old→new event per status-bar toggle, so this can reposition at
+///    most once — never follow the bar's slide animation.
 /// 2. While we hid the bar ourselves (chrome hidden / drag-scrub), keep the last
-///    value: the transient collapse to 0 mid-fade is exactly what the latch exists
-///    to ignore.
-/// The visibility flip also re-reads the CURRENT inset: a rotation while the bar is
-/// hidden produces no inset event (0 → 0), so without it a reveal in landscape
-/// would keep serving the stale portrait value.
+///    value: the transient collapse to 0 mid-fade is exactly what the latch
+///    exists to ignore. There is deliberately NO re-read when visibility flips
+///    back on — at that instant the inset still reads the hidden-state 0, and
+///    adopting it dropped the top bar a status-bar height during every scrub
+///    release (the post-review regression).
+/// 3. Rotation TO landscape on iPhone adopts the current inset: a rotation while
+///    the bar is hidden produces no inset event (0 → 0), and iPhone landscape's
+///    truth is always 0, so this is the one case rule 1 can't reach. iPad skips
+///    it — its portrait and landscape insets are equal, so the kept value is
+///    already right and adopting a hidden-state 0 would only add a settle.
 private struct TopInsetLatch: ViewModifier {
     let inset: CGFloat
     let statusBarVisible: Bool
+    /// From the FULL-BLEED physical probe, not the safe-bounded reader — the
+    /// safe-bounded height tracks the status bar and can flip w>h spuriously
+    /// in near-square Stage Manager windows.
+    let isLandscape: Bool
+    /// iPhone only (`!isPad`): see rule 3.
+    let adoptsLandscapeInset: Bool
     @Binding var latched: CGFloat
 
     func body(content: Content) -> some View {
@@ -1127,8 +1150,8 @@ private struct TopInsetLatch: ViewModifier {
             .onChange(of: inset, initial: true) { _, value in
                 if statusBarVisible { latched = value }
             }
-            .onChange(of: statusBarVisible) { _, visible in
-                if visible { latched = inset }
+            .onChange(of: isLandscape) { _, landscape in
+                if landscape && adoptsLandscapeInset { latched = inset }
             }
     }
 }

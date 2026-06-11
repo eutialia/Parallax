@@ -1,9 +1,13 @@
 import SwiftUI
 
-/// Circular glass control (Close, ±10s skip, PiP, AirPlay frame). The `primary`
-/// variant is the solid-white play/pause disc with dark glyph. White line glyphs are
-/// stroked; play/pause pass an already-filled SF Symbol. `.glassEffect` paints a
-/// material but adds no hit region, so the whole disc gets an explicit `contentShape`.
+/// Circular glass control (Close, ±10s skip, play/pause, PiP, AirPlay frame) —
+/// ONE material for the whole transport: the shared over-video glass. Play/pause
+/// used to be a solid-white "primary" platter (the tvOS focused-platter look
+/// ported to touch); it read as a heavier, alien material next to its glass
+/// siblings and was retired (user-flagged) — size alone carries its emphasis,
+/// like the TV app's transport. White line glyphs are stroked; play/pause pass
+/// an already-filled SF Symbol. `.glassEffect` paints a material but adds no
+/// hit region, so the whole disc gets an explicit `contentShape`.
 struct PlayerRoundButton: View {
     let systemImage: String
     let size: CGFloat
@@ -19,34 +23,24 @@ struct PlayerRoundButton: View {
     /// one constant so the value can be retired in one place if Apple ever bakes the
     /// compensation into the symbols (see `glyphOpticalYOffset`).
     static let skipGlyphYOffset: CGFloat = -0.05
-    var primary: Bool = false
     let accessibilityLabel: String
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             TVFocusReader { focused in
-                Group {
-                    if primary {
-                        icon(color: .playerInk)
-                            .frame(width: size, height: size)
-                            .background(Circle().fill(.white.opacity(0.97)))
-                            .shadow(color: .black.opacity(0.32), radius: 8 * (size / 120), y: 4)
-                    } else {
-                        // tvOS HIG focus contract: focused = opaque white disc + ink glyph,
-                        // FADED over an always-mounted glass base (a structural swap fired
-                        // the GlassEffectContainer's matchedGeometry morph and snapped with
-                        // no crossfade). Rest = the shared over-video recipe; `off` while
-                        // focused so the material (edge rim + outward shadow) vanishes
-                        // under the platter.
-                        icon(color: focused ? .playerInk : .white)
-                            .frame(width: size, height: size)
-                            .background(Circle().fill(.white.opacity(0.97)).opacity(focused ? 1 : 0))
-                            .playerGlassSurface(in: Circle(), off: focused)
-                            .animation(.tvFocusChrome, value: focused)
-                    }
-                }
-                .contentShape(Circle())
+                // tvOS HIG focus contract: focused = opaque white disc + ink glyph,
+                // FADED over an always-mounted glass base (a structural swap fired
+                // the GlassEffectContainer's matchedGeometry morph and snapped with
+                // no crossfade). Rest = the shared over-video recipe; `off` while
+                // focused so the material (edge rim + outward shadow) vanishes
+                // under the platter.
+                icon(color: focused ? .playerInk : .white)
+                    .frame(width: size, height: size)
+                    .background(Circle().fill(.white.opacity(0.97)).opacity(focused ? 1 : 0))
+                    .playerGlassSurface(in: Circle(), off: focused)
+                    .animation(.tvFocusChrome, value: focused)
+                    .contentShape(Circle())
             }
         }
         .tvChipButton()
@@ -83,7 +77,7 @@ struct PlayerRoundButton: View {
             PlayerRoundButton(systemImage: "gobackward.10", size: 80, iconScale: 0.48,
                               accessibilityLabel: "Back 10") {}
             PlayerRoundButton(systemImage: "pause.fill", size: 120, iconScale: 0.42,
-                              primary: true, accessibilityLabel: "Pause") {}
+                              accessibilityLabel: "Pause") {}
             PlayerRoundButton(systemImage: "goforward.10", size: 80, iconScale: 0.48,
                               accessibilityLabel: "Forward 10") {}
         }
@@ -108,7 +102,7 @@ struct PlayerRoundButton: View {
                                   glyphOpticalYOffset: PlayerRoundButton.skipGlyphYOffset,
                                   accessibilityLabel: "Back 10") {}
                 PlayerRoundButton(systemImage: "play.fill", size: 140, iconScale: 0.46,
-                                  primary: true, accessibilityLabel: "Play") {}
+                                  accessibilityLabel: "Play") {}
                 PlayerRoundButton(systemImage: "goforward.10", size: 96, iconScale: 0.52,
                                   glyphOpticalYOffset: PlayerRoundButton.skipGlyphYOffset,
                                   accessibilityLabel: "Forward 10") {}

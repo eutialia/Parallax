@@ -127,6 +127,10 @@ struct PlayerView: View {
         // (top bar, scrubber) and status bar respect the safe area. The status bar
         // hides in lockstep with the chrome.
         #if !os(tvOS)
+        // PAIRED PREDICATE: PlayerControlsView.statusBarExpectedVisible is the
+        // exact negation of this expression. Its TopInsetLatch only adopts the
+        // safe-area inset while the bar is expected visible — change one side
+        // and the other must follow, or the top bars latch stale insets.
         .statusBarHidden(!chromeVisible || scrubHUDActive)
         #endif
         .persistentSystemOverlays(systemOverlaysVisible ? .automatic : .hidden)
@@ -658,7 +662,11 @@ struct PlayerView: View {
             let target = CMTime(seconds: p * dur, preferredTimescale: 600)
             await vm.engine?.seek(to: target)
         case .togglePlayPause:
-            if vm.isPlaying { await vm.engine?.pause() } else { await vm.engine?.play() }
+            // Optimistic flip inside the vm — the paused overlay reacts on the
+            // press, not a beat later, and remote-press spam coalesces to the
+            // last intent. The reducer's .pause/.play effects above keep
+            // commanding the engine directly (they carry wasPlaying intent).
+            vm.togglePlayPause()
         case .exit:
             exitPlayer()
         }

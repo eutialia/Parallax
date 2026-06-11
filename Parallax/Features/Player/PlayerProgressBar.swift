@@ -97,7 +97,20 @@ struct PlayerProgressBar: View {
                     }
                 }
                 .frame(height: rowHeight, alignment: .center)
+                #if os(tvOS)
+                // No drag gesture on tvOS (the bar lives in a focusable Button) —
+                // an extended hit rect would grow the Button's focus geometry.
                 .contentShape(Rectangle())
+                #else
+                // Hit area only — visuals unchanged. The bar row is ~22-32pt;
+                // the extension reaches the HIG 44pt touch floor and covers the
+                // (non-interactive, scrub-faded) time labels above, so a grab
+                // aimed slightly high still starts the scrub. TOP-only by
+                // construction: the chips sit directly below with almost no
+                // clearance (phone: the rows already touch).
+                .contentShape(TopExtendedRectangle(
+                    topExtension: max(28 * metrics.u, 44 - rowHeight)))
+                #endif
                 .modifier(ScrubGesture(width: w, played: p,
                                        onChanged: onScrubChanged, onEnded: onScrubEnded))
             }
@@ -163,6 +176,18 @@ struct PlayerProgressBar: View {
             }
         }
         .fixedSize()
+    }
+}
+
+/// The scrub bar's hit region: the row's rect grown UPWARD only. Out-of-bounds
+/// hits are delivered because no ancestor in the bar's chain clips — adding a
+/// `.clipped()`/`.clipShape` anywhere above the scrubber would silently kill
+/// the extra grab zone.
+private struct TopExtendedRectangle: Shape {
+    var topExtension: CGFloat
+    func path(in rect: CGRect) -> Path {
+        Path(CGRect(x: rect.minX, y: rect.minY - topExtension,
+                    width: rect.width, height: rect.height + topExtension))
     }
 }
 
