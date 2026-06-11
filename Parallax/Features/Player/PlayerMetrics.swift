@@ -69,16 +69,17 @@ struct PlayerMetrics: Equatable {
     // Title
     var titleSize: CGFloat { 38 * u }
 
-    // Scrims — loading ring + caption (see PlayerLoadingScrim)
-    var scrimRingBuffer: CGFloat { 92 * u }
-    var scrimRingBufferStroke: CGFloat { 5.5 * u }
-    var scrimRingAudio: CGFloat { 80 * u }
-    var scrimRingAudioStroke: CGFloat { 5 * u }
+    // Scrims — loading ring + caption (see PlayerLoadingScrim).
+    // ONE ring geometry for every flavor (buffering / audio switch / stall):
+    // the modes cross-fade into each other over live video, so per-mode ring
+    // sizes and caption metrics made the circle jump scale and height at every
+    // flip (device-rejected). Only the dim differs per mode.
+    var scrimRing: CGFloat { 92 * u }
+    var scrimRingStroke: CGFloat { 5.5 * u }
     var scrimCaptionGap: CGFloat { 26 * u }
     var scrimCaptionLineGap: CGFloat { 6 * u }
     var scrimLabelSize: CGFloat { 24 * u }
-    var scrimSubSizeBuffer: CGFloat { 16 * u }
-    var scrimSubSizeAudio: CGFloat { 17 * u }
+    var scrimSubSize: CGFloat { 16 * u }
 
     // Scrims — double-tap seek flash (see PlayerSeekFlash)
     var seekChevronSize: CGFloat { 40 * u }

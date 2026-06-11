@@ -4,12 +4,14 @@ import ParallaxCore
 import ParallaxJellyfin
 import ParallaxPlayback
 
-/// A debug-only heads-up display over the player, surfacing what's *actually*
-/// playing on device: the server's routing decision + per-stream metadata, and
-/// the engine's live decode/track truth. Built to diagnose subtitle problems —
-/// "out of sync" and "selected but doesn't render" — so the subtitle section
-/// cross-checks the menu selection against the engine's active track and flags
-/// the segmented-WebVTT desync path.
+/// A debug-only panel surfacing what's *actually* playing on device: the
+/// server's routing decision + per-stream metadata, and the engine's live
+/// decode/track/transport truth. Built to diagnose subtitle problems and
+/// silent stalls ("never plays, no error" — see the transport/rx/error rows).
+///
+/// Presented through the chip row's `trackPresentation` like the track menus
+/// (sheet on tvOS / popover on iPad): on tvOS a ScrollView only scrolls by
+/// moving FOCUS, so each section is a focus stop the remote steps through.
 ///
 /// DEBUG-only: the whole file compiles out of release builds.
 struct DebugInfoOverlay: View {
@@ -18,22 +20,32 @@ struct DebugInfoOverlay: View {
 
     @State private var snapshot: PlaybackDebugInfo = .empty
 
+    /// Readable at couch distance on the tvOS canvas; dense on touch screens.
+    private var fontSize: CGFloat {
+        #if os(tvOS)
+        24
+        #else
+        11
+        #endif
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 2) {
-                header
-                deliverySection
-                videoSection
-                audioSection
-                subtitleSection
+                focusStop { header }
+                focusStop { deliverySection }
+                focusStop { videoSection }
+                focusStop { audioSection }
+                focusStop { subtitleSection }
             }
             .padding(12)
         }
         .scrollIndicators(.visible)
-        .font(.system(size: 11, design: .monospaced))
+        .scrollBounceBehavior(.basedOnSize)
+        .font(.system(size: fontSize, design: .monospaced))
         .foregroundStyle(.white)
-        .frame(maxWidth: 380, maxHeight: 460, alignment: .topLeading)
-        .background(.black.opacity(0.8), in: RoundedRectangle(cornerRadius: 10))
+        .preferredColorScheme(.dark)
+        .environment(\.colorScheme, .dark)
         .task {
             // Poll the engine's live snapshot; cancelled when the HUD disappears.
             while !Task.isCancelled {
@@ -41,6 +53,18 @@ struct DebugInfoOverlay: View {
                 try? await Task.sleep(for: .milliseconds(750))
             }
         }
+    }
+
+    /// tvOS: a section is a focus stop, so D-pad up/down walks the panel and the
+    /// ScrollView follows focus (its only scrolling mechanism there). The subtle
+    /// dim lift marks where focus sits. Elsewhere the wrapper is inert.
+    @ViewBuilder
+    private func focusStop<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        #if os(tvOS)
+        FocusableSection { content() }
+        #else
+        content()
+        #endif
     }
 
     // MARK: - Sections
@@ -90,6 +114,26 @@ struct DebugInfoOverlay: View {
         }
         if let dropped = snapshot.droppedVideoFrames { row("dropped", "\(dropped) frames") }
         if let buf = snapshot.bufferedSeconds { row("buffered", String(format: "%.1fs", buf)) }
+        // Stall forensics: where the playhead actually is vs where the data
+        // actually sits (a range parked away from the playhead = the resume
+        // gap wedge), the raw transport state (incl. WHY AVPlayer is waiting),
+        // data actually pulled, and the silent HLS error-log tail — the triage
+        // kit for "never plays, no error".
+        if let head = snapshot.playheadSeconds { row("playhead", String(format: "%.1fs", head)) }
+        if !snapshot.loadedRanges.isEmpty {
+            row("ranges", snapshot.loadedRanges.joined(separator: "  "))
+        }
+        if let status = snapshot.itemStatus { row("item", status) }
+        if let transport = snapshot.transportState { row("transport", transport) }
+        if let stalls = snapshot.stallCount, stalls > 0 { row("stalls", "\(stalls)") }
+        if let rx = snapshot.bytesTransferred {
+            row("rx", ByteCountFormatter.string(fromByteCount: rx, countStyle: .binary))
+        }
+        ForEach(Array(snapshot.errorLogTail.enumerated()), id: \.offset) { _, line in
+            Text(line)
+                .foregroundStyle(.yellow)
+                .padding(.top, 2)
+        }
     }
 
     @ViewBuilder
@@ -279,4 +323,26 @@ struct DebugInfoOverlay: View {
             : String(format: "%.0f kbps", bps / 1_000)
     }
 }
+
+#if os(tvOS)
+/// A focusable, non-interactive block: the debug panel's sections become focus
+/// stops so the remote can scroll the ScrollView (tvOS scrolls only by moving
+/// focus). The focused section lifts slightly so the user can see where the
+/// D-pad is — `.focusable()` alone paints no indicator.
+private struct FocusableSection<Content: View>: View {
+    let content: Content
+    @FocusState private var focused: Bool
+
+    init(@ViewBuilder content: () -> Content) { self.content = content() }
+
+    var body: some View {
+        content
+            .padding(6)
+            .background(.white.opacity(focused ? 0.08 : 0), in: RoundedRectangle(cornerRadius: 8))
+            .focusable()
+            .focused($focused)
+            .animation(.easeInOut(duration: 0.15), value: focused)
+    }
+}
+#endif
 #endif

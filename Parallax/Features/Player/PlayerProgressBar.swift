@@ -13,6 +13,11 @@ struct PlayerProgressBar: View {
     let metrics: PlayerMetrics
     var mode: Mode = .normal
     let played: Double
+    /// 0...1 fraction the buffer extends to — the spec's middle layer (track
+    /// `white 0.20` → buffered `white 0.36` → played `#fff`). Seeks inside it are
+    /// instant (no server round-trip), so it doubles as the scrub affordance.
+    /// Nil hides the layer (VLC path, or nothing buffered around the playhead).
+    var buffered: Double? = nil
     let elapsed: String
     let remaining: String
     /// Seconds behind `elapsed`/`remaining` (and the bubble). They drive the
@@ -55,6 +60,10 @@ struct PlayerProgressBar: View {
                 let p = clamp(played)
                 ZStack(alignment: .leading) {
                     Capsule().fill(.white.opacity(0.20)).frame(height: trackH)
+                    if let buffered {
+                        Capsule().fill(.white.opacity(0.36))
+                            .frame(width: w * clamp(buffered), height: trackH)
+                    }
                     Capsule().fill(.white).frame(width: w * p, height: trackH)
 
                     ForEach(chapters, id: \.self) { c in
@@ -172,15 +181,15 @@ private struct ScrubGesture: ViewModifier {
         LinearGradient(colors: [.purple, .black], startPoint: .topLeading, endPoint: .bottomTrailing)
             .ignoresSafeArea()
         VStack(spacing: 90) {
-            PlayerProgressBar(metrics: .tv, mode: .normal, played: 0.5,
+            PlayerProgressBar(metrics: .tv, mode: .normal, played: 0.5, buffered: 0.64,
                               elapsed: "1:04:18", remaining: "-1:02:42",
                               elapsedSeconds: 3858, remainingSeconds: 3762,
                               chapters: [0.12, 0.27, 0.41, 0.58, 0.74, 0.89])
-            PlayerProgressBar(metrics: .tv, mode: .focused, played: 0.5,
+            PlayerProgressBar(metrics: .tv, mode: .focused, played: 0.5, buffered: 0.64,
                               elapsed: "1:04:18", remaining: "-1:02:42",
                               elapsedSeconds: 3858, remainingSeconds: 3762,
                               chapters: [0.12, 0.27, 0.41, 0.58, 0.74, 0.89])
-            PlayerProgressBar(metrics: .tv, mode: .scrub, played: 0.72,
+            PlayerProgressBar(metrics: .tv, mode: .scrub, played: 0.72, buffered: 0.81,
                               elapsed: "1:31:10", remaining: "-0:35:50",
                               elapsedSeconds: 5470, remainingSeconds: 2150,
                               chapters: [0.12, 0.27, 0.41, 0.58, 0.74, 0.89],

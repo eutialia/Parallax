@@ -18,21 +18,26 @@ struct PlayerScrimRing: View {
     // Design timings (scrims.css): the ring rotates 360° in 1.55s linear while the
     // arc's dash grows 2→132 units and its offset crawls 0→-152 over 1.4s
     // ease-in-out, both endless.
-    private static let rotationPeriod: TimeInterval = 1.55
-    private static let dashPeriod: TimeInterval = 1.4
-    // Dash keyframes normalized by the design's 92pt ring circumference (≈271.7),
+    private nonisolated static let rotationPeriod: TimeInterval = 1.55
+    nonisolated static let dashPeriod: TimeInterval = 1.4
+    // Arc bounds normalized by the design's 92pt ring circumference (≈271.7),
     // so the arc covers the same angular fractions at any rendered size.
-    private static let minSweep = 2.0 / 271.7
-    private static let maxSweep = 132.0 / 271.7
-    private static let midLead = 22.0 / 271.7
-    private static let endLead = 152.0 / 271.7
+    //
+    // DELIBERATE deviation from the design CSS: its keyframes GROW the dash then
+    // HOLD it through the second half-cycle, snapping back at the loop — which
+    // forces one end of the arc to teleport ~172° every 1.4s (device-rejected:
+    // "the tail skips half of the circle to where the head is"). Instead the
+    // second half SHRINKS the arc — the tail chases the head along the circle —
+    // which closes the loop with both ends continuous, by construction.
+    private nonisolated static let minSweep = 2.0 / 271.7
+    private nonisolated static let maxSweep = 132.0 / 271.7
 
     var body: some View {
         TimelineView(.animation(paused: reduceMotion)) { context in
             let t = context.date.timeIntervalSinceReferenceDate
             // Reduce Motion: the same composition at rest — a static quarter arc.
-            let sweep = reduceMotion ? 0.25 : arcSweep(t)
-            let rotation = reduceMotion ? -90 : arcRotation(t)
+            let sweep = reduceMotion ? 0.25 : Self.arcSweep(t)
+            let rotation = reduceMotion ? -90 : Self.arcRotation(t)
             ZStack {
                 ring.stroke(.white.opacity(0.16), lineWidth: stroke)
                 ring.trim(from: 0, to: sweep)
@@ -48,36 +53,41 @@ struct PlayerScrimRing: View {
     private var ring: some InsettableShape { Circle().inset(by: stroke / 2) }
 
     /// Fraction of the circle the bright arc covers: grows 2→132 dash units across
-    /// the first half-cycle and holds through the second (per the CSS keyframes).
-    private func arcSweep(_ t: TimeInterval) -> Double {
+    /// the first half-cycle (head runs ahead), shrinks back across the second
+    /// (tail catches up). Continuous everywhere — no hold-and-snap.
+    /// Static + internal: pure math, unit-tested for cycle-boundary continuity.
+    nonisolated static func arcSweep(_ t: TimeInterval) -> Double {
         let p = dashPhase(t)
-        guard p < 0.5 else { return Self.maxSweep }
-        return Self.minSweep + (Self.maxSweep - Self.minSweep) * easeInOut(p / 0.5)
+        return p < 0.5
+            ? minSweep + (maxSweep - minSweep) * easeInOut(p / 0.5)
+            : maxSweep - (maxSweep - minSweep) * easeInOut((p - 0.5) / 0.5)
     }
 
-    /// Continuous spin plus the dash-offset's forward crawl (0→22→152 units), which
-    /// makes the arc's tail chase its head instead of shrinking in place.
-    private func arcRotation(_ t: TimeInterval) -> Double {
-        let spin = t.truncatingRemainder(dividingBy: Self.rotationPeriod) / Self.rotationPeriod
+    /// Rotation of the arc's TAIL (`trim` draws from here, head = tail + sweep):
+    /// continuous spin, plus the tail's chase across the second half-cycle —
+    /// while the arc shrinks, the tail travels forward to meet the head.
+    ///
+    /// Continuity proof sketch (per cycle, relative to the spin): first half the
+    /// tail rests and the head advances by `maxSweep − minSweep` (the growth);
+    /// second half the head rests and the tail advances by the same amount (the
+    /// chase). Carrying `maxSweep − minSweep` per completed cycle makes BOTH
+    /// ends land exactly where the next cycle picks them up — verified at the
+    /// half-cycle seam and the loop seam in `PlayerScrimRingTests`.
+    nonisolated static func arcRotation(_ t: TimeInterval) -> Double {
+        let spin = t.truncatingRemainder(dividingBy: rotationPeriod) / rotationPeriod
         let p = dashPhase(t)
-        let lead = p < 0.5
-            ? Self.midLead * easeInOut(p / 0.5)
-            : Self.midLead + (Self.endLead - Self.midLead) * easeInOut((p - 0.5) / 0.5)
-        // Each dash cycle ends with the lead at `endLead` but restarts it at 0 — the
-        // CSS loop snaps the arc ~201° there every 1.4s. Carrying the completed
-        // cycles forward keeps the rotation continuous; within a cycle it's the
-        // same motion, just phase-shifted by a constant.
-        let completedCycles = (t / Self.dashPeriod).rounded(.down)
-        return (spin + lead + Self.endLead * completedCycles)
+        let chase = p < 0.5 ? 0 : (maxSweep - minSweep) * easeInOut((p - 0.5) / 0.5)
+        let completedCycles = (t / dashPeriod).rounded(.down)
+        return (spin + chase + (maxSweep - minSweep) * completedCycles)
             .truncatingRemainder(dividingBy: 1) * 360
     }
 
-    private func dashPhase(_ t: TimeInterval) -> Double {
-        t.truncatingRemainder(dividingBy: Self.dashPeriod) / Self.dashPeriod
+    private nonisolated static func dashPhase(_ t: TimeInterval) -> Double {
+        t.truncatingRemainder(dividingBy: dashPeriod) / dashPeriod
     }
 
     /// Smoothstep ≈ CSS ease-in-out.
-    private func easeInOut(_ x: Double) -> Double { x * x * (3 - 2 * x) }
+    private nonisolated static func easeInOut(_ x: Double) -> Double { x * x * (3 - 2 * x) }
 }
 
 #Preview("Ring sizes") {

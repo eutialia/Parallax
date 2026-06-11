@@ -2,17 +2,17 @@ import SwiftUI
 
 /// The player's "calm" loading scrim — a dim wash over the live video surface with
 /// the white indeterminate ring and a shimmering caption. Replaces the liquid-glass
-/// orb. Two flavors per the design: `.buffering` (waiting for the picture / first
-/// load; heavier dim, bigger ring) and `.audioSwitch` (a transcode track switch is
-/// reloading the stream; lighter dim — the paused frame underneath is still the
-/// subject). Purely visual: the caller turns hit testing off so the HUD mounted
-/// below stays interactive while the stream resolves.
+/// orb. Two flavors, named for what's BEHIND the scrim: `.coldStart` (first load
+/// over the black floor — nothing to watch yet, heavy dim) and `.liveFrame` (a
+/// frame is on screen and is still the subject — a track-switch reload or a
+/// mid-stream stall; light dim). Purely visual: the caller turns hit testing off
+/// so the HUD mounted below stays interactive while the stream resolves.
 ///
 /// App target only: pure SwiftUI, no platform conditionals.
 struct PlayerLoadingScrim: View {
     enum Mode {
-        case buffering
-        case audioSwitch
+        case coldStart
+        case liveFrame
     }
 
     var mode: Mode
@@ -28,7 +28,7 @@ struct PlayerLoadingScrim: View {
     var body: some View {
         ZStack {
             PlayerScrimStyle.dim(
-                mode == .buffering ? PlayerScrimStyle.bufferingDim : PlayerScrimStyle.audioSwitchDim
+                mode == .coldStart ? PlayerScrimStyle.coldStartDim : PlayerScrimStyle.liveFrameDim
             )
             content
                 .opacity(entered ? 1 : 0)
@@ -49,23 +49,20 @@ struct PlayerLoadingScrim: View {
     }
 
     private var content: some View {
+        // One geometry for every mode: the ring never changes size, and the
+        // sublabel line is RESERVED even when absent (hidden placeholder), so
+        // the circle's center holds across Loading ↔ Buffering ↔ Switching
+        // cross-fades instead of jumping scale and height per flavor.
         VStack(spacing: metrics.scrimCaptionGap) {
-            PlayerScrimRing(
-                size: mode == .buffering ? metrics.scrimRingBuffer : metrics.scrimRingAudio,
-                stroke: mode == .buffering ? metrics.scrimRingBufferStroke : metrics.scrimRingAudioStroke
-            )
+            PlayerScrimRing(size: metrics.scrimRing, stroke: metrics.scrimRingStroke)
             if let label {
                 VStack(spacing: metrics.scrimCaptionLineGap) {
                     ShimmerLabel(text: label, size: metrics.scrimLabelSize)
-                    if let sublabel {
-                        Text(sublabel)
-                            .font(.system(
-                                size: mode == .buffering ? metrics.scrimSubSizeBuffer : metrics.scrimSubSizeAudio,
-                                weight: .medium
-                            ))
-                            .monospacedDigit()
-                            .foregroundStyle(.white.opacity(0.62))
-                    }
+                    Text(sublabel ?? " ")
+                        .font(.system(size: metrics.scrimSubSize, weight: .medium))
+                        .monospacedDigit()
+                        .foregroundStyle(.white.opacity(0.62))
+                        .opacity(sublabel == nil ? 0 : 1)
                 }
                 .multilineTextAlignment(.center)
             }
@@ -118,7 +115,7 @@ private struct ShimmerLabel: View {
         LinearGradient(colors: [Color(red: 0.05, green: 0.05, blue: 0.06), .black],
                        startPoint: .topLeading, endPoint: .bottomTrailing)
             .ignoresSafeArea()
-        PlayerLoadingScrim(mode: .buffering, label: "Loading",
+        PlayerLoadingScrim(mode: .coldStart, label: "Loading",
                            metrics: PlayerMetrics(width: 1280))
     }
     .frame(width: 1280, height: 720)
@@ -129,9 +126,26 @@ private struct ShimmerLabel: View {
         LinearGradient(colors: [Color(red: 0.05, green: 0.05, blue: 0.06), .black],
                        startPoint: .topLeading, endPoint: .bottomTrailing)
             .ignoresSafeArea()
-        PlayerLoadingScrim(mode: .audioSwitch, label: "Switching audio",
+        PlayerLoadingScrim(mode: .liveFrame, label: "Switching audio",
                            sublabel: "English · 5.1 · AC3",
                            metrics: PlayerMetrics(width: 1280))
+    }
+    .frame(width: 1280, height: 720)
+}
+
+// Both flavors overlaid at half opacity: the rings must coincide EXACTLY (one
+// geometry, reserved sublabel line) — any double ring or vertical ghosting
+// means a mode is moving the circle again.
+#Preview("Mode parity (overlay)") {
+    ZStack {
+        Color.black.ignoresSafeArea()
+        PlayerLoadingScrim(mode: .coldStart, label: "Buffering",
+                           metrics: PlayerMetrics(width: 1280))
+            .opacity(0.5)
+        PlayerLoadingScrim(mode: .liveFrame, label: "Switching audio",
+                           sublabel: "English · 5.1 · AC3",
+                           metrics: PlayerMetrics(width: 1280))
+            .opacity(0.5)
     }
     .frame(width: 1280, height: 720)
 }

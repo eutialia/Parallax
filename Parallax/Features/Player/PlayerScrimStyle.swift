@@ -12,10 +12,11 @@ enum PlayerScrimStyle {
     /// The wash's base alpha; multiplied by a state's dim factor.
     static let dimAlpha = 0.46
 
-    /// State dim factors: buffering is heaviest (there's nothing to watch yet), an
-    /// audio switch lightest (the paused picture is still the subject), errors between.
-    static let bufferingDim = 0.74
-    static let audioSwitchDim = 0.50
+    /// State dim factors: a cold start is heaviest (there's nothing to watch yet),
+    /// a live-frame reload/stall lightest (the picture is still the subject),
+    /// errors between.
+    static let coldStartDim = 0.74
+    static let liveFrameDim = 0.50
     static let errorDim = 0.62
 
     /// Entrance for centred scrim content: rise +10pt and fade in.

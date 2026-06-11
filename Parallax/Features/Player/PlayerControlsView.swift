@@ -31,6 +31,10 @@ struct PlayerControlsView: View {
     @Bindable var vm: PlayerViewModel
     /// Chrome visibility, owned by `PlayerView` so it can also drive the status bar.
     @Binding var controlsVisible: Bool
+    /// Debug-HUD visibility, owned by `PlayerView` (the overlay must outlive the
+    /// chrome's auto-hide). Toggled from the chip row — DEBUG builds only render
+    /// the chip; a corner overlay button was unreachable by the tvOS focus engine.
+    @Binding var debugHUD: Bool
     #if os(tvOS)
     /// Reports the scrub bar's focus to `PlayerView`, which gates window-level pans
     /// into analog scrub only while the bar is focused. Required, not optional —
@@ -82,13 +86,23 @@ struct PlayerControlsView: View {
     }
     #endif
 
-    private var menuOpen: Bool { audioMenu || subtitleMenu || chapterMenu || speedMenu }
+    // debugHUD needs no build-config fork: the binding is unconditional (only the
+    // DEBUG-only chip can ever set it), so in Release it's just always false.
+    private var menuOpen: Bool { audioMenu || subtitleMenu || chapterMenu || speedMenu || debugHUD }
     /// False while the stream is still resolving/buffering. The chrome mounts from
     /// loading onward so Close, tap-to-toggle, and the track chips work immediately;
     /// engine-backed transport (play/pause, skip, chapter seek, double-tap seek)
     /// gates on this — the centre cluster is hidden outright because the loading
     /// scrim's ring owns that spot.
     private var playbackReady: Bool { vm.phase == .playing }
+    /// Centre transport visibility, shared by the iPad and phone layouts. Absent
+    /// until the stream plays and while a stall scrim is up — the scrim's ring
+    /// occupies the transport's exact spot (loading and rebuffer alike). Also held
+    /// out while a scrub commit is in flight (`isScrubbing` outlives the finger):
+    /// the release restores chrome synchronously, but the seek's `.buffering` beat
+    /// arrives a few frames later — without the hold the paused-state button
+    /// flashes before the scrim replaces it.
+    private var showsCenterTransport: Bool { playbackReady && !vm.showsStallScrim && !isScrubbing }
     /// Deliberately device-based, not `@Environment(\.appIdiom)` (which is size-class
     /// derived): the phone layout must apply to ALL iPhones, including a regular-width
     /// Pro Max in landscape that reports `.regular` — keying on size class would push it
@@ -139,6 +153,11 @@ struct PlayerControlsView: View {
         }
         .animation(.easeInOut(duration: 0.2), value: controlsVisible)
         .animation(.easeInOut(duration: 0.2), value: dragScrubbing)
+        // The centre transport swaps with the stall scrim's ring — fade, don't pop.
+        .animation(.easeInOut(duration: 0.2), value: vm.showsStallScrim)
+        // …and fades back in when an in-flight scrub commit lands (the transport
+        // is held out through `isScrubbing` so the paused glyph can't flash).
+        .animation(.easeInOut(duration: 0.2), value: isScrubbing)
         #if !os(tvOS)
         .onAppear { scheduleHide() }
         // The sleeping tasks outlive a dismissed player: the seek commit would fire
@@ -233,9 +252,9 @@ struct PlayerControlsView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
                 #if !os(tvOS)
-                // Centre transport (iPad only — tvOS uses the remote). Absent until
-                // the stream plays: the loading scrim's ring occupies this exact spot.
-                if playbackReady {
+                // Centre transport (iPad only — tvOS uses the remote). See
+                // `showsCenterTransport` for the visibility contract.
+                if showsCenterTransport {
                     GlassEffectContainer(spacing: Space.s8) {
                         HStack(spacing: m.transportGap) {
                             PlayerRoundButton(systemImage: "gobackward.10", size: m.transportSkip, iconScale: 0.48,
@@ -312,9 +331,9 @@ struct PlayerControlsView: View {
                 .padding(.top, PlayerMetrics.phoneTopBarTop)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
-                // Centre transport. Absent until the stream plays: the loading
-                // scrim's ring occupies this exact spot.
-                if playbackReady {
+                // Centre transport. See `showsCenterTransport` for the visibility
+                // contract.
+                if showsCenterTransport {
                     GlassEffectContainer(spacing: Space.s8) {
                         HStack(spacing: PlayerMetrics.phoneTransportGap) {
                             PlayerRoundButton(systemImage: "gobackward.10", size: 52, iconScale: 0.5,
@@ -400,7 +419,31 @@ struct PlayerControlsView: View {
             .disabled(!playbackReady)
             .opacity(playbackReady ? 1 : 0.45)
         }
+        #if DEBUG
+        PlayerGlassChip(systemImage: "ladybug", label: "Debug",
+                        isActive: debugHUD, metrics: m, accessibilityLabel: "Debug info") {
+            resetHideTimer(); debugHUD = true
+        }
+        .trackPresentation(isPresented: $debugHUD) { debugMenuList }
+        #endif
     }
+
+    #if DEBUG
+    /// The live debug panel, presented like the track menus (sheet on tvOS —
+    /// focusable + scrollable by the remote — popover on iPad). Brings its own
+    /// glass: DebugInfoOverlay owns a ScrollView, so `trackMenuChrome`'s outer
+    /// ScrollView would nest-scroll.
+    @ViewBuilder
+    private var debugMenuList: some View {
+        let shape = RoundedRectangle(cornerRadius: Radius.panel, style: .continuous)
+        DebugInfoOverlay(vm: vm) { debugHUD = false }
+            .frame(idealWidth: 440)
+            .frame(maxHeight: 560)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .glassEffect(.regular, in: shape)
+            .overlay(shape.strokeBorder(.white.opacity(0.12), lineWidth: 1))
+    }
+    #endif
 
     // MARK: - Scrubber (shared visual, platform interaction)
 
@@ -421,7 +464,12 @@ struct PlayerControlsView: View {
         // is its own focus indicator, so the style must paint no system chrome
         // (`.plain` draws the tvOS focus platter around the whole bar).
         Button {
-            guard let engine = vm.engine, durSeconds > 0, isScrubbing else { return }
+            // `playbackReady` matters beyond the engine-nil case: during a
+            // track-switch re-buffer `currentDuration` is stale-positive (handle()
+            // is muted by isSwitchingTracks), so without it a Select here would
+            // fire a real seek at the mid-reload engine — the transcode seek-wedge
+            // class. Same reason on every seek path below.
+            guard playbackReady, let engine = vm.engine, durSeconds > 0, isScrubbing else { return }
             let gen = scrubGeneration
             let target = CMTime(seconds: scrubProgress * durSeconds, preferredTimescale: 600)
             Task {
@@ -430,7 +478,7 @@ struct PlayerControlsView: View {
             }
         } label: {
             PlayerProgressBar(metrics: m, mode: scrubberFocused ? .focused : .normal,
-                              played: displayed,
+                              played: displayed, buffered: vm.bufferedFraction,
                               elapsed: formatPlaybackTime(shownSeconds), remaining: remainingText,
                               elapsedSeconds: shownSeconds, remainingSeconds: remaining,
                               chapters: vm.chapterFractions)
@@ -440,7 +488,7 @@ struct PlayerControlsView: View {
         // Animate the thicken/handle-grow as focus lands, matching the original bar.
         .animation(.easeOut(duration: 0.15), value: scrubberFocused)
         .onMoveCommand { direction in
-            guard durSeconds > 0 else { return }
+            guard playbackReady, durSeconds > 0 else { return }
             if !isScrubbing { scrubProgress = liveProgress; isScrubbing = true; scrubGeneration += 1 }
             let step = 10.0 / durSeconds
             // Animated so the ±10s step glides and the time digits roll (`.numericText`).
@@ -464,17 +512,30 @@ struct PlayerControlsView: View {
         // thrashes a transcode and wedges the player).
         PlayerProgressBar(
             metrics: m, mode: dragScrubbing ? .scrub : .normal, played: displayed,
+            buffered: vm.bufferedFraction,
             elapsed: formatPlaybackTime(shownSeconds), remaining: remainingText,
             elapsedSeconds: shownSeconds, remainingSeconds: remaining,
             chapters: vm.chapterFractions,
             bubbleTime: dragScrubbing ? formatPlaybackTime(shownSeconds) : nil,
             bubbleChapter: dragScrubbing ? vm.chapterTitle(atSeconds: shownSeconds) : nil,
             onScrubChanged: { frac in
-                guard durSeconds > 0 else { return }
-                if !isScrubbing {
-                    isScrubbing = true
+                // playbackReady: during a track-switch re-buffer the duration is
+                // stale-positive — entering a drag then would pause + seek the
+                // mid-reload engine (the transcode seek-wedge class).
+                guard playbackReady, durSeconds > 0 else { return }
+                // Keyed on the FINGER (dragScrubbing), not isScrubbing: the
+                // previous commit holds isScrubbing true while its seek is in
+                // flight, and a re-drag in that window must still register —
+                // bumping the generation so the old commit can neither snap the
+                // bar back mid-drag nor resume under the finger.
+                if !dragScrubbing {
                     scrubGeneration += 1
-                    scrubWasPlaying = vm.isPlaying
+                    // Capture resume intent only at the start of a CHAIN: during
+                    // an in-flight commit the engine is paused by the scrub
+                    // itself, so re-reading vm.isPlaying here would turn a
+                    // drag-while-fetching into a stuck pause (manual play to fix).
+                    if !isScrubbing { scrubWasPlaying = vm.isPlaying }
+                    isScrubbing = true
                     dragScrubbing = true
                     onScrubActiveChange(true)
                     hideTask?.cancel()
@@ -488,7 +549,7 @@ struct PlayerControlsView: View {
                 onScrubActiveChange(false)
                 resetHideTimer()
                 scrubProgress = frac
-                guard let engine = vm.engine, durSeconds > 0 else { isScrubbing = false; return }
+                guard playbackReady, let engine = vm.engine, durSeconds > 0 else { isScrubbing = false; return }
                 let gen = scrubGeneration
                 let resume = scrubWasPlaying
                 let target = CMTime(seconds: frac * durSeconds, preferredTimescale: 600)
@@ -507,7 +568,7 @@ struct PlayerControlsView: View {
         .accessibilityLabel("Playback position")
         .accessibilityValue(Text("\(Int(displayed * 100)) percent"))
         .accessibilityAdjustableAction { direction in
-            guard durSeconds > 0 else { return }
+            guard playbackReady, durSeconds > 0 else { return }
             resetHideTimer()
             cancelPendingSeek()
             let step = 10.0 / durSeconds
@@ -702,6 +763,7 @@ struct PlayerControlsView: View {
 
     private func closeAllMenus() {
         audioMenu = false; subtitleMenu = false; chapterMenu = false; speedMenu = false
+        debugHUD = false
     }
 
     private func resetHideTimer() {

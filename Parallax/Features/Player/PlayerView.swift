@@ -47,11 +47,16 @@ struct PlayerView: View {
     /// so play/pause then sticks). `pendingClickSeek` is the un-committed target.
     @State private var commitSeekTask: Task<Void, Never>? = nil
     @State private var pendingClickSeek: Double? = nil
+    /// Set at the first `.playing` beat. The initial-load chrome (fullHUD over
+    /// the loading scrim — iOS parity) hands off to the reducer's clean floor
+    /// exactly once; later loading dips (track-switch re-buffers) keep whatever
+    /// HUD state the user is in, so an open menu survives the swap.
+    @State private var didBeginPlayback = false
     #endif
-    @Environment(\.appIdiom) private var idiom
-    #if DEBUG
+    /// Unconditional so the binding can thread into `PlayerControlsView`'s chip
+    /// row without forking its initializer per build config; everything that
+    /// RENDERS from it (the chip, the overlay) stays `#if DEBUG`.
     @State private var showDebugHUD = false
-    #endif
 
     var body: some View {
         ZStack {
@@ -80,17 +85,14 @@ struct PlayerView: View {
                         SubtitleOverlayView(vm: vm)
                     }
                     #if os(tvOS)
-                    if playing {
-                        tvPlaybackSurface(vm)
-                    } else {
-                        // Loading must be escapable: nothing else focusable is mounted
-                        // before playback, so this adapter holds focus and catches Menu
-                        // — Back exits immediately, cancelling the in-flight resolve.
-                        TVRemoteInputView(onEvent: { event in
-                            if case .menu = event { exitPlayer() }
-                        })
-                        .ignoresSafeArea()
-                    }
+                    // One surface identity from .idle through .playing (the video
+                    // host's lesson above): the HUD is live while the stream resolves
+                    // — the full chrome shows over the loading scrim (Close focusable,
+                    // chips populate as their lists arrive), Back exits immediately,
+                    // and a track-switch re-buffer no longer tears down the surface
+                    // (and any open menu) mid-switch. Engine-backed remote events are
+                    // gated in `send` until .playing.
+                    tvPlaybackSurface(vm)
                     #else
                     // One identity from loading through playing (the video host's
                     // lesson above): the HUD is live the moment the player appears —
@@ -98,6 +100,7 @@ struct PlayerView: View {
                     // soon as their lists populate. Engine-backed transport is gated
                     // inside on vm.phase, so nothing inert looks tappable.
                     PlayerControlsView(vm: vm, controlsVisible: $chromeVisible,
+                                       debugHUD: $showDebugHUD,
                                        onScrubActiveChange: { scrubHUDActive = $0 }) { exitPlayer() }
                     #endif
                     // A failed audio switch that fell back to the previous track:
@@ -116,31 +119,9 @@ struct PlayerView: View {
         }
         .animation(.easeInOut(duration: 0.3), value: showsReloadCover)
         .animation(.easeInOut(duration: 0.3), value: viewModel?.trackSwitchFailure != nil)
-        #if DEBUG
-        .overlay(alignment: .topLeading) {
-            if showDebugHUD, let vm = viewModel {
-                DebugInfoOverlay(vm: vm) { showDebugHUD = false }
-                    .padding(.top, 70)
-                    .padding(.leading, 16)
-                    .transition(.opacity)
-            }
-        }
-        .overlay(alignment: .bottomTrailing) {
-            if viewModel != nil {
-                Button("Toggle debug overlay", systemImage: "info.circle") {
-                    showDebugHUD.toggle()
-                }
-                .labelStyle(.iconOnly)
-                // `.title3` is oversized on the tvOS canvas; step it down and drop the
-                // default tvOS button platter for a clean focus lift.
-                .font(idiom == .tv ? .body : .title3)
-                .foregroundStyle(.white.opacity(0.55))
-                .tvChipButton()
-                .padding(12)
-            }
-        }
-        .animation(.easeInOut(duration: 0.15), value: showDebugHUD)
-        #endif
+        // The debug panel presents from the HUD's chip row (PlayerControlsView)
+        // like the track menus — a corner overlay was unreachable (and its
+        // ScrollView unscrollable) by the tvOS focus engine.
         // No blanket .ignoresSafeArea() here: the black floor, video host, and reload
         // cover each opt into full-bleed individually (see above), while the chrome
         // (top bar, scrubber) and status bar respect the safe area. The status bar
@@ -153,10 +134,14 @@ struct PlayerView: View {
         // The controls (which restore chromeVisible) only exist in .playing. If the
         // stream fails after the chrome auto-hid, force it back so the status bar and
         // home indicator return over the error overlay — and so a successful retry
-        // re-mounts the controls already visible.
+        // re-mounts the controls already visible. iOS-only: on tvOS the surface's
+        // phase hand-off owns chromeVisible (mirroring hudState), and forcing it
+        // true here would desync it from the floor.
+        #if !os(tvOS)
         .onChange(of: isPlaybackActive) { _, active in
             if !active { chromeVisible = true }
         }
+        #endif
         .task {
             if viewModel == nil {
                 let info = await deps.playbackInfoFactory(session)
@@ -192,6 +177,7 @@ struct PlayerView: View {
             #if os(tvOS)
             idleTask?.cancel()
             commitSeekTask?.cancel()
+            DisplayCriteriaMatcher.clear()
             #endif
         }
         // The player is an immersive "screening room": pin the whole surface (video
@@ -224,6 +210,10 @@ struct PlayerView: View {
         viewModel?.beginExit()
         let vm = viewModel
         Task { await vm?.stop() }
+        #if os(tvOS)
+        // Hand display-mode selection back to the system as the player leaves.
+        DisplayCriteriaMatcher.clear()
+        #endif
         dismiss()
     }
 
@@ -251,14 +241,23 @@ struct PlayerView: View {
     private var loadingVeil: some View {
         GeometryReader { geo in
             PlayerLoadingScrim(
-                mode: viewModel?.isSwitchingTracks == true ? .audioSwitch : .buffering,
+                mode: scrimFlavor,
                 label: viewModel?.loaderTitle ?? "Loading",
                 sublabel: viewModel?.loaderSubtitle,
                 metrics: scrimMetrics(width: geo.size.width)
             )
         }
+        // Full-bleed like the video host: the chrome toggles the status bar and
+        // home indicator, and a safe-area-bounded veil would shift its centred
+        // ring a few points every time the HUD shows/hides.
+        .ignoresSafeArea()
         .allowsHitTesting(false)
         .transition(.opacity)
+    }
+
+    private var scrimFlavor: PlayerLoadingScrim.Mode {
+        guard let vm = viewModel else { return .coldStart }
+        return vm.isSwitchingTracks || vm.showsStallScrim ? .liveFrame : .coldStart
     }
 
     /// Scrim scale: big screens derive the unit from the surface width (the same
@@ -272,14 +271,16 @@ struct PlayerView: View {
         #endif
     }
 
-    /// Whether to show the loading veil: before the VM exists and while it's
-    /// idle/loading (initial load and a track-switch re-buffer). Hidden once playing
-    /// (the video shows) or failed (the error overlay shows).
+    /// Whether to show the loading veil: before the VM exists, while it's
+    /// idle/loading (initial load and a track-switch re-buffer), and during a
+    /// mid-stream stall (debounced — the light "Buffering" flavor over the
+    /// frozen frame). Hidden when playing healthily or failed.
     private var showsReloadCover: Bool {
         guard let vm = viewModel else { return true }
         switch vm.phase {
         case .idle, .loading: return true
-        case .playing, .failed: return false
+        case .playing: return vm.showsStallScrim
+        case .failed: return false
         }
     }
 
@@ -413,6 +414,7 @@ struct PlayerView: View {
                 tvScrubBar(progress: progress, vm: vm).transition(.opacity)
             case .fullHUD:
                 PlayerControlsView(vm: vm, controlsVisible: .constant(true),
+                                   debugHUD: $showDebugHUD,
                                    onScrubberFocusChange: { scrubberHasFocus = $0 }) { exitPlayer() }
                     .transition(.opacity)
                     .onExitCommand { send(.menu, vm) }
@@ -429,8 +431,40 @@ struct PlayerView: View {
         .animation(.easeInOut(duration: 0.2), value: isFullHUD)
         // Dedicated Play/Pause button → reducer, in every HUD state.
         .onPlayPauseCommand { send(.playPause, vm) }
-        // Start on the clean floor (chrome starts hidden).
-        .onAppear { chromeVisible = false }
+        // Fresh surface: the initial load shows the full chrome over the scrim
+        // (iOS parity — the player is operable while the stream resolves); once
+        // playback has begun (a post-failure retry remount), start on the clean
+        // floor. Clear any click-seek debris a previous mount left armed.
+        .onAppear {
+            hudState = didBeginPlayback ? .floor : .fullHUD
+            cancelClickSeek()
+            chromeVisible = isFullHUD
+        }
+        // Phase transitions own the HUD floor hand-offs:
+        // • first .playing — the loading chrome drops to the reducer's clean
+        //   floor (re-buffers keep their HUD state, see `didBeginPlayback`);
+        // • leaving .playing (re-buffer / failure) — a scrub state would strand
+        //   a frozen bar plus armed idle/commit timers over the scrim, and its
+        //   duration context is stale mid-reload; fold to the floor and drop
+        //   the pending seek.
+        .onChange(of: vm.phase == .playing) { _, nowPlaying in
+            if nowPlaying {
+                if !didBeginPlayback {
+                    didBeginPlayback = true
+                    if isFullHUD {
+                        hudState = .floor
+                        // Same stale-mirror clear as send(): the HUD unmount may
+                        // never fire the focus callback with `false`.
+                        scrubberHasFocus = false
+                    }
+                }
+            } else {
+                cancelClickSeek()
+                idleTask?.cancel()
+                if isScrubbing { hudState = .floor }
+            }
+            chromeVisible = isFullHUD
+        }
     }
 
     /// The lone progress bar shown during swipe-scrub / click-seek: chrome is gone,
@@ -445,7 +479,7 @@ struct PlayerView: View {
         let shown = p * dur
         let remaining = max(0, dur - shown)
         PlayerProgressBar(
-            metrics: m, mode: .scrub, played: p,
+            metrics: m, mode: .scrub, played: p, buffered: vm.bufferedFraction,
             elapsed: formatPlaybackTime(shown),
             remaining: remaining > 0 ? "-\(formatPlaybackTime(remaining))" : formatPlaybackTime(dur),
             elapsedSeconds: shown,
@@ -488,6 +522,26 @@ struct PlayerView: View {
     /// in the reducer: rapid clicks accumulate a target in `.clickSeek` and fire a
     /// single engine seek once they settle (or when the state leaves `.clickSeek`).
     private func send(_ event: RemoteEvent, _ vm: PlayerViewModel) {
+        // Pre-playback (initial load and a track-switch re-buffer): only chrome
+        // reveal, exit, and idle are meaningful. Transport/seek events are
+        // dropped at the door — mid-reload the engine is being fed a new asset
+        // and `currentDuration` is stale, so a seek/play would land on a dead or
+        // mid-swap stream. The reducer itself stays phase-blind.
+        if vm.phase != .playing {
+            switch event {
+            case .menu where !didBeginPlayback:
+                // First load: Back exits immediately (synchronously fencing the
+                // in-flight resolve) instead of peeling the loading chrome back
+                // to an empty floor.
+                exitPlayer()
+                return
+            case .swipeVertical, .click(.up), .click(.down), .menu, .idle:
+                break
+            case .swipeHorizontal, .click(.left), .click(.right), .select, .playPause:
+                return
+            }
+        }
+
         let leavingTarget: Double? = { if case .clickSeek(let t) = hudState { return t } else { return nil } }()
         let ctx = ReduceContext(
             liveProgress: tvProgress(of: vm),
@@ -556,9 +610,16 @@ struct PlayerView: View {
     /// like `[.seek, .play]` can't race: as detached per-effect tasks, `play()` could
     /// land before `seek()`, and a play-then-seek on a Jellyfin transcode parks AVPlayer
     /// in `.waitingToPlayAtSpecifiedRate` (reported as playing) — the resume is lost.
+    ///
+    /// `.exit` is pulled out and run synchronously with the press: `beginExit()`
+    /// must arm its fence before a suspended start-path continuation can
+    /// interleave, and the one-hop Task below is exactly that window.
     private func runEffects(_ effects: [PlayerEffect], _ vm: PlayerViewModel) {
         guard !effects.isEmpty else { return }
-        Task { for effect in effects { await apply(effect, vm) } }
+        if effects.contains(.exit) { exitPlayer() }
+        let engineEffects = effects.filter { $0 != .exit }
+        guard !engineEffects.isEmpty else { return }
+        Task { for effect in engineEffects { await apply(effect, vm) } }
     }
 
     private func apply(_ effect: PlayerEffect, _ vm: PlayerViewModel) async {
