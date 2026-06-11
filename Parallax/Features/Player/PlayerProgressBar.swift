@@ -2,11 +2,16 @@ import SwiftUI
 
 /// The single layered progress bar for every platform and state — replaces the iOS
 /// `Slider`, the tvOS focusable bar, and the old `ScrubBar`. Monochrome white over the
-/// video scrim, panel-less. Visual only: `played` is a 0...1 fraction the caller
+/// video scrim, panel-less. The track runs the full row width with the time labels
+/// ABOVE its two ends (the tvOS system player's title-above-scrubber anatomy); during
+/// `.scrub` the labels fade out — the floating bubble carries the time, and near either
+/// end it would collide with them. Visual only: `played` is a 0...1 fraction the caller
 /// supplies (live playback, a drag preview, or the reducer's scrub head). When
-/// `onScrubChanged`/`onScrubEnded` are set (iOS), a drag on the track reports the
-/// fraction under the finger; tvOS leaves them nil and drives seeking via the remote,
-/// so no drag gesture is attached there.
+/// `onScrubChanged`/`onScrubEnded` are set (iOS), a drag anywhere on the bar scrubs
+/// RELATIVE to the current position — grabbing the bar is grabbing the handle, from
+/// wherever the finger lands; a plain tap is inert (no jump-to-tap seeking). tvOS
+/// leaves the handlers nil and drives seeking via the remote, so no drag gesture is
+/// attached there.
 struct PlayerProgressBar: View {
     enum Mode: Equatable { case normal, focused, scrub }
 
@@ -48,12 +53,23 @@ struct PlayerProgressBar: View {
     private func clamp(_ v: Double) -> Double { min(max(v, 0), 1) }
 
     var body: some View {
-        HStack(spacing: metrics.progressRowGap) {
-            Text(elapsed)
-                .font(.system(size: labelSize, weight: .semibold).monospacedDigit())
-                .contentTransition(.numericText(value: elapsedSeconds))
-                .foregroundStyle(.white)
-                .frame(minWidth: metrics.timeLabelWidth, alignment: .leading)
+        VStack(spacing: 6 * metrics.u) {
+            // Labels above the track ends. Opacity-hidden in `.scrub` (never a
+            // structural `if`): the row's height is part of the bar's reserved
+            // geometry, and unmounting it would shift the track on the HUD↔scrub
+            // switch — the exact jump `rowHeight` exists to prevent.
+            HStack(alignment: .firstTextBaseline, spacing: metrics.progressRowGap) {
+                Text(elapsed)
+                    .font(.system(size: labelSize, weight: .semibold).monospacedDigit())
+                    .contentTransition(.numericText(value: elapsedSeconds))
+                    .foregroundStyle(.white)
+                Spacer(minLength: 0)
+                Text(remaining)
+                    .font(.system(size: labelSize, weight: .semibold).monospacedDigit())
+                    .contentTransition(.numericText(value: remainingSeconds))
+                    .foregroundStyle(.white.opacity(0.62))
+            }
+            .opacity(mode == .scrub ? 0 : 1)
 
             GeometryReader { geo in
                 let w = geo.size.width
@@ -82,15 +98,10 @@ struct PlayerProgressBar: View {
                 }
                 .frame(height: rowHeight, alignment: .center)
                 .contentShape(Rectangle())
-                .modifier(ScrubGesture(width: w, onChanged: onScrubChanged, onEnded: onScrubEnded))
+                .modifier(ScrubGesture(width: w, played: p,
+                                       onChanged: onScrubChanged, onEnded: onScrubEnded))
             }
             .frame(height: rowHeight)
-
-            Text(remaining)
-                .font(.system(size: labelSize, weight: .semibold).monospacedDigit())
-                .contentTransition(.numericText(value: remainingSeconds))
-                .foregroundStyle(.white.opacity(0.62))
-                .frame(minWidth: metrics.timeLabelWidth, alignment: .trailing)
         }
     }
 
@@ -102,23 +113,34 @@ struct PlayerProgressBar: View {
         }
     }
 
-    @ViewBuilder
+    /// ONE view identity across all three modes — width/height/radius retarget on a
+    /// mode flip instead of crossfading two handle views. The structural `switch`
+    /// this replaces ghosted during the normal↔scrub transition: the outgoing dot
+    /// froze at its removal-time offset while the incoming pill tracked the finger,
+    /// reading as a misaligned dot beside the scrub line (device-caught).
     private var handle: some View {
+        RoundedRectangle(cornerRadius: handleCornerRadius, style: .continuous)
+            .fill(.white)
+            .frame(width: handleWidth, height: handleHeight)
+            .overlay(
+                Circle().strokeBorder(.white.opacity(0.55), lineWidth: 3 * metrics.u)
+                    .padding(-3 * metrics.u)
+                    .opacity(mode == .focused ? 1 : 0)
+            )
+            .shadow(color: .black.opacity(0.5),
+                    radius: (mode == .scrub ? 5 : 2) * metrics.u, y: 1)
+    }
+
+    private var handleHeight: CGFloat {
         switch mode {
-        case .normal:
-            Circle().fill(.white)
-                .frame(width: metrics.handleDiameter, height: metrics.handleDiameter)
-                .shadow(color: .black.opacity(0.5), radius: 2 * metrics.u, y: 1)
-        case .focused:
-            Circle().fill(.white)
-                .frame(width: metrics.handleDiameterFocused, height: metrics.handleDiameterFocused)
-                .overlay(Circle().strokeBorder(.white.opacity(0.55), lineWidth: 3 * metrics.u).padding(-3 * metrics.u))
-                .shadow(color: .black.opacity(0.5), radius: 2 * metrics.u, y: 1)
-        case .scrub:
-            RoundedRectangle(cornerRadius: 5 * metrics.u, style: .continuous).fill(.white)
-                .frame(width: metrics.scrubHandleWidth, height: trackH + 22 * metrics.u)
-                .shadow(color: .black.opacity(0.5), radius: 5 * metrics.u, y: 1)
+        case .normal: metrics.handleDiameter
+        case .focused: metrics.handleDiameterFocused
+        case .scrub: trackH + 22 * metrics.u
         }
+    }
+
+    private var handleCornerRadius: CGFloat {
+        mode == .scrub ? 5 * metrics.u : handleWidth / 2
     }
 
     /// Approximate so the bubble floats just above the handle; `.position` only needs the
@@ -148,10 +170,30 @@ struct PlayerProgressBar: View {
 /// path (handlers nil, bar driven by the remote inside a focusable Button) gets no
 /// gesture that could fight the focus engine. `DragGesture` is unavailable on tvOS, so
 /// the whole gesture path is compiled out there — the remote drives the bar instead.
+///
+/// The drag is RELATIVE: the displayed fraction is captured at drag start and the
+/// finger's translation moves the playhead from there — grabbing any part of the bar
+/// is grabbing the handle. (The old absolute `location.x / width` mapping made a bare
+/// touch JUMP the playhead to the tap point.) `minimumDistance` keeps plain taps from
+/// engaging at all: no jump, no pause, no seek.
 private struct ScrubGesture: ViewModifier {
     let width: CGFloat
+    /// The bar's currently displayed fraction — the relative drag's anchor.
+    let played: Double
     let onChanged: ((Double) -> Void)?
     let onEnded: ((Double) -> Void)?
+    @State private var startFraction: Double? = nil
+    #if !os(tvOS)
+    /// Gesture liveness. `onEnded` only fires when a drag SUCCEEDS — a system steal
+    /// (home-indicator swipe under the bar, notification pull) cancels the gesture
+    /// with no callback at all, which would strand `startFraction` AND the parent's
+    /// whole scrub state (engine paused, chrome collapsed, next grab anchored at the
+    /// old drag's start). `@GestureState` is the one thing the system resets even on
+    /// cancellation, so its false-flip is the cancel signal.
+    @GestureState private var dragActive = false
+    /// The last fraction reported to `onChanged` — what a detected cancel commits.
+    @State private var lastReported: Double? = nil
+    #endif
 
     func body(content: Content) -> some View {
         #if os(tvOS)
@@ -161,16 +203,35 @@ private struct ScrubGesture: ViewModifier {
             content
         } else {
             content.gesture(
-                DragGesture(minimumDistance: 0, coordinateSpace: .local)
+                DragGesture(minimumDistance: 9, coordinateSpace: .local)
+                    .updating($dragActive) { _, active, _ in active = true }
                     .onChanged { v in
                         guard width > 0 else { return }
-                        onChanged?(min(max(v.location.x / width, 0), 1))
+                        let base = startFraction ?? played
+                        if startFraction == nil { startFraction = base }
+                        let fraction = min(max(base + v.translation.width / width, 0), 1)
+                        lastReported = fraction
+                        onChanged?(fraction)
                     }
                     .onEnded { v in
                         guard width > 0 else { return }
-                        onEnded?(min(max(v.location.x / width, 0), 1))
+                        let base = startFraction ?? played
+                        startFraction = nil
+                        lastReported = nil
+                        onEnded?(min(max(base + v.translation.width / width, 0), 1))
                     }
             )
+            // Cancellation path: `dragActive` resets to false with `lastReported`
+            // still set only when the system killed the drag without `onEnded`.
+            // Route it through the normal end at the last reported fraction so the
+            // parent commits/resumes instead of stranding paused. (A normal end
+            // clears `lastReported` first, so this never double-fires.)
+            .onChange(of: dragActive) { _, active in
+                guard !active, let fraction = lastReported else { return }
+                startFraction = nil
+                lastReported = nil
+                onEnded?(fraction)
+            }
         }
         #endif
     }

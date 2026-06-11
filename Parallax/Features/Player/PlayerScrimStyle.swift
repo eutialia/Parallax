@@ -12,11 +12,21 @@ enum PlayerScrimStyle {
     /// The wash's base alpha; multiplied by a state's dim factor.
     static let dimAlpha = 0.46
 
+    /// The seek-flash dome ink (design `rgb(6,6,12)`); the gradient stops that
+    /// shape the dome live with the flash itself.
+    static let domeColor = Color(red: 6 / 255, green: 6 / 255, blue: 12 / 255)
+
+    /// Stand-in "paused video frame" behind scrim previews. Previews only —
+    /// shipped scrims always sit over real player output.
+    static let previewBackdrop = Color(red: 0.05, green: 0.05, blue: 0.06)
+
     /// State dim factors: a cold start is heaviest (there's nothing to watch yet),
     /// a live-frame reload/stall lightest (the picture is still the subject),
-    /// errors between.
+    /// errors between. Paused matches the live-frame weight — the frozen frame
+    /// stays the subject; the dim just marks it as held (see PlayerPausedOverlay).
     static let coldStartDim = 0.74
     static let liveFrameDim = 0.50
+    static let pausedDim = 0.50
     static let errorDim = 0.62
 
     /// Entrance for centred scrim content: rise +10pt and fade in.

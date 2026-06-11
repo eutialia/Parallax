@@ -118,7 +118,7 @@ struct PlayerErrorScrim<Buttons: View>: View {
 
 #Preview("Couldn't switch audio") {
     ZStack {
-        Color(red: 0.05, green: 0.05, blue: 0.06).ignoresSafeArea()
+        PlayerScrimStyle.previewBackdrop.ignoresSafeArea()
         PlayerErrorScrim(
             title: "Couldn't switch audio",
             message: "The English · 5.1 source didn't respond. Playback stayed on English · Stereo — nothing was lost.",

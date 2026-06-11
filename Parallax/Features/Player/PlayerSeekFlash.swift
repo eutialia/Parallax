@@ -105,7 +105,7 @@ struct PlayerSeekFlash: View {
     /// its centre sits at the design's origin; it fades to clear just past the
     /// dome's inner edge, which is what forms the dome shape — no clip needed.
     private func dome(forward: Bool, width: CGFloat, height: CGFloat) -> some View {
-        let base = Color(red: 6 / 255, green: 6 / 255, blue: 12 / 255)
+        let base = PlayerScrimStyle.domeColor
         return EllipticalGradient(
             stops: [
                 .init(color: base.opacity(0.52), location: 0),

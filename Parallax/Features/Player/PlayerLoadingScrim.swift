@@ -112,7 +112,7 @@ private struct ShimmerLabel: View {
 
 #Preview("Buffering") {
     ZStack {
-        LinearGradient(colors: [Color(red: 0.05, green: 0.05, blue: 0.06), .black],
+        LinearGradient(colors: [PlayerScrimStyle.previewBackdrop, .black],
                        startPoint: .topLeading, endPoint: .bottomTrailing)
             .ignoresSafeArea()
         PlayerLoadingScrim(mode: .coldStart, label: "Loading",
@@ -123,7 +123,7 @@ private struct ShimmerLabel: View {
 
 #Preview("Audio switch") {
     ZStack {
-        LinearGradient(colors: [Color(red: 0.05, green: 0.05, blue: 0.06), .black],
+        LinearGradient(colors: [PlayerScrimStyle.previewBackdrop, .black],
                        startPoint: .topLeading, endPoint: .bottomTrailing)
             .ignoresSafeArea()
         PlayerLoadingScrim(mode: .liveFrame, label: "Switching audio",

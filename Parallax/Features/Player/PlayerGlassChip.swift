@@ -9,18 +9,46 @@ struct PlayerGlassChip: View {
     let label: String
     var sub: String? = nil
     var isActive: Bool = false
+    /// The chip has vacated its spot for the inline track panel (iOS): content goes
+    /// transparent AND the glass flips to `.identity`, which removes the material at
+    /// the source — a bare `.opacity(0)` leaves the capsule visible whenever a
+    /// `GlassEffectContainer` is rendering member glass in its own layer (the tvOS
+    /// focus-ghost class of bug; the chip row's container is gone, but identity
+    /// keeps this correct regardless of future containment).
+    var isVacated: Bool = false
     let metrics: PlayerMetrics
     let accessibilityLabel: String
     let action: () -> Void
 
     var body: some View {
+        #if os(tvOS)
+        // tvOS: glass INSIDE the button — the platter follows focus, which only the
+        // reader inside the label can see.
         Button(action: action) {
             TVFocusReader { focused in
-                content(focused: focused)
+                chrome(chipLabel(platter: focused), platter: focused)
             }
         }
         .tvChipButton()
         .accessibilityLabel(accessibilityLabel)
+        #else
+        // iOS: glass OUTSIDE the button (the split pill's architecture). Bisect
+        // renders proved `.interactive()` glass inside a Button paints an armed,
+        // brighter standing sheen — the "super glass" chips next to the subtle
+        // pill. No focus engine here, so the platter is purely `isActive`, which
+        // is known without the reader.
+        chrome(
+            Button(action: action) {
+                chipLabel(platter: isActive)
+                    .contentShape(Capsule())
+            }
+            .tvChipButton(),
+            platter: isActive
+        )
+        .contentShape(.hoverEffect, Capsule())
+        .hoverEffect(.highlight)
+        .accessibilityLabel(accessibilityLabel)
+        #endif
     }
 
     /// tvOS shows the active chip on a frosted tinted-glass base (the platter is focus's);
@@ -35,26 +63,19 @@ struct PlayerGlassChip: View {
         #endif
     }
 
-    @ViewBuilder
-    private func content(focused: Bool) -> some View {
-        // tvOS HIG focus contract: the FOCUSED chip owns the solid-white-platter + ink
-        // look, so the active state must not reuse it (a white "active" chip reads as
-        // focused and made selection ambiguous on Apple TV). Active-but-unfocused gets a
-        // brighter tinted glass instead. iOS has no focus engine, so active keeps the
-        // solid look there — white means "this menu is open", nothing competes with it.
-        #if os(tvOS)
-        let platter = focused
-        #else
-        let platter = isActive
-        #endif
-        let activeTint = usesActiveTintBase
+    // tvOS HIG focus contract: the FOCUSED chip owns the solid-white-platter + ink
+    // look, so the active state must not reuse it (a white "active" chip reads as
+    // focused and made selection ambiguous on Apple TV). Active-but-unfocused gets a
+    // brighter tinted glass instead. iOS has no focus engine, so active keeps the
+    // solid look there — white means "this menu is open", nothing competes with it.
+    //
+    // The platter is a fading layer OVER an always-mounted glass base, never an
+    // `if platter` branch: a structural swap fires any enclosing glass container's
+    // matchedGeometry morph and snaps with no crossfade. Only the active/rest glass
+    // split stays structural — that flips on click, not focus.
+    private func chipLabel(platter: Bool) -> some View {
         let fg: Color = platter ? .playerInk : .white
-        // The platter is a fading layer OVER an always-mounted glass base, never an
-        // `if platter` branch: branching unmounted the glassEffect from the chip row's
-        // `GlassEffectContainer` on every focus change, firing its matchedGeometry morph
-        // against neighbours, and snapped the chrome with no crossfade. Only the
-        // active/rest glass split stays structural — that flips on click, not focus.
-        let inner = HStack(spacing: metrics.chipGap) {
+        return HStack(spacing: metrics.chipGap) {
             Image(systemName: systemImage)
                 .font(.system(size: metrics.chipIconSize, weight: .semibold))
             Text(label)
@@ -71,24 +92,36 @@ struct PlayerGlassChip: View {
         .frame(height: metrics.chipHeight)
         .padding(.horizontal, metrics.chipPadX)
         .background(Capsule().fill(.white.opacity(0.93)).opacity(platter ? 1 : 0))
+    }
 
-        // While the platter shows, the still-mounted glass flips to `.identity` so its
-        // material (edge rim + outward shadow, which opaque white can't cover) vanishes.
+    /// The capsule's material: glass + dim + hairline, with the platter/vacated
+    /// states flipping the glass to `.identity` so its material (edge rim + outward
+    /// shadow, which opaque white can't cover) vanishes.
+    @ViewBuilder
+    private func chrome(_ content: some View, platter: Bool) -> some View {
+        let activeTint = usesActiveTintBase
+        let glassOff = platter || isVacated
         Group {
             if activeTint {
-                inner.glassEffect(
-                    platter ? .identity : .regular.tint(.white.opacity(0.22)).interactive(),
+                content.glassEffect(
+                    glassOff ? .identity : .regular.tint(.white.opacity(0.22)).interactive(),
                     in: Capsule()
                 )
             } else {
-                // `.clear` + dim layer (Apple's media-controls guidance): regular's dark
-                // frost read as a flat tinted pill over video. The material ramp is now
-                // rest = clear glass · active = frosted tinted glass · focused = platter.
-                inner.glassEffect(platter ? .identity : .clear.interactive(), in: Capsule())
-                    .background(.black.opacity(platter ? 0 : 0.3), in: Capsule())
+                // The shared over-video recipe, minus its hairline (the chip's rim is
+                // stateful, below). The material ramp is rest = clear glass · active =
+                // frosted tinted glass · focused = platter.
+                content.playerGlassSurface(in: Capsule(), off: glassOff, hairline: nil)
             }
         }
-        .overlay(Capsule().strokeBorder(.white.opacity(platter ? 0.5 : activeTint ? 0.45 : 0.20), lineWidth: 1))
+        .overlay(Capsule().strokeBorder(
+            .white.opacity(isVacated ? 0 : platter ? 0.5 : activeTint ? 0.45 : 0.20), lineWidth: 1))
+        .opacity(isVacated ? 0 : 1)
+        // The vacated chip is invisible but its Button isn't gone: without these the
+        // tap survives by ZStack-ordering luck alone, and VoiceOver (which ignores
+        // hit order) can still focus and re-fire the hidden chip under its panel.
+        .allowsHitTesting(!isVacated)
+        .accessibilityHidden(isVacated)
         .contentShape(Capsule())
         .animation(.tvFocusChrome, value: platter)
     }

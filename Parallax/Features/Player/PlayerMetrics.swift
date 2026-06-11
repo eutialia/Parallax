@@ -3,33 +3,48 @@ import SwiftUI
 /// Every player dimension derived from the design's unit scale `u = width / 1920`.
 /// The big-screen player (tvOS + iPad) is authored at a 1920-wide base; tvOS renders
 /// at `u = 1.0`, a 1366-wide iPad at `u ≈ 0.711`, so the two platforms stay visually
-/// identical — just scaled. The iPhone player is authored separately: its round-button
-/// sizes are bespoke literals at the call site, but its chips and progress bar reuse
-/// these formulas at the fixed `.phone` scale.
+/// identical — just scaled. Control sizes at u=1.0 target the HIG's tvOS metrics:
+/// 66pt buttons (the documented default; 56 is the floor), ≥23pt text, and gaps sized
+/// so the 1.06 focus lift can't crowd a neighbour. The iPhone player is authored
+/// separately: its round-button sizes are the fixed `phone*` statics below, but its
+/// chips and progress bar reuse these formulas at the fixed `.phone` scale.
 struct PlayerMetrics: Equatable {
     let u: CGFloat
 
     /// Big-screen metrics for an actual point width, clamped so a small multitasking
     /// iPad window can't shrink controls to nothing and tvOS never exceeds the 1.0 base.
+    /// iPad callers pass the window's LARGER dimension (`max(width, height)`), not the
+    /// current width — controls keep one size across portrait/landscape, like every
+    /// native app's 44pt stays 44pt; only the window class (full screen vs multitask)
+    /// changes the scale.
     init(width: CGFloat) {
         self.u = min(max(width / 1920, 0.5), 1.0)
     }
 
     private init(u: CGFloat) { self.u = u }
 
-    /// Fixed iPhone scale for chips + progress. 0.7 sizes the chips (`54u ≈ 38pt`) to
-    /// the phone's bespoke 37–40pt round buttons and the time labels to 14pt — the
-    /// handoff's 0.92 read oversized next to them and ate track length with ~99pt
-    /// label columns.
+    /// Fixed iPhone scale for chips + progress. 0.7 sizes the chips (`66u ≈ 46pt`) to
+    /// the phone's `phone*` round-button statics and the time labels to ~17pt — the
+    /// handoff's 0.92 read oversized next to them.
     static let phone = PlayerMetrics(u: 0.7)
     /// tvOS full scale.
     static let tv = PlayerMetrics(u: 1.0)
 
     // Layout (big screens)
-    var padX: CGFloat { 60 * u }
-    var topBarTop: CGFloat { 52 * u }
+    /// 80 at u=1.0 — the documented tvOS side safe-area inset; the full-width track
+    /// and the control row both end on it.
+    var padX: CGFloat { 80 * u }
+    /// Directional HUD reveal distance: the top bar parks this far above its resting
+    /// spot while hidden, the bottom rows this far below (the center transport stays
+    /// put), so show/hide converges on the video instead of one flat fade.
+    var hudSlide: CGFloat { 12 * u }
+    /// Equal to `controlRowBottom` by design — top and bottom chrome carry the same
+    /// edge margin (the top bar adds the latched status-bar inset on top of this).
+    var topBarTop: CGFloat { 54 * u }
     var controlRowBottom: CGFloat { 54 * u }
-    var chipsGap: CGFloat { 14 * u }
+    /// 24 at u=1.0 — the HIG's spacing floor for bezel-less controls, so a focused
+    /// chip's 1.06 lift + shadow clears its neighbour instead of crowding it.
+    var chipsGap: CGFloat { 24 * u }
     /// One bottom inset and one track/label scale for BOTH the full-HUD scrubber and
     /// the minimal scrub bar, so the floor↔HUD switch reads as the same bar persisting
     /// (only the handle, bubble, and ticks change) instead of a jump-cut.
@@ -38,33 +53,39 @@ struct PlayerMetrics: Equatable {
     // Progress
     var trackHeight: CGFloat { 8 * u }
     var progressRowGap: CGFloat { 20 * u }
-    var timeLabelWidth: CGFloat { 108 * u }
-    var timeLabelSize: CGFloat { 20 * u }
+    /// 24 at u=1.0 — above the HIG's 23pt tvOS text floor (the old 20 sat below it).
+    var timeLabelSize: CGFloat { 24 * u }
     var chapterTickWidth: CGFloat { 3 * u }
     var handleDiameter: CGFloat { 22 * u }
     var handleDiameterFocused: CGFloat { 26 * u }
     var scrubHandleWidth: CGFloat { 7 * u }
-    var scrubBubbleSize: CGFloat { 54 * u }
+    /// 44 at u=1.0 — under 2× the 24u end labels; the old 54 dwarfed them.
+    var scrubBubbleSize: CGFloat { 44 * u }
     var scrubChapterSize: CGFloat { 22 * u }
 
     // Centre transport (iPad)
-    var transportSkip: CGFloat { 80 * u }
-    var transportPlay: CGFloat { 120 * u }
-    var transportGap: CGFloat { 68 * u }
+    var transportSkip: CGFloat { 96 * u }
+    var transportPlay: CGFloat { 140 * u }
+    var transportGap: CGFloat { 76 * u }
+    /// tvOS paused-status glyph (PlayerPausedOverlay) — keep equal to the iPad
+    /// play disc's glyph (`transportPlay × 0.46`) so the two platforms' center
+    /// pause marks are the same drawing at the same scale.
+    var pausedGlyph: CGFloat { 64 * u }
 
-    // Buttons / chips
-    var closeSize: CGFloat { 58 * u }
-    var chipHeight: CGFloat { 54 * u }
+    // Buttons / chips — 72 at u=1.0: one step above the HIG's 66pt tvOS default,
+    // sized to the TV app's player chrome; iPad (u ≈ 0.61) lands exactly on the
+    // 44pt iOS control default. (56 is the tvOS minimum the old 54/58 sat under.)
+    var closeSize: CGFloat { 72 * u }
+    var chipHeight: CGFloat { 72 * u }
     var chipPadX: CGFloat { 20 * u }
     var chipGap: CGFloat { 9 * u }
-    var chipFontSize: CGFloat { 20 * u }
-    var chipIconSize: CGFloat { 23 * u }
+    var chipFontSize: CGFloat { 25 * u }
+    var chipIconSize: CGFloat { 28 * u }
 
-    // Split pill
-    var splitPillHeight: CGFloat { 56 * u }
-    var splitPillSegment: CGFloat { 64 * u }
-    var splitPillIcon: CGFloat { 26 * u }
-    var splitPillDivider: CGFloat { 28 * u }
+    // Split pill — height matches `chipHeight` so the pill rows with the chips.
+    var splitPillHeight: CGFloat { 72 * u }
+    var splitPillSegment: CGFloat { 80 * u }
+    var splitPillIcon: CGFloat { 30 * u }
 
     // Title
     var titleSize: CGFloat { 38 * u }
@@ -114,4 +135,7 @@ struct PlayerMetrics: Equatable {
     static let phoneChipRowGap: CGFloat = 9
     static let phoneChipRowBottom: CGFloat = 18
     static let phoneProgressBottom: CGFloat = 64
+    static let phoneCloseSize: CGFloat = 44
+    static let phoneTransportPlay: CGFloat = 84
+    static let phoneTransportSkip: CGFloat = 58
 }

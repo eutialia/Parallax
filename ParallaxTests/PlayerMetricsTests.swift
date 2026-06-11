@@ -22,9 +22,9 @@ import CoreGraphics
 
     @Test func derivesUnitValuesAtFullScale() {
         let m = PlayerMetrics(width: 1920)
-        #expect(m.padX == 60)
-        #expect(m.chipHeight == 54)
-        #expect(m.closeSize == 58)
+        #expect(m.padX == 80)
+        #expect(m.chipHeight == 72)
+        #expect(m.closeSize == 72)
         #expect(m.progressBottom == 148)
     }
 
@@ -35,7 +35,7 @@ import CoreGraphics
     @Test func derivesScaledValuesAtPhoneScale() {
         // Confirms the transform is a plain linear `base * u`, not `u²` or similar.
         let m = PlayerMetrics.phone   // u = 0.7
-        #expect(abs(m.chipHeight - 54 * 0.7) < 0.0001)
+        #expect(abs(m.chipHeight - 72 * 0.7) < 0.0001)
         #expect(abs(m.trackHeight - 8 * 0.7) < 0.0001)
     }
 

@@ -36,22 +36,13 @@ struct PlayerRoundButton: View {
                         // tvOS HIG focus contract: focused = opaque white disc + ink glyph,
                         // FADED over an always-mounted glass base (a structural swap fired
                         // the GlassEffectContainer's matchedGeometry morph and snapped with
-                        // no crossfade). Rest = `.clear` glass + a dim layer, per Apple's
-                        // media-controls guidance: the regular variant's dark frost (the
-                        // player pins `.dark`) is so heavy over video it read as a flat
-                        // tinted disc, not glass. Clear lets the footage refract through;
-                        // the black 0.3 keeps the glyph legible.
-                        // `.identity` while focused: the mounted glass's material (edge
-                        // rim + outward shadow) vanishes under the platter.
+                        // no crossfade). Rest = the shared over-video recipe; `off` while
+                        // focused so the material (edge rim + outward shadow) vanishes
+                        // under the platter.
                         icon(color: focused ? .playerInk : .white)
                             .frame(width: size, height: size)
                             .background(Circle().fill(.white.opacity(0.97)).opacity(focused ? 1 : 0))
-                            .glassEffect(focused ? .identity : .clear.interactive(), in: Circle())
-                            .background(.black.opacity(focused ? 0 : 0.3), in: Circle())
-                            .overlay(
-                                Circle().strokeBorder(.white.opacity(0.20), lineWidth: 1)
-                                    .opacity(focused ? 0 : 1)
-                            )
+                            .playerGlassSurface(in: Circle(), off: focused)
                             .animation(.tvFocusChrome, value: focused)
                     }
                 }
@@ -59,6 +50,11 @@ struct PlayerRoundButton: View {
             }
         }
         .tvChipButton()
+        #if !os(tvOS)
+        // Same tint-only pointer treatment as the chips (HIG: no scale in tight rows).
+        .contentShape(.hoverEffect, Circle())
+        .hoverEffect(.highlight)
+        #endif
         .accessibilityLabel(accessibilityLabel)
     }
 
@@ -107,13 +103,13 @@ struct PlayerRoundButton: View {
         LinearGradient(colors: [.blue, .black], startPoint: .top, endPoint: .bottom)
             .ignoresSafeArea()
         GlassEffectContainer(spacing: Space.s8) {
-            HStack(spacing: 68) {
-                PlayerRoundButton(systemImage: "gobackward.10", size: 80, iconScale: 0.48,
+            HStack(spacing: 76) {
+                PlayerRoundButton(systemImage: "gobackward.10", size: 96, iconScale: 0.52,
                                   glyphOpticalYOffset: PlayerRoundButton.skipGlyphYOffset,
                                   accessibilityLabel: "Back 10") {}
-                PlayerRoundButton(systemImage: "play.fill", size: 120, iconScale: 0.42,
+                PlayerRoundButton(systemImage: "play.fill", size: 140, iconScale: 0.46,
                                   primary: true, accessibilityLabel: "Play") {}
-                PlayerRoundButton(systemImage: "goforward.10", size: 80, iconScale: 0.48,
+                PlayerRoundButton(systemImage: "goforward.10", size: 96, iconScale: 0.52,
                                   glyphOpticalYOffset: PlayerRoundButton.skipGlyphYOffset,
                                   accessibilityLabel: "Forward 10") {}
             }

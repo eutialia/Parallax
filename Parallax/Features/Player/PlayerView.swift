@@ -242,9 +242,9 @@ struct PlayerView: View {
         GeometryReader { geo in
             PlayerLoadingScrim(
                 mode: scrimFlavor,
-                label: viewModel?.loaderTitle ?? "Loading",
+                label: viewModel?.loaderTitle ?? "Loading video",
                 sublabel: viewModel?.loaderSubtitle,
-                metrics: scrimMetrics(width: geo.size.width)
+                metrics: scrimMetrics(size: geo.size)
             )
         }
         // Full-bleed like the video host: the chrome toggles the status bar and
@@ -260,14 +260,16 @@ struct PlayerView: View {
         return vm.isSwitchingTracks || vm.showsStallScrim ? .liveFrame : .coldStart
     }
 
-    /// Scrim scale: big screens derive the unit from the surface width (the same
-    /// 1920 base as the chrome); iPhone uses the fixed `.phone` scale — mirroring
-    /// `PlayerControlsView`'s device-based split.
-    private func scrimMetrics(width: CGFloat) -> PlayerMetrics {
+    /// Scrim scale: big screens derive the unit from the surface's LARGER dimension
+    /// (one size across orientations, same 1920 base as the chrome); iPhone uses the
+    /// fixed `.phone` scale — mirroring `PlayerControlsView`'s device-based split.
+    private func scrimMetrics(size: CGSize) -> PlayerMetrics {
         #if os(tvOS)
         return .tv
         #else
-        return UIDevice.current.userInterfaceIdiom == .pad ? PlayerMetrics(width: width) : .phone
+        return UIDevice.current.userInterfaceIdiom == .pad
+            ? PlayerMetrics(width: max(size.width, size.height))
+            : .phone
         #endif
     }
 
@@ -316,7 +318,7 @@ struct PlayerView: View {
                 title: "Playback stopped",
                 message: error.userMessage,
                 details: error.diagnosticDescription,
-                metrics: scrimMetrics(width: geo.size.width)
+                metrics: scrimMetrics(size: geo.size)
             ) {
                 Button("Try again", systemImage: "arrow.clockwise") { Task { await vm.retry() } }
                     .buttonStyle(.glassProminent)
@@ -350,7 +352,7 @@ struct PlayerView: View {
             PlayerErrorScrim(
                 title: "Couldn't switch audio",
                 message: switchFailureMessage(failure),
-                metrics: scrimMetrics(width: geo.size.width)
+                metrics: scrimMetrics(size: geo.size)
             ) {
                 Button("Try again", systemImage: "arrow.clockwise") {
                     Task { await vm.retryFailedTrackSwitch() }
@@ -405,6 +407,16 @@ struct PlayerView: View {
                 .allowsHitTesting(false)
                 .animation(.easeInOut(duration: 0.45), value: isScrubbing)
 
+            // Paused status — dim + flat center glyph. On the floor it brings its
+            // own dim; in .fullHUD the controls scrim already dims, so only the
+            // glyph rides. Hidden while scrubbing (the bar owns the screen, and the
+            // reducer pauses the engine as part of every scrub) and under the stall
+            // scrim (the ring owns the center spot).
+            if showsPausedStatus(vm) {
+                PlayerPausedOverlay(metrics: .tv, dimmed: !isFullHUD)
+                    .transition(.opacity)
+            }
+
             switch hudState {
             case .floor:
                 EmptyView()
@@ -428,7 +440,13 @@ struct PlayerView: View {
         // `isFullHUD`), and swipeScrub↔clickSeek shares one bar identity above, so it
         // needs no transition at all.
         .animation(.easeInOut(duration: 0.2), value: isScrubbing)
-        .animation(.easeInOut(duration: 0.2), value: isFullHUD)
+        // Fast ease-out so a Menu press mid-reveal feels instant — the chrome is
+        // opacity-driven and the animation retargets from its current value.
+        .animation(.easeOut(duration: 0.15), value: isFullHUD)
+        .animation(.easeInOut(duration: 0.2), value: viewModel?.isPlaying ?? true)
+        // …and the stall scrim's arrival, so a paused→stall flip fades the paused
+        // glyph out instead of popping it (review-found).
+        .animation(.easeInOut(duration: 0.2), value: viewModel?.showsStallScrim ?? false)
         // Dedicated Play/Pause button → reducer, in every HUD state.
         .onPlayPauseCommand { send(.playPause, vm) }
         // Fresh surface: the initial load shows the full chrome over the scrim
@@ -503,6 +521,12 @@ struct PlayerView: View {
     /// The two transient scrub-bar states; only these arm the inactivity auto-hide.
     private var isScrubbing: Bool {
         switch hudState { case .swipeScrub, .clickSeek: return true; default: return false }
+    }
+
+    /// Paused and stable: the engine is paused while the surface is live — not
+    /// because a scrub is holding it — and no stall scrim is claiming the center.
+    private func showsPausedStatus(_ vm: PlayerViewModel) -> Bool {
+        vm.phase == .playing && !vm.isPlaying && !isScrubbing && !vm.showsStallScrim
     }
 
     /// Window-level pan events. On the floor / scrub states every pan drives the
