@@ -28,7 +28,7 @@ final class MovieDetailViewModel {
         do {
             let detail = try await repo.detail(for: itemID)
             guard case .movie(let md) = detail else {
-                state = .failed("Unexpected item type for this screen.")
+                state = .failed("Your server returned something that isn't a movie.")
                 return
             }
             state = .loaded(md)
@@ -39,7 +39,7 @@ final class MovieDetailViewModel {
             state = .failed(error.userMessage)
         } catch {
             Log.ui.error("MovieDetail load unexpected: \(String(describing: type(of: error)))")
-            state = .failed("Something went wrong.")
+            state = .failed("Something went wrong. Go back and open it again.")
         }
     }
 

@@ -8,7 +8,7 @@ struct AppErrorTests {
     func userMessageSafety() {
         let netErr = URLError(.notConnectedToInternet)
         let err = AppError.network(netErr)
-        #expect(err.userMessage == "Couldn't reach the server. Check your internet connection.")
+        #expect(err.userMessage == "Couldn't reach your server. Check your connection.")
         #expect(!err.userMessage.contains("URLError"))
         #expect(!err.userMessage.contains("-1009"))
     }
@@ -22,7 +22,7 @@ struct AppErrorTests {
     @Test("server error includes status code in diagnostic but not user message")
     func serverDiagnosticVsUser() {
         let err = AppError.server(statusCode: 503, message: "DB down")
-        #expect(err.userMessage == "The server is having trouble responding. Try again in a moment.")
+        #expect(err.userMessage == "Your server returned an error. Try again in a moment.")
         #expect(err.diagnosticDescription.contains("503"))
         #expect(err.diagnosticDescription.contains("DB down"))
     }
@@ -40,7 +40,7 @@ struct AppErrorTests {
     func unexpectedWithUnderlying() {
         struct Underlying: Error { let note: String }
         let err = AppError.unexpected("calibration failed", underlying: AnySendableError(Underlying(note: "x")))
-        #expect(err.userMessage == "Something went wrong. Please try again.")
+        #expect(err.userMessage == "Something went wrong. Try again.")
         #expect(err.diagnosticDescription.contains("calibration failed"))
     }
 }

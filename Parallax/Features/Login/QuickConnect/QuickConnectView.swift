@@ -58,7 +58,12 @@ struct QuickConnectView: View {
         if let vm = viewModel {
             switch vm.uiState {
             case .idle, .starting, .awaitingCode:
-                QuickConnectLoadingSkeleton()
+                VStack(spacing: Space.s12) {
+                    QuickConnectLoadingSkeleton()
+                    Text("Getting a code from your server…")
+                        .font(.callout)
+                        .foregroundStyle(Color.secondaryLabel)
+                }
             case .showingCode(let code):
                 VStack(spacing: Space.s16) {
                     Text("Open Jellyfin on the web, go to your user menu → Quick Connect, and enter this code:")

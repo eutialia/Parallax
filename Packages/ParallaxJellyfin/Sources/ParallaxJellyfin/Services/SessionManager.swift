@@ -127,7 +127,7 @@ public actor SessionManager {
         }
 
         guard let secret else {
-            continuation.yield(.failed(reason: "The server completed Quick Connect without authorising. Try again."))
+            continuation.yield(.failed(reason: "Your server ended Quick Connect without approving this device."))
             continuation.finish()
             return
         }

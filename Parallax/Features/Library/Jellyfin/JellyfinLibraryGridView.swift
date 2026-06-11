@@ -63,7 +63,7 @@ struct JellyfinLibraryGridView: View {
             libraryGridLoadingPlaceholder
         } else if case .failed(let message) = vm.state, vm.items.isEmpty {
             ContentUnavailableView(
-                "Couldn't load library",
+                "Couldn't load \(collection.name)",
                 systemImage: "exclamationmark.triangle",
                 description: Text(message)
             )
@@ -131,7 +131,7 @@ struct JellyfinLibraryGridView: View {
                 .foregroundStyle(Color.secondaryLabel)
                 .lineLimit(2)
             Spacer(minLength: Space.s8)
-            Button("Try Again") { Task { await vm.retryRefresh() } }
+            Button("Try again") { Task { await vm.retryRefresh() } }
                 .font(.subheadline.weight(.semibold))
         }
         .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))

@@ -48,7 +48,7 @@ final class SettingsViewModel {
             signOutErrorMessage = "Couldn't fully sign out of \(session.serverName): \(error.userMessage)"
         } catch {
             Log.auth.error("Settings signOut unexpected for \(session.serverName): \(String(describing: type(of: error)))")
-            signOutErrorMessage = "Couldn't fully sign out of \(session.serverName)."
+            signOutErrorMessage = "Couldn't fully sign out of \(session.serverName). Try again."
         }
         await syncRouterToActive()
     }

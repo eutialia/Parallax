@@ -110,7 +110,12 @@ struct HomeView: View {
                             }
                         }
                         if vm.heroFeed.isEmpty && vm.continueWatching.isEmpty && vm.nextUp.isEmpty {
-                            ContentUnavailableView("Nothing here yet", systemImage: "play.slash").padding(.top, Space.s60)
+                            ContentUnavailableView(
+                                "Nothing here yet",
+                                systemImage: "play.slash",
+                                description: Text("Play something from your library and it will appear here.")
+                            )
+                            .padding(.top, Space.s60)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -128,11 +133,11 @@ struct HomeView: View {
             }
             }
             .alert(
-                "Favorite",
+                "Couldn't update favorite",
                 isPresented: $vm.isShowingFavoriteError,
                 presenting: vm.favoriteErrorMessage
             ) { _ in
-                Button("OK", role: .cancel) { }
+                Button("Dismiss", role: .cancel) { }
             } message: { message in
                 Text(message)
             }

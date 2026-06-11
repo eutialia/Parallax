@@ -36,7 +36,7 @@ final class SeriesDetailViewModel {
             async let resumeTask = repo.resumeEpisode(forSeries: itemID)
             let (detail, seasons) = try await (detailTask, seasonsTask)
             guard case .series(let sd) = detail else {
-                state = .failed("Unexpected item type for this screen.")
+                state = .failed("Your server returned something that isn't a series.")
                 return
             }
             state = .loaded(sd, seasons)
@@ -51,7 +51,7 @@ final class SeriesDetailViewModel {
             state = .failed(error.userMessage)
         } catch {
             Log.ui.error("SeriesDetail load unexpected: \(String(describing: type(of: error)))")
-            state = .failed("Something went wrong.")
+            state = .failed("Something went wrong. Go back and open it again.")
         }
     }
 

@@ -79,11 +79,11 @@ final class PlayerViewModel {
 
     /// Caption for the loading scrim. A transcode audio switch reloads the
     /// stream ("Switching audio · <track>"); a mid-stream stall over a live frame
-    /// is "Buffering"; a first play is "Loading".
+    /// is "Buffering"; a first play is "Loading video".
     var loaderTitle: String {
         if isSwitchingTracks { return "Switching audio" }
         if showsStallScrim { return "Buffering" }
-        return "Loading"
+        return "Loading video"
     }
     var loaderSubtitle: String? { isSwitchingTracks ? selectedAudioTrack?.displayName : nil }
 

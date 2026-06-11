@@ -29,7 +29,7 @@ final class QuickConnectViewModel {
     /// to the view's identity — no manual cancel(), no strong-self retention.
     func consume(serverURLInput: String) async {
         guard let url = LoginViewModel.normalize(serverURLInput) else {
-            uiState = .failure("Enter a valid server URL on the previous screen first.")
+            uiState = .failure("That server URL doesn't look right. Switch back to password sign-in to fix it.")
             return
         }
         uiState = .starting
@@ -49,7 +49,7 @@ final class QuickConnectViewModel {
             uiState = .signingIn
             didSignIn = true
         case .expired:
-            uiState = .failure("The pairing code expired before you authorised it. Try again.")
+            uiState = .failure("The pairing code expired before this device was approved.")
         case .failed(let reason):
             uiState = .failure(reason)
         }

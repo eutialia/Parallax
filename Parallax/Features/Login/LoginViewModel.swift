@@ -44,7 +44,7 @@ final class LoginViewModel {
     func signIn() async -> Bool {
         errorMessage = nil
         guard let url = Self.normalize(serverURLInput) else {
-            errorMessage = "Enter a valid server URL."
+            errorMessage = "That server URL doesn't look right. Check it and try again."
             return false
         }
         guard !username.isEmpty else {
@@ -63,7 +63,7 @@ final class LoginViewModel {
             return false
         } catch {
             Log.auth.error("LoginView signIn unexpected: \(String(describing: type(of: error)))")
-            errorMessage = "Something went wrong."
+            errorMessage = "Couldn't sign in. Try again."
             return false
         }
     }

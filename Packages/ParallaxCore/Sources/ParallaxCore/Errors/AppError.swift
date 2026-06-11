@@ -13,24 +13,24 @@ public enum AppError: Error, Sendable {
         case .network(let urlError):
             switch urlError.code {
             case .notConnectedToInternet, .networkConnectionLost:
-                return "Couldn't reach the server. Check your internet connection."
+                return "Couldn't reach your server. Check your connection."
             case .timedOut:
-                return "The server took too long to respond. Try again."
+                return "Your server took too long to respond. Try again."
             case .cannotFindHost, .cannotConnectToHost:
-                return "Couldn't find the server. Check the URL."
+                return "Couldn't find your server. Check the URL, or make sure it's online."
             default:
-                return "Network error. Please try again."
+                return "The connection failed. Try again."
             }
         case .auth(let failure):
             return failure.userMessage
         case .server:
-            return "The server is having trouble responding. Try again in a moment."
+            return "Your server returned an error. Try again in a moment."
         case .source(let failure):
             return failure.userMessage
         case .playback(let failure):
             return failure.userMessage
         case .unexpected:
-            return "Something went wrong. Please try again."
+            return "Something went wrong. Try again."
         }
     }
 
@@ -62,9 +62,9 @@ public enum AuthFailure: Sendable {
         case .invalidCredentials:
             return "Incorrect username or password."
         case .quickConnectExpired:
-            return "The pairing code expired. Please try again."
+            return "The pairing code expired before this device was approved."
         case .tokenInvalidated:
-            return "Your session expired. Please sign in again."
+            return "Your session expired. Sign in again."
         }
     }
 }
@@ -77,11 +77,11 @@ public enum SourceFailure: Sendable {
     public var userMessage: String {
         switch self {
         case .notFound:
-            return "That item couldn't be found."
+            return "Couldn't find that item."
         case .permissionDenied:
             return "You don't have access to that item."
         case .connectionLost:
-            return "Lost connection to the source. Try again."
+            return "The connection dropped. Try again."
         }
     }
 }
@@ -95,11 +95,11 @@ public enum PlaybackFailure: Sendable {
     public var userMessage: String {
         switch self {
         case .decodeFailed:
-            return "Couldn't decode that file."
+            return "Couldn't decode this file."
         case .unsupportedFormat:
             return "This file's format isn't supported on this device."
         case .resourceUnavailable:
-            return "Couldn't reach the file. Check your connection."
+            return "The stream stalled and didn't recover. Check your connection."
         case .audioSessionFailed:
             return "Couldn't start audio playback. Try again."
         }

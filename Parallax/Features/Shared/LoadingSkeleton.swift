@@ -252,6 +252,8 @@ struct DetailLoadingSkeleton: View {
             .skeletonShimmer()
         }
         .scrollDisabled(true)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Loading details")
     }
 }
 
@@ -281,6 +283,8 @@ struct EpisodeListLoadingSkeleton: View {
             }
         }
         .skeletonShimmer()
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Loading episodes")
     }
 }
 
