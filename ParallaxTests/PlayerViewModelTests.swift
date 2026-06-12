@@ -251,14 +251,19 @@ struct PlayerViewModelTests {
         #expect(vm.availableAudioTracks.count == 3)
         #expect(vm.availableSubtitleTracks.count == 1)                  // PGS (image) sub filtered out — no burn-in this phase
         #expect(vm.selectedAudioTrack?.id == .jellyfinStream(3))        // server default audio
-        #expect(vm.selectedSubtitleTrack == nil)                        // subtitle never auto-selected (D1)
-        // displayName is the server's menuLabel (strips " - Default"). The truehd
-        // source can't be stream-copied on the HLS transcode, so it's re-encoded to
-        // AAC; the delivered format now lives in the dedicated transcodeTarget field
-        // (7.1 = min(8 source ch, 8)) rather than being baked into the name.
-        #expect(vm.availableAudioTracks.first?.displayName == "Surround 7.1 - Japanese")
+        // The server's preference-derived default subtitle IS applied on first
+        // transcode play (sidecar render, no re-resolve) — the server only sets
+        // it when the user's subtitle mode/language prefs say to show one.
+        #expect(vm.selectedSubtitleTrack?.id == .jellyfinStream(1))
+        // displayName is the server's menuLabel: the stream's own title → the
+        // language name ("Japanese" here — the fixture has no muxer title; the
+        // displayTitle's codec noise is last-resort only). The truehd source
+        // can't be stream-copied on the HLS transcode, so it's re-encoded; the
+        // delivered codec lives in the dedicated transcodeTarget field and the
+        // layout on the menu's detail line, never baked into the name.
+        #expect(vm.availableAudioTracks.first?.displayName == "Japanese")
         #expect(vm.availableAudioTracks.first?.isTranscode == true)
-        #expect(vm.availableAudioTracks.first?.transcodeTarget == "AAC · 7.1")
+        #expect(vm.availableAudioTracks.first?.transcodeTarget == "AAC")
 
         // Advance playback so the switch resumes at a real position.
         engine.push(.playing(
@@ -274,7 +279,7 @@ struct PlayerViewModelTests {
 
         #expect(resolveCalls.count == 2)
         #expect(resolveCalls.last?.audio == 4)
-        #expect(resolveCalls.last?.sub == nil)                          // no subtitle was selected → switch carries none (D1)
+        #expect(resolveCalls.last?.sub == 1)                            // the auto-applied default sub rides along unchanged
         #expect(CMTimeGetSeconds(resolveCalls.last?.start ?? .zero) == 100)
         #expect(vm.selectedAudioTrack?.id == .jellyfinStream(4))
         #expect(engine.loadedAssets.count == 2)                         // engine reloaded
@@ -373,7 +378,9 @@ struct PlayerViewModelTests {
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
         let builder = DeviceProfileBuilder(probe: probe)
-        let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
+        // No server default subtitle: this test is about EXPLICIT selection
+        // isolation, so nothing may be auto-applied at start.
+        let resolved = PlayerFixtures.resolvedMultiTrackTranscode(defaultSubtitleStreamIndex: nil)
 
         nonisolated(unsafe) var resolveCalls: [(audio: Int?, sub: Int?)] = []
         let vm = PlayerViewModel(
@@ -394,7 +401,7 @@ struct PlayerViewModelTests {
         ))
         try await Task.sleep(for: .milliseconds(50))
 
-        // Nothing auto-selected at start (server default is never applied).
+        // Nothing auto-selected at start (the server surfaced no default sub).
         #expect(vm.selectedSubtitleTrack == nil)
         #expect(resolveCalls.first?.sub == nil)
 

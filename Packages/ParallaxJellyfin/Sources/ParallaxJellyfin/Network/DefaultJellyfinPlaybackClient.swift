@@ -1,5 +1,6 @@
 import Foundation
 import JellyfinAPI
+import ParallaxCore
 
 /// SDK-backed playback client. Builds a fresh JellyfinClient per call exactly
 /// like DefaultJellyfinLibraryClient — cheap value-type config, no shared
@@ -133,5 +134,19 @@ public final class DefaultJellyfinPlaybackClient: JellyfinPlaybackClient, @unche
 
     public func pingSession(playSessionID: String) async throws {
         try await client().send(Paths.pingPlaybackSession(playSessionID: playSessionID))
+    }
+
+    // MARK: - User configuration
+
+    public func currentUserConfiguration() async throws -> UserConfiguration {
+        let response = try await client().send(Paths.getCurrentUser)
+        guard let configuration = response.value.configuration else {
+            throw AppError.unexpected("GetCurrentUser returned no configuration", underlying: nil)
+        }
+        return configuration
+    }
+
+    public func updateUserConfiguration(_ configuration: UserConfiguration) async throws {
+        try await client().send(Paths.updateUserConfiguration(userID: userID, configuration))
     }
 }

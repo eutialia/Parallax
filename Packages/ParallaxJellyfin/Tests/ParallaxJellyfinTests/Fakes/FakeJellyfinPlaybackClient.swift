@@ -78,6 +78,22 @@ final class FakeJellyfinPlaybackClient: JellyfinPlaybackClient, @unchecked Senda
         pingSessionIDs.append(playSessionID)
         if let pingError { throw pingError }
     }
+
+    // User configuration round-trip.
+    var userConfigurationResult: Result<UserConfiguration, Error> = .success(UserConfiguration())
+    var updateUserConfigurationError: Error?
+    private(set) var userConfigurationFetchCount = 0
+    private(set) var updatedUserConfigurations: [UserConfiguration] = []
+
+    func currentUserConfiguration() async throws -> UserConfiguration {
+        userConfigurationFetchCount += 1
+        return try userConfigurationResult.get()
+    }
+
+    func updateUserConfiguration(_ configuration: UserConfiguration) async throws {
+        updatedUserConfigurations.append(configuration)
+        if let updateUserConfigurationError { throw updateUserConfigurationError }
+    }
 }
 
 final class FakeJellyfinPlaybackClientFactory: JellyfinPlaybackClientFactory, @unchecked Sendable {

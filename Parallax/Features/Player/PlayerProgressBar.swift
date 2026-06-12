@@ -110,6 +110,9 @@ struct PlayerProgressBar: View {
                 // clearance (phone: the rows already touch).
                 .contentShape(TopExtendedRectangle(
                     topExtension: max(28 * metrics.u, 44 - rowHeight)))
+                // Same reach as the hit shape above: a drag that starts where a
+                // scrub CAN start must never become a pull-to-dismiss.
+                .pullToDismissExclusion(extendingTop: max(28 * metrics.u, 44 - rowHeight))
                 #endif
                 .modifier(ScrubGesture(width: w, played: p,
                                        onChanged: onScrubChanged, onEnded: onScrubEnded))

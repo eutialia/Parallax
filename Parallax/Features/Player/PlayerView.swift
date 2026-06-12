@@ -19,9 +19,22 @@ struct PlayerView: View {
         self.source = .unresolved(itemID)
         self.session = session
     }
+    /// Build from a presenter request — the root hosts' shared entry point
+    /// (`PlayerPresentationHost` on iOS, the tvOS full-screen cover).
+    init(request: PlaybackPresenter.Request) {
+        switch request.target {
+        case .detail(let detail): self.init(item: detail, session: request.session)
+        case .itemID(let itemID): self.init(itemID: itemID, session: request.session)
+        }
+    }
 
     @Environment(AppDependencies.self) private var deps
-    @Environment(\.dismiss) private var dismiss
+    @Environment(PlaybackPresenter.self) private var playback
+    #if !os(tvOS)
+    /// The host's presentation state (travel + settled flag) the pull gesture
+    /// drives — injected by `PlayerPresentationHost`, the only iOS mount point.
+    @Environment(PlayerPresentation.self) private var presentation
+    #endif
     @State private var viewModel: PlayerViewModel?
     /// Chrome visibility, owned here so the status bar can hide with the controls.
     /// On tvOS this mirrors `hudState == .fullHUD` (driven by `send`).
@@ -31,6 +44,10 @@ struct PlayerView: View {
     /// the chrome into the lone scrub bar (the iOS analog of tvOS swipe-scrub), so
     /// the status bar and home indicator hide with it.
     @State private var scrubHUDActive = false
+    /// Mirror of the HUD's open-menu state (track panels / debug sheet) — while a
+    /// panel owns the screen, the pull-to-dismiss gesture stands down so a drag
+    /// inside a list can't start dragging the whole player.
+    @State private var trackMenuOpen = false
     #endif
     #if os(tvOS)
     /// The tvOS HUD floor state machine (floor → swipeScrub → clickSeek → fullHUD),
@@ -62,6 +79,116 @@ struct PlayerView: View {
         ZStack {
             Color.black.ignoresSafeArea()
 
+            playbackSurface
+        }
+        // On the whole stack, floor included: the pull moves ONE layer — the
+        // same unit the Close button's dismissal slides — not a card over a
+        // parked backdrop (see PlayerPullToDismiss).
+        #if !os(tvOS)
+        // exclusionsActive: the scrub bar's no-pull zone only counts while the
+        // chrome is hit-testable — hidden chrome leaves the whole surface as
+        // the sheet handle.
+        .playerPullToDismiss(
+            presentation: presentation,
+            isEnabled: !trackMenuOpen && !scrubHUDActive,
+            exclusionsActive: chromeVisible
+        ) { exitPlayer() }
+        #endif
+        .animation(.easeInOut(duration: 0.3), value: showsReloadCover)
+        .animation(.easeInOut(duration: 0.3), value: viewModel?.trackSwitchFailure != nil)
+        // The debug panel presents from the HUD's chip row (PlayerControlsView)
+        // like the track menus — a corner overlay was unreachable (and its
+        // ScrollView unscrollable) by the tvOS focus engine.
+        // No blanket .ignoresSafeArea() here: the black floor, video host, and reload
+        // cover each opt into full-bleed individually (see above), while the chrome
+        // (top bar, scrubber) and status bar respect the safe area. The status bar
+        // hides in lockstep with the chrome.
+        #if !os(tvOS)
+        // PAIRED PREDICATE: PlayerControlsView.statusBarExpectedVisible is the
+        // exact negation of this expression. Its TopInsetLatch only adopts the
+        // safe-area inset while the bar is expected visible — change one side
+        // and the other must follow, or the top bars latch stale insets.
+        .statusBarHidden(!chromeVisible || scrubHUDActive)
+        // The pull-to-dismiss owns the top zone, so the first top-edge swipe
+        // must be OURS — without this the notification-shade grabber steals
+        // (cancels) the drag mid-pull. Same deferral AVPlayerViewController
+        // applies in full screen; the shade stays one extra swipe away.
+        .defersSystemGestures(on: .top)
+        #endif
+        .persistentSystemOverlays(systemOverlaysVisible ? .automatic : .hidden)
+        .animation(.easeInOut(duration: 0.2), value: chromeVisible)
+        // The controls (which restore chromeVisible) only exist in .playing. If the
+        // stream fails after the chrome auto-hid, force it back so the status bar and
+        // home indicator return over the error overlay — and so a successful retry
+        // re-mounts the controls already visible. iOS-only: on tvOS the surface's
+        // phase hand-off owns chromeVisible (mirroring hudState), and forcing it
+        // true here would desync it from the floor.
+        #if !os(tvOS)
+        .onChange(of: isPlaybackActive) { _, active in
+            if !active { chromeVisible = true }
+        }
+        #endif
+        .task {
+            if viewModel == nil {
+                let info = await deps.playbackInfoFactory(session)
+                let repo = await deps.libraryRepoFactory(session)
+                let vm = PlayerViewModel(
+                    deviceProfileBuilder: deps.deviceProfileBuilder,
+                    playbackInfo: info,
+                    resolve: { id, caps, start, audioIndex, subtitleIndex in
+                        try await info.resolve(
+                            item: id,
+                            capabilities: caps,
+                            startTime: start,
+                            audioStreamIndex: audioIndex,
+                            subtitleStreamIndex: subtitleIndex
+                        )
+                    },
+                    engineFactory: deps.playbackEngineFactory,
+                    audioSession: deps.audioSession,
+                    fetchDetail: { try await repo.detail(for: $0) },
+                    rememberTrackSelection: { await info.rememberTrackSelection($0) }
+                )
+                viewModel = vm
+                switch source {
+                case .resolved(let item): await vm.start(item: item)
+                case .unresolved(let id): await vm.start(itemID: id)
+                }
+            }
+        }
+        .onDisappear {
+            // THE teardown point for every dismissal: exitPlayer() only pauses
+            // (so the last frame rides the slide-out and the teardown's
+            // main-thread burst can't eat its frames) and the host unmounts the
+            // view once the dismissal lands — full stop() runs here. Also the
+            // backstop for paths that never saw exitPlayer() (server switch,
+            // the system tearing the tvOS cover down). stop() is idempotent.
+            let vm = viewModel
+            Task { await vm?.stop() }
+            #if os(tvOS)
+            idleTask?.cancel()
+            commitSeekTask?.cancel()
+            DisplayCriteriaMatcher.clear()
+            #endif
+        }
+        // The player is an immersive "screening room": pin the whole surface (video
+        // host, controls, subtitle/loader/error/debug overlays) to dark appearance so
+        // every bare `.glassEffect(.regular)` resolves to the same dark frosted
+        // material regardless of the app's light/dark setting. Without this, in light
+        // mode the large bottom scrubber panel picks up the light glass variant while
+        // the small circle buttons barely show it, so they read as different palettes.
+        // Outermost so `.overlay(...)` content (loading scrim, debug HUD) inherits it;
+        // matches the dark pin already on the track menus (`trackMenuChrome`).
+        .environment(\.colorScheme, .dark)
+    }
+
+
+    /// Everything above the player's black floor — video host, veils, HUD, and
+    /// overlays — as ONE concrete view, so the iOS pull-to-dismiss can move it
+    /// as a single card (offset/scale/clip apply once, not per ZStack child).
+    @ViewBuilder
+    private var playbackSurface: some View {
+        ZStack {
             if let vm = viewModel {
                 // The video host is mounted ONCE with stable identity across
                 // .loading→.playing. Previously it lived inside both switch branches,
@@ -101,7 +228,8 @@ struct PlayerView: View {
                     // inside on vm.phase, so nothing inert looks tappable.
                     PlayerControlsView(vm: vm, controlsVisible: $chromeVisible,
                                        debugHUD: $showDebugHUD,
-                                       onScrubActiveChange: { scrubHUDActive = $0 }) { exitPlayer() }
+                                       onScrubActiveChange: { scrubHUDActive = $0 },
+                                       onMenuOpenChange: { trackMenuOpen = $0 }) { exitPlayer() }
                     #endif
                     // A failed audio switch that fell back to the previous track:
                     // playback continues underneath; the scrim offers retry / keep.
@@ -117,82 +245,6 @@ struct PlayerView: View {
                 loadingVeil
             }
         }
-        .animation(.easeInOut(duration: 0.3), value: showsReloadCover)
-        .animation(.easeInOut(duration: 0.3), value: viewModel?.trackSwitchFailure != nil)
-        // The debug panel presents from the HUD's chip row (PlayerControlsView)
-        // like the track menus — a corner overlay was unreachable (and its
-        // ScrollView unscrollable) by the tvOS focus engine.
-        // No blanket .ignoresSafeArea() here: the black floor, video host, and reload
-        // cover each opt into full-bleed individually (see above), while the chrome
-        // (top bar, scrubber) and status bar respect the safe area. The status bar
-        // hides in lockstep with the chrome.
-        #if !os(tvOS)
-        // PAIRED PREDICATE: PlayerControlsView.statusBarExpectedVisible is the
-        // exact negation of this expression. Its TopInsetLatch only adopts the
-        // safe-area inset while the bar is expected visible — change one side
-        // and the other must follow, or the top bars latch stale insets.
-        .statusBarHidden(!chromeVisible || scrubHUDActive)
-        #endif
-        .persistentSystemOverlays(systemOverlaysVisible ? .automatic : .hidden)
-        .animation(.easeInOut(duration: 0.2), value: chromeVisible)
-        // The controls (which restore chromeVisible) only exist in .playing. If the
-        // stream fails after the chrome auto-hid, force it back so the status bar and
-        // home indicator return over the error overlay — and so a successful retry
-        // re-mounts the controls already visible. iOS-only: on tvOS the surface's
-        // phase hand-off owns chromeVisible (mirroring hudState), and forcing it
-        // true here would desync it from the floor.
-        #if !os(tvOS)
-        .onChange(of: isPlaybackActive) { _, active in
-            if !active { chromeVisible = true }
-        }
-        #endif
-        .task {
-            if viewModel == nil {
-                let info = await deps.playbackInfoFactory(session)
-                let repo = await deps.libraryRepoFactory(session)
-                let vm = PlayerViewModel(
-                    deviceProfileBuilder: deps.deviceProfileBuilder,
-                    playbackInfo: info,
-                    resolve: { id, caps, start, audioIndex, subtitleIndex in
-                        try await info.resolve(
-                            item: id,
-                            capabilities: caps,
-                            startTime: start,
-                            audioStreamIndex: audioIndex,
-                            subtitleStreamIndex: subtitleIndex
-                        )
-                    },
-                    engineFactory: deps.playbackEngineFactory,
-                    audioSession: deps.audioSession,
-                    fetchDetail: { try await repo.detail(for: $0) }
-                )
-                viewModel = vm
-                switch source {
-                case .resolved(let item): await vm.start(item: item)
-                case .unresolved(let id): await vm.start(itemID: id)
-                }
-            }
-        }
-        .onDisappear {
-            // Backstop for dismissals that didn't route through exitPlayer()
-            // (e.g. the system tearing the cover down). stop() is idempotent.
-            let vm = viewModel
-            Task { await vm?.stop() }
-            #if os(tvOS)
-            idleTask?.cancel()
-            commitSeekTask?.cancel()
-            DisplayCriteriaMatcher.clear()
-            #endif
-        }
-        // The player is an immersive "screening room": pin the whole surface (video
-        // host, controls, subtitle/loader/error/debug overlays) to dark appearance so
-        // every bare `.glassEffect(.regular)` resolves to the same dark frosted
-        // material regardless of the app's light/dark setting. Without this, in light
-        // mode the large bottom scrubber panel picks up the light glass variant while
-        // the small circle buttons barely show it, so they read as different palettes.
-        // Outermost so `.overlay(...)` content (loading scrim, debug HUD) inherits it;
-        // matches the dark pin already on the track menus (`trackMenuChrome`).
-        .environment(\.colorScheme, .dark)
     }
 
     /// System overlays (home indicator) follow the chrome — and on iOS also hide
@@ -205,20 +257,26 @@ struct PlayerView: View {
         #endif
     }
 
-    /// Exit on user intent: halt playback NOW — `beginExit()` synchronously fences
-    /// the in-flight start path (a mid-load exit can't resurrect playback), and
-    /// stop() pauses + tears the engine down while the dismiss animation is still
-    /// running. Waiting for `onDisappear` alone meant ~half a second of audio
-    /// bleeding past the dismissal, and no cancellation at all during loading.
+    /// Exit on user intent: silence playback NOW, tear down AFTER the slide-out.
+    /// `beginExit()` synchronously fences the in-flight start path (a mid-load
+    /// exit can't resurrect playback) and `pause()` kills the audio on the spot —
+    /// but the full `stop()` waits for `onDisappear`, once the dismiss animation
+    /// has landed. Tearing down mid-slide unmounted the video host (the card went
+    /// blank as it moved) and `replaceCurrentItem(nil)`'s synchronous main-thread
+    /// burst ate dismissal frames — the "cut" slide-out. Pausing is the only
+    /// urgent part; the engine and its last frame ride the card out.
     private func exitPlayer() {
         viewModel?.beginExit()
         let vm = viewModel
-        Task { await vm?.stop() }
+        Task { await vm?.engine?.pause() }
         #if os(tvOS)
         // Hand display-mode selection back to the system as the player leaves.
         DisplayCriteriaMatcher.clear()
         #endif
-        dismiss()
+        // Through the presenter, not `\.dismiss`: on iOS the player is a root
+        // overlay (no presentation to dismiss); on tvOS clearing the request
+        // drives the cover's item binding to nil all the same.
+        playback.dismiss()
     }
 
     /// True only while actively playing — gates the chrome-visibility reset above.

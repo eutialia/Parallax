@@ -179,19 +179,70 @@ struct MediaInfoTests {
 
 @Suite("MediaStreamInfo helpers")
 struct MediaStreamInfoHelperTests {
-    private func sub(_ codec: String?, title: String? = nil) -> MediaStreamInfo {
-        MediaStreamInfo(index: 1, kind: .subtitle, displayTitle: title, language: "eng",
-                        codec: codec, channels: nil, isExternal: false, isForced: false, isDefault: false)
+    private let en = Locale(identifier: "en_US")
+
+    private func sub(
+        _ codec: String?, title: String? = nil, streamTitle: String? = nil,
+        language: String? = "eng", isExternal: Bool = false
+    ) -> MediaStreamInfo {
+        MediaStreamInfo(index: 1, kind: .subtitle, displayTitle: title, title: streamTitle,
+                        language: language, codec: codec, channels: nil,
+                        isExternal: isExternal, isForced: false, isDefault: false)
     }
 
-    @Test("menuLabel drops a trailing ' - Default' and falls back through title→language→index")
+    @Test("menuLabel falls through title→language→displayTitle→index, never leaking codec noise")
     func menuLabelFallback() {
-        #expect(sub("subrip", title: "English - SDH - Default").menuLabel == "English - SDH")
-        #expect(sub("subrip", title: "  English  ").menuLabel == "English")
-        #expect(sub("subrip", title: nil).menuLabel == "eng")          // falls to language
+        // The stream's own title wins outright.
+        #expect(sub("subrip", title: "English - SUBRIP - Default",
+                    streamTitle: "Signs & Songs").menuLabel(locale: en) == "Signs & Songs")
+        // No title → the LOCALIZED language name, not the server's decorated string.
+        #expect(sub("subrip", title: "English - SDH - Default").menuLabel(locale: en) == "English")
+        // No title, no language → the display title, trimmed, " - Default" dropped.
+        #expect(sub("subrip", title: "  English - SDH - Default  ",
+                    language: nil).menuLabel(locale: en) == "English - SDH")
         let noLang = MediaStreamInfo(index: 4, kind: .audio, displayTitle: nil, language: nil,
                                      codec: nil, channels: nil, isExternal: false, isForced: false, isDefault: false)
-        #expect(noLang.menuLabel == "Track 4")                         // falls to index
+        #expect(noLang.menuLabel(locale: en) == "Track 4")             // falls to index
+    }
+
+    @Test("trackDetailLabel composes codec/format · layout/source per kind")
+    func detailLabel() {
+        let audio = MediaStreamInfo(index: 1, kind: .audio, displayTitle: nil, language: "eng",
+                                    codec: "truehd", channels: 8, isExternal: false,
+                                    isForced: false, isDefault: true)
+        #expect(audio.trackDetailLabel == "TrueHD · 7.1")
+        #expect(sub("subrip", isExternal: true).trackDetailLabel == "SRT · External")
+        #expect(sub("ass").trackDetailLabel == "ASS · Embedded")
+        // Unknown codec still reports the source rather than dropping the line.
+        #expect(sub(nil).trackDetailLabel == "Embedded")
+    }
+
+    @Test("TrackDisplay maps codec identifiers to listener-facing names")
+    func trackDisplayNames() {
+        #expect(TrackDisplay.audioCodecName(codec: "eac3") == "Dolby Digital+")
+        #expect(TrackDisplay.audioCodecName(codec: "ac3") == "Dolby Digital")
+        #expect(TrackDisplay.audioCodecName(codec: "TRUEHD") == "TrueHD")
+        #expect(TrackDisplay.audioCodecName(codec: "dts", profile: "DTS-HD MA") == "DTS-HD MA")
+        #expect(TrackDisplay.audioCodecName(codec: "dts", profile: nil) == "DTS")
+        #expect(TrackDisplay.audioCodecName(codec: "pcm_s24le") == "PCM")
+        #expect(TrackDisplay.audioCodecName(codec: "exotic") == "EXOTIC")   // honest fallback
+        #expect(TrackDisplay.audioCodecName(codec: nil) == nil)
+
+        #expect(TrackDisplay.subtitleFormatName("subrip") == "SRT")
+        #expect(TrackDisplay.subtitleFormatName("webvtt") == "VTT")
+        #expect(TrackDisplay.subtitleFormatName("mov_text") == "Timed Text")
+        #expect(TrackDisplay.subtitleFormatName("hdmv_pgs_subtitle") == "PGS")
+        #expect(TrackDisplay.subtitleFormatName(nil) == nil)
+
+        #expect(TrackDisplay.channelLayout(2) == "Stereo")
+        #expect(TrackDisplay.channelLayout(6) == "5.1")
+        #expect(TrackDisplay.channelLayout(8) == "7.1")
+        #expect(TrackDisplay.channelLayout(10) == "10ch")
+        #expect(TrackDisplay.channelLayout(nil) == nil)
+
+        #expect(TrackDisplay.languageName("eng", locale: en) == "English")
+        #expect(TrackDisplay.languageName("und", locale: en) == nil)
+        #expect(TrackDisplay.languageName(nil, locale: en) == nil)
     }
 
     @Test("isImageSubtitle flags burn-in-only formats and clears text formats")
@@ -208,5 +259,34 @@ struct MediaStreamInfoHelperTests {
         let audio = MediaStreamInfo(index: 1, kind: .audio, displayTitle: nil, language: nil,
                                     codec: "pgs", channels: nil, isExternal: false, isForced: false, isDefault: false)
         #expect(!audio.isImageSubtitle)
+    }
+}
+
+@Suite("TrackLanguage normalization")
+struct TrackLanguageTests {
+    @Test("Dialects of the same language all match: 639-1, 639-2 T, 639-2 B, BCP-47")
+    func dialectsMatch() {
+        #expect(TrackLanguage.matches("en", "eng"))
+        #expect(TrackLanguage.matches("en-US", "eng"))
+        #expect(TrackLanguage.matches("fr", "fre"))      // bibliographic
+        #expect(TrackLanguage.matches("fra", "fre"))
+        #expect(TrackLanguage.matches("de", "ger"))
+        #expect(TrackLanguage.matches("zh-Hant", "chi"))
+        #expect(TrackLanguage.matches("nld", "dut"))
+    }
+
+    @Test("Different languages and missing tags never match")
+    func mismatches() {
+        #expect(!TrackLanguage.matches("eng", "fra"))
+        #expect(!TrackLanguage.matches(nil, "eng"))
+        #expect(!TrackLanguage.matches("eng", nil))
+        #expect(!TrackLanguage.matches(nil, nil))
+        #expect(!TrackLanguage.matches("", "eng"))
+    }
+
+    @Test("Unknown codes still match themselves (pass-through)")
+    func unknownPassThrough() {
+        #expect(TrackLanguage.normalized("qaa") == "qaa")
+        #expect(TrackLanguage.matches("qaa", "QAA"))
     }
 }

@@ -109,7 +109,10 @@ enum PlayerFixtures {
     /// A transcoded MKV with a full multi-track source: 3 audio + 2 subtitle
     /// streams. The HLS transcode only carries the default rendition, so the
     /// menus must come from `mediaStreams` and switching re-resolves.
-    static func resolvedMultiTrackTranscode(startTime: CMTime? = nil) -> ResolvedPlayback {
+    static func resolvedMultiTrackTranscode(
+        startTime: CMTime? = nil,
+        defaultSubtitleStreamIndex: Int? = 1
+    ) -> ResolvedPlayback {
         func audio(_ i: Int, _ title: String) -> MediaStreamInfo {
             MediaStreamInfo(index: i, kind: .audio, displayTitle: title, language: "jpn",
                             codec: "truehd", channels: 8, isExternal: false, isForced: false, isDefault: i == 3)
@@ -137,7 +140,7 @@ enum PlayerFixtures {
                 sub(7, "English - PGSSUB", "eng", "pgssub"),    // image — filtered out (burn-in only)
             ],
             defaultAudioStreamIndex: 3,
-            defaultSubtitleStreamIndex: 1,
+            defaultSubtitleStreamIndex: defaultSubtitleStreamIndex,
             subtitleStreamURLs: [
                 1: URL(string: "https://jf.example.com/Videos/movie-1/ms-1/Subtitles/1/Stream.vtt?api_key=abc&copyTimestamps=true")!
             ]

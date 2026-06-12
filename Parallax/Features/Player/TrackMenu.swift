@@ -2,6 +2,38 @@ import SwiftUI
 import ParallaxPlayback
 import ParallaxJellyfin
 
+// MARK: - tvOS default-focus plumbing
+
+#if os(tvOS)
+extension EnvironmentValues {
+    /// The focus scope of the presenting panel, threaded through the environment
+    /// so `MenuRow` can hand first focus to the SELECTED row (the system menus'
+    /// landing behavior) without every menu view carrying a namespace parameter.
+    @Entry var trackMenuFocusScope: Namespace.ID? = nil
+}
+#endif
+
+/// Marks the selected row as the scope's default focus target on tvOS; inert on
+/// touch platforms (no focus engine in the inline panel).
+private struct TrackMenuDefaultFocus: ViewModifier {
+    let isSelected: Bool
+    #if os(tvOS)
+    @Environment(\.trackMenuFocusScope) private var scope
+    #endif
+
+    func body(content: Content) -> some View {
+        #if os(tvOS)
+        if let scope {
+            content.prefersDefaultFocus(isSelected, in: scope)
+        } else {
+            content
+        }
+        #else
+        content
+        #endif
+    }
+}
+
 // MARK: - Private primitives
 
 private struct MenuHeader: View {
@@ -45,31 +77,39 @@ private struct MenuCheckColumn: View {
     }
 }
 
-private struct AudioStatusBadge: View {
-    let isTranscode: Bool
-    let transcodeTarget: String?
+/// The rows' two text layers: a primary name (who the track is) over an
+/// optional detail line (what it's made of) — one vocabulary for audio and
+/// subtitles, so the menus can't drift apart again.
+private struct MenuRowTitle: View {
+    let name: String
+    var detail: String? = nil
 
     var body: some View {
-        VStack(alignment: .trailing, spacing: 2) {
-            Text(isTranscode ? "Transcode" : "Direct Play")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(isTranscode ? Color.label : Color.secondaryLabel)
-            if isTranscode, let transcodeTarget {
-                Text("→ \(transcodeTarget)")
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(Color.tertiaryLabel)
+        VStack(alignment: .leading, spacing: 2) {
+            Text(name)
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(Color.label)
+                .lineLimit(1)
+            if let detail {
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(Color.secondaryLabel)
+                    .lineLimit(1)
             }
         }
     }
 }
 
+/// Trailing attribute badge — reserved for facts that bear on the CHOICE
+/// (Forced, SDH, "→ AAC" transcode cost), never for codec/format detail, which
+/// belongs on the detail line.
 private struct MenuMiniBadge: View {
     let text: String
     var prominent: Bool = false
 
     var body: some View {
         Text(text)
-            .font(.caption2.weight(.bold))
+            .font(.caption.weight(.bold))
             .tracking(0.3)
             .foregroundStyle(prominent ? Color.label : Color.secondaryLabel)
             .padding(.horizontal, 7)
@@ -84,11 +124,14 @@ private struct MenuFootnote: View {
     var body: some View {
         HStack(alignment: .top, spacing: Space.s8) {
             Image(systemName: "bolt.fill")
-                .font(.caption2)
+                .font(.caption)
                 .foregroundStyle(Color.tertiaryLabel)
             Text(text)
-                .font(.caption2)
+                .font(.caption)
                 .foregroundStyle(Color.tertiaryLabel)
+                // Wrap, never truncate: an HStack proposes its ideal width and
+                // a Text can answer with one ellipsized line.
+                .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, Space.s14)
@@ -130,6 +173,7 @@ private struct MenuRow<Trailing: View>: View {
             }
         }
         .tvChipButton()
+        .modifier(TrackMenuDefaultFocus(isSelected: isSelected))
     }
 }
 
@@ -153,23 +197,13 @@ struct AudioTrackMenu: View {
                 MenuRow(isSelected: track.id == selectedID, action: { onSelect(track) }) {
                     HStack(spacing: Space.s12) {
                         MenuCheckColumn(isSelected: track.id == selectedID)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(track.displayName)
-                                .font(.callout.weight(.semibold))
-                                .foregroundStyle(Color.label)
-                                .lineLimit(1)
-                            if let codecLabel = track.codecLabel {
-                                Text(codecLabel)
-                                    .font(.caption)
-                                    .foregroundStyle(Color.secondaryLabel)
-                                    .lineLimit(1)
-                            }
-                        }
+                        MenuRowTitle(name: track.displayName, detail: track.detailLabel)
                         Spacer(minLength: Space.s8)
-                        AudioStatusBadge(
-                            isTranscode: track.isTranscode,
-                            transcodeTarget: track.transcodeTarget
-                        )
+                        // Direct-play rows stay quiet — the badge marks the
+                        // exceptional pick, the one that costs a re-encode.
+                        if track.isTranscode {
+                            MenuMiniBadge(text: "→ \(track.transcodeTarget ?? "AAC")", prominent: true)
+                        }
                     }
                 }
             }
@@ -185,9 +219,7 @@ struct SubtitleTrackMenu: View {
     let selectedID: TrackID?
     let onSelect: (SubtitleTrack?) -> Void
 
-    private var anyExternal: Bool {
-        tracks.contains { ($0.sourceLabel ?? "") == "External" }
-    }
+    private var anyExternal: Bool { tracks.contains(where: \.isExternal) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -210,23 +242,11 @@ struct SubtitleTrackMenu: View {
                 MenuRow(isSelected: track.id == selectedID, action: { onSelect(track) }) {
                     HStack(spacing: Space.s12) {
                         MenuCheckColumn(isSelected: track.id == selectedID)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(track.displayName)
-                                .font(.callout.weight(.semibold))
-                                .foregroundStyle(Color.label)
-                                .lineLimit(1)
-                            if let sourceLabel = track.sourceLabel {
-                                Text(sourceLabel)
-                                    .font(.caption)
-                                    .foregroundStyle(Color.secondaryLabel)
-                                    .lineLimit(1)
-                            }
-                        }
+                        MenuRowTitle(name: track.displayName, detail: track.detailLabel)
                         Spacer(minLength: Space.s8)
                         HStack(spacing: 6) {
                             if track.isForced { MenuMiniBadge(text: "Forced", prominent: true) }
                             if track.isSDH { MenuMiniBadge(text: "SDH", prominent: true) }
-                            if let formatLabel = track.formatLabel { MenuMiniBadge(text: formatLabel) }
                         }
                     }
                 }
@@ -256,10 +276,13 @@ struct ChapterMenu: View {
                             .font(.caption.weight(.semibold).monospacedDigit())
                             .foregroundStyle(Color.tertiaryLabel)
                             .frame(width: 22)
-                        Text(chapter.name ?? "Chapter \(chapter.index + 1)")
-                            .font(.callout.weight(.semibold))
-                            .foregroundStyle(Color.label)
-                            .lineLimit(1)
+                        // A name the panel can't fit loops instead of truncating
+                        // (panel width is the menu system's, not the longest title's).
+                        MarqueeText(
+                            text: chapter.name ?? "Chapter \(chapter.index + 1)",
+                            font: .callout.weight(.semibold),
+                            color: Color.label
+                        )
                         Spacer(minLength: Space.s8)
                         Text(Self.timecode(chapter.start))
                             .font(.caption.monospacedDigit())
@@ -284,7 +307,7 @@ struct SpeedMenu: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            MenuHeader(systemImage: "timer", title: "Playback Speed")
+            MenuHeader(systemImage: "timer", title: "Speed")
             ForEach(options, id: \.self) { rate in
                 MenuRow(isSelected: rate == selected, action: { onSelect(rate) }) {
                     HStack(spacing: Space.s12) {
@@ -293,11 +316,6 @@ struct SpeedMenu: View {
                             .font(.callout.weight(.semibold))
                             .foregroundStyle(Color.label)
                         Spacer(minLength: Space.s8)
-                        if rate == 1.0 {
-                            Text("Normal")
-                                .font(.caption)
-                                .foregroundStyle(Color.tertiaryLabel)
-                        }
                     }
                 }
             }
@@ -314,7 +332,7 @@ struct SpeedMenu: View {
 
 // MARK: - Previews
 
-#Preview("Track menus", traits: .sizeThatFitsLayout) {
+#Preview("Audio + subtitles", traits: .sizeThatFitsLayout) {
     VStack(spacing: 24) {
         AudioTrackMenu(
             tracks: [
@@ -322,15 +340,23 @@ struct SpeedMenu: View {
                     id: .jellyfinStream(1),
                     displayName: "English",
                     languageCode: "eng",
-                    codecLabel: "TrueHD · 7.1",
+                    detailLabel: "TrueHD · 7.1",
                     isTranscode: true,
-                    transcodeTarget: "AAC · 7.1"
+                    transcodeTarget: "AAC"
                 ),
                 AudioTrack(
                     id: .jellyfinStream(2),
                     displayName: "English",
                     languageCode: "eng",
-                    codecLabel: "AAC · Stereo",
+                    detailLabel: "AAC · Stereo",
+                    isTranscode: false,
+                    transcodeTarget: nil
+                ),
+                AudioTrack(
+                    id: .jellyfinStream(3),
+                    displayName: "Director's Commentary",
+                    languageCode: "eng",
+                    detailLabel: "Dolby Digital · 5.1",
                     isTranscode: false,
                     transcodeTarget: nil
                 ),
@@ -341,30 +367,57 @@ struct SpeedMenu: View {
         SubtitleTrackMenu(
             tracks: [
                 SubtitleTrack(
-                    id: .jellyfinStream(3),
+                    id: .jellyfinStream(4),
                     displayName: "English",
                     languageCode: "eng",
                     isForced: false,
-                    sourceLabel: "External",
-                    formatLabel: "SRT",
+                    detailLabel: "SRT · External",
+                    isExternal: true,
                     isSDH: true
                 ),
                 SubtitleTrack(
-                    id: .jellyfinStream(4),
+                    id: .jellyfinStream(5),
                     displayName: "Spanish",
                     languageCode: "spa",
                     isForced: true,
-                    sourceLabel: "Embedded",
-                    formatLabel: "ASS",
+                    detailLabel: "ASS · Embedded",
+                    isExternal: false,
                     isSDH: false
                 ),
             ],
-            selectedID: .jellyfinStream(3),
+            selectedID: .jellyfinStream(4),
             onSelect: { _ in }
         )
     }
     .padding()
-    .frame(width: 360)
+    // Mirrors the live panel width (PlayerControlsView.panelWidth) so this
+    // preview stays an honest specimen of what ships.
+    .frame(width: 320)
     .background(Color.background)
     .preferredColorScheme(.dark)
+}
+
+#Preview("Speed + chapters", traits: .sizeThatFitsLayout) {
+    HStack(alignment: .top, spacing: 24) {
+        SpeedMenu(options: [0.5, 0.75, 1.0, 1.25, 1.5, 2.0], selected: 1.0, onSelect: { _ in })
+            .frame(width: 200)
+        ChapterMenu(
+            chapters: [
+                Chapter(index: 0, name: "Opening", start: .seconds(0)),
+                Chapter(index: 1, name: "A Chapter Title So Long It Cannot Possibly Fit The Panel",
+                        start: .seconds(412)),
+                Chapter(index: 2, name: nil, start: .seconds(1815)),
+                Chapter(index: 3, name: "Finale", start: .seconds(5403)),
+            ],
+            onSelect: { _ in }
+        )
+        .frame(width: 360)
+    }
+    .padding()
+    .background(Color.background)
+    .preferredColorScheme(.dark)
+    // Deterministic snapshot: the marquee otherwise loops forever and the
+    // preview agent never reaches quiescence (UpdateTimedOutError). This pins
+    // the truncation branch; the live loop is a device/simulator check.
+    .environment(\.marqueeEnabled, false)
 }

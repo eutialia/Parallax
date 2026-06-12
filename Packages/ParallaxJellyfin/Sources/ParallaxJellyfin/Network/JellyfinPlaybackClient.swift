@@ -74,4 +74,14 @@ public protocol JellyfinPlaybackClient: Sendable {
     /// pings, any pause >60s silently destroys the job and resume pays a cold
     /// ffmpeg respawn that presents as the endless-buffering wedge.
     func pingSession(playSessionID: String) async throws
+
+    /// The signed-in user's server-side configuration (`GET /Users/Me`) —
+    /// language preferences, subtitle mode, remember-selection flags.
+    func currentUserConfiguration() async throws -> UserConfiguration
+
+    /// Replaces the user's configuration (`POST /Users/Configuration`). The
+    /// endpoint takes the WHOLE object — callers must mutate a configuration
+    /// they just fetched, never construct a fresh one (defaulted nils would
+    /// wipe the user's other settings).
+    func updateUserConfiguration(_ configuration: UserConfiguration) async throws
 }

@@ -1,4 +1,5 @@
 import Foundation
+import ParallaxCore
 
 /// Pure naming/identity helpers for AVFoundation media-selection options.
 ///
@@ -66,13 +67,9 @@ enum AVKitTrackNaming {
         return lowered == "unknown" || lowered == "und" || lowered == "undetermined"
     }
 
-    /// Localized language name for an ISO code, skipping the codes that carry no
-    /// usable language (`und` undetermined, `mis` uncoded, `zxx` no linguistic
-    /// content). Returns nil when the code is missing or non-linguistic.
+    /// Localized language name for an ISO code — `TrackDisplay.languageName`,
+    /// re-exported under the old name so the naming tiers read in one place.
     static func localizedLanguageName(_ code: String?, locale: Locale = .current) -> String? {
-        guard let code, !code.isEmpty else { return nil }
-        let lowered = code.lowercased()
-        guard lowered != "und", lowered != "mis", lowered != "zxx" else { return nil }
-        return locale.localizedString(forLanguageCode: code)
+        TrackDisplay.languageName(code, locale: locale)
     }
 }

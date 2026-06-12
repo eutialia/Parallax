@@ -492,6 +492,15 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         for (index, option) in group.options.enumerated() {
             ordinal += 1
             let lang = Self.language(of: option)
+            // The manifest never carries codec metadata — the detail line comes
+            // from the server stream when the option↔stream join is unambiguous.
+            let matched = JellyfinTrackMatcher.matchedStream(
+                kind: .audio,
+                optionLanguage: lang,
+                optionCount: count,
+                streams: mediaStreams,
+                defaultStreamIndex: defaultAudioStreamIndex
+            )
             result.append(AudioTrack(
                 id: .avKitOption(index),
                 displayName: JellyfinTrackMatcher.name(
@@ -503,7 +512,8 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
                     streams: mediaStreams,
                     defaultStreamIndex: defaultAudioStreamIndex
                 ),
-                languageCode: lang
+                languageCode: lang,
+                detailLabel: matched?.trackDetailLabel
             ))
         }
         return result
@@ -519,6 +529,13 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         for (index, option) in displayed {
             ordinal += 1
             let lang = Self.language(of: option)
+            let matched = JellyfinTrackMatcher.matchedStream(
+                kind: .subtitle,
+                optionLanguage: lang,
+                optionCount: displayed.count,
+                streams: mediaStreams,
+                defaultStreamIndex: defaultSubtitleStreamIndex
+            )
             result.append(SubtitleTrack(
                 id: .avKitOption(index),
                 displayName: JellyfinTrackMatcher.name(
@@ -531,7 +548,10 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
                     defaultStreamIndex: defaultSubtitleStreamIndex
                 ),
                 languageCode: lang,
-                isForced: false
+                isForced: false,
+                detailLabel: matched?.trackDetailLabel,
+                isExternal: matched?.isExternal ?? false,
+                isSDH: matched?.isHearingImpaired ?? false
             ))
         }
         return result

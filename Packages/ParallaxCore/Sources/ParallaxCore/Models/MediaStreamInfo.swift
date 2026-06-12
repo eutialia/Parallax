@@ -20,7 +20,12 @@ public struct MediaStreamInfo: Sendable, Hashable, Identifiable {
     public let index: Int
     public let kind: Kind
     /// The server's pre-formatted label, e.g. "English - TrueHD 7.1 - Default".
+    /// Display fallback only — it bakes codec/layout into the name, which the
+    /// menus now show on their own detail line (see `menuLabel`).
     public let displayTitle: String?
+    /// The stream's own name from the container ("Director's Commentary"),
+    /// without the server's codec/default decoration. Nil when the muxer set none.
+    public let title: String?
     public let language: String?
     public let codec: String?
     public let channels: Int?
@@ -59,6 +64,7 @@ public struct MediaStreamInfo: Sendable, Hashable, Identifiable {
         index: Int,
         kind: Kind,
         displayTitle: String?,
+        title: String? = nil,
         language: String?,
         codec: String?,
         channels: Int?,
@@ -81,6 +87,7 @@ public struct MediaStreamInfo: Sendable, Hashable, Identifiable {
         self.index = index
         self.kind = kind
         self.displayTitle = displayTitle
+        self.title = title
         self.language = language
         self.codec = codec
         self.channels = channels
@@ -103,12 +110,39 @@ public struct MediaStreamInfo: Sendable, Hashable, Identifiable {
 }
 
 public extension MediaStreamInfo {
-    /// A menu-ready label: the server's title (else language, else "Track N"),
-    /// trimmed, with the redundant trailing " - Default" dropped (the menu marks
-    /// the active track with a checkmark already). Single source of truth for the
-    /// suffix rule, shared by the transcode menu and the AVKit track matcher.
-    var menuLabel: String {
-        Self.strippingDefaultSuffix(displayTitle ?? language ?? "Track \(index)")
+    /// A menu-ready PRIMARY name — just who the track is, never what it's made
+    /// of (codec/layout live on the menus' detail line): the stream's own title
+    /// ("Director's Commentary") → the localized language name ("English") →
+    /// the server's display title as a last resort (it bakes in codec noise) →
+    /// "Track N". Single source of truth, shared by the transcode menu and the
+    /// AVKit track matcher.
+    var menuLabel: String { menuLabel() }
+
+    /// `menuLabel` with an injectable locale for the language-name tier (tests
+    /// must not depend on the host locale).
+    func menuLabel(locale: Locale = .current) -> String {
+        preferredMenuName(locale: locale) ?? "Track \(index)"
+    }
+
+    /// The nil-falling core of `menuLabel`, for callers with their own final
+    /// fallback (the AVKit matcher prefers its ordinal "Audio N" over "Track N").
+    func preferredMenuName(locale: Locale = .current) -> String? {
+        if let title = Self.nonEmpty(title) {
+            return Self.strippingDefaultSuffix(title)
+        }
+        if let language = TrackDisplay.languageName(language, locale: locale) {
+            return language
+        }
+        if let displayTitle = Self.nonEmpty(displayTitle) {
+            return Self.strippingDefaultSuffix(displayTitle)
+        }
+        return nil
+    }
+
+    private static func nonEmpty(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else { return nil }
+        return trimmed
     }
 
     /// Trims `title` and drops a trailing " - Default".

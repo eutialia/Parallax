@@ -50,6 +50,9 @@ struct PlayerControlsView: View {
     /// Reports drag-scrub activity to `PlayerView`, which hides the status bar and
     /// home indicator while the chrome is collapsed into the lone scrub bar.
     let onScrubActiveChange: (Bool) -> Void
+    /// Reports menu state (track panels / debug sheet) to `PlayerView`, which
+    /// suspends the pull-to-dismiss gesture while a panel owns the screen.
+    let onMenuOpenChange: (Bool) -> Void
     #endif
     let onDismiss: () -> Void
 
@@ -72,11 +75,11 @@ struct PlayerControlsView: View {
     /// remote left/right into ±10s seek steps.
     @FocusState private var scrubberFocused: Bool
     #endif
-    /// Which track menu is open. ALL touch devices present it as the INLINE
+    /// Which track menu is open. EVERY platform presents it as the INLINE
     /// corner-aligned panel (see `inlineTrackPanel` — the TV-app look: the panel's
     /// bottom-left corner sits exactly where the chip's is and the chip hides, no
-    /// popover arrow); only tvOS keeps sheet presentation via `trackPresentation`,
-    /// driven by `menuBinding`.
+    /// popover arrow). Touch dismisses via the tap catcher; tvOS contains focus in
+    /// the panel and dismisses on Menu (`onExitCommand`).
     enum TrackMenuKind: Hashable { case audio, subtitles, speed, chapters }
     @State private var openMenu: TrackMenuKind? = nil
     /// Chip frames in the "hud" coordinate space — the inline panel's anchors.
@@ -137,15 +140,12 @@ struct PlayerControlsView: View {
     // DEBUG-only chip can ever set it), so in Release it's just always false.
     private var menuOpen: Bool { openMenu != nil || debugHUD }
 
-    /// Boolean bridge for `trackPresentation` (sheet paths still want Bindings).
-    private func menuBinding(_ kind: TrackMenuKind) -> Binding<Bool> {
-        Binding(
-            get: { openMenu == kind },
-            set: { isOn in
-                if isOn { openMenu = kind } else if openMenu == kind { openMenu = nil }
-            }
-        )
-    }
+    #if os(tvOS)
+    /// The open panel's focus scope: rows register their default-focus preference
+    /// against it (via `trackMenuFocusScope` in the environment), so first focus
+    /// lands on the SELECTED row like the system menus.
+    @Namespace private var menuFocusScope
+    #endif
     /// False while the stream is still resolving/buffering. The chrome mounts from
     /// loading onward so Close, tap-to-toggle, and the track chips work immediately;
     /// engine-backed transport (play/pause, skip, chapter seek, double-tap seek)
@@ -255,10 +255,13 @@ struct PlayerControlsView: View {
         #endif
         .onChange(of: menuOpen) { _, open in
             if open { hideTask?.cancel() } else { scheduleHide() }
+            #if !os(tvOS)
+            onMenuOpenChange(open)
+            #endif
         }
-        // When the chrome hides, the views anchoring the track popovers/sheets are
-        // removed — SwiftUI can strand a presentation's binding at true, which makes
-        // `menuOpen` permanently true and locks the user out of the chrome. Clear them.
+        // When the chrome hides, the chips anchoring the inline panels (and the
+        // debug sheet's binding) go with it — a stale `openMenu`/`debugHUD` would
+        // keep `menuOpen` true and lock the user out of the chrome. Clear them.
         .onChange(of: controlsVisible) { _, visible in
             if !visible { closeAllMenus() }
         }
@@ -288,53 +291,65 @@ struct PlayerControlsView: View {
             } else {
                 scrim
             }
-            #if os(tvOS)
-            bigControls(.tv)
-            #else
-            // Both branches latch the status-bar inset while the bar is expected
-            // visible — the top bars pin full-bleed and pad by the latched value, so
-            // the safe-area collapse when the status bar hides can't reflow them
-            // mid-fade (see `TopInsetLatch`).
-            if isPad {
-                GeometryReader { geo in
-                    // Metrics derive from the PHYSICAL max dimension (the probe in
-                    // the background below): one control size across orientations
-                    // AND across status-bar toggles — see `hudPhysicalMax`. The
-                    // safe-bounded fallback only covers the first frame.
-                    bigControls(PlayerMetrics(width: hudPhysicalMax > 0
-                                    ? hudPhysicalMax
-                                    : max(geo.size.width, geo.size.height)),
-                                topInset: hudTopInset)
-                        .modifier(TopInsetLatch(inset: geo.safeAreaInsets.top,
-                                                statusBarVisible: statusBarExpectedVisible,
-                                                isLandscape: hudPhysicalIsLandscape,
-                                                adoptsLandscapeInset: false,
-                                                latched: $hudTopInset))
+            Group {
+                #if os(tvOS)
+                bigControls(.tv)
+                #else
+                // Both branches latch the status-bar inset while the bar is expected
+                // visible — the top bars pin full-bleed and pad by the latched value, so
+                // the safe-area collapse when the status bar hides can't reflow them
+                // mid-fade (see `TopInsetLatch`).
+                if isPad {
+                    GeometryReader { geo in
+                        // Metrics derive from the PHYSICAL max dimension (the probe in
+                        // the background below): one control size across orientations
+                        // AND across status-bar toggles — see `hudPhysicalMax`. The
+                        // safe-bounded fallback only covers the first frame.
+                        bigControls(PlayerMetrics(width: hudPhysicalMax > 0
+                                        ? hudPhysicalMax
+                                        : max(geo.size.width, geo.size.height)),
+                                    topInset: hudTopInset)
+                            .modifier(TopInsetLatch(inset: geo.safeAreaInsets.top,
+                                                    statusBarVisible: statusBarExpectedVisible,
+                                                    isLandscape: hudPhysicalIsLandscape,
+                                                    adoptsLandscapeInset: false,
+                                                    latched: $hudTopInset))
+                    }
+                } else {
+                    GeometryReader { geo in
+                        phoneControls(topInset: hudTopInset)
+                            .modifier(TopInsetLatch(inset: geo.safeAreaInsets.top,
+                                                    statusBarVisible: statusBarExpectedVisible,
+                                                    isLandscape: hudPhysicalIsLandscape,
+                                                    adoptsLandscapeInset: true,
+                                                    latched: $hudTopInset))
+                    }
                 }
-            } else {
-                GeometryReader { geo in
-                    phoneControls(topInset: hudTopInset)
-                        .modifier(TopInsetLatch(inset: geo.safeAreaInsets.top,
-                                                statusBarVisible: statusBarExpectedVisible,
-                                                isLandscape: hudPhysicalIsLandscape,
-                                                adoptsLandscapeInset: true,
-                                                latched: $hudTopInset))
-                }
+                #endif
             }
+            // The open panel owns the surface: on tvOS, disabling the chrome is the
+            // focus containment (disabled views can't take focus, so the engine
+            // resolves into the panel and stays there); on touch the catcher below
+            // already swallows taps, and disabling also hides the dead chrome from
+            // VoiceOver. No style here reads `isEnabled` — visually inert.
+            .disabled(openMenu != nil)
 
-            // Track menus present INLINE on touch: a corner-aligned panel over the
-            // chrome (the TV-app replace), not a popover. The catcher and the panel
+            // Track menus present INLINE: a corner-aligned panel over the chrome
+            // (the TV-app replace), not a popover/sheet. The catcher and the panel
             // are separate ZStack children so the grow transition rides the panel's
             // own inserted root — anchored at the chip's corner — and fires reliably.
+            #if !os(tvOS)
             if openMenu != nil {
                 Color.clear
                     .contentShape(.rect)
                     .onTapGesture { openMenu = nil; resetHideTimer() }
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityLabel("Dismiss menu")
             }
+            #endif
             if let kind = openMenu, let chip = chipFrames[kind] {
                 inlineTrackPanel(kind, chip: chip)
             }
-            #endif
         }
         .coordinateSpace(name: "hud")
         .onGeometryChange(for: CGSize.self) { $0.size } action: { hudSize = $0 }
@@ -361,8 +376,7 @@ struct PlayerControlsView: View {
         #endif
     }
 
-    #if !os(tvOS)
-    /// The TV-app corner-aligned track panel (touch platforms): the panel's
+    /// The TV-app corner-aligned track panel (every platform): the panel's
     /// bottom-left corner sits exactly on the (vacated) chip's bottom-left corner —
     /// replace, not popover, so there's no arrow. When a narrow screen can't fit the
     /// panel rightward, alignment mirrors to the chip's bottom-RIGHT corner so the
@@ -370,7 +384,7 @@ struct PlayerControlsView: View {
     /// `UnitPoint`, like the iOS context-menu bloom); content-sized up to a cap.
     @ViewBuilder
     private func inlineTrackPanel(_ kind: TrackMenuKind, chip: CGRect) -> some View {
-        let width = min(trackPanelWidth, max(hudSize.width - 32, 240))
+        let width = min(panelWidth(kind), max(hudSize.width - 32, 240))
         let fitsTrailing = chip.minX + width + 16 <= hudSize.width
         let x = fitsTrailing ? chip.minX : max(chip.maxX - width, 16)
         let height = panelHeight(kind, anchoredTo: chip)
@@ -390,26 +404,54 @@ struct PlayerControlsView: View {
                 : .scale(scale: 0.05, anchor: anchor).combined(with: .opacity))
     }
 
-    private var trackPanelWidth: CGFloat { 380 }
+    /// Panel width per menu kind — the content decides (speed is a column of
+    /// numbers, chapters carry timecodes and long names), and tvOS scales up:
+    /// the menus ride semantic text styles, which render ~1.5× at 10 feet.
+    private func panelWidth(_ kind: TrackMenuKind) -> CGFloat {
+        let base: CGFloat
+        switch kind {
+        case .speed: base = 200
+        case .audio, .subtitles: base = 320
+        case .chapters: base = 360
+        }
+        #if os(tvOS)
+        return base * 1.5
+        #else
+        return base
+        #endif
+    }
 
-    /// Content-sized (measured per kind in `trackMenuChrome`), capped at 520 and at
-    /// the room above the chip; a 320 fallback covers each kind's first open before
-    /// its measurement lands.
+    /// Content-sized (measured per kind in `trackMenuChrome`), capped at a fixed
+    /// ceiling and at the room above the chip; a 320 fallback covers each kind's
+    /// first open before its measurement lands.
     private func panelHeight(_ kind: TrackMenuKind, anchoredTo chip: CGRect) -> CGFloat {
         let content = panelContentHeights[kind] ?? 320
+        #if os(tvOS)
+        return min(content, 840, max(chip.maxY - 60, 280))
+        #else
         return min(content, 520, max(chip.maxY - 24, 160))
+        #endif
     }
 
     @ViewBuilder
     private func panelMenu(_ kind: TrackMenuKind) -> some View {
-        switch kind {
-        case .audio: audioMenuList
-        case .subtitles: subtitleMenuList
-        case .speed: speedMenuList
-        case .chapters: chapterMenuList
+        Group {
+            switch kind {
+            case .audio: audioMenuList
+            case .subtitles: subtitleMenuList
+            case .speed: speedMenuList
+            case .chapters: chapterMenuList
+            }
         }
+        #if os(tvOS)
+        // Focus lands on the selected row (`prefersDefaultFocus` via the scope in
+        // the environment) and Menu closes the panel BEFORE PlayerView's handler
+        // can fold the whole HUD — the deeper focused handler wins.
+        .focusScope(menuFocusScope)
+        .environment(\.trackMenuFocusScope, menuFocusScope)
+        .onExitCommand { openMenu = nil }
+        #endif
     }
-    #endif
 
     private var scrim: some View {
         LinearGradient(
@@ -599,18 +641,10 @@ struct PlayerControlsView: View {
 
     // MARK: - Chips (shared)
 
-    /// Whether the inline corner panel owns track-menu presentation (all touch
-    /// devices; tvOS keeps focus-driven sheets).
-    private var usesInlinePanels: Bool {
-        #if os(tvOS)
-        false
-        #else
-        true
-        #endif
-    }
-
+    /// The chip has handed its spot to the open inline panel (see
+    /// `PlayerGlassChip.isVacated`).
     private func isVacated(_ kind: TrackMenuKind) -> Bool {
-        usesInlinePanels && openMenu == kind
+        openMenu == kind
     }
 
     @ViewBuilder
@@ -623,7 +657,6 @@ struct PlayerControlsView: View {
                 resetHideTimer(); openMenu = .audio
             }
             .modifier(TrackChipAnchor(kind: .audio, frames: $chipFrames))
-            .trackPresentation(isPresented: menuBinding(.audio), suppressed: usesInlinePanels) { audioMenuList }
         }
         if !vm.availableSubtitleTracks.isEmpty {
             PlayerGlassChip(systemImage: "captions.bubble", label: "Subtitles",
@@ -633,7 +666,6 @@ struct PlayerControlsView: View {
                 resetHideTimer(); openMenu = .subtitles
             }
             .modifier(TrackChipAnchor(kind: .subtitles, frames: $chipFrames))
-            .trackPresentation(isPresented: menuBinding(.subtitles), suppressed: usesInlinePanels) { subtitleMenuList }
         }
         PlayerGlassChip(systemImage: "timer", label: SpeedMenu.label(Double(vm.playbackRate)),
                         isActive: openMenu == .speed, isVacated: isVacated(.speed), metrics: m,
@@ -641,8 +673,6 @@ struct PlayerControlsView: View {
             resetHideTimer(); openMenu = .speed
         }
         .modifier(TrackChipAnchor(kind: .speed, frames: $chipFrames))
-        .trackPresentation(isPresented: menuBinding(.speed), detents: [.medium],
-                           suppressed: usesInlinePanels) { speedMenuList }
         if !vm.chapters.isEmpty {
             // Chapter seek needs a live engine — a pick mid-load would be silently
             // lost, so the chip dims until playback starts (unlike audio/subtitles,
@@ -653,7 +683,6 @@ struct PlayerControlsView: View {
                 resetHideTimer(); openMenu = .chapters
             }
             .modifier(TrackChipAnchor(kind: .chapters, frames: $chipFrames))
-            .trackPresentation(isPresented: menuBinding(.chapters), suppressed: usesInlinePanels) { chapterMenuList }
             .disabled(!playbackReady)
             .opacity(playbackReady ? 1 : 0.45)
         }
@@ -667,10 +696,10 @@ struct PlayerControlsView: View {
     }
 
     #if DEBUG
-    /// The live debug panel, presented like the track menus (sheet on tvOS —
-    /// focusable + scrollable by the remote — popover on iPad). Brings its own
-    /// glass: DebugInfoOverlay owns a ScrollView, so `trackMenuChrome`'s outer
-    /// ScrollView would nest-scroll.
+    /// The live debug panel — the one chip still presented as a sheet/popover
+    /// (`trackPresentation`); the track menus moved to `inlineTrackPanel`. Brings
+    /// its own glass: DebugInfoOverlay owns a ScrollView, so `trackMenuChrome`'s
+    /// outer ScrollView would nest-scroll.
     @ViewBuilder
     private var debugMenuList: some View {
         let shape = RoundedRectangle(cornerRadius: Radius.panel, style: .continuous)
@@ -1010,7 +1039,7 @@ struct PlayerControlsView: View {
     /// Scrollable Liquid Glass panel (same `.regular` + white hairline as the chips),
     /// dark-pinned so design tokens resolve to the immersive palette. The content
     /// measurement feeds the inline panel's content-sized height, keyed per kind;
-    /// sheets ignore it.
+    /// width and height are the panel's to set (`panelWidth`/`panelHeight`).
     @ViewBuilder
     private func trackMenuChrome<Content: View>(
         _ kind: TrackMenuKind, @ViewBuilder _ content: () -> Content
@@ -1021,8 +1050,6 @@ struct PlayerControlsView: View {
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { panelContentHeights[kind] = $0 }
         }
         .scrollBounceBehavior(.basedOnSize)
-        .frame(idealWidth: 360)
-        .frame(maxHeight: 520)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .glassEffect(.regular, in: shape)
         .overlay(shape.strokeBorder(.white.opacity(0.12), lineWidth: 1))
@@ -1071,18 +1098,15 @@ struct PlayerControlsView: View {
     }
 }
 
-// MARK: - Track menu presentation
+// MARK: - Debug overlay presentation
 
-/// tvOS: presents a track/speed/chapter menu as a focus-driven sheet — the live path.
-/// Touch: a popover (iPad regular) / bottom sheet (iPhone compact), gated so the two
-/// never race — but the four track chips pass `suppressed: true` (they present the
-/// inline corner-aligned panel, `inlineTrackPanel`, instead), so on touch this branch
-/// only ever fires for the DEBUG chip, which keeps `suppressed: false`. Don't strip
-/// the touch branch as dead code without re-homing the debug overlay first.
+/// The DEBUG chip's presentation (the four track menus are `inlineTrackPanel`
+/// on every platform): a focus-driven sheet on tvOS — focusable + scrollable by
+/// the remote — a popover on iPad regular, a bottom sheet on iPhone compact,
+/// gated so the two touch paths never race.
 private struct TrackPresentation<MenuContent: View>: ViewModifier {
     @Binding var isPresented: Bool
     var detents: Set<PresentationDetent> = [.medium, .large]
-    var suppressed: Bool = false
     @ViewBuilder var menu: () -> MenuContent
 
     @Environment(\.horizontalSizeClass) private var hSize
@@ -1109,7 +1133,7 @@ private struct TrackPresentation<MenuContent: View>: ViewModifier {
 
     private func gated(whenRegular: Bool) -> Binding<Bool> {
         Binding(
-            get: { !suppressed && isPresented && (hSize == .regular) == whenRegular },
+            get: { isPresented && (hSize == .regular) == whenRegular },
             set: { isPresented = $0 }
         )
     }
@@ -1174,10 +1198,8 @@ private extension View {
     func trackPresentation<MenuContent: View>(
         isPresented: Binding<Bool>,
         detents: Set<PresentationDetent> = [.medium, .large],
-        suppressed: Bool = false,
         @ViewBuilder menu: @escaping () -> MenuContent
     ) -> some View {
-        modifier(TrackPresentation(isPresented: isPresented, detents: detents,
-                                   suppressed: suppressed, menu: menu))
+        modifier(TrackPresentation(isPresented: isPresented, detents: detents, menu: menu))
     }
 }

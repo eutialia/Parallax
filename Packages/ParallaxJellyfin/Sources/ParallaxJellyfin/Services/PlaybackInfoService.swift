@@ -3,6 +3,16 @@ import CoreMedia
 import JellyfinAPI
 import ParallaxCore
 
+/// A track pick the player reports for server-side persistence — see
+/// `PlaybackInfoService.rememberTrackSelection`.
+public enum TrackSelectionUpdate: Sendable, Hashable {
+    /// An audio track was chosen; `languageCode` is its tag in any dialect
+    /// (ISO 639-2 "eng" or BCP-47 "en") — nil when the track carries none.
+    case audio(languageCode: String?)
+    /// A subtitle was chosen (`languageCode` as above) or turned off (nil).
+    case subtitles(languageCode: String?)
+}
+
 /// Resolves a playable stream from Jellyfin and owns the progress-report
 /// cadence. One per server (see PlaybackInfoServiceStore). Branches direct-play
 /// vs transcode on `mediaSource.transcodingURL` — the server has final say.
@@ -193,6 +203,7 @@ public actor PlaybackInfoService {
                 index: index,
                 kind: kind(from: stream.type),
                 displayTitle: stream.displayTitle,
+                title: stream.title,
                 language: stream.language,
                 codec: stream.codec,
                 channels: stream.channels,
@@ -296,6 +307,59 @@ public actor PlaybackInfoService {
     /// Non-fatal — a dropped ping just risks the idle kill it exists to prevent.
     public func pingSession(playSessionID: String) async {
         await send("pingSession") { try await self.client.pingSession(playSessionID: playSessionID) }
+    }
+
+    // MARK: - Track language preference write-back
+
+    /// Persists a track pick into the user's server-side language preferences,
+    /// so the NEXT play (on any client) defaults to it — the server folds these
+    /// into every PlaybackInfo's default stream indices. Official clients never
+    /// write these back (jellyfin-web only reads them); we do, gated on the
+    /// user's own Remember-Selections switches so an explicit opt-out holds.
+    ///
+    /// Non-fatal like the reports: preference persistence must never disturb
+    /// playback. The configuration is fetched FRESH on every write — the update
+    /// endpoint replaces the whole object, so posting a session-old cache would
+    /// silently revert settings the user changed from another client meanwhile.
+    /// Track picks are rare; the extra GET is noise.
+    public func rememberTrackSelection(_ update: TrackSelectionUpdate) async {
+        // An audio track with no usable language tag can never move the
+        // preference — skip the config round-trip entirely. (A nil SUBTITLE
+        // language is meaningful: it persists subtitles-off.)
+        if case .audio(let languageCode) = update,
+           TrackLanguage.normalized(languageCode) == nil { return }
+
+        await send("rememberTrackSelection") {
+            var config = try await self.client.currentUserConfiguration()
+
+            switch update {
+            case .audio(let languageCode):
+                guard config.isRememberAudioSelections ?? true else { return }
+                guard let language = TrackLanguage.normalized(languageCode),
+                      TrackLanguage.normalized(config.audioLanguagePreference) != language
+                else { return }
+                config.audioLanguagePreference = language
+
+            case .subtitles(let languageCode):
+                guard config.isRememberSubtitleSelections ?? true else { return }
+                if let language = TrackLanguage.normalized(languageCode) {
+                    let sameLanguage = TrackLanguage.normalized(config.subtitleLanguagePreference) == language
+                    // Mode escalates only out of None (subs would otherwise
+                    // never auto-show again); an explicit Default/Smart/
+                    // OnlyForced stays the user's call.
+                    let needsMode = config.subtitleMode == SubtitlePlaybackMode.none || config.subtitleMode == nil
+                    guard !sameLanguage || needsMode else { return }
+                    config.subtitleLanguagePreference = language
+                    if needsMode { config.subtitleMode = .always }
+                } else {
+                    // Subtitles turned off → off by default next time.
+                    guard config.subtitleMode != SubtitlePlaybackMode.none else { return }
+                    config.subtitleMode = SubtitlePlaybackMode.none
+                }
+            }
+
+            try await self.client.updateUserConfiguration(config)
+        }
     }
 
     // MARK: - Body translation + named non-fatal send

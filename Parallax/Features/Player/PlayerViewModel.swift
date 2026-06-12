@@ -161,7 +161,7 @@ final class PlayerViewModel {
         let audioIndex = currentAudioStreamIndex ?? resolved.defaultAudioStreamIndex
         let audio = resolved.mediaStreams.first { $0.kind == .audio && $0.index == audioIndex }
             ?? resolved.mediaStreams.first { $0.kind == .audio }
-        if let channels = audio?.channels { parts.append(Self.channelLayout(channels)) }
+        if let layout = TrackDisplay.channelLayout(audio?.channels) { parts.append(layout) }
         mediaSummary = parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
@@ -261,6 +261,10 @@ final class PlayerViewModel {
     /// Fetches sidecar subtitle bytes. Injectable so tests feed canned WebVTT
     /// without a network round-trip; production reads the authed VTT URL.
     private let subtitleFetch: @Sendable (URL) async -> Data?
+    /// Persists a track pick into the user's server-side language preferences
+    /// (PlaybackInfoService.rememberTrackSelection in production). Defaulted to
+    /// a no-op so tests and previews don't need the wiring.
+    private let rememberTrackSelection: @Sendable (TrackSelectionUpdate) async -> Void
     /// Ping cadence for `keepaliveTask` — half the server's 60s idle kill
     /// timeout in production; injectable so tests don't wait 30s for a beat.
     private let keepaliveInterval: Duration
@@ -297,6 +301,9 @@ final class PlayerViewModel {
     /// pick could otherwise land in the sliver where `beginPlayback` is suspended
     /// (engine.load) and race it with a second resolve/engine.
     private var isStartingPlayback = false
+    /// Server language preferences were applied to this item's initial tracks —
+    /// once per `start`, never on track-switch reloads or duplicate `.ready` beats.
+    private var didApplyPreferredTracks = false
     /// True only while a transcode track switch is reloading the (reused) engine.
     /// Gates `handle(_:)` so the outgoing stream's trailing beats are ignored — a
     /// stale `.playing` would otherwise claim the new session's `reportStart`.
@@ -334,6 +341,7 @@ final class PlayerViewModel {
             throw AppError.playback(.unsupportedFormat)
         },
         subtitleFetch: @escaping @Sendable (URL) async -> Data? = { try? await URLSession.shared.data(from: $0).0 },
+        rememberTrackSelection: @escaping @Sendable (TrackSelectionUpdate) async -> Void = { _ in },
         keepaliveInterval: Duration = .seconds(30)
     ) {
         self.deviceProfileBuilder = deviceProfileBuilder
@@ -343,6 +351,7 @@ final class PlayerViewModel {
         self.audioSession = audioSession
         self.fetchDetail = fetchDetail
         self.subtitleFetch = subtitleFetch
+        self.rememberTrackSelection = rememberTrackSelection
         self.keepaliveInterval = keepaliveInterval
     }
 
@@ -383,6 +392,7 @@ final class PlayerViewModel {
         isStartingPlayback = true
         defer { isStartingPlayback = false }
         phase = .loading
+        didApplyPreferredTracks = false
         playingItem = item
         let positionTicks: Int64
         let runtime: Duration?
@@ -462,13 +472,21 @@ final class PlayerViewModel {
         self.resolved = resolved
         startKeepalive(for: resolved)
         currentAudioStreamIndex = audioStreamIndex ?? resolved.defaultAudioStreamIndex
-        // Subtitle is the user's EXPLICIT choice only — never seeded from the server
-        // default. That isolates it from audio switching (an audio switch carries
-        // this value unchanged: none stays none, a chosen sub stays chosen) and means
-        // nothing is auto-burned-in. nil = "no subtitle". Burn-in is a later phase.
+        // Carries the user's choice across audio switches (none stays none, a
+        // chosen sub stays chosen). On FIRST play the preference application
+        // below/at-.ready may seed it from the server default — text subs only,
+        // so nothing is ever auto-burned-in (image subs never reach the menus).
         currentSubtitleStreamIndex = subtitleStreamIndex
         if resolved.method == .transcode {
             populateTranscodeMenus(from: resolved)
+            // First play only (a track switch carries the user's own choice):
+            // surface the subtitle Jellyfin computed from the user's language +
+            // mode preferences. The audio default is already honored above via
+            // `resolved.defaultAudioStreamIndex` — the server bakes it in.
+            if !didApplyPreferredTracks {
+                didApplyPreferredTracks = true
+                applyTranscodeDefaultSubtitle(from: resolved)
+            }
         } else {
             // Direct-play: embedded tracks only arrive with the engine's .ready, but
             // external sidecar subs are already known here — surface them so the
@@ -687,6 +705,11 @@ final class PlayerViewModel {
         // selected label is set before the re-resolve below, so accepting a pick
         // here would show a track the reload never honors.
         guard !isStartingPlayback, !isSwitchingTracks else { return }
+        // Re-picking the playing track is a no-op: on transcode it would be a
+        // full re-resolve + reload hitch, on direct-play a pointless preference
+        // round-trip. (A failed switch restores `selectedAudioTrack` to the
+        // fallback first, so the scrim's retry still passes this guard.)
+        guard track != selectedAudioTrack else { return }
         // Direct-play has every track in the stream → switch in-engine (instant).
         // Transcode carries only the baked-in rendition → re-resolve around the
         // chosen source index (track.id) and reload at the current position.
@@ -699,7 +722,7 @@ final class PlayerViewModel {
             trackSwitchFailure = nil
             switch await switchTranscodeTrack(audioStreamIndex: index, subtitleStreamIndex: currentSubtitleStreamIndex) {
             case .completed:
-                break
+                persistTrackSelection(.audio(languageCode: track.languageCode))
             case .abandoned:
                 // The reload never ran (re-entrant pick or exit) — quietly restore
                 // the checkmark so the menu doesn't show a track that isn't playing.
@@ -716,6 +739,7 @@ final class PlayerViewModel {
             guard let engine else { return }
             await engine.setAudioTrack(track)
             selectedAudioTrack = track
+            persistTrackSelection(.audio(languageCode: track.languageCode))
         }
     }
 
@@ -752,6 +776,75 @@ final class PlayerViewModel {
             await engine.setSubtitleTrack(track)
             clearSidecarSubtitle()
             selectedSubtitleTrack = track
+        }
+        persistTrackSelection(.subtitles(languageCode: track?.languageCode))
+    }
+
+    /// Fire-and-forget preference write-back: the service gates on the user's
+    /// Remember-Selections flags and swallows failures, so this can ride every
+    /// successful pick without touching playback.
+    private func persistTrackSelection(_ update: TrackSelectionUpdate) {
+        let remember = rememberTrackSelection
+        Task { await remember(update) }
+    }
+
+    // MARK: - Server language preferences (initial tracks)
+
+    /// Jellyfin folds the user's language preferences (audio/subtitle language,
+    /// subtitle mode, PlayDefaultAudioTrack) into PlaybackInfo's default stream
+    /// indices — the server is the single implementation of that logic. On the
+    /// transcode path the audio default is baked into the stream; the subtitle
+    /// default is surfaced here as the initial sidecar selection. Text subs
+    /// only: image subs never enter `availableSubtitleTracks`, so a PGS default
+    /// quietly stays off (burn-in is a later phase).
+    private func applyTranscodeDefaultSubtitle(from resolved: ResolvedPlayback) {
+        guard let index = resolved.defaultSubtitleStreamIndex,
+              let track = availableSubtitleTracks.first(where: { $0.id == .jellyfinStream(index) })
+        else { return }
+        selectedSubtitleTrack = track
+        currentSubtitleStreamIndex = index
+        loadSidecarSubtitle(streamIndex: index)
+    }
+
+    /// Direct-play analog of `applyTranscodeDefaultSubtitle`: the whole file is
+    /// delivered, so the ENGINE picks initial tracks by its own rules (AVKit:
+    /// system language + accessibility) and the server's preference-derived
+    /// defaults never apply on their own. Re-point the engine when the user's
+    /// Jellyfin preference disagrees; when no track matches the preferred
+    /// language, leave the engine's pick — the graceful fallback.
+    private func applyServerPreferredTracks() async {
+        guard let resolved, let engine else { return }
+
+        // AUDIO — match the default stream's language against the inventory.
+        if let index = resolved.defaultAudioStreamIndex,
+           let preferred = resolved.mediaStreams.first(where: { $0.kind == .audio && $0.index == index }),
+           let language = preferred.language,
+           !TrackLanguage.matches(selectedAudioTrack?.languageCode, language),
+           let match = availableAudioTracks.first(where: { TrackLanguage.matches($0.languageCode, language) }) {
+            await engine.setAudioTrack(match)
+            selectedAudioTrack = match
+        }
+
+        // SUBTITLES — only when the server's mode+language logic says one should
+        // show, and the engine didn't already auto-select one (AVKit honors the
+        // system's accessibility caption setting; never fight that).
+        guard selectedSubtitleTrack == nil,
+              let index = resolved.defaultSubtitleStreamIndex,
+              let preferred = resolved.mediaStreams.first(where: { $0.kind == .subtitle && $0.index == index })
+        else { return }
+        if let external = availableSubtitleTracks.first(where: { $0.id == .jellyfinStream(index) }) {
+            // External sidecar subs carry their Jellyfin index — exact match,
+            // rendered client-side like every external pick.
+            selectedSubtitleTrack = external
+            currentSubtitleStreamIndex = index
+            loadSidecarSubtitle(streamIndex: index)
+        } else if let match = availableSubtitleTracks.first(where: {
+            !$0.isExternal
+                && TrackLanguage.matches($0.languageCode, preferred.language)
+                && $0.isForced == preferred.isForced
+        }) {
+            await engine.setSubtitleTrack(match)
+            selectedSubtitleTrack = match
         }
     }
 
@@ -931,6 +1024,14 @@ final class PlayerViewModel {
                 if selectedSubtitleTrack == nil {
                     selectedSubtitleTrack = tracks.subtitles.first { $0.id == tracks.selectedSubtitleID }
                 }
+                // First inventory only: steer the engine's own picks toward the
+                // user's Jellyfin language preferences (AVKit selects by system
+                // language, not server config). Duplicate/late .ready beats and
+                // post-switch reloads skip it.
+                if !didApplyPreferredTracks {
+                    didApplyPreferredTracks = true
+                    await applyServerPreferredTracks()
+                }
             }
         case .playing(let position, let duration, let buffered):
             phase = .playing
@@ -1032,11 +1133,9 @@ final class PlayerViewModel {
                     id: .jellyfinStream(stream.index),
                     displayName: stream.menuLabel,
                     languageCode: stream.language,
-                    codecLabel: Self.audioCodecLabel(stream),
+                    detailLabel: stream.trackDetailLabel,
                     isTranscode: isTranscode,
-                    transcodeTarget: isTranscode
-                        ? "AAC · \(Self.channelLayout(min(stream.channels ?? 2, 8)))"
-                        : nil
+                    transcodeTarget: isTranscode ? "AAC" : nil
                 )
             }
         availableSubtitleTracks = resolved.mediaStreams
@@ -1045,13 +1144,6 @@ final class PlayerViewModel {
 
         selectedAudioTrack = availableAudioTracks.first { $0.id == currentAudioStreamIndex.map(TrackID.jellyfinStream) }
         selectedSubtitleTrack = availableSubtitleTracks.first { $0.id == currentSubtitleStreamIndex.map(TrackID.jellyfinStream) }
-    }
-
-    /// Source codec + channel layout, e.g. "TRUEHD · 7.1" — the SECONDARY detail
-    /// line under the track's name. Nil when neither is known.
-    private static func audioCodecLabel(_ stream: MediaStreamInfo) -> String? {
-        let parts = [stream.codec?.uppercased(), stream.channels.map { channelLayout($0) }].compactMap { $0 }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     /// Resolution bucket. Delegates 4K to the shared `QualityBadge`, keeping the
@@ -1068,19 +1160,6 @@ final class PlayerViewModel {
     /// (including `DOVIInvalid`) to `"HDR"`.
     private static func hdrLabel(_ range: String?) -> String? {
         QualityBadge.hdr(range)
-    }
-
-    /// Channel count → layout label. Shared by the summary and the transcode menu.
-    static func channelLayout(_ channels: Int?) -> String {
-        switch channels ?? 2 {
-        case ...1: return "Mono"
-        case 2:    return "Stereo"
-        case 3:    return "2.1"
-        case 6:    return "5.1"
-        case 7:    return "6.1"
-        case 8:    return "7.1"
-        default:   return "\(channels ?? 2)ch"
-        }
     }
 
     private static func makeAsset(
@@ -1137,8 +1216,8 @@ final class PlayerViewModel {
             displayName: stream.menuLabel,
             languageCode: stream.language,
             isForced: stream.isForced,
-            sourceLabel: stream.isExternal ? "External" : "Embedded",
-            formatLabel: stream.codec?.uppercased(),
+            detailLabel: stream.trackDetailLabel,
+            isExternal: stream.isExternal,
             isSDH: stream.isHearingImpaired
         )
     }

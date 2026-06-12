@@ -6,8 +6,15 @@ struct RootView: View {
     @Environment(LaunchGate.self) private var launchGate
 
     var body: some View {
-        @Bindable var playback = playback
         @Bindable var router = router
+        #if os(tvOS)
+        // Eager body-scope read: Observation only tracks properties read DURING
+        // body evaluation, and the tvOS cover's `Binding(get:)` closure runs
+        // outside it — without this line the tvOS player would never present or
+        // dismiss. (iOS doesn't read the request here at all: the presentation
+        // host observes it itself, so RootView never re-evaluates for playback.)
+        let playerRequest = playback.request
+        #endif
         // The launch animation plays over the real root from process start; the
         // content beneath it boots (and fetches) as normal during the hold.
         LaunchRevealHost {
@@ -60,13 +67,33 @@ struct RootView: View {
         // The player lives at the stable root — ABOVE RootTabView's
         // `.id(activeServerID)` remount — so a server switch can't force-dismiss it
         // and then re-present the previous server's player from a stale request.
-        .fullScreenCover(item: $playback.request) { request in
-            PlayerView(itemID: request.itemID, session: request.session)
+        //
+        // iOS: an overlay LAYER, not a `fullScreenCover` — a cover's container is
+        // opaque, so the pull-to-dismiss could only ever reveal black above the
+        // pulled surface. As a real layer over the live UI, the pull (and the
+        // slide-out it hands off to) genuinely uncovers the screen that started
+        // playback, like dragging a sheet. tvOS keeps the cover: no pull gesture
+        // there, and the cover's focus containment is load-bearing.
+        #if os(tvOS)
+        .fullScreenCover(item: Binding(
+            get: { playerRequest },
+            set: { if $0 == nil { playback.dismiss() } }
+        )) { request in
+            PlayerView(request: request)
         }
+        #else
+        // Explicit offset-driven layer, NOT `if let` + `.transition` — a
+        // transition's placement spring proved clobberable by the player's own
+        // mid-flight commits (stuck half-presented, dropped slide-up, cut
+        // slide-out). See `PlayerPresentationHost` for the full story.
+        .overlay {
+            PlayerPresentationHost()
+        }
+        #endif
         // Switching / adding / signing out a server closes any open player: its
         // content belongs to the previous server's session.
         .onChange(of: router.activeServerID) { _, _ in
-            playback.request = nil
+            playback.dismiss()
         }
     }
 }

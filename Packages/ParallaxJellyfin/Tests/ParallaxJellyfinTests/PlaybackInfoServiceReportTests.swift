@@ -110,3 +110,102 @@ struct PlaybackInfoServiceReportTests {
         #expect(fake.stoppedInfos.count == 1)
     }
 }
+
+@Suite("PlaybackInfoService — track selection write-back")
+struct PlaybackInfoServiceTrackSelectionTests {
+    private func config(
+        rememberAudio: Bool? = nil,
+        rememberSubtitles: Bool? = nil,
+        audioLanguage: String? = nil,
+        subtitleLanguage: String? = nil,
+        subtitleMode: SubtitlePlaybackMode? = nil
+    ) -> UserConfiguration {
+        UserConfiguration(
+            audioLanguagePreference: audioLanguage,
+            isRememberAudioSelections: rememberAudio,
+            isRememberSubtitleSelections: rememberSubtitles,
+            subtitleLanguagePreference: subtitleLanguage,
+            subtitleMode: subtitleMode
+        )
+    }
+
+    @Test("Audio pick writes the normalized language into the configuration")
+    func audioWriteBack() async {
+        let fake = FakeJellyfinPlaybackClient()
+        fake.userConfigurationResult = .success(config(audioLanguage: "eng"))
+        let service = PlaybackInfoService(client: fake)
+        await service.rememberTrackSelection(.audio(languageCode: "fr"))
+        #expect(fake.updatedUserConfigurations.count == 1)
+        #expect(fake.updatedUserConfigurations.first?.audioLanguagePreference == "fra")
+    }
+
+    @Test("Audio pick is a no-op when the preference already matches (any dialect)")
+    func audioNoOpWhenSame() async {
+        let fake = FakeJellyfinPlaybackClient()
+        fake.userConfigurationResult = .success(config(audioLanguage: "eng"))
+        let service = PlaybackInfoService(client: fake)
+        await service.rememberTrackSelection(.audio(languageCode: "en"))
+        #expect(fake.updatedUserConfigurations.isEmpty)
+    }
+
+    @Test("Remember-audio opt-out blocks the write")
+    func audioOptOut() async {
+        let fake = FakeJellyfinPlaybackClient()
+        fake.userConfigurationResult = .success(config(rememberAudio: false))
+        let service = PlaybackInfoService(client: fake)
+        await service.rememberTrackSelection(.audio(languageCode: "fr"))
+        #expect(fake.updatedUserConfigurations.isEmpty)
+    }
+
+    @Test("A track without a language tag never moves the preference")
+    func audioNoLanguageNoWrite() async {
+        let fake = FakeJellyfinPlaybackClient()
+        fake.userConfigurationResult = .success(config())
+        let service = PlaybackInfoService(client: fake)
+        await service.rememberTrackSelection(.audio(languageCode: nil))
+        #expect(fake.updatedUserConfigurations.isEmpty)
+    }
+
+    @Test("Subtitle pick writes language and escalates mode out of None only")
+    func subtitleWriteBack() async {
+        let fake = FakeJellyfinPlaybackClient()
+        fake.userConfigurationResult = .success(config(subtitleMode: SubtitlePlaybackMode.none))
+        let service = PlaybackInfoService(client: fake)
+        await service.rememberTrackSelection(.subtitles(languageCode: "ger"))
+        #expect(fake.updatedUserConfigurations.first?.subtitleLanguagePreference == "deu")
+        #expect(fake.updatedUserConfigurations.first?.subtitleMode == .always)
+    }
+
+    @Test("Subtitle pick keeps an explicit Smart mode")
+    func subtitleKeepsSmartMode() async {
+        let fake = FakeJellyfinPlaybackClient()
+        fake.userConfigurationResult = .success(config(subtitleLanguage: "eng", subtitleMode: .smart))
+        let service = PlaybackInfoService(client: fake)
+        await service.rememberTrackSelection(.subtitles(languageCode: "fre"))
+        #expect(fake.updatedUserConfigurations.first?.subtitleLanguagePreference == "fra")
+        #expect(fake.updatedUserConfigurations.first?.subtitleMode == .smart)
+    }
+
+    @Test("Subtitles off persists SubtitleMode = None, once")
+    func subtitlesOff() async {
+        let fake = FakeJellyfinPlaybackClient()
+        fake.userConfigurationResult = .success(config(subtitleMode: .always))
+        let service = PlaybackInfoService(client: fake)
+        await service.rememberTrackSelection(.subtitles(languageCode: nil))
+        #expect(fake.updatedUserConfigurations.first?.subtitleMode == SubtitlePlaybackMode.none)
+
+        // Already None → no redundant POST.
+        fake.userConfigurationResult = .success(config(subtitleMode: SubtitlePlaybackMode.none))
+        await service.rememberTrackSelection(.subtitles(languageCode: nil))
+        #expect(fake.updatedUserConfigurations.count == 1)
+    }
+
+    @Test("A failed fetch or update is swallowed (never disturbs playback)")
+    func failuresSwallowed() async {
+        let fake = FakeJellyfinPlaybackClient()
+        fake.userConfigurationResult = .failure(FakeJellyfinPlaybackClient.FakeError.reportFailed)
+        let service = PlaybackInfoService(client: fake)
+        await service.rememberTrackSelection(.audio(languageCode: "fr"))
+        #expect(fake.updatedUserConfigurations.isEmpty)
+    }
+}

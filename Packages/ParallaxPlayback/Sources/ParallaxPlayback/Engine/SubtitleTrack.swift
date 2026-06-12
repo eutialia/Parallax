@@ -5,10 +5,11 @@ public struct SubtitleTrack: Sendable, Hashable {
     public let displayName: String
     public let languageCode: String?
     public let isForced: Bool
-    /// "Embedded" (muxed) or "External" (sidecar file). Nil when unknown.
-    public let sourceLabel: String?
-    /// Subtitle format badge, e.g. "SRT" / "PGS" / "ASS". Nil when unknown.
-    public let formatLabel: String?
+    /// Secondary menu line — what the track is, e.g. "SRT · External" or
+    /// "ASS · Embedded" (format · source). Nil when unknown.
+    public let detailLabel: String?
+    /// A sidecar stream (external file), not muxed into the source container.
+    public let isExternal: Bool
     /// Hearing-impaired (SDH) track. Server wiring is deferred; defaults false so
     /// the menu can render the badge once `isHearingImpaired` is plumbed through.
     public let isSDH: Bool
@@ -18,16 +19,16 @@ public struct SubtitleTrack: Sendable, Hashable {
         displayName: String,
         languageCode: String?,
         isForced: Bool,
-        sourceLabel: String? = nil,
-        formatLabel: String? = nil,
+        detailLabel: String? = nil,
+        isExternal: Bool = false,
         isSDH: Bool = false
     ) {
         self.id = id
         self.displayName = displayName
         self.languageCode = languageCode
         self.isForced = isForced
-        self.sourceLabel = sourceLabel
-        self.formatLabel = formatLabel
+        self.detailLabel = detailLabel
+        self.isExternal = isExternal
         self.isSDH = isSDH
     }
 }
