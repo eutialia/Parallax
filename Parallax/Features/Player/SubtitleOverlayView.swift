@@ -13,29 +13,26 @@ import ParallaxPlayback
 ///   them to the engine.
 ///
 /// Embedded subs (rendered by the engine itself — AVKit legible / VLC libass) leave
-/// `activeSubtitleCues` empty, so this overlay draws nothing for them.
+/// `activeSubtitleCues` empty, so this overlay draws nothing for them; those renderers
+/// are pointed at the same `SubtitleStyle.standard` look from inside their engines.
 struct SubtitleOverlayView: View {
     let vm: PlayerViewModel
 
     @State private var text: String?
 
     var body: some View {
-        VStack {
-            Spacer(minLength: 0)
-            if let text {
-                Text(text)
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .multilineTextAlignment(.center)
-                    .shadow(color: .black.opacity(0.9), radius: 3, x: 0, y: 1)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(.black.opacity(0.45), in: RoundedRectangle(cornerRadius: 6))
-                    .padding(.horizontal, 24)
-                    .padding(.bottom, 48)
+        GeometryReader { geo in
+            let metrics = PlayerMetrics.forSurface(geo.size)
+            VStack {
+                Spacer(minLength: 0)
+                if let text {
+                    SubtitleCueText(text, fontSize: metrics.subtitleFontSize)
+                        .padding(.horizontal, metrics.subtitleInsetX)
+                        .padding(.bottom, metrics.subtitleBottom)
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         // Opt into full-bleed like the video host: PlayerView no longer applies a
         // blanket .ignoresSafeArea(), so without this the cues would float up by the
         // bottom safe-area inset instead of sitting just above the home indicator.
@@ -66,4 +63,78 @@ struct SubtitleOverlayView: View {
         guard !active.isEmpty else { return nil }
         return active.map(\.text).joined(separator: "\n")
     }
+}
+
+/// One subtitle cue in the canonical `SubtitleStyle`: boxless — a dimmed-white fill
+/// inside a black glyph border, over a soft shadow for separation on light content.
+/// SwiftUI cannot stroke glyphs (no outline API; `TextRenderer` exposes runs, not
+/// paths), so the border is the classic ring of offset copies drawn behind the fill:
+/// layout-neutral (offsets don't grow the footprint) and crisp at the 1–3pt widths
+/// cue text uses.
+private struct SubtitleCueText: View {
+    let text: String
+    let fontSize: CGFloat
+
+    init(_ text: String, fontSize: CGFloat) {
+        self.text = text
+        self.fontSize = fontSize
+    }
+
+    /// Unit vectors for the 8-direction border ring.
+    private static let ring: [CGSize] = (0..<8).map {
+        let angle = Double($0) * .pi / 4
+        return CGSize(width: cos(angle), height: sin(angle))
+    }
+
+    private static let style = SubtitleStyle.standard
+    private static let fillColor = Color(style.foreground)
+    private static let borderColor = Color(style.outline)
+    private static let shadowColor = Color.black.opacity(style.shadowOpacity)
+
+    var body: some View {
+        let style = Self.style
+        let borderWidth = max(1, fontSize * style.outlineWidthRatio)
+        ZStack {
+            ForEach(Self.ring.indices, id: \.self) { i in
+                cue.foregroundStyle(Self.borderColor)
+                    .offset(x: Self.ring[i].width * borderWidth,
+                            y: Self.ring[i].height * borderWidth)
+            }
+            cue.foregroundStyle(Self.fillColor)
+        }
+        // Flatten before shadowing: applied straight to the ZStack, SwiftUI would
+        // shadow each of the 9 copies individually.
+        .compositingGroup()
+        .shadow(color: Self.shadowColor,
+                radius: fontSize * style.shadowRadiusRatio,
+                x: 0, y: fontSize * style.shadowYOffsetRatio)
+    }
+
+    private var cue: some View {
+        Text(text)
+            .font(.system(size: fontSize, weight: .semibold))
+            .multilineTextAlignment(.center)
+    }
+}
+
+private extension Color {
+    init(_ rgba: SubtitleStyle.RGBA) {
+        self.init(.sRGB, red: rgba.red, green: rgba.green, blue: rgba.blue, opacity: rgba.alpha)
+    }
+}
+
+/// Worst-case legibility check: each device class's cue size over light, busy
+/// content — the case the old black pill existed for. The border + shadow must
+/// keep every size readable against the white band.
+#Preview("Cue sizes on light content", traits: .fixedLayout(width: 900, height: 620)) {
+    ZStack {
+        LinearGradient(colors: [.white, Color(white: 0.85), .yellow.opacity(0.6), Color(white: 0.3)],
+                       startPoint: .top, endPoint: .bottom)
+        VStack(spacing: 44) {
+            SubtitleCueText("Phone 20 — The quick brown fox\njumps over the lazy dog.", fontSize: 20)
+            SubtitleCueText("iPad ~22 — The quick brown fox\njumps over the lazy dog.", fontSize: 22)
+            SubtitleCueText("tvOS 46 — The quick brown fox\njumps over the lazy dog.", fontSize: 46)
+        }
+    }
+    .ignoresSafeArea()
 }

@@ -9,7 +9,13 @@ import SwiftUI
 /// separately: its round-button sizes are the fixed `phone*` statics below, but its
 /// chips and progress bar reuse these formulas at the fixed `.phone` scale.
 struct PlayerMetrics: Equatable {
+    /// Which layout family the metrics belong to. Stored because `u` alone can't
+    /// tell the classes apart (phone's fixed 0.7 ≈ a 12.9" iPad's 0.711) and a few
+    /// metrics — subtitles — anchor on viewing distance, not canvas scale.
+    enum DeviceClass { case phone, pad, tv }
+
     let u: CGFloat
+    let deviceClass: DeviceClass
 
     /// Big-screen metrics for an actual point width, clamped so a small multitasking
     /// iPad window can't shrink controls to nothing and tvOS never exceeds the 1.0 base.
@@ -19,16 +25,38 @@ struct PlayerMetrics: Equatable {
     /// changes the scale.
     init(width: CGFloat) {
         self.u = min(max(width / 1920, 0.5), 1.0)
+        self.deviceClass = .pad
     }
 
-    private init(u: CGFloat) { self.u = u }
+    private init(u: CGFloat, deviceClass: DeviceClass) {
+        self.u = u
+        self.deviceClass = deviceClass
+    }
 
     /// Fixed iPhone scale for chips + progress. 0.7 sizes the chips (`66u ≈ 46pt`) to
     /// the phone's `phone*` round-button statics and the time labels to ~17pt — the
     /// handoff's 0.92 read oversized next to them.
-    static let phone = PlayerMetrics(u: 0.7)
+    static let phone = PlayerMetrics(u: 0.7, deviceClass: .phone)
     /// tvOS full scale.
-    static let tv = PlayerMetrics(u: 1.0)
+    static let tv = PlayerMetrics(u: 1.0, deviceClass: .tv)
+
+    /// Device-correct metrics for a player surface — the one place the player maps
+    /// hardware to a layout family: tvOS full scale, iPad from the window's larger
+    /// dimension, iPhone the fixed phone scale. Deliberately `UIDevice`-based, not
+    /// size-class-based (a Pro Max in landscape reports `.regular` but must stay on
+    /// the phone layout) — mirroring `PlayerControlsView`'s split.
+    /// `@MainActor` for `UIDevice.current`: the `View`-body callers were already
+    /// isolated; the annotation keeps that guarantee explicit on this plain struct.
+    @MainActor
+    static func forSurface(_ size: CGSize) -> PlayerMetrics {
+        #if os(tvOS)
+        .tv
+        #else
+        UIDevice.current.userInterfaceIdiom == .pad
+            ? PlayerMetrics(width: max(size.width, size.height))
+            : .phone
+        #endif
+    }
 
     // Layout (big screens)
     /// 80 at u=1.0 — the documented tvOS side safe-area inset; the full-width track
@@ -89,6 +117,27 @@ struct PlayerMetrics: Equatable {
 
     // Title
     var titleSize: CGFloat { 38 * u }
+
+    // Subtitles (client-rendered overlay — SubtitleOverlayView). Cue size tracks
+    // viewing distance, not canvas scale, so each class anchors its own value:
+    // one u-coefficient can't hold the iPad near its proven ~20pt (u ≈ 0.62–0.71)
+    // while giving the 3-metre couch ~46pt (u = 1.0). iPad still scales with the
+    // window class via u; phone is fixed like the other phone statics.
+    /// tvOS 46 ≈ 4.3% of the 1080pt canvas (Apple's native player draws ~5%);
+    /// iPad 32u ≈ 20–23pt full screen, floored at the phone's 20 so a small
+    /// multitasking window (u clamps at 0.5 → 16) can't drop cues below the
+    /// proven phone size; phone keeps the proven 20.
+    var subtitleFontSize: CGFloat {
+        switch deviceClass {
+        case .phone: 20
+        case .pad: max(20, 32 * u)
+        case .tv: 46
+        }
+    }
+    /// Cue rest distance from the bottom edge (the overlay is full-bleed).
+    var subtitleBottom: CGFloat { deviceClass == .tv ? 64 : 48 }
+    /// Side inset capping long lines; tvOS uses the 80pt action-safe margin.
+    var subtitleInsetX: CGFloat { deviceClass == .tv ? 80 : 32 }
 
     // Scrims — loading ring + caption (see PlayerLoadingScrim).
     // ONE ring geometry for every flavor (buffering / audio switch / stall):

@@ -306,7 +306,7 @@ struct PlayerView: View {
                 mode: scrimFlavor,
                 label: viewModel?.loaderTitle ?? "Loading video",
                 sublabel: viewModel?.loaderSubtitle,
-                metrics: scrimMetrics(size: geo.size)
+                metrics: .forSurface(geo.size)
             )
         }
         // Full-bleed like the video host: the chrome toggles the status bar and
@@ -320,19 +320,6 @@ struct PlayerView: View {
     private var scrimFlavor: PlayerLoadingScrim.Mode {
         guard let vm = viewModel else { return .coldStart }
         return vm.isSwitchingTracks || vm.showsStallScrim ? .liveFrame : .coldStart
-    }
-
-    /// Scrim scale: big screens derive the unit from the surface's LARGER dimension
-    /// (one size across orientations, same 1920 base as the chrome); iPhone uses the
-    /// fixed `.phone` scale — mirroring `PlayerControlsView`'s device-based split.
-    private func scrimMetrics(size: CGSize) -> PlayerMetrics {
-        #if os(tvOS)
-        return .tv
-        #else
-        return UIDevice.current.userInterfaceIdiom == .pad
-            ? PlayerMetrics(width: max(size.width, size.height))
-            : .phone
-        #endif
     }
 
     /// Whether to show the loading veil: before the VM exists, while it's
@@ -380,7 +367,7 @@ struct PlayerView: View {
                 title: "Playback stopped",
                 message: error.userMessage,
                 details: error.diagnosticDescription,
-                metrics: scrimMetrics(size: geo.size)
+                metrics: .forSurface(geo.size)
             ) {
                 Button("Try again", systemImage: "arrow.clockwise") { Task { await vm.retry() } }
                     .buttonStyle(.glassProminent)
@@ -414,7 +401,7 @@ struct PlayerView: View {
             PlayerErrorScrim(
                 title: "Couldn't switch audio",
                 message: switchFailureMessage(failure),
-                metrics: scrimMetrics(size: geo.size)
+                metrics: .forSurface(geo.size)
             ) {
                 Button("Try again", systemImage: "arrow.clockwise") {
                     Task { await vm.retryFailedTrackSwitch() }

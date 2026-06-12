@@ -270,6 +270,17 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         if let fontPath = asset.subtitleFontURL?.path {
             media.addOption(":freetype-font=\(fontPath)")
         }
+        // VLC's freetype renderer (embedded plain-text subs), pinned to the boxless
+        // black-outline look of `SubtitleStyle.standard`. The fill dim is the real
+        // change — the default 0xFFFFFF reads as peak white next to tone-mapped HDR
+        // video. Background/outline match VLC's *desktop* defaults, but are set
+        // explicitly because the iOS build's defaults have never been device-verified
+        // (a dim fill WITHOUT a border would be worse than the old pure white).
+        // ASS/SSA keep their authored styles (libass ignores freetype-*).
+        media.addOption(":freetype-color=\(SubtitleStyle.standard.foreground.rgb24)")
+        media.addOption(":freetype-background-opacity=0")
+        media.addOption(":freetype-outline-color=\(SubtitleStyle.standard.outline.rgb24)")
+        media.addOption(":freetype-outline-thickness=4")
         if let headers = asset.headers {
             // Header values originate from the trusted Jellyfin server response and
             // are interpolated verbatim into VLC option strings (no delimiter sanitization).

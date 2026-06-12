@@ -83,6 +83,30 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         }
     }
 
+    /// Styling for natively rendered legible tracks (direct-play embedded WebVTT —
+    /// sidecar text subs never reach AVKit; the app overlay draws those). Matches
+    /// `SubtitleStyle.standard`: no cue box, black uniform glyph edge, dimmed-white
+    /// fill — native rendering composites into the HDR frame, where pure white is
+    /// drawn at peak brightness ("only the subtitles have HDR"). Per the docs the
+    /// rules apply to WebVTT only; other legible formats keep system styling. Size
+    /// is left at the system default (≈5% of video height), which already scales
+    /// per screen. Best-effort, not authoritative: a user-customized Subtitles &
+    /// Captioning style (Settings > Accessibility) can take precedence over these
+    /// rules — by iOS design, not a bug here.
+    private static let subtitleStyleRules: [AVTextStyleRule]? = {
+        let fg = SubtitleStyle.standard.foreground
+        let clear = [0, 0, 0, 0] as [NSNumber]
+        let attributes: [String: Any] = [
+            kCMTextMarkupAttribute_BackgroundColorARGB as String: clear,
+            kCMTextMarkupAttribute_CharacterBackgroundColorARGB as String: clear,
+            kCMTextMarkupAttribute_CharacterEdgeStyle as String:
+                kCMTextMarkupCharacterEdgeStyle_Uniform as String,
+            kCMTextMarkupAttribute_ForegroundColorARGB as String:
+                [fg.alpha, fg.red, fg.green, fg.blue].map { NSNumber(value: $0) },
+        ]
+        return AVTextStyleRule(textMarkupAttributes: attributes).map { [$0] }
+    }()
+
     public func load(_ asset: PlayableAsset) async throws {
         // Reload-safe: a transcode track switch loads a NEW asset into this same
         // engine, keeping the AVPlayer + its mounted layer (so the swap holds the
@@ -98,6 +122,7 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
 
         let urlAsset = AVURLAsset(url: asset.url)
         let item = AVPlayerItem(asset: urlAsset)
+        item.textStyleRules = Self.subtitleStyleRules
         currentItem = item
 
         statusObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
