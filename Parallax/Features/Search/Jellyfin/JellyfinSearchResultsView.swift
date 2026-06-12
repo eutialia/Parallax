@@ -15,12 +15,16 @@ struct JellyfinSearchResultsView: View, Equatable {
     let session: Session
     let posterCols: Int
     let landscapeCols: Int
+    /// `AppLayout.contentHMargin` from the parent — passed as a plain value
+    /// (not an `@Environment` idiom read) to keep the `==` skip honest.
+    let hMargin: CGFloat
 
     static func == (lhs: JellyfinSearchResultsView, rhs: JellyfinSearchResultsView) -> Bool {
         lhs.results == rhs.results
             && lhs.session == rhs.session
             && lhs.posterCols == rhs.posterCols
             && lhs.landscapeCols == rhs.landscapeCols
+            && lhs.hMargin == rhs.hMargin
     }
 
     var body: some View {
@@ -30,7 +34,7 @@ struct JellyfinSearchResultsView: View, Equatable {
                     gridSection("Shows", count: results.series.count, cols: posterCols) {
                         ForEach(results.series) { s in
                             ItemNavigator(item: .series(s), session: session) {
-                                MediaTile(title: s.title, imageRef: s.imageRef(.primary), imageKind: .primary, session: session, progress: nil, aspectRatio: JellyfinImage.poster, maxImageWidth: 400)
+                                MediaTile(title: s.title, imageRef: s.imageRef(.primary), imageKind: .primary, session: session, progress: nil, watched: .init(.series(s)), aspectRatio: JellyfinImage.poster, maxImageWidth: 400)
                             }
                         }
                     }
@@ -39,7 +43,7 @@ struct JellyfinSearchResultsView: View, Equatable {
                     gridSection("Movies", count: results.movies.count, cols: posterCols) {
                         ForEach(results.movies) { m in
                             ItemNavigator(item: .movie(m), session: session) {
-                                MediaTile(title: m.title, imageRef: m.imageRef(.primary), imageKind: .primary, session: session, progress: nil, aspectRatio: JellyfinImage.poster, maxImageWidth: 400)
+                                MediaTile(title: m.title, imageRef: m.imageRef(.primary), imageKind: .primary, session: session, progress: nil, watched: .init(.movie(m)), aspectRatio: JellyfinImage.poster, maxImageWidth: 400)
                             }
                         }
                     }
@@ -48,13 +52,14 @@ struct JellyfinSearchResultsView: View, Equatable {
                     gridSection("Episodes", count: results.episodes.count, cols: landscapeCols) {
                         ForEach(results.episodes) { e in
                             ItemNavigator(item: .episode(e), session: session) {
-                                MediaTile(title: e.name, imageRef: e.imageRef(.primary), imageKind: .primary, session: session, progress: nil, aspectRatio: JellyfinImage.landscape, maxImageWidth: 500)
+                                MediaTile(title: e.name, imageRef: e.imageRef(.primary), imageKind: .primary, session: session, progress: nil, watched: .init(.episode(e)), aspectRatio: JellyfinImage.landscape, maxImageWidth: 500)
                             }
                         }
                     }
                 }
             }
-            .padding(Space.s18)
+            .padding(.horizontal, hMargin)
+            .padding(.vertical, Space.s18)
         }
     }
 

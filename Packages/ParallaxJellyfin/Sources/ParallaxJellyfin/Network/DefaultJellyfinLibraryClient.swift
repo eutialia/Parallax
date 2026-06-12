@@ -36,7 +36,7 @@ public final class DefaultJellyfinLibraryClient: JellyfinLibraryClient, @uncheck
     }
 
     public func getItems(
-        parentID: String,
+        scope: LibraryScope,
         filter: ItemFilter,
         sort: ItemSort,
         startIndex: Int,
@@ -44,7 +44,6 @@ public final class DefaultJellyfinLibraryClient: JellyfinLibraryClient, @uncheck
     ) async throws -> (items: [BaseItemDto], total: Int) {
         var params = Paths.GetItemsParameters()
         params.userID = userID
-        params.parentID = parentID
         params.startIndex = startIndex
         params.limit = limit
         params.isRecursive = true
@@ -53,12 +52,15 @@ public final class DefaultJellyfinLibraryClient: JellyfinLibraryClient, @uncheck
         params.fields = [.primaryImageAspectRatio, .mediaSourceCount]
         params.imageTypeLimit = 1
         params.enableImageTypes = [.primary, .backdrop, .logo, .thumb]
-        params.filters = filter.wireFormat
         params.genres = filter.genres.isEmpty ? nil : filter.genres
-        // `favoritesOnly` is already emitted via filter.wireFormat as
-        // .isFavorite — don't double-write here, or a future filter case
-        // (e.g. "hide favorites") would fight a hard-coded true.
         params.includeItemTypes = [.movie, .series]
+        switch scope {
+        case .collection(let id):
+            params.parentID = id.rawValue
+        case .favorites:
+            // No parent: favorites span every library, recursive from the root.
+            params.filters = [.isFavorite]
+        }
 
         let request = Paths.getItems(parameters: params)
         let response = try await client().send(request)
@@ -212,10 +214,13 @@ public final class DefaultJellyfinLibraryClient: JellyfinLibraryClient, @uncheck
         return response.value.items?.first
     }
 
-    public func genres(parentID: String) async throws -> [String] {
+    public func genres(scope: LibraryScope) async throws -> [String] {
         var params = Paths.GetGenresParameters()
-        params.parentID = parentID
         params.userID = userID
+        switch scope {
+        case .collection(let id): params.parentID = id.rawValue
+        case .favorites: params.isFavorite = true
+        }
         let request = Paths.getGenres(parameters: params)
         let response = try await client().send(request)
         return response.value.items?.compactMap(\.name) ?? []
@@ -234,9 +239,6 @@ private extension ItemSort {
         case .releaseDate: return .premiereDate
         case .communityRating: return .communityRating
         case .officialRating: return .officialRating
-        case .runtime: return .runtime
-        case .playCount: return .playCount
-        case .random: return .random
         }
     }
 }
@@ -247,21 +249,6 @@ private extension ItemSort.Direction {
         case .ascending: return .ascending
         case .descending: return .descending
         }
-    }
-}
-
-// Note: both our domain and JellyfinAPI define `ItemFilter`. Inside this
-// file-private extension we use the fully qualified names to avoid ambiguity.
-private extension ParallaxJellyfin.ItemFilter {
-    var wireFormat: [JellyfinAPI.ItemFilter] {
-        var out: [JellyfinAPI.ItemFilter] = []
-        switch watchState {
-        case .all: break
-        case .played: out.append(.isPlayed)
-        case .unplayed: out.append(.isUnplayed)
-        }
-        if favoritesOnly { out.append(.isFavorite) }
-        return out
     }
 }
 

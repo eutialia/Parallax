@@ -45,6 +45,12 @@ public enum Item: Sendable, Hashable, Identifiable {
         }
     }
 
+    /// Watched fraction for tile badges; nil when playback hasn't started or the
+    /// runtime is unknown (series have no single runtime, so always nil there).
+    public var playbackProgress: Double? {
+        userData.playedFraction(runtime: runtime)
+    }
+
     public func withUserData(_ userData: UserItemData) -> Item {
         switch self {
         case .movie(let m):

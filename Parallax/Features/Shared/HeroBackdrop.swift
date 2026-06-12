@@ -251,6 +251,9 @@ extension View {
 
 // MARK: - Preview harness
 
+// iPad-only diagnostic (sidebarAdaptable + sidebar bottom bar don't exist on
+// tvOS); without the guard this preview alone breaks the whole tvOS build.
+#if !os(tvOS)
 #Preview("HeroBackdrop · sidebar bleed") {
     TabView {
         Tab("Home", systemImage: "house") {
@@ -317,6 +320,7 @@ extension View {
     // what ships on iPad (and cost a whole seam investigation a false acquittal).
     .environment(\.appIdiom, .regular)
 }
+#endif
 
 
 /// Worst-case artwork for scrim verification: near-white sky with bright high-frequency

@@ -38,14 +38,40 @@ struct SeriesDetailView: View {
                                     if !meta.isEmpty {
                                         DetailHeroMetadataRow(metadata: meta)
                                     }
+                                    // Play never disappears: a fully-watched series gets
+                                    // no /Shows/NextUp episode (Jellyfin treats finished —
+                                    // and empty — series as watched), so the row falls back
+                                    // to the first episode. Mid-series adds the prominent
+                                    // Resume beside a from-the-beginning Play.
                                     HStack(spacing: Space.s12) {
-                                        if let ep = vm.resumeEpisode {
+                                        let resume = vm.resumeEpisode
+                                        let showsResume = resume.map(ItemPlayButtonLabel.shouldResumeSeries) ?? false
+                                        if showsResume, let ep = resume {
                                             PrimaryPlayButton(
                                                 title: resumeLabel(ep),
                                                 fillWidth: false,
                                                 layoutReserveTitle: ItemPlayButtonLabel.layoutReserveTitle
                                             ) {
                                                 playback.play(ep.id, in: session)
+                                            }
+                                            // From-the-beginning sibling — hidden when the
+                                            // resume target IS the first episode (one button,
+                                            // one meaning).
+                                            if let first = vm.firstEpisode, first.id != ep.id {
+                                                CircleGlassButton(
+                                                    systemImage: "play",
+                                                    accessibilityLabel: "Play from beginning"
+                                                ) {
+                                                    playback.play(first.id, in: session)
+                                                }
+                                            }
+                                        } else if let target = resume ?? vm.firstEpisode {
+                                            PrimaryPlayButton(
+                                                title: "Play",
+                                                fillWidth: false,
+                                                layoutReserveTitle: ItemPlayButtonLabel.layoutReserveTitle
+                                            ) {
+                                                playback.play(target.id, in: session)
                                             }
                                         }
                                         FavoriteActionButton(isFavorite: vm.isFavorite) {
@@ -143,6 +169,9 @@ struct SeriesDetailView: View {
             session: session,
             progress: episode.shelfPlaybackProgress,
             progressCaption: episode.shelfFooterCaption(),
+            // Check only — the footer bar above already carries partial
+            // progress, so a ring would say the same thing twice.
+            watched: episode.userData.played ? .watched : .none,
             aspectRatio: JellyfinImage.landscape,
             maxImageWidth: SeriesShelf.imageMaxWidth
         )

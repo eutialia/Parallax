@@ -106,8 +106,6 @@ public extension Episode {
 
     /// Playback fraction for shelf progress bars; nil when not started or runtime unknown.
     var shelfPlaybackProgress: Double? {
-        guard userData.playbackPositionTicks > 0 else { return nil }
-        let runtimeTicks = runtime.map { Int64($0.components.seconds) * 10_000_000 }
-        return userData.playedFraction(runtimeTicks: runtimeTicks)
+        userData.playedFraction(runtime: runtime)
     }
 }

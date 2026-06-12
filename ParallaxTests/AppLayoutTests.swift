@@ -17,7 +17,10 @@ struct AppLayoutTests {
 
     @Test("compact idiom preserves iPhone metrics")
     func compactMetrics() {
-        #expect(AppLayout.contentHMargin(idiom: .compact) == 18)
+        // 16 = the system compact layout margin, where the nav bar also parks
+        // its trailing glass circles — the library sort button lines up with
+        // the grid edge only at this value (render-measured).
+        #expect(AppLayout.contentHMargin(idiom: .compact) == 16)
         #expect(AppLayout.posterGridColumns(idiom: .compact) == 3)
     }
 

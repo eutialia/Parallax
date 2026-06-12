@@ -10,10 +10,11 @@ struct RootTabView: View {
     @State private var selectedTab: AppTab = .home
     @State private var session: Session?
     @State private var libraries: [MediaCollection] = []
-    /// The last library opened from the sidebar's Libraries section, surfaced as the lone
-    /// dynamic tab in the collapsed tab bar (Apple Music style). In-memory only: this `@State`
-    /// resets on the `.id(activeServerID)` remount (server switch) and on relaunch — never persisted.
-    @State private var lastVisitedLibraryID: CollectionID?
+    /// The last library opened from the sidebar's Libraries section (a server collection or
+    /// the virtual Favorites grid), surfaced as the lone dynamic tab in the collapsed tab bar
+    /// (Apple Music style). In-memory only: this `@State` resets on the `.id(activeServerID)`
+    /// remount (server switch) and on relaunch — never persisted.
+    @State private var lastVisitedLibraryTab: AppTab?
 
     var body: some View {
         tabView
@@ -37,14 +38,14 @@ struct RootTabView: View {
         .onChange(of: hSize) { _, newValue in
             if newValue == .regular {
                 if selectedTab == .settings || selectedTab == .library { selectedTab = .home }
-            } else if case .collection = selectedTab {
+            } else if isLibraryTab(selectedTab) {
                 selectedTab = .library
             }
         }
     }
 
     /// Tab selection that records the last sidebar-opened library *in the same transaction* as the
-    /// selection change. Updating `lastVisitedLibraryID` here (rather than in a trailing
+    /// selection change. Updating `lastVisitedLibraryTab` here (rather than in a trailing
     /// `.onChange`) means the dynamic slot's tab-bar visibility flips in lockstep with selection —
     /// so the collapsed bar already contains the new library on the first frame of the sidebar→bar
     /// morph, instead of popping its layout a frame later (pills rendering small, then resizing).
@@ -54,16 +55,22 @@ struct RootTabView: View {
     /// after the body pass that committed the selection, so its mutation lands a frame late. The
     /// binding setter runs *during* the selection write, coalescing both into one update.
     ///
-    /// Only `.collection` values originate from the sidebar; the iPhone card-list drill-down is a
-    /// NavigationStack push, never a tab switch, so it can't reach here.
+    /// Only library tabs (`.collection` / `.favorites`) originate from the sidebar; the iPhone
+    /// card-list drill-down is a NavigationStack push, never a tab switch, so it can't reach here.
     private var tabSelection: Binding<AppTab> {
         Binding(
             get: { selectedTab },
             set: { newValue in
                 selectedTab = newValue
-                if case .collection(let id) = newValue { lastVisitedLibraryID = id }
+                if isLibraryTab(newValue) { lastVisitedLibraryTab = newValue }
             }
         )
+    }
+
+    /// Tabs that live in the sidebar's Libraries section (regular width only).
+    private func isLibraryTab(_ tab: AppTab) -> Bool {
+        if case .collection = tab { return true }
+        return tab == .favorites
     }
 
     private var tabView: some View {
@@ -128,8 +135,17 @@ struct RootTabView: View {
                                 JellyfinLibraryGridView(collection: library, session: session)
                             }
                         }
-                        .defaultVisibility(library.id == lastVisitedLibraryID ? .visible : .hidden, for: .tabBar)
+                        .defaultVisibility(AppTab.collection(library.id) == lastVisitedLibraryTab ? .visible : .hidden, for: .tabBar)
                     }
+                    // The virtual cross-library Favorites grid — movies + shows the user
+                    // favorited, every server library merged. Rides the same dynamic
+                    // collapsed-bar slot as the real libraries.
+                    Tab("Favorites", systemImage: "heart", value: AppTab.favorites) {
+                        NavigationStack {
+                            JellyfinLibraryGridView(scope: .favorites, title: "Favorites", session: session)
+                        }
+                    }
+                    .defaultVisibility(lastVisitedLibraryTab == .favorites ? .visible : .hidden, for: .tabBar)
                 }
                 .defaultVisibility(.hidden, for: .tabBar)
             }

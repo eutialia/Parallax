@@ -23,7 +23,7 @@ public actor LibraryRepository {
     }
 
     public func items(
-        in collection: CollectionID,
+        in scope: LibraryScope,
         filter: ItemFilter,
         sort: ItemSort,
         cursor: PageCursor?
@@ -32,7 +32,7 @@ public actor LibraryRepository {
         let response: (items: [BaseItemDto], total: Int)
         do {
             response = try await client.getItems(
-                parentID: collection.rawValue,
+                scope: scope,
                 filter: filter,
                 sort: sort,
                 startIndex: startIndex,
@@ -187,9 +187,9 @@ public actor LibraryRepository {
         return dto?.toEpisode()
     }
 
-    public func genres(in collection: CollectionID) async throws -> [String] {
+    public func genres(in scope: LibraryScope) async throws -> [String] {
         do {
-            return try await client.genres(parentID: collection.rawValue)
+            return try await client.genres(scope: scope)
         } catch {
             throw ErrorMapping.appError(from: error)
         }

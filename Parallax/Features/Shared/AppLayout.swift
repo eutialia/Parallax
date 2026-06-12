@@ -35,9 +35,14 @@ enum AppLayout {
     /// and the player's error buttons. Pairs with `contentHMargin(.tv)` for the horizontal gutter.
     static let tvControlHeight: CGFloat = 64
 
+    /// Compact is 16 and regular is 20 — the system's own layout margins, which is
+    /// also exactly where the nav bar parks its trailing glass circles (measured in
+    /// the "Sort button in toolbar" ruler preview: circle trailing edge at 16pt
+    /// compact / 20pt regular). Anything else leaves the library's sort button
+    /// visibly off the grid's trailing edge.
     static func contentHMargin(idiom: AppIdiom) -> CGFloat {
         switch idiom {
-        case .compact: 18
+        case .compact: 16
         case .regular: 20
         case .tv: 40
         }

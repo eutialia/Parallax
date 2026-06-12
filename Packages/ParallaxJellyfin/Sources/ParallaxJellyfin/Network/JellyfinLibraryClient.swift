@@ -9,7 +9,7 @@ import JellyfinAPI
 // repository, not here. Mirrors Phase 2's JellyfinAuthClient shape.
 public protocol JellyfinLibraryClient: Sendable {
     func getCollections() async throws -> [BaseItemDto]
-    func getItems(parentID: String, filter: ItemFilter, sort: ItemSort, startIndex: Int, limit: Int) async throws -> (items: [BaseItemDto], total: Int)
+    func getItems(scope: LibraryScope, filter: ItemFilter, sort: ItemSort, startIndex: Int, limit: Int) async throws -> (items: [BaseItemDto], total: Int)
     func getItemDetail(itemID: String) async throws -> BaseItemDto
     /// Batch lookup by item id (e.g. season folders for home-shelf artwork).
     func getItemsByIDs(_ ids: [String]) async throws -> [BaseItemDto]
@@ -27,6 +27,7 @@ public protocol JellyfinLibraryClient: Sendable {
     /// The single resume/next-up episode for a series (Jellyfin /Shows/NextUp?seriesId=),
     /// or nil when the series is unwatched-from-start / finished.
     func seriesNextUp(seriesID: String) async throws -> BaseItemDto?
-    /// Distinct genre names available under a library/collection (Jellyfin /Genres?parentId=).
-    func genres(parentID: String) async throws -> [String]
+    /// Distinct genre names available in a scope (Jellyfin /Genres?parentId= for a
+    /// collection, /Genres?isFavorite=true for the favorites scope).
+    func genres(scope: LibraryScope) async throws -> [String]
 }

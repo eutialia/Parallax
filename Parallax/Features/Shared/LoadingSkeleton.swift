@@ -138,6 +138,8 @@ struct PosterGridLoadingSkeleton: View {
     let columns: Int
     let rows: Int
 
+    @Environment(\.appIdiom) private var idiom
+
     var body: some View {
         LazyVGrid(
             columns: Array(repeating: GridItem(.flexible(), spacing: Space.s12), count: columns),
@@ -147,7 +149,10 @@ struct PosterGridLoadingSkeleton: View {
                 MediaTileSkeleton()
             }
         }
-        .padding(Space.s18)
+        // Horizontal = the shared content margin so the swap to the loaded
+        // search grid (which insets by the same knob) is shift-free.
+        .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
+        .padding(.vertical, Space.s18)
         .skeletonShimmer()
     }
 }
@@ -192,7 +197,9 @@ struct LibraryListLoadingSkeleton: View {
                     .aspectRatio(JellyfinImage.landscape, contentMode: .fit)
             }
         }
-        .padding(Space.s18)
+        // Same all-edge inset as the loaded list (`JellyfinLibraryListView`)
+        // so the skeleton→cards swap doesn't shift.
+        .padding(AppLayout.contentHMargin(idiom: idiom))
         .skeletonShimmer()
     }
 }
@@ -235,7 +242,10 @@ struct DetailLoadingSkeleton: View {
                             .frame(width: 44)
                     }
                 }
-                .padding(.horizontal, Space.s18)
+                // The loaded hero foreground insets by HeroMetrics, not the
+                // content margin — match it so the title/play block lands
+                // where the real hero's does.
+                .padding(.horizontal, HeroMetrics.foregroundHorizontalInset(idiom: idiom))
                 .padding(.top, -Space.s60)
                 .tvContentInset()
 
@@ -245,7 +255,9 @@ struct DetailLoadingSkeleton: View {
                             .padding(.trailing, CGFloat(40 + i * 18))
                     }
                 }
-                .padding(.horizontal, Space.s18)
+                // The loaded detail body (overview, metadata lines) insets by
+                // the shared content margin — keep the swap shift-free.
+                .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
                 .tvContentInset()
             }
             .padding(.bottom, Space.s30)

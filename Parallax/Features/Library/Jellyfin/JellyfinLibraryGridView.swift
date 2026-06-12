@@ -2,8 +2,23 @@ import SwiftUI
 import ParallaxJellyfin
 
 struct JellyfinLibraryGridView: View {
-    let collection: MediaCollection
+    let scope: LibraryScope
+    let title: String
     let session: Session
+
+    /// A server collection (the common case — sidebar tab or Library-list drill-down).
+    init(collection: MediaCollection, session: Session) {
+        self.scope = .collection(collection.id)
+        self.title = collection.name
+        self.session = session
+    }
+
+    /// The cross-library Favorites grid (movies + shows merged).
+    init(scope: LibraryScope, title: String, session: Session) {
+        self.scope = scope
+        self.title = title
+        self.session = session
+    }
 
     @Environment(AppDependencies.self) private var deps
     @Environment(\.appIdiom) private var idiom
@@ -18,7 +33,7 @@ struct JellyfinLibraryGridView: View {
     /// skeleton→real swap shift-free; the height reuses the app-wide control height.
     private let headerControlHeight: CGFloat = AppLayout.tvControlHeight
     private let genreChipWidth: CGFloat = 140
-    private let sortChipWidth: CGFloat = 150
+    private let sortChipWidth: CGFloat = 110
 
     var body: some View {
         Group {
@@ -34,24 +49,22 @@ struct JellyfinLibraryGridView: View {
         // tvOS deliberately omits it: the collapsed sidebar's top-left already carries the library
         // name (from the selected tab's label), so an in-content title would just duplicate it.
         #if !os(tvOS)
-        .navigationTitle(collection.name)
+        .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
-        // iPhone + iPad carry Genre/Sort in the nav bar's trailing edge — iPhone as ONE combined
-        // menu button (its bar is too narrow for two chips beside the title), iPad as two menus on
-        // the same row as the back button. tvOS instead keeps them in-content (see `gridContent`):
-        // toolbar items don't join its focus engine, and the header must stay focus-reachable.
-        .toolbar {
-            if let vm = viewModel {
-                libraryControlsToolbar(vm: vm)
-            }
-        }
+        // iPhone + iPad carry ONE combined Sort menu in the nav bar's trailing edge — direction
+        // tiles on top, sort fields below, genre folded in as a submenu. Unconditional (not
+        // gated on the view model): a toolbar item inserted mid-push doesn't render until the
+        // transition settles, so the button was blinking in late. tvOS instead keeps Genre +
+        // Sort as in-content chips (see `gridContent`): toolbar items don't join its focus
+        // engine, and the header must stay focus-reachable.
+        .toolbar { libraryControlsToolbar }
         #endif
         .itemDetailNavigation()
         .screenFloor()
         .task {
             if viewModel == nil {
                 let repo = await deps.libraryRepoFactory(session)
-                viewModel = JellyfinLibraryGridViewModel(repo: repo, collectionID: collection.id)
+                viewModel = JellyfinLibraryGridViewModel(repo: repo, scope: scope)
                 await viewModel?.load()
             }
         }
@@ -63,10 +76,12 @@ struct JellyfinLibraryGridView: View {
             libraryGridLoadingPlaceholder
         } else if case .failed(let message) = vm.state, vm.items.isEmpty {
             ContentUnavailableView(
-                "Couldn't load \(collection.name)",
+                "Couldn't load \(title)",
                 systemImage: "exclamationmark.triangle",
                 description: Text(message)
             )
+        } else if showsEmptyState(vm) {
+            emptyState
         } else {
             ScrollView {
                 VStack(spacing: 0) {
@@ -98,6 +113,29 @@ struct JellyfinLibraryGridView: View {
                         .background(Color.background)
                 }
             }
+        }
+    }
+
+    /// Loaded but nothing to show. Matters most for Favorites, which legitimately
+    /// starts empty; a filtered-out collection gets the same treatment.
+    private func showsEmptyState(_ vm: JellyfinLibraryGridViewModel) -> Bool {
+        vm.items.isEmpty && vm.state == .loaded && !vm.isRefreshing
+    }
+
+    @ViewBuilder
+    private var emptyState: some View {
+        if case .favorites = scope {
+            ContentUnavailableView(
+                "No Favorites",
+                systemImage: "heart",
+                description: Text("Movies and shows you favorite will show up here.")
+            )
+        } else {
+            ContentUnavailableView(
+                "No Items",
+                systemImage: "rectangle.stack",
+                description: Text("Nothing in \(title) matches the current genre.")
+            )
         }
     }
 
@@ -215,7 +253,7 @@ struct JellyfinLibraryGridView: View {
             } else if !vm.availableGenres.isEmpty {
                 genreMenu(vm: vm)
             }
-            sortFilterMenu(vm: vm)
+            sortMenu(vm: vm)
             Spacer(minLength: 0)
         }
         .padding(.top, Space.s8)
@@ -234,74 +272,30 @@ struct JellyfinLibraryGridView: View {
     }
 
     #if !os(tvOS)
-    /// Any active library filter — genre, watch state, or favorites (sort order isn't a filter).
-    /// Drives the iPhone combined button's filled-funnel state so an applied filter is visible
-    /// without opening the menu.
-    private func isFiltered(_ vm: JellyfinLibraryGridViewModel) -> Bool {
-        vm.selectedGenre != nil || vm.filter.watchState != .all || vm.filter.favoritesOnly
-    }
-
-    /// Nav-bar placement of the library controls (iPhone + iPad), on the trailing edge of the bar
-    /// that carries the back button. iPad spreads Genre + Sort across two menus (room to spare);
-    /// iPhone collapses them into ONE menu button whose Genre is a nested submenu, since its
-    /// narrower bar can't carry two chips beside the title. Both reuse `genrePicker` /
-    /// `sortFilterPicker`, with plain `Label`s so the system glass treats them as standard bar
-    /// buttons (the inline chips' own `.glassEffect` would double up). tvOS is excluded at compile
-    /// time (`.topBarTrailing` is iOS-only) and keeps the focusable in-content header.
+    /// Nav-bar placement of the library controls (iPhone + iPad): ONE menu carrying the
+    /// Photos-style direction tiles, the sort fields, and Genre as a nested submenu —
+    /// UIKit-bridged for the `.medium` element size (see `LibrarySortMenuButton`).
+    /// Renders from plain values so it can mount before the view model exists.
     @ToolbarContentBuilder
-    private func libraryControlsToolbar(vm: JellyfinLibraryGridViewModel) -> some ToolbarContent {
-        if idiom == .regular {
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                if !vm.availableGenres.isEmpty {
-                    Menu {
-                        genrePicker(vm: vm)
-                    } label: {
-                        Label(vm.selectedGenre ?? "Genre", systemImage: "theatermasks")
-                            .labelStyle(.titleAndIcon)
-                    }
-                    .accessibilityLabel("Genre")
-                }
-                Menu {
-                    sortFilterPicker(vm: vm)
-                } label: {
-                    Label("Sort & Filter", systemImage: "line.3.horizontal.decrease")
-                        .labelStyle(.titleAndIcon)
-                }
-                .accessibilityLabel("Sort and Filter")
-            }
-        } else {
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    // Genre as a nested submenu (it can be a long list); Sort / Order / Filter ride
-                    // inline beneath it as the menu's lower sections.
-                    if !vm.availableGenres.isEmpty {
-                        Menu {
-                            genrePicker(vm: vm)
-                        } label: {
-                            Label(vm.selectedGenre ?? "Genre", systemImage: "theatermasks")
-                        }
-                    }
-                    sortFilterPicker(vm: vm)
-                } label: {
-                    // The single button hides the genre/watch/favorites state inside the menu, so
-                    // the funnel fills when any filter is active — the affordance the iPad genre
-                    // label and the tvOS chip's isSelected tint provide on their own.
-                    Label(
-                        "Sort & Filter",
-                        systemImage: isFiltered(vm)
-                            ? "line.3.horizontal.decrease.circle.fill"
-                            : "line.3.horizontal.decrease.circle"
-                    )
-                }
-                .accessibilityLabel(vm.availableGenres.isEmpty ? "Sort and Filter" : "Sort, filter, and genre")
-            }
+    private var libraryControlsToolbar: some ToolbarContent {
+        ToolbarItem(placement: .topBarTrailing) {
+            LibrarySortMenuButton(
+                sortField: viewModel?.sortField ?? ItemSort.defaultForLibrary.field,
+                sortDirection: viewModel?.sortDirection ?? ItemSort.defaultForLibrary.direction,
+                selectedGenre: viewModel?.selectedGenre,
+                availableGenres: viewModel?.availableGenres ?? [],
+                isEnabled: viewModel != nil,
+                onSelectField: { viewModel?.sortField = $0 },
+                onSelectDirection: { viewModel?.sortDirection = $0 },
+                onSelectGenre: { viewModel?.selectedGenre = $0 }
+            )
         }
     }
     #endif
 
     /// Inline-header Genre menu — only reachable on tvOS (`headerControls` is gated on
-    /// `idiom == .tv`; iPhone/iPad carry the same `genrePicker` in the nav bar via
-    /// `libraryControlsToolbar`), so the native `.glass` style applies unconditionally.
+    /// `idiom == .tv`; iPhone/iPad fold the same `genrePicker` into the combined sort
+    /// menu), so the native `.glass` style applies unconditionally.
     private func genreMenu(vm: JellyfinLibraryGridViewModel) -> some View {
         Menu {
             genrePicker(vm: vm)
@@ -315,8 +309,8 @@ struct JellyfinLibraryGridView: View {
     }
 
     /// Single-select genre filter, collapsed from a scrolling chip bar into one menu: the inline
-    /// `Picker` gives each genre the system's leading checkmark, with "All Genres" to clear. Shared
-    /// by the inline chip (iPhone/tvOS) and the nav-bar menu (iPad).
+    /// `Picker` gives each genre the system's leading checkmark, with "All Genres" to clear.
+    /// Shared by the tvOS chip and the combined sort menu's submenu (iPhone/iPad).
     @ViewBuilder
     private func genrePicker(vm: JellyfinLibraryGridViewModel) -> some View {
         @Bindable var vm = vm
@@ -340,44 +334,37 @@ struct JellyfinLibraryGridView: View {
             .font(.subheadline.weight(.medium))
     }
 
-    /// Inline-header Sort & Filter menu — tvOS-only like `genreMenu`; iPhone/iPad carry
-    /// the same `sortFilterPicker` in the nav bar (see `libraryControlsToolbar`).
-    private func sortFilterMenu(vm: JellyfinLibraryGridViewModel) -> some View {
+    /// Inline-header Sort menu — tvOS-only like `genreMenu` (Genre stays its own chip
+    /// there, so this menu is sort-only).
+    private func sortMenu(vm: JellyfinLibraryGridViewModel) -> some View {
         Menu {
-            sortFilterPicker(vm: vm)
+            sortPicker(vm: vm)
         } label: {
-            headerChip("Sort & Filter", systemImage: "line.3.horizontal.decrease")
+            headerChip("Sort", systemImage: "arrow.up.arrow.down")
         }
         .buttonStyle(.glass)
-        .accessibilityLabel("Sort and Filter")
+        .accessibilityLabel("Sort")
     }
 
-    /// Sort field + order, then a Filter section. Field + direction are separate inline Pickers
-    /// (not a hand-rolled row with a trailing arrow), so every selected item gets the system's
-    /// LEADING checkmark column — aligned with the Filter watch-state picker, and no 0-height slot.
-    /// Shared by the inline chip (iPhone/tvOS) and the nav-bar menu (iPad).
+    /// The tvOS sort menu body: same human-language direction labels as the iOS
+    /// bridged menu (one vocabulary — `LibrarySortVocabulary`), but as an inline
+    /// picker — the tile row is a touch-menu affordance the tvOS focus engine
+    /// doesn't render. Genre stays its own header chip there.
     @ViewBuilder
-    private func sortFilterPicker(vm: JellyfinLibraryGridViewModel) -> some View {
+    private func sortPicker(vm: JellyfinLibraryGridViewModel) -> some View {
         @Bindable var vm = vm
+        Picker("Order", selection: $vm.sortDirection) {
+            ForEach(LibrarySortVocabulary.directionOptions(for: vm.sortField), id: \.direction) { option in
+                Label(option.title, systemImage: option.icon).tag(option.direction)
+            }
+        }
+        .pickerStyle(.inline)
         Picker("Sort By", selection: $vm.sortField) {
             ForEach(ItemSort.Field.allCases, id: \.self) { f in
-                Text(label(for: f)).tag(f)
+                Text(LibrarySortVocabulary.label(for: f)).tag(f)
             }
         }
         .pickerStyle(.inline)
-        Picker("Order", selection: $vm.sortDirection) {
-            Label("Ascending", systemImage: "arrow.up").tag(ItemSort.Direction.ascending)
-            Label("Descending", systemImage: "arrow.down").tag(ItemSort.Direction.descending)
-        }
-        .pickerStyle(.inline)
-        Section("Filter") {
-            Picker("Watched", selection: $vm.filter.watchState) {
-                Text("All").tag(ItemFilter.WatchState.all)
-                Text("Played").tag(ItemFilter.WatchState.played)
-                Text("Unplayed").tag(ItemFilter.WatchState.unplayed)
-            }
-            Toggle("Favorites only", isOn: $vm.filter.favoritesOnly)
-        }
     }
 
     @ViewBuilder
@@ -388,6 +375,7 @@ struct JellyfinLibraryGridView: View {
             imageKind: .primary,
             session: session,
             progress: nil,
+            watched: .init(item),
             aspectRatio: JellyfinImage.poster,
             maxImageWidth: 600
         )
@@ -401,16 +389,4 @@ struct JellyfinLibraryGridView: View {
         }
     }
 
-    private func label(for field: ItemSort.Field) -> String {
-        switch field {
-        case .title: return "Title"
-        case .dateAdded: return "Date Added"
-        case .releaseDate: return "Release Date"
-        case .communityRating: return "Community Rating"
-        case .officialRating: return "Official Rating"
-        case .runtime: return "Runtime"
-        case .playCount: return "Play Count"
-        case .random: return "Random"
-        }
-    }
 }

@@ -6,9 +6,9 @@ struct MovieDetailView: View {
     let session: Session
 
     @Environment(AppDependencies.self) private var deps
+    @Environment(PlaybackPresenter.self) private var playback
     @Environment(\.appIdiom) private var idiom
     @State private var viewModel: MovieDetailViewModel?
-    @State private var playerItem: ItemDetail?
 
     var body: some View {
         Group {
@@ -39,12 +39,15 @@ struct MovieDetailView: View {
                                         DetailHeroMetadataRow(metadata: meta)
                                     }
                                     HStack(spacing: Space.s12) {
+                                        // "Resume" when the movie is mid-watch — the player
+                                        // already resumes from the saved position; the pill
+                                        // just never admitted it.
                                         PrimaryPlayButton(
-                                            title: "Play",
+                                            title: ItemPlayButtonLabel.title(for: .movie(md.movie), resumeEpisode: nil),
                                             fillWidth: false,
                                             layoutReserveTitle: ItemPlayButtonLabel.layoutReserveTitle
                                         ) {
-                                            playerItem = .movie(md)
+                                            playback.play(.movie(md), in: session)
                                         }
                                         FavoriteActionButton(isFavorite: vm.isFavorite) {
                                             Task { await vm.toggleFavorite() }
@@ -115,9 +118,6 @@ struct MovieDetailView: View {
         .screenFloor()
         .toolbar(.visible, for: .navigationBar)
         .toolbarBackground(.hidden, for: .navigationBar)
-        .fullScreenCover(item: $playerItem) { detail in
-            PlayerView(item: detail, session: session)
-        }
         .task {
             if viewModel == nil {
                 let repo = await deps.libraryRepoFactory(session)

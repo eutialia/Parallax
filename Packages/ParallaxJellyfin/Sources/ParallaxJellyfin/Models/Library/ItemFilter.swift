@@ -1,19 +1,12 @@
 import Foundation
 
+/// Library-grid filtering. Watch state and favorites left this struct on purpose:
+/// played titles are marked on the tile itself, and favorites became their own
+/// library scope (`LibraryScope.favorites`) — genre is the one remaining filter.
 public struct ItemFilter: Sendable, Hashable {
-    public var watchState: WatchState
-    public var favoritesOnly: Bool
     public var genres: [String]
 
-    public init(watchState: WatchState = .all, favoritesOnly: Bool = false, genres: [String] = []) {
-        self.watchState = watchState
-        self.favoritesOnly = favoritesOnly
+    public init(genres: [String] = []) {
         self.genres = genres
-    }
-
-    public enum WatchState: Sendable, Hashable, CaseIterable {
-        case all
-        case played
-        case unplayed
     }
 }

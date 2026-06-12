@@ -31,7 +31,7 @@ final class FakeJellyfinLibraryClient: JellyfinLibraryClient, @unchecked Sendabl
 
     // Call records.
     private(set) var collectionsCallCount = 0
-    private(set) var itemsCalls: [(parentID: String, filter: ParallaxJellyfin.ItemFilter, sort: ParallaxJellyfin.ItemSort, startIndex: Int, limit: Int)] = []
+    private(set) var itemsCalls: [(scope: LibraryScope, filter: ParallaxJellyfin.ItemFilter, sort: ParallaxJellyfin.ItemSort, startIndex: Int, limit: Int)] = []
     private(set) var detailCalls: [String] = []
     private(set) var itemsByIDsCalls: [[String]] = []
     private(set) var seasonsCalls: [String] = []
@@ -43,7 +43,7 @@ final class FakeJellyfinLibraryClient: JellyfinLibraryClient, @unchecked Sendabl
     private(set) var setFavoriteCalls: [(itemID: String, isFavorite: Bool)] = []
     private(set) var setPlayedCalls: [(itemID: String, isPlayed: Bool)] = []
     private(set) var seriesNextUpCalls: [String] = []
-    private(set) var genresCalls: [String] = []
+    private(set) var genresCalls: [LibraryScope] = []
 
     enum FakeError: Error { case notConfigured }
 
@@ -52,8 +52,8 @@ final class FakeJellyfinLibraryClient: JellyfinLibraryClient, @unchecked Sendabl
         return try collectionsResult.get()
     }
 
-    func getItems(parentID: String, filter: ParallaxJellyfin.ItemFilter, sort: ParallaxJellyfin.ItemSort, startIndex: Int, limit: Int) async throws -> (items: [BaseItemDto], total: Int) {
-        itemsCalls.append((parentID, filter, sort, startIndex, limit))
+    func getItems(scope: LibraryScope, filter: ParallaxJellyfin.ItemFilter, sort: ParallaxJellyfin.ItemSort, startIndex: Int, limit: Int) async throws -> (items: [BaseItemDto], total: Int) {
+        itemsCalls.append((scope, filter, sort, startIndex, limit))
         if !itemsPagedResults.isEmpty {
             let result = itemsPagedResults.removeFirst()
             return try result.get()
@@ -129,8 +129,8 @@ final class FakeJellyfinLibraryClient: JellyfinLibraryClient, @unchecked Sendabl
         return try seriesNextUpResult.get()
     }
 
-    func genres(parentID: String) async throws -> [String] {
-        genresCalls.append(parentID)
+    func genres(scope: LibraryScope) async throws -> [String] {
+        genresCalls.append(scope)
         return try genresResult.get()
     }
 }

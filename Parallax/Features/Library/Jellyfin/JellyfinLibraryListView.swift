@@ -32,6 +32,11 @@ struct JellyfinLibraryListView: View {
                                 NavigationLink(value: coll) { LibraryCard(collection: coll, session: session) }
                                     .tvPosterButton()
                             }
+                            // The virtual cross-library Favorites grid, riding the same banner
+                            // grid as the server libraries (the iPad/tvOS sidebar lists it as a
+                            // Libraries-section tab instead).
+                            NavigationLink(value: FavoritesRoute()) { FavoritesCard() }
+                                .tvPosterButton()
                         }
                         .padding(AppLayout.contentHMargin(idiom: idiom))
                     }
@@ -50,6 +55,9 @@ struct JellyfinLibraryListView: View {
         }
         .navigationDestination(for: MediaCollection.self) { coll in
             JellyfinLibraryGridView(collection: coll, session: session)
+        }
+        .navigationDestination(for: FavoritesRoute.self) { _ in
+            JellyfinLibraryGridView(scope: .favorites, title: "Favorites", session: session)
         }
         .task {
             if viewModel == nil {

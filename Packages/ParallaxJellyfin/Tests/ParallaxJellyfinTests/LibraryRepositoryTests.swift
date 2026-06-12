@@ -76,7 +76,7 @@ struct LibraryRepositoryTests {
         client.itemsResult = .success((items: (0..<50).map { sampleMovieDto(id: "m\($0)") }, total: 120))
 
         let page1 = try await repo.items(
-            in: CollectionID(rawValue: "coll-movies"),
+            in: .collection(CollectionID(rawValue: "coll-movies")),
             filter: ItemFilter(),
             sort: .defaultForLibrary,
             cursor: nil
@@ -88,7 +88,7 @@ struct LibraryRepositoryTests {
         // Second page: client returns next 50; cursor still valid.
         client.itemsResult = .success((items: (50..<100).map { sampleMovieDto(id: "m\($0)") }, total: 120))
         let page2 = try await repo.items(
-            in: CollectionID(rawValue: "coll-movies"),
+            in: .collection(CollectionID(rawValue: "coll-movies")),
             filter: ItemFilter(),
             sort: .defaultForLibrary,
             cursor: page1.nextCursor
@@ -99,7 +99,7 @@ struct LibraryRepositoryTests {
         // Third page: only 20 items remain; nextCursor goes nil.
         client.itemsResult = .success((items: (100..<120).map { sampleMovieDto(id: "m\($0)") }, total: 120))
         let page3 = try await repo.items(
-            in: CollectionID(rawValue: "coll-movies"),
+            in: .collection(CollectionID(rawValue: "coll-movies")),
             filter: ItemFilter(),
             sort: .defaultForLibrary,
             cursor: page2.nextCursor
@@ -112,10 +112,10 @@ struct LibraryRepositoryTests {
     func itemsForwardsParams() async throws {
         let (repo, client, _) = make()
         client.itemsResult = .success(([], 0))
-        let filter = ItemFilter(watchState: .unplayed, favoritesOnly: true, genres: ["Action"])
+        let filter = ItemFilter(genres: ["Action"])
         let sort = ItemSort(field: .dateAdded, direction: .descending)
         _ = try await repo.items(
-            in: CollectionID(rawValue: "coll-movies"),
+            in: .collection(CollectionID(rawValue: "coll-movies")),
             filter: filter,
             sort: sort,
             cursor: nil
@@ -123,9 +123,17 @@ struct LibraryRepositoryTests {
         #expect(client.itemsCalls.last?.filter == filter)
         #expect(client.itemsCalls.last?.filter.genres == ["Action"])
         #expect(client.itemsCalls.last?.sort == sort)
-        #expect(client.itemsCalls.last?.parentID == "coll-movies")
+        #expect(client.itemsCalls.last?.scope == .collection(CollectionID(rawValue: "coll-movies")))
         #expect(client.itemsCalls.last?.startIndex == 0)
         #expect(client.itemsCalls.last?.limit == 50)
+    }
+
+    @Test("items() forwards the favorites scope to the client")
+    func itemsFavoritesScope() async throws {
+        let (repo, client, _) = make()
+        client.itemsResult = .success(([], 0))
+        _ = try await repo.items(in: .favorites, filter: ItemFilter(), sort: .defaultForLibrary, cursor: nil)
+        #expect(client.itemsCalls.last?.scope == .favorites)
     }
 
     @Test("detail() returns the right ItemDetail case based on DTO type")
@@ -307,12 +315,12 @@ struct LibraryRepositoryUserActionTests {
         #expect(client.seriesNextUpCalls == ["ser-1"])
     }
 
-    @Test("genres forwards parentID and returns client list")
+    @Test("genres forwards the scope and returns client list")
     func genresForwards() async throws {
         let (repo, client) = make()
         client.genresResult = .success(["Action", "Drama"])
-        let result = try await repo.genres(in: CollectionID(rawValue: "coll-1"))
-        #expect(client.genresCalls == ["coll-1"])
+        let result = try await repo.genres(in: .collection(CollectionID(rawValue: "coll-1")))
+        #expect(client.genresCalls == [.collection(CollectionID(rawValue: "coll-1"))])
         #expect(result == ["Action", "Drama"])
     }
 
@@ -320,7 +328,7 @@ struct LibraryRepositoryUserActionTests {
     func genresEmpty() async throws {
         let (repo, client) = make()
         client.genresResult = .success([])
-        let result = try await repo.genres(in: CollectionID(rawValue: "coll-2"))
+        let result = try await repo.genres(in: .collection(CollectionID(rawValue: "coll-2")))
         #expect(result.isEmpty)
     }
 }

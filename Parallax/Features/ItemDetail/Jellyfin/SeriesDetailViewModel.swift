@@ -59,6 +59,21 @@ final class SeriesDetailViewModel {
         episodesBySeasonID[seasonID] ?? []
     }
 
+    /// First playable episode — S1 E1 in the common case, skipping Specials
+    /// (season 0) whenever a regular season exists. This is the "Play" target
+    /// that survives a fully-watched series: Jellyfin's /Shows/NextUp returns
+    /// nothing once everything is played (and treats an empty series as
+    /// watched), which used to take the Play button down with it.
+    var firstEpisode: Episode? {
+        guard case .loaded(_, let seasons) = state else { return nil }
+        let ordered = seasons.sorted { ($0.indexNumber ?? Int.max) < ($1.indexNumber ?? Int.max) }
+        let regular = ordered.filter { ($0.indexNumber ?? 0) > 0 }
+        for season in (regular.isEmpty ? ordered : regular) {
+            if let first = episodesBySeasonID[season.id]?.first { return first }
+        }
+        return nil
+    }
+
     func toggleFavorite() async {
         let original = isFavorite
         isFavorite = !original

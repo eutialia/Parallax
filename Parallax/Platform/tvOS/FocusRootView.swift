@@ -79,6 +79,11 @@ struct FocusRootView: View {
                             }
                         }
                     }
+                    Tab("Favorites", systemImage: "heart", value: AppTab.favorites) {
+                        NavigationStack {
+                            JellyfinLibraryGridView(scope: .favorites, title: "Favorites", session: session)
+                        }
+                    }
                 }
             }
 

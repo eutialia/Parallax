@@ -2,6 +2,15 @@ import SwiftUI
 import ParallaxJellyfin
 
 struct MediaTile: View {
+    /// Top-right corner badge state: a progress ring while a title is mid-watch,
+    /// the check once it's done — one disc, the ring "fills up into" the check.
+    enum WatchedStatus: Equatable {
+        case none
+        /// Watched fraction (0–1) — the disc's border fills clockwise.
+        case inProgress(Double)
+        case watched
+    }
+
     @Environment(\.itemZoomNavigationValue) private var itemZoomNavigation
 
     let title: String
@@ -10,6 +19,7 @@ struct MediaTile: View {
     let session: Session
     let progress: Double?   // 0.0–1.0; nil hides the bar
     let progressCaption: String?
+    let watched: WatchedStatus
     let aspectRatio: CGFloat
     let maxImageWidth: Int
 
@@ -20,6 +30,7 @@ struct MediaTile: View {
         session: Session,
         progress: Double?,
         progressCaption: String? = nil,
+        watched: WatchedStatus = .none,
         aspectRatio: CGFloat = JellyfinImage.poster,
         maxImageWidth: Int = 600
     ) {
@@ -29,6 +40,7 @@ struct MediaTile: View {
         self.session = session
         self.progress = progress
         self.progressCaption = progressCaption
+        self.watched = watched
         self.aspectRatio = aspectRatio
         self.maxImageWidth = maxImageWidth
     }
@@ -44,11 +56,78 @@ struct MediaTile: View {
             }
         }
         .clipShape(.rect(cornerRadius: Radius.tile))
+        // After the clip: the disc rides over the rounded corner instead of
+        // being shaved by it.
+        .overlay(alignment: .topTrailing) {
+            statusBadge
+        }
         // tvOS system highlight (specular + parallax) masked to the tile's own corners —
         // pairs with the `.borderless` style the enclosing button wears (`tvPosterButton`).
         .tvPosterHighlight(cornerRadius: Radius.tile)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(title)
+        .accessibilityValue(watchedAccessibilityValue)
+    }
+
+    private var watchedAccessibilityValue: String {
+        switch watched {
+        case .none: ""
+        case .inProgress(let fraction): "\(Int((fraction * 100).rounded()))% watched"
+        case .watched: "Watched"
+        }
+    }
+
+    #if os(tvOS)
+    private static let badgeDiameter: CGFloat = 36
+    private static let badgeInset: CGFloat = 12
+    private static let badgeRing: CGFloat = 3
+    private static let badgeGlyph: Font = .system(size: 17, weight: .bold)
+    #else
+    private static let badgeDiameter: CGFloat = 22
+    private static let badgeInset: CGFloat = 6
+    private static let badgeRing: CGFloat = 2
+    private static let badgeGlyph: Font = .system(size: 10, weight: .bold)
+    #endif
+
+    /// Watched marker — Jellyfin's top-corner check, restated quietly: a white
+    /// check on a dark scrim disc, hairline-ringed so it separates from light
+    /// posters without shouting over dark ones. Mid-watch, the same disc carries
+    /// a progress ring on its border instead of the check — the fraction fills
+    /// the border clockwise, and at 100% the full ring "becomes" the check
+    /// badge. Library grids only; the continue-watching shelves carry footer
+    /// progress bars instead.
+    @ViewBuilder
+    private var statusBadge: some View {
+        switch watched {
+        case .none:
+            EmptyView()
+        case .inProgress(let fraction):
+            badgeDisc {
+                Circle()
+                    // Floor the arc so "just started" still reads as a ring, not a dot.
+                    .trim(from: 0, to: min(max(fraction, 0.05), 1))
+                    .stroke(.white, style: StrokeStyle(lineWidth: Self.badgeRing, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                    // Center the arc on the hairline track: inset the path so the
+                    // stroke straddles the disc's border instead of clipping at it.
+                    .padding(Self.badgeRing / 2)
+            }
+        case .watched:
+            badgeDisc {
+                Image(systemName: "checkmark")
+                    .font(Self.badgeGlyph)
+                    .foregroundStyle(.white)
+            }
+        }
+    }
+
+    private func badgeDisc(@ViewBuilder content: () -> some View) -> some View {
+        content()
+            .frame(width: Self.badgeDiameter, height: Self.badgeDiameter)
+            .background(.black.opacity(0.45), in: .circle)
+            .overlay(Circle().strokeBorder(.white.opacity(0.35), lineWidth: 1))
+            .padding(Self.badgeInset)
+            .allowsHitTesting(false)
     }
 
     private var showsShelfFooterOverlay: Bool {
@@ -107,4 +186,54 @@ struct MediaTile: View {
             image
         }
     }
+}
+
+extension MediaTile.WatchedStatus {
+    /// Grid mapping from a library item: the check when played, the ring while
+    /// mid-watch (movies/episodes only — a series has no single playback
+    /// position, so it's check-or-nothing there).
+    init(_ item: Item) {
+        if item.userData.played {
+            self = .watched
+        } else if let fraction = item.playbackProgress, fraction > 0, fraction < 1 {
+            self = .inProgress(fraction)
+        } else {
+            self = .none
+        }
+    }
+}
+
+/// Diagnostic: badge legibility on the placeholder field (the worst case is a
+/// light poster — the hairline ring is what separates it there) and the
+/// progress ring at the tricky fractions: barely started (floored arc), the
+/// half mark, and almost-done next to the full check it morphs into.
+#Preview("Watched badge", traits: .sizeThatFitsLayout) {
+    let session = Session(
+        persisted: PersistedSession(
+            id: ServerID(rawValue: "preview"),
+            serverURL: URL(string: "https://preview.invalid")!,
+            serverName: "Preview",
+            user: UserSnapshot(id: "u1", name: "preview", serverLastUpdatedAt: nil)
+        ),
+        accessToken: "preview"
+    )
+    return HStack(spacing: 16) {
+        MediaTile(title: "Just started", imageRef: nil, imageKind: .primary,
+                  session: session, progress: nil, watched: .inProgress(0.02))
+            .frame(width: 140)
+        MediaTile(title: "Halfway", imageRef: nil, imageKind: .primary,
+                  session: session, progress: nil, watched: .inProgress(0.5))
+            .frame(width: 140)
+        MediaTile(title: "Almost done", imageRef: nil, imageKind: .primary,
+                  session: session, progress: nil, watched: .inProgress(0.92))
+            .frame(width: 140)
+        MediaTile(title: "Watched", imageRef: nil, imageKind: .primary,
+                  session: session, progress: nil, watched: .watched)
+            .frame(width: 140)
+        MediaTile(title: "Unwatched", imageRef: nil, imageKind: .primary,
+                  session: session, progress: nil)
+            .frame(width: 140)
+    }
+    .padding()
+    .background(Color.background)
 }

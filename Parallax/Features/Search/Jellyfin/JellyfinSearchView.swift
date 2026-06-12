@@ -106,7 +106,8 @@ struct JellyfinSearchView: View {
                     results: results,
                     session: session,
                     posterCols: posterCols,
-                    landscapeCols: landscapeCols
+                    landscapeCols: landscapeCols,
+                    hMargin: AppLayout.contentHMargin(idiom: idiom)
                 )
                 .equatable()
                 #if !os(tvOS)

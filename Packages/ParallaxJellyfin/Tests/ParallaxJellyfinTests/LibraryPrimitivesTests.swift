@@ -28,18 +28,26 @@ struct LibraryPrimitivesTests {
         #expect(page.nextCursor == cursor)
     }
 
-    @Test("ItemSort default for library is title ascending")
+    @Test("ItemSort default for library is release date, newest first")
     func itemSortDefault() {
         let s = ItemSort.defaultForLibrary
-        #expect(s.field == .title)
-        #expect(s.direction == .ascending)
+        #expect(s.field == .releaseDate)
+        #expect(s.direction == .descending)
+    }
+
+    @Test("ItemSort natural directions: dates and ratings descend, titles ascend")
+    func itemSortNaturalDirections() {
+        #expect(ItemSort.Field.releaseDate.naturalDirection == .descending)
+        #expect(ItemSort.Field.dateAdded.naturalDirection == .descending)
+        #expect(ItemSort.Field.communityRating.naturalDirection == .descending)
+        #expect(ItemSort.Field.officialRating.naturalDirection == .descending)
+        #expect(ItemSort.Field.title.naturalDirection == .ascending)
     }
 
     @Test("ItemFilter default is no constraints")
     func itemFilterDefault() {
         let f = ItemFilter()
-        #expect(f.watchState == .all)
-        #expect(f.favoritesOnly == false)
+        #expect(f.genres.isEmpty)
     }
 
     @Test("SearchResults default is empty")

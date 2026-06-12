@@ -21,6 +21,13 @@ public struct UserItemData: Sendable, Hashable, Codable {
         return Double(playbackPositionTicks) / Double(runtimeTicks)
     }
 
+    /// Same fraction from the model types' `Duration` runtime; nil when playback
+    /// hasn't started or there's no runtime to divide by.
+    public func playedFraction(runtime: Duration?) -> Double? {
+        guard playbackPositionTicks > 0 else { return nil }
+        return playedFraction(runtimeTicks: runtime.map { Int64($0.components.seconds) * 10_000_000 })
+    }
+
     /// Whole minutes left in the item; nil when runtime is unknown or fully watched.
     public func remainingMinutes(runtime: Duration?) -> Int? {
         guard let runtime else { return nil }

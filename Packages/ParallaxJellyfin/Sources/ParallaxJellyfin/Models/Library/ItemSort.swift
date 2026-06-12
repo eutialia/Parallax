@@ -10,14 +10,22 @@ public struct ItemSort: Sendable, Hashable {
     }
 
     public enum Field: Sendable, Hashable, CaseIterable {
-        case title              // SortName
-        case dateAdded          // DateCreated
         case releaseDate        // PremiereDate
+        case dateAdded          // DateCreated
+        case title              // SortName
         case communityRating
         case officialRating
-        case runtime
-        case playCount
-        case random
+
+        /// The direction a freshly picked field starts in — the ordering people
+        /// mean when they tap the field name: dates newest-first, titles A→Z,
+        /// ratings highest-first. The UI resets to this on every field switch so
+        /// "Title" never inherits a stale Z→A from a previous "Newest" pick.
+        public var naturalDirection: Direction {
+            switch self {
+            case .title: return .ascending
+            case .releaseDate, .dateAdded, .communityRating, .officialRating: return .descending
+            }
+        }
     }
 
     public enum Direction: Sendable, Hashable, CaseIterable {
@@ -25,5 +33,5 @@ public struct ItemSort: Sendable, Hashable {
         case descending
     }
 
-    public static let defaultForLibrary = ItemSort(field: .title, direction: .ascending)
+    public static let defaultForLibrary = ItemSort(field: .releaseDate, direction: .descending)
 }

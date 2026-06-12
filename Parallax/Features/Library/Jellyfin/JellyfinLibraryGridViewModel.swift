@@ -50,7 +50,11 @@ final class JellyfinLibraryGridViewModel {
     }
     var sortField: ItemSort.Field {
         get { sort.field }
-        set { sort = ItemSort(field: newValue, direction: sort.direction) }
+        // Picking a field adopts its natural direction (dates newest-first,
+        // titles A→Z) instead of inheriting the previous field's order — the
+        // direction palette re-labels per field, so a carried-over direction
+        // would silently flip meaning ("Newest" → "Z to A").
+        set { sort = ItemSort(field: newValue, direction: newValue.naturalDirection) }
     }
     var sortDirection: ItemSort.Direction {
         get { sort.direction }
@@ -64,11 +68,11 @@ final class JellyfinLibraryGridViewModel {
     /// Monotonic token so only the latest reset fetch may mutate refresh UI state.
     private var fetchGeneration: UInt = 0
     private let repo: LibraryRepository
-    private let collectionID: CollectionID
+    private let scope: LibraryScope
 
-    init(repo: LibraryRepository, collectionID: CollectionID) {
+    init(repo: LibraryRepository, scope: LibraryScope) {
         self.repo = repo
-        self.collectionID = collectionID
+        self.scope = scope
     }
 
     func load() async {
@@ -90,7 +94,7 @@ final class JellyfinLibraryGridViewModel {
         genreTask?.cancel()
         isLoadingGenres = true
         genreTask = Task {
-            let genres = (try? await repo.genres(in: collectionID)) ?? []
+            let genres = (try? await repo.genres(in: scope)) ?? []
             guard !Task.isCancelled else { return }
             availableGenres = genres
             isLoadingGenres = false
@@ -149,7 +153,7 @@ final class JellyfinLibraryGridViewModel {
         inFlight = Task {
             do {
                 let page = try await repo.items(
-                    in: collectionID,
+                    in: scope,
                     filter: snapshotFilter,
                     sort: snapshotSort,
                     cursor: snapshotCursor

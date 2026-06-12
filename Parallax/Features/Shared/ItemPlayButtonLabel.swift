@@ -24,7 +24,10 @@ enum ItemPlayButtonLabel {
 
     /// Resume when the next-up episode has progress, or it isn't the very first episode
     /// (earlier ones are watched — you're continuing the series). Otherwise a fresh "Play".
-    private static func shouldResumeSeries(_ episode: Episode) -> Bool {
+    /// Internal: the series detail's action row uses the same test to decide whether the
+    /// next-up target presents as Resume (with a separate from-the-beginning Play) or IS
+    /// the plain Play.
+    static func shouldResumeSeries(_ episode: Episode) -> Bool {
         if episode.userData.playbackPositionTicks > 0 && !episode.userData.played { return true }
         let isFirstEpisode = (episode.parentIndexNumber ?? 1) == 1 && (episode.indexNumber ?? 1) == 1
         return !isFirstEpisode
