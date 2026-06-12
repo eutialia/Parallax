@@ -4,6 +4,7 @@ import ParallaxJellyfin
 struct HomeView: View {
     @Environment(AppDependencies.self) private var deps
     @Environment(AppRouter.self) private var router
+    @Environment(LaunchGate.self) private var launchGate
     @Environment(\.horizontalSizeClass) private var hSize
     @Environment(\.appIdiom) private var idiom
     /// Supplied by the tvOS launch gate (`FocusRootView`), which loads the feed up front so the
@@ -60,7 +61,9 @@ struct HomeView: View {
         .toolbarBackground(.hidden, for: .navigationBar)
         .itemDetailNavigation()
         .task(id: router.activeServerID) {
-            // tvOS launch gate already fetched the feed — adopt it and skip the redundant load.
+            // tvOS launch gate already fetched the feed — adopt it and skip the
+            // redundant load. No gate release here: FocusRootView is the
+            // authoritative tvOS release site (it already fired before this mounts).
             if let preloaded {
                 session = preloaded.session
                 viewModel = preloaded.viewModel
@@ -77,6 +80,10 @@ struct HomeView: View {
                 viewModel = HomeViewModel(repo: repo)
                 await viewModel?.load()
             }
+            // Releases the cold-launch sync-hold: `load()` has returned (loaded
+            // OR failed — both are revealable screens). One-shot; server-switch
+            // re-runs are no-ops inside the gate.
+            launchGate.markContentReady()
         }
     }
 

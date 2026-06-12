@@ -17,6 +17,7 @@ struct ParallaxApp: App {
     @State private var dependencies: AppDependencies = .live()
     @State private var router: AppRouter = .init()
     @State private var playback: PlaybackPresenter = .init()
+    @State private var launchGate: LaunchGate = .init()
 
     /// Boot into the poster-tile focus spike screen (PosterFocusSpike.swift) instead of
     /// the app — Debug-only diagnostic for on-device focus A/Bs.
@@ -41,6 +42,7 @@ struct ParallaxApp: App {
             .environment(dependencies)
             .environment(router)
             .environment(playback)
+            .environment(launchGate)
             .task {
                 do {
                     try await dependencies.serverStore.load()

@@ -3,36 +3,47 @@ import SwiftUI
 struct RootView: View {
     @Environment(AppRouter.self) private var router
     @Environment(PlaybackPresenter.self) private var playback
+    @Environment(LaunchGate.self) private var launchGate
 
     var body: some View {
         @Bindable var playback = playback
         @Bindable var router = router
-        Group {
-            switch router.destination {
-            case .bootstrapping, .home:
-                // One `RootTabView` for bootstrap + home so finishing `ServerStore.load()`
-                // doesn't tear down tabs mid-flight (that cancelled Home's first request).
-                //
-                // The single screen floor lives HERE, behind the whole tab host — not sprayed
-                // per-screen inside each NavigationStack. It sits under the sidebar/tab-bar glass
-                // too, so the chrome reads as a solid tinted bar (there's nothing but a flat color
-                // to refract anyway). Content stacks on top of this one constant floor, which is
-                // what lets the tvOS detail crossfade dissolve over a background that never moves.
-                Group {
-                    #if os(tvOS)
-                    FocusRootView()
-                    #else
-                    RootTabView()
-                    #endif
+        // The launch animation plays over the real root from process start; the
+        // content beneath it boots (and fetches) as normal during the hold.
+        LaunchRevealHost {
+            Group {
+                switch router.destination {
+                case .bootstrapping, .home:
+                    // One `RootTabView` for bootstrap + home so finishing `ServerStore.load()`
+                    // doesn't tear down tabs mid-flight (that cancelled Home's first request).
+                    //
+                    // The single screen floor lives HERE, behind the whole tab host — not sprayed
+                    // per-screen inside each NavigationStack. It sits under the sidebar/tab-bar glass
+                    // too, so the chrome reads as a solid tinted bar (there's nothing but a flat color
+                    // to refract anyway). Content stacks on top of this one constant floor, which is
+                    // what lets the tvOS detail crossfade dissolve over a background that never moves.
+                    Group {
+                        #if os(tvOS)
+                        FocusRootView()
+                        #else
+                        RootTabView()
+                        #endif
+                    }
+                    .background(Color.background.ignoresSafeArea())
+                case .login:
+                    // Login sits outside `RootTabView`, so it carries its own floor.
+                    // (`.containerBackground(for: .window)` is macOS-only; tabs use `.tabView`.)
+                    LoginView()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(Color.background)
                 }
-                .background(Color.background.ignoresSafeArea())
-            case .login:
-                // Login sits outside `RootTabView`, so it carries its own floor.
-                // (`.containerBackground(for: .window)` is macOS-only; tabs use `.tabView`.)
-                LoginView()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Color.background)
             }
+        }
+        // Cold launch with no server resolves to login — there's no Home fetch
+        // to wait on, so release the launch hold and reveal the login screen.
+        // (Home's own release lives in `HomeView`'s load task.)
+        .onChange(of: router.destination, initial: true) { _, destination in
+            if destination == .login { launchGate.markContentReady() }
         }
         // Monochrome chrome: no brand accent anywhere. This overrides the system
         // accent for every control (selection, toggles, links) beneath the root.

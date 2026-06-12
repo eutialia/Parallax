@@ -11,5 +11,14 @@
 	<array>
 		<string>audio</string>
 	</array>
+	<!-- Launch screen painted in the launch animation's field color (mid stop),
+	     so the system launch screen → first animation frame handoff is seamless:
+	     the story's t=0 draws nothing but the field (rings fade in from 0).
+	     Color lives in LaunchBackground.colorset; keep in sync with LaunchPalette. -->
+	<key>UILaunchScreen</key>
+	<dict>
+		<key>UIColorName</key>
+		<string>LaunchBackground</string>
+	</dict>
 </dict>
 </plist>

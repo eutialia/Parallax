@@ -4,6 +4,7 @@ import ParallaxJellyfin
 struct FocusRootView: View {
     @Environment(AppRouter.self) private var router
     @Environment(AppDependencies.self) private var deps
+    @Environment(LaunchGate.self) private var launchGate
     @State private var selectedTab: AppTab = .home
     @State private var session: Session?
     @State private var libraries: [MediaCollection] = []
@@ -45,6 +46,10 @@ struct FocusRootView: View {
             _ = await homeLoaded
             self.session = session
             self.homeViewModel = vm
+            // Both gates settle here: the TabView mounts (hero focusable from
+            // its first frame) and the launch stage's sync-hold releases, so
+            // the iris opens onto the ready UI.
+            launchGate.markContentReady()
         }
     }
 
