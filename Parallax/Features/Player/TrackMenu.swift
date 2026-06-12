@@ -2,29 +2,32 @@ import SwiftUI
 import ParallaxPlayback
 import ParallaxJellyfin
 
-// MARK: - tvOS default-focus plumbing
+// MARK: - tvOS row-focus plumbing
 
 #if os(tvOS)
 extension EnvironmentValues {
-    /// The focus scope of the presenting panel, threaded through the environment
-    /// so `MenuRow` can hand first focus to the SELECTED row (the system menus'
-    /// landing behavior) without every menu view carrying a namespace parameter.
-    @Entry var trackMenuFocusScope: Namespace.ID? = nil
+    /// The presenting panel's row-focus binding, threaded through the environment so
+    /// every `MenuRow` can register against it without carrying a parameter. The panel
+    /// drives it PROGRAMMATICALLY to land first focus on the SELECTED row (the system
+    /// menus' behavior): `prefersDefaultFocus` was a no-op here — it only applies when
+    /// no view has focus, and opening a panel RELOCATES focus (the chip just disabled),
+    /// which left first focus wherever the engine's geometry put it.
+    @Entry var trackMenuRowFocus: FocusState<AnyHashable?>.Binding? = nil
 }
 #endif
 
-/// Marks the selected row as the scope's default focus target on tvOS; inert on
-/// touch platforms (no focus engine in the inline panel).
-private struct TrackMenuDefaultFocus: ViewModifier {
-    let isSelected: Bool
+/// Binds a row to the panel's focus state under its key; inert on touch platforms
+/// (no focus engine in the inline panel).
+private struct TrackMenuRowFocus: ViewModifier {
+    let key: AnyHashable
     #if os(tvOS)
-    @Environment(\.trackMenuFocusScope) private var scope
+    @Environment(\.trackMenuRowFocus) private var binding
     #endif
 
     func body(content: Content) -> some View {
         #if os(tvOS)
-        if let scope {
-            content.prefersDefaultFocus(isSelected, in: scope)
+        if let binding {
+            content.focused(binding, equals: key)
         } else {
             content
         }
@@ -32,6 +35,23 @@ private struct TrackMenuDefaultFocus: ViewModifier {
         content
         #endif
     }
+}
+
+/// Fixed row metrics that can't ride the semantic text styles: tvOS renders those
+/// ~1.5× (10-foot UI), so the iOS-tuned check column and badge box clipped their
+/// own glyphs there (the "funky" audio badge).
+private enum MenuMetrics {
+    #if os(tvOS)
+    static let checkColumn: CGFloat = 34
+    static let badgeRadius: CGFloat = 9
+    static let badgePadX: CGFloat = 10
+    static let badgePadY: CGFloat = 5
+    #else
+    static let checkColumn: CGFloat = 22
+    static let badgeRadius: CGFloat = 6
+    static let badgePadX: CGFloat = 7
+    static let badgePadY: CGFloat = 4
+    #endif
 }
 
 // MARK: - Private primitives
@@ -73,7 +93,7 @@ private struct MenuCheckColumn: View {
                     .foregroundStyle(Color.label)
             }
         }
-        .frame(width: 22)
+        .frame(width: MenuMetrics.checkColumn)
     }
 }
 
@@ -112,9 +132,10 @@ private struct MenuMiniBadge: View {
             .font(.caption.weight(.bold))
             .tracking(0.3)
             .foregroundStyle(prominent ? Color.label : Color.secondaryLabel)
-            .padding(.horizontal, 7)
-            .frame(height: 22)
-            .background(Color.fill, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .padding(.horizontal, MenuMetrics.badgePadX)
+            .padding(.vertical, MenuMetrics.badgePadY)
+            .background(Color.fill, in: RoundedRectangle(cornerRadius: MenuMetrics.badgeRadius,
+                                                         style: .continuous))
     }
 }
 
@@ -124,10 +145,10 @@ private struct MenuFootnote: View {
     var body: some View {
         HStack(alignment: .top, spacing: Space.s8) {
             Image(systemName: "bolt.fill")
-                .font(.caption)
+                .font(.caption2)
                 .foregroundStyle(Color.tertiaryLabel)
             Text(text)
-                .font(.caption)
+                .font(.caption2)
                 .foregroundStyle(Color.tertiaryLabel)
                 // Wrap, never truncate: an HStack proposes its ideal width and
                 // a Text can answer with one ellipsized line.
@@ -140,6 +161,9 @@ private struct MenuFootnote: View {
 }
 
 private struct MenuRow<Trailing: View>: View {
+    /// The row's identity in the panel's focus state — what the panel assigns to land
+    /// first focus here, and what `defaultFocus` re-targets on later evaluations.
+    let focusKey: AnyHashable
     let isSelected: Bool
     let action: () -> Void
     @ViewBuilder let content: () -> Trailing
@@ -164,16 +188,16 @@ private struct MenuRow<Trailing: View>: View {
                             .opacity(focused ? 1 : 0)
                     )
                     .background(
-                        isSelected ? AnyShapeStyle(Color.selectionFill) : AnyShapeStyle(Color.clear),
-                        in: RoundedRectangle(cornerRadius: Radius.tile, style: .continuous)
+                        RoundedRectangle(cornerRadius: Radius.tile, style: .continuous)
+                            .fill(isSelected ? Color.selectionFill : .clear)
                     )
                     .environment(\.colorScheme, focused ? .light : .dark)
                     .contentShape(.rect)
                     .animation(.tvFocusChrome, value: focused)
             }
         }
-        .tvChipButton()
-        .modifier(TrackMenuDefaultFocus(isSelected: isSelected))
+        .tvMenuRowButton()
+        .modifier(TrackMenuRowFocus(key: focusKey))
     }
 }
 
@@ -186,6 +210,12 @@ struct AudioTrackMenu: View {
 
     private var anyTranscode: Bool { tracks.contains { $0.isTranscode } }
 
+    /// First-focus row key for the presenting panel (tvOS): the selected track,
+    /// falling back to the first row.
+    static func defaultFocusKey(tracks: [AudioTrack], selectedID: TrackID?) -> AnyHashable? {
+        (tracks.first { $0.id == selectedID } ?? tracks.first)?.id
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             MenuHeader(
@@ -194,7 +224,8 @@ struct AudioTrackMenu: View {
                 trailing: "\(tracks.count) track\(tracks.count == 1 ? "" : "s")"
             )
             ForEach(tracks, id: \.id) { track in
-                MenuRow(isSelected: track.id == selectedID, action: { onSelect(track) }) {
+                MenuRow(focusKey: track.id, isSelected: track.id == selectedID,
+                        action: { onSelect(track) }) {
                     HStack(spacing: Space.s12) {
                         MenuCheckColumn(isSelected: track.id == selectedID)
                         MenuRowTitle(name: track.displayName, detail: track.detailLabel)
@@ -221,6 +252,14 @@ struct SubtitleTrackMenu: View {
 
     private var anyExternal: Bool { tracks.contains(where: \.isExternal) }
 
+    /// The Off row's focus key — it has no `TrackID`.
+    static let offFocusKey: AnyHashable = "subtitles-off"
+
+    /// First-focus row key for the presenting panel (tvOS): the selected track, or Off.
+    static func defaultFocusKey(tracks: [SubtitleTrack], selectedID: TrackID?) -> AnyHashable {
+        tracks.first { $0.id == selectedID }.map { AnyHashable($0.id) } ?? offFocusKey
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             MenuHeader(
@@ -229,7 +268,8 @@ struct SubtitleTrackMenu: View {
                 trailing: "\(tracks.count + 1) options"
             )
             // Off row
-            MenuRow(isSelected: selectedID == nil, action: { onSelect(nil) }) {
+            MenuRow(focusKey: Self.offFocusKey, isSelected: selectedID == nil,
+                    action: { onSelect(nil) }) {
                 HStack(spacing: Space.s12) {
                     MenuCheckColumn(isSelected: selectedID == nil)
                     Text("Off")
@@ -239,7 +279,8 @@ struct SubtitleTrackMenu: View {
                 }
             }
             ForEach(tracks, id: \.id) { track in
-                MenuRow(isSelected: track.id == selectedID, action: { onSelect(track) }) {
+                MenuRow(focusKey: track.id, isSelected: track.id == selectedID,
+                        action: { onSelect(track) }) {
                     HStack(spacing: Space.s12) {
                         MenuCheckColumn(isSelected: track.id == selectedID)
                         MenuRowTitle(name: track.displayName, detail: track.detailLabel)
@@ -262,6 +303,12 @@ struct ChapterMenu: View {
     let chapters: [Chapter]
     let onSelect: (Chapter) -> Void
 
+    /// First-focus row key for the presenting panel (tvOS): no row is "selected",
+    /// so land on the chapter containing the playhead.
+    static func defaultFocusKey(chapters: [Chapter], atSeconds seconds: Double) -> AnyHashable? {
+        (chapters.last { $0.start <= .seconds(seconds) } ?? chapters.first)?.id
+    }
+
     var body: some View {
         // LazyVStack (not VStack): a movie can carry 30–60 chapters, and the
         // popover's ScrollView eagerly builds+measures every row of a plain VStack
@@ -270,12 +317,12 @@ struct ChapterMenu: View {
         LazyVStack(alignment: .leading, spacing: 2) {
             MenuHeader(systemImage: "list.bullet", title: "Chapters", trailing: "\(chapters.count)")
             ForEach(chapters) { chapter in
-                MenuRow(isSelected: false, action: { onSelect(chapter) }) {
+                MenuRow(focusKey: chapter.id, isSelected: false, action: { onSelect(chapter) }) {
                     HStack(spacing: Space.s12) {
                         Text("\(chapter.index + 1)")
                             .font(.caption.weight(.semibold).monospacedDigit())
                             .foregroundStyle(Color.tertiaryLabel)
-                            .frame(width: 22)
+                            .frame(width: MenuMetrics.checkColumn)
                         // A name the panel can't fit loops instead of truncating
                         // (panel width is the menu system's, not the longest title's).
                         MarqueeText(
@@ -305,11 +352,16 @@ struct SpeedMenu: View {
     let selected: Double
     let onSelect: (Double) -> Void
 
+    /// First-focus row key for the presenting panel (tvOS): the active rate.
+    static func defaultFocusKey(options: [Double], selected: Double) -> AnyHashable? {
+        options.contains(selected) ? selected : options.first
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             MenuHeader(systemImage: "timer", title: "Speed")
             ForEach(options, id: \.self) { rate in
-                MenuRow(isSelected: rate == selected, action: { onSelect(rate) }) {
+                MenuRow(focusKey: rate, isSelected: rate == selected, action: { onSelect(rate) }) {
                     HStack(spacing: Space.s12) {
                         MenuCheckColumn(isSelected: rate == selected)
                         Text(Self.label(rate))
@@ -391,8 +443,12 @@ struct SpeedMenu: View {
     }
     .padding()
     // Mirrors the live panel width (PlayerControlsView.panelWidth) so this
-    // preview stays an honest specimen of what ships.
+    // preview stays an honest specimen of what ships — tvOS scales it 1.5×.
+    #if os(tvOS)
+    .frame(width: 480)
+    #else
     .frame(width: 320)
+    #endif
     .background(Color.background)
     .preferredColorScheme(.dark)
 }

@@ -88,24 +88,32 @@ private final class ClosureTap: UITapGestureRecognizer {
 struct TVPanCatcher: UIViewRepresentable {
     /// Points-of-pan → normalised-progress conversion. Tuned on device.
     let progressPerPoint: Double
+    /// Fires on EVERY observed remote interaction — every pan delta and every press —
+    /// in every HUD state, including `.fullHUD` where presses ride the focus engine
+    /// and never reach the reducer. The inactivity timer's only complete signal: it's
+    /// what lets the full HUD auto-hide without hiding mid-interaction.
+    var onActivity: (() -> Void)? = nil
     let onEvent: (RemoteEvent) -> Void
 
     func makeUIView(context: Context) -> PanCatcherView {
         let v = PanCatcherView()
         v.isHidden = true   // inert placeholder — the recognizers live on the window
         v.onEvent = onEvent
+        v.onActivity = onActivity
         v.progressPerPoint = progressPerPoint
         return v
     }
 
     func updateUIView(_ v: PanCatcherView, context: Context) {
         v.onEvent = onEvent
+        v.onActivity = onActivity
         v.progressPerPoint = progressPerPoint
     }
 }
 
 final class PanCatcherView: UIView {
     var onEvent: ((RemoteEvent) -> Void)?
+    var onActivity: (() -> Void)?
     var progressPerPoint: Double = 0.0008
 
     private enum PanAxis { case undecided, horizontal, vertical }
@@ -127,7 +135,10 @@ final class PanCatcherView: UIView {
         g.cancelsTouchesInView = false   // observe only — never starve the focus engine
         return g
     }()
-    private lazy var press = PressSentinel { [weak self] in self?.panSuppressed = true }
+    private lazy var press = PressSentinel { [weak self] in
+        self?.panSuppressed = true
+        self?.onActivity?()
+    }
 
     private weak var attachedWindow: UIWindow?
 
@@ -147,6 +158,7 @@ final class PanCatcherView: UIView {
             panSuppressed = false   // a fresh gesture reclaims scrub authority
             panAxis = .undecided
         case .changed:
+            onActivity?()   // any touch on the pad is activity, even suppressed/sub-threshold motion
             if panSuppressed { return }   // trailing motion after a click — ignore
             let t = g.translation(in: g.view)
             if panAxis == .undecided {

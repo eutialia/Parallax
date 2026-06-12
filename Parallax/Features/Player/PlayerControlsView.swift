@@ -50,9 +50,17 @@ struct PlayerControlsView: View {
     /// Reports drag-scrub activity to `PlayerView`, which hides the status bar and
     /// home indicator while the chrome is collapsed into the lone scrub bar.
     let onScrubActiveChange: (Bool) -> Void
-    /// Reports menu state (track panels / debug sheet) to `PlayerView`, which
-    /// suspends the pull-to-dismiss gesture while a panel owns the screen.
+    #endif
+    /// Reports menu state (track panels / debug sheet) to `PlayerView`: iOS suspends
+    /// the pull-to-dismiss gesture while a panel owns the screen; tvOS suspends the
+    /// HUD's inactivity auto-hide.
     let onMenuOpenChange: (Bool) -> Void
+    #if os(tvOS)
+    /// Back pressed with NO menu open: fold the HUD (the reducer's `.menu`). Owned
+    /// here — one root `onExitCommand` branches menu-close vs HUD-fold, so Back can
+    /// never fold the chrome out from under an open panel no matter where focus sits
+    /// (the old deeper-handler-wins split lost whenever first focus missed the panel).
+    let onExitHUD: () -> Void
     #endif
     let onDismiss: () -> Void
 
@@ -80,7 +88,9 @@ struct PlayerControlsView: View {
     /// bottom-left corner sits exactly where the chip's is and the chip hides, no
     /// popover arrow). Touch dismisses via the tap catcher; tvOS contains focus in
     /// the panel and dismisses on Menu (`onExitCommand`).
-    enum TrackMenuKind: Hashable { case audio, subtitles, speed, chapters }
+    // nonisolated: `chipNearest` (and its tests) hash this off the main actor — the
+    // app target's default-MainActor mode would otherwise isolate the conformance.
+    nonisolated enum TrackMenuKind: Hashable { case audio, subtitles, speed, chapters }
     @State private var openMenu: TrackMenuKind? = nil
     /// Chip frames in the "hud" coordinate space — the inline panel's anchors.
     @State private var chipFrames: [TrackMenuKind: CGRect] = [:]
@@ -141,11 +151,21 @@ struct PlayerControlsView: View {
     private var menuOpen: Bool { openMenu != nil || debugHUD }
 
     #if os(tvOS)
-    /// The open panel's focus scope: rows register their default-focus preference
-    /// against it (via `trackMenuFocusScope` in the environment), so first focus
-    /// lands on the SELECTED row like the system menus.
-    @Namespace private var menuFocusScope
+    /// The open panel's row focus, keyed by each row's `focusKey` (threaded to the
+    /// rows via `trackMenuRowFocus` in the environment). Driven PROGRAMMATICALLY on
+    /// panel open so first focus lands on the SELECTED row like the system menus —
+    /// `prefersDefaultFocus` never applied here (it only matters when nothing has
+    /// focus, and opening a panel relocates focus from the just-disabled chip).
+    @FocusState private var menuRowFocus: AnyHashable?
+    /// The scrubber's frame in the "hud" space — the playhead-dot x for `playheadChip`.
+    @State private var scrubberFrame: CGRect = .zero
     #endif
+    /// Which track chip holds focus (tvOS; inert on touch — bound via `tvFocused`).
+    /// Written when a panel closes (focus returns to the chip that opened it — Back
+    /// must peel one layer, not strand focus) and by the chip row's `defaultFocus`
+    /// (focus moving down from the scrubber lands on the chip nearest the playhead,
+    /// not the geometric screen-center pick).
+    @FocusState private var chipFocus: TrackMenuKind?
     /// False while the stream is still resolving/buffering. The chrome mounts from
     /// loading onward so Close, tap-to-toggle, and the track chips work immediately;
     /// engine-backed transport (play/pause, skip, chapter seek, double-tap seek)
@@ -255,10 +275,15 @@ struct PlayerControlsView: View {
         #endif
         .onChange(of: menuOpen) { _, open in
             if open { hideTask?.cancel() } else { scheduleHide() }
-            #if !os(tvOS)
             onMenuOpenChange(open)
-            #endif
         }
+        #if os(tvOS)
+        // ONE Back handler for the whole HUD, wherever focus sits: an open panel
+        // closes (focus back to its chip); otherwise the HUD folds to the floor.
+        .onExitCommand {
+            if openMenu != nil { closeMenu() } else { onExitHUD() }
+        }
+        #endif
         // When the chrome hides, the chips anchoring the inline panels (and the
         // debug sheet's binding) go with it — a stale `openMenu`/`debugHUD` would
         // keep `menuOpen` true and lock the user out of the chrome. Clear them.
@@ -342,7 +367,7 @@ struct PlayerControlsView: View {
             if openMenu != nil {
                 Color.clear
                     .contentShape(.rect)
-                    .onTapGesture { openMenu = nil; resetHideTimer() }
+                    .onTapGesture { closeMenu(); resetHideTimer() }
                     .accessibilityAddTraits(.isButton)
                     .accessibilityLabel("Dismiss menu")
             }
@@ -444,14 +469,34 @@ struct PlayerControlsView: View {
             }
         }
         #if os(tvOS)
-        // Focus lands on the selected row (`prefersDefaultFocus` via the scope in
-        // the environment) and Menu closes the panel BEFORE PlayerView's handler
-        // can fold the whole HUD — the deeper focused handler wins.
-        .focusScope(menuFocusScope)
-        .environment(\.trackMenuFocusScope, menuFocusScope)
-        .onExitCommand { openMenu = nil }
+        // First focus lands on the SELECTED row: assigned programmatically on mount
+        // (the chrome's disable relocates focus into the panel, and a declarative
+        // preference alone loses that race), with `defaultFocus` re-targeting any
+        // later evaluation while the panel is up. Back is handled at the HUD root.
+        .environment(\.trackMenuRowFocus, $menuRowFocus)
+        .defaultFocus($menuRowFocus, panelDefaultFocusKey(kind), priority: .userInitiated)
+        .task { menuRowFocus = panelDefaultFocusKey(kind) }
         #endif
     }
+
+    #if os(tvOS)
+    /// The row the panel should land first focus on — each menu owns its key scheme.
+    private func panelDefaultFocusKey(_ kind: TrackMenuKind) -> AnyHashable? {
+        switch kind {
+        case .audio:
+            AudioTrackMenu.defaultFocusKey(tracks: vm.availableAudioTracks,
+                                           selectedID: vm.selectedAudioTrack?.id)
+        case .subtitles:
+            SubtitleTrackMenu.defaultFocusKey(tracks: vm.availableSubtitleTracks,
+                                              selectedID: vm.selectedSubtitleTrack?.id)
+        case .speed:
+            SpeedMenu.defaultFocusKey(options: speedOptions, selected: Double(vm.playbackRate))
+        case .chapters:
+            ChapterMenu.defaultFocusKey(chapters: vm.chapters,
+                                        atSeconds: CMTimeGetSeconds(vm.currentPosition))
+        }
+    }
+    #endif
 
     private var scrim: some View {
         LinearGradient(
@@ -548,6 +593,15 @@ struct PlayerControlsView: View {
                 }
                 .padding(.horizontal, m.padX)
                 .padding(.bottom, m.controlRowBottom)
+                #if os(tvOS)
+                // Focus moving DOWN from the full-width scrubber lands on the chip
+                // nearest the playhead dot — where the user is already looking — not
+                // the engine's geometric pick (the screen-center speed chip). The
+                // section makes the row one focus target; the `userInitiated`
+                // priority makes the preference win user-driven entry too.
+                .focusSection()
+                .defaultFocus($chipFocus, playheadChip, priority: .userInitiated)
+                #endif
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                 .offset(y: revealOffset(m.hudSlide))
             }
@@ -647,6 +701,43 @@ struct PlayerControlsView: View {
         openMenu == kind
     }
 
+    /// Pure playhead-nearest pick over the measured chip frames — `playheadChip`'s
+    /// core, extracted nonisolated so `PlayerControlsViewTests` can pin the mapping.
+    nonisolated static func chipNearest(
+        playheadX: CGFloat, in frames: [TrackMenuKind: CGRect]
+    ) -> TrackMenuKind? {
+        frames.min { abs($0.value.midX - playheadX) < abs($1.value.midX - playheadX) }?.key
+    }
+
+    /// Live playback position as a clamped 0...1 fraction — shared by the scrubber's
+    /// display math and `playheadChip` so the clamp can't drift between them.
+    private var liveProgressFraction: Double {
+        let durSeconds = CMTimeGetSeconds(vm.currentDuration)
+        guard durSeconds > 0 else { return 0 }
+        return min(max(CMTimeGetSeconds(vm.currentPosition) / durSeconds, 0), 1)
+    }
+
+    #if os(tvOS)
+    /// Whether a chip can take focus right now. Chapters is the one chip that can be
+    /// DISABLED (it gates on a live engine), and a FocusState write or default-focus
+    /// preference targeting a disabled view is silently dropped — both the playhead
+    /// pick and the close-restore must route around it.
+    private func chipIsFocusable(_ kind: TrackMenuKind) -> Bool {
+        kind != .chapters || playbackReady
+    }
+
+    /// The chip whose center sits nearest the playhead dot — the `defaultFocus`
+    /// target when focus moves down from the scrubber. Falls back to the speed chip
+    /// (always present and enabled) before geometry lands.
+    private var playheadChip: TrackMenuKind {
+        let progress = isScrubbing ? scrubProgress : liveProgressFraction
+        let candidates = chipFrames.filter { chipIsFocusable($0.key) }
+        guard scrubberFrame.width > 0, !candidates.isEmpty else { return .speed }
+        let x = scrubberFrame.minX + progress * scrubberFrame.width
+        return Self.chipNearest(playheadX: x, in: candidates) ?? .speed
+    }
+    #endif
+
     @ViewBuilder
     private func chips(_ m: PlayerMetrics) -> some View {
         if !vm.availableAudioTracks.isEmpty {
@@ -657,6 +748,7 @@ struct PlayerControlsView: View {
                 resetHideTimer(); openMenu = .audio
             }
             .modifier(TrackChipAnchor(kind: .audio, frames: $chipFrames))
+            .tvFocused($chipFocus, equals: .audio)
         }
         if !vm.availableSubtitleTracks.isEmpty {
             PlayerGlassChip(systemImage: "captions.bubble", label: "Subtitles",
@@ -666,6 +758,7 @@ struct PlayerControlsView: View {
                 resetHideTimer(); openMenu = .subtitles
             }
             .modifier(TrackChipAnchor(kind: .subtitles, frames: $chipFrames))
+            .tvFocused($chipFocus, equals: .subtitles)
         }
         PlayerGlassChip(systemImage: "timer", label: SpeedMenu.label(Double(vm.playbackRate)),
                         isActive: openMenu == .speed, isVacated: isVacated(.speed), metrics: m,
@@ -673,6 +766,7 @@ struct PlayerControlsView: View {
             resetHideTimer(); openMenu = .speed
         }
         .modifier(TrackChipAnchor(kind: .speed, frames: $chipFrames))
+        .tvFocused($chipFocus, equals: .speed)
         if !vm.chapters.isEmpty {
             // Chapter seek needs a live engine — a pick mid-load would be silently
             // lost, so the chip dims until playback starts (unlike audio/subtitles,
@@ -683,6 +777,7 @@ struct PlayerControlsView: View {
                 resetHideTimer(); openMenu = .chapters
             }
             .modifier(TrackChipAnchor(kind: .chapters, frames: $chipFrames))
+            .tvFocused($chipFocus, equals: .chapters)
             .disabled(!playbackReady)
             .opacity(playbackReady ? 1 : 0.45)
         }
@@ -718,7 +813,7 @@ struct PlayerControlsView: View {
     private func scrubber(_ m: PlayerMetrics) -> some View {
         let posSeconds = CMTimeGetSeconds(vm.currentPosition)
         let durSeconds = CMTimeGetSeconds(vm.currentDuration)
-        let liveProgress = durSeconds > 0 ? min(max(posSeconds / durSeconds, 0), 1) : 0
+        let liveProgress = liveProgressFraction
         let displayed = isScrubbing ? scrubProgress : liveProgress
         let shownSeconds = isScrubbing ? scrubProgress * durSeconds : posSeconds
         let remaining = max(0, durSeconds - shownSeconds)
@@ -750,8 +845,11 @@ struct PlayerControlsView: View {
                               elapsedSeconds: shownSeconds, remainingSeconds: remaining,
                               chapters: vm.chapterFractions)
         }
-        .buttonStyle(TVScrubberButtonStyle())
+        .buttonStyle(TVQuietButtonStyle(pressedOpacity: 0.9))
         .focused($scrubberFocused)
+        // The playhead-dot x for `playheadChip` (chip-row default focus) reads off
+        // this frame plus the displayed fraction.
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("hud")) } action: { scrubberFrame = $0 }
         // Animate the thicken/handle-grow as focus lands, matching the original bar.
         .animation(.easeOut(duration: 0.15), value: scrubberFocused)
         .onMoveCommand { direction in
@@ -994,7 +1092,7 @@ struct PlayerControlsView: View {
     private var audioMenuList: some View {
         trackMenuChrome(.audio) {
             AudioTrackMenu(tracks: vm.availableAudioTracks, selectedID: vm.selectedAudioTrack?.id) { track in
-                openMenu = nil; resetHideTimer()
+                closeMenu(); resetHideTimer()
                 #if !os(tvOS)
                 cancelPendingSeek()   // a queued burst would seek the mid-reload engine
                 #endif
@@ -1007,7 +1105,7 @@ struct PlayerControlsView: View {
     private var subtitleMenuList: some View {
         trackMenuChrome(.subtitles) {
             SubtitleTrackMenu(tracks: vm.availableSubtitleTracks, selectedID: vm.selectedSubtitleTrack?.id) { track in
-                openMenu = nil; resetHideTimer()
+                closeMenu(); resetHideTimer()
                 Task { await vm.selectSubtitleTrack(track) }
             }
         }
@@ -1017,7 +1115,7 @@ struct PlayerControlsView: View {
     private var chapterMenuList: some View {
         trackMenuChrome(.chapters) {
             ChapterMenu(chapters: vm.chapters) { chapter in
-                openMenu = nil; resetHideTimer()
+                closeMenu(); resetHideTimer()
                 #if !os(tvOS)
                 cancelPendingSeek()
                 #endif
@@ -1030,7 +1128,7 @@ struct PlayerControlsView: View {
     private var speedMenuList: some View {
         trackMenuChrome(.speed) {
             SpeedMenu(options: speedOptions, selected: Double(vm.playbackRate)) { rate in
-                openMenu = nil; resetHideTimer()
+                closeMenu(); resetHideTimer()
                 Task { await vm.setPlaybackRate(Float(rate)) }
             }
         }
@@ -1068,6 +1166,20 @@ struct PlayerControlsView: View {
         }
         controlsVisible.toggle()
         if controlsVisible { scheduleHide() }
+    }
+
+    /// Close the open track panel, handing focus back to the chip that opened it on
+    /// tvOS (row picks and Back alike — focus must never strand in the vacated spot).
+    /// The opening chip can be unfocusable by close time (`chipIsFocusable`: a
+    /// track-switch re-buffer disables chapters while its panel is up) — fall back
+    /// to the speed chip rather than dropping the focus write.
+    private func closeMenu() {
+        #if os(tvOS)
+        if let kind = openMenu {
+            chipFocus = chipIsFocusable(kind) ? kind : .speed
+        }
+        #endif
+        openMenu = nil
     }
 
     private func closeAllMenus() {

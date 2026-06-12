@@ -44,11 +44,13 @@ struct PlayerView: View {
     /// the chrome into the lone scrub bar (the iOS analog of tvOS swipe-scrub), so
     /// the status bar and home indicator hide with it.
     @State private var scrubHUDActive = false
-    /// Mirror of the HUD's open-menu state (track panels / debug sheet) — while a
-    /// panel owns the screen, the pull-to-dismiss gesture stands down so a drag
-    /// inside a list can't start dragging the whole player.
-    @State private var trackMenuOpen = false
     #endif
+    /// Mirror of the HUD's open-menu state (track panels / debug sheet). iOS: while
+    /// a panel owns the screen, the pull-to-dismiss gesture stands down so a drag
+    /// inside a list can't start dragging the whole player. tvOS: the full-HUD
+    /// inactivity auto-hide is suspended — folding the chrome would take the open
+    /// panel (and the debug sheet's mount point) with it.
+    @State private var trackMenuOpen = false
     #if os(tvOS)
     /// The tvOS HUD floor state machine (floor → swipeScrub → clickSeek → fullHUD),
     /// driven by `TVRemoteInputView` through `send(_:_:)`. See `PlayerHUDReducer`.
@@ -64,6 +66,9 @@ struct PlayerView: View {
     /// so play/pause then sticks). `pendingClickSeek` is the un-committed target.
     @State private var commitSeekTask: Task<Void, Never>? = nil
     @State private var pendingClickSeek: Double? = nil
+    /// Last activity-driven idle re-arm — coalesces the ~60Hz pan stream (re-arming
+    /// a multi-second timer per delta churns a cancel+Task each frame for nothing).
+    @State private var lastActivityRearm: ContinuousClock.Instant? = nil
     /// Set at the first `.playing` beat. The initial-load chrome (fullHUD over
     /// the loading scrim — iOS parity) hands off to the reducer's clean floor
     /// exactly once; later loading dips (track-switch re-buffers) keep whatever
@@ -436,8 +441,12 @@ struct PlayerView: View {
             // Analog pans are captured at the window level in EVERY state (one
             // recognizer for the surface's lifetime, so an in-flight pan keeps
             // streaming deltas across floor↔scrub↔fullHUD transitions). `onPan`
-            // gates what reaches the reducer per state.
-            TVPanCatcher(progressPerPoint: 0.00005) { onPan($0, vm) }
+            // gates what reaches the reducer per state. `onActivity` feeds the
+            // inactivity timer with EVERY observed pan/press — including the
+            // focus-engine interactions in `.fullHUD` that never reach `send` —
+            // so the full HUD can auto-hide without hiding mid-interaction.
+            TVPanCatcher(progressPerPoint: 0.00005,
+                         onActivity: { noteRemoteActivity() }) { onPan($0, vm) }
                 .allowsHitTesting(false)
 
             // The raw adapter owns the remote's PRESSES on the floor and during
@@ -474,11 +483,24 @@ struct PlayerView: View {
             case .swipeScrub(let progress, _), .clickSeek(targetProgress: let progress):
                 tvScrubBar(progress: progress, vm: vm).transition(.opacity)
             case .fullHUD:
+                // Back handling lives INSIDE the controls (one root handler that
+                // closes an open panel before folding); `onExitHUD` is the no-menu
+                // branch. The menu mirror gates the idle timer: cancel under an
+                // open panel, re-arm when it closes.
                 PlayerControlsView(vm: vm, controlsVisible: .constant(true),
                                    debugHUD: $showDebugHUD,
-                                   onScrubberFocusChange: { scrubberHasFocus = $0 }) { exitPlayer() }
+                                   onScrubberFocusChange: { scrubberHasFocus = $0 },
+                                   onMenuOpenChange: { open in
+                                       trackMenuOpen = open
+                                       if open { idleTask?.cancel() } else { restartIdleTimer() }
+                                   },
+                                   onExitHUD: { send(.menu, vm) }) { exitPlayer() }
                     .transition(.opacity)
-                    .onExitCommand { send(.menu, vm) }
+                    // The mirror can go stale when the controls unmount with a panel
+                    // up (phase → .failed swaps in the error overlay): a remount
+                    // starts with no menu but `trackMenuOpen` stuck true would
+                    // suspend the auto-hide for the rest of the session.
+                    .onDisappear { trackMenuOpen = false }
             }
         }
         // Key the cross-fades on the state KIND, not the whole `hudState`: `swipeScrub`
@@ -498,6 +520,14 @@ struct PlayerView: View {
         .animation(.easeInOut(duration: 0.2), value: viewModel?.showsStallScrim ?? false)
         // Dedicated Play/Pause button → reducer, in every HUD state.
         .onPlayPauseCommand { send(.playPause, vm) }
+        // Pause pins the full HUD (the auto-hide guard reads isPlaying); resuming
+        // re-arms it. Engine beats flip isPlaying async, so the pause side must
+        // also cancel a timer armed a beat earlier. Full-HUD only: swipe-scrub
+        // pauses the engine BY DESIGN and its 1s commit timer must keep running.
+        .onChange(of: vm.isPlaying) { _, playing in
+            guard isFullHUD else { return }
+            if playing { restartIdleTimer() } else { idleTask?.cancel() }
+        }
         // Fresh surface: the initial load shows the full chrome over the scrim
         // (iOS parity — the player is operable while the stream resolves); once
         // playback has begun (a post-failure retry remount), start on the clean
@@ -717,14 +747,41 @@ struct PlayerView: View {
         }
     }
 
-    /// Only the transient scrub bars auto-hide after inactivity. The floor needs no
-    /// timer, and the full HUD is navigated with native focus (whose moves never reach
-    /// `send`, so a timer there would hide the chrome mid-interaction) — Menu dismisses it.
+    /// Per-state inactivity timer. Swipe-scrub commits ~1s after the touch goes
+    /// quiet (the reducer's `.idle` seeks and resumes — no Select required); the
+    /// click-seek bar lingers longer (its seek already landed via the 400ms click
+    /// debounce — idle only drops the bar). The full HUD auto-hides after 4s of no
+    /// remote interaction: focus-engine moves never reach `send`, so the reset
+    /// signal is `TVPanCatcher.onActivity` (window-level pans + presses, observed
+    /// in every focus state). Suspended while a panel is open (folding would
+    /// unmount it) or playback is paused (the iOS rule — vanishing chrome over a
+    /// frozen frame reads as a dead player). The floor needs no timer.
+    /// Activity from the window-level observers, coalesced to ~4 re-arms/s: a pan
+    /// streams a delta per frame, and the slop this adds (<250ms against multi-second
+    /// timeouts) is invisible — reducer-driven `send` still re-arms exactly.
+    private func noteRemoteActivity() {
+        let now = ContinuousClock.now
+        if let last = lastActivityRearm, now - last < .milliseconds(250) { return }
+        lastActivityRearm = now
+        restartIdleTimer()
+    }
+
     private func restartIdleTimer() {
         idleTask?.cancel()
-        guard isScrubbing else { return }
+        let timeout: Duration
+        switch hudState {
+        case .floor:
+            return
+        case .swipeScrub:
+            timeout = .seconds(1)
+        case .clickSeek:
+            timeout = .seconds(4)
+        case .fullHUD:
+            guard !trackMenuOpen, viewModel?.isPlaying == true else { return }
+            timeout = .seconds(4)
+        }
         idleTask = Task {
-            try? await Task.sleep(for: .seconds(4))
+            try? await Task.sleep(for: timeout)
             if !Task.isCancelled, let vm = viewModel { send(.idle, vm) }
         }
     }

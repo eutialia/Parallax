@@ -99,12 +99,36 @@ extension View {
         #endif
     }
 
+    /// Row style for items INSIDE a glass panel (the track menus): no system chrome and
+    /// no scale lift — the row's own white platter (`TVFocusReader` in the label) is the
+    /// whole focus affordance, and `tvChipButton()`'s 1.06 lift made a full-width row
+    /// overflow its panel's edges on focus. `.plain` on iOS. Owns the button style.
+    @ViewBuilder
+    func tvMenuRowButton() -> some View {
+        #if os(tvOS)
+        self.buttonStyle(TVQuietButtonStyle())
+        #else
+        self.buttonStyle(.plain)
+        #endif
+    }
+
     /// Group a row/section so the tvOS focus engine treats it as one unit (preferred focus
     /// target, contained traversal). No-op on iOS.
     @ViewBuilder
     func tvFocusSection() -> some View {
         #if os(tvOS)
         self.focusSection()
+        #else
+        self
+        #endif
+    }
+
+    /// `.focused(_:equals:)` for FocusState that only drives the tvOS focus engine —
+    /// keeps call sites to one line instead of an `#if os(tvOS)` block each. No-op on iOS.
+    @ViewBuilder
+    func tvFocused<V: Hashable>(_ binding: FocusState<V>.Binding, equals value: V) -> some View {
+        #if os(tvOS)
+        self.focused(binding, equals: value)
         #else
         self
         #endif
@@ -152,15 +176,18 @@ struct TVGlassChipButtonStyle: ButtonStyle {
     }
 }
 
-/// Player scrubber style: renders the label with NO system focus chrome and no lift — `.plain`
-/// on tvOS paints the system focus platter (a bright rounded box) around the whole label, which
-/// swallowed the full-width progress bar. The bar communicates focus itself (`PlayerProgressBar`
-/// `.focused` mode: handle grows + soft outline ring), so the style's only job is to suppress
-/// the platter while keeping the Button focusable. Slight dim on press for Select feedback.
-struct TVScrubberButtonStyle: ButtonStyle {
+/// "Quiet" style: renders the label with NO system focus chrome and no lift — `.plain` on
+/// tvOS paints the system focus platter (a bright rounded box) around the whole label.
+/// For controls whose label carries its own focus affordance: the scrubber (handle grows +
+/// outline ring in `.focused` mode — the platter swallowed the full-width bar) and the
+/// track-menu rows (white platter via `TVFocusReader` — a lift overflows the panel).
+/// Slight dim on press for Select feedback.
+struct TVQuietButtonStyle: ButtonStyle {
+    var pressedOpacity: Double = 0.85
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .opacity(configuration.isPressed ? 0.9 : 1)
+            .opacity(configuration.isPressed ? pressedOpacity : 1)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }
