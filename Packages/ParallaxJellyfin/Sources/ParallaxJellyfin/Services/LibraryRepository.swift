@@ -187,6 +187,30 @@ public actor LibraryRepository {
         return dto?.toEpisode()
     }
 
+    /// Intro/outro markers for an item (native `GET /MediaSegments/{itemId}`).
+    /// Empty is the normal no-provider case — callers treat it as "no skip UI".
+    public func mediaSegments(for itemID: ItemID) async throws -> [MediaSegment] {
+        do {
+            let dtos = try await client.mediaSegments(itemID: itemID.rawValue)
+            return dtos.compactMap { $0.toMediaSegment() }
+        } catch {
+            throw ErrorMapping.appError(from: error)
+        }
+    }
+
+    /// Previous/next episode around `episodeID`, series-wide, from the server's
+    /// `adjacentTo` window — the neighbor source for the player's next/previous
+    /// buttons and end-of-episode autoplay.
+    public func adjacentEpisodes(seriesID: ItemID, episodeID: ItemID) async throws -> AdjacentEpisodes {
+        let dtos: [BaseItemDto]
+        do {
+            dtos = try await client.adjacentEpisodes(seriesID: seriesID.rawValue, episodeID: episodeID.rawValue)
+        } catch {
+            throw ErrorMapping.appError(from: error)
+        }
+        return AdjacentEpisodes(around: episodeID, in: dtos.compactMap { $0.toEpisode() })
+    }
+
     public func genres(in scope: LibraryScope) async throws -> [String] {
         do {
             return try await client.genres(scope: scope)

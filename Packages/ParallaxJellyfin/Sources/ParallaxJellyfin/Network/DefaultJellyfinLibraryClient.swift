@@ -214,6 +214,30 @@ public final class DefaultJellyfinLibraryClient: JellyfinLibraryClient, @uncheck
         return response.value.items?.first
     }
 
+    public func mediaSegments(itemID: String) async throws -> [MediaSegmentDto] {
+        // Only the kinds the player acts on (Skip Intro/Recap, Next Episode); the
+        // server filters the rest out so we don't pay for preview/commercial.
+        let request = Paths.getItemSegments(itemID: itemID, includeSegmentTypes: [.intro, .recap, .outro])
+        let response = try await client().send(request)
+        return response.value.items ?? []
+    }
+
+    public func adjacentEpisodes(seriesID: String, episodeID: String) async throws -> [BaseItemDto] {
+        // No seasonID on purpose: the adjacency window must span the whole series
+        // so it crosses a season boundary (S1 finale → S2 premiere). The server
+        // orders by AiredEpisodeOrder and returns up to [previous, self, next].
+        var params = Paths.GetEpisodesParameters()
+        params.userID = userID
+        params.adjacentTo = episodeID
+        params.fields = [.overview, .primaryImageAspectRatio]
+        params.enableUserData = true
+        params.imageTypeLimit = 1
+        params.enableImageTypes = [.primary, .backdrop, .thumb]
+        let request = Paths.getEpisodes(seriesID: seriesID, parameters: params)
+        let response = try await client().send(request)
+        return response.value.items ?? []
+    }
+
     public func genres(scope: LibraryScope) async throws -> [String] {
         var params = Paths.GetGenresParameters()
         params.userID = userID

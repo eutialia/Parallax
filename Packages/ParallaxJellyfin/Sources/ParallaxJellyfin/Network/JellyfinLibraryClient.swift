@@ -27,6 +27,14 @@ public protocol JellyfinLibraryClient: Sendable {
     /// The single resume/next-up episode for a series (Jellyfin /Shows/NextUp?seriesId=),
     /// or nil when the series is unwatched-from-start / finished.
     func seriesNextUp(seriesID: String) async throws -> BaseItemDto?
+    /// Media segments (intro/outro markers) for an item — Jellyfin's native
+    /// `GET /MediaSegments/{itemId}`. Empty unless a provider plugin analyzed it.
+    func mediaSegments(itemID: String) async throws -> [MediaSegmentDto]
+    /// The `adjacentTo` window for an episode (`GET /Shows/{seriesId}/Episodes`):
+    /// up to three items — previous, the episode itself, next — in airing order,
+    /// series-wide (no season filter, so it crosses season boundaries). The
+    /// neighbor source for in-player succession.
+    func adjacentEpisodes(seriesID: String, episodeID: String) async throws -> [BaseItemDto]
     /// Distinct genre names available in a scope (Jellyfin /Genres?parentId= for a
     /// collection, /Genres?isFavorite=true for the favorites scope).
     func genres(scope: LibraryScope) async throws -> [String]

@@ -23,6 +23,8 @@ final class FakeJellyfinLibraryClient: JellyfinLibraryClient, @unchecked Sendabl
     // parallel calls). Falls back to `searchResult` if a scope is unmapped.
     var searchResultsByScope: [SearchScope: Result<[BaseItemDto], Error>] = [:]
     var seriesNextUpResult: Result<BaseItemDto?, Error> = .success(nil)
+    var mediaSegmentsResult: Result<[MediaSegmentDto], Error> = .success([])
+    var adjacentEpisodesResult: Result<[BaseItemDto], Error> = .success([])
     var genresResult: Result<[String], Error> = .success([])
     var setFavoriteResult: Result<UserItemData, Error> = .success(
         UserItemData(played: false, playbackPositionTicks: 0, playCount: 0, isFavorite: true)
@@ -43,6 +45,8 @@ final class FakeJellyfinLibraryClient: JellyfinLibraryClient, @unchecked Sendabl
     private(set) var setFavoriteCalls: [(itemID: String, isFavorite: Bool)] = []
     private(set) var setPlayedCalls: [(itemID: String, isPlayed: Bool)] = []
     private(set) var seriesNextUpCalls: [String] = []
+    private(set) var mediaSegmentsCalls: [String] = []
+    private(set) var adjacentEpisodesCalls: [(seriesID: String, episodeID: String)] = []
     private(set) var genresCalls: [LibraryScope] = []
 
     enum FakeError: Error { case notConfigured }
@@ -127,6 +131,16 @@ final class FakeJellyfinLibraryClient: JellyfinLibraryClient, @unchecked Sendabl
     func seriesNextUp(seriesID: String) async throws -> BaseItemDto? {
         seriesNextUpCalls.append(seriesID)
         return try seriesNextUpResult.get()
+    }
+
+    func mediaSegments(itemID: String) async throws -> [MediaSegmentDto] {
+        mediaSegmentsCalls.append(itemID)
+        return try mediaSegmentsResult.get()
+    }
+
+    func adjacentEpisodes(seriesID: String, episodeID: String) async throws -> [BaseItemDto] {
+        adjacentEpisodesCalls.append((seriesID, episodeID))
+        return try adjacentEpisodesResult.get()
     }
 
     func genres(scope: LibraryScope) async throws -> [String] {
