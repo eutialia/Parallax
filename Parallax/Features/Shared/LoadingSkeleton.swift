@@ -24,27 +24,35 @@ struct SkeletonBlock: View {
 /// Reduce Motion. Apply ONCE at the top of a skeleton screen, never per block.
 struct SkeletonShimmerModifier: ViewModifier {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// The masked subtree's width, captured via `onGeometryChange` instead of a
+    /// `GeometryReader` so the overlay sizes to `content` (not the other way round) and
+    /// the closure re-runs only on a real resize — the `TimelineView` already drives the
+    /// per-frame sweep. Zero until the first layout pass (band collapses to nothing, no
+    /// shimmer) — one frame, invisible.
+    @State private var width: CGFloat = 0
 
     func body(content: Content) -> some View {
         if reduceMotion {
             content
         } else {
             content.overlay {
-                GeometryReader { geo in
-                    TimelineView(.animation) { context in
-                        let period: TimeInterval = 1.35
-                        let phase = context.date.timeIntervalSinceReferenceDate
-                            .truncatingRemainder(dividingBy: period) / period
-                        let band = geo.size.width * 0.35
-                        LinearGradient(
-                            colors: [.clear, Color.white.opacity(0.28), .clear],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                        .frame(width: band)
-                        .offset(x: (geo.size.width + band) * phase - band)
-                    }
+                TimelineView(.animation) { context in
+                    let period: TimeInterval = 1.35
+                    let phase = context.date.timeIntervalSinceReferenceDate
+                        .truncatingRemainder(dividingBy: period) / period
+                    let band = width * 0.35
+                    LinearGradient(
+                        colors: [.clear, Color.white.opacity(0.28), .clear],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                    .frame(width: band)
+                    // Full-height band pinned to the leading edge, then slid across — the
+                    // layout `GeometryReader` placed at top-leading and filled by default.
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                    .offset(x: (width + band) * phase - band)
                 }
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
                 .allowsHitTesting(false)
                 .mask(content)
             }
@@ -366,4 +374,13 @@ struct SearchRefiningSkeleton: View {
             .overlay { Capsule().strokeBorder(Color.glassBorder, lineWidth: 1) }
             .padding(.top, Space.s8)
     }
+}
+
+// Render-verification asset for `SkeletonShimmerModifier` (GeometryReader →
+// onGeometryChange): confirms the hero band + two shelves lay out and the shimmer
+// overlay masks to the blocks without breaking the skeleton geometry. The sweep is
+// time-driven, so a static snapshot proves layout integrity, not the animation.
+#Preview("Home skeleton", traits: .fixedLayout(width: 420, height: 820)) {
+    HomeLoadingSkeleton()
+        .environment(\.appIdiom, .compact)
 }

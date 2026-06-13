@@ -19,20 +19,24 @@ struct SubtitleOverlayView: View {
     let vm: PlayerViewModel
 
     @State private var text: String?
+    /// The video surface size, captured via `onGeometryChange` instead of a
+    /// `GeometryReader` (which greedily expands and re-runs its closure every frame). The
+    /// cue scale/inset/bottom all derive from `PlayerMetrics.forSurface(size)`; the first
+    /// cue only appears once playback is live, by which point the size is already latched.
+    @State private var surfaceSize: CGSize = .zero
 
     var body: some View {
-        GeometryReader { geo in
-            let metrics = PlayerMetrics.forSurface(geo.size)
-            VStack {
-                Spacer(minLength: 0)
-                if let text {
-                    SubtitleCueText(text, fontSize: metrics.subtitleFontSize)
-                        .padding(.horizontal, metrics.subtitleInsetX)
-                        .padding(.bottom, metrics.subtitleBottom)
-                }
+        let metrics = PlayerMetrics.forSurface(surfaceSize)
+        VStack {
+            Spacer(minLength: 0)
+            if let text {
+                SubtitleCueText(text, fontSize: metrics.subtitleFontSize)
+                    .padding(.horizontal, metrics.subtitleInsetX)
+                    .padding(.bottom, metrics.subtitleBottom)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { surfaceSize = $0 }
         // Opt into full-bleed like the video host: PlayerView no longer applies a
         // blanket .ignoresSafeArea(), so without this the cues would float up by the
         // bottom safe-area inset instead of sitting just above the home indicator.
