@@ -88,6 +88,16 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// scrubber can't span the full media or rewind before the resume point.
     private var pendingStartMs: Int32?
 
+    /// Target (ms) of an in-flight user seek. Right after `setTime`, VLCKit's clock keeps
+    /// interpolating from a now-stale reference and `player.time` briefly reads far past
+    /// the target before the demux settles — surfacing as a scrubber overshoot that snaps
+    /// back a poll later. The poll holds beats until the clock converges on this target
+    /// (the `seek()` beat already carries the correct position); `pendingSeekPolls` is a
+    /// fallback so a keyframe-snapped landing a few seconds off the request still resumes
+    /// live tracking instead of freezing the bar.
+    private var pendingSeekMs: Int32?
+    private var pendingSeekPolls = 0
+
     /// The resume seek runs concurrently with playback (not awaited in `play()`), so it's
     /// stored here for `teardown()` to cancel — otherwise a dismiss during the readiness
     /// window would leave it polling and then write `player.time` on a stopped player.
@@ -112,6 +122,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         continuation.yield(.loading)
         didEmitSettledInventory = false
         pendingStartMs = Self.startMs(from: asset.startTime)
+        pendingSeekMs = nil
         // VLCMedia(url:) returns optional; a nil result means the URL was rejected
         // by libvlc at construction time (e.g. empty path). Treat as unplayable.
         guard let media = VLCMedia(url: asset.url) else {
@@ -176,8 +187,18 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     public func seek(to time: CMTime) async {
         let seconds = CMTimeGetSeconds(time)
         guard seconds.isFinite else { return }
+        // A user seek supersedes a still-pending resume seek: cancel the resume
+        // task and clear the saved offset so an in-flight seekToPendingStart()
+        // can't overwrite this position with the stale resume point during the
+        // ~3s readiness window.
+        resumeTask?.cancel()
+        pendingStartMs = nil
         let ms = Int32(min(max(seconds * 1000, Double(Int32.min)), Double(Int32.max)))
         player.time = VLCTime(int: ms)
+        // Gate the poll until VLC's clock settles on this target so its transient
+        // post-seek reads can't surface as an overshoot (see pendingSeekMs).
+        pendingSeekMs = ms
+        pendingSeekPolls = 0
         // Publish the new position now so the scrubber tracks the seek instead of
         // snapping back to the last polled position on release.
         emitPosition(isPlaying: player.isPlaying, positionMs: ms)
@@ -249,6 +270,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         progressTask = nil
         resumeTask?.cancel()
         resumeTask = nil
+        pendingSeekMs = nil
         player.drawable = nil
         player.delegate = nil
         player.stop()
@@ -308,6 +330,17 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
                 // Hold beats until the resume seek has applied, so the first beat reports
                 // the resume position rather than the pre-seek clock (no 0:00 flash).
                 guard self.pendingStartMs == nil else { continue }
+                // Suppress the transient clock VLC reports right after a user seek until it
+                // converges on the requested target (±3s tolerates a keyframe-snapped
+                // landing); a ~5s fallback resumes live tracking if it never lands exactly.
+                if let target = self.pendingSeekMs {
+                    self.pendingSeekPolls += 1
+                    if Self.seekHasSettled(now: self.player.time.intValue, target: target, polls: self.pendingSeekPolls) {
+                        self.pendingSeekMs = nil
+                    } else {
+                        continue
+                    }
+                }
                 self.emitPosition(isPlaying: true, positionMs: self.player.time.intValue)
                 // Re-emit the inventory once VLC settles the default selection, so the
                 // menus check the playing track and the chip shows its name.
@@ -397,6 +430,14 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     nonisolated static func vlcTimeToCMTime(ms: Int32) -> CMTime {
         guard ms > 0 else { return .zero }
         return CMTime(value: CMTimeValue(ms), timescale: 1000)
+    }
+
+    /// Whether a post-seek poll should resume publishing live position beats: VLC's clock
+    /// has converged on the requested target (±3s, tolerating a keyframe-snapped landing),
+    /// or the fallback poll budget elapsed so live tracking resumes even if it never lands
+    /// exactly. Pure so the seek-overshoot guard can be tested without a live player.
+    static func seekHasSettled(now: Int32, target: Int32, polls: Int) -> Bool {
+        abs(now - target) <= 3_000 || polls >= 10
     }
 
     static func positionState(isPlaying: Bool, positionMs: Int32, durationMs: Int32) -> PlaybackState {

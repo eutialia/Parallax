@@ -80,6 +80,27 @@ struct VLCKitEngineTests {
         }
     }
 
+    @Test("seekHasSettled: a far transient overshoot is suppressed (forward and backward)")
+    func seekTransientSuppressed() {
+        // Seek target 480_000ms (08:00). VLC's clock briefly reads 600_000 (10:00).
+        #expect(VLCKitEngine.seekHasSettled(now: 600_000, target: 480_000, polls: 1) == false)
+        // Backward seek to 05:00 with a transient that overshoots below the target.
+        #expect(VLCKitEngine.seekHasSettled(now: 180_000, target: 300_000, polls: 1) == false)
+    }
+
+    @Test("seekHasSettled: converges once the clock lands within the keyframe tolerance")
+    func seekConvergesWithinTolerance() {
+        #expect(VLCKitEngine.seekHasSettled(now: 480_000, target: 480_000, polls: 2))       // exact
+        #expect(VLCKitEngine.seekHasSettled(now: 477_500, target: 480_000, polls: 2))       // -2.5s keyframe snap
+        #expect(VLCKitEngine.seekHasSettled(now: 482_900, target: 480_000, polls: 2))       // +2.9s keyframe snap
+    }
+
+    @Test("seekHasSettled: the fallback budget resumes live tracking even if it never lands exactly")
+    func seekFallbackResumes() {
+        // Still far off, but the poll budget is spent → resume so the bar can't freeze.
+        #expect(VLCKitEngine.seekHasSettled(now: 600_000, target: 480_000, polls: 10))
+        #expect(VLCKitEngine.seekHasSettled(now: 600_000, target: 480_000, polls: 9) == false)
+    }
 }
 
 @Suite("VLCKitEngine — track mapping")

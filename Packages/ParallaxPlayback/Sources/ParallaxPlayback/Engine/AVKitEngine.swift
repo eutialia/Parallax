@@ -398,6 +398,10 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
             inventoryTask = Task { [weak self] in
                 guard let self else { return }
                 let tracks = await self.loadTrackInventory(of: item)
+                // A reload/teardown cancels this task (see line ~271). If that
+                // happened while loadTrackInventory was awaiting, a superseded
+                // item must not publish a stale `.ready`.
+                if Task.isCancelled { return }
                 self.continuation.yield(.ready(duration: duration, tracks: tracks))
             }
         case .failed:
