@@ -72,6 +72,35 @@ enum PlayerFixtures {
         return .movie(MovieDetail(movie: movie, tagline: nil, studios: [], people: []))
     }
 
+    /// A movie detail carrying chapter markers — for the `chapterFractions` memoization.
+    /// `runtime` and the chapter starts are caller-chosen so the expected fractions are exact.
+    static func movieDetailWithChapters(startsSeconds: [Double], runtime: Duration) -> ItemDetail {
+        let movie = Movie(
+            id: ItemID(rawValue: "movie-1"),
+            title: "Chaptered Movie",
+            overview: nil,
+            year: 2024,
+            runtime: runtime,
+            communityRating: nil,
+            officialRating: nil,
+            genres: [],
+            primaryTag: nil,
+            backdropTags: [],
+            logoTag: nil,
+            thumbTag: nil,
+            userData: UserItemData(
+                played: false,
+                playbackPositionTicks: 0,
+                playCount: 0,
+                isFavorite: false
+            )
+        )
+        let chapters = startsSeconds.enumerated().map { index, seconds in
+            Chapter(index: index, name: "Chapter \(index + 1)", start: .seconds(seconds))
+        }
+        return .movie(MovieDetail(movie: movie, tagline: nil, studios: [], people: [], chapters: chapters))
+    }
+
     /// An episode `ItemDetail` (carries `seriesID`, so adjacency wiring applies).
     static func episodeDetail(
         id: String,

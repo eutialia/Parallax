@@ -146,6 +146,48 @@ struct PlayerViewModelTests {
         #expect(events.contains(.stopped(ticks: 30 * 10_000_000, itemID: "movie-1")))
     }
 
+    @Test("chapterFractions is empty until a duration beat, then maps chapters to 0...1")
+    func chapterFractionsTrackDuration() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+
+        let vm = makeVM(reporting: reporting, engine: engine, resolved: PlayerFixtures.resolved(), capturedItem: { _ in })
+        // Chapters at 0 / 600 / 1200s; the duration arrives only with the engine beat.
+        await vm.start(item: PlayerFixtures.movieDetailWithChapters(startsSeconds: [0, 600, 1200],
+                                                                    runtime: .seconds(1200)))
+
+        // Chapters are known but the duration isn't yet — no fractions to map onto.
+        #expect(vm.chapterFractions.isEmpty)
+
+        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1),
+                             duration: CMTime(seconds: 1200, preferredTimescale: 1), buffered: nil))
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(vm.chapterFractions == [0, 0.5, 1.0])
+
+        // A repeat duration beat must NOT disturb the cached value (the memoization gate).
+        engine.push(.playing(position: CMTime(seconds: 20, preferredTimescale: 1),
+                             duration: CMTime(seconds: 1200, preferredTimescale: 1), buffered: nil))
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(vm.chapterFractions == [0, 0.5, 1.0])
+    }
+
+    @Test("chapterFractions clears on stop")
+    func chapterFractionsClearOnStop() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+
+        let vm = makeVM(reporting: reporting, engine: engine, resolved: PlayerFixtures.resolved(), capturedItem: { _ in })
+        await vm.start(item: PlayerFixtures.movieDetailWithChapters(startsSeconds: [0, 300], runtime: .seconds(600)))
+        engine.push(.playing(position: CMTime(seconds: 5, preferredTimescale: 1),
+                             duration: CMTime(seconds: 600, preferredTimescale: 1), buffered: nil))
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(vm.chapterFractions == [0, 0.5])
+
+        await vm.stop()
+        #expect(vm.chapterFractions.isEmpty)
+    }
+
     @Test("VC-1 MKV direct-play routes to .vlcKit — no unsupportedFormat error")
     func vc1MKVDirectPlaySelectsVLCKit() async {
         let reporting = StubPlaybackReporting()

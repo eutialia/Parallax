@@ -184,14 +184,30 @@ final class PlayerViewModel {
 
     /// Chapter start fractions (0...1) of the current duration — the progress bars'
     /// tick positions on every platform. Empty until the duration is known.
-    var chapterFractions: [Double] {
+    /// Cached, not computed-per-read (same reason as `mediaSummary`): the scrubber body
+    /// re-evaluates ~twice a second off the periodic position beat, and this maps every
+    /// chapter through a divide. Recomputed only when the chapter set (`playingItem`) or
+    /// the duration actually changes — see `recomputeChapterFractions` / `applyDuration`.
+    private(set) var chapterFractions: [Double] = []
+
+    private func recomputeChapterFractions() {
         let dur = CMTimeGetSeconds(currentDuration)
-        guard dur > 0 else { return [] }
-        return chapters.map { chapter in
+        guard dur > 0 else { chapterFractions = []; return }
+        chapterFractions = chapters.map { chapter in
             let c = chapter.start.components
             let s = Double(c.seconds) + Double(c.attoseconds) / 1e18
             return min(max(s / dur, 0), 1)
         }
+    }
+
+    /// Sets `currentDuration` and refreshes the derived `chapterFractions` ONLY when the
+    /// value actually changes. The duration lands once per asset and then repeats
+    /// unchanged on every position beat (~2/s), so gating the recompute on a real change
+    /// is what keeps this off the per-beat path. Every duration write goes through here.
+    private func applyDuration(_ duration: CMTime) {
+        guard duration != currentDuration else { return }
+        currentDuration = duration
+        recomputeChapterFractions()
     }
 
     /// The chapter containing `atSeconds`, formatted "Chapter N · Name" — the scrub
@@ -532,6 +548,10 @@ final class PlayerViewModel {
         phase = .loading
         didApplyPreferredTracks = false
         playingItem = item
+        // The chapter set just changed; refresh the derived fractions against whatever
+        // duration is known (still the previous item's during an episode→episode swap —
+        // the next duration beat corrects it, and an equal duration is already right).
+        recomputeChapterFractions()
         let positionTicks: Int64
         let runtime: Duration?
         switch item {
@@ -765,6 +785,7 @@ final class PlayerViewModel {
         activeSubtitleCues = []
         currentPosition = .zero
         currentDuration = .zero
+        chapterFractions = []
         bufferedTo = nil
         segmentsTask?.cancel()
         segmentsTask = nil
@@ -1191,7 +1212,7 @@ final class PlayerViewModel {
             clearStall()
             lastPosition = position
             currentPosition = position
-            currentDuration = duration
+            applyDuration(duration)
             bufferedTo = buffered
             nowPlaying.update(position: position, duration: duration, isPlaying: true, title: itemTitle)
             if !didReportStart {
@@ -1205,7 +1226,7 @@ final class PlayerViewModel {
             clearStall()
             lastPosition = position
             currentPosition = position
-            currentDuration = duration
+            applyDuration(duration)
             bufferedTo = buffered
             nowPlaying.update(position: position, duration: duration, isPlaying: false, title: itemTitle)
             // Never report progress for a session that never reported start (a remote/PiP
@@ -1229,7 +1250,7 @@ final class PlayerViewModel {
             let isSeekFetch = abs(CMTimeGetSeconds(position) - CMTimeGetSeconds(currentPosition)) > 2
             lastPosition = position
             currentPosition = position
-            currentDuration = duration
+            applyDuration(duration)
             bufferedTo = buffered
             if isSeekFetch {
                 stallDebounceTask?.cancel()
