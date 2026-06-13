@@ -28,9 +28,6 @@ struct PlayerSegmentPrompt: View {
     /// (countdown elapsed, tapped, or revealed-past). Written by the countdown task,
     /// the iOS tap, and tvOS `send`; cleared when the playhead leaves all segments.
     @Binding var expiredSegmentID: String?
-    /// Reports show/hide up to `PlayerView` so the tvOS `send` pipeline knows when the
-    /// floor remote should act on this button instead of the transport.
-    let onVisibilityChange: (Bool) -> Void
     /// Fire the active prompt (skip / next episode). Same closure tvOS `send` calls, so
     /// the action is identical across the tap and the remote.
     let onActivate: () -> Void
@@ -81,7 +78,6 @@ struct PlayerSegmentPrompt: View {
         // Arm/disarm: a new shown segment resets the drain and (re)starts it; clearing
         // resets so the next segment opens full.
         .onChange(of: shownKey, initial: true) { _, key in
-            onVisibilityChange(key != nil)
             drain = 1
             if key != nil, !reduceMotion {
                 withAnimation(.linear(duration: countdownSeconds)) { drain = 0 }

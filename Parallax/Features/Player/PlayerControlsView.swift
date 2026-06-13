@@ -567,32 +567,36 @@ struct PlayerControlsView: View {
                 .ignoresSafeArea(edges: .top)
                 #endif
 
-                // Centre transport — previous episode · play/pause · next episode.
-                // The ±10s skip is now gesture-only (iOS double-tap thirds · tvOS
-                // scrubber move/pan), and the cluster is visible on tvOS too (the
-                // remote-driven HUD gets the same three buttons). Prev/next disable
-                // at the series boundaries — and for movies, where both are nil — so
-                // the focus engine skips dead targets. See `showsCenterTransport`.
+                // Centre transport — previous episode · play/pause · next episode (the
+                // ±10s skip is gesture-only now: iOS double-tap thirds · tvOS scrubber
+                // move/pan). Movies (`!supportsEpisodeNavigation`) show play/pause ALONE;
+                // episodic content keeps prev/next, disabled at the series boundaries so
+                // the focus engine skips the dead side. See `showsCenterTransport`.
                 //
-                // ALWAYS mounted (gated by opacity/disable, not an `if`): pressing
-                // prev/next loads the next episode, which drops `phase` out of
-                // `.playing` and flips `showsCenterTransport` false. REMOVING the
-                // just-pressed, focused button mid-flight corrupts the tvOS focus
-                // engine — the next directional press then asserts in
+                // The prev/next pair is gated by `supportsEpisodeNavigation`, which is
+                // STABLE per session (movie vs episode never flips during an
+                // episode→episode swap) — so when present the buttons stay ALWAYS mounted
+                // (visibility is opacity/disable, never an `if` on their existence).
+                // REMOVING a just-pressed, focused button mid-flight corrupts the tvOS
+                // focus engine — the next directional press asserts in
                 // `_UIFocusMovementDirectionalPressGestureRecognizer` ("untracked
-                // presses"). Disabling a still-mounted button is safe: the press
-                // already completed, and the engine just relocates focus.
+                // presses"). Disabling a still-mounted button is safe: the press already
+                // completed, and the engine just relocates focus.
                 GlassEffectContainer(spacing: Space.s8) {
                     HStack(spacing: m.transportGap) {
-                        PlayerRoundButton(systemImage: "backward.end.fill", size: m.transportSkip, iconScale: 0.42,
-                                          isEnabled: vm.previousEpisode != nil,
-                                          accessibilityLabel: "Previous episode") { playPrevious() }
+                        if vm.supportsEpisodeNavigation {
+                            PlayerRoundButton(systemImage: "backward.end.fill", size: m.transportSkip, iconScale: 0.42,
+                                              isEnabled: vm.previousEpisode != nil,
+                                              accessibilityLabel: "Previous episode") { playPrevious() }
+                        }
                         PlayerRoundButton(systemImage: vm.isPlaying ? "pause.fill" : "play.fill", size: m.transportPlay,
                                           iconScale: 0.46,
                                           accessibilityLabel: vm.isPlaying ? "Pause" : "Play") { togglePlayPause() }
-                        PlayerRoundButton(systemImage: "forward.end.fill", size: m.transportSkip, iconScale: 0.42,
-                                          isEnabled: vm.nextEpisode != nil,
-                                          accessibilityLabel: "Next episode") { playNext() }
+                        if vm.supportsEpisodeNavigation {
+                            PlayerRoundButton(systemImage: "forward.end.fill", size: m.transportSkip, iconScale: 0.42,
+                                              isEnabled: vm.nextEpisode != nil,
+                                              accessibilityLabel: "Next episode") { playNext() }
+                        }
                     }
                 }
                 #if os(tvOS)
@@ -691,18 +695,22 @@ struct PlayerControlsView: View {
                 if showsCenterTransport {
                     GlassEffectContainer(spacing: Space.s8) {
                         HStack(spacing: PlayerMetrics.phoneTransportGap) {
-                            PlayerRoundButton(systemImage: "backward.end.fill", size: PlayerMetrics.phoneTransportSkip,
-                                              iconScale: 0.42,
-                                              isEnabled: vm.previousEpisode != nil,
-                                              accessibilityLabel: "Previous episode") { playPrevious() }
+                            if vm.supportsEpisodeNavigation {
+                                PlayerRoundButton(systemImage: "backward.end.fill", size: PlayerMetrics.phoneTransportSkip,
+                                                  iconScale: 0.42,
+                                                  isEnabled: vm.previousEpisode != nil,
+                                                  accessibilityLabel: "Previous episode") { playPrevious() }
+                            }
                             PlayerRoundButton(systemImage: vm.isPlaying ? "pause.fill" : "play.fill",
                                               size: PlayerMetrics.phoneTransportPlay,
                                               iconScale: 0.46,
                                               accessibilityLabel: vm.isPlaying ? "Pause" : "Play") { togglePlayPause() }
-                            PlayerRoundButton(systemImage: "forward.end.fill", size: PlayerMetrics.phoneTransportSkip,
-                                              iconScale: 0.42,
-                                              isEnabled: vm.nextEpisode != nil,
-                                              accessibilityLabel: "Next episode") { playNext() }
+                            if vm.supportsEpisodeNavigation {
+                                PlayerRoundButton(systemImage: "forward.end.fill", size: PlayerMetrics.phoneTransportSkip,
+                                                  iconScale: 0.42,
+                                                  isEnabled: vm.nextEpisode != nil,
+                                                  accessibilityLabel: "Next episode") { playNext() }
+                            }
                         }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)

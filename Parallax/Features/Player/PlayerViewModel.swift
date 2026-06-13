@@ -394,6 +394,16 @@ final class PlayerViewModel {
 
     var nextEpisode: Episode? { adjacentEpisodes.next }
     var previousEpisode: Episode? { adjacentEpisodes.previous }
+    /// Whether the playing item is episodic (part of a series), so the prev/next
+    /// transport is meaningful. False for movies — the centre cluster then shows
+    /// play/pause alone. Set once per item from its type and stable across an
+    /// episode→episode swap (both episodic), so the always-mounted prev/next buttons
+    /// never unmount mid-press on tvOS.
+    private(set) var supportsEpisodeNavigation = false
+    /// Flips true when a natural end-of-video has nowhere to advance (a movie or a
+    /// series finale). The view dismisses on it — same exit path as the Close/▼
+    /// chevron — instead of stranding a paused glyph on the final frame.
+    private(set) var playbackDidComplete = false
 
     /// The actionable segment the playhead currently sits inside (intro/recap/
     /// outro), or nil. Computed off the position beats, so the overlay button
@@ -470,6 +480,7 @@ final class PlayerViewModel {
     private func loadSegmentsAndNeighbors(for item: ItemDetail) {
         segments = []
         adjacentEpisodes = .none
+        playbackDidComplete = false
         segmentsTask?.cancel()
         let itemID = item.id
         let episode: (series: ItemID, id: ItemID)?
@@ -477,6 +488,10 @@ final class PlayerViewModel {
         case .episode(let detail): episode = (detail.episode.seriesID, detail.episode.id)
         case .movie, .series, .season: episode = nil
         }
+        // Stable for the whole session (only flips on the initial movie-vs-episode load,
+        // never during an episode→episode swap), so the centre cluster can drop prev/next
+        // for movies without ever unmounting a focused button on tvOS.
+        supportsEpisodeNavigation = episode != nil
         segmentsTask = Task { [weak self, fetchSegments, fetchAdjacent] in
             async let segmentsResult = fetchSegments(itemID)
             var neighbors = AdjacentEpisodes.none
@@ -1236,7 +1251,16 @@ final class PlayerViewModel {
             // advances"). The veil then rides continuously through `resetForReplay`/`start`
             // into the next episode: one cover, no pause scrim, and (on the floor) no HUD.
             let advanceTarget = canAutoAdvance ? adjacentEpisodes.next?.id : nil
-            if advanceTarget != nil { phase = .loading }
+            if advanceTarget != nil {
+                phase = .loading
+            } else if !isExiting {
+                // A movie or series finale ended with nowhere to go: dismiss the player
+                // (the view watches this and runs the Close-chevron exit) rather than
+                // leaving a stranded paused glyph on the last frame. Flip it BEFORE the
+                // await so the paused overlay (gated on !playbackDidComplete) never paints
+                // in the gap before the dismiss lands.
+                playbackDidComplete = true
+            }
             await reportStoppedIfNeeded()
             // Deferred onto a fresh task so the in-flight `.ended` beat unwinds the engine's
             // state loop before the swap tears it down.

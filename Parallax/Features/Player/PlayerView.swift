@@ -84,10 +84,6 @@ struct PlayerView: View {
     /// Shared by `PlayerSegmentPrompt`'s timer/tap and the tvOS `send` pipeline; cleared
     /// when the playhead leaves all segments so a re-entry re-arms.
     @State private var segmentPromptExpiredID: String?
-    /// Whether that button is showing right now (reported by `PlayerSegmentPrompt`).
-    /// tvOS reads it in `send` to route floor presses to the prompt instead of the
-    /// transport.
-    @State private var segmentButtonShowing = false
 
     var body: some View {
         ZStack {
@@ -187,6 +183,12 @@ struct PlayerView: View {
             DisplayCriteriaMatcher.clear()
             #endif
         }
+        // A movie / series finale that played to its end dismisses the player the same
+        // way the Close chevron does (the VM flips `playbackDidComplete`); episodes
+        // auto-advance instead and never set it.
+        .onChange(of: viewModel?.playbackDidComplete) { _, done in
+            if done == true { exitPlayer() }
+        }
         // The player is an immersive "screening room": pin the whole surface (video
         // host, controls, subtitle/loader/error/debug overlays) to dark appearance so
         // every bare `.glassEffect(.regular)` resolves to the same dark frosted
@@ -256,7 +258,6 @@ struct PlayerView: View {
                             vm: vm,
                             enabled: segmentPromptEnabled,
                             expiredSegmentID: $segmentPromptExpiredID,
-                            onVisibilityChange: { segmentButtonShowing = $0 },
                             onActivate: { activateSegmentPrompt(vm) }
                         )
                     }
@@ -323,6 +324,15 @@ struct PlayerView: View {
         #else
         !scrubHUDActive
         #endif
+    }
+
+    /// Whether the contextual segment button is on screen right now — derived from the
+    /// SAME inputs as `PlayerSegmentPrompt.visible` (enabled · a current segment · not
+    /// already dismissed), so `send` routes the floor remote to it off live state rather
+    /// than a frame-late mirrored flag that could strand across an episode swap.
+    private var segmentButtonShowing: Bool {
+        guard let vm = viewModel else { return false }
+        return segmentPromptEnabled && vm.activeSegmentID != nil && vm.activeSegmentID != segmentPromptExpiredID
     }
 
     /// Fire the active segment prompt — the shared action for the iOS tap and the tvOS
@@ -658,9 +668,12 @@ struct PlayerView: View {
     /// must survive the resume (hence this drops the old `!isPlaying` term that used to
     /// unmount it the instant playback resumed). Suppressed in `.fullHUD`: the centre
     /// transport's own play/pause glyph stands in there, so a second centred mark would
-    /// double up.
+    /// double up. Also suppressed once `playbackDidComplete`: a finale/movie ends with
+    /// `phase` still `.playing` (no `.loading` swap, since nothing advances), and this
+    /// view is about to dismiss — without the term the pause glyph would flash through
+    /// the exit slide.
     private func pausedScrimEligible(_ vm: PlayerViewModel) -> Bool {
-        vm.phase == .playing && !isScrubbing && !vm.showsStallScrim && !isFullHUD
+        vm.phase == .playing && !isScrubbing && !vm.showsStallScrim && !isFullHUD && !vm.playbackDidComplete
     }
 
     /// Window-level pan events. On the floor / scrub states every pan drives the

@@ -160,6 +160,8 @@ struct PlayerViewModelSegmentTests {
 
         #expect(ids.values.contains(ItemID(rawValue: "ep-2")))
         #expect(engines.count == 2)                     // a fresh engine for ep-2
+        #expect(!vm.playbackDidComplete)                // it advanced, didn't finish
+        #expect(vm.supportsEpisodeNavigation)           // episodic → prev/next transport
     }
 
     @Test("end-of-video on a finale (no next) does not auto-advance")
@@ -176,6 +178,7 @@ struct PlayerViewModelSegmentTests {
 
         #expect(ids.values == [ItemID(rawValue: "ep-9")])
         #expect(engines.count == 1)
+        #expect(vm.playbackDidComplete)                 // finale ended → the view dismisses
     }
 
     @Test("playPreviousEpisode replays the previous neighbor")
