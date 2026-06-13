@@ -42,17 +42,41 @@ public extension Logger {
     }
 }
 
+public extension URL {
+    /// Scheme/host/port/path of the URL with every credential-bearing component
+    /// stripped, safe to drop into a log line. Jellyfin stream and transcode URLs
+    /// carry the access token as an `api_key` query item, and a malformed
+    /// user-typed URL can preserve `user:pass@` userinfo on the `failingURL` of a
+    /// `URLError` — both must never reach Console.app, sysdiagnose, or crash logs.
+    /// The query is replaced with `?<redacted>` when present so the shape stays
+    /// diagnostic without exposing the value.
+    var redactedForLog: String {
+        guard var components = URLComponents(url: self, resolvingAgainstBaseURL: false) else {
+            return "\(scheme ?? "?")://\(host ?? "?")"
+        }
+        let hadQuery = components.query != nil
+        components.user = nil
+        components.password = nil
+        components.query = nil
+        components.fragment = nil
+        let base = components.string ?? "\(scheme ?? "?")://\(host ?? "?")"
+        return hadQuery ? "\(base)?<redacted>" : base
+    }
+}
+
 public extension Error {
     /// Compact, log-safe summary of a network-shaped error. `URLError` gets
     /// structured detail (code + symbol + failing URL) so an opaque
     /// "Network error" turns into something like
     /// `URLError code=-1022 (appTransportSecurityRequiresSecureConnection) failingURL=http://192.168.1.10:8096/...`.
+    /// The failing URL is routed through `URL.redactedForLog` so any `api_key`
+    /// query item or `user:pass@` userinfo is stripped before it reaches the log.
     /// Other errors fall back to type name + description, which for the kean/Get
     /// and Jellyfin SDK errors covers status code / URL without echoing
     /// authorization headers or response bodies.
     var networkDiagnostic: String {
         if let urlError = self as? URLError {
-            let failing = urlError.failingURL?.absoluteString ?? "nil"
+            let failing = urlError.failingURL?.redactedForLog ?? "nil"
             return "URLError code=\(urlError.code.rawValue) (\(urlError.code)) failingURL=\(failing)"
         }
         return "\(type(of: self)): \(self)"

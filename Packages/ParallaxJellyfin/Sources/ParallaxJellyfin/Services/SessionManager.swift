@@ -16,7 +16,7 @@ public actor SessionManager {
     }
 
     public func signIn(server: URL, username: String, password: String) async throws -> Session {
-        Log.network.info("signIn → \(server.absoluteString)")
+        Log.network.info("signIn → \(server.redactedForLog)")
         let client = await factory.make(serverURL: server)
 
         let authResult: AuthenticationResult
@@ -75,19 +75,19 @@ public actor SessionManager {
     }
 
     public func signInWithQuickConnect(server: URL) -> AsyncStream<QuickConnectStatus> {
-        AsyncStream { continuation in
-            let task = Task {
-                await runQuickConnect(server: server, continuation: continuation)
-            }
-            continuation.onTermination = { _ in task.cancel() }
+        let (stream, continuation) = AsyncStream.makeStream(of: QuickConnectStatus.self)
+        let task = Task {
+            await runQuickConnect(server: server, continuation: continuation)
         }
+        continuation.onTermination = { _ in task.cancel() }
+        return stream
     }
 
     private func runQuickConnect(
         server: URL,
         continuation: AsyncStream<QuickConnectStatus>.Continuation
     ) async {
-        Log.network.info("quickConnect → \(server.absoluteString)")
+        Log.network.info("quickConnect → \(server.redactedForLog)")
         continuation.yield(.waitingForCode)
         let client = await factory.make(serverURL: server)
         let events = client.quickConnectEvents()

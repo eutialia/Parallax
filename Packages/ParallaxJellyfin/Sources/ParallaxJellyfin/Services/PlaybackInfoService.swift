@@ -390,7 +390,7 @@ public actor PlaybackInfoService {
         do {
             try await work()
         } catch {
-            Log.playback.error("\(label) failed: \(error.localizedDescription, privacy: .public)")
+            Log.playback.error("\(label) failed: \(error.localizedDescription)")
         }
     }
 }

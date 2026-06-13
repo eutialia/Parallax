@@ -521,7 +521,7 @@ final class PlayerViewModel {
         } catch let error as AppError {
             phase = .failed(error)
         } catch {
-            Log.playback.error("item detail fetch failed: \(error.networkDiagnostic, privacy: .public)")
+            Log.playback.error("item detail fetch failed: \(error.networkDiagnostic)")
             phase = .failed(.unexpected("couldn't load item", underlying: AnySendableError(error)))
         }
     }
@@ -560,7 +560,7 @@ final class PlayerViewModel {
                 // failures leave a trail (the bare AVAudioSession NSError is not
                 // an AppError, so it would otherwise fall into the generic catch
                 // and be mislabeled as "Couldn't reach the file").
-                Log.playback.error("audio session activate failed: \(error.networkDiagnostic, privacy: .public)")
+                Log.playback.error("audio session activate failed: \(error.networkDiagnostic)")
                 throw AppError.playback(.audioSessionFailed)
             }
             let resumeTime = ResumePolicy.resumeStartTime(positionTicks: positionTicks, runtime: runtime)
@@ -583,7 +583,7 @@ final class PlayerViewModel {
             // already maps its failures to AppError). Log it and preserve the
             // underlying error in diagnostics instead of mislabeling it as a
             // network problem.
-            Log.playback.error("playback start failed (unmapped): \(error.networkDiagnostic, privacy: .public)")
+            Log.playback.error("playback start failed (unmapped): \(error.networkDiagnostic)")
             phase = .failed(.unexpected("playback start failed", underlying: AnySendableError(error)))
             await audioSession.deactivate()
         }
@@ -1097,7 +1097,7 @@ final class PlayerViewModel {
         } catch let error as AppError {
             return await fallBackAfterFailedSwitch(error)
         } catch {
-            Log.playback.error("track switch failed: \(error.networkDiagnostic, privacy: .public)")
+            Log.playback.error("track switch failed: \(error.networkDiagnostic)")
             return await fallBackAfterFailedSwitch(
                 .unexpected("track switch failed", underlying: AnySendableError(error))
             )
