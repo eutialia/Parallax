@@ -6,7 +6,7 @@ import ParallaxCore
 /// like DefaultJellyfinLibraryClient — cheap value-type config, no shared
 /// mutable state. URL helpers use the public client.url(with:queryAPIKey:) /
 /// client.url(path:) so api_key lands in the query.
-public final class DefaultJellyfinPlaybackClient: JellyfinPlaybackClient, @unchecked Sendable {
+public final class DefaultJellyfinPlaybackClient: JellyfinPlaybackClient, Sendable {
     private let session: Session
     private let identity: DeviceIdentity
 

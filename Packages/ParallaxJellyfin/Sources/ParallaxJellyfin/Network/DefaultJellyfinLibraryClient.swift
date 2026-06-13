@@ -2,7 +2,7 @@ import Foundation
 import JellyfinAPI
 import ParallaxCore
 
-public final class DefaultJellyfinLibraryClient: JellyfinLibraryClient, @unchecked Sendable {
+public final class DefaultJellyfinLibraryClient: JellyfinLibraryClient, Sendable {
     private let session: Session
     private let identity: DeviceIdentity
 

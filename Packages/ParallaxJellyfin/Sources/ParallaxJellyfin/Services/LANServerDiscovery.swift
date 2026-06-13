@@ -49,6 +49,9 @@ public final class LANServerDiscovery {
         task = Task { [weak self] in
             var attempt = 0
             while !Task.isCancelled {
+                // `broadcaster` is a blocking, synchronous UDP send/receive loop;
+                // detach it to a utility thread so the wait never occupies the
+                // actor's executor (or, in tests, the cooperative pool).
                 let responses = await Task.detached(priority: .utility) { broadcaster(timeout) }.value
                 guard let self else { return }
                 self.ingest(responses)
