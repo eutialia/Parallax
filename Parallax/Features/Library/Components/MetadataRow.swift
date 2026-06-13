@@ -28,8 +28,12 @@ struct MetadataRow<Item: Identifiable & Hashable, Content: View>: View {
                     }
                 }
                 .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
-                .tvFocusSection()
             }
+            // Group the whole scrollable shelf into one tvOS focus section (on the scroll
+            // container, the conventional anchor — Apple's TV catalog sample) so vertical
+            // entry from an adjacent shelf lands on the nearest tile and horizontal
+            // traversal stays contained to this row until its edges.
+            .tvFocusSection()
             // Let a focused tile's lift/shadow paint past the row bounds instead of being
             // clipped by the horizontal scroll view.
             .tvScrollClipDisabled()
