@@ -7,6 +7,8 @@ struct HomeView: View {
     @Environment(LaunchGate.self) private var launchGate
     @Environment(\.horizontalSizeClass) private var hSize
     @Environment(\.appIdiom) private var idiom
+    @Environment(PlaybackPresenter.self) private var playback
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Supplied by the tvOS launch gate (`FocusRootView`), which loads the feed up front so the
     /// hero is on screen — and focusable — the instant the sidebar appears. When set, the view
     /// skips its own fetch. iOS leaves this nil and self-loads in `.task` as before.
@@ -85,6 +87,16 @@ struct HomeView: View {
             // re-runs are no-ops inside the gate.
             launchGate.markContentReady()
         }
+        // A finished playback session moved progress (incl. the new prev/next episode
+        // jumps), so re-pull the progress-driven shelves the moment the player dismisses.
+        // Home stays MOUNTED under the player layer/cover, so its `.task`/`.onAppear`
+        // never re-fire — `playback.request` clearing is the only "back from watching"
+        // edge. Guarded to the present→dismiss transition (oldID != nil, newID == nil).
+        .onChange(of: playback.request?.id) { oldID, newID in
+            if oldID != nil, newID == nil {
+                Task { await viewModel?.refresh() }
+            }
+        }
     }
 
     @ViewBuilder
@@ -130,6 +142,9 @@ struct HomeView: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .tvContentInset()
+                    // Dim + crossfade the progress-driven shelves while `refresh()` re-pulls
+                    // them after playback — same recipe as the library grid's sort/filter.
+                    .staleWhileRevalidate(isRefreshing: vm.isRefreshing, reduceMotion: reduceMotion)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.bottom, Space.s30)

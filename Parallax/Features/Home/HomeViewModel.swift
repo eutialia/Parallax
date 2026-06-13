@@ -15,6 +15,10 @@ final class HomeViewModel {
     private(set) var heroFeed: [HomeHeroFeedEntry] = []
     private(set) var continueWatching: [Item] = []
     private(set) var nextUp: [Item] = []
+    /// True while `refresh()` re-pulls the progress-driven shelves in the background.
+    /// The view dims + crossfades them (the library grid's stale-while-revalidate recipe)
+    /// instead of dropping back to a skeleton.
+    private(set) var isRefreshing = false
     private(set) var favoriteErrorMessage: String?
 
     /// Drives the favorite-failure alert. The view binds `$vm.isShowingFavoriteError`;
@@ -53,6 +57,33 @@ final class HomeViewModel {
         } catch {
             Log.ui.error("HomeViewModel load unexpected: \(String(describing: type(of: error)))")
             state = .failed("Something went wrong.")
+        }
+    }
+
+    /// Re-pull ONLY the progress-driven shelves (Continue Watching + Next Up) without a
+    /// full reload — playback moves progress (incl. the new prev/next episode jumps), so
+    /// landing back on Home should reflect it. The hero and the current shelves stay on
+    /// screen (dimmed) through the round-trip, then the fresh lists crossfade in.
+    /// No-op until the first `load()` has landed, and re-entrancy-guarded.
+    func refresh() async {
+        guard state == .loaded, !isRefreshing else { return }
+        isRefreshing = true
+        defer { isRefreshing = false }
+        do {
+            async let cwTask = repo.continueWatching()
+            async let nuTask = repo.nextUp()
+            let (cw, nu) = try await (cwTask, nuTask)
+            try Task.checkCancellation()
+            continueWatching = cw
+            nextUp = nu
+        } catch is CancellationError {
+            return
+        } catch let error as AppError {
+            if case .network(let urlError) = error, urlError.code == .cancelled { return }
+            // Non-fatal: keep the stale shelves rather than blanking a working screen.
+            Log.ui.error("HomeViewModel refresh failed: \(error.userMessage) (\(error.networkDiagnostic))")
+        } catch {
+            Log.ui.error("HomeViewModel refresh unexpected: \(String(describing: type(of: error)))")
         }
     }
 

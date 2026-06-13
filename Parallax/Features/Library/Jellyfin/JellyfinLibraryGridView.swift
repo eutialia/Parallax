@@ -145,23 +145,6 @@ struct JellyfinLibraryGridView: View {
         vm.items.isEmpty && (vm.state == .idle || (vm.state == .loading && vm.isLoadingGenres))
     }
 
-    private var gridAnimation: Animation? {
-        if reduceMotion { return nil }
-        #if os(tvOS)
-        // Instant swap on tvOS: a crossfade replacing the grid's focusable content makes the focus
-        // engine re-evaluate for the animation's whole duration, parking focus off the header's
-        // Genre/Sort button until it settles. No animation window → focus stays put. iOS has no
-        // focus to lose, so it keeps the crossfade.
-        return nil
-        #else
-        return .smooth
-        #endif
-    }
-
-    private func gridDimmed(_ vm: JellyfinLibraryGridViewModel) -> Double {
-        vm.isRefreshing && !reduceMotion ? 0.45 : 1
-    }
-
     private func refreshErrorBanner(message: String, vm: JellyfinLibraryGridViewModel) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: Space.s8) {
             Label(message, systemImage: "exclamationmark.triangle")
@@ -190,14 +173,9 @@ struct JellyfinLibraryGridView: View {
             ) { item in
                 ItemNavigator(item: item, session: session) { tile(for: item) }
             }
-            // Stale-while-revalidate: dim the outgoing page (`gridDimmed` tracks `isRefreshing`)
-            // during the API round-trip, then crossfade back when it clears. Keyed on `isRefreshing`
-            // — the only input the opacity derives from — so iOS crossfades in BOTH directions. tvOS
-            // gets the instant swap for free: `gridAnimation` is nil there, so no animation window
-            // opens to hold the focus/input system and block re-opening the menu at the pick moment.
-            .opacity(gridDimmed(vm))
-            .allowsHitTesting(!vm.isRefreshing)
-            .animation(gridAnimation, value: vm.isRefreshing)
+            // Stale-while-revalidate dim → crossfade during the sort/filter/genre API
+            // round-trip (shared with the Home shelves so the two never drift).
+            .staleWhileRevalidate(isRefreshing: vm.isRefreshing, reduceMotion: reduceMotion)
             if vm.isLoadingMore {
                 AdaptivePosterGridLoadingSkeleton(tileCount: columns, fixedColumns: columns)
                     .padding(.vertical, Space.s12)
