@@ -13,7 +13,15 @@ import Foundation
 /// Void payload carries no route detail (the new profile is probed fresh on
 /// the next `build()` call).
 public protocol AudioSessionControlling: Sendable {
+    /// Configures and activates the playback session (`.playback` category) so audio
+    /// keeps playing in the background and over the silent switch. Throws if the
+    /// system refuses activation (e.g. an interruption already owns the session).
     func activate() async throws
+    /// Deactivates the session on teardown so other apps can resume. Best-effort —
+    /// never throws (a failed deactivation isn't actionable from the player).
     func deactivate() async
+    /// Fires once per audio-route change (headphones in/out, AirPlay handoff). Each
+    /// emission signals the cached `DeviceProfile` is stale and must be rebuilt; see
+    /// the type doc for why the payload is `Void`.
     var routeChanges: AsyncStream<Void> { get }
 }
