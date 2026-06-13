@@ -1,24 +1,32 @@
 import Foundation
 import JellyfinAPI
 
-// Narrow protocol that LibraryRepository calls. Implementations:
-//   - DefaultJellyfinLibraryClient (production, wraps a real JellyfinClient)
-//   - FakeJellyfinLibraryClient (tests, programmable canned responses)
-//
-// Exposes BaseItemDto on purpose — DTO translation happens in the
-// repository, not here. Mirrors Phase 2's JellyfinAuthClient shape.
+/// Narrow protocol that `LibraryRepository` calls. Implementations:
+///   - `DefaultJellyfinLibraryClient` (production, wraps a real `JellyfinClient`)
+///   - `FakeJellyfinLibraryClient` (tests, programmable canned responses)
+///
+/// Exposes `BaseItemDto` on purpose — DTO translation happens in the repository, not here.
+/// Mirrors the `JellyfinAuthClient` shape.
 public protocol JellyfinLibraryClient: Sendable {
+    /// The user's top-level library collections (Movies, Shows, …).
     func getCollections() async throws -> [BaseItemDto]
+    /// A page of items in a scope, filtered and sorted; returns the page plus the total count.
     func getItems(scope: LibraryScope, filter: ItemFilter, sort: ItemSort, startIndex: Int, limit: Int) async throws -> (items: [BaseItemDto], total: Int)
+    /// Full detail for a single item by id.
     func getItemDetail(itemID: String) async throws -> BaseItemDto
     /// Batch lookup by item id (e.g. season folders for home-shelf artwork).
     func getItemsByIDs(_ ids: [String]) async throws -> [BaseItemDto]
+    /// The seasons of a series, in order.
     func getSeasons(seriesID: String) async throws -> [BaseItemDto]
+    /// The episodes of a season, in order.
     func getEpisodes(seasonID: String) async throws -> [BaseItemDto]
+    /// The user's Continue Watching shelf (in-progress items).
     func getContinueWatching() async throws -> [BaseItemDto]
+    /// The user's Next Up shelf (next unwatched episode per series).
     func getNextUp() async throws -> [BaseItemDto]
     /// Latest items added across libraries (`GET /Items/Latest`).
     func getRecentlyAdded(limit: Int, includeItemTypes: [BaseItemKind]) async throws -> [BaseItemDto]
+    /// Search items by free-text query within a scope (all / movies / shows / …).
     func search(query: String, scope: SearchScope) async throws -> [BaseItemDto]
     /// POST/DELETE the item's favorite flag for the current user (`/UserFavoriteItems/{id}`).
     func setFavorite(itemID: String, isFavorite: Bool) async throws -> UserItemData

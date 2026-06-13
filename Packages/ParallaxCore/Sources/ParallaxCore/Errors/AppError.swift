@@ -1,11 +1,20 @@
 import Foundation
 
+/// The app's unified error type. Every subsystem maps its failures into one of these cases
+/// so the UI can render a consistent `userMessage` and logs a `diagnosticDescription`
+/// without leaking provider-specific detail.
 public enum AppError: Error, Sendable {
+    /// A transport-level URL loading failure (no connection, timeout, host unreachable).
     case network(URLError)
+    /// Authentication failed — see `AuthFailure` for the specific reason.
     case auth(AuthFailure)
+    /// The server returned a non-success status; `message` is its text, if any.
     case server(statusCode: Int, message: String?)
+    /// The media source couldn't be resolved or prepared — see `SourceFailure`.
     case source(SourceFailure)
+    /// Playback itself failed — see `PlaybackFailure`.
     case playback(PlaybackFailure)
+    /// An unmapped failure; `underlying` preserves the original error for diagnostics.
     case unexpected(String, underlying: AnySendableError?)
 
     public var userMessage: String {

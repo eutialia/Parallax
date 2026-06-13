@@ -1,6 +1,10 @@
 import Foundation
 
+/// Coalesces a burst of `update(_:)` calls into a single emission on `stream`, delivered
+/// `delay` after the last update. Each new value cancels the pending one — for-await over
+/// `stream` to receive only the settled value (e.g. a search field that fires once typing stops).
 public actor AsyncDebouncer<Value: Sendable> {
+    /// The debounced output; for-await over it to receive settled values.
     public nonisolated let stream: AsyncStream<Value>
     private nonisolated let continuation: AsyncStream<Value>.Continuation
     private let delay: Duration

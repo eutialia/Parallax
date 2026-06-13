@@ -1,20 +1,26 @@
 import Foundation
 
+/// A media bitrate stored as bits per second. Build it with the unit factories and render
+/// it with `formatted()`; it's `Comparable` so quality ladders can sort by it directly.
 public struct Bitrate: Sendable, Hashable, Codable, Comparable {
+    /// The bitrate in bits per second.
     public let rawValue: Int64
 
     public init(rawValue: Int64) {
         self.rawValue = rawValue
     }
 
+    /// A bitrate from a raw bits-per-second value.
     public static func bitsPerSecond(_ value: Int64) -> Bitrate {
         Bitrate(rawValue: value)
     }
 
+    /// A bitrate from kilobits per second (×1,000).
     public static func kilobits(_ value: Int64) -> Bitrate {
         Bitrate(rawValue: value * 1_000)
     }
 
+    /// A bitrate from megabits per second (×1,000,000).
     public static func megabits(_ value: Int64) -> Bitrate {
         Bitrate(rawValue: value * 1_000_000)
     }

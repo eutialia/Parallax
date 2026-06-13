@@ -1,9 +1,17 @@
 import Foundation
 
+/// A failure surfaced by a `PlaybackEngine` on its state stream. The app maps these to a
+/// user-facing `AppError.playback`; engines stay URL- and provider-agnostic, so the cases
+/// describe playback states, never network/auth specifics.
 public enum PlaybackError: Error, Sendable, Equatable {
-    case assetNotPlayable        // AVPlayerItem never became .readyToPlay
-    case decodeFailed            // AVPlayerItem.status == .failed mid-playback
-    case networkStalled          // playback buffer emptied and did not recover
+    /// The asset never became playable (`AVPlayerItem` never reached `.readyToPlay`).
+    case assetNotPlayable
+    /// Decoding failed mid-playback (`AVPlayerItem.status == .failed`).
+    case decodeFailed
+    /// The playback buffer emptied and did not recover.
+    case networkStalled
+    /// An engine-specific failure outside the cases above; the string is a log-safe
+    /// summary, not user-facing copy.
     case unknown(String)
 
     public static func == (lhs: PlaybackError, rhs: PlaybackError) -> Bool {
