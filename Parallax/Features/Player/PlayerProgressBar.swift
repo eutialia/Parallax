@@ -138,11 +138,11 @@ struct PlayerProgressBar: View {
         RoundedRectangle(cornerRadius: handleCornerRadius, style: .continuous)
             .fill(.white)
             .frame(width: handleWidth, height: handleHeight)
-            .overlay(
+            .overlay {
                 Circle().strokeBorder(.white.opacity(0.55), lineWidth: 3 * metrics.u)
                     .padding(-3 * metrics.u)
                     .opacity(mode == .focused ? 1 : 0)
-            )
+            }
             .shadow(color: .black.opacity(0.5),
                     radius: (mode == .scrub ? 5 : 2) * metrics.u, y: 1)
     }

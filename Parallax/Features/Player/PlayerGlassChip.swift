@@ -114,8 +114,10 @@ struct PlayerGlassChip: View {
                 content.playerGlassSurface(in: Capsule(), off: glassOff, hairline: nil)
             }
         }
-        .overlay(Capsule().strokeBorder(
-            .white.opacity(isVacated ? 0 : platter ? 0.5 : activeTint ? 0.45 : 0.20), lineWidth: 1))
+        .overlay {
+            Capsule().strokeBorder(
+                .white.opacity(isVacated ? 0 : platter ? 0.5 : activeTint ? 0.45 : 0.20), lineWidth: 1)
+        }
         .opacity(isVacated ? 0 : 1)
         // The vacated chip is invisible but its Button isn't gone: without these the
         // tap survives by ZStack-ordering luck alone, and VoiceOver (which ignores

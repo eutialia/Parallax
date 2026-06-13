@@ -35,6 +35,10 @@ struct PrimaryPlayButton: View {
         // controlSize is unavailable on tvOS; .extraLarge lands ~50pt at .headline,
         // the closest native metric to the previous 46pt custom pill.
         .controlSize(.extraLarge)
+        // Pin dark so light mode / bright artwork doesn't resolve the near-white glass
+        // variant (measured rgb(222,219,255) unpinned vs rgb(25,21,62) pinned —
+        // CircleGlassButton applies the same fix for the same reason).
+        .environment(\.colorScheme, .dark)
         #endif
     }
 

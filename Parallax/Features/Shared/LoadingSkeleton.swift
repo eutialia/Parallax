@@ -362,7 +362,8 @@ struct SearchRefiningSkeleton: View {
             .frame(width: 72)
             .skeletonShimmer()
             .padding(10)
-            .background(.regularMaterial, in: Capsule())
+            .glassEffect(.regular.tint(Color.glass), in: Capsule())
+            .overlay { Capsule().strokeBorder(Color.glassBorder, lineWidth: 1) }
             .padding(.top, Space.s8)
     }
 }

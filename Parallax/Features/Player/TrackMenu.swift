@@ -197,6 +197,7 @@ private struct MenuRow<Trailing: View>: View {
             }
         }
         .tvMenuRowButton()
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
         .modifier(TrackMenuRowFocus(key: focusKey))
     }
 }
@@ -342,8 +343,10 @@ struct ChapterMenu: View {
 
     private static func timecode(_ duration: Duration) -> String {
         let total = Int(duration.components.seconds)
-        let h = total / 3600, m = (total % 3600) / 60, s = total % 60
-        return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%d:%02d", m, s)
+        let whole = Duration.seconds(total)
+        return total >= 3600
+            ? whole.formatted(.time(pattern: .hourMinuteSecond(padHourToLength: 1, fractionalSecondsLength: 0)))
+            : whole.formatted(.time(pattern: .minuteSecond(padMinuteToLength: 1, fractionalSecondsLength: 0)))
     }
 }
 
@@ -377,7 +380,7 @@ struct SpeedMenu: View {
     /// Shared "1.5×" formatter — also used by the speed chip label so the chip and
     /// the menu can't drift.
     static func label(_ rate: Double) -> String {
-        let s = String(format: rate == rate.rounded() ? "%.0f" : "%g", rate)
+        let s = rate.formatted(.number.precision(.fractionLength(0...2)))
         return s + "×"
     }
 }
