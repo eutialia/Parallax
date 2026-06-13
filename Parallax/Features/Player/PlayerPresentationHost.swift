@@ -43,9 +43,15 @@ struct PlayerPresentationHost: View {
     /// out); the presenter's teardown grace latch covers that overlap.
     @State private var mounted: PlaybackPresenter.Request?
     @State private var presentation = PlayerPresentation()
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// One spring for present and dismiss — matches the system cover feel.
     private static let spring = Animation.spring(duration: 0.45, bounce: 0)
+    /// Reduce Motion swaps the full-height slide spring for a short cross-fade-speed
+    /// ease so the player still appears/dismisses without the large vertical travel.
+    private static let reducedSpring = Animation.easeInOut(duration: 0.2)
+
+    private var presentAnimation: Animation { reduceMotion ? Self.reducedSpring : Self.spring }
 
     var body: some View {
         // GeometryReader (not onGeometryChange) on purpose: it stays full-size
@@ -75,7 +81,7 @@ struct PlayerPresentationHost: View {
                         // transaction as the insertion wouldn't animate (a fresh
                         // view's first values are its identity).
                         .onAppear {
-                            withAnimation(Self.spring) {
+                            withAnimation(presentAnimation) {
                                 presentation.travel = 0
                             } completion: {
                                 // A dismiss that retargeted this spring
@@ -110,7 +116,7 @@ struct PlayerPresentationHost: View {
             // down past the bottom edge, then unmount. The completion fires
             // exactly once even if the animation is interrupted, so the player
             // can never linger unmounted-but-visible.
-            withAnimation(Self.spring) {
+            withAnimation(presentAnimation) {
                 presentation.travel = height
             } completion: {
                 // If a present raced this slide-out (the presenter's grace

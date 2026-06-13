@@ -91,6 +91,8 @@ struct PlayerView: View {
 
             playbackSurface
         }
+        // VoiceOver's two-finger double-tap toggles playback from anywhere on the surface.
+        .accessibilityAction(.magicTap) { viewModel?.togglePlayPause() }
         // On the whole stack, floor included: the pull moves ONE layer — the
         // same unit the Close button's dismissal slides — not a card over a
         // parked backdrop (see PlayerPullToDismiss).

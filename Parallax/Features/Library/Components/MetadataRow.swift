@@ -16,6 +16,7 @@ struct MetadataRow<Item: Identifiable & Hashable, Content: View>: View {
                 // clear 10-foot heading) while iPhone/iPad keep `.title2`.
                 .font(idiom == .tv ? .title3.weight(.bold) : .title2.weight(.bold))
                 .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
+                .accessibilityAddTraits(.isHeader)
             ScrollView(.horizontal, showsIndicators: false) {
                 // 40pt inter-tile gap on tvOS (Apple's canonical focusable-tile spacing) so a
                 // focused poster's lift doesn't crowd its neighbours.

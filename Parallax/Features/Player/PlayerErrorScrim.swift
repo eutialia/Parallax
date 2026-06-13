@@ -34,6 +34,11 @@ struct PlayerErrorScrim<Buttons: View>: View {
         }
         .onAppear {
             withAnimation(reduceMotion ? nil : PlayerScrimStyle.rise) { entered = true }
+            // VoiceOver focus may be on the video surface (mid-scrub or HUD hidden),
+            // so the scrim's appearance is otherwise silent — announce the failure.
+            AccessibilityNotification.Announcement(
+                AttributedString(message.isEmpty ? title : "\(title). \(message)")
+            ).post()
         }
     }
 
@@ -82,7 +87,7 @@ struct PlayerErrorScrim<Buttons: View>: View {
                     .padding(.horizontal, metrics.errorDetailPadX)
                     .padding(.vertical, metrics.errorDetailPadY)
                     .background(.white.opacity(0.05), in: detailShape)
-                    .overlay(detailShape.strokeBorder(.white.opacity(0.1), lineWidth: 1))
+                    .overlay { detailShape.strokeBorder(.white.opacity(0.1), lineWidth: 1) }
                     .frame(maxWidth: metrics.errorDetailMaxWidth)
                     .padding(.top, metrics.errorDetailTop)
             }

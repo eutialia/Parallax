@@ -164,7 +164,7 @@ struct LoginView: View {
 
             // Connect (solid primary) — needs all three fields before it's tappable.
             Button {
-                Task { if await vm.signIn() { await handleSuccess() } }
+                Task { await submitSignIn(vm: vm) }
             } label: {
                 Group {
                     if vm.isWorking { ProgressView().tint(Color.buttonLabel) }
@@ -179,7 +179,7 @@ struct LoginView: View {
             // OR divider
             HStack(spacing: Space.s12) {
                 Rectangle().fill(Color.separator).frame(height: 1)
-                Text("OR").font(.caption.weight(.semibold)).foregroundStyle(Color.tertiaryLabel)
+                Text("or").textCase(.uppercase).font(.caption.weight(.semibold)).foregroundStyle(Color.tertiaryLabel)
                 Rectangle().fill(Color.separator).frame(height: 1)
             }
 
@@ -198,12 +198,16 @@ struct LoginView: View {
         .glassBar()
     }
 
+    private func submitSignIn(vm: LoginViewModel) async {
+        if await vm.signIn() { await handleSuccess() }
+    }
+
     /// URL-shaped placeholders get auto-styled as blue links, which ignores `.tint`
     /// and `.foregroundStyle`. Feeding the example as an `AttributedString` with an
     /// explicit color renders it in the normal placeholder gray instead.
     private static var urlPrompt: Text {
         var prompt = AttributedString("https://jellyfin.example.com")
-        prompt.foregroundColor = Color.tertiaryLabel
+        prompt.swiftUI.foregroundColor = Color.tertiaryLabel
         return Text(prompt)
     }
 

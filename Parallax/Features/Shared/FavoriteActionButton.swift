@@ -13,5 +13,8 @@ struct FavoriteActionButton: View {
             accessibilityLabel: isFavorite ? "Remove from Favorites" : "Add to Favorites",
             action: action
         )
+        // Treat the heart as a toggle, not a renamed button, so VoiceOver says "selected"
+        // instead of re-reading the whole label on every tap.
+        .accessibilityAddTraits(isFavorite ? .isSelected : [])
     }
 }

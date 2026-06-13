@@ -68,6 +68,7 @@ struct JellyfinSearchResultsView: View, Equatable {
         VStack(alignment: .leading, spacing: Space.s12) {
             HStack(spacing: 6) {
                 Text(title).font(.title3.weight(.bold))
+                    .accessibilityAddTraits(.isHeader)
                 Text("\(count)").font(.subheadline).foregroundStyle(Color.secondaryLabel)
             }
             LazyVGrid(columns: posterGridColumns(fixedColumns: cols, columnMinWidth: 0), spacing: Space.s18) {

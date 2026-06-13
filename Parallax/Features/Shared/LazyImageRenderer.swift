@@ -20,6 +20,7 @@ struct LazyImageRenderer: View {
                 LazyImage(url: url) { state in
                     if let image = state.image {
                         image.resizable().aspectRatio(contentMode: contentMode)
+                            .accessibilityIgnoresInvertColors()
                     }
                 }
                 .pipeline(pipeline)

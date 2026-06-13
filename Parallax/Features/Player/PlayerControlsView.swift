@@ -674,7 +674,7 @@ struct PlayerControlsView: View {
                 HStack(spacing: PlayerMetrics.phoneTopBarGap) {
                     PlayerRoundButton(systemImage: "chevron.down", size: PlayerMetrics.phoneCloseSize,
                                       iconScale: 0.46, accessibilityLabel: "Close") { onDismiss() }
-                    Text(vm.title).font(.system(size: 17, weight: .bold)).foregroundStyle(.white).lineLimit(1)
+                    Text(vm.title).scaledFont(17, relativeTo: .headline, weight: .bold).foregroundStyle(.white).lineLimit(1)
                     Spacer(minLength: Space.s8)
                     if vm.isVideoAirPlayAvailable || vm.isPiPAvailable {
                         PlayerSplitPill(metrics: m, airPlayAvailable: vm.isVideoAirPlayAvailable,
@@ -865,7 +865,7 @@ struct PlayerControlsView: View {
             .frame(maxHeight: 560)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .glassEffect(.regular, in: shape)
-            .overlay(shape.strokeBorder(.white.opacity(0.12), lineWidth: 1))
+            .overlay { shape.strokeBorder(.white.opacity(0.12), lineWidth: 1) }
     }
     #endif
 
@@ -1012,6 +1012,7 @@ struct PlayerControlsView: View {
         .accessibilityElement()
         .accessibilityLabel("Playback position")
         .accessibilityValue(Text("\(Int(displayed * 100)) percent"))
+        .accessibilityAddTraits(.updatesFrequently)
         .accessibilityAdjustableAction { direction in
             guard playbackReady, durSeconds > 0 else { return }
             resetHideTimer()
@@ -1209,7 +1210,7 @@ struct PlayerControlsView: View {
         .scrollBounceBehavior(.basedOnSize)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .glassEffect(.regular, in: shape)
-        .overlay(shape.strokeBorder(.white.opacity(0.12), lineWidth: 1))
+        .overlay { shape.strokeBorder(.white.opacity(0.12), lineWidth: 1) }
         .preferredColorScheme(.dark)
         .environment(\.colorScheme, .dark)
     }

@@ -24,6 +24,7 @@ struct PlayerPausedOverlay: View {
     @State private var visible = false
     @State private var glyph = "pause.fill"
     @State private var closeTask: Task<Void, Never>?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// How long the play glyph lingers after a resume before the scrim closes — long
     /// enough to read the morph, short enough to feel like an acknowledgement.
@@ -44,7 +45,8 @@ struct PlayerPausedOverlay: View {
                     .contentTransition(.symbolEffect(.replace))
                     .animation(.snappy(duration: 0.32), value: glyph)
                     // Scale-in on appear / scale-out on close, distinct from the morph.
-                    .transition(.scale(scale: 0.82).combined(with: .opacity))
+                    // Reduce Motion swaps the scale for a plain fade.
+                    .transition(reduceMotion ? .opacity : .scale(scale: 0.82).combined(with: .opacity))
             }
         }
         .allowsHitTesting(false)

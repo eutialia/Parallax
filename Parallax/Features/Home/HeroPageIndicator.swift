@@ -18,6 +18,7 @@ struct HeroPageIndicator: UIViewRepresentable {
 
     func makeUIView(context: Context) -> UIPageControl {
         let pc = UIPageControl()
+        pc.accessibilityLabel = "Featured content"
         pc.currentPageIndicatorTintColor = .white
         pc.pageIndicatorTintColor = UIColor.white.withAlphaComponent(0.45)
         // tvOS resolves `.automatic` to `.prominent`, wrapping the dots in a bright glass
