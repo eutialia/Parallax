@@ -44,8 +44,13 @@ public actor LibraryRepository {
 
         let items: [Item] = response.items.compactMap(Self.dtoToItem)
 
+        // An empty page mid-pagination (server deletions, or a `total` that
+        // over-reports the live count) leaves `consumed == startIndex`, so a
+        // `.startIndex(consumed)` cursor would equal the current one and the
+        // caller would re-fetch the same empty page forever. Treat any empty
+        // page as the end of the sequence.
         let consumed = startIndex + response.items.count
-        let nextCursor: PageCursor? = (consumed < response.total) ? .startIndex(consumed) : nil
+        let nextCursor: PageCursor? = (!response.items.isEmpty && consumed < response.total) ? .startIndex(consumed) : nil
         return Page(items: items, total: response.total, nextCursor: nextCursor)
     }
 

@@ -108,6 +108,33 @@ struct LibraryRepositoryTests {
         #expect(page3.nextCursor == nil)
     }
 
+    @Test("items() stops paginating on an empty mid-sequence page (no infinite re-fetch)")
+    func itemsEmptyPageEndsPagination() async throws {
+        let (repo, client, _) = make()
+        // First page is full and `total` claims more remain → cursor advances.
+        client.itemsResult = .success((items: (0..<50).map { sampleMovieDto(id: "m\($0)") }, total: 120))
+        let page1 = try await repo.items(
+            in: .collection(CollectionID(rawValue: "coll-movies")),
+            filter: ItemFilter(),
+            sort: .defaultForLibrary,
+            cursor: nil
+        )
+        #expect(page1.nextCursor != nil)
+
+        // Second page comes back empty even though `total` still says 120
+        // (server deletions / over-reported total). The cursor must terminate,
+        // not repeat the same startIndex forever.
+        client.itemsResult = .success((items: [], total: 120))
+        let page2 = try await repo.items(
+            in: .collection(CollectionID(rawValue: "coll-movies")),
+            filter: ItemFilter(),
+            sort: .defaultForLibrary,
+            cursor: page1.nextCursor
+        )
+        #expect(page2.items.isEmpty)
+        #expect(page2.nextCursor == nil)
+    }
+
     @Test("items() forwards filter and sort to the client unchanged")
     func itemsForwardsParams() async throws {
         let (repo, client, _) = make()
