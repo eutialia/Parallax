@@ -265,6 +265,13 @@ final class PlayerViewModel {
     /// (PlaybackInfoService.rememberTrackSelection in production). Defaulted to
     /// a no-op so tests and previews don't need the wiring.
     private let rememberTrackSelection: @Sendable (TrackSelectionUpdate) async -> Void
+    /// Best-effort fetch of intro/outro segments for an item (empty on error or
+    /// when the server has no provider). Defaulted to empty so tests/previews need
+    /// no wiring.
+    private let fetchSegments: @Sendable (ItemID) async -> [MediaSegment]
+    /// Best-effort fetch of an episode's previous/next neighbors — args are
+    /// (seriesID, episodeID), `.none` on error or for non-episodes. Defaulted.
+    private let fetchAdjacent: @Sendable (ItemID, ItemID) async -> AdjacentEpisodes
     /// Ping cadence for `keepaliveTask` — half the server's 60s idle kill
     /// timeout in production; injectable so tests don't wait 30s for a beat.
     private let keepaliveInterval: Duration
@@ -342,6 +349,8 @@ final class PlayerViewModel {
         },
         subtitleFetch: @escaping @Sendable (URL) async -> Data? = { try? await URLSession.shared.data(from: $0).0 },
         rememberTrackSelection: @escaping @Sendable (TrackSelectionUpdate) async -> Void = { _ in },
+        fetchSegments: @escaping @Sendable (ItemID) async -> [MediaSegment] = { _ in [] },
+        fetchAdjacent: @escaping @Sendable (ItemID, ItemID) async -> AdjacentEpisodes = { _, _ in .none },
         keepaliveInterval: Duration = .seconds(30)
     ) {
         self.deviceProfileBuilder = deviceProfileBuilder
@@ -352,6 +361,8 @@ final class PlayerViewModel {
         self.fetchDetail = fetchDetail
         self.subtitleFetch = subtitleFetch
         self.rememberTrackSelection = rememberTrackSelection
+        self.fetchSegments = fetchSegments
+        self.fetchAdjacent = fetchAdjacent
         self.keepaliveInterval = keepaliveInterval
     }
 
@@ -365,6 +376,118 @@ final class PlayerViewModel {
         subtitleFetchTask?.cancel()
         stallDebounceTask?.cancel()
         keepaliveTask?.cancel()
+        segmentsTask?.cancel()
+    }
+
+    // MARK: - Skip segments & episode succession
+
+    /// Intro/outro markers for the playing item — empty when the server has no
+    /// segment provider, which is the normal "no skip UI" case, never an error.
+    private(set) var segments: [MediaSegment] = []
+    /// Previous/next episode in airing order (`.none` for movies and at the
+    /// series' first/last episode). Source for the prev/next buttons + autoplay.
+    private(set) var adjacentEpisodes: AdjacentEpisodes = .none
+    private var segmentsTask: Task<Void, Never>?
+    /// Serializes episode swaps so a double-press — or an auto-advance racing a
+    /// manual Next — can't kick off two overlapping reloads.
+    private var isAdvancing = false
+
+    var nextEpisode: Episode? { adjacentEpisodes.next }
+    var previousEpisode: Episode? { adjacentEpisodes.previous }
+
+    /// The actionable segment the playhead currently sits inside (intro/recap/
+    /// outro), or nil. Computed off the position beats, so the overlay button
+    /// tracks the playhead with no extra timer.
+    var activeSegment: MediaSegment? {
+        guard phase == .playing, !segments.isEmpty else { return nil }
+        let seconds = CMTimeGetSeconds(currentPosition)
+        guard seconds.isFinite else { return nil }
+        return segments.first { $0.kind.playerAction != nil && $0.contains(seconds: seconds) }
+    }
+
+    /// What the contextual overlay button offers right now, if anything: Skip for
+    /// an intro/recap; Next Episode for an outro **only when a next episode
+    /// exists** (otherwise the outro plays out and nothing shows).
+    enum SegmentPrompt: Equatable {
+        case skip(MediaSegment)
+        case nextEpisode(MediaSegment)
+        /// The segment this prompt is for, independent of its action.
+        var segment: MediaSegment {
+            switch self { case .skip(let s), .nextEpisode(let s): s }
+        }
+    }
+    var segmentPrompt: SegmentPrompt? {
+        guard let segment = activeSegment, let action = segment.kind.playerAction else { return nil }
+        switch action {
+        case .skip: return .skip(segment)
+        case .nextEpisode: return nextEpisode != nil ? .nextEpisode(segment) : nil
+        }
+    }
+    /// The id of the segment the contextual prompt is for right now, or nil. The single
+    /// source for the one-shot suppression key — read by both `PlayerSegmentPrompt` and
+    /// the tvOS `send` pipeline, so the switch-on-`segmentPrompt` lives in one place.
+    var activeSegmentID: String? { segmentPrompt?.segment.id }
+
+    /// Seek just past the active intro/recap and keep playing.
+    func skipActiveSegment() async {
+        guard let segment = activeSegment, segment.kind.playerAction == .skip, let engine else { return }
+        await engine.seek(to: CMTime(seconds: segment.endSeconds, preferredTimescale: 600))
+    }
+
+    /// Play the next episode now (the outro button, or the prev/next transport).
+    func playNextEpisode() async {
+        guard let next = adjacentEpisodes.next else { return }
+        await replacePlayback(with: next.id)
+    }
+
+    /// Play the previous episode now (the prev transport button).
+    func playPreviousEpisode() async {
+        guard let previous = adjacentEpisodes.previous else { return }
+        await replacePlayback(with: previous.id)
+    }
+
+    /// Whether a natural end-of-video should roll into the next episode: a next episode
+    /// exists and the player is neither exiting nor already torn down. No-op for movies
+    /// and finales. Read synchronously at `.ended` to capture the advance target and
+    /// raise the loading veil before the paused scrim can flash.
+    private var canAutoAdvance: Bool { !isExiting && !didStop && adjacentEpisodes.next != nil }
+
+    /// Tears the current session down and replays this same player surface with a
+    /// different item — the in-player episode handoff. Reuses `retry()`'s reset
+    /// sequence (closes the encode job, clears the per-session fences) so the new
+    /// episode starts clean on the reused view model.
+    private func replacePlayback(with id: ItemID) async {
+        guard !isAdvancing, !isExiting else { return }
+        isAdvancing = true
+        defer { isAdvancing = false }
+        await resetForReplay()
+        await start(itemID: id)
+    }
+
+    /// Best-effort fetch of intro/outro segments + the prev/next episode for the
+    /// item that just started. Never blocks or fails playback; errors resolve to
+    /// no segments / no neighbors. Runs concurrently with the playback resolve.
+    private func loadSegmentsAndNeighbors(for item: ItemDetail) {
+        segments = []
+        adjacentEpisodes = .none
+        segmentsTask?.cancel()
+        let itemID = item.id
+        let episode: (series: ItemID, id: ItemID)?
+        switch item {
+        case .episode(let detail): episode = (detail.episode.seriesID, detail.episode.id)
+        case .movie, .series, .season: episode = nil
+        }
+        segmentsTask = Task { [weak self, fetchSegments, fetchAdjacent] in
+            async let segmentsResult = fetchSegments(itemID)
+            var neighbors = AdjacentEpisodes.none
+            if let episode {
+                neighbors = await fetchAdjacent(episode.series, episode.id)
+            }
+            let resolvedSegments = await segmentsResult
+            guard !Task.isCancelled else { return }
+            self?.segments = resolvedSegments
+            self?.adjacentEpisodes = neighbors
+        }
     }
 
     /// Direct-play entry: fetch the item's detail, then play. The frosted reload
@@ -409,6 +532,9 @@ final class PlayerViewModel {
             phase = .failed(.playback(.unsupportedFormat))
             return
         }
+
+        // Fire-and-forget alongside the resolve: best-effort, never gates playback.
+        loadSegmentsAndNeighbors(for: item)
 
         do {
             do {
@@ -625,6 +751,10 @@ final class PlayerViewModel {
         currentPosition = .zero
         currentDuration = .zero
         bufferedTo = nil
+        segmentsTask?.cancel()
+        segmentsTask = nil
+        segments = []
+        adjacentEpisodes = .none
         clearStall()
         isPlaying = false
         mediaSummary = nil
@@ -685,9 +815,19 @@ final class PlayerViewModel {
     func retry() async {
         let item = playingItem
         let id = pendingItemID
+        await resetForReplay()
+        if let item { await start(item: item) }
+        else if let id { await start(itemID: id) }
+        else { Log.playback.error("retry() had no item or id to replay") }
+    }
+
+    /// Tears the current session down (reporting its stop, killing its encode job)
+    /// and clears the per-session fences so a fresh `start` can run on this same
+    /// view model. Shared by `retry()` (same item) and `replacePlayback` (episode
+    /// swap). `stop()` arms the exit fence; this is a restart, not an exit, so the
+    /// fence is disarmed for the fresh start path.
+    private func resetForReplay() async {
         await stop()
-        // stop() arms the exit fence; this is a restart, not an exit — disarm it
-        // so the fresh start path isn't killed at its first checkpoint.
         isExiting = false
         didStop = false
         phase = .idle
@@ -695,9 +835,6 @@ final class PlayerViewModel {
         didReportStopped = false
         didStopEncoding = false
         lastPosition = .zero
-        if let item { await start(item: item) }
-        else if let id { await start(itemID: id) }
-        else { Log.playback.error("retry() had no item or id to replay") }
     }
 
     func selectAudioTrack(_ track: AudioTrack) async {
@@ -1089,7 +1226,23 @@ final class PlayerViewModel {
         case .ended:
             isPlaying = false
             clearStall()
+            // Auto-advance: capture the target episode NOW and raise the loading veil
+            // synchronously — both before the `await` below can yield. Capturing the id
+            // pins the advance to THIS episode's neighbor: a manual prev/next during the
+            // await would repoint `adjacentEpisodes`, so a late read would skip the wrong
+            // way (or double-skip). Raising `.loading` here also stops `phase` lingering
+            // at `.playing` + `isPlaying == false` across the hand-off — that flashed the
+            // paused scrim before the next episode loaded (device-reported "pauses then
+            // advances"). The veil then rides continuously through `resetForReplay`/`start`
+            // into the next episode: one cover, no pause scrim, and (on the floor) no HUD.
+            let advanceTarget = canAutoAdvance ? adjacentEpisodes.next?.id : nil
+            if advanceTarget != nil { phase = .loading }
             await reportStoppedIfNeeded()
+            // Deferred onto a fresh task so the in-flight `.ended` beat unwinds the engine's
+            // state loop before the swap tears it down.
+            if let advanceTarget {
+                Task { [weak self] in await self?.replacePlayback(with: advanceTarget) }
+            }
         case .failed(let error):
             isPlaying = false
             clearStall()

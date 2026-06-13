@@ -79,6 +79,15 @@ struct PlayerView: View {
     /// row without forking its initializer per build config; everything that
     /// RENDERS from it (the chip, the overlay) stays `#if DEBUG`.
     @State private var showDebugHUD = false
+    /// One-shot suppression for the contextual Skip / Next Episode button: the segment
+    /// id whose prompt has already shown (countdown elapsed, tapped, or revealed past).
+    /// Shared by `PlayerSegmentPrompt`'s timer/tap and the tvOS `send` pipeline; cleared
+    /// when the playhead leaves all segments so a re-entry re-arms.
+    @State private var segmentPromptExpiredID: String?
+    /// Whether that button is showing right now (reported by `PlayerSegmentPrompt`).
+    /// tvOS reads it in `send` to route floor presses to the prompt instead of the
+    /// transport.
+    @State private var segmentButtonShowing = false
 
     var body: some View {
         ZStack {
@@ -152,7 +161,9 @@ struct PlayerView: View {
                     engineFactory: deps.playbackEngineFactory,
                     audioSession: deps.audioSession,
                     fetchDetail: { try await repo.detail(for: $0) },
-                    rememberTrackSelection: { await info.rememberTrackSelection($0) }
+                    rememberTrackSelection: { await info.rememberTrackSelection($0) },
+                    fetchSegments: { (try? await repo.mediaSegments(for: $0)) ?? [] },
+                    fetchAdjacent: { (try? await repo.adjacentEpisodes(seriesID: $0, episodeID: $1)) ?? .none }
                 )
                 viewModel = vm
                 switch source {
@@ -236,6 +247,19 @@ struct PlayerView: View {
                                        onScrubActiveChange: { scrubHUDActive = $0 },
                                        onMenuOpenChange: { trackMenuOpen = $0 }) { exitPlayer() }
                     #endif
+                    // Contextual Skip Intro/Recap · Next Episode button — a sibling
+                    // layer ABOVE the chrome so it's independent of the auto-hide HUD
+                    // (it shows over a clean frame on segment entry). iOS taps it
+                    // directly; tvOS drives it through `send` (see `segmentButtonShowing`).
+                    if playing {
+                        PlayerSegmentPrompt(
+                            vm: vm,
+                            enabled: segmentPromptEnabled,
+                            expiredSegmentID: $segmentPromptExpiredID,
+                            onVisibilityChange: { segmentButtonShowing = $0 },
+                            onActivate: { activateSegmentPrompt(vm) }
+                        )
+                    }
                     // A failed audio switch that fell back to the previous track:
                     // playback continues underneath; the scrim offers retry / keep.
                     if playing, let failure = vm.trackSwitchFailure {
@@ -288,6 +312,30 @@ struct PlayerView: View {
     private var isPlaybackActive: Bool {
         if case .playing = viewModel?.phase { return true }
         return false
+    }
+
+    /// Whether the contextual segment button may show. tvOS gates on the clean floor
+    /// (revealing the HUD dismisses it); iOS hides it while a drag-scrub has collapsed
+    /// the chrome into the lone bar (which owns the bottom edge and reads as clean).
+    private var segmentPromptEnabled: Bool {
+        #if os(tvOS)
+        hudState == .floor
+        #else
+        !scrubHUDActive
+        #endif
+    }
+
+    /// Fire the active segment prompt — the shared action for the iOS tap and the tvOS
+    /// remote's Select. Skip seeks past the intro/recap and keeps playing; Next Episode
+    /// advances. No-op when nothing's active. One-shot-dismisses the button up front so
+    /// it hides on the press, not a frame later when the seek/reload lands.
+    private func activateSegmentPrompt(_ vm: PlayerViewModel) {
+        switch vm.segmentPrompt {
+        case .skip: Task { await vm.skipActiveSegment() }
+        case .nextEpisode: Task { await vm.playNextEpisode() }
+        case nil: return
+        }
+        segmentPromptExpiredID = vm.activeSegmentID
     }
 
     /// Whether the persistent video host is mounted. Shown for every phase except
@@ -465,13 +513,14 @@ struct PlayerView: View {
                 .allowsHitTesting(false)
                 .animation(.easeInOut(duration: 0.45), value: isScrubbing)
 
-            // Paused status — dim + flat center glyph. On the floor it brings its
-            // own dim; in .fullHUD the controls scrim already dims, so only the
-            // glyph rides. Hidden while scrubbing (the bar owns the screen, and the
-            // reducer pauses the engine as part of every scrub) and under the stall
-            // scrim (the ring owns the center spot).
-            if showsPausedStatus(vm) {
-                PlayerPausedOverlay(metrics: .tv, dimmed: !isFullHUD)
+            // Paused status — dim + flat center glyph. Mounted for the whole eligible
+            // window (floor playback, not scrubbing/stalling) and fed the live pause
+            // intent; the overlay owns its glyph lifecycle (pause in → hold → play morph
+            // → close) so a resume gets a play-glyph beat instead of a hard cut. On the
+            // floor it brings its own dim; in .fullHUD the controls scrim already dims, so
+            // only the glyph rides (stacked dims read as a brightness glitch).
+            if pausedScrimEligible(vm) {
+                PlayerPausedOverlay(metrics: .tv, dimmed: !isFullHUD, isPaused: !vm.isPlaying)
                     .transition(.opacity)
             }
 
@@ -490,6 +539,7 @@ struct PlayerView: View {
                 PlayerControlsView(vm: vm, controlsVisible: .constant(true),
                                    debugHUD: $showDebugHUD,
                                    onScrubberFocusChange: { scrubberHasFocus = $0 },
+                                   onActivity: { noteRemoteActivity() },
                                    onMenuOpenChange: { open in
                                        trackMenuOpen = open
                                        if open { idleTask?.cancel() } else { restartIdleTimer() }
@@ -602,10 +652,15 @@ struct PlayerView: View {
         switch hudState { case .swipeScrub, .clickSeek: return true; default: return false }
     }
 
-    /// Paused and stable: the engine is paused while the surface is live — not
-    /// because a scrub is holding it — and no stall scrim is claiming the center.
-    private func showsPausedStatus(_ vm: PlayerViewModel) -> Bool {
-        vm.phase == .playing && !vm.isPlaying && !isScrubbing && !vm.showsStallScrim
+    /// Whether the paused-status overlay is RELEVANT (mounted): the surface is live on
+    /// the floor, not scrubbing, not stalling. Whether it actually paints — and the
+    /// pause→hold→play→close lifecycle — is the overlay's own call off `isPaused`, so it
+    /// must survive the resume (hence this drops the old `!isPlaying` term that used to
+    /// unmount it the instant playback resumed). Suppressed in `.fullHUD`: the centre
+    /// transport's own play/pause glyph stands in there, so a second centred mark would
+    /// double up.
+    private func pausedScrimEligible(_ vm: PlayerViewModel) -> Bool {
+        vm.phase == .playing && !isScrubbing && !vm.showsStallScrim && !isFullHUD
     }
 
     /// Window-level pan events. On the floor / scrub states every pan drives the
@@ -625,6 +680,30 @@ struct PlayerView: View {
     /// in the reducer: rapid clicks accumulate a target in `.clickSeek` and fire a
     /// single engine seek once they settle (or when the state leaves `.clickSeek`).
     private func send(_ event: RemoteEvent, _ vm: PlayerViewModel) {
+        // While the contextual segment button shows over the floor, the remote acts
+        // on IT — the floor adapter already holds focus, so there's no competing
+        // focusable. Select fires the prompt (skip / next episode); any directional
+        // reveal lifts the HUD and one-shot-dismisses the button (it won't re-summon
+        // on return until the playhead re-enters the segment). Back still exits and an
+        // analog pan still scrubs, so neither is intercepted here.
+        if hudState == .floor, segmentButtonShowing, vm.phase == .playing {
+            switch event {
+            case .select:
+                activateSegmentPrompt(vm)
+                restartIdleTimer()
+                return
+            case .click, .swipeVertical:
+                segmentPromptExpiredID = vm.activeSegmentID
+                hudState = .fullHUD
+                scrubberHasFocus = false
+                chromeVisible = true
+                restartIdleTimer()
+                return
+            case .swipeHorizontal, .menu, .playPause, .idle:
+                break
+            }
+        }
+
         // Pre-playback (initial load and a track-switch re-buffer): only chrome
         // reveal, exit, and idle are meaningful. Transport/seek events are
         // dropped at the door — mid-reload the engine is being fed a new asset
@@ -676,20 +755,33 @@ struct PlayerView: View {
         restartIdleTimer()
     }
 
-    /// ~0.4s of quiet after the last click before the accumulated seek commits — long
-    /// enough to fold a burst of clicks into one transcode seek, short enough to feel
-    /// responsive. Tunable on device.
+    /// The quiet-time before a scrub auto-commits, SHARED by ±10s click-seek (this
+    /// debounce) and analog swipe-scrub (the `.swipeScrub` idle in `restartIdleTimer`),
+    /// so both resume the same delay after you stop. Long enough to fold a click burst
+    /// into one transcode seek, short enough to feel responsive. Tunable on device.
+    private static let scrubCommitDelay: Duration = .milliseconds(400)
+
     private func scheduleClickSeek(to target: Double, _ vm: PlayerViewModel) {
         pendingClickSeek = target
         commitSeekTask?.cancel()
         commitSeekTask = Task {
-            try? await Task.sleep(for: .milliseconds(400))
-            if !Task.isCancelled { flushClickSeek(vm) }
+            try? await Task.sleep(for: Self.scrubCommitDelay)
+            guard !Task.isCancelled, let dest = pendingClickSeek else { return }
+            pendingClickSeek = nil
+            // Commit the ONE coalesced seek, then drop the bar the moment it lands —
+            // the click-seek bar used to ride the 4s `.clickSeek` idle timeout even after
+            // playback had already resumed at the new spot (user-reported lingering). The
+            // timeout stays only as a safety net if this task is cancelled mid-flight.
+            await apply(.seek(progress: dest), vm)
+            guard !Task.isCancelled, case .clickSeek = hudState else { return }
+            send(.idle, vm)
         }
     }
 
-    /// Fire the single accumulated seek now and clear the pending target (so a later
-    /// flush — e.g. from idle after the debounce already ran — is a no-op).
+    /// Fire the single accumulated seek NOW and clear the pending target. Used by the
+    /// `send` leave-early path (the user navigates out of `.clickSeek` before the 400ms
+    /// debounce); the natural debounce path commits AND drops the bar in
+    /// `scheduleClickSeek` instead. A later flush with nothing pending is a no-op.
     private func flushClickSeek(_ vm: PlayerViewModel) {
         commitSeekTask?.cancel()
         guard let target = pendingClickSeek else { return }
@@ -773,7 +865,8 @@ struct PlayerView: View {
         case .floor:
             return
         case .swipeScrub:
-            timeout = .seconds(1)
+            timeout = Self.scrubCommitDelay   // same 0.4s as the click-seek debounce
+
         case .clickSeek:
             timeout = .seconds(4)
         case .fullHUD:

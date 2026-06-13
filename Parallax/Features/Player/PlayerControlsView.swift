@@ -46,6 +46,12 @@ struct PlayerControlsView: View {
     /// into analog scrub only while the bar is focused. Required, not optional —
     /// without the wiring, swipe-on-scrubber silently degrades to click-stepping.
     let onScrubberFocusChange: (Bool) -> Void
+    /// Reports HUD interaction (focus moving between scrubber/chips, panel work) up to
+    /// `PlayerView` so its inactivity timer re-arms. In `.fullHUD` the raw press adapter
+    /// is unmounted and focus-engine navigation never reaches `send`; directional CLICKS
+    /// also slip past the window-level press sentinel that otherwise feeds the timer — so
+    /// without this the chrome auto-hid mid-navigation (user-reported).
+    let onActivity: () -> Void
     #else
     /// Reports drag-scrub activity to `PlayerView`, which hides the status bar and
     /// home indicator while the chrome is collapsed into the lone scrub bar.
@@ -172,14 +178,24 @@ struct PlayerControlsView: View {
     /// gates on this — the centre cluster is hidden outright because the loading
     /// scrim's ring owns that spot.
     private var playbackReady: Bool { vm.phase == .playing }
-    /// Centre transport visibility, shared by the iPad and phone layouts. Absent
-    /// until the stream plays and while a stall scrim is up — the scrim's ring
-    /// occupies the transport's exact spot (loading and rebuffer alike). Also held
-    /// out while a scrub commit is in flight (`isScrubbing` outlives the finger):
-    /// the release restores chrome synchronously, but the seek's `.buffering` beat
-    /// arrives a few frames later — without the hold the paused-state button
-    /// flashes before the scrim replaces it.
-    private var showsCenterTransport: Bool { playbackReady && !vm.showsStallScrim && !isScrubbing }
+    /// Centre transport visibility. Absent until the stream plays and while a stall
+    /// scrim is up — the scrim's ring occupies the transport's exact spot (loading and
+    /// rebuffer alike).
+    private var showsCenterTransport: Bool {
+        guard playbackReady, !vm.showsStallScrim else { return false }
+        #if os(tvOS)
+        // tvOS: nudging the focused scrubber with L/R keeps the FULL chrome up, so the
+        // transport must not blink out under it — and a vertical focus move past it must
+        // never hide it (that latched `isScrubbing` and stranded the focus engine on a
+        // disappearing cluster). Only the loading/stall ring claims this spot here.
+        return true
+        #else
+        // iOS drag-scrub collapses the chrome to the lone bar; hold the transport out
+        // while the commit is in flight (`isScrubbing` outlives the finger) so the
+        // paused-state glyph can't flash before the seek's `.buffering` scrim lands.
+        return !isScrubbing
+        #endif
+    }
     /// Deliberately device-based, not `@Environment(\.appIdiom)` (which is size-class
     /// derived): the phone layout must apply to ALL iPhones, including a regular-width
     /// Pro Max in landscape that reports `.regular` — keying on size class would push it
@@ -551,31 +567,53 @@ struct PlayerControlsView: View {
                 .ignoresSafeArea(edges: .top)
                 #endif
 
-                #if !os(tvOS)
-                // Centre transport (iPad only — tvOS uses the remote). See
-                // `showsCenterTransport` for the visibility contract.
-                if showsCenterTransport {
-                    GlassEffectContainer(spacing: Space.s8) {
-                        HStack(spacing: m.transportGap) {
-                            PlayerRoundButton(systemImage: "gobackward.10", size: m.transportSkip, iconScale: 0.52,
-                                              glyphOpticalYOffset: PlayerRoundButton.skipGlyphYOffset,
-                                              accessibilityLabel: "Skip back 10 seconds") { skip(-10) }
-                            PlayerRoundButton(systemImage: vm.isPlaying ? "pause.fill" : "play.fill", size: m.transportPlay,
-                                              iconScale: 0.46,
-                                              accessibilityLabel: vm.isPlaying ? "Pause" : "Play") { togglePlayPause() }
-                            PlayerRoundButton(systemImage: "goforward.10", size: m.transportSkip, iconScale: 0.52,
-                                              glyphOpticalYOffset: PlayerRoundButton.skipGlyphYOffset,
-                                              accessibilityLabel: "Skip forward 10 seconds") { skip(10) }
-                        }
+                // Centre transport — previous episode · play/pause · next episode.
+                // The ±10s skip is now gesture-only (iOS double-tap thirds · tvOS
+                // scrubber move/pan), and the cluster is visible on tvOS too (the
+                // remote-driven HUD gets the same three buttons). Prev/next disable
+                // at the series boundaries — and for movies, where both are nil — so
+                // the focus engine skips dead targets. See `showsCenterTransport`.
+                //
+                // ALWAYS mounted (gated by opacity/disable, not an `if`): pressing
+                // prev/next loads the next episode, which drops `phase` out of
+                // `.playing` and flips `showsCenterTransport` false. REMOVING the
+                // just-pressed, focused button mid-flight corrupts the tvOS focus
+                // engine — the next directional press then asserts in
+                // `_UIFocusMovementDirectionalPressGestureRecognizer` ("untracked
+                // presses"). Disabling a still-mounted button is safe: the press
+                // already completed, and the engine just relocates focus.
+                GlassEffectContainer(spacing: Space.s8) {
+                    HStack(spacing: m.transportGap) {
+                        PlayerRoundButton(systemImage: "backward.end.fill", size: m.transportSkip, iconScale: 0.42,
+                                          isEnabled: vm.previousEpisode != nil,
+                                          accessibilityLabel: "Previous episode") { playPrevious() }
+                        PlayerRoundButton(systemImage: vm.isPlaying ? "pause.fill" : "play.fill", size: m.transportPlay,
+                                          iconScale: 0.46,
+                                          accessibilityLabel: vm.isPlaying ? "Pause" : "Play") { togglePlayPause() }
+                        PlayerRoundButton(systemImage: "forward.end.fill", size: m.transportSkip, iconScale: 0.42,
+                                          isEnabled: vm.nextEpisode != nil,
+                                          accessibilityLabel: "Next episode") { playNext() }
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-                    // Full-bleed center like the loading veil's ring (which this
-                    // cluster swaps with): a safe-area-bounded center shifts when the
-                    // status bar hides with the chrome — the buttons crept upward
-                    // mid-fade. Same fix as the veil's round-2 device finding.
-                    .ignoresSafeArea()
                 }
+                #if os(tvOS)
+                // Sized to the cluster ITSELF, before the full-bleed centering frame:
+                // the focus engine picks the nearest focusable along a straight line, so
+                // a screen-spanning section would distort up/down travel between the
+                // scrubber, chips, and this cluster (and could even capture focus meant
+                // for them). One stable unit also stops the engine dropping focus to the
+                // scrubber when the play/pause glyph re-renders.
+                .focusSection()
                 #endif
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                // Full-bleed center like the loading veil's ring (which this
+                // cluster swaps with): a safe-area-bounded center shifts when the
+                // status bar hides with the chrome — the buttons crept upward
+                // mid-fade. Same fix as the veil's round-2 device finding.
+                .ignoresSafeArea()
+                .opacity(showsCenterTransport ? 1 : 0)
+                .disabled(!showsCenterTransport)
+                .allowsHitTesting(showsCenterTransport)
+                .animation(.easeInOut(duration: 0.2), value: showsCenterTransport)
 
                 // Control row — chips on the track's left end (tvOS keeps Close leading,
                 // see the header note). NO `GlassEffectContainer` here: the container
@@ -601,6 +639,10 @@ struct PlayerControlsView: View {
                 // priority makes the preference win user-driven entry too.
                 .focusSection()
                 .defaultFocus($chipFocus, playheadChip, priority: .userInitiated)
+                // A chip gaining/losing focus is HUD navigation — re-arm the auto-hide
+                // (these moves never reach `send`, and directional clicks don't reliably
+                // hit the window press sentinel that feeds the timer otherwise).
+                .onChange(of: chipFocus) { _, _ in onActivity() }
                 #endif
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                 .offset(y: revealOffset(m.hudSlide))
@@ -643,23 +685,24 @@ struct PlayerControlsView: View {
                 // bar, so this only bites in portrait playback).
                 .ignoresSafeArea(edges: .top)
 
-                // Centre transport. See `showsCenterTransport` for the visibility
-                // contract.
+                // Centre transport — previous episode · play/pause · next episode
+                // (±10s is gesture-only now; see the iPad transport above). See
+                // `showsCenterTransport` for the visibility contract.
                 if showsCenterTransport {
                     GlassEffectContainer(spacing: Space.s8) {
                         HStack(spacing: PlayerMetrics.phoneTransportGap) {
-                            PlayerRoundButton(systemImage: "gobackward.10", size: PlayerMetrics.phoneTransportSkip,
-                                              iconScale: 0.52,
-                                              glyphOpticalYOffset: PlayerRoundButton.skipGlyphYOffset,
-                                              accessibilityLabel: "Skip back 10 seconds") { skip(-10) }
+                            PlayerRoundButton(systemImage: "backward.end.fill", size: PlayerMetrics.phoneTransportSkip,
+                                              iconScale: 0.42,
+                                              isEnabled: vm.previousEpisode != nil,
+                                              accessibilityLabel: "Previous episode") { playPrevious() }
                             PlayerRoundButton(systemImage: vm.isPlaying ? "pause.fill" : "play.fill",
                                               size: PlayerMetrics.phoneTransportPlay,
                                               iconScale: 0.46,
                                               accessibilityLabel: vm.isPlaying ? "Pause" : "Play") { togglePlayPause() }
-                            PlayerRoundButton(systemImage: "goforward.10", size: PlayerMetrics.phoneTransportSkip,
-                                              iconScale: 0.52,
-                                              glyphOpticalYOffset: PlayerRoundButton.skipGlyphYOffset,
-                                              accessibilityLabel: "Skip forward 10 seconds") { skip(10) }
+                            PlayerRoundButton(systemImage: "forward.end.fill", size: PlayerMetrics.phoneTransportSkip,
+                                              iconScale: 0.42,
+                                              isEnabled: vm.nextEpisode != nil,
+                                              accessibilityLabel: "Next episode") { playNext() }
                         }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
@@ -738,8 +781,22 @@ struct PlayerControlsView: View {
     }
     #endif
 
+    /// Chips appear only once playback is ready, as a COMPLETE set — never one-by-one
+    /// as their lists populate. Audio/subtitle/chapter lists arrive at different beats
+    /// during a load (and reset on an episode switch), and rendering them as they land
+    /// inserted chips at the leading edge and shoved the rest right (the "chips jump"
+    /// bug). By `.playing` every list is settled, so the row lays out once in its final
+    /// shape. A transcode track switch keeps `phase == .playing`, so the chips never
+    /// flicker there — only a true (re)load hides them, which already shows the scrim.
     @ViewBuilder
     private func chips(_ m: PlayerMetrics) -> some View {
+        if playbackReady {
+            chipSet(m)
+        }
+    }
+
+    @ViewBuilder
+    private func chipSet(_ m: PlayerMetrics) -> some View {
         if !vm.availableAudioTracks.isEmpty {
             PlayerGlassChip(systemImage: "waveform",
                             label: vm.selectedAudioTrack?.displayName ?? "Audio",
@@ -768,9 +825,8 @@ struct PlayerControlsView: View {
         .modifier(TrackChipAnchor(kind: .speed, frames: $chipFrames))
         .tvFocused($chipFocus, equals: .speed)
         if !vm.chapters.isEmpty {
-            // Chapter seek needs a live engine — a pick mid-load would be silently
-            // lost, so the chip dims until playback starts (unlike audio/subtitles,
-            // which re-resolve server-side and work during buffering).
+            // The whole row only mounts once `playbackReady` (see `chips`), so the
+            // engine is live by the time this shows — no mid-load dimming needed.
             PlayerGlassChip(systemImage: "list.bullet", label: "Chapters",
                             isActive: openMenu == .chapters, isVacated: isVacated(.chapters), metrics: m,
                             accessibilityLabel: "Chapters") {
@@ -778,8 +834,6 @@ struct PlayerControlsView: View {
             }
             .modifier(TrackChipAnchor(kind: .chapters, frames: $chipFrames))
             .tvFocused($chipFocus, equals: .chapters)
-            .disabled(!playbackReady)
-            .opacity(playbackReady ? 1 : 0.45)
         }
         #if DEBUG
         PlayerGlassChip(systemImage: "ladybug", label: "Debug",
@@ -854,19 +908,29 @@ struct PlayerControlsView: View {
         .animation(.easeOut(duration: 0.15), value: scrubberFocused)
         .onMoveCommand { direction in
             guard playbackReady, durSeconds > 0 else { return }
-            if !isScrubbing { scrubProgress = liveProgress; isScrubbing = true; scrubGeneration += 1 }
+            // ONLY left/right scrub. The bar has no horizontal focus neighbour, so L/R
+            // reach here instead of moving focus; up/down ARE focus navigation to the
+            // chips / centre transport and must never enter scrub. Latching `isScrubbing`
+            // on a vertical press froze the bar at the live fraction and — now that the
+            // tvOS centre cluster is visible — hid it out from under the focus engine.
+            // So set `isScrubbing` INSIDE the L/R cases, never before the switch.
             let step = 10.0 / durSeconds
-            // Animated so the ±10s step glides and the time digits roll (`.numericText`).
-            withAnimation(.snappy(duration: 0.25, extraBounce: 0)) {
-                switch direction {
-                case .left: scrubProgress = max(0, scrubProgress - step)
-                case .right: scrubProgress = min(1, scrubProgress + step)
-                default: break
+            switch direction {
+            case .left, .right:
+                if !isScrubbing { scrubProgress = liveProgress; isScrubbing = true; scrubGeneration += 1 }
+                // Animated so the ±10s step glides and the time digits roll (`.numericText`).
+                withAnimation(.snappy(duration: 0.25, extraBounce: 0)) {
+                    scrubProgress = direction == .left
+                        ? max(0, scrubProgress - step)
+                        : min(1, scrubProgress + step)
                 }
+            default:
+                break   // up/down: leave focus movement to the engine
             }
         }
         .onChange(of: scrubberFocused) { _, focused in
             onScrubberFocusChange(focused)
+            onActivity()   // focus arriving on / leaving the bar is interaction — keep the HUD up
             if !focused && isScrubbing { isScrubbing = false }
         }
         #else
@@ -1063,19 +1127,6 @@ struct PlayerControlsView: View {
 
     // MARK: - Transport actions
 
-    private func skip(_ seconds: Double) {
-        resetHideTimer()
-        #if !os(tvOS)
-        cancelPendingSeek()
-        #endif
-        Task {
-            guard let engine = vm.engine else { return }
-            let posSeconds = CMTimeGetSeconds(vm.currentPosition)
-            let target = CMTime(seconds: max(0, posSeconds + seconds), preferredTimescale: 600)
-            await engine.seek(to: target)
-        }
-    }
-
     private func togglePlayPause() {
         resetHideTimer()
         // Optimistic + coalescing: vm flips isPlaying synchronously (glyph and
@@ -1190,6 +1241,23 @@ struct PlayerControlsView: View {
     private func resetHideTimer() {
         if !controlsVisible { controlsVisible = true }
         scheduleHide()
+    }
+
+    /// Centre-transport episode jumps — one place for the `resetHideTimer` + async hop
+    /// the prev/next buttons share across the iPad and phone layouts.
+    private func playPrevious() {
+        resetHideTimer()
+        #if !os(tvOS)
+        cancelPendingSeek()   // a queued double-tap burst would seek the NEW episode's engine
+        #endif
+        Task { await vm.playPreviousEpisode() }
+    }
+    private func playNext() {
+        resetHideTimer()
+        #if !os(tvOS)
+        cancelPendingSeek()
+        #endif
+        Task { await vm.playNextEpisode() }
     }
 
     private func scheduleHide() {

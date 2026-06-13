@@ -72,6 +72,64 @@ enum PlayerFixtures {
         return .movie(MovieDetail(movie: movie, tagline: nil, studios: [], people: []))
     }
 
+    /// An episode `ItemDetail` (carries `seriesID`, so adjacency wiring applies).
+    static func episodeDetail(
+        id: String,
+        seriesID: String = "series-1",
+        name: String = "Episode",
+        season: Int = 1,
+        number: Int = 1,
+        positionTicks: Int64 = 0,
+        runtime: Duration = .seconds(1800)
+    ) -> ItemDetail {
+        let episode = Episode(
+            id: ItemID(rawValue: id),
+            seriesID: ItemID(rawValue: seriesID),
+            seasonID: ItemID(rawValue: "season-\(season)"),
+            name: name,
+            indexNumber: number,
+            parentIndexNumber: season,
+            overview: nil,
+            runtime: runtime,
+            primaryTag: nil,
+            userData: UserItemData(played: false, playbackPositionTicks: positionTicks, playCount: 0, isFavorite: false)
+        )
+        return .episode(EpisodeDetail(episode: episode, people: []))
+    }
+
+    /// A plain `Episode` — an adjacency neighbor (prev/next), not a full detail.
+    static func episode(id: String, seriesID: String = "series-1", season: Int = 1, number: Int = 1) -> Episode {
+        Episode(
+            id: ItemID(rawValue: id),
+            seriesID: ItemID(rawValue: seriesID),
+            seasonID: ItemID(rawValue: "season-\(season)"),
+            name: "S\(season)E\(number)",
+            indexNumber: number,
+            parentIndexNumber: season,
+            overview: nil,
+            runtime: .seconds(1800),
+            primaryTag: nil,
+            userData: UserItemData(played: false, playbackPositionTicks: 0, playCount: 0, isFavorite: false)
+        )
+    }
+
+    /// A direct-play `ResolvedPlayback` for an arbitrary episode id — used by the
+    /// succession tests whose resolve closure keys on the requested item.
+    static func resolvedEpisode(id: String) -> ResolvedPlayback {
+        ResolvedPlayback(
+            itemID: id,
+            url: URL(string: "https://jf.example.com/Videos/\(id)/stream.m3u8?api_key=abc")!,
+            method: .directPlay,
+            container: .mp4,
+            videoCodec: .h264,
+            audioCodec: .aac,
+            mediaSourceID: "ms-\(id)",
+            playSessionID: "ps-\(id)",
+            runtime: CMTime(seconds: 1800, preferredTimescale: 600),
+            startTime: nil
+        )
+    }
+
     static func resolved() -> ResolvedPlayback {
         ResolvedPlayback(
             itemID: "movie-1",

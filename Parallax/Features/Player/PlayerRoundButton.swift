@@ -23,6 +23,10 @@ struct PlayerRoundButton: View {
     /// one constant so the value can be retired in one place if Apple ever bakes the
     /// compensation into the symbols (see `glyphOpticalYOffset`).
     static let skipGlyphYOffset: CGFloat = -0.05
+    /// Dim + non-interactive when false (a prev/next-episode button at a series
+    /// boundary). On tvOS a disabled button is also unfocusable, so the focus engine
+    /// skips it instead of stranding on a dead target.
+    var isEnabled: Bool = true
     let accessibilityLabel: String
     let action: () -> Void
 
@@ -49,6 +53,9 @@ struct PlayerRoundButton: View {
         .contentShape(.hoverEffect, Circle())
         .hoverEffect(.highlight)
         #endif
+        .disabled(!isEnabled)
+        .opacity(isEnabled ? 1 : 0.4)
+        .animation(.easeInOut(duration: 0.2), value: isEnabled)
         .accessibilityLabel(accessibilityLabel)
     }
 
@@ -106,6 +113,28 @@ struct PlayerRoundButton: View {
                 PlayerRoundButton(systemImage: "goforward.10", size: 96, iconScale: 0.52,
                                   glyphOpticalYOffset: PlayerRoundButton.skipGlyphYOffset,
                                   accessibilityLabel: "Forward 10") {}
+            }
+        }
+    }
+    .environment(\.colorScheme, .dark)
+}
+
+// Episode transport: prev · play · next at iPad scale, with `next` disabled (a series
+// finale / movie) to check the 0.4 dim and the `.end.fill` glyph weight against the
+// 0.46 play disc. The `.end.fill` glyphs are heavier than the 10-skip arcs, so they
+// ride a smaller 0.42 iconScale.
+#Preview("Episode transport") {
+    ZStack {
+        LinearGradient(colors: [.blue, .black], startPoint: .top, endPoint: .bottom)
+            .ignoresSafeArea()
+        GlassEffectContainer(spacing: Space.s8) {
+            HStack(spacing: 76) {
+                PlayerRoundButton(systemImage: "backward.end.fill", size: 96, iconScale: 0.42,
+                                  accessibilityLabel: "Previous episode") {}
+                PlayerRoundButton(systemImage: "pause.fill", size: 140, iconScale: 0.46,
+                                  accessibilityLabel: "Pause") {}
+                PlayerRoundButton(systemImage: "forward.end.fill", size: 96, iconScale: 0.42,
+                                  isEnabled: false, accessibilityLabel: "Next episode") {}
             }
         }
     }
