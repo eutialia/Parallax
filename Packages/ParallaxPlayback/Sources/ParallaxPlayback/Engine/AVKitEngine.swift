@@ -47,7 +47,13 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     private var defaultSubtitleStreamIndex: Int?
 
     public override init() {
-        let (stream, continuation) = AsyncStream<PlaybackState>.makeStream()
+        // Bounded so a wedged consumer can't grow the buffer without limit.
+        // `.bufferingNewest` keeps the freshest beats — the latest position plus any
+        // terminal .ready/.ended/.failed (nothing follows those, so they're never the
+        // dropped-oldest) — and 32 ≈ 16s of 0.5s position beats, far beyond what the
+        // MainActor consumer ever queues. It only sheds stale intermediate positions
+        // under a real stall, which the next beat supersedes anyway.
+        let (stream, continuation) = AsyncStream<PlaybackState>.makeStream(bufferingPolicy: .bufferingNewest(32))
         self.state = stream
         self.continuation = continuation
         super.init()

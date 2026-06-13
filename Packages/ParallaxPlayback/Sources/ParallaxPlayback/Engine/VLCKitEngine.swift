@@ -107,7 +107,10 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
 
     public override init() {
         _ = Self._eventsConfigured   // guarantee main-queue delegate delivery before the player exists
-        let (stream, cont) = AsyncStream<PlaybackState>.makeStream()
+        // Bounded buffer — see the AVKitEngine init for the rationale. `.bufferingNewest`
+        // keeps the freshest position plus any terminal beat; 32 ≈ 16s of 0.5s ticks, well
+        // beyond what the MainActor consumer ever queues, so nothing real is ever dropped.
+        let (stream, cont) = AsyncStream<PlaybackState>.makeStream(bufferingPolicy: .bufferingNewest(32))
         self.state = stream
         self.continuation = cont
         self.player = VLCMediaPlayer()
