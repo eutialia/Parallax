@@ -5,10 +5,7 @@ struct HomeView: View {
     @Environment(AppDependencies.self) private var deps
     @Environment(AppRouter.self) private var router
     @Environment(LaunchGate.self) private var launchGate
-    @Environment(\.horizontalSizeClass) private var hSize
-    @Environment(\.appIdiom) private var idiom
     @Environment(PlaybackPresenter.self) private var playback
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Supplied by the tvOS launch gate (`FocusRootView`), which loads the feed up front so the
     /// hero is on screen — and focusable — the instant the sidebar appears. When set, the view
     /// skips its own fetch. iOS leaves this nil and self-loads in `.task` as before.
@@ -62,31 +59,7 @@ struct HomeView: View {
         // counterpart and slides across the screen on dismiss.
         .toolbarBackground(.hidden, for: .navigationBar)
         .itemDetailNavigation()
-        .task(id: router.activeServerID) {
-            // tvOS launch gate already fetched the feed — adopt it and skip the
-            // redundant load. No gate release here: FocusRootView is the
-            // authoritative tvOS release site (it already fired before this mounts).
-            if let preloaded {
-                session = preloaded.session
-                viewModel = preloaded.viewModel
-                return
-            }
-            // Skeleton-only until bootstrap sets `activeServerID` — avoids a fetch that
-            // `RootTabView`'s `.id` remount would cancel when the session becomes active.
-            guard router.activeServerID != nil else { return }
-            if session == nil {
-                session = await deps.serverStore.active
-            }
-            if viewModel == nil, let session {
-                let repo = await deps.libraryRepoFactory(session)
-                viewModel = HomeViewModel(repo: repo)
-                await viewModel?.load()
-            }
-            // Releases the cold-launch sync-hold: `load()` has returned (loaded
-            // OR failed — both are revealable screens). One-shot; server-switch
-            // re-runs are no-ops inside the gate.
-            launchGate.markContentReady()
-        }
+        .task(id: router.activeServerID) { await loadFeed() }
         // A finished playback session moved progress (incl. the new prev/next episode
         // jumps), so re-pull the progress-driven shelves the moment the player dismisses.
         // Home stays MOUNTED under the player layer/cover, so its `.task`/`.onAppear`
@@ -97,6 +70,36 @@ struct HomeView: View {
                 Task { await viewModel?.refresh() }
             }
         }
+    }
+
+    /// Per-server feed load for the `.task(id:)`. tvOS adopts the launch gate's
+    /// preloaded feed and skips the fetch; iOS self-loads once the session is active.
+    /// Re-runs on a server switch (the task id changes) — each step is guarded so an
+    /// already-built model isn't rebuilt.
+    private func loadFeed() async {
+        // tvOS launch gate already fetched the feed — adopt it and skip the
+        // redundant load. No gate release here: FocusRootView is the
+        // authoritative tvOS release site (it already fired before this mounts).
+        if let preloaded {
+            session = preloaded.session
+            viewModel = preloaded.viewModel
+            return
+        }
+        // Skeleton-only until bootstrap sets `activeServerID` — avoids a fetch that
+        // `RootTabView`'s `.id` remount would cancel when the session becomes active.
+        guard router.activeServerID != nil else { return }
+        if session == nil {
+            session = await deps.serverStore.active
+        }
+        if viewModel == nil, let session {
+            let repo = await deps.libraryRepoFactory(session)
+            viewModel = HomeViewModel(repo: repo)
+            await viewModel?.load()
+        }
+        // Releases the cold-launch sync-hold: `load()` has returned (loaded
+        // OR failed — both are revealable screens). One-shot; server-switch
+        // re-runs are no-ops inside the gate.
+        launchGate.markContentReady()
     }
 
     @ViewBuilder
@@ -117,34 +120,10 @@ struct HomeView: View {
                             scrollAdjustment: heroScrollAdjustment
                         )
                     }
-                    // Everything below the full-bleed hero stays inside the tvOS title-safe
-                    // region (`tvContentInset()`), so focusable shelf cards aren't clipped by
-                    // overscan. No-op on iOS.
-                    VStack(alignment: .leading, spacing: Space.s30) {
-                        if !vm.continueWatching.isEmpty {
-                            MetadataRow(title: "Continue Watching", items: vm.continueWatching, tileWidth: AppLayout.shelfTileWidth(idiom: idiom)) { item in
-                                homeShelfTile(item: item, session: session, showProgress: true)
-                            }
-                        }
-                        if !vm.nextUp.isEmpty {
-                            MetadataRow(title: "Next Up", items: vm.nextUp, tileWidth: AppLayout.shelfTileWidth(idiom: idiom)) { item in
-                                homeShelfTile(item: item, session: session, showProgress: false)
-                            }
-                        }
-                        if vm.heroFeed.isEmpty && vm.continueWatching.isEmpty && vm.nextUp.isEmpty {
-                            ContentUnavailableView(
-                                "Nothing here yet",
-                                systemImage: "play.slash",
-                                description: Text("Play something from your library and it will appear here.")
-                            )
-                            .padding(.top, Space.s60)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .tvContentInset()
-                    // Dim + crossfade the progress-driven shelves while `refresh()` re-pulls
-                    // them after playback — same recipe as the library grid's sort/filter.
-                    .staleWhileRevalidate(isRefreshing: vm.isRefreshing, reduceMotion: reduceMotion)
+                    // Everything below the full-bleed hero lives in its own view, so it isn't
+                    // re-evaluated on every hero-scroll frame — only `HomeHeroCarousel` reads
+                    // `heroScrollAdjustment`, which changes per frame while the hero is on screen.
+                    HomeShelves(viewModel: vm, session: session)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.bottom, Space.s30)
@@ -170,11 +149,55 @@ struct HomeView: View {
             HomeLoadingSkeleton()
         }
     }
+}
+
+/// The progress-driven shelves below the hero (Continue Watching · Next Up, or the
+/// empty state). A standalone view — not an inline `@ViewBuilder` — so it's insulated
+/// from `HomeView`'s per-frame `heroScrollAdjustment` writes: only the carousel needs
+/// that, and rebuilding these shelves on every scroll frame is wasted work.
+private struct HomeShelves: View {
+    let viewModel: HomeViewModel
+    let session: Session
+
+    @Environment(\.appIdiom) private var idiom
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        let vm = viewModel
+        // Everything below the full-bleed hero stays inside the tvOS title-safe
+        // region (`tvContentInset()`), so focusable shelf cards aren't clipped by
+        // overscan. No-op on iOS.
+        VStack(alignment: .leading, spacing: Space.s30) {
+            if !vm.continueWatching.isEmpty {
+                MetadataRow(title: "Continue Watching", items: vm.continueWatching, tileWidth: AppLayout.shelfTileWidth(idiom: idiom)) { item in
+                    homeShelfTile(item: item, showProgress: true)
+                }
+            }
+            if !vm.nextUp.isEmpty {
+                MetadataRow(title: "Next Up", items: vm.nextUp, tileWidth: AppLayout.shelfTileWidth(idiom: idiom)) { item in
+                    homeShelfTile(item: item, showProgress: false)
+                }
+            }
+            if vm.heroFeed.isEmpty && vm.continueWatching.isEmpty && vm.nextUp.isEmpty {
+                ContentUnavailableView(
+                    "Nothing here yet",
+                    systemImage: "play.slash",
+                    description: Text("Play something from your library and it will appear here.")
+                )
+                .padding(.top, Space.s60)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .tvContentInset()
+        // Dim + crossfade the progress-driven shelves while `refresh()` re-pulls
+        // them after playback — same recipe as the library grid's sort/filter.
+        .staleWhileRevalidate(isRefreshing: vm.isRefreshing, reduceMotion: reduceMotion)
+    }
 
     // MARK: - Item rendering helpers
 
     @ViewBuilder
-    private func homeShelfTile(item: Item, session: Session, showProgress: Bool) -> some View {
+    private func homeShelfTile(item: Item, showProgress: Bool) -> some View {
         ItemNavigator(item: item, session: session) {
             MediaTile(
                 title: item.displayTitle,

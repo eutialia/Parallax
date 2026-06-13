@@ -1,6 +1,17 @@
 import SwiftUI
 import ParallaxJellyfin
 
+/// Skeleton capsule metrics for the tvOS in-content header's loading state — shared by
+/// the live `headerControls` (the `isLoadingGenres` capsule) and the first-load
+/// `LibraryGridLoadingPlaceholder` so the skeleton→real-controls swap is shift-free. The
+/// real Genre/Sort chips are native `.glass` Menus that size themselves from their labels,
+/// so these approximate that footprint; the height reuses the app-wide control height.
+private enum LibraryHeaderChip {
+    static let height: CGFloat = AppLayout.tvControlHeight
+    static let genreWidth: CGFloat = 140
+    static let sortWidth: CGFloat = 110
+}
+
 struct JellyfinLibraryGridView: View {
     let scope: LibraryScope
     let title: String
@@ -27,20 +38,13 @@ struct JellyfinLibraryGridView: View {
     /// load-more strip so all three stay aligned. Denser on regular width (iPad).
     private var columns: Int { AppLayout.posterGridColumns(idiom: idiom) }
     @State private var viewModel: JellyfinLibraryGridViewModel?
-    /// Skeleton capsule metrics for the header's loading state — tvOS-only, like the
-    /// header itself. The real Genre/Sort chips are native `.glass` Menus that size
-    /// themselves from their labels, so these approximate that footprint to keep the
-    /// skeleton→real swap shift-free; the height reuses the app-wide control height.
-    private let headerControlHeight: CGFloat = AppLayout.tvControlHeight
-    private let genreChipWidth: CGFloat = 140
-    private let sortChipWidth: CGFloat = 110
 
     var body: some View {
         Group {
             if let vm = viewModel {
                 gridContent(vm: vm)
             } else {
-                libraryGridLoadingPlaceholder
+                LibraryGridLoadingPlaceholder()
             }
         }
         // The grid owns its own title (the library name) so both iOS entry points — iPhone's
@@ -61,19 +65,24 @@ struct JellyfinLibraryGridView: View {
         #endif
         .itemDetailNavigation()
         .screenFloor()
-        .task {
-            if viewModel == nil {
-                let repo = await deps.libraryRepoFactory(session)
-                viewModel = JellyfinLibraryGridViewModel(repo: repo, scope: scope)
-                await viewModel?.load()
-            }
-        }
+        .task { await loadViewModel() }
+    }
+
+    /// One-shot view-model construction for the `.task`: build the repo-backed model and
+    /// kick the first page. Idempotent — a `.task` re-fire (server switch) with the model
+    /// already present is a no-op.
+    private func loadViewModel() async {
+        guard viewModel == nil else { return }
+        let repo = await deps.libraryRepoFactory(session)
+        let vm = JellyfinLibraryGridViewModel(repo: repo, scope: scope)
+        viewModel = vm
+        await vm.load()
     }
 
     @ViewBuilder
     private func gridContent(vm: JellyfinLibraryGridViewModel) -> some View {
         if isInitialLoad(vm) {
-            libraryGridLoadingPlaceholder
+            LibraryGridLoadingPlaceholder()
         } else if case .failed(let message) = vm.state, vm.items.isEmpty {
             ContentUnavailableView(
                 "Couldn't load \(title)",
@@ -183,37 +192,6 @@ struct JellyfinLibraryGridView: View {
         }
     }
 
-    /// Full-screen first-load placeholder: genre-pill row above a poster-grid skeleton,
-    /// laid out to match the loaded grid so content doesn't shift in when it arrives.
-    private var libraryGridLoadingPlaceholder: some View {
-        ScrollView {
-            VStack(spacing: 0) {
-                // Match the loaded grid's tvOS in-content header geometry (two centered capsules) so
-                // the swap to the real Genre/Sort controls is shift-free. iPhone/iPad carry those in
-                // the nav bar, not the content, so they skip the placeholder capsules. Horizontal
-                // inset comes from `contentMargins`, like the header itself.
-                if idiom == .tv {
-                    HStack(spacing: Space.s12) {
-                        Spacer(minLength: 0)
-                        Capsule().fill(Color.fill).frame(width: genreChipWidth, height: headerControlHeight)
-                        Capsule().fill(Color.fill).frame(width: sortChipWidth, height: headerControlHeight)
-                        Spacer(minLength: 0)
-                    }
-                    // Matches `headerControls`' padding so the skeleton→real-controls swap doesn't
-                    // shift the grid down (8pt top + 30pt bottom gap to the first poster row).
-                    .padding(.top, Space.s8)
-                    .padding(.bottom, Space.s30)
-                }
-                AdaptivePosterGridLoadingSkeleton(tileCount: columns * 3, fixedColumns: columns)
-            }
-        }
-        .scrollDisabled(true)
-        .contentMargins(.horizontal, AppLayout.contentHMargin(idiom: idiom), for: .scrollContent)
-        // Match the loaded grid's vertical overscan (line up `gridContent`) so the first poster row
-        // lands at the same y when the skeleton swaps out — no 40pt jump on tvOS load.
-        .contentMargins(.vertical, idiom == .tv ? Space.s40 : 0, for: .scrollContent)
-    }
-
     /// Centered Genre + Sort control row — tvOS only, living INSIDE the scroll content (see
     /// `gridContent`) so the focus engine can scroll back up to it. Holds a stable height across
     /// loading → loaded so the grid below never shifts; Genre collapses out when the library has no
@@ -227,7 +205,7 @@ struct JellyfinLibraryGridView: View {
         HStack(spacing: Space.s12) {
             Spacer(minLength: 0)
             if vm.isLoadingGenres {
-                Capsule().fill(Color.fill).frame(width: genreChipWidth, height: headerControlHeight)
+                Capsule().fill(Color.fill).frame(width: LibraryHeaderChip.genreWidth, height: LibraryHeaderChip.height)
             } else if !vm.availableGenres.isEmpty {
                 genreMenu(vm: vm)
             }
@@ -367,4 +345,43 @@ struct JellyfinLibraryGridView: View {
         }
     }
 
+}
+
+/// Full-screen first-load placeholder: genre-pill row above a poster-grid skeleton,
+/// laid out to match the loaded grid so content doesn't shift in when it arrives. A
+/// standalone view (not a `@ViewBuilder` on the grid) so it owns its own body
+/// invalidation and renders identically from both the pre-VM and initial-load branches.
+private struct LibraryGridLoadingPlaceholder: View {
+    @Environment(\.appIdiom) private var idiom
+
+    private var columns: Int { AppLayout.posterGridColumns(idiom: idiom) }
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 0) {
+                // Match the loaded grid's tvOS in-content header geometry (two centered capsules) so
+                // the swap to the real Genre/Sort controls is shift-free. iPhone/iPad carry those in
+                // the nav bar, not the content, so they skip the placeholder capsules. Horizontal
+                // inset comes from `contentMargins`, like the header itself.
+                if idiom == .tv {
+                    HStack(spacing: Space.s12) {
+                        Spacer(minLength: 0)
+                        Capsule().fill(Color.fill).frame(width: LibraryHeaderChip.genreWidth, height: LibraryHeaderChip.height)
+                        Capsule().fill(Color.fill).frame(width: LibraryHeaderChip.sortWidth, height: LibraryHeaderChip.height)
+                        Spacer(minLength: 0)
+                    }
+                    // Matches `headerControls`' padding so the skeleton→real-controls swap doesn't
+                    // shift the grid down (8pt top + 30pt bottom gap to the first poster row).
+                    .padding(.top, Space.s8)
+                    .padding(.bottom, Space.s30)
+                }
+                AdaptivePosterGridLoadingSkeleton(tileCount: columns * 3, fixedColumns: columns)
+            }
+        }
+        .scrollDisabled(true)
+        .contentMargins(.horizontal, AppLayout.contentHMargin(idiom: idiom), for: .scrollContent)
+        // Match the loaded grid's vertical overscan (line up `gridContent`) so the first poster row
+        // lands at the same y when the skeleton swaps out — no 40pt jump on tvOS load.
+        .contentMargins(.vertical, idiom == .tv ? Space.s40 : 0, for: .scrollContent)
+    }
 }

@@ -871,6 +871,25 @@ struct PlayerControlsView: View {
 
     // MARK: - Scrubber (shared visual, platform interaction)
 
+    #if os(tvOS)
+    /// tvOS Select on the focused scrubber: commit the pending ±10s scrub head as ONE
+    /// engine seek, then drop `isScrubbing` so the bar tracks live playback again.
+    /// Generation-guarded so a newer scrub (or a dismissal) can't clear the flag out from
+    /// under the live one. `playbackReady` matters beyond the engine-nil case: during a
+    /// track-switch re-buffer `currentDuration` is stale-positive (handle() is muted by
+    /// isSwitchingTracks), so without it a Select here would fire a real seek at the
+    /// mid-reload engine — the transcode seek-wedge class. Same reason on every seek path.
+    private func commitScrub(durSeconds: Double) {
+        guard playbackReady, let engine = vm.engine, durSeconds > 0, isScrubbing else { return }
+        let gen = scrubGeneration
+        let target = CMTime(seconds: scrubProgress * durSeconds, preferredTimescale: 600)
+        Task {
+            await engine.seek(to: target)
+            if scrubGeneration == gen { isScrubbing = false }
+        }
+    }
+    #endif
+
     @ViewBuilder
     private func scrubber(_ m: PlayerMetrics) -> some View {
         let posSeconds = CMTimeGetSeconds(vm.currentPosition)
@@ -888,18 +907,7 @@ struct PlayerControlsView: View {
         // is its own focus indicator, so the style must paint no system chrome
         // (`.plain` draws the tvOS focus platter around the whole bar).
         Button {
-            // `playbackReady` matters beyond the engine-nil case: during a
-            // track-switch re-buffer `currentDuration` is stale-positive (handle()
-            // is muted by isSwitchingTracks), so without it a Select here would
-            // fire a real seek at the mid-reload engine — the transcode seek-wedge
-            // class. Same reason on every seek path below.
-            guard playbackReady, let engine = vm.engine, durSeconds > 0, isScrubbing else { return }
-            let gen = scrubGeneration
-            let target = CMTime(seconds: scrubProgress * durSeconds, preferredTimescale: 600)
-            Task {
-                await engine.seek(to: target)
-                if scrubGeneration == gen { isScrubbing = false }
-            }
+            commitScrub(durSeconds: durSeconds)
         } label: {
             PlayerProgressBar(metrics: m, mode: scrubberFocused ? .focused : .normal,
                               played: displayed, buffered: vm.bufferedFraction,

@@ -140,36 +140,7 @@ struct PlayerView: View {
             if !active { chromeVisible = true }
         }
         #endif
-        .task {
-            if viewModel == nil {
-                let info = await deps.playbackInfoFactory(session)
-                let repo = await deps.libraryRepoFactory(session)
-                let vm = PlayerViewModel(
-                    deviceProfileBuilder: deps.deviceProfileBuilder,
-                    playbackInfo: info,
-                    resolve: { id, caps, start, audioIndex, subtitleIndex in
-                        try await info.resolve(
-                            item: id,
-                            capabilities: caps,
-                            startTime: start,
-                            audioStreamIndex: audioIndex,
-                            subtitleStreamIndex: subtitleIndex
-                        )
-                    },
-                    engineFactory: deps.playbackEngineFactory,
-                    audioSession: deps.audioSession,
-                    fetchDetail: { try await repo.detail(for: $0) },
-                    rememberTrackSelection: { await info.rememberTrackSelection($0) },
-                    fetchSegments: { (try? await repo.mediaSegments(for: $0)) ?? [] },
-                    fetchAdjacent: { (try? await repo.adjacentEpisodes(seriesID: $0, episodeID: $1)) ?? .none }
-                )
-                viewModel = vm
-                switch source {
-                case .resolved(let item): await vm.start(item: item)
-                case .unresolved(let id): await vm.start(itemID: id)
-                }
-            }
-        }
+        .task { await beginSession() }
         .onDisappear {
             // THE teardown point for every dismissal: exitPlayer() only pauses
             // (so the last frame rides the slide-out and the teardown's
@@ -202,6 +173,39 @@ struct PlayerView: View {
         .environment(\.colorScheme, .dark)
     }
 
+    /// Builds the player's view model on first appearance and starts playback. One-shot
+    /// (guarded on `viewModel == nil`): the `.task` can re-fire, but the session is built
+    /// once. The model is wired with the per-session dependency factories (playback info,
+    /// library repo) resolved here so they aren't captured before the session exists.
+    private func beginSession() async {
+        guard viewModel == nil else { return }
+        let info = await deps.playbackInfoFactory(session)
+        let repo = await deps.libraryRepoFactory(session)
+        let vm = PlayerViewModel(
+            deviceProfileBuilder: deps.deviceProfileBuilder,
+            playbackInfo: info,
+            resolve: { id, caps, start, audioIndex, subtitleIndex in
+                try await info.resolve(
+                    item: id,
+                    capabilities: caps,
+                    startTime: start,
+                    audioStreamIndex: audioIndex,
+                    subtitleStreamIndex: subtitleIndex
+                )
+            },
+            engineFactory: deps.playbackEngineFactory,
+            audioSession: deps.audioSession,
+            fetchDetail: { try await repo.detail(for: $0) },
+            rememberTrackSelection: { await info.rememberTrackSelection($0) },
+            fetchSegments: { (try? await repo.mediaSegments(for: $0)) ?? [] },
+            fetchAdjacent: { (try? await repo.adjacentEpisodes(seriesID: $0, episodeID: $1)) ?? .none }
+        )
+        viewModel = vm
+        switch source {
+        case .resolved(let item): await vm.start(item: item)
+        case .unresolved(let id): await vm.start(itemID: id)
+        }
+    }
 
     /// Everything above the player's black floor — video host, veils, HUD, and
     /// overlays — as ONE concrete view, so the iOS pull-to-dismiss can move it
