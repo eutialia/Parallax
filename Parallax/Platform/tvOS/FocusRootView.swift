@@ -76,13 +76,13 @@ struct FocusRootView: View {
                     ForEach(libraries) { library in
                         Tab(library.name, systemImage: library.collectionType.symbolName, value: AppTab.collection(library.id)) {
                             NavigationStack {
-                                JellyfinLibraryGridView(collection: library, session: session)
+                                LibraryGridView(collection: library, session: session)
                             }
                         }
                     }
                     Tab("Favorites", systemImage: "heart", value: AppTab.favorites) {
                         NavigationStack {
-                            JellyfinLibraryGridView(scope: .favorites, title: "Favorites", session: session)
+                            LibraryGridView(scope: .favorites, title: "Favorites", session: session)
                         }
                     }
                 }

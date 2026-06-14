@@ -205,7 +205,7 @@ struct LibraryListLoadingSkeleton: View {
                     .aspectRatio(JellyfinImage.landscape, contentMode: .fit)
             }
         }
-        // Same all-edge inset as the loaded list (`JellyfinLibraryListView`)
+        // Same all-edge inset as the loaded list (`LibraryListView`)
         // so the skeleton→cards swap doesn't shift.
         .padding(AppLayout.contentHMargin(idiom: idiom))
         .skeletonShimmer()

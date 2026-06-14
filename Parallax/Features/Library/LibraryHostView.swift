@@ -13,7 +13,7 @@ struct LibraryHostView: View {
             if let source {
                 switch source {
                 case .jellyfin(let session):
-                    JellyfinLibraryListView(session: session)
+                    LibraryListView(session: session)
                         .navigationTitle("Library")
                         // Server name sits under the title (was a truncated "cort…"
                         // caption crammed into the top-left). Becomes a source-switcher

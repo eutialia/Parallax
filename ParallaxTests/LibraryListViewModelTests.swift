@@ -11,7 +11,7 @@ struct LibraryListViewModelTests {
         fake.collectionsResult = .success([
             MediaCollection(id: CollectionID(rawValue: "c1"), name: "Movies", collectionType: .movies, primaryTag: nil)
         ])
-        let vm = JellyfinLibraryListViewModel(repo: fake)
+        let vm = LibraryListViewModel(repo: fake)
         await vm.load()
         #expect(vm.collections.count == 1)
         #expect(vm.collections.first?.name == "Movies")

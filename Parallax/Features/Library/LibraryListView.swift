@@ -2,12 +2,12 @@ import SwiftUI
 import ParallaxJellyfin
 import ParallaxCore
 
-struct JellyfinLibraryListView: View {
+struct LibraryListView: View {
     let session: Session
 
     @Environment(AppDependencies.self) private var deps
     @Environment(\.appIdiom) private var idiom
-    @State private var viewModel: JellyfinLibraryListViewModel?
+    @State private var viewModel: LibraryListViewModel?
 
     var body: some View {
         Group {
@@ -55,15 +55,15 @@ struct JellyfinLibraryListView: View {
             }
         }
         .navigationDestination(for: MediaCollection.self) { coll in
-            JellyfinLibraryGridView(collection: coll, session: session)
+            LibraryGridView(collection: coll, session: session)
         }
         .navigationDestination(for: FavoritesRoute.self) { _ in
-            JellyfinLibraryGridView(scope: .favorites, title: "Favorites", session: session)
+            LibraryGridView(scope: .favorites, title: "Favorites", session: session)
         }
         .task {
             if viewModel == nil {
                 let repo = await deps.mediaRepoFactory(.jellyfin(session))
-                viewModel = JellyfinLibraryListViewModel(repo: repo)
+                viewModel = LibraryListViewModel(repo: repo)
                 await viewModel?.load()
             }
         }

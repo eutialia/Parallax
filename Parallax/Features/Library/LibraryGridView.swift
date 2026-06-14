@@ -13,7 +13,7 @@ private enum LibraryHeaderChip {
     static let sortWidth: CGFloat = 110
 }
 
-struct JellyfinLibraryGridView: View {
+struct LibraryGridView: View {
     let scope: LibraryScope
     let title: String
     let session: Session
@@ -38,7 +38,7 @@ struct JellyfinLibraryGridView: View {
     /// Fixed poster columns — shared by the grid, its first-load placeholder, and the
     /// load-more strip so all three stay aligned. Denser on regular width (iPad).
     private var columns: Int { AppLayout.posterGridColumns(idiom: idiom) }
-    @State private var viewModel: JellyfinLibraryGridViewModel?
+    @State private var viewModel: LibraryGridViewModel?
 
     var body: some View {
         Group {
@@ -75,13 +75,13 @@ struct JellyfinLibraryGridView: View {
     private func loadViewModel() async {
         guard viewModel == nil else { return }
         let repo = await deps.mediaRepoFactory(.jellyfin(session))
-        let vm = JellyfinLibraryGridViewModel(repo: repo, scope: scope)
+        let vm = LibraryGridViewModel(repo: repo, scope: scope)
         viewModel = vm
         await vm.load()
     }
 
     @ViewBuilder
-    private func gridContent(vm: JellyfinLibraryGridViewModel) -> some View {
+    private func gridContent(vm: LibraryGridViewModel) -> some View {
         if isInitialLoad(vm) {
             LibraryGridLoadingPlaceholder()
         } else if case .failed(let message) = vm.state, vm.items.isEmpty {
@@ -128,7 +128,7 @@ struct JellyfinLibraryGridView: View {
 
     /// Loaded but nothing to show. Matters most for Favorites, which legitimately
     /// starts empty; a filtered-out collection gets the same treatment.
-    private func showsEmptyState(_ vm: JellyfinLibraryGridViewModel) -> Bool {
+    private func showsEmptyState(_ vm: LibraryGridViewModel) -> Bool {
         vm.items.isEmpty && vm.state == .loaded && !vm.isRefreshing
     }
 
@@ -151,11 +151,11 @@ struct JellyfinLibraryGridView: View {
 
     /// Full-screen placeholder only on the very first load — while genres are still
     /// in flight. Sort/filter/genre changes reload the grid but keep the header controls.
-    private func isInitialLoad(_ vm: JellyfinLibraryGridViewModel) -> Bool {
+    private func isInitialLoad(_ vm: LibraryGridViewModel) -> Bool {
         vm.items.isEmpty && (vm.state == .idle || (vm.state == .loading && vm.isLoadingGenres))
     }
 
-    private func refreshErrorBanner(message: String, vm: JellyfinLibraryGridViewModel) -> some View {
+    private func refreshErrorBanner(message: String, vm: LibraryGridViewModel) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: Space.s8) {
             Label(message, systemImage: "exclamationmark.triangle")
                 .font(.subheadline)
@@ -172,7 +172,7 @@ struct JellyfinLibraryGridView: View {
     }
 
     @ViewBuilder
-    private func gridScrollContent(vm: JellyfinLibraryGridViewModel) -> some View {
+    private func gridScrollContent(vm: LibraryGridViewModel) -> some View {
         if vm.items.isEmpty, vm.state == .loading {
             AdaptivePosterGridLoadingSkeleton(tileCount: columns * 3, fixedColumns: columns)
         } else {
@@ -198,7 +198,7 @@ struct JellyfinLibraryGridView: View {
     /// loading → loaded so the grid below never shifts; Genre collapses out when the library has no
     /// genres. Horizontal inset comes from the scroll view's `contentMargins`, not local padding.
     @ViewBuilder
-    private func headerControls(vm: JellyfinLibraryGridViewModel) -> some View {
+    private func headerControls(vm: LibraryGridViewModel) -> some View {
         // No `GlassEffectContainer` here: this row only renders on tvOS (iOS puts the
         // controls in the nav bar), and on tvOS the container re-renders the native button
         // glass in its own layer — glyphs drift off the discs and the glass desyncs from
@@ -234,7 +234,7 @@ struct JellyfinLibraryGridView: View {
     /// they're still in flight, or nothing when the library has no genres (its equal-width
     /// half then collapses and Sort centers — see `headerControls`).
     @ViewBuilder
-    private func genreHeaderSlot(vm: JellyfinLibraryGridViewModel) -> some View {
+    private func genreHeaderSlot(vm: LibraryGridViewModel) -> some View {
         if vm.isLoadingGenres {
             Capsule().fill(Color.fill).frame(width: LibraryHeaderChip.genreWidth, height: LibraryHeaderChip.height)
         } else if !vm.availableGenres.isEmpty {
@@ -268,7 +268,7 @@ struct JellyfinLibraryGridView: View {
     /// `idiom == .tv`; iPhone/iPad fold the same `genrePicker` into the combined sort
     /// menu). Shares `libraryHeaderMenu` with Sort so the two chips are styled identically;
     /// a selected genre flips the resting monochrome tint to the filled `chipSelectedFill`.
-    private func genreMenu(vm: JellyfinLibraryGridViewModel) -> some View {
+    private func genreMenu(vm: LibraryGridViewModel) -> some View {
         libraryHeaderMenu(
             title: vm.selectedGenre ?? "Genre",
             systemImage: "theatermasks",
@@ -283,7 +283,7 @@ struct JellyfinLibraryGridView: View {
     /// `Picker` gives each genre the system's leading checkmark, with "All Genres" to clear.
     /// Shared by the tvOS chip and the combined sort menu's submenu (iPhone/iPad).
     @ViewBuilder
-    private func genrePicker(vm: JellyfinLibraryGridViewModel) -> some View {
+    private func genrePicker(vm: LibraryGridViewModel) -> some View {
         @Bindable var vm = vm
         Picker("Genre", selection: $vm.selectedGenre) {
             Text("All Genres").tag(String?.none)
@@ -297,7 +297,7 @@ struct JellyfinLibraryGridView: View {
     /// Inline-header Sort menu — tvOS-only like `genreMenu` (Genre stays its own chip
     /// there, so this menu is sort-only). No `activeTint`: Sort has no selected state, so
     /// it rests on the same monochrome `Color.label` tint as an unselected Genre.
-    private func sortMenu(vm: JellyfinLibraryGridViewModel) -> some View {
+    private func sortMenu(vm: LibraryGridViewModel) -> some View {
         libraryHeaderMenu(
             title: "Sort",
             systemImage: "arrow.up.arrow.down",
@@ -312,7 +312,7 @@ struct JellyfinLibraryGridView: View {
     /// picker — the tile row is a touch-menu affordance the tvOS focus engine
     /// doesn't render. Genre stays its own header chip there.
     @ViewBuilder
-    private func sortPicker(vm: JellyfinLibraryGridViewModel) -> some View {
+    private func sortPicker(vm: LibraryGridViewModel) -> some View {
         @Bindable var vm = vm
         Picker("Order", selection: $vm.sortDirection) {
             ForEach(LibrarySortVocabulary.directionOptions(for: vm.sortField), id: \.direction) { option in

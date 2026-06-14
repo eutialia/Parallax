@@ -4,7 +4,7 @@ import ParallaxCore
 extension CollectionType {
     /// SF Symbol for a Jellyfin library, keyed off its `collectionType`. The single source
     /// of truth shared by the sidebar's library tabs (`RootTabView`) and the Library-list
-    /// cards (`JellyfinLibraryListView`) so the two can't drift apart.
+    /// cards (`LibraryListView`) so the two can't drift apart.
     ///
     /// Outline (non-filled) variants, per Apple's tab-bar / sidebar convention — the system
     /// fills the selected sidebar row itself, and a frosted card chip reads cleaner outlined.

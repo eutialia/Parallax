@@ -133,7 +133,7 @@ struct RootTabView: View {
                             NavigationStack {
                                 // Title is owned by the grid (from the collection) so the iPhone
                                 // Library-list drill-down and this direct tab show it identically.
-                                JellyfinLibraryGridView(collection: library, session: session)
+                                LibraryGridView(collection: library, session: session)
                             }
                         }
                         .defaultVisibility(AppTab.collection(library.id) == lastVisitedLibraryTab ? .visible : .hidden, for: .tabBar)
@@ -143,7 +143,7 @@ struct RootTabView: View {
                     // collapsed-bar slot as the real libraries.
                     Tab("Favorites", systemImage: "heart", value: AppTab.favorites) {
                         NavigationStack {
-                            JellyfinLibraryGridView(scope: .favorites, title: "Favorites", session: session)
+                            LibraryGridView(scope: .favorites, title: "Favorites", session: session)
                         }
                     }
                     .defaultVisibility(lastVisitedLibraryTab == .favorites ? .visible : .hidden, for: .tabBar)

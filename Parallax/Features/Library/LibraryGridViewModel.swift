@@ -6,7 +6,7 @@ import ParallaxJellyfin
 
 @Observable
 @MainActor
-final class JellyfinLibraryGridViewModel {
+final class LibraryGridViewModel {
     enum LoadState: Equatable {
         case idle, loading, loaded, failed(String)
     }
@@ -183,7 +183,7 @@ final class JellyfinLibraryGridViewModel {
                 }
             } catch {
                 if !Task.isCancelled {
-                    Log.ui.error("JellyfinLibraryGrid load unexpected: \(String(describing: type(of: error)))")
+                    Log.ui.error("LibraryGrid load unexpected: \(String(describing: type(of: error)))")
                     handleFetchFailure("Something went wrong.", reset: reset, generation: generation)
                 }
             }
@@ -194,7 +194,7 @@ final class JellyfinLibraryGridViewModel {
     private func handleFetchFailure(_ message: String, reset: Bool, generation: UInt?) {
         if let generation, !isCurrentResetFetch(generation) { return }
 
-        Log.ui.error("JellyfinLibraryGrid load failed: \(message)")
+        Log.ui.error("LibraryGrid load failed: \(message)")
         isRefreshing = false
 
         if reset {

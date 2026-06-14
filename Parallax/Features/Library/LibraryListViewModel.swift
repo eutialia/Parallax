@@ -6,7 +6,7 @@ import ParallaxJellyfin
 
 @Observable
 @MainActor
-final class JellyfinLibraryListViewModel {
+final class LibraryListViewModel {
     enum LoadState: Equatable {
         case idle, loading, loaded, failed(String)
     }
@@ -26,10 +26,10 @@ final class JellyfinLibraryListViewModel {
             collections = try await repo.collections()
             state = .loaded
         } catch let error as AppError {
-            Log.ui.error("JellyfinLibraryList load failed: \(error.userMessage)")
+            Log.ui.error("LibraryList load failed: \(error.userMessage)")
             state = .failed(error.userMessage)
         } catch {
-            Log.ui.error("JellyfinLibraryList load unexpected: \(String(describing: type(of: error)))")
+            Log.ui.error("LibraryList load unexpected: \(String(describing: type(of: error)))")
             state = .failed("Something went wrong.")
         }
     }
