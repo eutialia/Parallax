@@ -87,17 +87,16 @@ struct SeriesDetailView: View {
                                 }
                             }
 
-                            // Body + episode shelves stay inside the tvOS title-safe region
-                            // while the hero bleeds full-width.
+                            // Overview + genres fold into one tappable info section (full card on
+                            // tap); the season shelves stay below it. The section is focusable, so
+                            // even a series with NO season shelf has a tvOS scroll target. Body +
+                            // shelves stay inside the tvOS title-safe region while the hero bleeds.
+                            let info = DetailInfo(series: sd)
                             VStack(alignment: .leading, spacing: Space.s22) {
-                                if let overview = sd.series.overview {
-                                    DetailOverview(text: overview)
-                                        .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
+                                if info.hasContent {
+                                    DetailInfoSection(info: info)
                                 }
                                 seasonEpisodeShelves(seasons: seasons, vm: vm)
-                                if !sd.series.genres.isEmpty {
-                                    DetailMetadataLine(label: "Genres", value: sd.series.genres.joined(separator: ", "))
-                                }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .tvContentInset()

@@ -59,8 +59,9 @@ struct DetailHeroMetadataRow: View {
 }
 
 /// Filled glass capsule for a quality or accessibility label (4K, HDR, CC, …).
-/// Matches the hero's circular glass buttons — dark frosted fill over photography.
-private struct DetailMetadataBadge: View {
+/// Matches the hero's circular glass buttons — dark frosted fill over photography. Self-contained
+/// dark chrome (pins `.dark` + white ink), so it also reads on the info card's flat background.
+struct DetailMetadataBadge: View {
     let label: String
     let accessibilityLabel: String
 
@@ -82,19 +83,81 @@ private struct DetailMetadataBadge: View {
     }
 }
 
-/// A labeled metadata line (caption label over a callout value) in the detail bodies
-/// (Studios, Cast & Crew, Genres).
-struct DetailMetadataLine: View {
-    let label: String
-    let value: String
-
-    @Environment(\.appIdiom) private var idiom
+/// The fact line (year · runtime · ★rating · age-rating) plus quality / CC badges, for the
+/// expanded info card. The hero's `DetailHeroMetadataRow` paints white-on-photo; this variant
+/// uses the adaptive label tokens so it reads on the card's flat `Color.background`.
+struct DetailInfoFactsRow: View {
+    let facts: DetailMetadata
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(label).font(.caption).foregroundStyle(Color.secondaryLabel)
-            Text(value).font(.callout).foregroundStyle(Color.label)
+        if !facts.isEmpty {
+            HStack(spacing: Space.s8) {
+                if !facts.textParts.isEmpty {
+                    Text(facts.textParts.joined(separator: " · "))
+                        .font(.subheadline)
+                        .foregroundStyle(Color.secondaryLabel)
+                }
+                // Index-keyed, not `id: \.self` — quality labels can repeat and would collide.
+                ForEach(Array(facts.qualityLabels.enumerated()), id: \.offset) { DetailMetadataBadge(label: $0.element) }
+                if facts.hasSubtitles {
+                    DetailMetadataBadge(label: "CC", accessibilityLabel: "Subtitles available")
+                }
+            }
         }
-        .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
+    }
+}
+
+/// One labeled metadata block in the expanded info card. Genres render as a wrapping chip flow
+/// (short tokens read better as chips across the wide card); other lists are comma-joined text.
+struct DetailInfoFieldView: View {
+    let field: DetailInfoField
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.s8) {
+            DetailSectionLabel(field.label)
+            switch field.presentation {
+            case .chips:
+                FlowLayout(spacing: Space.s8) {
+                    // Index-keyed, not `id: \.self` — values can repeat (Jellyfin returns dup
+                    // genres) and would collide on identity, dropping a chip.
+                    ForEach(Array(field.values.enumerated()), id: \.offset) { MetadataChip(text: $0.element) }
+                }
+            case .text:
+                Text(field.values.joined(separator: ", "))
+                    .font(.callout)
+                    .foregroundStyle(Color.label)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+}
+
+/// The small uppercase caption that heads a section/field in the detail info card (Overview,
+/// Genres, Studios, …). One source so the modal's overview header and the metadata-field labels
+/// can't drift.
+struct DetailSectionLabel: View {
+    let text: String
+
+    init(_ text: String) { self.text = text }
+
+    var body: some View {
+        Text(text)
+            .font(.footnote.weight(.semibold))
+            .textCase(.uppercase)
+            .foregroundStyle(Color.secondaryLabel)
+    }
+}
+
+/// A filled capsule token for a short metadata value (a genre) in the info card.
+private struct MetadataChip: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.subheadline)
+            .foregroundStyle(Color.label)
+            .padding(.horizontal, Space.s12)
+            .padding(.vertical, Space.s8)
+            .background(Color.fill, in: Capsule())
     }
 }
