@@ -205,11 +205,10 @@ private struct HomeShelves: View {
             MediaTile(
                 title: item.displayTitle,
                 imageRef: item.homeShelfImageRef,
-                imageKind: item.homeShelfImageKind,
                 session: session,
                 progress: showProgress ? tileProgress(item) : nil,
                 progressCaption: homeShelfCaption(item, showProgress: showProgress),
-                aspectRatio: JellyfinImage.poster,
+                aspectRatio: MediaImage.poster,
                 maxImageWidth: HomeShelf.imageMaxWidth
             )
         }

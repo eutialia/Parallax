@@ -333,11 +333,10 @@ struct LibraryGridView: View {
         MediaTile(
             title: item.displayTitle,
             imageRef: image(for: item),
-            imageKind: .primary,
             session: session,
             progress: nil,
             watched: .init(item),
-            aspectRatio: JellyfinImage.poster,
+            aspectRatio: MediaImage.poster,
             maxImageWidth: 600
         )
     }

@@ -71,7 +71,7 @@ extension View {
 
 /// Poster-only placeholder — mirrors `MediaTile`, which dropped its title/subtitle text.
 struct MediaTileSkeleton: View {
-    var aspectRatio: CGFloat = JellyfinImage.poster
+    var aspectRatio: CGFloat = MediaImage.poster
 
     var body: some View {
         SkeletonBlock(cornerRadius: Radius.tile)
@@ -81,7 +81,7 @@ struct MediaTileSkeleton: View {
 
 struct MetadataRowSkeleton: View {
     let tileWidth: CGFloat
-    var aspectRatio: CGFloat = JellyfinImage.landscape
+    var aspectRatio: CGFloat = MediaImage.landscape
 
     @Environment(\.appIdiom) private var idiom
     @State private var rowWidth: CGFloat = 0
@@ -132,8 +132,8 @@ struct HomeLoadingSkeleton: View {
                     contentMode: .fit
                 )
             VStack(alignment: .leading, spacing: Space.s30) {
-                MetadataRowSkeleton(tileWidth: HomeShelf.tileWidth, aspectRatio: JellyfinImage.poster)
-                MetadataRowSkeleton(tileWidth: HomeShelf.tileWidth, aspectRatio: JellyfinImage.poster)
+                MetadataRowSkeleton(tileWidth: HomeShelf.tileWidth, aspectRatio: MediaImage.poster)
+                MetadataRowSkeleton(tileWidth: HomeShelf.tileWidth, aspectRatio: MediaImage.poster)
             }
             .tvContentInset()
         }
@@ -202,7 +202,7 @@ struct LibraryListLoadingSkeleton: View {
         ) {
             ForEach(0..<(columns * 3), id: \.self) { _ in
                 SkeletonBlock(cornerRadius: Radius.card)
-                    .aspectRatio(JellyfinImage.landscape, contentMode: .fit)
+                    .aspectRatio(MediaImage.landscape, contentMode: .fit)
             }
         }
         // Same all-edge inset as the loaded list (`LibraryListView`)
@@ -293,7 +293,7 @@ struct EpisodeListLoadingSkeleton: View {
                                 SkeletonBlock(cornerRadius: Radius.tile)
                                     .frame(
                                         width: SeriesShelf.episodeTileWidth,
-                                        height: SeriesShelf.episodeTileWidth / JellyfinImage.landscape
+                                        height: SeriesShelf.episodeTileWidth / MediaImage.landscape
                                     )
                             }
                         }

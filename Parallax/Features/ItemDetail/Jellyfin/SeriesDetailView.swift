@@ -165,14 +165,13 @@ struct SeriesDetailView: View {
         MediaTile(
             title: episode.name,
             imageRef: episode.imageRef(.primary),
-            imageKind: .primary,
             session: session,
             progress: episode.shelfPlaybackProgress,
             progressCaption: episode.shelfFooterCaption(),
             // Check only — the footer bar above already carries partial
             // progress, so a ring would say the same thing twice.
             watched: episode.userData.played ? .watched : .none,
-            aspectRatio: JellyfinImage.landscape,
+            aspectRatio: MediaImage.landscape,
             maxImageWidth: SeriesShelf.imageMaxWidth
         )
     }

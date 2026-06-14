@@ -10,9 +10,8 @@ struct HeroBandImage: View {
     let regularWidth: Bool
 
     var body: some View {
-        JellyfinImage(
-            ref: regularWidth ? landscapeRef : posterRef,
-            kind: regularWidth ? .backdrop(index: 0) : .primary,
+        MediaImage(
+            jellyfin: regularWidth ? landscapeRef : posterRef,
             session: session,
             maxWidth: 1600,
             aspectRatio: HeroMetrics.bandAspectRatio(regularWidth: regularWidth),

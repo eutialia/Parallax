@@ -14,9 +14,8 @@ struct HeroArtwork: View {
     }
 
     var body: some View {
-        JellyfinImage(
-            ref: artwork.ref,
-            kind: artwork.kind,
+        MediaImage(
+            jellyfin: artwork.ref,
             session: session,
             maxWidth: 1600,
             aspectRatio: HeroMetrics.bandAspectRatio(regularWidth: regularWidth),

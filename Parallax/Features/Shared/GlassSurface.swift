@@ -124,7 +124,7 @@ private struct ShelfFooterPreviewTile: View {
             .shelfTileFooterGlass()
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         }
-        .frame(width: HomeShelf.tileWidth, height: HomeShelf.tileWidth / JellyfinImage.poster)
+        .frame(width: HomeShelf.tileWidth, height: HomeShelf.tileWidth / MediaImage.poster)
         .clipShape(.rect(cornerRadius: Radius.tile))
     }
 }

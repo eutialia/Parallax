@@ -11,8 +11,8 @@ struct LibraryCard: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            JellyfinImage(ref: collection.imageRef(.primary), kind: .primary, session: session,
-                          maxWidth: 1200, aspectRatio: JellyfinImage.landscape)
+            MediaImage(jellyfin: collection.imageRef(.primary), session: session,
+                       maxWidth: 1200, aspectRatio: MediaImage.landscape)
             // A frosted type-glyph chip is the one piece of chrome — a glanceable cue for
             // libraries whose art is a generic collage with no obvious type.
             Image(systemName: collection.collectionType.symbolName)
@@ -26,7 +26,7 @@ struct LibraryCard: View {
         }
         // Pin the card to the banner aspect so a library with no Primary image keeps full
         // height (and a tappable contentShape) instead of collapsing.
-        .aspectRatio(JellyfinImage.landscape, contentMode: .fit)
+        .aspectRatio(MediaImage.landscape, contentMode: .fit)
         .clipShape(.rect(cornerRadius: Radius.card))
         .contentShape(.rect(cornerRadius: Radius.card))
         // tvOS system highlight masked to the banner's corners — pairs with the

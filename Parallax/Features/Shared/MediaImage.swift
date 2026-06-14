@@ -1,15 +1,14 @@
 import SwiftUI
 import Nuke
-import ParallaxJellyfin
 import ParallaxCore
+import ParallaxJellyfin
 
-struct JellyfinImage: View {
-    let ref: ImageRef?
-    let kind: ImageKind
-    let session: Session
-    let maxWidth: Int
-    let aspectRatio: CGFloat
-    let style: Style
+struct MediaImage: View {
+    private let ref: ImageRef?
+    private let session: Session
+    private let maxWidth: Int
+    private let aspectRatio: CGFloat
+    private let style: Style
 
     /// Width ÷ height — matches Jellyfin season/series/movie primary posters.
     static let poster: CGFloat = 2.0 / 3.0
@@ -29,15 +28,13 @@ struct JellyfinImage: View {
     }
 
     init(
-        ref: ImageRef?,
-        kind: ImageKind,
+        jellyfin ref: ImageRef?,
         session: Session,
         maxWidth: Int,
         aspectRatio: CGFloat = 2.0 / 3.0,
         style: Style = .boxed
     ) {
         self.ref = ref
-        self.kind = kind
         self.session = session
         self.maxWidth = maxWidth
         self.aspectRatio = aspectRatio

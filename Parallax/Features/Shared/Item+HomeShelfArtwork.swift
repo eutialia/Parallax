@@ -6,8 +6,6 @@ extension Item {
     /// primary share Jellyfin's usual poster aspect. Episodes fall back to still.
     var homeShelfImageRef: ImageRef? { homeShelfArtwork.ref }
 
-    var homeShelfImageKind: ImageKind { homeShelfArtwork.kind }
-
     private var homeShelfArtwork: (ref: ImageRef?, kind: ImageKind) {
         switch self {
         case .movie(let m):

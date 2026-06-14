@@ -72,7 +72,7 @@ enum HeroMetrics {
     }
     /// Band aspect ratio (width ÷ height): 2:3 poster on iPhone, 16:9 landscape on iPad.
     static func bandAspectRatio(regularWidth: Bool) -> CGFloat {
-        regularWidth ? JellyfinImage.landscape : JellyfinImage.poster
+        regularWidth ? MediaImage.landscape : MediaImage.poster
     }
     /// Half-speed parallax lag for a signed scroll adjustment (positive = pull-down
     /// rubber-band, negative = scrolled into the feed). Only the scrolled-down side
@@ -391,7 +391,7 @@ private struct PreviewHeroForeground: View {
     // on a short canvas (e.g. iPhone landscape) the fixed-size foreground climbs into the
     // band's upper half, far above the fractional wash onsets, and every contrast number
     // measured there is garbage.
-    .frame(width: 1080, height: 1080 / JellyfinImage.landscape)
+    .frame(width: 1080, height: 1080 / MediaImage.landscape)
     .environment(\.appIdiom, .regular)
 }
 

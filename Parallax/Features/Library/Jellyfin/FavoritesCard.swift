@@ -35,7 +35,7 @@ struct FavoritesCard: View {
                 .padding(Space.s14)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
         }
-        .aspectRatio(JellyfinImage.landscape, contentMode: .fit)
+        .aspectRatio(MediaImage.landscape, contentMode: .fit)
         .clipShape(.rect(cornerRadius: Radius.card))
         .contentShape(.rect(cornerRadius: Radius.card))
         .tvPosterHighlight(cornerRadius: Radius.card)

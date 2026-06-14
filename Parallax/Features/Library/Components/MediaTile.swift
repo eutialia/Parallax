@@ -16,7 +16,6 @@ struct MediaTile: View {
 
     let title: String
     let imageRef: ImageRef?
-    let imageKind: ImageKind
     let session: Session
     let progress: Double?   // 0.0–1.0; nil hides the bar
     let progressCaption: String?
@@ -27,17 +26,15 @@ struct MediaTile: View {
     init(
         title: String,
         imageRef: ImageRef?,
-        imageKind: ImageKind,
         session: Session,
         progress: Double?,
         progressCaption: String? = nil,
         watched: WatchedStatus = .none,
-        aspectRatio: CGFloat = JellyfinImage.poster,
+        aspectRatio: CGFloat = MediaImage.poster,
         maxImageWidth: Int = 600
     ) {
         self.title = title
         self.imageRef = imageRef
-        self.imageKind = imageKind
         self.session = session
         self.progress = progress
         self.progressCaption = progressCaption
@@ -173,9 +170,8 @@ struct MediaTile: View {
 
     @ViewBuilder
     private var artwork: some View {
-        let image = JellyfinImage(
-            ref: imageRef,
-            kind: imageKind,
+        let image = MediaImage(
+            jellyfin: imageRef,
             session: session,
             maxWidth: maxImageWidth,
             aspectRatio: aspectRatio
@@ -219,19 +215,19 @@ extension MediaTile.WatchedStatus {
         accessToken: "preview"
     )
     return HStack(spacing: 16) {
-        MediaTile(title: "Just started", imageRef: nil, imageKind: .primary,
+        MediaTile(title: "Just started", imageRef: nil,
                   session: session, progress: nil, watched: .inProgress(0.02))
             .frame(width: 140)
-        MediaTile(title: "Halfway", imageRef: nil, imageKind: .primary,
+        MediaTile(title: "Halfway", imageRef: nil,
                   session: session, progress: nil, watched: .inProgress(0.5))
             .frame(width: 140)
-        MediaTile(title: "Almost done", imageRef: nil, imageKind: .primary,
+        MediaTile(title: "Almost done", imageRef: nil,
                   session: session, progress: nil, watched: .inProgress(0.92))
             .frame(width: 140)
-        MediaTile(title: "Watched", imageRef: nil, imageKind: .primary,
+        MediaTile(title: "Watched", imageRef: nil,
                   session: session, progress: nil, watched: .watched)
             .frame(width: 140)
-        MediaTile(title: "Unwatched", imageRef: nil, imageKind: .primary,
+        MediaTile(title: "Unwatched", imageRef: nil,
                   session: session, progress: nil)
             .frame(width: 140)
     }

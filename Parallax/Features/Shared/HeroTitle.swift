@@ -43,7 +43,7 @@ struct HeroTitle: View {
     }
 
     private func logo(_ ref: ImageRef) -> some View {
-        JellyfinImage(ref: ref, kind: .logo, session: session, maxWidth: 800, style: .logo)
+        MediaImage(jellyfin: ref, session: session, maxWidth: 800, style: .logo)
             .frame(height: regularWidth ? 96 : 60, alignment: .leading)
             .frame(maxWidth: HeroMetrics.contentMaxWidth, alignment: .leading)
             .accessibilityLabel(title)
