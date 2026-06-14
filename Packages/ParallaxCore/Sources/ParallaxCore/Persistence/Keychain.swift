@@ -1,7 +1,19 @@
 import Foundation
 import Security
 
-public actor Keychain {
+/// The seam over secret storage that consumers depend on instead of the
+/// concrete `Keychain`. The generic `Value` lives on each method (not the
+/// protocol), so it's usable as `any KeychainStoring` while still keeping the
+/// phantom-typed `KeychainKey<Value>` contract. Conformers are free to be
+/// actors (`Keychain`) or plain test fakes — the requirements are `async` so
+/// cross-actor isolation is satisfied either way.
+public protocol KeychainStoring: Sendable {
+    func store<Value: Codable & Sendable>(_ value: Value, for key: KeychainKey<Value>) async throws
+    func read<Value: Codable & Sendable>(_ key: KeychainKey<Value>) async throws -> Value?
+    func delete<Value: Codable & Sendable>(_ key: KeychainKey<Value>) async throws
+}
+
+public actor Keychain: KeychainStoring {
     public enum KeychainError: Error, Sendable {
         case unexpectedStatus(OSStatus)
         case encodingFailed(underlying: String)

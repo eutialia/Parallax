@@ -8,8 +8,8 @@ import ParallaxCore
 struct LibraryRepositoryDrillInTests {
     private func make() -> (LibraryRepository, FakeJellyfinLibraryClient) {
         let session = Session(
-            persisted: PersistedSession(
-                id: ServerID(rawValue: "s1"),
+            id: ServerID(rawValue: "s1"),
+            data: JellyfinServerData(
                 serverURL: URL(string: "https://j.example.com")!,
                 serverName: "Home",
                 user: UserSnapshot(id: "u1", name: "alice", serverLastUpdatedAt: nil)

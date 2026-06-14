@@ -14,13 +14,12 @@ struct LibraryRepositoryTests {
     }
 
     private func sampleSession() -> Session {
-        let persisted = PersistedSession(
-            id: ServerID(rawValue: "s1"),
+        let data = JellyfinServerData(
             serverURL: URL(string: "https://j.example.com")!,
             serverName: "Home",
             user: UserSnapshot(id: "u1", name: "alice", serverLastUpdatedAt: nil)
         )
-        return Session(persisted: persisted, accessToken: "tok-1")
+        return Session(id: ServerID(rawValue: "s1"), data: data, accessToken: "tok-1")
     }
 
     private func moviesCollectionDto() -> BaseItemDto {
@@ -245,13 +244,12 @@ struct LibraryRepositoryTests {
 @Suite("LibraryRepository — setFavorite, setPlayed, resumeEpisode, genres")
 struct LibraryRepositoryUserActionTests {
     private func make() -> (LibraryRepository, FakeJellyfinLibraryClient) {
-        let persisted = PersistedSession(
-            id: ServerID(rawValue: "s1"),
+        let data = JellyfinServerData(
             serverURL: URL(string: "https://j.example.com")!,
             serverName: "Home",
             user: UserSnapshot(id: "u1", name: "alice", serverLastUpdatedAt: nil)
         )
-        let session = Session(persisted: persisted, accessToken: "tok-1")
+        let session = Session(id: ServerID(rawValue: "s1"), data: data, accessToken: "tok-1")
         let client = FakeJellyfinLibraryClient()
         let repo = LibraryRepository(session: session, client: client)
         return (repo, client)

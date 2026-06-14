@@ -14,45 +14,75 @@ struct ModelsTests {
         #expect(Set([a, b, c]).count == 2)
     }
 
-    @Test("PersistedSession round-trips through JSON")
-    func persistedSessionCodable() throws {
-        let session = PersistedSession(
+    @Test("PersistedServer round-trips through JSON")
+    func persistedServerCodable() throws {
+        let server = PersistedServer(
             id: ServerID(rawValue: "server-1"),
-            serverURL: URL(string: "https://jellyfin.example.com")!,
-            serverName: "Living Room",
-            user: UserSnapshot(id: "user-1", name: "alice", serverLastUpdatedAt: nil)
+            kind: .jellyfin(JellyfinServerData(
+                serverURL: URL(string: "https://jellyfin.example.com")!,
+                serverName: "Living Room",
+                user: UserSnapshot(id: "user-1", name: "alice", serverLastUpdatedAt: nil)
+            ))
         )
-        let data = try JSONEncoder().encode(session)
-        let decoded = try JSONDecoder().decode(PersistedSession.self, from: data)
-        #expect(decoded == session)
+        let data = try JSONEncoder().encode(server)
+        let decoded = try JSONDecoder().decode(PersistedServer.self, from: data)
+        #expect(decoded == server)
     }
 
-    @Test("PersistedSession decodes legacy user primaryImageTag without failing")
-    func persistedSessionIgnoresLegacyProfileImageTag() throws {
+    @Test("PersistedServer SMB kind round-trips (password not persisted here)")
+    func persistedServerSMBCodable() throws {
+        let server = PersistedServer(
+            id: ServerID(rawValue: "nas-1"),
+            kind: .smb(SMBServerData(
+                host: "192.168.1.10",
+                share: "Media",
+                root: "Movies",
+                username: "guest",
+                domain: "WORKGROUP"
+            ))
+        )
+        let data = try JSONEncoder().encode(server)
+        let decoded = try JSONDecoder().decode(PersistedServer.self, from: data)
+        #expect(decoded == server)
+        guard case .smb(let smb) = decoded.kind else {
+            Issue.record("expected .smb kind"); return
+        }
+        #expect(smb.host == "192.168.1.10")
+        #expect(smb.share == "Media")
+    }
+
+    @Test("Jellyfin server data decodes legacy user primaryImageTag without failing")
+    func jellyfinDataIgnoresLegacyProfileImageTag() throws {
+        // UserSnapshot must tolerate an extra (now-dropped) field carried by an
+        // older server's user blob — decoding extra keys must not throw.
         let json = """
-        {"id":"server-1","serverURL":"https:\\/\\/jellyfin.example.com","serverName":"Home",\
-        "user":{"id":"user-1","name":"alice","primaryImageTag":"abc123","serverLastUpdatedAt":null}}
+        {"id":"user-1","name":"alice","primaryImageTag":"abc123","serverLastUpdatedAt":null}
         """
-        let data = Data(json.utf8)
-        let decoded = try JSONDecoder().decode(PersistedSession.self, from: data)
-        #expect(decoded.user.name == "alice")
-        #expect(decoded.user.id == "user-1")
+        let decoded = try JSONDecoder().decode(UserSnapshot.self, from: Data(json.utf8))
+        #expect(decoded.name == "alice")
+        #expect(decoded.id == "user-1")
     }
 
-    @Test("Session combines PersistedSession with a token")
-    func sessionAttachesToken() {
-        let persisted = PersistedSession(
-            id: ServerID(rawValue: "s1"),
+    @Test("Session combines a .jellyfin PersistedServer with a token")
+    func sessionAttachesToken() throws {
+        let data = JellyfinServerData(
             serverURL: URL(string: "https://j.example.com")!,
             serverName: "Home",
             user: UserSnapshot(id: "u1", name: "alice", serverLastUpdatedAt: nil)
         )
-        let session = Session(persisted: persisted, accessToken: "tok-123")
-        #expect(session.id == persisted.id)
-        #expect(session.serverURL == persisted.serverURL)
-        #expect(session.serverName == persisted.serverName)
-        #expect(session.user == persisted.user)
+        let session = Session(id: ServerID(rawValue: "s1"), data: data, accessToken: "tok-123")
+        #expect(session.id == ServerID(rawValue: "s1"))
+        #expect(session.serverURL == data.serverURL)
+        #expect(session.serverName == data.serverName)
+        #expect(session.user == data.user)
         #expect(session.accessToken == "tok-123")
+
+        // An .smb PersistedServer never produces a Session.
+        let smbServer = PersistedServer(
+            id: ServerID(rawValue: "nas-1"),
+            kind: .smb(SMBServerData(host: "h", share: "s", root: "", username: "u", domain: "d"))
+        )
+        #expect(Session(persisted: smbServer, accessToken: "pw") == nil)
     }
 
     @Test("QuickConnectStatus cases are distinguishable")

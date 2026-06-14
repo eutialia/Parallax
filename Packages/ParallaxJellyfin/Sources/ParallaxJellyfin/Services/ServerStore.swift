@@ -7,7 +7,22 @@ public actor ServerStore {
         case decodeFailed(underlying: String)
     }
 
-    private static let persistedSessionsKey = SettingKey<[PersistedSession]>(
+    /// The legacy v1 on-disk shape: a flat Jellyfin-only record. Kept ONLY as
+    /// the migration-input type — `load()` falls back to decoding this when the
+    /// current `[PersistedServer]` shape fails, then rewrites it as `.jellyfin`.
+    /// Not part of the live API; nothing constructs it.
+    private struct LegacyPersistedSession: Codable {
+        let id: ServerID
+        let serverURL: URL
+        let serverName: String
+        let user: UserSnapshot
+    }
+
+    private static let persistedServersKey = SettingKey<[PersistedServer]>(
+        name: "ParallaxJellyfin.persistedSessions",
+        defaultValue: []
+    )
+    private static let legacyPersistedSessionsKey = SettingKey<[LegacyPersistedSession]>(
         name: "ParallaxJellyfin.persistedSessions",
         defaultValue: []
     )
@@ -17,14 +32,19 @@ public actor ServerStore {
     )
 
     private let settings: SettingsStore
-    private let keychain: Keychain
+    private let keychain: any KeychainStoring
+    private var persistedServers: [PersistedServer] = []
     private var loadedSessions: [Session] = []
     private var activeID: ServerID?
 
-    public init(settings: SettingsStore, keychain: Keychain) {
+    public init(settings: SettingsStore, keychain: any KeychainStoring) {
         self.settings = settings
         self.keychain = keychain
     }
+
+    /// Every persisted server, regardless of kind (Jellyfin sessions + SMB
+    /// servers). `sessions` is the Jellyfin-only subset that has a live token.
+    public var servers: [PersistedServer] { persistedServers }
 
     public var sessions: [Session] { loadedSessions }
 
@@ -34,37 +54,43 @@ public actor ServerStore {
     }
 
     public func load() async throws {
-        let persisted: [PersistedSession]
-        do {
-            persisted = try await settings.tryValue(for: Self.persistedSessionsKey) ?? []
-        } catch {
-            // Decode failure on the session list means a schema mismatch
-            // (added/changed field). Wiping would silently lose every saved
-            // server AND orphan their Keychain tokens. Refuse loudly instead.
-            Log.persistence.error("ServerStore.load: persistedSessions decode failed — refusing to wipe. \(String(describing: error))")
-            throw ServerStoreError.decodeFailed(underlying: String(describing: error))
-        }
+        let servers = try await loadPersistedServers()
+        persistedServers = servers
 
         var rebuilt: [Session] = []
-        var orphaned: [PersistedSession] = []
-        for entry in persisted {
-            let key = KeychainKey<String>(account: tokenAccount(for: entry.id))
+        var orphanedJellyfinIDs: Set<ServerID> = []
+        for server in servers {
+            // Only `.jellyfin` servers reconstruct into a `Session`; their
+            // Keychain slot holds the bearer token. SMB servers persist but
+            // have no session (their slot holds the password, used at connect).
+            guard case .jellyfin = server.kind else { continue }
+            let key = KeychainKey<String>(account: tokenAccount(for: server.id))
             do {
-                if let token = try await keychain.read(key) {
-                    rebuilt.append(Session(persisted: entry, accessToken: token))
+                if let token = try await keychain.read(key),
+                   let session = Session(persisted: server, accessToken: token) {
+                    rebuilt.append(session)
                 } else {
-                    orphaned.append(entry)
+                    // Token is confirmed ABSENT (Keychain returned nil) — the
+                    // user signed out / the slot was wiped. Safe to prune.
+                    orphanedJellyfinIDs.insert(server.id)
                 }
             } catch {
-                Log.persistence.error("ServerStore.load: Keychain read failed for \(entry.id.rawValue) — \(error.localizedDescription)")
-                orphaned.append(entry)
+                // A Keychain READ ERROR (locked device, missing entitlement) is
+                // NOT proof the token is gone — pruning here would permanently
+                // lose the saved server over a transient fault. Skip building a
+                // session this load; leave the persisted record untouched.
+                Log.persistence.error("ServerStore.load: Keychain read failed for \(server.id.rawValue) — leaving persisted record intact. \(error.localizedDescription)")
             }
         }
         loadedSessions = rebuilt
 
-        if !orphaned.isEmpty {
+        if !orphanedJellyfinIDs.isEmpty {
+            // Drop the orphaned Jellyfin servers (token confirmed gone) while
+            // keeping every other server (SMB, and Jellyfin servers that still
+            // resolve or that we couldn't read this launch).
+            persistedServers.removeAll { orphanedJellyfinIDs.contains($0.id) }
             do {
-                try await settings.set(rebuilt.map(\.persisted), for: Self.persistedSessionsKey)
+                try await settings.set(persistedServers, for: Self.persistedServersKey)
             } catch {
                 throw ServerStoreError.persistenceFailed(underlying: String(describing: error))
             }
@@ -84,6 +110,46 @@ public actor ServerStore {
         }
     }
 
+    /// Decodes the persisted server list, migrating the legacy flat shape on
+    /// the fly. Tries the current `[PersistedServer]` shape first; on decode
+    /// failure, falls back to the legacy `[LegacyPersistedSession]` shape,
+    /// rewrites each entry as `.jellyfin`, persists the upgraded form, and
+    /// returns it. Throws `decodeFailed` only when BOTH shapes fail — refusing
+    /// to wipe (which would orphan Keychain tokens / log the user out).
+    private func loadPersistedServers() async throws -> [PersistedServer] {
+        do {
+            return try await settings.tryValue(for: Self.persistedServersKey) ?? []
+        } catch let newShapeError {
+            let legacy: [LegacyPersistedSession]
+            do {
+                legacy = try await settings.tryValue(for: Self.legacyPersistedSessionsKey) ?? []
+            } catch {
+                // Both the current and the legacy shape failed to decode — a
+                // genuine schema mismatch we can't recover. Refuse to wipe.
+                Log.persistence.error("ServerStore.load: persistedServers decode failed (new + legacy) — refusing to wipe. new=\(String(describing: newShapeError)) legacy=\(String(describing: error))")
+                throw ServerStoreError.decodeFailed(underlying: String(describing: newShapeError))
+            }
+
+            let upgraded = legacy.map { entry in
+                PersistedServer(
+                    id: entry.id,
+                    kind: .jellyfin(JellyfinServerData(
+                        serverURL: entry.serverURL,
+                        serverName: entry.serverName,
+                        user: entry.user
+                    ))
+                )
+            }
+            Log.persistence.info("ServerStore.load: migrated \(upgraded.count) legacy Jellyfin session(s) to PersistedServer")
+            do {
+                try await settings.set(upgraded, for: Self.persistedServersKey)
+            } catch {
+                throw ServerStoreError.persistenceFailed(underlying: String(describing: error))
+            }
+            return upgraded
+        }
+    }
+
     /// Adds (or replaces) a session. Coordinates the two stores so a partial
     /// failure does not leave a Keychain token orphaned: on settings.set
     /// failure we restore the previous Keychain entry (or delete the new
@@ -93,6 +159,7 @@ public actor ServerStore {
         let existingIndex = loadedSessions.firstIndex(where: { $0.id == session.id })
         let previousToken: String? = existingIndex.map { loadedSessions[$0].accessToken }
         let previousSessions = loadedSessions
+        let previousServers = persistedServers
 
         do {
             try await keychain.store(session.accessToken, for: key)
@@ -105,15 +172,21 @@ public actor ServerStore {
         } else {
             loadedSessions.append(session)
         }
+        if let serverIndex = persistedServers.firstIndex(where: { $0.id == session.id }) {
+            persistedServers[serverIndex] = session.persisted
+        } else {
+            persistedServers.append(session.persisted)
+        }
 
         do {
-            try await settings.set(loadedSessions.map(\.persisted), for: Self.persistedSessionsKey)
+            try await settings.set(persistedServers, for: Self.persistedServersKey)
         } catch {
             // Roll back Keychain so we never leave a live token unreferenced
             // by UserDefaults. Best-effort: log restore failure but surface
             // the original error so the caller knows the add did not commit.
             await rollbackKeychain(key: key, previousToken: previousToken)
             loadedSessions = previousSessions
+            persistedServers = previousServers
             throw ServerStoreError.persistenceFailed(underlying: String(describing: error))
         }
 
@@ -145,13 +218,16 @@ public actor ServerStore {
         }
 
         let previousSessions = loadedSessions
+        let previousServers = persistedServers
         let previousActive = activeID
         loadedSessions.removeAll(where: { $0.id == id })
+        persistedServers.removeAll(where: { $0.id == id })
 
         do {
-            try await settings.set(loadedSessions.map(\.persisted), for: Self.persistedSessionsKey)
+            try await settings.set(persistedServers, for: Self.persistedServersKey)
         } catch {
             loadedSessions = previousSessions
+            persistedServers = previousServers
             activeID = previousActive
             throw ServerStoreError.persistenceFailed(underlying: String(describing: error))
         }

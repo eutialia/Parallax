@@ -7,13 +7,12 @@ import ParallaxCore
 struct MediaRepositoryConformanceTests {
     private func makeRepo() -> (LibraryRepository, FakeJellyfinLibraryClient) {
         let client = FakeJellyfinLibraryClient()
-        let persisted = PersistedSession(
-            id: ServerID(rawValue: "s1"),
+        let data = JellyfinServerData(
             serverURL: URL(string: "https://example.test")!,
             serverName: "Test",
             user: UserSnapshot(id: "u1", name: "alice", serverLastUpdatedAt: nil)
         )
-        let session = Session(persisted: persisted, accessToken: "token")
+        let session = Session(id: ServerID(rawValue: "s1"), data: data, accessToken: "token")
         return (LibraryRepository(session: session, client: client), client)
     }
 

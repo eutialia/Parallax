@@ -182,8 +182,7 @@ public actor SessionManager {
         }
         let serverName = publicInfo.serverName ?? server.host ?? "Jellyfin"
 
-        let persisted = PersistedSession(
-            id: ServerID(rawValue: serverID),
+        let data = JellyfinServerData(
             serverURL: server,
             serverName: serverName,
             user: UserSnapshot(
@@ -192,6 +191,6 @@ public actor SessionManager {
                 serverLastUpdatedAt: user.lastActivityDate
             )
         )
-        return Session(persisted: persisted, accessToken: accessToken)
+        return Session(id: ServerID(rawValue: serverID), data: data, accessToken: accessToken)
     }
 }

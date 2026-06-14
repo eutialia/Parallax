@@ -6,13 +6,12 @@ import JellyfinAPI
 @Suite("DefaultJellyfinPlaybackClient — URL construction")
 struct DefaultJellyfinPlaybackClientTests {
     private func sampleSession() -> Session {
-        let persisted = PersistedSession(
-            id: ServerID(rawValue: "s1"),
+        let data = JellyfinServerData(
             serverURL: URL(string: "https://j.example.com")!,
             serverName: "Home",
             user: UserSnapshot(id: "u1", name: "alice", serverLastUpdatedAt: nil)
         )
-        return Session(persisted: persisted, accessToken: "tok-1")
+        return Session(id: ServerID(rawValue: "s1"), data: data, accessToken: "tok-1")
     }
 
     private func identity() -> DeviceIdentity {

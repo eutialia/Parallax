@@ -16,13 +16,12 @@ struct ServerStoreTests {
     }
 
     private func sampleSession(id: String = "server-1", token: String = "tok-1") -> Session {
-        let persisted = PersistedSession(
-            id: ServerID(rawValue: id),
+        let data = JellyfinServerData(
             serverURL: URL(string: "https://j-\(id).example.com")!,
             serverName: "Server \(id)",
             user: UserSnapshot(id: "u-\(id)", name: "alice", serverLastUpdatedAt: nil)
         )
-        return Session(persisted: persisted, accessToken: token)
+        return Session(id: ServerID(rawValue: id), data: data, accessToken: token)
     }
 
     @Test("Add session persists token and metadata, exposes it as the active session")

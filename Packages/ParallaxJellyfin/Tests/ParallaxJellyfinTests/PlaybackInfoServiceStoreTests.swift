@@ -6,8 +6,8 @@ import Testing
 struct PlaybackInfoServiceStoreTests {
     private func session(id: String, token: String) -> Session {
         Session(
-            persisted: PersistedSession(
-                id: ServerID(rawValue: id),
+            id: ServerID(rawValue: id),
+            data: JellyfinServerData(
                 serverURL: URL(string: "https://j.example.com")!,
                 serverName: "Home",
                 user: UserSnapshot(id: "u-\(id)", name: "alice", serverLastUpdatedAt: nil)

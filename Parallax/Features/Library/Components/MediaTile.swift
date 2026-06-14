@@ -206,8 +206,8 @@ extension MediaTile.WatchedStatus {
 /// half mark, and almost-done next to the full check it morphs into.
 #Preview("Watched badge", traits: .sizeThatFitsLayout) {
     let session = Session(
-        persisted: PersistedSession(
-            id: ServerID(rawValue: "preview"),
+        id: ServerID(rawValue: "preview"),
+        data: JellyfinServerData(
             serverURL: URL(string: "https://preview.invalid")!,
             serverName: "Preview",
             user: UserSnapshot(id: "u1", name: "preview", serverLastUpdatedAt: nil)

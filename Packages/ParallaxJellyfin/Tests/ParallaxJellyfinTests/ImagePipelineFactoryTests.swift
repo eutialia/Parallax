@@ -8,8 +8,8 @@ import ParallaxCore
 struct ImagePipelineFactoryTests {
     private func session(id: String, token: String) -> Session {
         Session(
-            persisted: PersistedSession(
-                id: ServerID(rawValue: id),
+            id: ServerID(rawValue: id),
+            data: JellyfinServerData(
                 serverURL: URL(string: "https://\(id).example.com")!,
                 serverName: id,
                 user: UserSnapshot(id: "u-\(id)", name: "alice", serverLastUpdatedAt: nil)
