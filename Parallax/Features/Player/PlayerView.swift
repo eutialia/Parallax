@@ -74,6 +74,13 @@ struct PlayerView: View {
     /// exactly once; later loading dips (track-switch re-buffers) keep whatever
     /// HUD state the user is in, so an open menu survives the swap.
     @State private var didBeginPlayback = false
+    /// A committing swipe-scrub resumes the engine with a `.play` that lands a beat
+    /// AFTER `hudState` returns to `.floor`. Without this, the paused overlay re-mounts
+    /// into that transient `isPlaying == false` window and flashes a spurious pause→play
+    /// morph for what was only a scrub. Set when a scrub commit emits a resume; cleared
+    /// on the next `isPlaying` beat (or the user's own transport). A genuine pause emits
+    /// `.togglePlayPause`, never `.play`, so this never suppresses a real pause glyph.
+    @State private var scrubResumePending = false
     #endif
     /// Unconditional so the binding can thread into `PlayerControlsView`'s chip
     /// row without forking its initializer per build config; everything that
@@ -591,6 +598,10 @@ struct PlayerView: View {
         // also cancel a timer armed a beat earlier. Full-HUD only: swipe-scrub
         // pauses the engine BY DESIGN and its 1s commit timer must keep running.
         .onChange(of: vm.isPlaying) { _, playing in
+            // The scrub-resume beat arrived: let the paused overlay mount again (it'll
+            // come up hidden, since playback is live). Any user transport that flips
+            // isPlaying true clears it too, so the flag can never strand the overlay.
+            if playing { scrubResumePending = false }
             guard isFullHUD else { return }
             if playing { restartIdleTimer() } else { idleTask?.cancel() }
         }
@@ -679,7 +690,8 @@ struct PlayerView: View {
     /// view is about to dismiss — without the term the pause glyph would flash through
     /// the exit slide.
     private func pausedScrimEligible(_ vm: PlayerViewModel) -> Bool {
-        vm.phase == .playing && !isScrubbing && !vm.showsStallScrim && !isFullHUD && !vm.playbackDidComplete
+        vm.phase == .playing && !isScrubbing && !scrubResumePending
+            && !vm.showsStallScrim && !isFullHUD && !vm.playbackDidComplete
     }
 
     /// Window-level pan events. On the floor / scrub states every pan drives the
@@ -699,6 +711,12 @@ struct PlayerView: View {
     /// in the reducer: rapid clicks accumulate a target in `.clickSeek` and fire a
     /// single engine seek once they settle (or when the state leaves `.clickSeek`).
     private func send(_ event: RemoteEvent, _ vm: PlayerViewModel) {
+        // A fresh remote event supersedes a settling scrub-resume: clear the suppression
+        // here (the commit branch below re-sets it for the scrub it's committing) so a
+        // stuck flag — if the engine's pause beat never landed before the resume, so no
+        // `isPlaying` change fires the overlay's clear — can't outlive this interaction.
+        scrubResumePending = false
+
         // While the contextual segment button shows over the floor, the remote acts
         // on IT — the floor adapter already holds focus, so there's no competing
         // focusable. Select fires the prompt (skip / next episode); any directional
@@ -759,6 +777,12 @@ struct PlayerView: View {
             default: flushClickSeek(vm)         // land the accumulated seek now
             }
         }
+
+        // A scrub commit that resumes playback (`[.seek, .play]`) lands its `.play`
+        // async, after this returns to `.floor`; flag it so `pausedScrimEligible` holds
+        // the overlay back until the resume beat clears it — otherwise it re-mounts into
+        // the transient pause and flashes a pause→play morph the user never asked for.
+        if case .floor = next, effects.contains(.play) { scrubResumePending = true }
 
         hudState = next
         // The focus mirror only matters in `.fullHUD`; clear it on the way out because
