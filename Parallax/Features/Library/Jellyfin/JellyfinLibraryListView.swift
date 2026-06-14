@@ -62,7 +62,7 @@ struct JellyfinLibraryListView: View {
         }
         .task {
             if viewModel == nil {
-                let repo = await deps.jellyfinLibraryRepoFactory(session)
+                let repo = await deps.mediaRepoFactory(.jellyfin(session))
                 viewModel = JellyfinLibraryListViewModel(repo: repo)
                 await viewModel?.load()
             }

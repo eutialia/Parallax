@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import ParallaxCore
 import ParallaxJellyfin
 @testable import Parallax
 

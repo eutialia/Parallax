@@ -14,9 +14,9 @@ final class JellyfinLibraryListViewModel {
     private(set) var state: LoadState = .idle
     private(set) var collections: [MediaCollection] = []
 
-    private let repo: LibraryRepository
+    private let repo: any MediaRepository
 
-    init(repo: LibraryRepository) {
+    init(repo: any MediaRepository) {
         self.repo = repo
     }
 

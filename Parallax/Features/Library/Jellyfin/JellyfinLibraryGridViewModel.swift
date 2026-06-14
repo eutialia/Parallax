@@ -67,10 +67,10 @@ final class JellyfinLibraryGridViewModel {
     private var reloadSnapshot: ReloadSnapshot?
     /// Monotonic token so only the latest reset fetch may mutate refresh UI state.
     private var fetchGeneration: UInt = 0
-    private let repo: LibraryRepository
+    private let repo: any MediaRepository
     private let scope: LibraryScope
 
-    init(repo: LibraryRepository, scope: LibraryScope) {
+    init(repo: any MediaRepository, scope: LibraryScope) {
         self.repo = repo
         self.scope = scope
     }
