@@ -8,8 +8,8 @@ import ParallaxJellyfin
 struct PlaybackPresenterTests {
     private func session() -> Session {
         Session(
-            persisted: PersistedSession(
-                id: ServerID(rawValue: "s1"),
+            id: ServerID(rawValue: "s1"),
+            data: JellyfinServerData(
                 serverURL: URL(string: "https://s1.example.test")!,
                 serverName: "S1",
                 user: UserSnapshot(id: "u1", name: "U", serverLastUpdatedAt: nil)

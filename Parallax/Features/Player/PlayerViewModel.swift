@@ -314,6 +314,12 @@ final class PlayerViewModel {
     /// to the player's fetch cadence. Transcode sessions only.
     private var keepaliveTask: Task<Void, Never>?
     private var resolved: ResolvedPlayback?
+    /// Source-agnostic subtitle URL map: stream-index → sidecar URL. Jellyfin
+    /// populates it from `resolved.subtitleStreamURLs` in `beginPlayback`; the
+    /// SMB path (Task 10) will populate it from the filename-matched sibling
+    /// resolver before loading the engine. Both paths produce WebVTT or SRT URLs
+    /// that `loadSidecarSubtitle` fetches and parses.
+    private var subtitleURLs: [Int: URL] = [:]
     private var didReportStart = false
     private var didReportStopped = false
     /// Whether this session's server-side encoding was already killed. NOT
@@ -638,6 +644,7 @@ final class PlayerViewModel {
         // exit-during-loading usually lands. Bail BEFORE building an engine.
         try checkStillActive()
         self.resolved = resolved
+        subtitleURLs = resolved.subtitleStreamURLs   // Jellyfin: index → authed VTT URL
         startKeepalive(for: resolved)
         currentAudioStreamIndex = audioStreamIndex ?? resolved.defaultAudioStreamIndex
         // Carries the user's choice across audio switches (none stays none, a
@@ -790,6 +797,7 @@ final class PlayerViewModel {
         subtitleFetchTask?.cancel()
         subtitleFetchTask = nil
         activeSubtitleCues = []
+        subtitleURLs = [:]
         clientSubtitleDelayMs = 0
         currentPosition = .zero
         currentDuration = .zero
@@ -1038,7 +1046,7 @@ final class PlayerViewModel {
     private func loadSidecarSubtitle(streamIndex: Int) {
         subtitleFetchTask?.cancel()
         clientSubtitleDelayMs = 0   // a fresh sidecar starts un-nudged
-        guard let url = resolved?.subtitleStreamURLs[streamIndex] else {
+        guard let url = subtitleURLs[streamIndex] else {
             activeSubtitleCues = []
             return
         }

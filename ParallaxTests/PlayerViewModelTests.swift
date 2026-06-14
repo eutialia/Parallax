@@ -524,6 +524,43 @@ struct PlayerViewModelTests {
         #expect(resolveCount == resolvesAfterStart)
     }
 
+    // MARK: - Source-agnostic subtitle URL map
+
+    @Test("Jellyfin path populates subtitleURLs from resolved.subtitleStreamURLs (no behavior change)")
+    func jellyfinPathPopulatesSubtitleURLMap() async throws {
+        // resolved carries index 1 → a known VTT URL (from resolvedMultiTrackTranscode).
+        // After start(), selecting that subtitle track must fetch exactly that URL.
+        // This is the regression guard: if subtitleURLs isn't populated from resolved,
+        // the lookup misses and activeSubtitleCues stays empty.
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
+        let builder = DeviceProfileBuilder(probe: probe)
+        let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
+        // The expected subtitle URL lives at resolved.subtitleStreamURLs[1].
+        let expectedURL = try #require(resolved.subtitleStreamURLs[1])
+        let vtt = Data("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nSubtitle text".utf8)
+
+        nonisolated(unsafe) var fetchedURL: URL?
+        let vm = PlayerViewModel(
+            deviceProfileBuilder: builder,
+            playbackInfo: reporting,
+            resolve: { _, _, _, _, _ in resolved },
+            engineFactory: { _ in engine },
+            audioSession: NoopAudioSession(),
+            subtitleFetch: { url in fetchedURL = url; return vtt }
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+
+        let chineseSub = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(1) })
+        await vm.selectSubtitleTrack(chineseSub)
+        try await Task.sleep(for: .milliseconds(50))   // let the fetch Task land
+
+        // The VM used the URL from resolved.subtitleStreamURLs — not a nil lookup.
+        #expect(fetchedURL == expectedURL)
+        #expect(vm.activeSubtitleCues.first?.text == "Subtitle text")
+    }
+
     @Test("subtitle delay nudge retimes the client overlay (clientSubtitleDelayMs) and resets on a sidecar change")
     func clientSubtitleDelayNudge() async throws {
         let reporting = StubPlaybackReporting()

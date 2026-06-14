@@ -7,8 +7,8 @@ import ParallaxJellyfin
 struct AppRouterTests {
     private func session(_ rawID: String) -> Session {
         Session(
-            persisted: PersistedSession(
-                id: ServerID(rawValue: rawID),
+            id: ServerID(rawValue: rawID),
+            data: JellyfinServerData(
                 serverURL: URL(string: "https://\(rawID).example.test")!,
                 serverName: "Server \(rawID)",
                 user: UserSnapshot(id: "user-\(rawID)", name: "User", serverLastUpdatedAt: nil)
