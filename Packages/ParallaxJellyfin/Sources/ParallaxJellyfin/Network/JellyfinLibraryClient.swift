@@ -1,5 +1,6 @@
 import Foundation
 import JellyfinAPI
+import ParallaxCore
 
 /// Narrow protocol that `LibraryRepository` calls. Implementations:
 ///   - `DefaultJellyfinLibraryClient` (production, wraps a real `JellyfinClient`)
@@ -11,7 +12,7 @@ public protocol JellyfinLibraryClient: Sendable {
     /// The user's top-level library collections (Movies, Shows, …).
     func getCollections() async throws -> [BaseItemDto]
     /// A page of items in a scope, filtered and sorted; returns the page plus the total count.
-    func getItems(scope: LibraryScope, filter: ItemFilter, sort: ItemSort, startIndex: Int, limit: Int) async throws -> (items: [BaseItemDto], total: Int)
+    func getItems(scope: LibraryScope, filter: ParallaxCore.ItemFilter, sort: ItemSort, startIndex: Int, limit: Int) async throws -> (items: [BaseItemDto], total: Int)
     /// Full detail for a single item by id.
     func getItemDetail(itemID: String) async throws -> BaseItemDto
     /// Batch lookup by item id (e.g. season folders for home-shelf artwork).

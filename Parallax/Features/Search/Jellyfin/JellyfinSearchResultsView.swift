@@ -1,5 +1,6 @@
 import SwiftUI
 import ParallaxJellyfin
+import ParallaxCore
 
 /// The search results grid, split out as an `Equatable` view so typing can't re-render it.
 ///

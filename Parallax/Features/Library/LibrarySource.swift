@@ -1,5 +1,6 @@
 import Foundation
 import ParallaxJellyfin
+import ParallaxCore
 
 // One case in v1. v2 adds .files(FileSource) and others.
 enum LibrarySource: Hashable {

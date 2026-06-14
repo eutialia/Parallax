@@ -1,5 +1,6 @@
 import SwiftUI
 import ParallaxJellyfin
+import ParallaxCore
 
 /// Skeleton capsule metrics for the tvOS in-content header's loading state — shared by
 /// the live `headerControls` (the `isLoadingGenres` capsule) and the first-load

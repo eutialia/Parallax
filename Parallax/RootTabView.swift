@@ -1,6 +1,7 @@
 #if !os(tvOS)
 import SwiftUI
 import ParallaxJellyfin
+import ParallaxCore
 
 struct RootTabView: View {
     @Environment(AppRouter.self) private var router

@@ -1,5 +1,6 @@
 import SwiftUI
 import ParallaxJellyfin
+import ParallaxCore
 
 /// The detail page's interactive info teaser: a height-clamped, full-width glass panel showing
 /// only the overview, with a "More" affordance bottom-trailing. Tapping it opens

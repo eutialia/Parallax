@@ -1,5 +1,6 @@
 import Foundation
 import ParallaxJellyfin
+import ParallaxCore
 
 /// One vocabulary for the library sort UI on every platform — the iOS nav-bar
 /// menu (`LibrarySortMenuButton`) and the tvOS header chip read the same field

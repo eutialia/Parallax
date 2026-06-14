@@ -1,5 +1,6 @@
 import SwiftUI
 import ParallaxJellyfin
+import ParallaxCore
 
 /// One tile in the Library list: a 16:9 Jellyfin banner (the library name is baked into the
 /// art) topped with a frosted type-glyph chip. Shows no text label of its own — the name

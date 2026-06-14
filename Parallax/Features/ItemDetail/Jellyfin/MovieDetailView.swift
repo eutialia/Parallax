@@ -1,5 +1,6 @@
 import SwiftUI
 import ParallaxJellyfin
+import ParallaxCore
 
 struct MovieDetailView: View {
     let itemID: ItemID

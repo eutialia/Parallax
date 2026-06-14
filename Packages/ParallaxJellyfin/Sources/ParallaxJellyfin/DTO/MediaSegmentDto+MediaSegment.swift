@@ -1,5 +1,6 @@
 import Foundation
 import JellyfinAPI
+import ParallaxCore
 
 extension MediaSegmentDto {
     /// Maps the SDK DTO to the domain model, or nil when the positional data is

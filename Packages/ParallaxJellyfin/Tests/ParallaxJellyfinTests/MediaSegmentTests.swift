@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import JellyfinAPI
+import ParallaxCore
 @testable import ParallaxJellyfin
 
 @Suite("Media segment mapping")

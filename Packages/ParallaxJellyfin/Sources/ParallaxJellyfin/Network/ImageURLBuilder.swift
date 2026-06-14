@@ -1,4 +1,5 @@
 import Foundation
+import ParallaxCore
 
 public enum ImageURLBuilder {
     public static func url(

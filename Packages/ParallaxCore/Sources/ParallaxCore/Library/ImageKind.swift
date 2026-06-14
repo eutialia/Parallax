@@ -10,7 +10,8 @@ public enum ImageKind: Sendable, Hashable {
     case disc
 
     // Wire-format segment used in /Items/{id}/Images/{segment}[/{index}]
-    var pathSegment: String {
+    // public: ImageURLBuilder in ParallaxJellyfin reads this cross-module.
+    public var pathSegment: String {
         switch self {
         case .primary: return "Primary"
         case .backdrop: return "Backdrop"

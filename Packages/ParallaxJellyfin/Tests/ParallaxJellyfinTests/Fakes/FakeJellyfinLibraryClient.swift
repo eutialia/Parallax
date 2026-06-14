@@ -1,5 +1,6 @@
 import Foundation
 import JellyfinAPI
+import ParallaxCore
 @testable import ParallaxJellyfin
 
 final class FakeJellyfinLibraryClient: JellyfinLibraryClient, @unchecked Sendable {
@@ -33,7 +34,7 @@ final class FakeJellyfinLibraryClient: JellyfinLibraryClient, @unchecked Sendabl
 
     // Call records.
     private(set) var collectionsCallCount = 0
-    private(set) var itemsCalls: [(scope: LibraryScope, filter: ParallaxJellyfin.ItemFilter, sort: ParallaxJellyfin.ItemSort, startIndex: Int, limit: Int)] = []
+    private(set) var itemsCalls: [(scope: LibraryScope, filter: ParallaxCore.ItemFilter, sort: ParallaxCore.ItemSort, startIndex: Int, limit: Int)] = []
     private(set) var detailCalls: [String] = []
     private(set) var itemsByIDsCalls: [[String]] = []
     private(set) var seasonsCalls: [String] = []
@@ -56,7 +57,7 @@ final class FakeJellyfinLibraryClient: JellyfinLibraryClient, @unchecked Sendabl
         return try collectionsResult.get()
     }
 
-    func getItems(scope: LibraryScope, filter: ParallaxJellyfin.ItemFilter, sort: ParallaxJellyfin.ItemSort, startIndex: Int, limit: Int) async throws -> (items: [BaseItemDto], total: Int) {
+    func getItems(scope: LibraryScope, filter: ParallaxCore.ItemFilter, sort: ParallaxCore.ItemSort, startIndex: Int, limit: Int) async throws -> (items: [BaseItemDto], total: Int) {
         itemsCalls.append((scope, filter, sort, startIndex, limit))
         if !itemsPagedResults.isEmpty {
             let result = itemsPagedResults.removeFirst()

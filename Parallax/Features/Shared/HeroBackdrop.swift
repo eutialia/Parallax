@@ -1,5 +1,6 @@
 import SwiftUI
 import ParallaxJellyfin
+import ParallaxCore
 
 /// The Apple-TV / Infuse-style hero band used by the movie/series detail header. It is
 /// built from two layers that deliberately share **no** modifiers, which is the whole point:

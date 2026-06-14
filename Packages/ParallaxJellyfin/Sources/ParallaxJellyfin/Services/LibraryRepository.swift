@@ -24,7 +24,7 @@ public actor LibraryRepository {
 
     public func items(
         in scope: LibraryScope,
-        filter: ItemFilter,
+        filter: ParallaxCore.ItemFilter,
         sort: ItemSort,
         cursor: PageCursor?
     ) async throws -> Page<Item> {

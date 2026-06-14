@@ -1,5 +1,6 @@
 import SwiftUI
 import ParallaxJellyfin
+import ParallaxCore
 
 struct FocusRootView: View {
     @Environment(AppRouter.self) private var router

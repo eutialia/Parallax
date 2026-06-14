@@ -1,5 +1,6 @@
 import SwiftUI
 import ParallaxJellyfin
+import ParallaxCore
 
 /// Hero title treatment: text over `.primary` poster art (logo is often baked in),
 /// transparent logo over landscape/backdrop art.

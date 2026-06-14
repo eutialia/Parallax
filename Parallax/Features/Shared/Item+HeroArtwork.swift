@@ -1,4 +1,5 @@
 import ParallaxJellyfin
+import ParallaxCore
 
 extension Item {
     /// Hero band artwork — landscape 16:9 on iPad regular width; 2:3 `.primary` poster on iPhone.

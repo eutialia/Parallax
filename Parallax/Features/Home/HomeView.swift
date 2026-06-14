@@ -1,5 +1,6 @@
 import SwiftUI
 import ParallaxJellyfin
+import ParallaxCore
 
 struct HomeView: View {
     @Environment(AppDependencies.self) private var deps

@@ -37,7 +37,7 @@ public final class DefaultJellyfinLibraryClient: JellyfinLibraryClient, Sendable
 
     public func getItems(
         scope: LibraryScope,
-        filter: ItemFilter,
+        filter: ParallaxCore.ItemFilter,
         sort: ItemSort,
         startIndex: Int,
         limit: Int

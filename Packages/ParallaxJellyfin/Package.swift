@@ -31,7 +31,7 @@ let package = Package(
         ),
         .testTarget(
             name: "ParallaxJellyfinTests",
-            dependencies: ["ParallaxJellyfin"],
+            dependencies: ["ParallaxJellyfin", "ParallaxCore"],
             resources: [
                 .copy("Fixtures"),
             ],

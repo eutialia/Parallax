@@ -1,5 +1,6 @@
 import SwiftUI
 import ParallaxJellyfin
+import ParallaxCore
 
 /// The expanded info card opened from `DetailInfoSection`: the full overview plus every metadata
 /// field, dimmed over the detail screen. A form-sized sheet on iPhone/iPad (`.presentationSizing`

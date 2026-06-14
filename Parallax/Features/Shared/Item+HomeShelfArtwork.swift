@@ -1,4 +1,5 @@
 import ParallaxJellyfin
+import ParallaxCore
 
 extension Item {
     /// Poster-ratio (2:3) shelf art — season folder, series poster, and movie

@@ -1,5 +1,6 @@
 import SwiftUI
 import ParallaxJellyfin
+import ParallaxCore
 
 struct MediaTile: View {
     /// Top-right corner badge state: a progress ring while a title is mid-watch,

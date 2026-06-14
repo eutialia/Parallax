@@ -2,6 +2,7 @@
 import SwiftUI
 import UIKit
 import ParallaxJellyfin
+import ParallaxCore
 
 /// The library's nav-bar sort button, bridged to UIKit for ONE reason: the
 /// Photos-style direction row — two tiles with the icon ABOVE its title and a

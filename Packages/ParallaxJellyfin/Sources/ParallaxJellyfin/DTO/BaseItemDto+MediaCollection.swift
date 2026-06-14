@@ -1,12 +1,13 @@
 import Foundation
 import JellyfinAPI
+import ParallaxCore
 
 extension BaseItemDto {
     func toMediaCollection() -> MediaCollection? {
         guard let id, let name else { return nil }
         // SDK CollectionType is a String enum; .rawValue gives the lowercase string.
         // Our domain CollectionType is a different type — qualify to resolve the ambiguity.
-        let domainType: ParallaxJellyfin.CollectionType
+        let domainType: ParallaxCore.CollectionType
         switch collectionType?.rawValue.lowercased() {
         case "movies": domainType = .movies
         case "tvshows": domainType = .tvShows

@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import ParallaxCore
 @testable import ParallaxJellyfin
 
 @Suite("ImageURLBuilder")

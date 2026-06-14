@@ -1,5 +1,6 @@
 import SwiftUI
 import ParallaxJellyfin
+import ParallaxCore
 
 /// Hero metadata row: text facts, filled quality badges, and a CC indicator.
 struct DetailHeroMetadataRow: View {

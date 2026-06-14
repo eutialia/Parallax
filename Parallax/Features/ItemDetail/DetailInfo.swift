@@ -1,4 +1,5 @@
 import ParallaxJellyfin
+import ParallaxCore
 
 /// Everything a detail screen shows below the hero action row and OUTSIDE the season shelf — the
 /// overview plus the labeled metadata (Genres, Studios, Cast & Crew) and the fact line (year,

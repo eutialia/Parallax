@@ -1,5 +1,6 @@
 import SwiftUI
 import ParallaxJellyfin
+import ParallaxCore
 
 /// Full-bleed artwork for one hero item — the crossfading layers inside `CrossfadeArtwork`,
 /// which stacks two of these and carries the iPad sidebar `backgroundExtensionEffect`.

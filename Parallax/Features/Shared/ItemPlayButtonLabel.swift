@@ -1,5 +1,6 @@
 import Foundation
 import ParallaxJellyfin
+import ParallaxCore
 
 enum ItemPlayButtonLabel {
     /// Widest play CTA copy — sizes the play pill so Play / Resume S# E# don't reflow.

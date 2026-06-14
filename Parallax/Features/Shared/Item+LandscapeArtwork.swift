@@ -1,4 +1,5 @@
 import ParallaxJellyfin
+import ParallaxCore
 
 extension Item {
     /// 16:9 landscape artwork for Home rows and the hero: prefer `.thumb`, then a

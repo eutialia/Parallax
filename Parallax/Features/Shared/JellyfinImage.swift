@@ -1,6 +1,7 @@
 import SwiftUI
 import Nuke
 import ParallaxJellyfin
+import ParallaxCore
 
 struct JellyfinImage: View {
     let ref: ImageRef?

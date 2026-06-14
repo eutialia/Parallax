@@ -1,5 +1,6 @@
 import Foundation
 import JellyfinAPI
+import ParallaxCore
 
 extension BaseItemDto {
     func toItemDetail() -> ItemDetail? {

@@ -1,4 +1,5 @@
 import Foundation
+import ParallaxCore
 
 public enum HomeHeroFeedBuilder {
     public static let defaultImportWindow: TimeInterval = 24 * 60 * 60

@@ -1,5 +1,6 @@
 import SwiftUI
 import ParallaxJellyfin
+import ParallaxCore
 
 /// Home hero — an Apple-TV-style crossfade carousel.
 ///

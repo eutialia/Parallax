@@ -1,4 +1,5 @@
 import ParallaxJellyfin
+import ParallaxCore
 
 extension CollectionType {
     /// SF Symbol for a Jellyfin library, keyed off its `collectionType`. The single source

@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import ParallaxJellyfin
+import ParallaxCore
 
 /// App-level "play this item now" coordinator. Every play intent — episode taps
 /// (Home, Search, a library grid, a season's episode list) and the detail pages'

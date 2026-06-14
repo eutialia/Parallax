@@ -1,6 +1,7 @@
 import SwiftUI
 import ParallaxPlayback
 import ParallaxJellyfin
+import ParallaxCore
 
 // MARK: - tvOS row-focus plumbing
 
