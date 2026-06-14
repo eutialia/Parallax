@@ -13,7 +13,6 @@ struct MediaImage: View {
     /// Width ÷ height — matches Jellyfin season/series/movie primary posters.
     static let poster: CGFloat = 2.0 / 3.0
     static let landscape: CGFloat = 16.0 / 9.0
-    static let banner: CGFloat = 1000.0 / 185.0
 
     /// How the image sizes and backs its frame. One value picks the whole layout path
     /// (sizing + content mode + background) instead of inferring it from a flag combo.
@@ -31,7 +30,7 @@ struct MediaImage: View {
         jellyfin ref: ImageRef?,
         session: Session,
         maxWidth: Int,
-        aspectRatio: CGFloat = 2.0 / 3.0,
+        aspectRatio: CGFloat = MediaImage.poster,
         style: Style = .boxed
     ) {
         self.ref = ref
