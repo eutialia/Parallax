@@ -123,7 +123,7 @@ struct SeriesDetailView: View {
         .toolbarBackground(.hidden, for: .navigationBar)
         .task {
             if viewModel == nil {
-                let repo = await deps.libraryRepoFactory(session)
+                let repo = await deps.jellyfinLibraryRepoFactory(session)
                 viewModel = SeriesDetailViewModel(repo: repo, itemID: itemID)
                 await viewModel?.load()
             }

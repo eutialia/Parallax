@@ -28,7 +28,7 @@ struct RootTabView: View {
             guard router.activeServerID != nil else { return }
             session = await deps.serverStore.active
             guard let session else { libraries = []; return }
-            let repo = await deps.libraryRepoFactory(session)
+            let repo = await deps.jellyfinLibraryRepoFactory(session)
             libraries = (try? await repo.collections()) ?? []
         }
         // Tabs that exist at only one width — Library + Settings are compact-only (regular browses

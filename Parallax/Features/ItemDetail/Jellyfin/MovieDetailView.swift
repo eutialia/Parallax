@@ -106,7 +106,7 @@ struct MovieDetailView: View {
         .toolbarBackground(.hidden, for: .navigationBar)
         .task {
             if viewModel == nil {
-                let repo = await deps.libraryRepoFactory(session)
+                let repo = await deps.jellyfinLibraryRepoFactory(session)
                 viewModel = MovieDetailViewModel(repo: repo, itemID: itemID)
                 await viewModel?.load()
             }

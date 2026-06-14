@@ -93,7 +93,7 @@ struct HomeView: View {
             session = await deps.serverStore.active
         }
         if viewModel == nil, let session {
-            let repo = await deps.libraryRepoFactory(session)
+            let repo = await deps.jellyfinLibraryRepoFactory(session)
             viewModel = HomeViewModel(repo: repo)
             await viewModel?.load()
         }

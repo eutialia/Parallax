@@ -74,7 +74,7 @@ struct JellyfinLibraryGridView: View {
     /// already present is a no-op.
     private func loadViewModel() async {
         guard viewModel == nil else { return }
-        let repo = await deps.libraryRepoFactory(session)
+        let repo = await deps.jellyfinLibraryRepoFactory(session)
         let vm = JellyfinLibraryGridViewModel(repo: repo, scope: scope)
         viewModel = vm
         await vm.load()

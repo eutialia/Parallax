@@ -11,7 +11,8 @@ final class AppDependencies {
     let sessionManager: SessionManager
     let deviceIdentityProvider: DeviceIdentityProvider
     let lanDiscovery: LANServerDiscovery
-    let libraryRepoFactory: @Sendable (Session) async -> LibraryRepository
+    let jellyfinLibraryRepoFactory: @Sendable (Session) async -> LibraryRepository
+    let mediaRepoFactory: @Sendable (LibrarySource) async -> any MediaRepository
     let imagePipelineFactory: ImagePipelineFactory
     let deviceProfileBuilder: DeviceProfileBuilder
     let playbackInfoFactory: @Sendable (Session) async -> PlaybackInfoService
@@ -23,7 +24,8 @@ final class AppDependencies {
         sessionManager: SessionManager,
         deviceIdentityProvider: DeviceIdentityProvider,
         lanDiscovery: LANServerDiscovery,
-        libraryRepoFactory: @Sendable @escaping (Session) async -> LibraryRepository,
+        jellyfinLibraryRepoFactory: @Sendable @escaping (Session) async -> LibraryRepository,
+        mediaRepoFactory: @Sendable @escaping (LibrarySource) async -> any MediaRepository,
         imagePipelineFactory: ImagePipelineFactory,
         deviceProfileBuilder: DeviceProfileBuilder,
         playbackInfoFactory: @Sendable @escaping (Session) async -> PlaybackInfoService,
@@ -34,7 +36,8 @@ final class AppDependencies {
         self.sessionManager = sessionManager
         self.deviceIdentityProvider = deviceIdentityProvider
         self.lanDiscovery = lanDiscovery
-        self.libraryRepoFactory = libraryRepoFactory
+        self.jellyfinLibraryRepoFactory = jellyfinLibraryRepoFactory
+        self.mediaRepoFactory = mediaRepoFactory
         self.imagePipelineFactory = imagePipelineFactory
         self.deviceProfileBuilder = deviceProfileBuilder
         self.playbackInfoFactory = playbackInfoFactory
@@ -57,11 +60,16 @@ final class AppDependencies {
         let libraryClientFactory = DefaultJellyfinLibraryClientFactory(identityProvider: identity)
 
         // One repo per server, reused across every screen (see
-        // LibraryRepositoryStore). The factory closure just delegates so call
-        // sites keep their `await deps.libraryRepoFactory(session)` shape.
+        // LibraryRepositoryStore). Both factories delegate to the same store so
+        // there is never more than one LibraryRepository per server alive at once.
         let repoStore = LibraryRepositoryStore(clientFactory: libraryClientFactory)
-        let repoFactory: @Sendable (Session) async -> LibraryRepository = { session in
+        let jellyfinRepoFactory: @Sendable (Session) async -> LibraryRepository = { session in
             await repoStore.repository(for: session)
+        }
+        let mediaRepoFactory: @Sendable (LibrarySource) async -> any MediaRepository = { source in
+            switch source {
+            case .jellyfin(let session): await repoStore.repository(for: session)
+            }
         }
 
         // Playback wiring. The profile builder probes HDR/audio at runtime via
@@ -97,7 +105,8 @@ final class AppDependencies {
             sessionManager: manager,
             deviceIdentityProvider: identity,
             lanDiscovery: LANServerDiscovery(),
-            libraryRepoFactory: repoFactory,
+            jellyfinLibraryRepoFactory: jellyfinRepoFactory,
+            mediaRepoFactory: mediaRepoFactory,
             // Resolve the image-pipeline device identity from the same provider
             // as auth, so image traffic presents the persisted deviceID rather
             // than a per-launch random UUID.

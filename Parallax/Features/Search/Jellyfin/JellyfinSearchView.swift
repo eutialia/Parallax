@@ -64,7 +64,7 @@ struct JellyfinSearchView: View {
                 session = await deps.serverStore.active
             }
             if viewModel == nil, let session {
-                let repo = await deps.libraryRepoFactory(session)
+                let repo = await deps.jellyfinLibraryRepoFactory(session)
                 let vm = JellyfinSearchViewModel(repo: repo)
                 vm.start()
                 // Seed any text/scope set during construction before wiring up — the

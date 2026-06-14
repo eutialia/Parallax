@@ -37,7 +37,7 @@ struct FocusRootView: View {
         .task(id: router.activeServerID) {
             guard router.activeServerID != nil else { return }
             guard let session = await deps.serverStore.active else { return }
-            let repo = await deps.libraryRepoFactory(session)
+            let repo = await deps.jellyfinLibraryRepoFactory(session)
             // Load the sidebar's libraries and Home's feed concurrently, then reveal once both
             // settle — so the UI appears whole, with the hero already focusable.
             let vm = HomeViewModel(repo: repo)

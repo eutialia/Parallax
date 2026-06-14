@@ -187,7 +187,7 @@ struct PlayerView: View {
     private func beginSession() async {
         guard viewModel == nil else { return }
         let info = await deps.playbackInfoFactory(session)
-        let repo = await deps.libraryRepoFactory(session)
+        let repo = await deps.jellyfinLibraryRepoFactory(session)
         let vm = PlayerViewModel(
             deviceProfileBuilder: deps.deviceProfileBuilder,
             playbackInfo: info,
