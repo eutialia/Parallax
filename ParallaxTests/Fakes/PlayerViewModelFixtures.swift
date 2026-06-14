@@ -262,6 +262,35 @@ enum PlayerFixtures {
         )
     }
 
+    /// A direct-play MKV (VC-1 → .vlcKit) whose server-preferred subtitle is an
+    /// EXTERNAL sidecar. Drives the double-subtitle fix: activating the external sub
+    /// must deselect the engine's own track, because VLC auto-picks an embedded default
+    /// (and discovers more text tracks as the demux runs) that would otherwise render
+    /// THROUGH the client overlay.
+    static func resolvedDirectPlayExternalSub() -> ResolvedPlayback {
+        ResolvedPlayback(
+            itemID: "movie-1",
+            url: URL(string: "https://jf.example.com/Videos/movie-1/stream.mkv?api_key=abc")!,
+            method: .directPlay,
+            container: .mkv,
+            videoCodec: .vc1,       // routes to .vlcKit, like the reported case
+            audioCodec: .aac,
+            mediaSourceID: "ms-1",
+            playSessionID: "ps-1",
+            runtime: CMTime(seconds: 7200, preferredTimescale: 600),
+            startTime: nil,
+            mediaStreams: [
+                MediaStreamInfo(index: 2, kind: .subtitle, displayTitle: "English", language: "eng",
+                                codec: "subrip", channels: nil, isExternal: true, isForced: false, isDefault: true)
+            ],
+            defaultAudioStreamIndex: nil,
+            defaultSubtitleStreamIndex: 2,
+            subtitleStreamURLs: [
+                2: URL(string: "https://jf.example.com/Videos/movie-1/ms-1/Subtitles/2/Stream.vtt?api_key=abc&copyTimestamps=true")!
+            ]
+        )
+    }
+
     /// A VP9/WebM/Opus direct-play item — container and codec both outside the AVKit
     /// whitelist, so EngineSelector routes it to .vlcKit.
     static func resolvedVP9WebM() -> ResolvedPlayback {

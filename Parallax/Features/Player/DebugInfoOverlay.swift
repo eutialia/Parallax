@@ -174,20 +174,32 @@ struct DebugInfoOverlay: View {
                 .foregroundStyle(.yellow)
                 .padding(.top, 2)
         }
-        if let delay = snapshot.subtitleDelayMs {
+        // Retime control: client-drawn sidecar cues nudge in the overlay
+        // (`clientSubtitleDelayMs` — the transcode seek-desync escape hatch); an
+        // engine-rendered embedded track nudges in the engine (VLC). Gate on the SAME
+        // intent predicate `setSubtitleDelay` routes by, so the control can't show one
+        // renderer's value while the nudge lands on the other's.
+        if vm.usesClientSubtitleRendering {
+            subtitleDelayControl(current: vm.clientSubtitleDelayMs)
+        } else if let delay = snapshot.subtitleDelayMs {
             subtitleDelayControl(current: delay)
         }
     }
 
-    /// VLC-only live retiming: proves whether the SRT/ASS is correctly timed
-    /// (a working ± nudge that fixes sync points at the segmented-WebVTT path).
+    /// Live subtitle retiming nudge. Coarse (±1s) for the multi-second Jellyfin
+    /// transcode seek desync on the client overlay; fine (±100ms) for ordinary sync
+    /// points. A working nudge also proves the offset is a clean constant.
     private func subtitleDelayControl(current: Int) -> some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             Text("delay")
-            Button("−100ms") { Task { await vm.setSubtitleDelay(ms: current - 100) } }
+            Button("−1s") { Task { await vm.setSubtitleDelay(ms: current - 1000) } }
                 .buttonStyle(.bordered)
-            Text("\(current) ms").bold().frame(minWidth: 56)
-            Button("+100ms") { Task { await vm.setSubtitleDelay(ms: current + 100) } }
+            Button("−100") { Task { await vm.setSubtitleDelay(ms: current - 100) } }
+                .buttonStyle(.bordered)
+            Text("\(current) ms").bold().frame(minWidth: 64)
+            Button("+100") { Task { await vm.setSubtitleDelay(ms: current + 100) } }
+                .buttonStyle(.bordered)
+            Button("+1s") { Task { await vm.setSubtitleDelay(ms: current + 1000) } }
                 .buttonStyle(.bordered)
         }
         .controlSize(.mini)

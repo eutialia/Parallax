@@ -267,6 +267,27 @@ struct PlayerViewModelTests {
         #expect(vm.selectedSubtitleTrack == nil)      // nil subtitle id == "Off"
     }
 
+    @Test("direct-play: a server-preferred EXTERNAL sub deselects the engine subtitle so an embedded default can't show through the client overlay")
+    func directPlayExternalSubtitleDeselectsEngine() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let resolved = PlayerFixtures.resolvedDirectPlayExternalSub()
+        let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
+        await vm.start(item: PlayerFixtures.movieDetail())
+
+        // Engine inventory with NO subtitle pre-selected: the external default is the
+        // server's choice, rendered client-side — not one of the engine's own tracks.
+        engine.push(.ready(duration: resolved.runtime!, tracks: .empty))
+        try await Task.sleep(for: .milliseconds(50))
+
+        // The external sidecar is the active selection…
+        #expect(vm.selectedSubtitleTrack?.id == .jellyfinStream(2))
+        // …and the engine was told to drop its own subtitle. Before the fix the
+        // server-preferred path skipped this deselect, so VLC's auto-picked embedded
+        // sub rendered THROUGH the overlay (two subtitles); only re-picking cleared it.
+        #expect(engine.calls.contains("setSubtitleTrack(nil)"))
+    }
+
     @Test("transcode: menus come from MediaStreams; selecting audio re-resolves at position with that index")
     func transcodeAudioSwitch() async throws {
         let reporting = StubPlaybackReporting()
@@ -501,6 +522,39 @@ struct PlayerViewModelTests {
         #expect(vm.activeSubtitleCues.isEmpty)
         #expect(vm.selectedSubtitleTrack == nil)
         #expect(resolveCount == resolvesAfterStart)
+    }
+
+    @Test("subtitle delay nudge retimes the client overlay (clientSubtitleDelayMs) and resets on a sidecar change")
+    func clientSubtitleDelayNudge() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
+        let builder = DeviceProfileBuilder(probe: probe)
+        let resolved = PlayerFixtures.resolvedMultiTrackTranscode()   // seeds default sub 1
+        let vtt = Data("WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nNi hao".utf8)
+        let vm = PlayerViewModel(
+            deviceProfileBuilder: builder,
+            playbackInfo: reporting,
+            resolve: { _, _, _, _, _ in resolved },
+            engineFactory: { _ in engine },
+            audioSession: NoopAudioSession(),
+            subtitleFetch: { _ in vtt }
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+        try await Task.sleep(for: .milliseconds(50))   // let the default sidecar fetch land
+
+        // A client-rendered sidecar is active and un-nudged.
+        #expect(!vm.activeSubtitleCues.isEmpty)
+        #expect(vm.clientSubtitleDelayMs == 0)
+
+        // The nudge retimes the OVERLAY (the transcode seek-desync escape hatch), not the
+        // engine — the cues are drawn against the engine clock, which AVKit can't retime.
+        await vm.setSubtitleDelay(ms: 1500)
+        #expect(vm.clientSubtitleDelayMs == 1500)
+
+        // Changing the active sidecar (here: Off) resets the nudge — it's per timeline.
+        await vm.selectSubtitleTrack(nil)
+        #expect(vm.clientSubtitleDelayMs == 0)
     }
 
     @Test("isPlaying tracks engine play/pause so the button can resume from pause")

@@ -50,6 +50,13 @@ final class PlayerViewModel {
     /// active — including direct-play EMBEDDED subs, which the engine renders itself. This
     /// is how we sidestep the in-manifest WebVTT drift (jellyfin/jellyfin#16647).
     private(set) var activeSubtitleCues: [SubtitleCue] = []
+    /// Manual timing nudge for client-rendered cues (`SubtitleOverlayView`), in
+    /// milliseconds; positive shows them later. The engine's own retiming
+    /// (`setSubtitleDelay`) doesn't reach these — they're drawn against the engine
+    /// clock — so this is the escape hatch for the Jellyfin HLS transcode seek desync,
+    /// where `currentTime` drifts ahead of the frames (the client has no independent
+    /// clock to auto-correct it). Reset whenever the active sidecar changes.
+    private(set) var clientSubtitleDelayMs: Int = 0
     private(set) var currentPosition: CMTime = .zero
     private(set) var currentDuration: CMTime = .zero
     /// Absolute media time the contiguous buffer around the playhead extends to
@@ -646,7 +653,7 @@ final class PlayerViewModel {
             // `resolved.defaultAudioStreamIndex` — the server bakes it in.
             if !didApplyPreferredTracks {
                 didApplyPreferredTracks = true
-                applyTranscodeDefaultSubtitle(from: resolved)
+                await applyTranscodeDefaultSubtitle(from: resolved)
             }
         } else {
             // Direct-play: embedded tracks only arrive with the engine's .ready, but
@@ -783,6 +790,7 @@ final class PlayerViewModel {
         subtitleFetchTask?.cancel()
         subtitleFetchTask = nil
         activeSubtitleCues = []
+        clientSubtitleDelayMs = 0
         currentPosition = .zero
         currentDuration = .zero
         chapterFractions = []
@@ -921,27 +929,19 @@ final class PlayerViewModel {
         // still points at the outgoing session, so a sidecar fetch would read the
         // old session's subtitle URLs.
         guard !isStartingPlayback, !isSwitchingTracks else { return }
-        if resolved?.method == .transcode {
-            // Client-side rendering: the chosen text subtitle is fetched as a
-            // correctly-timed sidecar VTT and drawn by SubtitleOverlayView — NO
-            // server re-transcode, so toggling subtitles is instant and immune to
-            // the in-manifest WebVTT drift. (Image subs never reach here; they're
-            // filtered out of the transcode menu — burn-in is a later phase.)
-            selectedSubtitleTrack = track
-            if let index = track?.id.jellyfinStreamIndex {
-                currentSubtitleStreamIndex = index
-                loadSidecarSubtitle(streamIndex: index)
-            } else {
-                currentSubtitleStreamIndex = -1   // Jellyfin's "no subtitle" sentinel
-                clearSidecarSubtitle()
-            }
-        } else if let index = track?.id.jellyfinStreamIndex {
-            // Direct-play EXTERNAL sidecar: render client-side like transcode. Deselect any
-            // engine subtitle so VLC isn't also drawing one, then fetch + parse the VTT.
-            await engine?.setSubtitleTrack(nil)
-            currentSubtitleStreamIndex = index
-            selectedSubtitleTrack = track
-            loadSidecarSubtitle(streamIndex: index)
+        // A `.jellyfinStream` id is an external/sidecar text sub we render ourselves
+        // (transcode: every text sub; direct-play: the external ones) — fetch + draw it
+        // via SubtitleOverlayView with the engine's own subtitle held off. An embedded
+        // direct-play track carries a `.vlc`/`.avKitOption` id the engine renders; `nil`
+        // is Off.
+        if let track, let index = track.id.jellyfinStreamIndex {
+            await activateSidecarSubtitle(track, index: index)
+        } else if resolved?.method == .transcode {
+            // Transcode Off: no engine subtitle exists (subs never ride the manifest),
+            // so just drop the overlay and record Jellyfin's "no subtitle" sentinel.
+            selectedSubtitleTrack = nil
+            currentSubtitleStreamIndex = -1
+            clearSidecarSubtitle()
         } else {
             // Direct-play EMBEDDED track (or Off): the engine renders it. Clear any
             // client-side sidecar that a prior external selection left up.
@@ -951,6 +951,20 @@ final class PlayerViewModel {
             selectedSubtitleTrack = track
         }
         persistTrackSelection(.subtitles(languageCode: track?.languageCode))
+    }
+
+    /// Activate a client-rendered sidecar subtitle: the app draws it via
+    /// `SubtitleOverlayView`, so the ENGINE must not also render one. Deselecting the
+    /// engine subtitle is mandatory on EVERY external pick — VLC auto-selects an embedded
+    /// default and keeps discovering text tracks as the demux runs, so a stray embedded
+    /// sub would otherwise render THROUGH the overlay. The server-preferred initial pick
+    /// used to skip this deselect — that was the double-subtitle bug. Harmless no-op on
+    /// the transcode/AVKit path, which has no in-manifest text track to deselect.
+    private func activateSidecarSubtitle(_ track: SubtitleTrack, index: Int) async {
+        await engine?.setSubtitleTrack(nil)
+        currentSubtitleStreamIndex = index
+        selectedSubtitleTrack = track
+        loadSidecarSubtitle(streamIndex: index)
     }
 
     /// Fire-and-forget preference write-back: the service gates on the user's
@@ -970,13 +984,11 @@ final class PlayerViewModel {
     /// default is surfaced here as the initial sidecar selection. Text subs
     /// only: image subs never enter `availableSubtitleTracks`, so a PGS default
     /// quietly stays off (burn-in is a later phase).
-    private func applyTranscodeDefaultSubtitle(from resolved: ResolvedPlayback) {
+    private func applyTranscodeDefaultSubtitle(from resolved: ResolvedPlayback) async {
         guard let index = resolved.defaultSubtitleStreamIndex,
               let track = availableSubtitleTracks.first(where: { $0.id == .jellyfinStream(index) })
         else { return }
-        selectedSubtitleTrack = track
-        currentSubtitleStreamIndex = index
-        loadSidecarSubtitle(streamIndex: index)
+        await activateSidecarSubtitle(track, index: index)
     }
 
     /// Direct-play analog of `applyTranscodeDefaultSubtitle`: the whole file is
@@ -1006,11 +1018,10 @@ final class PlayerViewModel {
               let preferred = resolved.mediaStreams.first(where: { $0.kind == .subtitle && $0.index == index })
         else { return }
         if let external = availableSubtitleTracks.first(where: { $0.id == .jellyfinStream(index) }) {
-            // External sidecar subs carry their Jellyfin index — exact match,
-            // rendered client-side like every external pick.
-            selectedSubtitleTrack = external
-            currentSubtitleStreamIndex = index
-            loadSidecarSubtitle(streamIndex: index)
+            // External sidecar subs carry their Jellyfin index — exact match, rendered
+            // client-side like every external pick (engine subtitle held off so VLC's
+            // late-discovered embedded default can't show through it).
+            await activateSidecarSubtitle(external, index: index)
         } else if let match = availableSubtitleTracks.first(where: {
             !$0.isExternal
                 && TrackLanguage.matches($0.languageCode, preferred.language)
@@ -1026,6 +1037,7 @@ final class PlayerViewModel {
     /// parse can't land on screen after a newer pick.
     private func loadSidecarSubtitle(streamIndex: Int) {
         subtitleFetchTask?.cancel()
+        clientSubtitleDelayMs = 0   // a fresh sidecar starts un-nudged
         guard let url = resolved?.subtitleStreamURLs[streamIndex] else {
             activeSubtitleCues = []
             return
@@ -1043,6 +1055,7 @@ final class PlayerViewModel {
         subtitleFetchTask?.cancel()
         subtitleFetchTask = nil
         activeSubtitleCues = []
+        clientSubtitleDelayMs = 0
     }
 
     /// How a transcode track switch ended — drives `selectAudioTrack`'s selection
@@ -1475,9 +1488,23 @@ extension PlayerViewModel {
         await engine?.debugSnapshot() ?? .empty
     }
 
-    /// Live subtitle-delay nudge (VLC retimes; AVKit ignores). `ms` is absolute.
+    /// Whether the active subtitle is one WE draw (`SubtitleOverlayView` renders the
+    /// sidecar cues) rather than the engine — true exactly when the selection carries a
+    /// `.jellyfinStream` id (transcode text subs + direct-play externals). Keying on the
+    /// SELECTION (intent) rather than on `activeSubtitleCues` (the fetched effect) means a
+    /// nudge during the sidecar's fetch window still routes to the client offset.
+    var usesClientSubtitleRendering: Bool { selectedSubtitleTrack?.id.jellyfinStreamIndex != nil }
+
+    /// Live subtitle-delay nudge (`ms` absolute, positive = later). Routes to whichever
+    /// renderer owns the active subtitle: client-drawn sidecar cues retime in
+    /// `SubtitleOverlayView` via `clientSubtitleDelayMs`; an engine-rendered (embedded)
+    /// track retimes in the engine itself (VLC; AVKit ignores).
     func setSubtitleDelay(ms: Int) async {
-        await engine?.setSubtitleDelay(milliseconds: ms)
+        if usesClientSubtitleRendering {
+            clientSubtitleDelayMs = ms
+        } else {
+            await engine?.setSubtitleDelay(milliseconds: ms)
+        }
     }
 }
 #endif

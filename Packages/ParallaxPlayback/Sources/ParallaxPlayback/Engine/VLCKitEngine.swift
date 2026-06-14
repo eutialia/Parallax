@@ -103,6 +103,13 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// window would leave it polling and then write `player.time` on a stopped player.
     private var resumeTask: Task<Void, Never>?
 
+    /// The app's standing "no engine subtitle" intent (Off, or it's drawing an external
+    /// sidecar itself). VLC discovers embedded text tracks as the demux runs and
+    /// auto-selects a default/forced one — which would render THROUGH the client overlay
+    /// — so this latch lets `mediaPlayerTrackAdded` re-assert the deselect against a late
+    /// track. Set by `setSubtitleTrack`; reset on each fresh `load`.
+    private var subtitlesDisabled = false
+
     // MARK: - Init
 
     public override init() {
@@ -124,6 +131,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     public func load(_ asset: PlayableAsset) async throws {
         continuation.yield(.loading)
         didEmitSettledInventory = false
+        subtitlesDisabled = false
         pendingStartMs = Self.startMs(from: asset.startTime)
         pendingSeekMs = nil
         // VLCMedia(url:) returns optional; a nil result means the URL was rejected
@@ -217,10 +225,12 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
 
     public func setSubtitleTrack(_ track: SubtitleTrack?) async {
         guard let track else {
+            subtitlesDisabled = true
             player.deselectAllTextTracks()
             return
         }
         guard let vlcID = track.id.vlcTrackID else { return }
+        subtitlesDisabled = false
         for t in player.textTracks where t.trackId == vlcID {
             t.isSelectedExclusively = true
             return
@@ -498,6 +508,10 @@ extension VLCKitEngine: VLCMediaPlayerDelegate {
     public nonisolated func mediaPlayerTrackAdded(_ trackId: String, with trackType: VLCMedia.TrackType) {
         guard trackType == .text else { return }
         MainActor.assumeIsolated {
+            // VLC auto-selects a newly-discovered default/forced embedded sub. If the app
+            // asked for NO engine subtitle (it's drawing an external sidecar, or subs are
+            // Off), re-assert that here so the late track can't render through the overlay.
+            if subtitlesDisabled { player.deselectAllTextTracks() }
             emitReady()
         }
     }

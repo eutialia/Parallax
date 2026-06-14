@@ -219,7 +219,33 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         // stream feel stuck. Segment-level accuracy is right for both scrubbing and
         // the resume seek: Jellyfin's transcode is a full-timeline playlist, so
         // resume is an ordinary seek — the stream URL carries no start offset.
+        #if DEBUG
+        let preSeek = player.currentTime()
+        #endif
         let finished = await player.seek(to: time)
+        #if DEBUG
+        // DIAGNOSTIC (temporary, dev-only) — "subtitles drift after scrubbing": a
+        // transcode seek can leave `currentTime` (the HLS playlist clock the
+        // client-rendered cue overlay matches against) ahead of the decoded frames, so
+        // the absolute `copyTimestamps` cues fire early. The client has no independent
+        // clock to catch it, so this line is the witness. `date` is the playlist's
+        // EXT-X-PROGRAM-DATE-TIME mapping (nil if Jellyfin emits none); if present it's a
+        // true source-time anchor the overlay could match against instead of
+        // `currentTime`. Compare `target` vs `landed` and watch whether `seekable`
+        // re-bases across the scrub that desyncs. `#if DEBUG` so it never ships as
+        // per-seek log I/O on the scrub hot path.
+        let landed = player.currentTime()
+        func secs(_ t: CMTime) -> String {
+            let s = CMTimeGetSeconds(t)
+            return s.isFinite ? String(format: "%.2f", s) : "—"
+        }
+        let seekable = player.currentItem?.seekableTimeRanges.first?.timeRangeValue
+        let seekableDesc = seekable.map { "\(secs($0.start))…\(secs(CMTimeRangeGetEnd($0)))" } ?? "nil"
+        let dateDesc = player.currentItem?.currentDate().map { "\($0)" } ?? "nil"
+        Log.playback.info(
+            "seek target=\(secs(time), privacy: .public) pre=\(secs(preSeek), privacy: .public) landed=\(secs(landed), privacy: .public) finished=\(finished, privacy: .public) seekable=\(seekableDesc, privacy: .public) date=\(dateDesc, privacy: .public)"
+        )
+        #endif
         // A superseded seek must NOT land its post-seek beat. When a newer seek
         // arrives, AVPlayer resumes THIS call with finished == false — but only
         // AFTER the newer call already pre-emitted its .buffering, so the stale
