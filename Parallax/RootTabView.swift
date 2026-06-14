@@ -10,7 +10,7 @@ struct RootTabView: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var selectedTab: AppTab = .home
     @State private var session: Session?
-    @State private var libraries: [MediaCollection] = []
+    @State private var entries: [LibraryEntry] = []
     /// The last library opened from the sidebar's Libraries section (a server collection or
     /// the virtual Favorites grid), surfaced as the lone dynamic tab in the collapsed tab bar
     /// (Apple Music style). In-memory only: this `@State` resets on the `.id(activeServerID)`
@@ -27,9 +27,10 @@ struct RootTabView: View {
         .task(id: router.activeServerID) {
             guard router.activeServerID != nil else { return }
             session = await deps.serverStore.active
-            guard let session else { libraries = []; return }
-            let repo = await deps.jellyfinLibraryRepoFactory(session)
-            libraries = (try? await repo.collections()) ?? []
+            guard let session else { entries = []; return }
+            let source: LibrarySource = .jellyfin(session)
+            let repo = await deps.mediaRepoFactory(source)
+            entries = ((try? await repo.collections()) ?? []).map { LibraryEntry(source: source.sourceID, collection: $0) }
         }
         // Tabs that exist at only one width — Library + Settings are compact-only (regular browses
         // libraries from the sidebar and hosts Settings in its footer), the per-library tabs are
@@ -126,17 +127,17 @@ struct RootTabView: View {
             // appear as the lone dynamic slot to the right of Search; nothing shows before any
             // library is opened (`lastVisitedLibraryID` starts nil). The expanded sidebar ignores
             // `.tabBar` visibility and lists every library under the header.
-            if hSize == .regular, let session, !libraries.isEmpty {
+            if hSize == .regular, let session, !entries.isEmpty {
                 TabSection("Libraries") {
-                    ForEach(libraries) { library in
-                        Tab(library.name, systemImage: library.collectionType.symbolName, value: AppTab.collection(library.id)) {
+                    ForEach(entries) { entry in
+                        Tab(entry.collection.name, systemImage: entry.collection.collectionType.symbolName, value: AppTab.collection(entry.id)) {
                             NavigationStack {
                                 // Title is owned by the grid (from the collection) so the iPhone
                                 // Library-list drill-down and this direct tab show it identically.
-                                LibraryGridView(collection: library, session: session)
+                                LibraryGridView(collection: entry.collection, session: session)
                             }
                         }
-                        .defaultVisibility(AppTab.collection(library.id) == lastVisitedLibraryTab ? .visible : .hidden, for: .tabBar)
+                        .defaultVisibility(AppTab.collection(entry.id) == lastVisitedLibraryTab ? .visible : .hidden, for: .tabBar)
                     }
                     // The virtual cross-library Favorites grid — movies + shows the user
                     // favorited, every server library merged. Rides the same dynamic
