@@ -309,3 +309,7 @@ public actor LibraryRepository {
         }
     }
 }
+
+// The browse-surface methods (collections / items / genres) already match
+// MediaRepository's requirements verbatim — conformance is declaration-only.
+extension LibraryRepository: MediaRepository {}
