@@ -198,7 +198,9 @@ private struct HomeShelves: View {
 
     @ViewBuilder
     private func homeShelfTile(item: Item, showProgress: Bool) -> some View {
-        ItemNavigator(item: item, session: session) {
+        // Home is play-first: a movie tile plays (and resumes) immediately instead of opening
+        // detail. Episodes already play; series still need detail to pick an episode.
+        ItemNavigator(item: item, session: session, movieTap: .plays) {
             MediaTile(
                 title: item.displayTitle,
                 imageRef: item.homeShelfImageRef,

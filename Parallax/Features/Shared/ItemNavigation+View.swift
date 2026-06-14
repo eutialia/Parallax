@@ -94,12 +94,22 @@ private struct ItemZoomTransitionSourceModifier: ViewModifier {
 
 // MARK: - Item navigator
 
-/// Wraps a tile with the right tap behavior for its item kind: an episode plays directly (via the
-/// PlaybackPresenter); a movie/series pushes its detail screen. Single source for the
+/// Wraps a tile with the right tap behavior for its item kind. An episode always plays directly
+/// (via the `PlaybackPresenter`); a series always pushes its detail screen (it can't play without
+/// first picking an episode); a movie does whichever `movieTap` specifies. Single source for the
 /// play-vs-navigate dispatch reused across Home / Library / Search.
 struct ItemNavigator<Label: View>: View {
+    /// What tapping a *movie* tile does. Library and Search are browse-first, so they keep the
+    /// detail push (the default). Home is play-first — its shelves are Continue Watching / Next
+    /// Up — so it plays the movie immediately, resuming from saved progress like an episode.
+    enum MovieTap {
+        case opensDetail
+        case plays
+    }
+
     let item: Item
     let session: Session
+    var movieTap: MovieTap = .opensDetail
     @ViewBuilder let label: () -> Label
 
     @Environment(PlaybackPresenter.self) private var playback
@@ -107,13 +117,23 @@ struct ItemNavigator<Label: View>: View {
     var body: some View {
         switch item {
         case .episode(let e):
-            Button { playback.play(e.id, in: session) } label: { label() }
-                .tvPosterButton()
+            playButton(e.id)
         case .movie(let m):
-            detailLink(.movie(m.id, session))
+            switch movieTap {
+            case .plays:       playButton(m.id)
+            case .opensDetail: detailLink(.movie(m.id, session))
+            }
         case .series(let s):
             detailLink(.series(s.id, session))
         }
+    }
+
+    /// Tap-to-play for a directly playable item (an episode, or a movie on a play-first surface).
+    /// The player resolves the stream URL and resume position from the id under its loading veil —
+    /// the same `.itemID` path episodes already use, so a half-watched movie resumes, not restarts.
+    private func playButton(_ id: ItemID) -> some View {
+        Button { playback.play(id, in: session) } label: { label() }
+            .tvPosterButton()
     }
 
     private func detailLink(_ nav: ItemNavigation) -> some View {
