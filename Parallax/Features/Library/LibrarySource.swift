@@ -18,6 +18,6 @@ enum LibrarySource: Hashable {
 // view model decides what to load. Defined here because LibrarySource
 // is the natural sibling, and Task 17 (HomeView) is the first user.
 enum ItemNavigation: Hashable {
-    case movie(ItemID, Session)
-    case series(ItemID, Session)
+    case movie(ItemID, LibrarySource)
+    case series(ItemID, LibrarySource)
 }

@@ -59,8 +59,14 @@ private struct ItemDetailNavigationModifier: ViewModifier {
     @ViewBuilder
     private func itemDetailDestination(_ nav: ItemNavigation) -> some View {
         switch nav {
-        case .movie(let id, let session): MovieDetailView(itemID: id, session: session)
-        case .series(let id, let session): SeriesDetailView(itemID: id, session: session)
+        case .movie(let id, let source):
+            switch source {
+            case .jellyfin(let session): MovieDetailView(itemID: id, session: session)
+            }
+        case .series(let id, let source):
+            switch source {
+            case .jellyfin(let session): SeriesDetailView(itemID: id, session: session)
+            }
         }
     }
 }
@@ -122,10 +128,10 @@ struct ItemNavigator<Label: View>: View {
         case .movie(let m):
             switch movieTap {
             case .plays:       playButton(m.id)
-            case .opensDetail: detailLink(.movie(m.id, session))
+            case .opensDetail: detailLink(.movie(m.id, .jellyfin(session)))
             }
         case .series(let s):
-            detailLink(.series(s.id, session))
+            detailLink(.series(s.id, .jellyfin(session)))
         }
     }
 
