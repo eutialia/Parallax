@@ -13,11 +13,14 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "../ParallaxCore"),
+        // libsmb2-backed SMB2/3 client (LGPL — dynamically linked per its own Package.swift).
+        // Used for directory enumeration only; streaming goes through libVLC's smb:// path.
+        .package(url: "https://github.com/amosavian/AMSMB2.git", from: "4.0.3"),
     ],
     targets: [
         .target(
             name: "ParallaxFileBrowse",
-            dependencies: ["ParallaxCore"],
+            dependencies: ["ParallaxCore", "AMSMB2"],
             swiftSettings: [
                 .swiftLanguageMode(.v6),
             ]

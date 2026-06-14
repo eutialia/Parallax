@@ -2,6 +2,15 @@
   "originHash" : "e17cf8bdbaaf8427b21619b18520f2ab5aeb8d8fdd116c33863b300c66405007",
   "pins" : [
     {
+      "identity" : "amsmb2",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/amosavian/AMSMB2.git",
+      "state" : {
+        "revision" : "1726aaaf7adf63d7d1d2a0c5d1b0e635028215c0",
+        "version" : "4.0.3"
+      }
+    },
+    {
       "identity" : "get",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/kean/Get",

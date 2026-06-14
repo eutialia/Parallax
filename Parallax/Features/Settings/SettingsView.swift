@@ -126,6 +126,7 @@ struct SettingsView: View {
                 .foregroundStyle(Color.secondaryLabel)
                 .padding(.horizontal, Space.s14)
             smbSpikeLink
+            smbListSpikeLink
         }
         #endif
     }
@@ -186,6 +187,14 @@ struct SettingsView: View {
     private var smbSpikeLink: some View {
         NavigationLink(destination: SMBPlaybackSpikeView()) {
             Label("SMB Playback Spike", systemImage: "network")
+                .formActionLabel(.glass)
+        }
+        .formActionButton(.glass)
+    }
+
+    private var smbListSpikeLink: some View {
+        NavigationLink(destination: SMBListSpikeView()) {
+            Label("SMB List Spike", systemImage: "folder.badge.questionmark")
                 .formActionLabel(.glass)
         }
         .formActionButton(.glass)
