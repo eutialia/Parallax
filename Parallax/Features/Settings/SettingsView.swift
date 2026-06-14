@@ -118,6 +118,16 @@ struct SettingsView: View {
                 addServerButton
             }
         }
+        #if DEBUG
+        VStack(alignment: .leading, spacing: Space.s8) {
+            Text("Debug")
+                .font(.footnote.weight(.semibold))
+                .textCase(.uppercase)
+                .foregroundStyle(Color.secondaryLabel)
+                .padding(.horizontal, Space.s14)
+            smbSpikeLink
+        }
+        #endif
     }
 
     private func serverCard(_ session: Session, vm: SettingsViewModel) -> some View {
@@ -169,6 +179,18 @@ struct SettingsView: View {
         .formActionButton(.glass)
         .padding(.top, Space.s8)
     }
+
+    // MARK: - DEBUG-only spike harness (deleted in Phase 2 Task 12)
+
+    #if DEBUG
+    private var smbSpikeLink: some View {
+        NavigationLink(destination: SMBPlaybackSpikeView()) {
+            Label("SMB Playback Spike", systemImage: "network")
+                .formActionLabel(.glass)
+        }
+        .formActionButton(.glass)
+    }
+    #endif
 
     /// After the pushed `LoginView` signs in: re-point the router at the now-active server,
     /// then pop back to the list so the new server is visible.
