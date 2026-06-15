@@ -12,6 +12,7 @@ final class AppDependencies {
     let sessionManager: SessionManager
     let deviceIdentityProvider: DeviceIdentityProvider
     let lanDiscovery: LANServerDiscovery
+    let smbDiscovery: SMBBonjourDiscovery
     let jellyfinLibraryRepoFactory: @Sendable (Session) async -> LibraryRepository
     let mediaRepoFactory: @Sendable (LibrarySource) async -> any MediaRepository
     let imagePipelineFactory: ImagePipelineFactory
@@ -25,6 +26,7 @@ final class AppDependencies {
         sessionManager: SessionManager,
         deviceIdentityProvider: DeviceIdentityProvider,
         lanDiscovery: LANServerDiscovery,
+        smbDiscovery: SMBBonjourDiscovery,
         jellyfinLibraryRepoFactory: @Sendable @escaping (Session) async -> LibraryRepository,
         mediaRepoFactory: @Sendable @escaping (LibrarySource) async -> any MediaRepository,
         imagePipelineFactory: ImagePipelineFactory,
@@ -37,6 +39,7 @@ final class AppDependencies {
         self.sessionManager = sessionManager
         self.deviceIdentityProvider = deviceIdentityProvider
         self.lanDiscovery = lanDiscovery
+        self.smbDiscovery = smbDiscovery
         self.jellyfinLibraryRepoFactory = jellyfinLibraryRepoFactory
         self.mediaRepoFactory = mediaRepoFactory
         self.imagePipelineFactory = imagePipelineFactory
@@ -117,6 +120,7 @@ final class AppDependencies {
             sessionManager: manager,
             deviceIdentityProvider: identity,
             lanDiscovery: LANServerDiscovery(),
+            smbDiscovery: SMBBonjourDiscovery(),
             jellyfinLibraryRepoFactory: jellyfinRepoFactory,
             mediaRepoFactory: mediaRepoFactory,
             // Resolve the image-pipeline device identity from the same provider
