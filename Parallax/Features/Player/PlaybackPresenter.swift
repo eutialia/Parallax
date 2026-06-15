@@ -15,14 +15,18 @@ final class PlaybackPresenter {
     struct Request: Identifiable {
         enum Target {
             /// Detail already in hand (a detail page's Play button) — no refetch.
-            case detail(ItemDetail)
-            /// Play by id — the player resolves it under its loading veil.
-            case itemID(ItemID)
+            /// Carries its Jellyfin `Session`; SMB has none (`.smb` below).
+            case detail(ItemDetail, Session)
+            /// Play by id — the player resolves it under its loading veil. Carries
+            /// the Jellyfin `Session` it resolves against.
+            case itemID(ItemID, Session)
+            /// Play a browsed SMB file — the player resolves the `SMBPlaybackItem`
+            /// (Keychain + sidecar subs) under its loading veil, no `Session` involved.
+            case smb(Item, SMBServerRef)
         }
 
         let id = UUID()
         let target: Target
-        let session: Session
     }
 
     private(set) var request: Request?
@@ -53,12 +57,19 @@ final class PlaybackPresenter {
     }
 
     func play(_ itemID: ItemID, in session: Session) {
-        present(.init(target: .itemID(itemID), session: session))
+        present(.init(target: .itemID(itemID, session)))
     }
 
     /// Play an already-loaded detail (e.g. the movie detail's Play button).
     func play(_ detail: ItemDetail, in session: Session) {
-        present(.init(target: .detail(detail), session: session))
+        present(.init(target: .detail(detail, session)))
+    }
+
+    /// Play a browsed SMB file. The player resolves the `SMBPlaybackItem` under its
+    /// loading veil (via `AppDependencies.smbPlaybackResolver`), so a resolution
+    /// failure lands on the failure scrim like the Jellyfin id path.
+    func playSMB(_ item: Item, ref: SMBServerRef) {
+        present(.init(target: .smb(item, ref)))
     }
 
     func dismiss() {

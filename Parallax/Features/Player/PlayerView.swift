@@ -5,9 +5,18 @@ import ParallaxJellyfin
 import ParallaxPlayback
 
 struct PlayerView: View {
-    private enum Source { case resolved(ItemDetail); case unresolved(ItemID) }
+    private enum Source {
+        case resolved(ItemDetail)
+        case unresolved(ItemID)
+        /// A browsed SMB file resolved under the loading veil. Carries no `Session`
+        /// (SMB has none) — the resolver is reached via the environment in `.task`.
+        case smb(Item, SMBServerRef)
+    }
     private let source: Source
-    let session: Session
+    /// The Jellyfin session this player resolves/reports against. Nil on the SMB
+    /// path, which has no server — `beginSession` only builds the Jellyfin-wired
+    /// view model when a session is present.
+    let session: Session?
 
     /// Play an already-loaded detail (e.g. the movie-detail Play button).
     init(item: ItemDetail, session: Session) {
@@ -19,12 +28,20 @@ struct PlayerView: View {
         self.source = .unresolved(itemID)
         self.session = session
     }
+    /// Play a browsed SMB file — the `SMBPlaybackItem` resolves under the loading
+    /// veil (no Jellyfin session). The resolver is reached via the environment in
+    /// `.task`, not captured here, so its Keychain isn't held by the view value.
+    init(smbItem item: Item, ref: SMBServerRef) {
+        self.source = .smb(item, ref)
+        self.session = nil
+    }
     /// Build from a presenter request — the root hosts' shared entry point
     /// (`PlayerPresentationHost` on iOS, the tvOS full-screen cover).
     init(request: PlaybackPresenter.Request) {
         switch request.target {
-        case .detail(let detail): self.init(item: detail, session: request.session)
-        case .itemID(let itemID): self.init(itemID: itemID, session: request.session)
+        case .detail(let detail, let session): self.init(item: detail, session: session)
+        case .itemID(let itemID, let session): self.init(itemID: itemID, session: session)
+        case .smb(let item, let ref): self.init(smbItem: item, ref: ref)
         }
     }
 
@@ -186,6 +203,29 @@ struct PlayerView: View {
     /// library repo) resolved here so they aren't captured before the session exists.
     private func beginSession() async {
         guard viewModel == nil else { return }
+        // SMB has no Jellyfin session: a server-less view model reporting to no one
+        // (`NoOpPlaybackReporting`) that resolves the file under the veil. The Jellyfin
+        // factories below need a `Session`, so they only run on the Jellyfin paths.
+        if case .smb(let item, let ref) = source {
+            let vm = PlayerViewModel(
+                deviceProfileBuilder: deps.deviceProfileBuilder,
+                playbackInfo: NoOpPlaybackReporting(),
+                resolve: { _, _, _, _, _ in
+                    // Unreachable on the SMB path — `start(resolvingSMB:)` delegates to
+                    // `start(smbItem:)`, which never calls the Jellyfin resolve.
+                    throw AppError.playback(.unsupportedFormat)
+                },
+                engineFactory: deps.playbackEngineFactory,
+                audioSession: deps.audioSession
+            )
+            viewModel = vm
+            // The resolver — and its Keychain — is reached through the environment
+            // here, not captured at init, so the view value never holds it.
+            await vm.start(resolvingSMB: { try await deps.smbPlaybackResolver.resolve(item, ref: ref) })
+            return
+        }
+
+        guard let session else { return }
         let info = await deps.playbackInfoFactory(session)
         let repo = await deps.jellyfinLibraryRepoFactory(session)
         let vm = PlayerViewModel(
@@ -211,6 +251,7 @@ struct PlayerView: View {
         switch source {
         case .resolved(let item): await vm.start(item: item)
         case .unresolved(let id): await vm.start(itemID: id)
+        case .smb: break   // handled above
         }
     }
 

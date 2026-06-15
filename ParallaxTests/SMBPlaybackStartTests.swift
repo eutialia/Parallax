@@ -182,6 +182,63 @@ struct SMBPlaybackStartTests {
         #expect(await reporting.stoppedEncodings.isEmpty)
     }
 
+    // MARK: - start(resolvingSMB:) — resolve under the veil
+
+    @Test("resolving start: the closure's item is loaded + played, no Jellyfin reporting")
+    func resolvingStartLoadsResolvedItem() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let vm = makeVM(reporting: reporting, engine: engine)
+
+        let creds = [":smb-user=alice", ":smb-pwd=secret", ":smb-domain=WORKGROUP"]
+        let resolved = smbItem(vlcOptions: creds)
+        await vm.start(resolvingSMB: { resolved })
+
+        // Same assertions as startBuildsSMBAssetAndPlays: the resolve closure's item
+        // is the one the engine loaded + played, routed at smb with the creds verbatim.
+        #expect(engine.loadedAssets.count == 1)
+        let asset = try #require(engine.loadedAssets.first)
+        #expect(asset.hints.scheme == "smb")
+        #expect(asset.url.absoluteString == "smb://nas.local/Media/Movies/Example.mkv")
+        #expect(asset.vlcOptions == creds)
+        #expect(asset.headers == nil)
+        #expect(engine.calls.contains("load"))
+        #expect(engine.calls.contains("play"))
+
+        engine.push(.playing(
+            position: CMTime(seconds: 5, preferredTimescale: 1),
+            duration: CMTime(seconds: 6000, preferredTimescale: 1),
+            buffered: nil
+        ))
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(vm.phase == .playing)
+
+        // No server in the loop: the resolve-then-delegate path reports nothing.
+        #expect(await reporting.events.isEmpty)
+        #expect(await reporting.pings.isEmpty)
+        #expect(await reporting.stoppedEncodings.isEmpty)
+    }
+
+    @Test("resolving start: a resolve that throws an AppError lands on the failure scrim; the engine never loads")
+    func resolvingStartSurfacesAppErrorOnFailureScrim() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let vm = makeVM(reporting: reporting, engine: engine)
+
+        let thrown = AppError.source(.notFound)
+        await vm.start(resolvingSMB: { throw thrown })
+
+        guard case .failed(let error) = vm.phase else {
+            Issue.record("expected .failed, got \(vm.phase)")
+            return
+        }
+        #expect(error.diagnosticDescription == thrown.diagnosticDescription)
+        // Resolution failed before any asset reached the engine.
+        #expect(engine.loadedAssets.isEmpty)
+        #expect(!engine.calls.contains("load"))
+        #expect(await reporting.events.isEmpty)
+    }
+
     @Test("NoOpPlaybackReporting swallows every call without recording")
     func noOpReportingIsInert() async {
         let noop = NoOpPlaybackReporting()

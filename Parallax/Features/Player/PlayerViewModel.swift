@@ -622,6 +622,35 @@ final class PlayerViewModel {
         }
     }
 
+    /// SMB/local presentation entry: raise the loading veil, resolve the
+    /// `SMBPlaybackItem` (Keychain + sidecar subs) off the tap, then delegate to
+    /// `start(smbItem:)`. The resolve is the long off-tap step — the analog of the
+    /// Jellyfin `start(itemID:)` detail fetch — so a failure here lands on the same
+    /// failure scrim instead of silently no-op'ing the video.
+    ///
+    /// Delegation, not duplication: `start(smbItem:)` owns the audio-session
+    /// activation, `isStartingPlayback`, and the real `loadAndPlay`. This method only
+    /// owns the pre-resolve veil + the resolve's own error mapping, so the audio
+    /// session is never double-activated and `phase` is managed in one place per step.
+    func start(resolvingSMB resolve: @escaping () async throws -> SMBPlaybackItem) async {
+        phase = .loading
+        do {
+            let item = try await resolve()
+            // The resolve is the off-tap window an exit usually lands in — bail before
+            // delegating so a dismissed player can't start audio. `start(smbItem:)`
+            // re-checks after activating the session.
+            try checkStillActive()
+            await start(smbItem: item)
+        } catch is CancellationError {
+            // Exit raced the resolve — the view is gone; nothing to surface.
+        } catch let error as AppError {
+            phase = .failed(error)
+        } catch {
+            Log.playback.error("SMB resolve failed: \(error.networkDiagnostic)")
+            phase = .failed(.unexpected("couldn't load file", underlying: AnySendableError(error)))
+        }
+    }
+
     /// SMB/local direct-play entry: play a local file by building a `PlayableAsset`
     /// DIRECTLY — no Jellyfin network resolve, no `DeviceProfile`, no
     /// `mediaSourceID`/`playSessionID`, no progress reporting. The caller (Task 11)

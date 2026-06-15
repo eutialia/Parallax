@@ -20,6 +20,11 @@ final class AppDependencies {
     let playbackInfoFactory: @Sendable (Session) async -> PlaybackInfoService
     let playbackEngineFactory: @MainActor @Sendable (PlaybackEngineID) -> any PlaybackEngine
     let audioSession: any AudioSessionControlling
+    /// Resolves a browsed SMB `Item` into a ready-to-play `SMBPlaybackItem` (decodes
+    /// the share path, reads the Keychain password, builds the `smb://` URL + libVLC
+    /// credential options, matches sidecar subs). Owned here so it reaches the player
+    /// via the environment with the same `keychain` the live media repos use.
+    let smbPlaybackResolver: SMBPlaybackResolver
 
     init(
         serverStore: ServerStore,
@@ -33,7 +38,8 @@ final class AppDependencies {
         deviceProfileBuilder: DeviceProfileBuilder,
         playbackInfoFactory: @Sendable @escaping (Session) async -> PlaybackInfoService,
         playbackEngineFactory: @MainActor @Sendable @escaping (PlaybackEngineID) -> any PlaybackEngine,
-        audioSession: any AudioSessionControlling
+        audioSession: any AudioSessionControlling,
+        smbPlaybackResolver: SMBPlaybackResolver
     ) {
         self.serverStore = serverStore
         self.sessionManager = sessionManager
@@ -47,6 +53,7 @@ final class AppDependencies {
         self.playbackInfoFactory = playbackInfoFactory
         self.playbackEngineFactory = playbackEngineFactory
         self.audioSession = audioSession
+        self.smbPlaybackResolver = smbPlaybackResolver
     }
 
     static func live() -> AppDependencies {
@@ -115,6 +122,11 @@ final class AppDependencies {
 
         let audioSession = LiveAudioSession()
 
+        // One SMB resolver, sharing the same Keychain as the media repos above so a
+        // tapped SMB file resolves its credentials from the same slot it was browsed
+        // under. Default `makeLister` (the live AMSMB2 sidecar-subtitle lister).
+        let smbPlaybackResolver = SMBPlaybackResolver(keychain: keychain)
+
         return AppDependencies(
             serverStore: store,
             sessionManager: manager,
@@ -130,7 +142,8 @@ final class AppDependencies {
             deviceProfileBuilder: profileBuilder,
             playbackInfoFactory: playbackInfoFactory,
             playbackEngineFactory: engineFactory,
-            audioSession: audioSession
+            audioSession: audioSession,
+            smbPlaybackResolver: smbPlaybackResolver
         )
     }
 
