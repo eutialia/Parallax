@@ -23,11 +23,18 @@ public struct SMBFileSource: Sendable {
         self.root = root
     }
 
-    /// Lists top-level media files under `path` (relative to the configured root).
+    /// Raw directory listing. Lists `path`; when `path` is empty, lists the configured `root`.
+    /// A non-empty `path` replaces `root` (it is not joined to it). No filtering.
+    /// Package-internal so `SMBSubtitleResolver` reuses this same root/path resolution.
+    func allEntries(in path: String) async throws -> [SMBDirectoryEntry] {
+        let listPath = path.isEmpty ? root : path
+        return try await lister.list(share: share, path: listPath)
+    }
+
+    /// Lists top-level media files in `path` (or the configured `root` when `path` is empty).
     /// Directories and non-media files are excluded. No recursion.
     public func mediaFiles(in path: String) async throws -> [SMBDirectoryEntry] {
-        let listPath = path.isEmpty ? root : path
-        let entries = try await lister.list(share: share, path: listPath)
+        let entries = try await allEntries(in: path)
         return entries.filter { entry in
             guard !entry.isDirectory else { return false }
             let ext = (entry.name as NSString).pathExtension.lowercased()
