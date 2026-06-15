@@ -36,6 +36,9 @@ let package = Package(
         .testTarget(
             name: "ParallaxPlaybackTests",
             dependencies: ["ParallaxPlayback", "ParallaxPlaybackTestSupport"],
+            resources: [
+                .copy("Fixtures"),
+            ],
             swiftSettings: [ .swiftLanguageMode(.v6) ]
         ),
     ]
