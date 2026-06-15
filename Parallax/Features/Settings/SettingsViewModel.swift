@@ -8,6 +8,7 @@ import ParallaxJellyfin
 @MainActor
 final class SettingsViewModel {
     var sessions: [Session] = []
+    var smbServers: [PersistedServer] = []
     var activeID: ServerID?
     /// Surfaces the most recent sign-out failure so the UI can show the user that their
     /// action did not fully take effect. Set at the start of `signOut` (cleared) and only
@@ -28,6 +29,19 @@ final class SettingsViewModel {
     func refresh() async {
         sessions = await serverStore.sessions
         activeID = await serverStore.active?.id
+        smbServers = await serverStore.servers.filter {
+            if case .smb = $0.kind { return true }
+            return false
+        }
+    }
+
+    func removeSMBServer(_ id: ServerID) async {
+        do {
+            try await serverStore.remove(id)
+        } catch {
+            Log.persistence.error("Settings removeSMBServer failed for \(id.rawValue): \(error.localizedDescription)")
+        }
+        await refresh()
     }
 
     func setActive(_ id: ServerID) async {

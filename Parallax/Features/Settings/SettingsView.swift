@@ -25,6 +25,7 @@ struct SettingsView: View {
     enum Route: Hashable {
         case server(Session)
         case addServer
+        case addSMBServer
     }
 
     var body: some View {
@@ -53,7 +54,13 @@ struct SettingsView: View {
                         }
                     case .addServer:
                         LoginView(onSignedIn: { handleAddedServer() })
-                            .navigationTitle("Add Server")
+                            .navigationTitle("Add Jellyfin Server")
+                            #if !os(tvOS)
+                            .navigationBarTitleDisplayMode(.inline)
+                            #endif
+                    case .addSMBServer:
+                        SMBLoginView(onAdded: { handleAddedSMBServer() })
+                            .navigationTitle("Add SMB Server")
                             #if !os(tvOS)
                             .navigationBarTitleDisplayMode(.inline)
                             #endif
@@ -115,6 +122,7 @@ struct SettingsView: View {
                 .padding(.horizontal, Space.s14)
             VStack(spacing: Space.s12) {
                 ForEach(vm.sessions) { serverCard($0, vm: vm) }
+                ForEach(vm.smbServers) { smbServerCard($0, vm: vm) }
                 addServerButton
             }
         }
@@ -173,12 +181,50 @@ struct SettingsView: View {
     }
 
     private var addServerButton: some View {
-        NavigationLink(value: Route.addServer) {
+        Menu {
+            Button {
+                path.append(Route.addServer)
+            } label: {
+                Label("Jellyfin Server", systemImage: "hexagon.fill")
+            }
+            Button {
+                path.append(Route.addSMBServer)
+            } label: {
+                Label("SMB / Network Share", systemImage: "externaldrive.connected.to.line.below.fill")
+            }
+        } label: {
             Label("Add Server", systemImage: "plus")
                 .formActionLabel(.glass)
         }
         .formActionButton(.glass)
         .padding(.top, Space.s8)
+    }
+
+    private func smbServerCard(_ server: PersistedServer, vm: SettingsViewModel) -> some View {
+        guard case .smb(let data) = server.kind else { return AnyView(EmptyView()) }
+        return AnyView(
+            HStack(spacing: Space.s14) {
+                IconTile(systemImage: "externaldrive.connected.to.line.below.fill", size: 44, cornerRadius: 10, glyphSize: 18, glyphWeight: .regular)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(data.host).font(.headline).foregroundStyle(Color.label)
+                    Text(data.share + (data.root.isEmpty ? "" : "/\(data.root)"))
+                        .font(.caption).foregroundStyle(Color.secondaryLabel).lineLimit(1)
+                    Text(data.username).font(.caption).foregroundStyle(Color.tertiaryLabel)
+                }
+                Spacer(minLength: 0)
+                Button(role: .destructive) {
+                    Task { await vm.removeSMBServer(server.id) }
+                } label: {
+                    Image(systemName: "trash")
+                        .foregroundStyle(.red)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Remove \(data.host)")
+            }
+            .padding(Space.s14)
+            .glassPanel(cornerRadius: Radius.card)
+            .contentShape(.rect)
+        )
     }
 
     // MARK: - DEBUG-only spike harness (deleted in Phase 2 Task 12)
@@ -206,6 +252,16 @@ struct SettingsView: View {
     private func handleAddedServer() {
         Task {
             await viewModel?.didAddServer()
+            path = []
+        }
+    }
+
+    /// After a successful SMB add: refresh the server list and pop to root. Intentionally
+    /// does NOT re-point the router — SMB servers are not active sessions; the active
+    /// Jellyfin session is unchanged by this addition.
+    private func handleAddedSMBServer() {
+        Task {
+            await viewModel?.refresh()
             path = []
         }
     }
