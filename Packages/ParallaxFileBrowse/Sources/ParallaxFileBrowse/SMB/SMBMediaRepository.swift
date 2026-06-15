@@ -87,6 +87,19 @@ public struct SMBMediaRepository: MediaRepository {
         return lastComponent.isEmpty ? share : lastComponent
     }
 
+    // MARK: - Public ID decoding (reverse of item(from:share:root:))
+
+    /// The share-relative path encoded into an `ItemID` minted by this repository, or
+    /// nil if `itemID` wasn't produced for `share`. Inverse of `item(from:share:root:)`.
+    ///
+    /// Example: for share `"Media"` and ItemID `"Media:Movies/Film.mkv"` this returns
+    /// `"Movies/Film.mkv"`. A foreign ItemID (wrong prefix) returns nil.
+    public static func playablePath(fromItemID itemID: ItemID, share: String) -> String? {
+        let prefix = "\(share):"
+        guard itemID.rawValue.hasPrefix(prefix) else { return nil }
+        return String(itemID.rawValue.dropFirst(prefix.count))
+    }
+
     // MARK: - Entry → Item mapping
 
     private func item(from entry: SMBDirectoryEntry, share: String, root: String) -> Item {

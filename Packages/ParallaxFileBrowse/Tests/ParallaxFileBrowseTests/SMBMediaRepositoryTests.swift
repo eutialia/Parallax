@@ -205,6 +205,30 @@ struct SMBMediaRepositoryTests {
         }
     }
 
+    // MARK: - playablePath(fromItemID:share:)
+
+    @Test("playablePath recovers the share-relative path that item(from:) encoded")
+    func playablePathRoundTrips() async throws {
+        let entries: [SMBDirectoryEntry] = [
+            .init(name: "Film.mkv", isDirectory: false, size: 1, modifiedAt: nil),
+        ]
+        let repo = makeRepo(share: "Media", roots: ["Movies"], entries: entries)
+        let cols = try await repo.collections()
+        let page = try await repo.items(in: .collection(cols[0].id), filter: .init(), sort: .defaultForLibrary, cursor: nil)
+        let item = try #require(page.items.first)
+
+        // Decode should return the encoded path "Movies/Film.mkv"
+        let decoded = SMBMediaRepository.playablePath(fromItemID: item.id, share: "Media")
+        #expect(decoded == "Movies/Film.mkv")
+    }
+
+    @Test("playablePath returns nil for a foreign ItemID (wrong share prefix)")
+    func playablePathForeignIDReturnsNil() {
+        let foreignID = ItemID(rawValue: "OtherShare:Movies/Film.mkv")
+        let decoded = SMBMediaRepository.playablePath(fromItemID: foreignID, share: "Media")
+        #expect(decoded == nil)
+    }
+
     // MARK: - genres(in:)
 
     @Test("genres() always returns empty array")

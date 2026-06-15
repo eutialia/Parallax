@@ -1,0 +1,247 @@
+import Foundation
+import Testing
+import CoreMedia
+import ParallaxCore
+import ParallaxJellyfin
+import ParallaxFileBrowse
+@testable import Parallax
+
+// MARK: - In-test fake lister
+
+/// Minimal `SMBLister` fake that returns a fixed set of entries on every call.
+private final class StubSMBLister: SMBLister, @unchecked Sendable {
+    let entries: [SMBDirectoryEntry]
+    var shouldThrow = false
+
+    init(entries: [SMBDirectoryEntry]) {
+        self.entries = entries
+    }
+
+    func list(share: String, path: String) async throws -> [SMBDirectoryEntry] {
+        if shouldThrow { throw StubError.listFailed }
+        return entries
+    }
+
+    func disconnect() async {}
+
+    enum StubError: Error { case listFailed }
+}
+
+// MARK: - Test fixtures
+
+private func makeRef(
+    id: String = "smb-nas.local|Media|Movies",
+    host: String = "nas.local",
+    share: String = "Media",
+    root: String = "Movies",
+    username: String = "alice",
+    domain: String = "WORKGROUP"
+) -> SMBServerRef {
+    SMBServerRef(
+        id: ServerID(rawValue: id),
+        data: SMBServerData(host: host, share: share, root: root, username: username, domain: domain)
+    )
+}
+
+/// Returns a `.movie` `Item` whose `ItemID` is encoded the same way `SMBMediaRepository` encodes it.
+private func makeItem(share: String = "Media", path: String = "Movies/Example.mkv") -> Item {
+    let title = (path as NSString).lastPathComponent
+    let displayTitle = (title as NSString).deletingPathExtension
+    let movie = Movie(
+        id: ItemID(rawValue: "\(share):\(path)"),
+        title: displayTitle,
+        overview: nil,
+        year: nil,
+        runtime: nil,
+        communityRating: nil,
+        officialRating: nil,
+        genres: [],
+        primaryTag: nil,
+        backdropTags: [],
+        logoTag: nil,
+        thumbTag: nil,
+        dateAdded: nil,
+        userData: UserItemData(played: false, playbackPositionTicks: 0, playCount: 0, isFavorite: false),
+        width: nil,
+        height: nil,
+        videoRangeType: nil,
+        hasSubtitles: false
+    )
+    return .movie(movie)
+}
+
+// MARK: - Tests
+
+@Suite("SMBPlaybackResolver")
+struct SMBPlaybackResolverTests {
+
+    // MARK: - Helpers
+
+    private func makeResolver(
+        keychain: FakeKeychain = FakeKeychain(),
+        lister: StubSMBLister
+    ) -> SMBPlaybackResolver {
+        SMBPlaybackResolver(keychain: keychain) { _, _ in lister }
+    }
+
+    // MARK: - URL
+
+    @Test("resolved URL is smb://host/share/path with no credentials embedded")
+    func urlIsCredentialFree() async throws {
+        let lister = StubSMBLister(entries: [])
+        let resolver = makeResolver(lister: lister)
+        let item = makeItem(share: "Media", path: "Movies/Example.mkv")
+        let ref = makeRef()
+
+        let result = try await resolver.resolve(item, ref: ref)
+
+        #expect(result.url.absoluteString == "smb://nas.local/Media/Movies/Example.mkv")
+        #expect(!result.url.absoluteString.contains("@"), "URL must not contain credential separator")
+        #expect(!result.url.absoluteString.contains("alice"))
+    }
+
+    // MARK: - VLC credential options
+
+    @Test("vlcOptions contain the three smb credential strings with the seeded password")
+    func vlcOptionsCarryCredentials() async throws {
+        let keychain = FakeKeychain()
+        try keychain.setValue("s3cr3t", for: KeychainKey<String>(account: "token-smb-nas.local|Media|Movies"))
+
+        let lister = StubSMBLister(entries: [])
+        let resolver = makeResolver(keychain: keychain, lister: lister)
+        let item = makeItem()
+        let ref = makeRef()
+
+        let result = try await resolver.resolve(item, ref: ref)
+
+        #expect(result.vlcOptions == [":smb-user=alice", ":smb-pwd=s3cr3t", ":smb-domain=WORKGROUP"])
+    }
+
+    @Test("missing Keychain entry falls back to empty password without throwing")
+    func missingPasswordFallsBack() async throws {
+        let lister = StubSMBLister(entries: [])
+        let resolver = makeResolver(lister: lister)   // keychain has no entry
+        let item = makeItem()
+        let ref = makeRef()
+
+        let result = try await resolver.resolve(item, ref: ref)
+
+        #expect(result.vlcOptions == [":smb-user=alice", ":smb-pwd=", ":smb-domain=WORKGROUP"])
+    }
+
+    // MARK: - Subtitle resolution
+
+    @Test("subtitleURLs contains matched sidecar and excludes unrelated files")
+    func subtitleURLsContainsMatchedSidecar() async throws {
+        // Sibling entries alongside "Example.mkv":
+        //   Example.en.srt  → matches (language token "en")
+        //   readme.txt      → not a subtitle extension, excluded
+        //   Other.srt       → unrelated filename, excluded
+        let entries: [SMBDirectoryEntry] = [
+            .init(name: "Example.mkv",    isDirectory: false, size: 1, modifiedAt: nil),
+            .init(name: "Example.en.srt", isDirectory: false, size: 1, modifiedAt: nil),
+            .init(name: "readme.txt",     isDirectory: false, size: 1, modifiedAt: nil),
+            .init(name: "Other.srt",      isDirectory: false, size: 1, modifiedAt: nil),
+        ]
+        let lister = StubSMBLister(entries: entries)
+        let resolver = makeResolver(lister: lister)
+        let item = makeItem(share: "Media", path: "Movies/Example.mkv")
+        let ref = makeRef()
+
+        let result = try await resolver.resolve(item, ref: ref)
+
+        #expect(result.subtitleURLs.count == 1)
+        let subURL = try #require(result.subtitleURLs.values.first)
+        #expect(subURL.lastPathComponent == "Example.en.srt")
+        // Verify the smb:// URL shape
+        #expect(subURL.absoluteString == "smb://nas.local/Media/Movies/Example.en.srt")
+    }
+
+    @Test("subtitle resolution throwing yields empty subtitleURLs and playback item is still returned")
+    func subtitleThrowingYieldsEmptyMap() async throws {
+        let lister = StubSMBLister(entries: [])
+        lister.shouldThrow = true
+        let resolver = makeResolver(lister: lister)
+        let item = makeItem()
+        let ref = makeRef()
+
+        // Must NOT throw — subtitle errors are non-fatal.
+        let result = try await resolver.resolve(item, ref: ref)
+
+        #expect(result.subtitleURLs.isEmpty)
+        #expect(result.url.absoluteString == "smb://nas.local/Media/Movies/Example.mkv")
+    }
+
+    // MARK: - Title
+
+    @Test("title is the item's displayTitle (filename without extension)")
+    func titleIsDisplayTitle() async throws {
+        let lister = StubSMBLister(entries: [])
+        let resolver = makeResolver(lister: lister)
+        let item = makeItem(share: "Media", path: "Movies/Example.mkv")
+        let ref = makeRef()
+
+        let result = try await resolver.resolve(item, ref: ref)
+
+        #expect(result.title == "Example")
+    }
+
+    // MARK: - Invalid ItemID
+
+    @Test("undecodable ItemID (wrong share prefix) throws AppError.source(.notFound)")
+    func wrongSharePrefixThrows() async throws {
+        let lister = StubSMBLister(entries: [])
+        let resolver = makeResolver(lister: lister)
+        // Item minted for share "OtherShare", not "Media"
+        let item = makeItem(share: "OtherShare", path: "Movies/Example.mkv")
+        let ref = makeRef(share: "Media")
+
+        do {
+            _ = try await resolver.resolve(item, ref: ref)
+            Issue.record("Expected AppError.source(.notFound) to be thrown")
+        } catch let error as AppError {
+            guard case .source(let failure) = error, case .notFound = failure else {
+                Issue.record("Expected .source(.notFound), got \(error)")
+                return
+            }
+        } catch {
+            Issue.record("Unexpected error type: \(error)")
+        }
+    }
+
+    // MARK: - startTime
+
+    @Test("startTime is always nil (no local resume store yet)")
+    func startTimeIsNil() async throws {
+        let lister = StubSMBLister(entries: [])
+        let resolver = makeResolver(lister: lister)
+        let item = makeItem()
+        let ref = makeRef()
+
+        let result = try await resolver.resolve(item, ref: ref)
+
+        #expect(result.startTime == nil)
+    }
+
+    // MARK: - Root-level path (no directory)
+
+    @Test("path with no directory component produces correct URL and resolves subs from share root")
+    func rootLevelPath() async throws {
+        let entries: [SMBDirectoryEntry] = [
+            .init(name: "Standalone.mkv",    isDirectory: false, size: 1, modifiedAt: nil),
+            .init(name: "Standalone.en.srt", isDirectory: false, size: 1, modifiedAt: nil),
+        ]
+        let lister = StubSMBLister(entries: entries)
+        let resolver = makeResolver(lister: lister)
+        // ItemID encodes root="" → path is just the filename
+        let item = makeItem(share: "Media", path: "Standalone.mkv")
+        let ref = makeRef(share: "Media")
+
+        let result = try await resolver.resolve(item, ref: ref)
+
+        #expect(result.url.absoluteString == "smb://nas.local/Media/Standalone.mkv")
+        #expect(result.subtitleURLs.count == 1)
+        let subURL = try #require(result.subtitleURLs.values.first)
+        #expect(subURL.lastPathComponent == "Standalone.en.srt")
+    }
+}
