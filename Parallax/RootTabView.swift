@@ -30,7 +30,7 @@ struct RootTabView: View {
             guard let session else { entries = []; return }
             let source: LibrarySource = .jellyfin(session)
             let repo = await deps.mediaRepoFactory(source)
-            entries = ((try? await repo.collections()) ?? []).map { LibraryEntry(source: source.sourceID, collection: $0) }
+            entries = ((try? await repo.collections()) ?? []).map { LibraryEntry(source: source, collection: $0) }
         }
         // Tabs that exist at only one width — Library + Settings are compact-only (regular browses
         // libraries from the sidebar and hosts Settings in its footer), the per-library tabs are
@@ -134,7 +134,7 @@ struct RootTabView: View {
                             NavigationStack {
                                 // Title is owned by the grid (from the collection) so the iPhone
                                 // Library-list drill-down and this direct tab show it identically.
-                                LibraryGridView(collection: entry.collection, session: session)
+                                LibraryGridView(collection: entry.collection, source: entry.source)
                             }
                         }
                         .defaultVisibility(AppTab.collection(entry.id) == lastVisitedLibraryTab ? .visible : .hidden, for: .tabBar)

@@ -16,23 +16,27 @@ private enum LibraryHeaderChip {
 struct LibraryGridView: View {
     let scope: LibraryScope
     let title: String
-    let session: Session
+    /// The library's source — drives the repo (`mediaRepoFactory(source)`) and the per-tile
+    /// tap: a Jellyfin tile pushes detail (via `ItemNavigator`), an SMB tile plays directly.
+    let source: LibrarySource
 
     /// A server collection (the common case — sidebar tab or Library-list drill-down).
-    init(collection: MediaCollection, session: Session) {
+    init(collection: MediaCollection, source: LibrarySource) {
         self.scope = .collection(collection.id)
         self.title = collection.name
-        self.session = session
+        self.source = source
     }
 
-    /// The cross-library Favorites grid (movies + shows merged).
+    /// The cross-library Favorites grid (movies + shows merged). Jellyfin-only — Favorites is a
+    /// cross-Jellyfin-library grid; SMB has no favorites — so it pins `source` to `.jellyfin`.
     init(scope: LibraryScope, title: String, session: Session) {
         self.scope = scope
         self.title = title
-        self.session = session
+        self.source = .jellyfin(session)
     }
 
     @Environment(AppDependencies.self) private var deps
+    @Environment(PlaybackPresenter.self) private var playback
     @Environment(\.appIdiom) private var idiom
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Fixed poster columns — shared by the grid, its first-load placeholder, and the
@@ -74,7 +78,7 @@ struct LibraryGridView: View {
     /// already present is a no-op.
     private func loadViewModel() async {
         guard viewModel == nil else { return }
-        let repo = await deps.mediaRepoFactory(.jellyfin(session))
+        let repo = await deps.mediaRepoFactory(source)
         let vm = LibraryGridViewModel(repo: repo, scope: scope)
         viewModel = vm
         await vm.load()
@@ -181,7 +185,16 @@ struct LibraryGridView: View {
                 fixedColumns: columns,
                 onAppearLast: { Task { await vm.loadMore() } }
             ) { item in
-                ItemNavigator(item: item, session: session) { tile(for: item) }
+                // Jellyfin tiles browse-first (ItemNavigator pushes detail); SMB files are flat and
+                // play-only, so the tile IS the play button — wearing the same `.tvPosterButton()`
+                // poster focus treatment as ItemNavigator's so focus/lift behaves identically.
+                switch source {
+                case .jellyfin(let session):
+                    ItemNavigator(item: item, session: session) { jellyfinTile(for: item, session: session) }
+                case .smb(let ref):
+                    Button { playback.playSMB(item, ref: ref) } label: { smbTile(for: item) }
+                        .tvPosterButton()
+                }
             }
             // Stale-while-revalidate dim → crossfade during the sort/filter/genre API
             // round-trip (shared with the Home shelves so the two never drift).
@@ -329,11 +342,26 @@ struct LibraryGridView: View {
     }
 
     @ViewBuilder
-    private func tile(for item: Item) -> some View {
+    private func jellyfinTile(for item: Item, session: Session) -> some View {
         MediaTile(
             title: item.displayTitle,
             imageRef: image(for: item),
             session: session,
+            progress: nil,
+            watched: .init(item),
+            aspectRatio: MediaImage.poster,
+            maxImageWidth: 600
+        )
+    }
+
+    /// SMB tile: the same poster chrome as the Jellyfin tile but neutral (placeholder)
+    /// artwork — SMB thumbnails are a later task, so it shows the same gray placeholder
+    /// as a missing Jellyfin poster.
+    @ViewBuilder
+    private func smbTile(for item: Item) -> some View {
+        MediaTile(
+            title: item.displayTitle,
+            artwork: .none,
             progress: nil,
             watched: .init(item),
             aspectRatio: MediaImage.poster,

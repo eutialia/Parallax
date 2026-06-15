@@ -55,7 +55,7 @@ struct LibraryListView: View {
             }
         }
         .navigationDestination(for: MediaCollection.self) { coll in
-            LibraryGridView(collection: coll, session: session)
+            LibraryGridView(collection: coll, source: .jellyfin(session))
         }
         .navigationDestination(for: FavoritesRoute.self) { _ in
             LibraryGridView(scope: .favorites, title: "Favorites", session: session)

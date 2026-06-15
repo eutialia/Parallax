@@ -48,7 +48,7 @@ struct FocusRootView: View {
             let vm = HomeViewModel(repo: repo)
             async let libs: [MediaCollection] = (try? await repo.collections()) ?? []
             async let homeLoaded: Void = vm.load()
-            self.entries = (await libs).map { LibraryEntry(source: source.sourceID, collection: $0) }
+            self.entries = (await libs).map { LibraryEntry(source: source, collection: $0) }
             _ = await homeLoaded
             self.session = session
             self.homeViewModel = vm
@@ -81,7 +81,7 @@ struct FocusRootView: View {
                     ForEach(entries) { entry in
                         Tab(entry.collection.name, systemImage: entry.collection.collectionType.symbolName, value: AppTab.collection(entry.id)) {
                             NavigationStack {
-                                LibraryGridView(collection: entry.collection, session: session)
+                                LibraryGridView(collection: entry.collection, source: entry.source)
                             }
                         }
                     }
