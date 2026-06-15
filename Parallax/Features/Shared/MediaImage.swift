@@ -4,8 +4,16 @@ import ParallaxCore
 import ParallaxJellyfin
 
 struct MediaImage: View {
-    private let ref: ImageRef?
-    private let session: Session
+    /// What the image renders from. Jellyfin keeps its per-`Session` Nuke pipeline
+    /// (which carries auth at the URLSession layer) — it does NOT route through
+    /// `ArtworkSource`. The neutral `artwork` case serves local/remote sources
+    /// (SMB thumbnails today, headered remote reserved) over the shared pipeline.
+    private enum Content {
+        case jellyfin(ImageRef?, Session)
+        case artwork(ArtworkSource)
+    }
+
+    private let content: Content
     private let maxWidth: Int
     private let aspectRatio: CGFloat
     private let style: Style
@@ -33,8 +41,22 @@ struct MediaImage: View {
         aspectRatio: CGFloat = MediaImage.poster,
         style: Style = .boxed
     ) {
-        self.ref = ref
-        self.session = session
+        self.content = .jellyfin(ref, session)
+        self.maxWidth = maxWidth
+        self.aspectRatio = aspectRatio
+        self.style = style
+    }
+
+    /// Source-neutral artwork: a local file thumbnail, a headered remote URL, or none.
+    /// Used by non-Jellyfin sources (SMB). `.none` shows the same gray placeholder as
+    /// a missing Jellyfin poster.
+    init(
+        artwork: ArtworkSource,
+        maxWidth: Int,
+        aspectRatio: CGFloat = MediaImage.poster,
+        style: Style = .boxed
+    ) {
+        self.content = .artwork(artwork)
         self.maxWidth = maxWidth
         self.aspectRatio = aspectRatio
         self.style = style
@@ -68,7 +90,7 @@ struct MediaImage: View {
 
     private var placeholder: Color { Color(white: 0.15) }
 
-    /// When the layout box is poster-shaped, ask Jellyfin for a matching height so
+    /// When the layout box is poster-shaped, ask the source for a matching height so
     /// the scaler doesn't squeeze width-only thumbs into a tall cell.
     private var requestMaxHeight: Int? {
         guard style == .boxed else { return nil }
@@ -77,6 +99,16 @@ struct MediaImage: View {
 
     @ViewBuilder
     private var imageOverlay: some View {
+        switch content {
+        case .jellyfin(let ref, let session):
+            jellyfinOverlay(ref: ref, session: session)
+        case .artwork(let source):
+            artworkOverlay(source)
+        }
+    }
+
+    @ViewBuilder
+    private func jellyfinOverlay(ref: ImageRef?, session: Session) -> some View {
         if let ref, let url = ImageURLBuilder.url(
             serverURL: session.serverURL,
             ref: ref,
@@ -95,5 +127,45 @@ struct MediaImage: View {
             case .fill, .boxed: renderer.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+    }
+
+    @ViewBuilder
+    private func artworkOverlay(_ source: ArtworkSource) -> some View {
+        switch source {
+        case .none:
+            // Placeholder already sits behind the overlay — nothing to draw.
+            EmptyView()
+        case .local(let url):
+            artworkImage(ImageRequest(url: url))
+        case .remote(let url, let headers):
+            artworkImage(remoteRequest(url: url, headers: headers))
+        }
+    }
+
+    /// Renders a non-Jellyfin image over the shared (default) Nuke pipeline — no
+    /// per-session auth. Mirrors `LazyImageRenderer`'s presentation (resizable +
+    /// aspect-fill/fit + the same frame treatment per style).
+    @ViewBuilder
+    private func artworkImage(_ request: ImageRequest) -> some View {
+        let image = LazyImage(request: request) { state in
+            if let image = state.image {
+                image.resizable()
+                    .aspectRatio(contentMode: style == .logo ? .fit : .fill)
+                    .accessibilityIgnoresInvertColors()
+            }
+        }
+        switch style {
+        case .logo: image
+        case .fill, .boxed: image.frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private func remoteRequest(url: URL, headers: [String: String]?) -> ImageRequest {
+        guard let headers, !headers.isEmpty else { return ImageRequest(url: url) }
+        var request = URLRequest(url: url)
+        for (field, value) in headers {
+            request.setValue(value, forHTTPHeaderField: field)
+        }
+        return ImageRequest(urlRequest: request)
     }
 }

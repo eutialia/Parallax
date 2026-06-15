@@ -14,9 +14,16 @@ struct MediaTile: View {
 
     @Environment(\.itemZoomNavigationValue) private var itemZoomNavigation
 
+    /// The tile's artwork source. Jellyfin items carry their `Session` so `MediaImage`
+    /// can use the per-session auth pipeline; other sources (SMB) pass a neutral
+    /// `ArtworkSource` (a local thumbnail, or `.none` for the placeholder).
+    private enum Artwork {
+        case jellyfin(ImageRef?, Session)
+        case artwork(ArtworkSource)
+    }
+
     let title: String
-    let imageRef: ImageRef?
-    let session: Session
+    private let artworkSource: Artwork
     let progress: Double?   // 0.0–1.0; nil hides the bar
     let progressCaption: String?
     let watched: WatchedStatus
@@ -34,8 +41,27 @@ struct MediaTile: View {
         maxImageWidth: Int = 600
     ) {
         self.title = title
-        self.imageRef = imageRef
-        self.session = session
+        self.artworkSource = .jellyfin(imageRef, session)
+        self.progress = progress
+        self.progressCaption = progressCaption
+        self.watched = watched
+        self.aspectRatio = aspectRatio
+        self.maxImageWidth = maxImageWidth
+    }
+
+    /// Source-neutral tile for non-Jellyfin items (SMB): a local thumbnail or the
+    /// placeholder, with the same badge/footer chrome as the Jellyfin tile.
+    init(
+        title: String,
+        artwork: ArtworkSource,
+        progress: Double?,
+        progressCaption: String? = nil,
+        watched: WatchedStatus = .none,
+        aspectRatio: CGFloat = MediaImage.poster,
+        maxImageWidth: Int = 600
+    ) {
+        self.title = title
+        self.artworkSource = .artwork(artwork)
         self.progress = progress
         self.progressCaption = progressCaption
         self.watched = watched
@@ -169,13 +195,18 @@ struct MediaTile: View {
     }
 
     @ViewBuilder
+    private var mediaImage: some View {
+        switch artworkSource {
+        case .jellyfin(let ref, let session):
+            MediaImage(jellyfin: ref, session: session, maxWidth: maxImageWidth, aspectRatio: aspectRatio)
+        case .artwork(let source):
+            MediaImage(artwork: source, maxWidth: maxImageWidth, aspectRatio: aspectRatio)
+        }
+    }
+
+    @ViewBuilder
     private var artwork: some View {
-        let image = MediaImage(
-            jellyfin: imageRef,
-            session: session,
-            maxWidth: maxImageWidth,
-            aspectRatio: aspectRatio
-        )
+        let image = mediaImage
 
         if let itemZoomNavigation {
             image.itemZoomTransitionSource(itemZoomNavigation)
@@ -229,6 +260,10 @@ extension MediaTile.WatchedStatus {
             .frame(width: 140)
         MediaTile(title: "Unwatched", imageRef: nil,
                   session: session, progress: nil)
+            .frame(width: 140)
+        // Neutral (SMB) path with no thumbnail yet — same gray placeholder as a missing poster.
+        MediaTile(title: "SMB placeholder", artwork: .none,
+                  progress: nil)
             .frame(width: 140)
     }
     .padding()
