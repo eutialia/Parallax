@@ -242,6 +242,56 @@ public actor ServerStore {
         }
     }
 
+    /// Persists a configured SMB server. The password goes to the SAME opaque
+    /// Keychain slot Jellyfin uses for bearer tokens (`token-<id>`), so
+    /// `remove(_:)` already cleans it up.
+    ///
+    /// The `ServerID` is derived deterministically from `(host, share, root)` as
+    /// `"smb-\(host)|\(share)|\(root)"` — a URL-like composite that is stable
+    /// across re-adds, never collides with a Jellyfin id (which has no `smb-`
+    /// prefix), and is human-readable in logs. Re-adding the same target reuses
+    /// the same id, so credentials update rather than duplicating the row.
+    ///
+    /// Does NOT touch `loadedSessions` and does NOT call `setActive` — SMB
+    /// servers have no `Session`, and making one "active" would nil-route the
+    /// Jellyfin-keyed router to the login screen.
+    @discardableResult
+    public func addSMBServer(_ data: SMBServerData, password: String) async throws -> ServerID {
+        let id = ServerID(rawValue: "smb-\(data.host)|\(data.share)|\(data.root)")
+        let key = KeychainKey<String>(account: tokenAccount(for: id))
+
+        // Capture previous state for rollback.
+        let previousServers = persistedServers
+        let previousPassword: String? = try? await keychain.read(key)
+
+        do {
+            try await keychain.store(password, for: key)
+        } catch {
+            throw ServerStoreError.persistenceFailed(underlying: String(describing: error))
+        }
+
+        let server = PersistedServer(id: id, kind: .smb(data))
+        if let existingIndex = persistedServers.firstIndex(where: { $0.id == id }) {
+            persistedServers[existingIndex] = server
+        } else {
+            persistedServers.append(server)
+        }
+
+        do {
+            try await settings.set(persistedServers, for: Self.persistedServersKey)
+        } catch {
+            // Roll back Keychain and in-memory list so a settings failure never
+            // leaves a live password unreferenced by UserDefaults. If a previous
+            // password existed (re-add), restore it; if this was a fresh add,
+            // delete the slot we just wrote.
+            await rollbackKeychain(key: key, previousToken: previousPassword)
+            persistedServers = previousServers
+            throw ServerStoreError.persistenceFailed(underlying: String(describing: error))
+        }
+
+        return id
+    }
+
     public func setActive(_ id: ServerID) async throws {
         guard loadedSessions.contains(where: { $0.id == id }) else { return }
         activeID = id
