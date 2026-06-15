@@ -105,6 +105,24 @@ struct SMBFileSourceTests {
         #expect(!raw.contains("password"), "URL must not contain any password token")
     }
 
+    @Test("playableURL percent-encodes '#' and '?' so the filename isn't truncated")
+    func playableURLEncodesStructuralDelimiters() {
+        let source = SMBFileSource(lister: FakeSMBLister(entries: []), host: "nas", share: "Media", root: "Movies")
+
+        let hashEntry = SMBDirectoryEntry(name: "Episode#1.mkv", isDirectory: false, size: 1, modifiedAt: nil)
+        let hashURL = source.playableURL(for: hashEntry, in: "")
+        // '#' must be encoded, NOT parsed as a fragment that truncates the path.
+        #expect(hashURL?.fragment == nil)
+        #expect(hashURL?.absoluteString.contains("%23") == true)
+        // libVLC decodes %23 back to '#', so the last path component is the real filename.
+        #expect(hashURL?.lastPathComponent == "Episode#1.mkv")
+
+        let queryEntry = SMBDirectoryEntry(name: "Show?.mkv", isDirectory: false, size: 1, modifiedAt: nil)
+        let queryURL = source.playableURL(for: queryEntry, in: "")
+        #expect(queryURL?.query == nil)
+        #expect(queryURL?.lastPathComponent == "Show?.mkv")
+    }
+
     // MARK: - disconnect
 
     @Test("disconnect forwards to the underlying lister")

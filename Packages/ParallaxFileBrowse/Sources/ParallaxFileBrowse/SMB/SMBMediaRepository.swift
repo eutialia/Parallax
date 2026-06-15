@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 import ParallaxCore
 
 /// A `MediaRepository` that surfaces flat media files from SMB share roots.
@@ -18,6 +19,8 @@ public struct SMBMediaRepository: MediaRepository {
     private let lister: any SMBLister
     private let share: String
     private let roots: [String]
+
+    private static let logger = Logger(subsystem: "Parallax", category: "SMBMediaRepository")
 
     public init(lister: any SMBLister, share: String, roots: [String]) {
         self.lister = lister
@@ -50,7 +53,15 @@ public struct SMBMediaRepository: MediaRepository {
         }
 
         let source = SMBFileSource(lister: lister, share: share, root: root)
-        let entries = try await source.mediaFiles(in: "")
+        let entries: [SMBDirectoryEntry]
+        do {
+            entries = try await source.mediaFiles(in: "")
+        } catch {
+            // Map the raw libsmb2/AMSMB2 error to a typed AppError so the grid shows a
+            // meaningful message (and logs the real cause) instead of letting a bare NSError
+            // fall through to LibraryGridViewModel's generic "Something went wrong."
+            throw Self.mapListError(error, share: share, root: root)
+        }
         let items: [Item] = entries.map { entry in
             item(from: entry, share: share, root: root)
         }
@@ -59,6 +70,13 @@ public struct SMBMediaRepository: MediaRepository {
 
     public func genres(in scope: LibraryScope) async throws -> [String] {
         []
+    }
+
+    /// Closes the live SMB share connection the lister opened on first `items()`. Called
+    /// when the browsing surface is torn down (the grid view model's deinit) so a visit
+    /// doesn't leave a connection open on the NAS until ARC eventually reclaims the lister.
+    public func teardown() async {
+        await lister.disconnect()
     }
 
     // MARK: - ID derivation
@@ -131,5 +149,30 @@ public struct SMBMediaRepository: MediaRepository {
             hasSubtitles: false
         )
         return .movie(movie)
+    }
+
+    // MARK: - Error mapping
+
+    /// Maps a raw libsmb2/AMSMB2 enumeration failure to a typed `AppError`, logging the
+    /// underlying `NSError` (domain/code/message) so the cause is diagnosable — a bare
+    /// NSError otherwise surfaced as "Something went wrong." with nothing in the log.
+    /// Credentials never appear here: the error carries none, and only the share/root are
+    /// logged, never the lister's `URLCredential`.
+    private static func mapListError(_ error: Error, share: String, root: String) -> AppError {
+        let ns = error as NSError
+        logger.error("SMB list failed [share=\(share, privacy: .public) root=\(root, privacy: .public)]: \(ns.domain, privacy: .public)#\(ns.code) — \(ns.localizedDescription, privacy: .public)")
+        // libsmb2/AMSMB2 surface POSIX errnos either as a bridged POSIXError or as a raw
+        // NSError in NSPOSIXErrorDomain — accept both. A non-POSIX error (custom domain) maps
+        // to the general "connection lost".
+        let posixCode: Int32? = (error as? POSIXError).map { $0.code.rawValue }
+            ?? (ns.domain == NSPOSIXErrorDomain ? Int32(ns.code) : nil)
+        switch posixCode {
+        case POSIXErrorCode.EACCES.rawValue, POSIXErrorCode.EPERM.rawValue:
+            return .source(.permissionDenied)
+        case POSIXErrorCode.ENOENT.rawValue, POSIXErrorCode.ENOTDIR.rawValue, POSIXErrorCode.ENODEV.rawValue:
+            return .source(.notFound)
+        default:
+            return .source(.connectionLost)
+        }
     }
 }

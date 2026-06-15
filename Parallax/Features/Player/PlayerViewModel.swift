@@ -357,6 +357,9 @@ final class PlayerViewModel {
     /// The id requested via `start(itemID:)`, kept so `retry()` can re-fetch when
     /// the original failure was the detail fetch itself (no `playingItem` yet).
     private var pendingItemID: ItemID?
+    /// The SMB resolve closure for the current local session (nil for Jellyfin), kept so
+    /// `retry()` can replay the SMB path — which sets neither `playingItem` nor `pendingItemID`.
+    private var smbResolve: (() async throws -> SMBPlaybackItem)?
     private var currentAudioStreamIndex: Int?
     private var currentSubtitleStreamIndex: Int?
 
@@ -634,6 +637,9 @@ final class PlayerViewModel {
     /// session is never double-activated and `phase` is managed in one place per step.
     func start(resolvingSMB resolve: @escaping () async throws -> SMBPlaybackItem) async {
         phase = .loading
+        // Kept so the failure scrim's "Try again" can replay the SMB path (retry() otherwise
+        // reads only the Jellyfin playingItem/pendingItemID, which this path never sets).
+        smbResolve = resolve
         do {
             let item = try await resolve()
             // The resolve is the off-tap window an exit usually lands in — bail before
@@ -893,6 +899,7 @@ final class PlayerViewModel {
         engine = nil
         playingItem = nil
         pendingItemID = nil
+        smbResolve = nil
         currentAudioStreamIndex = nil
         currentSubtitleStreamIndex = nil
         availableAudioTracks = []
@@ -973,8 +980,10 @@ final class PlayerViewModel {
     func retry() async {
         let item = playingItem
         let id = pendingItemID
+        let smb = smbResolve
         await resetForReplay()
-        if let item { await start(item: item) }
+        if let smb { await start(resolvingSMB: smb) }
+        else if let item { await start(item: item) }
         else if let id { await start(itemID: id) }
         else { Log.playback.error("retry() had no item or id to replay") }
     }

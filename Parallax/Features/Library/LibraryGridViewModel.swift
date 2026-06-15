@@ -75,6 +75,15 @@ final class LibraryGridViewModel {
         self.scope = scope
     }
 
+    isolated deinit {
+        // Close any live source connection (SMB opens a share socket on first `items()`;
+        // Jellyfin's teardown is a no-op) when the grid is torn down. The capture keeps the
+        // repo alive until the disconnect completes, after the view model is released.
+        inFlight?.cancel()
+        genreTask?.cancel()
+        Task { [repo] in await repo.teardown() }
+    }
+
     func load() async {
         guard state != .loading else { return }
         refreshErrorMessage = nil

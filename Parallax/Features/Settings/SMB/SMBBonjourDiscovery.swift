@@ -26,15 +26,12 @@ final class SMBBonjourDiscovery {
     private(set) var isDiscovering = false
 
     private var browser: NWBrowser?
-    private var seenIDs: Set<String> = []
 
     func start() {
         guard browser == nil else { return }
-        // Fresh scan each time the picker opens — a prior session's hosts may be
-        // gone, and `browseResultsChangedHandler` only re-reports them if they're
-        // newly seen relative to `seenIDs`.
+        // Fresh scan each time the picker opens; `ingest` then reconciles against each
+        // snapshot, so a host that later leaves the network drops out on its own.
         discovered = []
-        seenIDs = []
         Log.network.info("SMB Bonjour discovery starting")
 
         let descriptor = NWBrowser.Descriptor.bonjour(type: "_smb._tcp", domain: "local.")
@@ -81,16 +78,18 @@ final class SMBBonjourDiscovery {
     // MARK: - Result ingestion
 
     private func ingest(_ results: Set<NWBrowser.Result>) {
-        let before = discovered.count
-        for result in results {
-            guard case .service(let name, _, _, _) = result.endpoint else { continue }
-            guard seenIDs.insert(name).inserted else { continue }
-            discovered.append(Self.discoveredServer(forServiceName: name))
+        // NWBrowser delivers the COMPLETE current result set on every change, so reconcile
+        // `discovered` against it rather than appending — a host that left the network (its
+        // service dropped from the set) must stop being offered as a connectable row, not
+        // linger until the picker is reopened. Sorted by name for stable row order.
+        let names = results.compactMap { result -> String? in
+            guard case .service(let name, _, _, _) = result.endpoint else { return nil }
+            return name
         }
-        let added = discovered.count - before
-        if added > 0 {
-            Log.network.info("SMB Bonjour: \(added) new host(s) discovered (\(self.discovered.count) total)")
-        }
+        let servers = Set(names).sorted().map { Self.discoveredServer(forServiceName: $0) }
+        guard servers != discovered else { return }
+        discovered = servers
+        Log.network.info("SMB Bonjour: \(servers.count) host(s) currently on the network")
     }
 
     // MARK: - Pure mapping (unit-testable)

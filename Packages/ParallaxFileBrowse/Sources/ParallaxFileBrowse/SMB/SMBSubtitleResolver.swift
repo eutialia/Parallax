@@ -72,9 +72,9 @@ public struct SMBSubtitleResolver: Sendable {
                 continue
             }
 
-            // playableURL is nil only when the smb:// string won't parse (e.g. unencoded
-            // spaces/unicode — percent-encoding lands in Task 10). Drop the one entry rather
-            // than aborting the whole scan; a malformed sibling shouldn't lose the rest.
+            // playableURL percent-encodes path components (SMBURL), so '#'/'?' siblings no
+            // longer truncate; nil here means the components still couldn't form a URL. Drop
+            // the one entry rather than aborting the whole scan.
             guard let url = fileSource.playableURL(for: entry, in: path) else { continue }
             matches.append(SMBSubtitleMatch(label: label, url: url))
         }

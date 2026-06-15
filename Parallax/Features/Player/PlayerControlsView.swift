@@ -890,6 +890,28 @@ struct PlayerControlsView: View {
     }
     #endif
 
+    #if !os(tvOS)
+    /// Hold the scrub latch (`isScrubbing`) until the engine's reported position reaches the
+    /// committed target, so the displayed fraction (`isScrubbing ? scrubProgress : liveProgress`)
+    /// never flips to a STALE pre-seek `liveProgress` for a frame on release — the scrub-release
+    /// "jump" (the dot snaps to the old time, then animates back to the let-go point; playback
+    /// itself was always correct). The engine publishes the seek's target position immediately
+    /// (VLCKitEngine.seek / AVKitEngine) but the VM consumes that beat on a separate task, so
+    /// clearing the latch the instant `seek()` returns races that beat; polling the live fraction
+    /// converges in ~one beat, and the ~1s cap keeps the bar from ever freezing if none lands.
+    /// Generation-guarded so a newer drag owns the release.
+    private func releaseScrubLatch(at frac: Double, durSeconds: Double, generation: Int) async {
+        guard durSeconds > 0 else { isScrubbing = false; return }
+        for _ in 0..<20 {
+            if scrubGeneration != generation { return }
+            if abs(liveProgressFraction - frac) * durSeconds < 3 { break }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        guard scrubGeneration == generation, !Task.isCancelled else { return }
+        isScrubbing = false
+    }
+    #endif
+
     @ViewBuilder
     private func scrubber(_ m: PlayerMetrics) -> some View {
         let posSeconds = CMTimeGetSeconds(vm.currentPosition)
@@ -1011,7 +1033,9 @@ struct PlayerControlsView: View {
                     // don't resume a torn-down engine on the way out.
                     guard !Task.isCancelled, scrubGeneration == gen else { return }
                     if resume { await engine.play() }
-                    isScrubbing = false
+                    // Keep the bar pinned at the committed target until the engine's live
+                    // position catches up, so it never flashes the stale pre-seek frame.
+                    await releaseScrubLatch(at: frac, durSeconds: durSeconds, generation: gen)
                 }
             }
         )
@@ -1037,7 +1061,10 @@ struct PlayerControlsView: View {
             scrubCommitTask?.cancel()
             scrubCommitTask = Task {
                 await engine.seek(to: seekTarget)
-                if !Task.isCancelled, scrubGeneration == gen { isScrubbing = false }
+                guard !Task.isCancelled, scrubGeneration == gen else { return }
+                // Same settle-then-release as the drag path, so a VoiceOver/Switch-Control
+                // adjust never flashes the stale frame either.
+                await releaseScrubLatch(at: target, durSeconds: durSeconds, generation: gen)
             }
         }
         #endif

@@ -3,11 +3,13 @@ import Foundation
 
 /// Identity of an SMB file for thumbnail caching.
 ///
-/// Keyed on the share-relative path plus the file's size and modification date so a
-/// changed file on the share produces a different key — the stale thumbnail is bypassed
-/// rather than served.
+/// Keyed on the owning server's id PLUS the share-relative path, then the file's size and
+/// modification date. The server id discriminates two different SMB servers that happen to
+/// hold the same share-relative path (e.g. both have `Movies/Film.mkv`), and size+mtime mean
+/// a changed file produces a different key — the stale thumbnail is bypassed rather than served.
 struct SMBThumbnailKey: Hashable, Sendable {
-    let path: String     // smb path within the share, e.g. "Movies/Film.mkv"
+    let serverID: String  // unique per SMB server (ServerID.rawValue)
+    let path: String      // smb path within the share, e.g. "Movies/Film.mkv"
     let size: Int64
     let modifiedAt: Date?
 }
@@ -66,11 +68,13 @@ actor SMBThumbnailCache {
         return url
     }
 
-    /// `<sha256(path)>-<size>-<mtimeEpoch>.png`. The size and modification-date suffix
-    /// guarantees two otherwise-identical paths that differ in size or mtime map to
-    /// distinct filenames, so a changed file never collides with its own stale cache entry.
+    /// `<sha256(serverID + path)>-<size>-<mtimeEpoch>.png`. Hashing the server id together
+    /// with the path keeps two servers' identical relative paths in distinct cache files; the
+    /// size + modification-date suffix means a changed file never collides with its own stale
+    /// entry. The NUL separator can't appear in a host id or a filename, so the digest input
+    /// is unambiguous.
     private func fileName(for key: SMBThumbnailKey) -> String {
-        let digest = SHA256.hash(data: Data(key.path.utf8))
+        let digest = SHA256.hash(data: Data("\(key.serverID)\u{0}\(key.path)".utf8))
         let hash = digest.map { String(format: "%02x", $0) }.joined()
         let mtime = key.modifiedAt.map { String(Int64($0.timeIntervalSince1970.rounded())) } ?? "na"
         return "\(hash)-\(key.size)-\(mtime).png"

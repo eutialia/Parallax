@@ -64,7 +64,7 @@ public actor ServerStore {
             // Keychain slot holds the bearer token. SMB servers persist but
             // have no session (their slot holds the password, used at connect).
             guard case .jellyfin = server.kind else { continue }
-            let key = KeychainKey<String>(account: tokenAccount(for: server.id))
+            let key = KeychainKey<String>(account: Self.tokenAccount(for: server.id))
             do {
                 if let token = try await keychain.read(key),
                    let session = Session(persisted: server, accessToken: token) {
@@ -155,7 +155,7 @@ public actor ServerStore {
     /// failure we restore the previous Keychain entry (or delete the new
     /// one for a fresh add) and revert the in-memory list.
     public func add(_ session: Session) async throws {
-        let key = KeychainKey<String>(account: tokenAccount(for: session.id))
+        let key = KeychainKey<String>(account: Self.tokenAccount(for: session.id))
         let existingIndex = loadedSessions.firstIndex(where: { $0.id == session.id })
         let previousToken: String? = existingIndex.map { loadedSessions[$0].accessToken }
         let previousSessions = loadedSessions
@@ -208,7 +208,7 @@ public actor ServerStore {
     /// touching UserDefaults — better to leave the user with a visible
     /// (and removable) session than to silently orphan a live token.
     public func remove(_ id: ServerID) async throws {
-        let key = KeychainKey<String>(account: tokenAccount(for: id))
+        let key = KeychainKey<String>(account: Self.tokenAccount(for: id))
         do {
             try await keychain.delete(key)
         } catch {
@@ -258,11 +258,22 @@ public actor ServerStore {
     @discardableResult
     public func addSMBServer(_ data: SMBServerData, password: String) async throws -> ServerID {
         let id = ServerID(rawValue: "smb-\(data.host)|\(data.share)|\(data.root)")
-        let key = KeychainKey<String>(account: tokenAccount(for: id))
+        let key = KeychainKey<String>(account: Self.tokenAccount(for: id))
 
-        // Capture previous state for rollback.
+        // Capture previous state for rollback. A THROWN read (transient Keychain fault) is NOT
+        // proof the slot is empty — distinguish it from a confirmed-absent slot so a re-add
+        // never deletes a still-valid password: nil-because-absent is safe to delete on
+        // rollback; a thrown read leaves the slot untouched.
         let previousServers = persistedServers
-        let previousPassword: String? = try? await keychain.read(key)
+        let previousPassword: String?
+        let slotWasConfirmedEmpty: Bool
+        do {
+            previousPassword = try await keychain.read(key)
+            slotWasConfirmedEmpty = (previousPassword == nil)
+        } catch {
+            previousPassword = nil
+            slotWasConfirmedEmpty = false
+        }
 
         do {
             try await keychain.store(password, for: key)
@@ -280,11 +291,15 @@ public actor ServerStore {
         do {
             try await settings.set(persistedServers, for: Self.persistedServersKey)
         } catch {
-            // Roll back Keychain and in-memory list so a settings failure never
-            // leaves a live password unreferenced by UserDefaults. If a previous
-            // password existed (re-add), restore it; if this was a fresh add,
-            // delete the slot we just wrote.
-            await rollbackKeychain(key: key, previousToken: previousPassword)
+            // Roll back Keychain and in-memory list so a settings failure never leaves a live
+            // password unreferenced by UserDefaults. Restore a captured previous password;
+            // delete ONLY if the slot was confirmed empty (a true fresh add). If the pre-read
+            // threw, leave the slot — deleting could wipe a password that was actually there.
+            if let previousPassword {
+                try? await keychain.store(previousPassword, for: key)
+            } else if slotWasConfirmedEmpty {
+                try? await keychain.delete(key)
+            }
             persistedServers = previousServers
             throw ServerStoreError.persistenceFailed(underlying: String(describing: error))
         }
@@ -318,7 +333,12 @@ public actor ServerStore {
         }
     }
 
-    private func tokenAccount(for id: ServerID) -> String {
+    /// The opaque Keychain account that holds a server's secret — the Jellyfin bearer token
+    /// for `.jellyfin`, the password for `.smb`. Public + static so the app's media-repo
+    /// factory and SMB playback resolver derive the SAME slot instead of re-hardcoding the
+    /// `"token-<id>"` literal (a divergence would silently read an empty password and fail
+    /// SMB auth with no error).
+    public static func tokenAccount(for id: ServerID) -> String {
         "token-\(id.rawValue)"
     }
 }

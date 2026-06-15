@@ -34,6 +34,7 @@ struct SMBFolderPickerView: View {
     @State private var entries: [SMBDirectoryEntry] = []
     @State private var isLoading = false
     @State private var loadError: String?
+    @State private var loadTask: Task<Void, Never>?
     @State private var isSaving = false
     @State private var saveError: String?
 
@@ -90,6 +91,7 @@ struct SMBFolderPickerView: View {
         }
         .task { loadCurrentDirectory() }
         .onDisappear {
+            loadTask?.cancel()
             Task { await lister.disconnect() }
         }
     }
@@ -206,14 +208,21 @@ struct SMBFolderPickerView: View {
         loadError = nil
         let path = currentPath
         let share = share
-        Task {
+        // Cancel any in-flight load and guard the post-await writes on `path == currentPath`:
+        // rapid descend/ascend taps otherwise leave concurrent lists racing to overwrite
+        // `entries`, and a slow earlier load landing last would show the wrong directory's
+        // contents — then "Use This Folder" would save the wrong root.
+        loadTask?.cancel()
+        loadTask = Task {
             do {
                 let result = try await lister.list(share: share, path: path)
+                guard !Task.isCancelled, path == currentPath else { return }
                 entries = result.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
             } catch {
+                guard !Task.isCancelled, path == currentPath else { return }
                 loadError = "Couldn't list directory. \(error.localizedDescription)"
             }
-            isLoading = false
+            if path == currentPath { isLoading = false }
         }
     }
 

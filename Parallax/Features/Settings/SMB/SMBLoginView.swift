@@ -205,7 +205,16 @@ struct SMBLoginView: View {
             )
             do {
                 _ = try await lister.list(share: trimShare, path: "")
-                // Success — hand the connected lister to the folder picker.
+                // Adopt the validated (trimmed) values so what we persist EXACTLY matches
+                // what connected. SMBFolderPickerView reads these straight into the saved
+                // SMBServerData, and the media-repo factory later reconnects with them — if
+                // we persisted the raw, untrimmed fields, a stray space would reconnect to a
+                // different host/share and fail (browse works, the grid throws). Password +
+                // domain are left as typed: those are exactly what the connection used.
+                host = trimHost
+                share = trimShare
+                username = trimUser
+                // Hand the connected lister to the folder picker.
                 pendingLister = lister
                 showFolderPicker = true
             } catch {

@@ -17,6 +17,20 @@ struct SMBMediaRepositoryTests {
         return SMBMediaRepository(lister: lister, share: share, roots: roots)
     }
 
+    /// A lister whose `list` always throws the supplied error — exercises the
+    /// repository's raw-error → `AppError` mapping (so a failure reaches the UI as a
+    /// meaningful message, not a bare "Something went wrong.").
+    private final class ThrowingSMBLister: SMBLister, @unchecked Sendable {
+        let error: Error
+        init(error: Error) { self.error = error }
+        func list(share: String, path: String) async throws -> [SMBDirectoryEntry] { throw error }
+        func disconnect() async {}
+    }
+
+    private func makeThrowingRepo(_ error: Error, share: String = "Media", root: String = "Movies") -> SMBMediaRepository {
+        SMBMediaRepository(lister: ThrowingSMBLister(error: error), share: share, roots: [root])
+    }
+
     // MARK: - collections()
 
     @Test("collections() returns one MediaCollection per root")
@@ -202,6 +216,38 @@ struct SMBMediaRepositoryTests {
             // correct
         } else {
             Issue.record("Expected .movie case, got \(page.items[0])")
+        }
+    }
+
+    // MARK: - items() error mapping
+
+    @Test("items() maps a POSIX permission failure to AppError.source(.permissionDenied)")
+    func itemsMapsPermissionError() async throws {
+        let denied = NSError(domain: NSPOSIXErrorDomain, code: Int(POSIXErrorCode.EACCES.rawValue))
+        let repo = makeThrowingRepo(denied)
+        let cols = try await repo.collections()
+        do {
+            _ = try await repo.items(in: .collection(cols[0].id), filter: .init(), sort: .defaultForLibrary, cursor: nil)
+            Issue.record("expected items() to throw when the lister fails")
+        } catch AppError.source(.permissionDenied) {
+            // expected — a bare NSError would otherwise reach the UI as "Something went wrong."
+        } catch {
+            Issue.record("expected AppError.source(.permissionDenied), got \(error)")
+        }
+    }
+
+    @Test("items() maps a non-POSIX list failure to AppError.source(.connectionLost)")
+    func itemsMapsGenericErrorToConnectionLost() async throws {
+        let generic = NSError(domain: "SMB2", code: 5)
+        let repo = makeThrowingRepo(generic)
+        let cols = try await repo.collections()
+        do {
+            _ = try await repo.items(in: .collection(cols[0].id), filter: .init(), sort: .defaultForLibrary, cursor: nil)
+            Issue.record("expected items() to throw when the lister fails")
+        } catch AppError.source(.connectionLost) {
+            // expected
+        } catch {
+            Issue.record("expected AppError.source(.connectionLost), got \(error)")
         }
     }
 

@@ -54,6 +54,12 @@ struct SMBPlaybackStartTests {
         )
     }
 
+    /// Counts resolve-closure invocations so a test can prove `retry()` replays it.
+    private actor ResolveAttempts {
+        private(set) var count = 0
+        func bump() -> Int { count += 1; return count }
+    }
+
     @Test("builds a VLC smb:// asset carrying the credential options, then loads + plays")
     func startBuildsSMBAssetAndPlays() async throws {
         let reporting = StubPlaybackReporting()
@@ -237,6 +243,30 @@ struct SMBPlaybackStartTests {
         #expect(engine.loadedAssets.isEmpty)
         #expect(!engine.calls.contains("load"))
         #expect(await reporting.events.isEmpty)
+    }
+
+    @Test("retry() replays the SMB resolve closure — Try again is live on the SMB path")
+    func retryReplaysSMBResolve() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let vm = makeVM(reporting: reporting, engine: engine)
+
+        let attempts = ResolveAttempts()
+        let resolved = smbItem()
+        let resolve: () async throws -> SMBPlaybackItem = {
+            _ = await attempts.bump()
+            return resolved
+        }
+
+        await vm.start(resolvingSMB: resolve)
+        #expect(await attempts.count == 1)
+
+        // retry() sets neither playingItem nor pendingItemID on the SMB path, so before the
+        // fix it fell through to a no-op log and the closure was never re-run (dead "Try
+        // again"). It must now replay the stored SMB resolve.
+        await vm.retry()
+        #expect(await attempts.count == 2)
+        #expect(engine.calls.contains("load"))
     }
 
     @Test("NoOpPlaybackReporting swallows every call without recording")

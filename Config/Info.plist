@@ -7,6 +7,15 @@
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 	</dict>
+	<!-- Bonjour service types the app browses with NWBrowser. Without _smb._tcp here,
+	     browsing it fails with -65555 (kDNSServiceErr_NoAuth): the SMB add-server
+	     discovery picker. (Jellyfin discovery is UDP broadcast, not Bonjour, so it
+	     needs no entry.) Distinct from the multicast entitlement, which gates raw
+	     broadcast sockets, not Bonjour browsing. -->
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_smb._tcp</string>
+	</array>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>

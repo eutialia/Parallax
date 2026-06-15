@@ -29,13 +29,14 @@ struct SMBPlaybackResolver {
             throw AppError.source(.notFound)
         }
 
-        // 2. Read the password from Keychain; fall back to empty string if absent.
-        let passwordKey = KeychainKey<String>(account: "token-\(ref.id.rawValue)")
+        // 2. Read the password from Keychain; fall back to empty string if absent. Same slot
+        //    derivation the media-repo factory + ServerStore use, so they never diverge.
+        let passwordKey = KeychainKey<String>(account: ServerStore.tokenAccount(for: ref.id))
         let password = (try? await keychain.read(passwordKey)) ?? ""
 
-        // 3. Build the credential-free smb:// URL.
-        let rawURL = "smb://\(ref.data.host)/\(ref.data.share)/\(path)"
-        guard let url = URL(string: rawURL) else {
+        // 3. Build the credential-free, percent-encoded smb:// URL (SMBURL handles '#'/'?'
+        //    and other delimiters in real filenames — see SMBFileSource.playableURL).
+        guard let url = SMBURL.make(host: ref.data.host, share: ref.data.share, path: path) else {
             throw AppError.source(.notFound)
         }
 

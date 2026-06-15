@@ -82,7 +82,7 @@ final class AppDependencies {
             case .jellyfin(let session):
                 return await repoStore.repository(for: session)
             case .smb(let ref):
-                let key = KeychainKey<String>(account: "token-\(ref.id.rawValue)")
+                let key = KeychainKey<String>(account: ServerStore.tokenAccount(for: ref.id))
                 let password = (try? await keychain.read(key)) ?? ""
                 let lister = AMSMB2Lister(
                     host: ref.data.host,

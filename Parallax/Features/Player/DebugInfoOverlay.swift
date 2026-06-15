@@ -90,6 +90,11 @@ struct DebugInfoOverlay: View {
                 row("reason", r.transcodeReasons.joined(separator: ", "))
             }
             if let req = requestedIndices { row("requested", req) }
+        } else if vm.phase == .playing {
+            // No Jellyfin resolve object, but the engine is playing: this is the SMB/local
+            // path, which plays straight off the file URL with no server routing decision —
+            // so "resolving…" would be misleading. (`resolved` is nil by design there.)
+            row("method", "local/SMB direct")
         } else {
             row("state", "resolving…")
         }

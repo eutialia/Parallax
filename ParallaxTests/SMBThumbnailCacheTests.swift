@@ -44,7 +44,7 @@ struct SMBThumbnailCacheTests {
         defer { cleanup(dir) }
         let cache = SMBThumbnailCache(directory: dir)
         let counter = CallCounter()
-        let key = SMBThumbnailKey(path: "Movies/Film.mkv", size: 1234, modifiedAt: Date(timeIntervalSince1970: 1_000))
+        let key = SMBThumbnailKey(serverID: "smb-nas|Media|", path: "Movies/Film.mkv", size: 1234, modifiedAt: Date(timeIntervalSince1970: 1_000))
 
         let url = await cache.thumbnailURL(for: key) {
             await counter.increment()
@@ -64,7 +64,7 @@ struct SMBThumbnailCacheTests {
         defer { cleanup(dir) }
         let cache = SMBThumbnailCache(directory: dir)
         let counter = CallCounter()
-        let key = SMBThumbnailKey(path: "Shows/E01.mkv", size: 42, modifiedAt: Date(timeIntervalSince1970: 2_000))
+        let key = SMBThumbnailKey(serverID: "smb-nas|Media|", path: "Shows/E01.mkv", size: 42, modifiedAt: Date(timeIntervalSince1970: 2_000))
 
         let generate: () async throws -> Data = {
             await counter.increment()
@@ -90,8 +90,8 @@ struct SMBThumbnailCacheTests {
             return Self.pngData
         }
 
-        let original = SMBThumbnailKey(path: "Movies/Film.mkv", size: 1234, modifiedAt: Date(timeIntervalSince1970: 1_000))
-        let edited = SMBThumbnailKey(path: "Movies/Film.mkv", size: 1234, modifiedAt: Date(timeIntervalSince1970: 9_999))
+        let original = SMBThumbnailKey(serverID: "smb-nas|Media|", path: "Movies/Film.mkv", size: 1234, modifiedAt: Date(timeIntervalSince1970: 1_000))
+        let edited = SMBThumbnailKey(serverID: "smb-nas|Media|", path: "Movies/Film.mkv", size: 1234, modifiedAt: Date(timeIntervalSince1970: 9_999))
 
         let firstURL = await cache.thumbnailURL(for: original, generate: generate)
         let secondURL = await cache.thumbnailURL(for: edited, generate: generate)
@@ -108,7 +108,7 @@ struct SMBThumbnailCacheTests {
         defer { cleanup(dir) }
         let cache = SMBThumbnailCache(directory: dir)
         let counter = CallCounter()
-        let key = SMBThumbnailKey(path: "Movies/Broken.mkv", size: 7, modifiedAt: nil)
+        let key = SMBThumbnailKey(serverID: "smb-nas|Media|", path: "Movies/Broken.mkv", size: 7, modifiedAt: nil)
 
         struct GenerationError: Error {}
         let url = await cache.thumbnailURL(for: key) {
@@ -121,5 +121,28 @@ struct SMBThumbnailCacheTests {
         // No artifact should be left behind for this key.
         let contents = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
         #expect(contents.allSatisfy { !$0.hasSuffix(".png") })
+    }
+
+    @Test("two servers with the same share-relative path get distinct cache entries")
+    func differentServerIDsDoNotCollide() async throws {
+        let dir = makeTempDir()
+        defer { cleanup(dir) }
+        let cache = SMBThumbnailCache(directory: dir)
+        let counter = CallCounter()
+        let generate: () async throws -> Data = {
+            await counter.increment()
+            return Self.pngData
+        }
+        // Same path, size, and mtime — only the owning server differs.
+        let serverA = SMBThumbnailKey(serverID: "smb-a|Media|", path: "Movies/Film.mkv", size: 1234, modifiedAt: Date(timeIntervalSince1970: 1_000))
+        let serverB = SMBThumbnailKey(serverID: "smb-b|Media|", path: "Movies/Film.mkv", size: 1234, modifiedAt: Date(timeIntervalSince1970: 1_000))
+
+        let urlA = await cache.thumbnailURL(for: serverA, generate: generate)
+        let urlB = await cache.thumbnailURL(for: serverB, generate: generate)
+
+        #expect(urlA != nil)
+        #expect(urlB != nil)
+        #expect(urlA != urlB, "Different servers must not share one cache file for the same relative path")
+        #expect(await counter.count == 2)
     }
 }

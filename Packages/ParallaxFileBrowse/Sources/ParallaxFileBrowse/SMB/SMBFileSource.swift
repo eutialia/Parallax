@@ -43,17 +43,13 @@ public struct SMBFileSource: Sendable {
     }
 
     /// Builds an `smb://host/share/path` URL. Credentials are NEVER included in the string.
+    /// Path components are percent-encoded (see `SMBURL`) so `#`/`?` in a real filename don't
+    /// truncate the URL.
     public func playableURL(for entry: SMBDirectoryEntry, in path: String) -> URL? {
         let listPath = path.isEmpty ? root : path
-        let filePath: String
-        if listPath.isEmpty {
-            filePath = entry.name
-        } else {
-            let trimmed = listPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            filePath = trimmed.isEmpty ? entry.name : "\(trimmed)/\(entry.name)"
-        }
-        let raw = "smb://\(host)/\(share)/\(filePath)"
-        return URL(string: raw)
+        let trimmed = listPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let filePath = trimmed.isEmpty ? entry.name : "\(trimmed)/\(entry.name)"
+        return SMBURL.make(host: host, share: share, path: filePath)
     }
 
     /// Forwards disconnect to the underlying lister.
