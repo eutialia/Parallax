@@ -4,6 +4,10 @@ import ParallaxCore
 
 struct LibraryListView: View {
     let session: Session
+    /// SMB libraries to surface alongside the Jellyfin collections — additive only: a failed
+    /// SMB source contributes an empty array (silent), never touching the Jellyfin VM or its
+    /// load/error states. Defaults empty so any non-iPhone caller is unaffected.
+    var smbEntries: [LibraryEntry] = []
 
     @Environment(AppDependencies.self) private var deps
     @Environment(\.appIdiom) private var idiom
@@ -33,6 +37,14 @@ struct LibraryListView: View {
                                 NavigationLink(value: coll) { LibraryCard(collection: coll, session: session) }
                                     .tvPosterButton()
                             }
+                            // SMB libraries after the Jellyfin banners, before Favorites — additive
+                            // (driven by `smbEntries`, not the Jellyfin VM) so a failed SMB source
+                            // simply contributes no cards. Drills into the source-aware, play-on-tap
+                            // SMB grid via the `LibraryEntry` navigation value.
+                            ForEach(smbEntries) { entry in
+                                NavigationLink(value: entry) { LibraryCard(smb: entry.collection) }
+                                    .tvPosterButton()
+                            }
                             // The virtual cross-library Favorites grid, riding the same banner
                             // grid as the server libraries (the iPad/tvOS sidebar lists it as a
                             // Libraries-section tab instead).
@@ -56,6 +68,12 @@ struct LibraryListView: View {
         }
         .navigationDestination(for: MediaCollection.self) { coll in
             LibraryGridView(collection: coll, source: .jellyfin(session))
+        }
+        // SMB drill-down: an entry carries its own source, so the grid builds the right repo and
+        // plays on tap. Distinct value type from the Jellyfin `MediaCollection` destination above,
+        // so the two never collide.
+        .navigationDestination(for: LibraryEntry.self) { entry in
+            LibraryGridView(collection: entry.collection, source: entry.source)
         }
         .navigationDestination(for: FavoritesRoute.self) { _ in
             LibraryGridView(scope: .favorites, title: "Favorites", session: session)
