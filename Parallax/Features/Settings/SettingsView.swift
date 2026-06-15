@@ -189,9 +189,11 @@ struct SettingsView: View {
         .padding(.top, Space.s8)
     }
 
+    // `@ViewBuilder` + `if case` (not `guard ... return AnyView`): SwiftUI can't diff through
+    // AnyView, so the erased card fully re-rendered on every settings-list update.
+    @ViewBuilder
     private func smbServerCard(_ server: PersistedServer, vm: SettingsViewModel) -> some View {
-        guard case .smb(let data) = server.kind else { return AnyView(EmptyView()) }
-        return AnyView(
+        if case .smb(let data) = server.kind {
             HStack(spacing: Space.s14) {
                 IconTile(systemImage: "externaldrive.connected.to.line.below.fill", size: 44, cornerRadius: 10, glyphSize: 18, glyphWeight: .regular)
                 VStack(alignment: .leading, spacing: 2) {
@@ -213,7 +215,7 @@ struct SettingsView: View {
             .padding(Space.s14)
             .glassPanel(cornerRadius: Radius.card)
             .contentShape(.rect)
-        )
+        }
     }
 
     /// After the pushed `LoginView` signs in: re-point the router at the now-active server,

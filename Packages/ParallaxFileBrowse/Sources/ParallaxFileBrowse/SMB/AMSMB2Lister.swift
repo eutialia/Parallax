@@ -75,6 +75,12 @@ public actor AMSMB2Lister: SMBLister {
 
     // MARK: - Connection
 
+    /// Returns the live manager for `share`, connecting on demand. ASSUMES a single caller per
+    /// instance: `await client.connectShare` below is a suspension point *before* `self.manager`
+    /// is set, so two CONCURRENT `list()` calls for the same not-yet-connected share would open
+    /// two connections (actor reentrancy). Safe today because every lister is single-use — one
+    /// `items()` per grid, and `SMBSubtitleResolver` builds its own — so no instance ever sees
+    /// concurrent `list()`. Keep it that way, or memoize an in-flight connect `Task` here.
     private func connectedManager(for share: String) async throws -> SMB2Manager {
         if let manager, connectedShare == share {
             return manager

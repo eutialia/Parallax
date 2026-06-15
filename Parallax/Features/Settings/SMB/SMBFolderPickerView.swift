@@ -101,6 +101,8 @@ struct SMBFolderPickerView: View {
     private var directoryList: some View {
         ScrollView {
             LazyVStack(spacing: 0) {
+                // Filter directories once per body pass, not twice (ForEach + empty-state check).
+                let dirs = entries.filter { $0.isDirectory }
                 if !currentPath.isEmpty {
                     Button {
                         ascend()
@@ -123,7 +125,7 @@ struct SMBFolderPickerView: View {
                     Divider().padding(.leading, Space.s14 + 20 + Space.s12)
                 }
 
-                ForEach(entries.filter { $0.isDirectory }, id: \.name) { entry in
+                ForEach(dirs, id: \.name) { entry in
                     Button {
                         descend(into: entry.name)
                     } label: {
@@ -148,7 +150,7 @@ struct SMBFolderPickerView: View {
                     Divider().padding(.leading, Space.s14 + 20 + Space.s12)
                 }
 
-                if entries.filter({ $0.isDirectory }).isEmpty {
+                if dirs.isEmpty {
                     Text("No subdirectories — use this folder")
                         .font(.callout)
                         .foregroundStyle(Color.secondaryLabel)
