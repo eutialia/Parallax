@@ -41,7 +41,16 @@ final class SettingsViewModel {
         } catch {
             Log.persistence.error("Settings removeSMBServer failed for \(id.rawValue): \(error.localizedDescription)")
         }
+        await reloadAfterSMBChange()
+    }
+
+    /// Reload the settings list AND bump the router's library revision, so the navigation
+    /// roots rebuild their merged library list immediately after an SMB server is added or
+    /// removed. The active Jellyfin session is unchanged by an SMB change, so `activeServerID`
+    /// doesn't move — the revision bump is what re-fires the roots' library `.task`.
+    func reloadAfterSMBChange() async {
         await refresh()
+        router.bumpLibraryRevision()
     }
 
     func setActive(_ id: ServerID) async {

@@ -34,21 +34,27 @@ struct FocusRootView: View {
             selectedTab = .settings
             router.presentingSettings = false
         }
-        .task(id: router.activeServerID) {
+        // Keyed on the reload token (server switch + SMB add/remove), matching RootTabView.
+        // The `.id(activeServerID)` remount above stays session-only.
+        .task(id: router.libraryReloadToken) {
             guard router.activeServerID != nil else { return }
             guard let session = await deps.serverStore.active else { return }
-            let source: LibrarySource = .jellyfin(session)
-            // Concrete LibraryRepository: HomeViewModel needs the Jellyfin-only feed
-            // methods (homeHeroFeed/continueWatching/nextUp). We reuse it for collections()
-            // too (it conforms to MediaRepository). When a 2nd source lands (Phase 2), the
-            // library list here merges sources like RootTabView's mediaRepoFactory path.
+            // Concrete LibraryRepository for HomeViewModel: it needs the Jellyfin-only feed
+            // methods (homeHeroFeed/continueWatching/nextUp). The merged library list builds
+            // via `mediaRepoFactory` instead — for `.jellyfin` it resolves to this same
+            // per-session repo (shared `LibraryRepositoryStore`), so `collections()` is
+            // identical; it additionally folds in every configured SMB server.
             let repo = await deps.jellyfinLibraryRepoFactory(session)
             // Load the sidebar's libraries and Home's feed concurrently, then reveal once both
             // settle — so the UI appears whole, with the hero already focusable.
             let vm = HomeViewModel(repo: repo)
-            async let libs: [MediaCollection] = (try? await repo.collections()) ?? []
+            async let libs: [LibraryEntry] = MergedLibrary.entries(
+                jellyfinSession: session,
+                smbServers: await deps.serverStore.servers,
+                repoFactory: deps.mediaRepoFactory
+            )
             async let homeLoaded: Void = vm.load()
-            self.entries = (await libs).map { LibraryEntry(source: source, collection: $0) }
+            self.entries = await libs
             _ = await homeLoaded
             self.session = session
             self.homeViewModel = vm

@@ -256,12 +256,14 @@ struct SettingsView: View {
         }
     }
 
-    /// After a successful SMB add: refresh the server list and pop to root. Intentionally
-    /// does NOT re-point the router — SMB servers are not active sessions; the active
-    /// Jellyfin session is unchanged by this addition.
+    /// After a successful SMB add: refresh the server list, bump the library revision so the
+    /// navigation roots merge the new SMB source in immediately, and pop to root. Intentionally
+    /// does NOT re-point the router — SMB servers are not active sessions; the active Jellyfin
+    /// session is unchanged by this addition (the revision bump, not `activeServerID`, refreshes
+    /// the sidebar).
     private func handleAddedSMBServer() {
         Task {
-            await viewModel?.refresh()
+            await viewModel?.reloadAfterSMBChange()
             path = []
         }
     }

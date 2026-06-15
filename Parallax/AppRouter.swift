@@ -27,6 +27,19 @@ final class AppRouter {
     /// here rather than in view `@State` for the same reason `activeServerID` does.
     var presentingSettings: Bool = false
 
+    /// Monotonic counter the roots fold into `libraryReloadToken`.
+    private(set) var libraryRevision = 0
+
+    /// Bump to force the roots to rebuild their merged library list when the SET of configured
+    /// servers changes without the active Jellyfin session changing (e.g. an SMB server
+    /// added/removed). Distinct from a session switch, which already moves `activeServerID`.
+    func bumpLibraryRevision() { libraryRevision += 1 }
+
+    /// Reload key for the roots' library `.task`: re-fires on a Jellyfin server switch AND on a
+    /// server-set change. The full-tab `.id(activeServerID)` remount stays keyed on the session
+    /// only — a revision bump rebuilds `entries` without tearing down every tab.
+    var libraryReloadToken: String { "\(activeServerID?.rawValue ?? "-")#\(libraryRevision)" }
+
     func updateForCurrentSession(_ session: Session?) {
         destination = (session == nil) ? .login : .home
         activeServerID = session?.id

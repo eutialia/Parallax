@@ -24,13 +24,19 @@ struct RootTabView: View {
         // so a switch tears down + rebuilds the tabs (and reloads the sidebar libraries)
         // against the new server instead of leaving them on the previous one's content.
         .id(router.activeServerID)
-        .task(id: router.activeServerID) {
+        // Keyed on the reload token, not `activeServerID`: a server switch (token's id part)
+        // AND an SMB add/remove (token's revision part) both rebuild `entries`. The `.id`
+        // remount above stays on the session only, so a revision bump rebuilds the merged
+        // list without tearing every tab down.
+        .task(id: router.libraryReloadToken) {
             guard router.activeServerID != nil else { return }
             session = await deps.serverStore.active
             guard let session else { entries = []; return }
-            let source: LibrarySource = .jellyfin(session)
-            let repo = await deps.mediaRepoFactory(source)
-            entries = ((try? await repo.collections()) ?? []).map { LibraryEntry(source: source, collection: $0) }
+            entries = await MergedLibrary.entries(
+                jellyfinSession: session,
+                smbServers: await deps.serverStore.servers,
+                repoFactory: deps.mediaRepoFactory
+            )
         }
         // Tabs that exist at only one width — Library + Settings are compact-only (regular browses
         // libraries from the sidebar and hosts Settings in its footer), the per-library tabs are
@@ -128,6 +134,9 @@ struct RootTabView: View {
             // library is opened (`lastVisitedLibraryID` starts nil). The expanded sidebar ignores
             // `.tabBar` visibility and lists every library under the header.
             if hSize == .regular, let session, !entries.isEmpty {
+                // TODO: per-server sections — one `TabSection` per source (each Jellyfin /
+                // SMB server its own titled group), instead of this single merged section.
+                // Deferred UI polish; the merge already tags every entry by source.
                 TabSection("Libraries") {
                     ForEach(entries) { entry in
                         Tab(entry.collection.name, systemImage: entry.collection.collectionType.symbolName, value: AppTab.collection(entry.id)) {
