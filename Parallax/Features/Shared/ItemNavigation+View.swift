@@ -62,10 +62,18 @@ private struct ItemDetailNavigationModifier: ViewModifier {
         case .movie(let id, let source):
             switch source {
             case .jellyfin(let session): MovieDetailView(itemID: id, session: session)
+            case .smb:
+                // SMB items are play-only — they never create an ItemNavigation value,
+                // so this arm is unreachable.
+                EmptyView()
             }
         case .series(let id, let source):
             switch source {
             case .jellyfin(let session): SeriesDetailView(itemID: id, session: session)
+            case .smb:
+                // SMB items are play-only — they never create an ItemNavigation value,
+                // so this arm is unreachable.
+                EmptyView()
             }
         }
     }

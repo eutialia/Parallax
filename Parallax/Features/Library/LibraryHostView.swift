@@ -21,6 +21,11 @@ struct LibraryHostView: View {
                         #if !os(tvOS)
                         .navigationSubtitle(source.displayName)
                         #endif
+                case .smb:
+                    // SMB libraries are presented from the merged sidebar (wired in the
+                    // merged-library task); this single-source iPhone host never resolves
+                    // a .smb source yet.
+                    EmptyView()
                 }
             } else if isResolvingSource {
                 LibraryListLoadingPlaceholder()

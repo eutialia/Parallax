@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import ParallaxCore
+import ParallaxFileBrowse
 import ParallaxJellyfin
 import ParallaxPlayback
 
@@ -66,9 +67,20 @@ final class AppDependencies {
         let jellyfinRepoFactory: @Sendable (Session) async -> LibraryRepository = { session in
             await repoStore.repository(for: session)
         }
-        let mediaRepoFactory: @Sendable (LibrarySource) async -> any MediaRepository = { source in
+        let mediaRepoFactory: @Sendable (LibrarySource) async -> any MediaRepository = { [keychain] source in
             switch source {
-            case .jellyfin(let session): await repoStore.repository(for: session)
+            case .jellyfin(let session):
+                return await repoStore.repository(for: session)
+            case .smb(let ref):
+                let key = KeychainKey<String>(account: "token-\(ref.id.rawValue)")
+                let password = (try? await keychain.read(key)) ?? ""
+                let lister = AMSMB2Lister(
+                    host: ref.data.host,
+                    username: ref.data.username,
+                    password: password,
+                    domain: ref.data.domain
+                )
+                return SMBMediaRepository(lister: lister, share: ref.data.share, roots: [ref.data.root])
             }
         }
 
