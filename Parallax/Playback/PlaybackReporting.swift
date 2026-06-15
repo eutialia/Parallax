@@ -34,3 +34,16 @@ extension PlaybackInfoService: PlaybackReporting {
         await reportProgress(beat, now: ProcessInfo.processInfo.systemUptime)
     }
 }
+
+/// Inert `PlaybackReporting` for source-agnostic sessions with no Jellyfin server
+/// to report to (the SMB/local path). The VM's real safety is the `resolved == nil`
+/// gate in its beat handler — an SMB session never builds a beat to send — so this
+/// is belt-and-suspenders: it lets the player be constructed for a local file
+/// without wiring a live `PlaybackInfoService`.
+struct NoOpPlaybackReporting: PlaybackReporting {
+    func reportStart(_ beat: ProgressBeat) async {}
+    func reportProgress(_ beat: ProgressBeat) async {}
+    func reportStopped(_ beat: ProgressBeat) async {}
+    func stopEncoding(playSessionID: String) async {}
+    func pingSession(playSessionID: String) async {}
+}

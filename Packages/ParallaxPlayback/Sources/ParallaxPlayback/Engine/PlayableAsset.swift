@@ -24,6 +24,12 @@ public struct PlayableAsset: Sendable {
     /// `freetype-font`; on iOS it holds no fonts unless pointed at a directory to scan.
     /// The app materializes the CJK system faces here. Unused by AVKit.
     public let subtitleFontsDirectoryURL: URL?
+    /// Verbatim libVLC media options (e.g. SMB credentials `:smb-user=…`,
+    /// `:smb-pwd=…`), applied via `VLCMedia.addOption` after the engine's own.
+    /// The package treats these as opaque — it does not know any are credentials.
+    /// AVKit ignores them. **Never logged**: a value here can hold a password, so
+    /// it must never be interpolated into a log or diagnostic string.
+    public let vlcOptions: [String]?
 
     public init(
         url: URL,
@@ -34,7 +40,8 @@ public struct PlayableAsset: Sendable {
         defaultAudioStreamIndex: Int? = nil,
         defaultSubtitleStreamIndex: Int? = nil,
         subtitleFontURL: URL? = nil,
-        subtitleFontsDirectoryURL: URL? = nil
+        subtitleFontsDirectoryURL: URL? = nil,
+        vlcOptions: [String]? = nil
     ) {
         self.url = url
         self.headers = headers
@@ -45,5 +52,6 @@ public struct PlayableAsset: Sendable {
         self.defaultSubtitleStreamIndex = defaultSubtitleStreamIndex
         self.subtitleFontURL = subtitleFontURL
         self.subtitleFontsDirectoryURL = subtitleFontsDirectoryURL
+        self.vlcOptions = vlcOptions
     }
 }

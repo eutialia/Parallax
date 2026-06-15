@@ -326,6 +326,12 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
                 media.addOption(":http-referrer=\(ref)")
             }
         }
+        // Caller-supplied verbatim media options (e.g. SMB credentials). Opaque to
+        // the engine and applied last so they can override the defaults above.
+        // NEVER logged — an entry here can carry a password.
+        for option in asset.vlcOptions ?? [] {
+            media.addOption(option)
+        }
     }
 
     /// Poll the live player clock every 500ms (matching `AVKitEngine`'s observer

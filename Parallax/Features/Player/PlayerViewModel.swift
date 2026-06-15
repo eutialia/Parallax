@@ -622,6 +622,74 @@ final class PlayerViewModel {
         }
     }
 
+    /// SMB/local direct-play entry: play a local file by building a `PlayableAsset`
+    /// DIRECTLY — no Jellyfin network resolve, no `DeviceProfile`, no
+    /// `mediaSourceID`/`playSessionID`, no progress reporting. The caller (Task 11)
+    /// pre-resolves everything (the `smb://` URL, credential options from the Keychain,
+    /// sibling subtitle URLs), so the VM stays decoupled from the SMB layer.
+    ///
+    /// `resolved` deliberately stays nil: the beat handler's `if let resolved`
+    /// blocks then skip all Jellyfin reporting, so a local session never reports
+    /// progress to a server it has none of. The libVLC `smb://` path is the
+    /// validated primary (the spike passed), so the asset routes to VLCKit via
+    /// `hints.scheme == "smb"`.
+    func start(smbItem: SMBPlaybackItem) async {
+        isStartingPlayback = true
+        defer { isStartingPlayback = false }
+        phase = .loading
+        itemTitle = smbItem.title
+        // No Jellyfin item: skip resolve, DeviceProfile, keepalive, segments, and
+        // neighbor lookups (all server features). `resolved` stays nil.
+        do {
+            do {
+                try await audioSession.activate()
+            } catch {
+                Log.playback.error("audio session activate failed: \(error.networkDiagnostic)")
+                throw AppError.playback(.audioSessionFailed)
+            }
+            try checkStillActive()
+            // Sidecar subs are already filename-matched by the caller; surface them so
+            // `loadSidecarSubtitle` finds the URL by index, exactly like the Jellyfin
+            // path's `subtitleURLs = resolved.subtitleStreamURLs`.
+            subtitleURLs = smbItem.subtitleURLs
+            // Materialized off-main (the first touch writes font files) so embedded
+            // ASS/SSA subs still render under VLC — same source as the Jellyfin asset.
+            let fonts = await SubtitleFontLocator.resolved()
+            let asset = PlayableAsset(
+                url: smbItem.url,
+                headers: nil,
+                hints: PlaybackHints(
+                    scheme: "smb",
+                    container: nil,
+                    videoCodec: nil,
+                    audioCodec: nil,
+                    subtitleFormats: []
+                ),
+                startTime: smbItem.startTime,
+                mediaStreams: [],
+                defaultAudioStreamIndex: nil,
+                defaultSubtitleStreamIndex: nil,
+                subtitleFontURL: fonts?.primaryFile,
+                subtitleFontsDirectoryURL: fonts?.directory,
+                vlcOptions: smbItem.vlcOptions
+            )
+            // Follow-up (Task 11): surface `subtitleURLs` as selectable tracks. The
+            // engine only reports EMBEDDED tracks, so a synthetic-index → URL menu entry
+            // (the Jellyfin path's `externalSubtitleTracks` machinery) is needed to make
+            // the sidecar user-pickable. Populating `subtitleURLs` is enough for this task.
+            try await loadAndPlay(asset, reusingEngine: false)
+        } catch is CancellationError {
+            await audioSession.deactivate()
+        } catch let error as AppError {
+            phase = .failed(error)
+            await audioSession.deactivate()
+        } catch {
+            Log.playback.error("SMB playback start failed (unmapped): \(error.networkDiagnostic)")
+            phase = .failed(.unexpected("playback start failed", underlying: AnySendableError(error)))
+            await audioSession.deactivate()
+        }
+    }
+
     /// Resolve + load + play. Shared by first play (`start`) and a transcode
     /// track switch (`switchTranscodeTrack`). On the transcode path the menus
     /// are sourced from the server's full track list, since the HLS manifest
@@ -672,6 +740,15 @@ final class PlayerViewModel {
         recomputeMediaSummary()
 
         let asset = Self.makeAsset(from: resolved, subtitleFonts: await subtitleFonts)
+        try await loadAndPlay(asset, reusingEngine: reusingEngine)
+    }
+
+    /// Select the engine for `asset`, (re)build or reuse it, load, fence, and play —
+    /// the shared tail of every play path. `beginPlayback` (Jellyfin) and
+    /// `start(smbItem:)` (SMB) both end here, so the engine lifecycle (subscription,
+    /// Now Playing wiring, tvOS display-mode match, load-failure teardown, rate
+    /// re-apply) lives in exactly one place.
+    private func loadAndPlay(_ asset: PlayableAsset, reusingEngine: Bool) async throws {
         let id = EngineSelector.select(hints: asset.hints)
 
         // Reuse the live engine when a transcode track switch keeps the same engine
@@ -1189,7 +1266,11 @@ final class PlayerViewModel {
         // outgoing stream's trailing beats — a stale `.playing` would claim the new
         // session's reportStart and the server would never register it starting.
         if isSwitchingTracks { return }
-        guard let resolved else { return }
+        // NOTE: do NOT gate the whole handler on `resolved` here. The SMB/local path
+        // (`start(smbItem:)`) leaves `resolved` nil but still drives phase/position/
+        // track/buffering beats through this surface. Each Jellyfin *reporting* call
+        // below is gated on `resolved` individually instead — so a local session
+        // updates the UI but never reports progress to a server it has none of.
         switch state {
         case .idle, .loading:
             break
@@ -1198,17 +1279,20 @@ final class PlayerViewModel {
             // (populated at resolve); the engine only sees the one baked-in
             // rendition, so don't let it overwrite them. Direct-play has every
             // track in the stream, so the engine's inventory is authoritative.
+            // The SMB path (resolved == nil) is direct-play by nature: the engine's
+            // inventory is authoritative and there are no external server subs to append.
             //
             // Track inventory resolves asynchronously (AVKit loads media
             // selection groups off the actor), so .ready can land *after*
             // .playing. Only publish the tracks — never regress phase back to
             // .loading, or the spinner would reappear over a playing video.
-            if resolved.method != .transcode {
+            if resolved?.method != .transcode {
                 availableAudioTracks = tracks.audio
                 // Embedded subs come from the engine; external sidecar subs are appended
                 // from the server list and rendered client-side (the engine can't shape
-                // sidecar VTT on iOS). Both share the chip menu.
-                availableSubtitleTracks = tracks.subtitles + Self.externalSubtitleTracks(from: resolved)
+                // sidecar VTT on iOS). Both share the chip menu. (No server subs on SMB.)
+                let externalSubs = resolved.map(Self.externalSubtitleTracks) ?? []
+                availableSubtitleTracks = tracks.subtitles + externalSubs
                 // Reflect the engine's default selection so the menus show a
                 // checkmark on the track that's actually playing. Don't clobber
                 // a choice the user already made (a late/duplicate .ready).
@@ -1221,7 +1305,8 @@ final class PlayerViewModel {
                 // First inventory only: steer the engine's own picks toward the
                 // user's Jellyfin language preferences (AVKit selects by system
                 // language, not server config). Duplicate/late .ready beats and
-                // post-switch reloads skip it.
+                // post-switch reloads skip it. No-op when resolved == nil (SMB):
+                // applyServerPreferredTracks guards on `resolved`.
                 if !didApplyPreferredTracks {
                     didApplyPreferredTracks = true
                     await applyServerPreferredTracks()
@@ -1236,11 +1321,14 @@ final class PlayerViewModel {
             applyDuration(duration)
             bufferedTo = buffered
             nowPlaying.update(position: position, duration: duration, isPlaying: true, title: itemTitle)
-            if !didReportStart {
-                didReportStart = true
-                await playbackInfo.reportStart(beat(position: position, isPaused: false, from: resolved))
-            } else {
-                await playbackInfo.reportProgress(beat(position: position, isPaused: false, from: resolved))
+            // Jellyfin-only: no server session to report against on the SMB path.
+            if let resolved {
+                if !didReportStart {
+                    didReportStart = true
+                    await playbackInfo.reportStart(beat(position: position, isPaused: false, from: resolved))
+                } else {
+                    await playbackInfo.reportProgress(beat(position: position, isPaused: false, from: resolved))
+                }
             }
         case .paused(let position, let duration, let buffered):
             isPlaying = false
@@ -1253,7 +1341,8 @@ final class PlayerViewModel {
             // Never report progress for a session that never reported start (a remote/PiP
             // pause can land during buffering, before the first .playing beat) — Jellyfin
             // expects PlaybackStart before any Progress. Mirrors the .playing branch's gate.
-            if didReportStart {
+            // The `if let resolved` also skips the SMB path, which has no server session.
+            if let resolved, didReportStart {
                 await playbackInfo.reportProgress(beat(position: position, isPaused: true, from: resolved))
             }
         case .buffering(let position, let duration, let buffered):
@@ -1486,6 +1575,11 @@ extension PlayerViewModel {
     /// The resolved server-side playback metadata for the playing item.
     /// Debug HUD only — exposes the otherwise-private `resolved`.
     var debugResolved: ResolvedPlayback? { resolved }
+
+    /// The active stream-index → sidecar subtitle URL map. Test-only window onto
+    /// the private `subtitleURLs` so the SMB-start tests can assert it's populated
+    /// from the item and cleared on `stop()`.
+    var debugSubtitleURLs: [Int: URL] { subtitleURLs }
 
     /// The active engine's id, for the HUD's engine label.
     var debugEngineID: PlaybackEngineID? { engine?.id }
