@@ -50,8 +50,13 @@ struct SMBPlaybackResolver {
             let lister = makeLister(ref, password)
             let resolver = SMBSubtitleResolver(lister: lister, host: ref.data.host, share: ref.data.share, root: "")
             let matches = try await resolver.subtitles(for: filename, in: directory)
-            // Sort by label for deterministic index assignment so the map is reproducible.
-            let sorted = matches.sorted { $0.label < $1.label }
+            // Sort by label, then filename, for deterministic index assignment. The filename
+            // tie-break matters: loosened matching can emit colliding labels (e.g. several "Default"
+            // lonely-video subs), and a label-only sort isn't stable — the index→URL map would
+            // otherwise depend on the lister's enumeration order.
+            let sorted = matches.sorted {
+                ($0.label, $0.url.lastPathComponent) < ($1.label, $1.url.lastPathComponent)
+            }
             subtitleURLs = Dictionary(uniqueKeysWithValues: sorted.enumerated().map { ($0.offset, $0.element.url) })
         } catch {
             logger.warning("SMB subtitle resolution failed for \(path, privacy: .public): \(error, privacy: .public)")

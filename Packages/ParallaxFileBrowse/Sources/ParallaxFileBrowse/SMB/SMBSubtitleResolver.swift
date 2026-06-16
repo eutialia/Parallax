@@ -5,9 +5,9 @@ import Foundation
 
 /// A subtitle file found alongside a video on an SMB share.
 public struct SMBSubtitleMatch: Sendable, Hashable {
-    /// Human-readable track label. Language tag extracted from the filename (e.g. `"en"`,
-    /// `"en.forced"`) or `"Default"` when the subtitle name exactly matches the video basename
-    /// with no additional tokens. Always lowercased.
+    /// Human-readable track label. A recovered language/qualifier tag (e.g. `"en"`, `"en.forced"`,
+    /// `"jptc"`), the differing release group, an `"epNN"` anchor, or `"Default"` when nothing
+    /// distinguishes the sub. Language tags are lowercased; `"Default"` is the literal fallback.
     public let label: String
 
     /// `smb://host/share/path/filename` — credentials are NEVER embedded.
@@ -21,11 +21,9 @@ public struct SMBSubtitleMatch: Sendable, Hashable {
 
 /// Finds subtitle sidecar files for a video on an SMB share by comparing sibling filenames.
 ///
-/// **Match rule:** a sibling is a subtitle match when its stem is either:
-/// - exactly the video basename (→ label `"Default"`), or
-/// - the video basename followed by `.` and one or more dot-separated tokens (→ label = those tokens).
-///
-/// The comparison is case-insensitive; the label is lowercased.
+/// All filename-matching logic lives in `SubtitleMatcher` (pure, transport-agnostic, unit-tested in
+/// isolation). This type owns only the SMB side: list one directory level, count videos to decide
+/// the lonely-video fallback, then ask the matcher for each subtitle sibling's label.
 ///
 /// Recognised subtitle extensions: `srt`, `ass`, `ssa`, `vtt`.
 public struct SMBSubtitleResolver: Sendable {
@@ -44,11 +42,17 @@ public struct SMBSubtitleResolver: Sendable {
     ///   - videoName: Basename of the video file, e.g. `"Movie.mkv"`.
     ///   - path: Directory path relative to the configured root, e.g. `"Movies"`.
     public func subtitles(for videoName: String, in path: String) async throws -> [SMBSubtitleMatch] {
-        let videoBasename = (videoName as NSString).deletingPathExtension.lowercased()
-
-        // List once via SMBFileSource — allEntries rather than mediaFiles, which would filter to
-        // video extensions — and reuse playableURL for the smb:// URLs so path-building stays in one place.
+        // List once via SMBFileSource — allEntries rather than mediaFiles, since we need both the
+        // subtitle siblings AND a video count, and reuse playableURL so path-building stays in one place.
         let allEntries = try await fileSource.allEntries(in: path)
+
+        let video = SubtitleMatcher.NameModel(filename: videoName)
+
+        // Lonely-video tier: enabled only when exactly one video file is present in this directory.
+        // A many-video season folder disables the fallback so it can't cross-attach. Counted per raw
+        // entry (a listing never repeats a name) — no case-folding, so two case-distinct videos read
+        // as two, keeping the guard-suspending fallback off.
+        let lonelyVideo = allEntries.lazy.filter(SMBFileSource.isMediaFile).count == 1
 
         var matches: [SMBSubtitleMatch] = []
         for entry in allEntries {
@@ -56,21 +60,8 @@ public struct SMBSubtitleResolver: Sendable {
             let ext = (entry.name as NSString).pathExtension.lowercased()
             guard Self.subtitleExtensions.contains(ext) else { continue }
 
-            let siblingBasename = (entry.name as NSString).deletingPathExtension.lowercased()
-
-            let label: String
-            if siblingBasename == videoBasename {
-                // Exact match — no language token.
-                label = "Default"
-            } else if siblingBasename.hasPrefix(videoBasename + ".") {
-                // Language token(s) after the video basename.
-                let afterDot = String(siblingBasename.dropFirst(videoBasename.count + 1))
-                guard !afterDot.isEmpty else { continue }
-                label = afterDot
-            } else {
-                // Prefix-only or unrelated — skip.
-                continue
-            }
+            let sub = SubtitleMatcher.NameModel(filename: entry.name)
+            guard let label = SubtitleMatcher.label(forSub: sub, video: video, lonelyVideo: lonelyVideo) else { continue }
 
             // playableURL percent-encodes path components (SMBURL), so '#'/'?' siblings no
             // longer truncate; nil here means the components still couldn't form a URL. Drop

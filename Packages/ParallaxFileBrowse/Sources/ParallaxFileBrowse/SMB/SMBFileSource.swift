@@ -31,15 +31,17 @@ public struct SMBFileSource: Sendable {
         return try await lister.list(share: share, path: listPath)
     }
 
+    /// True for a non-directory entry whose extension is a recognised playable media type.
+    /// Shared so the subtitle resolver's video count and `mediaFiles` apply one definition.
+    static func isMediaFile(_ entry: SMBDirectoryEntry) -> Bool {
+        guard !entry.isDirectory else { return false }
+        return mediaExtensions.contains((entry.name as NSString).pathExtension.lowercased())
+    }
+
     /// Lists top-level media files in `path` (or the configured `root` when `path` is empty).
     /// Directories and non-media files are excluded. No recursion.
     public func mediaFiles(in path: String) async throws -> [SMBDirectoryEntry] {
-        let entries = try await allEntries(in: path)
-        return entries.filter { entry in
-            guard !entry.isDirectory else { return false }
-            let ext = (entry.name as NSString).pathExtension.lowercased()
-            return Self.mediaExtensions.contains(ext)
-        }
+        try await allEntries(in: path).filter(Self.isMediaFile)
     }
 
     /// Builds an `smb://host/share/path` URL. Credentials are NEVER included in the string.
