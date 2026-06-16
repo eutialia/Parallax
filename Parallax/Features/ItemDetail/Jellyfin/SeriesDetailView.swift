@@ -162,17 +162,19 @@ struct SeriesDetailView: View {
 
     @ViewBuilder
     private func episodeCard(_ episode: Episode) -> some View {
-        MediaTile(
-            title: episode.name,
-            imageRef: episode.imageRef(.primary),
+        MediaThumbnail(
+            jellyfin: episode.imageRef(.primary),
             session: session,
-            progress: episode.shelfPlaybackProgress,
-            progressCaption: episode.shelfFooterCaption(),
-            // Check only — the footer bar above already carries partial
+            // Check only — the footer bar below already carries partial
             // progress, so a ring would say the same thing twice.
             watched: episode.userData.played ? .watched : .none,
+            footer: MediaThumbnail.Footer.make(
+                caption: episode.shelfFooterCaption(),
+                progress: episode.shelfPlaybackProgress
+            ),
             aspectRatio: MediaImage.landscape,
-            maxImageWidth: SeriesShelf.imageMaxWidth
+            maxImageWidth: SeriesShelf.imageMaxWidth,
+            accessibilityLabel: episode.name
         )
     }
 

@@ -28,6 +28,20 @@ import VLCKitSPM
 /// a fixed box — a 160×90 (16:9) source yields a 569×320 thumbnail (1.778, exactly 16:9),
 /// NOT a 320×240 4:3 frame. `width: 0` is honored, so the API defaults to it. (Downstream
 /// `MediaImage` fill+crop would absorb a minor mismatch regardless.)
+/// A generated still frame plus the source's duration, read off the same `VLCMedia` the
+/// thumbnailer already had to parse. `Sendable` so it crosses the package→app boundary cleanly
+/// (a raw `CGImage`/`VLCMedia` would not). `duration` is nil when libvlc couldn't determine the
+/// length — the caller falls back (e.g. to file size for an SMB tile).
+public struct VLCThumbnailFrame: Sendable {
+    public let data: Data
+    public let duration: Duration?
+
+    public init(data: Data, duration: Duration?) {
+        self.data = data
+        self.duration = duration
+    }
+}
+
 @MainActor
 public final class VLCThumbnailer {
 
@@ -53,6 +67,7 @@ public final class VLCThumbnailer {
     ///   - height: target height (default 320).
     ///   - position: 0–1 fraction of the video duration to snapshot (default 0.3).
     ///   - timeout: hard ceiling; if VLC neither finishes nor times out by then, throws `.timedOut`.
+    /// - Returns: the PNG frame plus the source duration (nil if libvlc couldn't read the length).
     public func thumbnailData(
         for url: URL,
         options: [String] = [],
@@ -60,7 +75,7 @@ public final class VLCThumbnailer {
         height: CGFloat = 320,
         position: Float = 0.3,
         timeout: Duration = .seconds(20)
-    ) async throws -> Data {
+    ) async throws -> VLCThumbnailFrame {
         // Global events-config consistency with the engine (idempotent). Does NOT
         // affect thumbnailer callback threading — see the type doc.
         VLCKitEngine.configureVLCEvents()
@@ -115,7 +130,20 @@ public final class VLCThumbnailer {
             }
         }
 
-        return try Self.encodePNG(cgImage)
+        let data = try Self.encodePNG(cgImage)
+        // `media.length` is populated as a side effect of the parse+seek the thumbnailer just
+        // performed (positional snapshotting can't seek to 5% without knowing the duration), so
+        // it's read here — after a successful frame — without a second parse. nil/0 means libvlc
+        // never resolved it; the caller falls back rather than showing a bogus 0.
+        let duration = Self.duration(of: media)
+        return VLCThumbnailFrame(data: data, duration: duration)
+    }
+
+    /// The media's length as a `Duration`, or nil if libvlc hasn't resolved it (`length.value`
+    /// is `nil`) or it's non-positive. `VLCTime.value` is milliseconds.
+    private static func duration(of media: VLCMedia) -> Duration? {
+        guard let milliseconds = media.length.value?.int64Value, milliseconds > 0 else { return nil }
+        return .milliseconds(milliseconds)
     }
 
     /// First resolution wins; later ones (the timeout/delegate/cancel race) are no-ops

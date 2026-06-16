@@ -3,6 +3,16 @@ import ParallaxCore
 import ParallaxJellyfin
 import ParallaxPlayback
 
+/// A resolved tile artwork plus the source duration extracted while generating it. The duration
+/// rides alongside the image so an SMB tile can show its runtime under the thumbnail; nil when the
+/// source carries no artwork or libvlc couldn't read a length.
+struct MediaArtwork: Sendable, Equatable {
+    let source: ArtworkSource
+    let duration: Duration?
+
+    static let none = MediaArtwork(source: .none, duration: nil)
+}
+
 /// Resolves a poster for a source-neutral `Item` that carries no server artwork — today only the
 /// SMB path, which generates a frame-grab from the video itself.
 ///
@@ -53,10 +63,11 @@ actor MediaArtworkProvider {
     /// Keychain), so a disk hit or a negative-cache skip returns WITHOUT a Keychain round-trip or
     /// the gate. Only a genuine miss pays for credential assembly + gated generation.
     ///
-    /// Returns `.local(url)` once a thumbnail exists on disk, or `.none` while one can't be
-    /// produced. Safe to call from a SwiftUI `.task`: cancellation (scroll-off) propagates through
-    /// the gate and into `VLCThumbnailer`, freeing the single permit for a still-visible tile.
-    func artwork(for item: Item, ref: SMBServerRef) async -> ArtworkSource {
+    /// Returns the local thumbnail (with its duration) once one exists on disk, or `.none` while
+    /// one can't be produced. Safe to call from a SwiftUI `.task`: cancellation (scroll-off)
+    /// propagates through the gate and into `VLCThumbnailer`, freeing the single permit for a
+    /// still-visible tile.
+    func artwork(for item: Item, ref: SMBServerRef) async -> MediaArtwork {
         // SMB library items are flat movies; anything else carries server artwork already.
         guard case .movie(let movie) = item else { return .none }
         // The share-relative path decodes from the ItemID with no Keychain read, so the key (and
@@ -69,7 +80,7 @@ actor MediaArtworkProvider {
             modifiedAt: movie.dateAdded
         )
 
-        if let hit = await cache.existingURL(for: key) { return .local(hit) }
+        if let hit = await cache.existing(for: key) { return MediaArtwork(source: .local(hit.url), duration: hit.duration) }
         if isNegativelyCached(key) { return .none }
 
         // Real miss → assemble credentials (the only Keychain read) + the smb:// URL.
@@ -91,9 +102,9 @@ actor MediaArtworkProvider {
 
     /// Runs under the held single permit. Re-checks the disk first so two tasks that raced for the
     /// same key collapse to one demux (coalescing), then generates and stores.
-    private func generateUnderGate(key: SMBThumbnailKey, ctx: SMBSourceContext) async -> ArtworkSource {
+    private func generateUnderGate(key: SMBThumbnailKey, ctx: SMBSourceContext) async -> MediaArtwork {
         // A sibling task for the same key may have written it while we waited for the permit.
-        if let hit = await cache.existingURL(for: key) { return .local(hit) }
+        if let hit = await cache.existing(for: key) { return MediaArtwork(source: .local(hit.url), duration: hit.duration) }
         if isNegativelyCached(key) { return .none }
 
         do {
@@ -104,10 +115,11 @@ actor MediaArtworkProvider {
             // past a black leader but shallow enough that the bytes are already streamed for the
             // header, so it's fast and reliable, and the frame is no worse than the fallback we were
             // getting. height 320 + the 20s hard timeout keep their defaults.
-            let data = try await thumbnailer.thumbnailData(for: ctx.url, options: ctx.vlcOptions, position: 0.05)
+            let frame = try await thumbnailer.thumbnailData(for: ctx.url, options: ctx.vlcOptions, position: 0.05)
             // A nil from store() is a WRITE failure, not a decode failure — return .none but do
             // NOT poison the key, so the next scroll retries instead of hiding a decodable file.
-            return (await cache.store(data, for: key)).map(ArtworkSource.local) ?? .none
+            guard let cached = await cache.store(frame.data, duration: frame.duration, for: key) else { return .none }
+            return MediaArtwork(source: .local(cached.url), duration: cached.duration)
         } catch {
             // Generation failed/timed out. Poison ONLY if this wasn't a scroll-off cancellation —
             // a cancelled fetch also throws (.timedOut), and `Task.isCancelled` is the reliable

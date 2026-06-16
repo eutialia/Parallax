@@ -69,13 +69,28 @@ extension View {
 
 // MARK: - Tiles & rows
 
-/// Poster-only placeholder — mirrors `MediaTile`, which dropped its title/subtitle text.
+/// Tile placeholder — mirrors `MediaTile`. Poster grids show the bare artwork block; SMB landscape
+/// grids set `showsMetadata` to reserve the under-thumbnail filename + duration row so the
+/// loading→loaded swap doesn't shift the grid.
 struct MediaTileSkeleton: View {
     var aspectRatio: CGFloat = MediaImage.poster
+    var showsMetadata: Bool = false
 
     var body: some View {
-        SkeletonBlock(cornerRadius: Radius.tile)
-            .aspectRatio(aspectRatio, contentMode: .fit)
+        VStack(alignment: .leading, spacing: MediaTile.metadataGap) {
+            SkeletonBlock(cornerRadius: Radius.tile)
+                .aspectRatio(aspectRatio, contentMode: .fit)
+            if showsMetadata {
+                // Two stub lines sized to the real MediaTile.metadataRow's rendered height (~33pt:
+                // a .subheadline title line + 2pt + a .caption2 line) so the loading→loaded swap
+                // doesn't shift the SMB grid. Heights are the rendered line boxes, not font points.
+                VStack(alignment: .leading, spacing: 2) {
+                    SkeletonBlock(cornerRadius: 4, height: 19)
+                    SkeletonBlock(cornerRadius: 4, height: 12)
+                        .frame(width: 56)
+                }
+            }
+        }
     }
 }
 
@@ -173,6 +188,8 @@ struct AdaptivePosterGridLoadingSkeleton: View {
     /// Tile shape — `.poster` for Jellyfin grids, `.landscape` for SMB frame-grab grids, so the
     /// skeleton matches the loaded tiles and the swap stays shift-free.
     var aspectRatio: CGFloat = MediaImage.poster
+    /// Reserve the under-thumbnail metadata row (SMB grids) so the swap to loaded tiles is shift-free.
+    var showsMetadata: Bool = false
 
     @Environment(\.appIdiom) private var idiom
 
@@ -184,7 +201,7 @@ struct AdaptivePosterGridLoadingSkeleton: View {
         )
         LazyVGrid(columns: columns, spacing: AppLayout.posterGridRowSpacing(idiom: idiom)) {
             ForEach(0..<tileCount, id: \.self) { _ in
-                MediaTileSkeleton(aspectRatio: aspectRatio)
+                MediaTileSkeleton(aspectRatio: aspectRatio, showsMetadata: showsMetadata)
             }
         }
         .skeletonShimmer()

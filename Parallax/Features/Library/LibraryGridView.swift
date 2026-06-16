@@ -49,6 +49,10 @@ struct LibraryGridView: View {
     private var columns: Int {
         source.usesLandscapeTiles ? AppLayout.landscapeGridColumns(idiom: idiom) : AppLayout.posterGridColumns(idiom: idiom)
     }
+    /// SMB landscape tiles carry a filename + duration row under the thumbnail; Jellyfin posters
+    /// don't. Drives both the loaded tiles (via `SMBThumbnailTile`) and the skeletons, so the
+    /// loading→loaded swap reserves the same height.
+    private var showsTileMetadata: Bool { source.usesLandscapeTiles }
     @State private var viewModel: LibraryGridViewModel?
 
     var body: some View {
@@ -56,7 +60,7 @@ struct LibraryGridView: View {
             if let vm = viewModel {
                 gridContent(vm: vm)
             } else {
-                LibraryGridLoadingPlaceholder(aspectRatio: tileAspectRatio, columns: columns)
+                LibraryGridLoadingPlaceholder(aspectRatio: tileAspectRatio, columns: columns, showsMetadata: showsTileMetadata)
             }
         }
         // The grid owns its own title (the library name) so both iOS entry points — iPhone's
@@ -94,7 +98,7 @@ struct LibraryGridView: View {
     @ViewBuilder
     private func gridContent(vm: LibraryGridViewModel) -> some View {
         if isInitialLoad(vm) {
-            LibraryGridLoadingPlaceholder(aspectRatio: tileAspectRatio, columns: columns)
+            LibraryGridLoadingPlaceholder(aspectRatio: tileAspectRatio, columns: columns, showsMetadata: showsTileMetadata)
         } else if case .failed(let message) = vm.state, vm.items.isEmpty {
             ContentUnavailableView(
                 "Couldn't load \(title)",
@@ -185,7 +189,7 @@ struct LibraryGridView: View {
     @ViewBuilder
     private func gridScrollContent(vm: LibraryGridViewModel) -> some View {
         if vm.items.isEmpty, vm.state == .loading {
-            AdaptivePosterGridLoadingSkeleton(tileCount: columns * 3, fixedColumns: columns, aspectRatio: tileAspectRatio)
+            AdaptivePosterGridLoadingSkeleton(tileCount: columns * 3, fixedColumns: columns, aspectRatio: tileAspectRatio, showsMetadata: showsTileMetadata)
         } else {
             MediaGrid(
                 items: vm.items,
@@ -207,7 +211,7 @@ struct LibraryGridView: View {
             // round-trip (shared with the Home shelves so the two never drift).
             .staleWhileRevalidate(isRefreshing: vm.isRefreshing, reduceMotion: reduceMotion)
             if vm.isLoadingMore {
-                AdaptivePosterGridLoadingSkeleton(tileCount: columns, fixedColumns: columns, aspectRatio: tileAspectRatio)
+                AdaptivePosterGridLoadingSkeleton(tileCount: columns, fixedColumns: columns, aspectRatio: tileAspectRatio, showsMetadata: showsTileMetadata)
                     .padding(.vertical, Space.s12)
             }
         }
@@ -354,7 +358,6 @@ struct LibraryGridView: View {
             title: item.displayTitle,
             imageRef: image(for: item),
             session: session,
-            progress: nil,
             watched: .init(item),
             aspectRatio: MediaImage.poster,
             maxImageWidth: 600
@@ -431,6 +434,8 @@ private struct LibraryGridLoadingPlaceholder: View {
     /// lays out the exact grid the loaded content will — no shift when the real grid swaps in.
     var aspectRatio: CGFloat = MediaImage.poster
     let columns: Int
+    /// SMB grids reserve the under-thumbnail metadata row; forwarded to the tile skeletons.
+    var showsMetadata: Bool = false
 
     @Environment(\.appIdiom) private var idiom
 
@@ -455,7 +460,7 @@ private struct LibraryGridLoadingPlaceholder: View {
                     .padding(.top, Space.s8)
                     .padding(.bottom, Space.s30)
                 }
-                AdaptivePosterGridLoadingSkeleton(tileCount: columns * 3, fixedColumns: columns, aspectRatio: aspectRatio)
+                AdaptivePosterGridLoadingSkeleton(tileCount: columns * 3, fixedColumns: columns, aspectRatio: aspectRatio, showsMetadata: showsMetadata)
             }
         }
         .scrollDisabled(true)

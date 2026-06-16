@@ -35,7 +35,7 @@ struct JellyfinSearchResultsView: View, Equatable {
                     gridSection("Shows", count: results.series.count, cols: posterCols) {
                         ForEach(results.series) { s in
                             ItemNavigator(item: .series(s), session: session) {
-                                MediaTile(title: s.title, imageRef: s.imageRef(.primary), session: session, progress: nil, watched: .init(.series(s)), aspectRatio: MediaImage.poster, maxImageWidth: 400)
+                                MediaTile(title: s.title, imageRef: s.imageRef(.primary), session: session, watched: .init(.series(s)), aspectRatio: MediaImage.poster, maxImageWidth: 400)
                             }
                         }
                     }
@@ -44,7 +44,7 @@ struct JellyfinSearchResultsView: View, Equatable {
                     gridSection("Movies", count: results.movies.count, cols: posterCols) {
                         ForEach(results.movies) { m in
                             ItemNavigator(item: .movie(m), session: session) {
-                                MediaTile(title: m.title, imageRef: m.imageRef(.primary), session: session, progress: nil, watched: .init(.movie(m)), aspectRatio: MediaImage.poster, maxImageWidth: 400)
+                                MediaTile(title: m.title, imageRef: m.imageRef(.primary), session: session, watched: .init(.movie(m)), aspectRatio: MediaImage.poster, maxImageWidth: 400)
                             }
                         }
                     }
@@ -53,7 +53,7 @@ struct JellyfinSearchResultsView: View, Equatable {
                     gridSection("Episodes", count: results.episodes.count, cols: landscapeCols) {
                         ForEach(results.episodes) { e in
                             ItemNavigator(item: .episode(e), session: session) {
-                                MediaTile(title: e.name, imageRef: e.imageRef(.primary), session: session, progress: nil, watched: .init(.episode(e)), aspectRatio: MediaImage.landscape, maxImageWidth: 500)
+                                MediaTile(title: e.name, imageRef: e.imageRef(.primary), session: session, watched: .init(.episode(e)), aspectRatio: MediaImage.landscape, maxImageWidth: 500)
                             }
                         }
                     }

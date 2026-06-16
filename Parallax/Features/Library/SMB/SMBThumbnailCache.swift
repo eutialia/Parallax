@@ -14,14 +14,26 @@ struct SMBThumbnailKey: Hashable, Sendable {
     let modifiedAt: Date?
 }
 
+/// A cached thumbnail: its on-disk PNG plus the source duration persisted alongside it (a small
+/// `.dur` sidecar). `duration` is nil when none was stored — an old entry written before duration
+/// extraction, or a file libvlc couldn't read a length from.
+struct CachedThumbnail: Sendable, Equatable {
+    let url: URL
+    let duration: Duration?
+}
+
 /// Disk-backed store of locally generated SMB thumbnails — a PURE storage layer (no generation,
 /// no concurrency policy; `MediaArtworkProvider` owns those).
 ///
-/// Two operations: `existingURL(for:)` peeks for a cached file (and stamps its access date so
-/// eviction is true-LRU), and `store(_:for:)` writes generated PNG bytes. Splitting peek from
-/// store lets the caller distinguish a generation failure (never calls `store`) from a write
+/// Two operations: `existing(for:)` peeks for a cached file (and stamps its access date so
+/// eviction is true-LRU), and `store(_:duration:for:)` writes generated PNG bytes. Splitting peek
+/// from store lets the caller distinguish a generation failure (never calls `store`) from a write
 /// failure (`store` returns nil) — they must not be conflated, or a write blip would poison a
 /// perfectly decodable file. The produced URL is meant to feed `ArtworkSource.local(_:)`.
+///
+/// Each PNG carries an optional `.dur` sidecar holding the source duration in milliseconds, so a
+/// cache hit can show the tile's runtime without re-decoding the video. The sidecar is best-effort:
+/// its absence (or a parse failure) just yields a nil duration, never a broken thumbnail.
 actor SMBThumbnailCache {
     private let directory: URL
     private let fileManager: FileManager
@@ -67,30 +79,43 @@ actor SMBThumbnailCache {
         }
     }
 
-    /// The cached thumbnail URL for `key` if a file already exists, else nil. Never generates.
+    /// The cached thumbnail for `key` if a file already exists, else nil. Never generates. The
+    /// returned record carries the duration read from the PNG's `.dur` sidecar (nil if absent).
     ///
     /// On a hit it stamps the file's access date to now so `sweep()` can evict by TRUE recency:
     /// iOS does not bump a file's access time on a plain `stat`/read, so the cache must set it
     /// explicitly (the same technique Nuke's `DataCache` uses) — otherwise eviction silently
     /// degrades to oldest-written-first regardless of how often a thumbnail is actually viewed.
-    func existingURL(for key: SMBThumbnailKey) -> URL? {
+    func existing(for key: SMBThumbnailKey) -> CachedThumbnail? {
         let url = directory.appendingPathComponent(fileName(for: key))
         guard fileManager.fileExists(atPath: url.path) else { return nil }
         touchAccessDate(url)
-        return url
+        return CachedThumbnail(url: url, duration: readDuration(for: url))
     }
 
-    /// Writes `data` as the thumbnail for `key`, returning its file URL, or nil if the write fails
-    /// (createDirectory / atomic-write error). A nil here means a STORAGE failure, NOT a generation
-    /// failure — the caller already produced valid bytes — so the caller must not treat it as a
-    /// reason to negative-cache the key. No partial file is left behind on failure.
-    func store(_ data: Data, for key: SMBThumbnailKey) -> URL? {
+    /// Writes `data` as the thumbnail for `key` (plus `duration` as a `.dur` sidecar when present),
+    /// returning the cached record, or nil if the PNG write fails (createDirectory / atomic-write
+    /// error). A nil here means a STORAGE failure, NOT a generation failure — the caller already
+    /// produced valid bytes — so the caller must not treat it as a reason to negative-cache the
+    /// key. No partial file is left behind on failure.
+    func store(_ data: Data, duration: Duration?, for key: SMBThumbnailKey) -> CachedThumbnail? {
         let url = directory.appendingPathComponent(fileName(for: key))
         do {
             try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
             try data.write(to: url, options: .atomic)
         } catch {
             return nil
+        }
+        // Persist the duration sidecar and report back ONLY what actually reached disk: a failed
+        // sidecar write (or no duration) means a later `existing(for:)` reads nil, so store() must
+        // return nil too — otherwise the same key shows a duration now and none after a
+        // scroll-off/scroll-back. Re-storing a key without a duration also clears any stale sidecar.
+        let persistedDuration: Duration?
+        if let duration, writeDuration(duration, for: url) {
+            persistedDuration = duration
+        } else {
+            removeDuration(for: url)
+            persistedDuration = nil
         }
 
         // Amortise the bounded-LRU sweep across writes — never on the read/hit path, so the steady
@@ -100,7 +125,44 @@ actor SMBThumbnailCache {
             writesSinceSweep = 0
             sweep()
         }
-        return url
+        return CachedThumbnail(url: url, duration: persistedDuration)
+    }
+
+    /// The `.dur` sidecar URL for a PNG: same base name, `dur` extension (`<name>.dur`). Holds the
+    /// source duration in whole milliseconds as decimal text.
+    private func durationSidecarURL(for pngURL: URL) -> URL {
+        pngURL.deletingPathExtension().appendingPathExtension("dur")
+    }
+
+    /// Reads the duration from `pngURL`'s sidecar, or nil if it's missing/unparseable.
+    private func readDuration(for pngURL: URL) -> Duration? {
+        guard let data = try? Data(contentsOf: durationSidecarURL(for: pngURL)),
+              let text = String(data: data, encoding: .utf8),
+              let milliseconds = Int64(text.trimmingCharacters(in: .whitespacesAndNewlines)),
+              milliseconds > 0
+        else { return nil }
+        return .milliseconds(milliseconds)
+    }
+
+    /// Writes the duration sidecar (whole milliseconds), returning whether it reached disk. A
+    /// non-positive duration or a write error yields false, and `store` then reports a nil duration
+    /// so its in-memory result can't disagree with a later on-disk `existing(for:)` read.
+    private func writeDuration(_ duration: Duration, for pngURL: URL) -> Bool {
+        let milliseconds = duration.components.seconds * 1_000
+            + duration.components.attoseconds / 1_000_000_000_000_000
+        guard milliseconds > 0 else { return false }
+        do {
+            try Data(String(milliseconds).utf8).write(to: durationSidecarURL(for: pngURL), options: .atomic)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// Removes a PNG's `.dur` sidecar if present (best-effort). Pairs with PNG eviction in `sweep`
+    /// and clears a stale sidecar when a key is re-stored without a duration.
+    private func removeDuration(for pngURL: URL) {
+        try? fileManager.removeItem(at: durationSidecarURL(for: pngURL))
     }
 
     /// Stamps `url`'s access date to now so a hit counts as "recently used" for `sweep()`.
@@ -113,7 +175,7 @@ actor SMBThumbnailCache {
 
     /// Bounded-LRU eviction. Lists the cache directory once for size + access time; if the total
     /// exceeds `sizeCapBytes`, deletes least-recently-accessed files until under `trimTargetBytes`.
-    /// Access time is meaningful because `existingURL` stamps it on every hit. Best-effort: a
+    /// Access time is meaningful because `existing` stamps it on every hit. Best-effort: a
     /// transient list/remove failure just defers eviction to the next sweep.
     private func sweep() {
         let keys: [URLResourceKey] = [.contentAccessDateKey, .totalFileAllocatedSizeKey, .isRegularFileKey]
@@ -124,6 +186,9 @@ actor SMBThumbnailCache {
         var files: [(url: URL, size: Int64, accessed: Date)] = []
         var total: Int64 = 0
         for entry in entries {
+            // PNGs are the eviction units; `.dur` sidecars are tiny and ride their PNG out (below),
+            // so they're neither counted toward the cap nor evicted on their own.
+            guard entry.pathExtension == "png" else { continue }
             guard let values = try? entry.resourceValues(forKeys: Set(keys)),
                   values.isRegularFile == true else { continue }
             let size = Int64(values.totalFileAllocatedSize ?? 0)
@@ -133,11 +198,12 @@ actor SMBThumbnailCache {
 
         guard total > sizeCapBytes else { return }
 
-        // Oldest access first → evict until under the trim target.
+        // Oldest access first → evict until under the trim target. Each PNG takes its sidecar with it.
         files.sort { $0.accessed < $1.accessed }
         for file in files where total > trimTargetBytes {
             if (try? fileManager.removeItem(at: file.url)) != nil {
                 total -= file.size
+                removeDuration(for: file.url)
             }
         }
     }

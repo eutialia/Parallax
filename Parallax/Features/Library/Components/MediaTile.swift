@@ -2,239 +2,110 @@ import SwiftUI
 import ParallaxJellyfin
 import ParallaxCore
 
+/// A library grid cell: a `MediaThumbnail` (artwork + watched badge) with an *optional* metadata
+/// row underneath — the filename + duration the wider 16:9 SMB tiles have room for. Jellyfin poster
+/// grids pass `metadata: nil` and render the thumbnail alone (the poster carries identity). The
+/// footer-bearing shelves use `MediaThumbnail` directly, not this.
 struct MediaTile: View {
-    /// Top-right corner badge state: a progress ring while a title is mid-watch,
-    /// the check once it's done — one disc, the ring "fills up into" the check.
-    enum WatchedStatus: Equatable {
-        case none
-        /// Watched fraction (0–1) — the disc's border fills clockwise.
-        case inProgress(Double)
-        case watched
-    }
-
-    @Environment(\.itemZoomNavigationValue) private var itemZoomNavigation
-
-    /// The tile's artwork source. Jellyfin items carry their `Session` so `MediaImage`
-    /// can use the per-session auth pipeline; other sources (SMB) pass a neutral
-    /// `ArtworkSource` (a local thumbnail, or `.none` for the placeholder).
-    private enum Artwork {
-        case jellyfin(ImageRef?, Session)
-        case artwork(ArtworkSource)
+    /// The optional text row under the thumbnail. Its primary line is the tile's `title` (one label
+    /// source, no duplication); this adds the supporting `secondary` line — duration, falling back
+    /// to file size for SMB. A non-nil value renders the row; nil hides it (Jellyfin posters carry
+    /// identity unaided).
+    struct Metadata: Equatable {
+        let secondary: String?
     }
 
     let title: String
-    private let artworkSource: Artwork
-    let progress: Double?   // 0.0–1.0; nil hides the bar
-    let progressCaption: String?
-    let watched: WatchedStatus
-    let aspectRatio: CGFloat
-    let maxImageWidth: Int
+    let metadata: Metadata?
+    /// Built once at init: MediaTile is just this thumbnail plus the metadata row, so it stores the
+    /// constructed `MediaThumbnail` instead of re-deriving an artwork enum that mirrors the one
+    /// MediaThumbnail already owns.
+    private let thumbnail: MediaThumbnail
 
     init(
         title: String,
         imageRef: ImageRef?,
         session: Session,
-        progress: Double?,
-        progressCaption: String? = nil,
-        watched: WatchedStatus = .none,
+        watched: MediaThumbnail.WatchedStatus = .none,
         aspectRatio: CGFloat = MediaImage.poster,
-        maxImageWidth: Int = 600
+        maxImageWidth: Int = 600,
+        metadata: Metadata? = nil
     ) {
         self.title = title
-        self.artworkSource = .jellyfin(imageRef, session)
-        self.progress = progress
-        self.progressCaption = progressCaption
-        self.watched = watched
-        self.aspectRatio = aspectRatio
-        self.maxImageWidth = maxImageWidth
+        self.metadata = metadata
+        self.thumbnail = MediaThumbnail(
+            jellyfin: imageRef, session: session,
+            watched: watched, aspectRatio: aspectRatio, maxImageWidth: maxImageWidth,
+            accessibilityLabel: Self.accessibilityLabel(title: title, metadata: metadata)
+        )
     }
 
-    /// Source-neutral tile for non-Jellyfin items (SMB): a local thumbnail or the
-    /// placeholder, with the same badge/footer chrome as the Jellyfin tile.
+    /// Source-neutral tile for non-Jellyfin items (SMB): a local thumbnail or the placeholder, with
+    /// the same chrome as the Jellyfin tile and the metadata row the SMB grid populates.
     init(
         title: String,
         artwork: ArtworkSource,
-        progress: Double?,
-        progressCaption: String? = nil,
-        watched: WatchedStatus = .none,
+        watched: MediaThumbnail.WatchedStatus = .none,
         aspectRatio: CGFloat = MediaImage.poster,
-        maxImageWidth: Int = 600
+        maxImageWidth: Int = 600,
+        metadata: Metadata? = nil
     ) {
         self.title = title
-        self.artworkSource = .artwork(artwork)
-        self.progress = progress
-        self.progressCaption = progressCaption
-        self.watched = watched
-        self.aspectRatio = aspectRatio
-        self.maxImageWidth = maxImageWidth
+        self.metadata = metadata
+        self.thumbnail = MediaThumbnail(
+            artwork: artwork,
+            watched: watched, aspectRatio: aspectRatio, maxImageWidth: maxImageWidth,
+            accessibilityLabel: Self.accessibilityLabel(title: title, metadata: metadata)
+        )
     }
 
-    // Poster-only tile: the title/subtitle text under the artwork was removed —
-    // the poster carries identity, `title` survives solely as the VoiceOver label.
+    /// Gap between the thumbnail and its metadata row — shared with `MediaTileSkeleton` so the
+    /// loading→loaded swap doesn't shift the grid.
+    static let metadataGap: CGFloat = Space.s8
+
     var body: some View {
-        ZStack(alignment: .bottom) {
-            artwork
-
-            if showsShelfFooterOverlay {
-                shelfArtworkFooter(caption: progressCaption ?? "", progress: progress)
-            }
-        }
-        .clipShape(.rect(cornerRadius: Radius.tile))
-        // After the clip: the disc rides over the rounded corner instead of
-        // being shaved by it.
-        .overlay(alignment: .topTrailing) {
-            statusBadge
-        }
-        // tvOS system highlight (specular + parallax) masked to the tile's own corners —
-        // pairs with the `.borderless` style the enclosing button wears (`tvPosterButton`).
-        .tvPosterHighlight(cornerRadius: Radius.tile)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(title)
-        .accessibilityValue(watchedAccessibilityValue)
-    }
-
-    private var watchedAccessibilityValue: String {
-        switch watched {
-        case .none: ""
-        case .inProgress(let fraction): "\(Int((fraction * 100).rounded()))% watched"
-        case .watched: "Watched"
-        }
-    }
-
-    #if os(tvOS)
-    private static let badgeDiameter: CGFloat = 36
-    private static let badgeInset: CGFloat = 12
-    private static let badgeRing: CGFloat = 3
-    private static let badgeGlyph: Font = .system(size: 17, weight: .bold)
-    #else
-    private static let badgeDiameter: CGFloat = 22
-    private static let badgeInset: CGFloat = 6
-    private static let badgeRing: CGFloat = 2
-    private static let badgeGlyph: Font = .system(size: 10, weight: .bold)
-    #endif
-
-    /// Watched marker — Jellyfin's top-corner check, restated quietly: a white
-    /// check on a dark scrim disc, hairline-ringed so it separates from light
-    /// posters without shouting over dark ones. Mid-watch, the same disc carries
-    /// a progress ring on its border instead of the check — the fraction fills
-    /// the border clockwise, and at 100% the full ring "becomes" the check
-    /// badge. Library grids only; the continue-watching shelves carry footer
-    /// progress bars instead.
-    @ViewBuilder
-    private var statusBadge: some View {
-        switch watched {
-        case .none:
-            EmptyView()
-        case .inProgress(let fraction):
-            badgeDisc {
-                Circle()
-                    // Floor the arc so "just started" still reads as a ring, not a dot.
-                    .trim(from: 0, to: min(max(fraction, 0.05), 1))
-                    .stroke(.white, style: StrokeStyle(lineWidth: Self.badgeRing, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-                    // Center the arc on the hairline track: inset the path so the
-                    // stroke straddles the disc's border instead of clipping at it.
-                    .padding(Self.badgeRing / 2)
-            }
-        case .watched:
-            badgeDisc {
-                Image(systemName: "checkmark")
-                    .font(Self.badgeGlyph)
-                    .foregroundStyle(.white)
+        // The tvOS focus highlight + zoom transition live on the thumbnail (inside MediaThumbnail),
+        // not this VStack — the poster lifts on focus while the metadata row stays as supporting
+        // text beneath it. SMB is iOS-first, where there's no focus lift, so the artwork-scoped
+        // highlight only matters if SMB grids ever reach tvOS.
+        VStack(alignment: .leading, spacing: Self.metadataGap) {
+            thumbnail
+            if let metadata {
+                metadataRow(metadata)
             }
         }
     }
 
-    private func badgeDisc(@ViewBuilder content: () -> some View) -> some View {
-        content()
-            .frame(width: Self.badgeDiameter, height: Self.badgeDiameter)
-            .background(.black.opacity(0.45), in: .circle)
-            .overlay(Circle().strokeBorder(.white.opacity(0.35), lineWidth: 1))
-            .padding(Self.badgeInset)
-            .allowsHitTesting(false)
-    }
-
-    private var showsShelfFooterOverlay: Bool {
-        let hasCaption = progressCaption.map { !$0.isEmpty } ?? false
-        let hasProgress = (progress ?? 0) > 0
-        return hasCaption || hasProgress
+    /// The secondary line folds into the thumbnail's single accessibility element ("Title, 1h 23m");
+    /// the visible row below is then hidden from VoiceOver so the tile reads as one element.
+    private static func accessibilityLabel(title: String, metadata: Metadata?) -> String {
+        guard let secondary = metadata?.secondary, !secondary.isEmpty else { return title }
+        return "\(title), \(secondary)"
     }
 
     @ViewBuilder
-    private func shelfArtworkFooter(caption: String, progress: Double?) -> some View {
-        VStack(spacing: 0) {
-            Color.clear.frame(height: HomeShelf.footerBlurFeatherBleed)
-            VStack(alignment: .leading, spacing: 5) {
-                if !caption.isEmpty {
-                    Text(caption)
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                if let progress, progress > 0 {
-                    GeometryReader { geo in
-                        ZStack(alignment: .leading) {
-                            Rectangle().fill(.white.opacity(0.28))
-                            Rectangle()
-                                .fill(.white)
-                                .frame(width: geo.size.width * progress)
-                        }
-                    }
-                    .frame(height: 5)
-                    .clipShape(.rect(cornerRadius: 2.5))
-                }
+    private func metadataRow(_ metadata: Metadata) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(Color.label)
+                .lineLimit(1)
+            if let secondary = metadata.secondary, !secondary.isEmpty {
+                Text(secondary)
+                    .font(.caption2)
+                    .foregroundStyle(Color.secondaryLabel)
+                    .lineLimit(1)
             }
-            .padding(.horizontal, HomeShelf.footerCaptionInsetX)
-            .padding(.bottom, HomeShelf.footerCaptionInsetBottom)
         }
-        .frame(maxWidth: .infinity)
-        .shelfTileFooterGlass()
-        .allowsHitTesting(false)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-    }
-
-    @ViewBuilder
-    private var mediaImage: some View {
-        switch artworkSource {
-        case .jellyfin(let ref, let session):
-            MediaImage(jellyfin: ref, session: session, maxWidth: maxImageWidth, aspectRatio: aspectRatio)
-        case .artwork(let source):
-            MediaImage(artwork: source, maxWidth: maxImageWidth, aspectRatio: aspectRatio)
-        }
-    }
-
-    @ViewBuilder
-    private var artwork: some View {
-        let image = mediaImage
-
-        if let itemZoomNavigation {
-            image.itemZoomTransitionSource(itemZoomNavigation)
-        } else {
-            image
-        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityHidden(true)
     }
 }
 
-extension MediaTile.WatchedStatus {
-    /// Grid mapping from a library item: the check when played, the ring while
-    /// mid-watch (movies/episodes only — a series has no single playback
-    /// position, so it's check-or-nothing there).
-    init(_ item: Item) {
-        if item.userData.played {
-            self = .watched
-        } else if let fraction = item.playbackProgress, fraction > 0, fraction < 1 {
-            self = .inProgress(fraction)
-        } else {
-            self = .none
-        }
-    }
-}
-
-/// Diagnostic: badge legibility on the placeholder field (the worst case is a
-/// light poster — the hairline ring is what separates it there) and the
-/// progress ring at the tricky fractions: barely started (floored arc), the
-/// half mark, and almost-done next to the full check it morphs into.
+#if DEBUG
+/// Badge legibility on the placeholder field (worst case: a light poster — the hairline ring is
+/// what separates the disc there) and the progress ring at the tricky fractions: barely started
+/// (floored arc), the half mark, and almost-done next to the full check it morphs into.
 #Preview("Watched badge", traits: .sizeThatFitsLayout) {
     let session = Session(
         id: ServerID(rawValue: "preview"),
@@ -246,26 +117,61 @@ extension MediaTile.WatchedStatus {
         accessToken: "preview"
     )
     return HStack(spacing: 16) {
-        MediaTile(title: "Just started", imageRef: nil,
-                  session: session, progress: nil, watched: .inProgress(0.02))
+        MediaTile(title: "Just started", imageRef: nil, session: session, watched: .inProgress(0.02))
             .frame(width: 140)
-        MediaTile(title: "Halfway", imageRef: nil,
-                  session: session, progress: nil, watched: .inProgress(0.5))
+        MediaTile(title: "Halfway", imageRef: nil, session: session, watched: .inProgress(0.5))
             .frame(width: 140)
-        MediaTile(title: "Almost done", imageRef: nil,
-                  session: session, progress: nil, watched: .inProgress(0.92))
+        MediaTile(title: "Almost done", imageRef: nil, session: session, watched: .inProgress(0.92))
             .frame(width: 140)
-        MediaTile(title: "Watched", imageRef: nil,
-                  session: session, progress: nil, watched: .watched)
+        MediaTile(title: "Watched", imageRef: nil, session: session, watched: .watched)
             .frame(width: 140)
-        MediaTile(title: "Unwatched", imageRef: nil,
-                  session: session, progress: nil)
-            .frame(width: 140)
-        // Neutral (SMB) path with no thumbnail yet — same gray placeholder as a missing poster.
-        MediaTile(title: "SMB placeholder", artwork: .none,
-                  progress: nil)
+        MediaTile(title: "Unwatched", imageRef: nil, session: session)
             .frame(width: 140)
     }
     .padding()
     .background(Color.background)
 }
+
+/// The SMB landscape tile with its metadata row: filename on top, duration (or the file-size
+/// fallback) beneath, under a 16:9 frame-grab placeholder.
+#Preview("SMB metadata row", traits: .sizeThatFitsLayout) {
+    HStack(spacing: 16) {
+        MediaTile(
+            title: "The Grand Budapest Hotel (2014)",
+            artwork: .none,
+            aspectRatio: MediaImage.landscape,
+            metadata: .init(secondary: "1h 39m")
+        )
+        .frame(width: 280)
+        MediaTile(
+            title: "Sintel.2010.1080p",
+            artwork: .none,
+            watched: .inProgress(0.3),
+            aspectRatio: MediaImage.landscape,
+            metadata: .init(secondary: "1.4 GB")
+        )
+        .frame(width: 280)
+    }
+    .padding()
+    .background(Color.background)
+}
+
+/// Shift-free check for the SMB grid: the skeleton's reserved metadata band (left) must match the
+/// loaded `MediaTile.metadataRow` height (right) so the load→loaded swap doesn't jump. Render on an
+/// iOS destination and confirm the thumbnail bottoms and the text bands below them line up.
+#Preview("SMB skeleton ↔ loaded parity", traits: .sizeThatFitsLayout) {
+    HStack(alignment: .top, spacing: 16) {
+        MediaTileSkeleton(aspectRatio: MediaImage.landscape, showsMetadata: true)
+            .frame(width: 280)
+        MediaTile(
+            title: "The Grand Budapest Hotel (2014)",
+            artwork: .none,
+            aspectRatio: MediaImage.landscape,
+            metadata: .init(secondary: "1h 39m")
+        )
+        .frame(width: 280)
+    }
+    .padding()
+    .background(Color.background)
+}
+#endif

@@ -31,37 +31,65 @@ struct SMBThumbnailCacheTests {
         try? FileManager.default.removeItem(at: dir)
     }
 
-    @Test("existingURL misses on a fresh key; store writes the PNG and returns its file URL")
-    func storeWritesAndExistingURLFinds() async throws {
+    @Test("existing misses on a fresh key; store writes the PNG and returns its file URL")
+    func storeWritesAndExistingFinds() async throws {
         let dir = makeTempDir()
         defer { cleanup(dir) }
         let cache = SMBThumbnailCache(directory: dir)
         let key = SMBThumbnailKey(serverID: "smb-nas|Media|", path: "Movies/Film.mkv", size: 1234, modifiedAt: Date(timeIntervalSince1970: 1_000))
 
         // Fresh key: a miss, no file written.
-        #expect(await cache.existingURL(for: key) == nil)
+        #expect(await cache.existing(for: key) == nil)
 
-        let stored = try #require(await cache.store(Self.pngData, for: key))
-        #expect(stored.isFileURL)
-        #expect(FileManager.default.fileExists(atPath: stored.path))
-        #expect(try Data(contentsOf: stored) == Self.pngData)
+        let stored = try #require(await cache.store(Self.pngData, duration: nil, for: key))
+        #expect(stored.url.isFileURL)
+        #expect(FileManager.default.fileExists(atPath: stored.url.path))
+        #expect(try Data(contentsOf: stored.url) == Self.pngData)
 
-        // After storing, the same key resolves to the same file via existingURL.
-        #expect(await cache.existingURL(for: key) == stored)
+        // After storing, the same key resolves to the same file via existing.
+        #expect(await cache.existing(for: key) == stored)
     }
 
-    @Test("existingURL is read-only — repeated lookups return the same URL, never re-storing")
-    func existingURLIsStableAndReadOnly() async throws {
+    @Test("store persists the duration; existing reads it back from the sidecar")
+    func durationRoundTrips() async throws {
+        let dir = makeTempDir()
+        defer { cleanup(dir) }
+        let cache = SMBThumbnailCache(directory: dir)
+        let key = SMBThumbnailKey(serverID: "smb-nas|Media|", path: "Movies/Film.mkv", size: 1234, modifiedAt: Date(timeIntervalSince1970: 1_000))
+
+        let duration = Duration.seconds(5_025)  // 1h 23m 45s — sub-minute precision survives the ms round-trip
+        let stored = try #require(await cache.store(Self.pngData, duration: duration, for: key))
+        #expect(stored.duration == duration)
+
+        // A fresh peek reads the duration back from the `.dur` sidecar, not from memory.
+        let hit = try #require(await cache.existing(for: key))
+        #expect(hit.duration == duration)
+    }
+
+    @Test("a store with no duration round-trips a nil duration (no sidecar)")
+    func absentDurationIsNil() async throws {
+        let dir = makeTempDir()
+        defer { cleanup(dir) }
+        let cache = SMBThumbnailCache(directory: dir)
+        let key = SMBThumbnailKey(serverID: "smb-nas|Media|", path: "Shows/E02.mkv", size: 7, modifiedAt: nil)
+
+        _ = try #require(await cache.store(Self.pngData, duration: nil, for: key))
+        let hit = try #require(await cache.existing(for: key))
+        #expect(hit.duration == nil)
+    }
+
+    @Test("existing is read-only — repeated lookups return the same URL, never re-storing")
+    func existingIsStableAndReadOnly() async throws {
         let dir = makeTempDir()
         defer { cleanup(dir) }
         let cache = SMBThumbnailCache(directory: dir)
         let key = SMBThumbnailKey(serverID: "smb-nas|Media|", path: "Shows/E01.mkv", size: 42, modifiedAt: Date(timeIntervalSince1970: 2_000))
 
-        let stored = try #require(await cache.store(Self.pngData, for: key))
-        let first = await cache.existingURL(for: key)
-        let second = await cache.existingURL(for: key)
-        #expect(first == stored)
-        #expect(second == stored)
+        let stored = try #require(await cache.store(Self.pngData, duration: nil, for: key))
+        let first = await cache.existing(for: key)
+        let second = await cache.existing(for: key)
+        #expect(first?.url == stored.url)
+        #expect(second?.url == stored.url)
     }
 
     @Test("a changed modification date is a distinct key, so it stores a distinct file")
@@ -73,8 +101,8 @@ struct SMBThumbnailCacheTests {
         let original = SMBThumbnailKey(serverID: "smb-nas|Media|", path: "Movies/Film.mkv", size: 1234, modifiedAt: Date(timeIntervalSince1970: 1_000))
         let edited = SMBThumbnailKey(serverID: "smb-nas|Media|", path: "Movies/Film.mkv", size: 1234, modifiedAt: Date(timeIntervalSince1970: 9_999))
 
-        let firstURL = try #require(await cache.store(Self.pngData, for: original))
-        let secondURL = try #require(await cache.store(Self.pngData, for: edited))
+        let firstURL = try #require(await cache.store(Self.pngData, duration: nil, for: original)).url
+        let secondURL = try #require(await cache.store(Self.pngData, duration: nil, for: edited)).url
         #expect(firstURL != secondURL)
         #expect(FileManager.default.fileExists(atPath: firstURL.path))
         #expect(FileManager.default.fileExists(atPath: secondURL.path))
@@ -97,7 +125,7 @@ struct SMBThumbnailCacheTests {
 
         for i in 0..<8 {
             let key = SMBThumbnailKey(serverID: "s", path: "f\(i).mkv", size: Int64(i), modifiedAt: nil)
-            _ = await cache.store(blob, for: key)
+            _ = await cache.store(blob, duration: nil, for: key)
         }
 
         let urls = try FileManager.default.contentsOfDirectory(
@@ -112,6 +140,42 @@ struct SMBThumbnailCacheTests {
         #expect(!urls.isEmpty, "the most recent write must survive the sweep")
     }
 
+    @Test("sweep co-evicts each PNG's .dur sidecar — no orphans, sidecars excluded from the cap")
+    func sweepCoEvictsSidecars() async throws {
+        let dir = makeTempDir()
+        defer { cleanup(dir) }
+        let blob = Data(count: 16 * 1024)
+        let cap = Int64(blob.count) * 3
+        let cache = SMBThumbnailCache(
+            directory: dir,
+            sizeCapBytes: cap,
+            trimTargetBytes: Int64(blob.count),
+            sweepInterval: 1
+        )
+
+        // Every store carries a positive duration, so each PNG also writes a .dur sidecar.
+        for i in 0..<8 {
+            let key = SMBThumbnailKey(serverID: "s", path: "f\(i).mkv", size: Int64(i), modifiedAt: nil)
+            _ = await cache.store(blob, duration: .seconds(60 + i), for: key)
+        }
+
+        let entries = try FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.totalFileAllocatedSizeKey])
+        let pngs = entries.filter { $0.pathExtension == "png" }
+        let durs = entries.filter { $0.pathExtension == "dur" }
+
+        #expect(pngs.count < 8, "the sweep must have evicted at least one PNG")
+        #expect(!pngs.isEmpty, "the most recent write must survive the sweep")
+        // Each evicted PNG drops its sidecar and each survivor keeps its own — so the two counts match,
+        // i.e. no orphaned .dur is left behind.
+        #expect(durs.count == pngs.count, "sidecars must track PNGs 1:1 after sweep (no orphans)")
+
+        // Sidecars (tens of bytes) must not count toward the cap: the surviving PNG bytes alone hold within it.
+        let pngBytes = try pngs.reduce(Int64(0)) {
+            $0 + Int64((try $1.resourceValues(forKeys: [.totalFileAllocatedSizeKey])).totalFileAllocatedSize ?? 0)
+        }
+        #expect(pngBytes <= cap, "surviving PNG bytes \(pngBytes) must stay within the cap \(cap)")
+    }
+
     @Test("two servers with the same share-relative path get distinct cache entries")
     func differentServerIDsDoNotCollide() async throws {
         let dir = makeTempDir()
@@ -121,8 +185,8 @@ struct SMBThumbnailCacheTests {
         let serverA = SMBThumbnailKey(serverID: "smb-a|Media|", path: "Movies/Film.mkv", size: 1234, modifiedAt: Date(timeIntervalSince1970: 1_000))
         let serverB = SMBThumbnailKey(serverID: "smb-b|Media|", path: "Movies/Film.mkv", size: 1234, modifiedAt: Date(timeIntervalSince1970: 1_000))
 
-        let urlA = try #require(await cache.store(Self.pngData, for: serverA))
-        let urlB = try #require(await cache.store(Self.pngData, for: serverB))
+        let urlA = try #require(await cache.store(Self.pngData, duration: nil, for: serverA)).url
+        let urlB = try #require(await cache.store(Self.pngData, duration: nil, for: serverB)).url
         #expect(urlA != urlB, "Different servers must not share one cache file for the same relative path")
         #expect(FileManager.default.fileExists(atPath: urlA.path))
         #expect(FileManager.default.fileExists(atPath: urlB.path))

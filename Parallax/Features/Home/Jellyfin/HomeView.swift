@@ -202,14 +202,16 @@ private struct HomeShelves: View {
         // Home is play-first: a movie tile plays (and resumes) immediately instead of opening
         // detail. Episodes already play; series still need detail to pick an episode.
         ItemNavigator(item: item, session: session, movieTap: .plays) {
-            MediaTile(
-                title: item.displayTitle,
-                imageRef: item.homeShelfImageRef,
+            MediaThumbnail(
+                jellyfin: item.homeShelfImageRef,
                 session: session,
-                progress: showProgress ? tileProgress(item) : nil,
-                progressCaption: homeShelfCaption(item, showProgress: showProgress),
+                footer: MediaThumbnail.Footer.make(
+                    caption: homeShelfCaption(item, showProgress: showProgress),
+                    progress: showProgress ? tileProgress(item) : nil
+                ),
                 aspectRatio: MediaImage.poster,
-                maxImageWidth: HomeShelf.imageMaxWidth
+                maxImageWidth: HomeShelf.imageMaxWidth,
+                accessibilityLabel: item.displayTitle
             )
         }
     }

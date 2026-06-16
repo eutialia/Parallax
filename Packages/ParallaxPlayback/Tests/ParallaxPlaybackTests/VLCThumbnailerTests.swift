@@ -90,10 +90,10 @@ struct VLCThumbnailerHappyPathTests {
             "tiny.mp4 fixture missing from the test bundle"
         )
         let thumbnailer = VLCThumbnailer()
-        let data = try await thumbnailer.thumbnailData(for: url, height: 320, timeout: .seconds(20))
-        #expect(!data.isEmpty)
+        let frame = try await thumbnailer.thumbnailData(for: url, height: 320, timeout: .seconds(20))
+        #expect(!frame.data.isEmpty)
 
-        let image = try #require(decodeImage(data), "PNG data did not decode as an image")
+        let image = try #require(decodeImage(frame.data), "PNG data did not decode as an image")
         #expect(image.width > 0)
         #expect(image.height > 0)
         // Source is 16:9 (~1.778). With width derived from aspect, expect roughly that —
@@ -101,5 +101,21 @@ struct VLCThumbnailerHappyPathTests {
         // SAR adjustment; the point is "not stretched to 4:3".
         let aspect = Double(image.width) / Double(image.height)
         #expect(aspect > 1.5, "expected a wide (16:9-ish) thumbnail, got aspect \(aspect) (\(image.width)x\(image.height))")
+    }
+
+    /// Positional snapshotting can't seek to a fraction without the duration, so a successful
+    /// thumbnail should carry one. (If a future VLCKit build stops populating `media.length` in
+    /// the sim, this is the assertion to relax — the app already tolerates a nil duration by
+    /// falling back to file size.)
+    @Test("a successful thumbnail carries the source duration")
+    func bundledClipReportsDuration() async throws {
+        let url = try #require(
+            Bundle.module.url(forResource: "tiny", withExtension: "mp4", subdirectory: "Fixtures"),
+            "tiny.mp4 fixture missing from the test bundle"
+        )
+        let thumbnailer = VLCThumbnailer()
+        let frame = try await thumbnailer.thumbnailData(for: url, height: 320, timeout: .seconds(20))
+        let duration = try #require(frame.duration, "expected libvlc to report the clip's length")
+        #expect(duration > .zero)
     }
 }
