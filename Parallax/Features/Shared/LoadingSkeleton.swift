@@ -170,6 +170,9 @@ struct AdaptivePosterGridLoadingSkeleton: View {
     var columnMinWidth: CGFloat = 140
     /// Fixed column count; when nil the grid adapts by `columnMinWidth`. Mirrors `MediaGrid`.
     var fixedColumns: Int? = nil
+    /// Tile shape — `.poster` for Jellyfin grids, `.landscape` for SMB frame-grab grids, so the
+    /// skeleton matches the loaded tiles and the swap stays shift-free.
+    var aspectRatio: CGFloat = MediaImage.poster
 
     @Environment(\.appIdiom) private var idiom
 
@@ -181,7 +184,7 @@ struct AdaptivePosterGridLoadingSkeleton: View {
         )
         LazyVGrid(columns: columns, spacing: AppLayout.posterGridRowSpacing(idiom: idiom)) {
             ForEach(0..<tileCount, id: \.self) { _ in
-                MediaTileSkeleton()
+                MediaTileSkeleton(aspectRatio: aspectRatio)
             }
         }
         .skeletonShimmer()

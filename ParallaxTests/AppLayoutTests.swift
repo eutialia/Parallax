@@ -38,6 +38,19 @@ struct AppLayoutTests {
         #expect(AppLayout.posterGridColumns(idiom: .regular) == 5)
     }
 
+    @Test("landscape (SMB) grids run fewer columns than poster grids on every idiom")
+    func landscapeGridColumns() {
+        #expect(AppLayout.landscapeGridColumns(idiom: .compact) == 2)
+        #expect(AppLayout.landscapeGridColumns(idiom: .regular) == 4)
+        #expect(AppLayout.landscapeGridColumns(idiom: .tv) == 4)
+        // A 16:9 tile is far wider than a 2:3 poster at the same column width, so a landscape
+        // grid must thin its columns relative to the poster count — never match or exceed it,
+        // or the tiles render short and cramped.
+        for idiom in [AppIdiom.compact, .regular, .tv] {
+            #expect(AppLayout.landscapeGridColumns(idiom: idiom) < AppLayout.posterGridColumns(idiom: idiom))
+        }
+    }
+
     @Test("landscape hero band on regular and tv only")
     func heroBand() {
         #expect(AppIdiom.compact.usesLandscapeHeroBand == false)

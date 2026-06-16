@@ -39,9 +39,16 @@ struct LibraryGridView: View {
     @Environment(PlaybackPresenter.self) private var playback
     @Environment(\.appIdiom) private var idiom
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    /// Fixed poster columns — shared by the grid, its first-load placeholder, and the
-    /// load-more strip so all three stay aligned. Denser on regular width (iPad).
-    private var columns: Int { AppLayout.posterGridColumns(idiom: idiom) }
+    /// Tile shape comes from the source (`LibrarySource.usesLandscapeTiles`): SMB frame-grabs read
+    /// as 16:9 landscape, Jellyfin posters as 2:3. One fact drives BOTH the tile aspect ratio and
+    /// the column count, so the grid, its first-load placeholder, and the load-more strip stay in
+    /// lockstep (a 16:9 thumbnail in a 2:3 box was the overflow that broke tile taps).
+    private var tileAspectRatio: CGFloat { source.usesLandscapeTiles ? MediaImage.landscape : MediaImage.poster }
+    /// Fixed columns — shared by the grid, its first-load placeholder, and the load-more strip so
+    /// all three stay aligned. Fewer columns for the wider landscape (SMB) tiles. Denser on iPad.
+    private var columns: Int {
+        source.usesLandscapeTiles ? AppLayout.landscapeGridColumns(idiom: idiom) : AppLayout.posterGridColumns(idiom: idiom)
+    }
     @State private var viewModel: LibraryGridViewModel?
 
     var body: some View {
@@ -49,7 +56,7 @@ struct LibraryGridView: View {
             if let vm = viewModel {
                 gridContent(vm: vm)
             } else {
-                LibraryGridLoadingPlaceholder()
+                LibraryGridLoadingPlaceholder(aspectRatio: tileAspectRatio, columns: columns)
             }
         }
         // The grid owns its own title (the library name) so both iOS entry points — iPhone's
@@ -87,7 +94,7 @@ struct LibraryGridView: View {
     @ViewBuilder
     private func gridContent(vm: LibraryGridViewModel) -> some View {
         if isInitialLoad(vm) {
-            LibraryGridLoadingPlaceholder()
+            LibraryGridLoadingPlaceholder(aspectRatio: tileAspectRatio, columns: columns)
         } else if case .failed(let message) = vm.state, vm.items.isEmpty {
             ContentUnavailableView(
                 "Couldn't load \(title)",
@@ -178,7 +185,7 @@ struct LibraryGridView: View {
     @ViewBuilder
     private func gridScrollContent(vm: LibraryGridViewModel) -> some View {
         if vm.items.isEmpty, vm.state == .loading {
-            AdaptivePosterGridLoadingSkeleton(tileCount: columns * 3, fixedColumns: columns)
+            AdaptivePosterGridLoadingSkeleton(tileCount: columns * 3, fixedColumns: columns, aspectRatio: tileAspectRatio)
         } else {
             MediaGrid(
                 items: vm.items,
@@ -200,7 +207,7 @@ struct LibraryGridView: View {
             // round-trip (shared with the Home shelves so the two never drift).
             .staleWhileRevalidate(isRefreshing: vm.isRefreshing, reduceMotion: reduceMotion)
             if vm.isLoadingMore {
-                AdaptivePosterGridLoadingSkeleton(tileCount: columns, fixedColumns: columns)
+                AdaptivePosterGridLoadingSkeleton(tileCount: columns, fixedColumns: columns, aspectRatio: tileAspectRatio)
                     .padding(.vertical, Space.s12)
             }
         }
@@ -359,7 +366,7 @@ struct LibraryGridView: View {
     /// carries no server poster. Falls back to the same gray placeholder while none exists.
     @ViewBuilder
     private func smbTile(for item: Item, ref: SMBServerRef) -> some View {
-        SMBThumbnailTile(item: item, ref: ref, provider: deps.mediaArtworkProvider)
+        SMBThumbnailTile(item: item, ref: ref, provider: deps.mediaArtworkProvider, aspectRatio: tileAspectRatio)
     }
 
     private func image(for item: Item) -> ImageRef? {
@@ -420,9 +427,12 @@ private func libraryHeaderMenu<Content: View>(
 /// standalone view (not a `@ViewBuilder` on the grid) so it owns its own body
 /// invalidation and renders identically from both the pre-VM and initial-load branches.
 private struct LibraryGridLoadingPlaceholder: View {
-    @Environment(\.appIdiom) private var idiom
+    /// Tile shape + column count come from `LibraryGridView` (source-derived) so the placeholder
+    /// lays out the exact grid the loaded content will — no shift when the real grid swaps in.
+    var aspectRatio: CGFloat = MediaImage.poster
+    let columns: Int
 
-    private var columns: Int { AppLayout.posterGridColumns(idiom: idiom) }
+    @Environment(\.appIdiom) private var idiom
 
     var body: some View {
         ScrollView {
@@ -445,7 +455,7 @@ private struct LibraryGridLoadingPlaceholder: View {
                     .padding(.top, Space.s8)
                     .padding(.bottom, Space.s30)
                 }
-                AdaptivePosterGridLoadingSkeleton(tileCount: columns * 3, fixedColumns: columns)
+                AdaptivePosterGridLoadingSkeleton(tileCount: columns * 3, fixedColumns: columns, aspectRatio: aspectRatio)
             }
         }
         .scrollDisabled(true)

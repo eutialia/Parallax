@@ -145,6 +145,12 @@ struct MediaImage: View {
     /// Renders a non-Jellyfin image over the shared (default) Nuke pipeline — no
     /// per-session auth. Mirrors `LazyImageRenderer`'s presentation (resizable +
     /// aspect-fill/fit + the same frame treatment per style).
+    ///
+    /// `allowsHitTesting(false)`: the artwork is purely decorative — the enclosing control (the SMB
+    /// grid `Button`) owns the tap. A `.fill` thumbnail with a wider aspect than its box (a 16:9
+    /// video frame in a 2:3 poster cell) overflows horizontally; left interactive, that overflow
+    /// steals taps from the `Button` and from neighbouring cells (only the last-drawn tile in a row
+    /// stayed tappable). The placeholder behind it still provides the cell's hit region.
     @ViewBuilder
     private func artworkImage(_ request: ImageRequest) -> some View {
         let image = LazyImage(request: request) { state in
@@ -155,8 +161,8 @@ struct MediaImage: View {
             }
         }
         switch style {
-        case .logo: image
-        case .fill, .boxed: image.frame(maxWidth: .infinity, maxHeight: .infinity)
+        case .logo: image.allowsHitTesting(false)
+        case .fill, .boxed: image.frame(maxWidth: .infinity, maxHeight: .infinity).allowsHitTesting(false)
         }
     }
 
