@@ -97,8 +97,14 @@ actor MediaArtworkProvider {
         if isNegativelyCached(key) { return .none }
 
         do {
-            // Defaults bake in the agreed frame: height 320, position 0.3, 20s hard timeout.
-            let data = try await thumbnailer.thumbnailData(for: ctx.url, options: ctx.vlcOptions)
+            // SMB media is REMOTE: the thumbnailer's default 0.3 (30%-in) snapshot forces a deep
+            // mid-file seek, and over the share a Matroska cluster read there repeatedly fails
+            // ("unable to read KaxCluster during seek, giving up") and sometimes times out — VLC
+            // then falls back to an early frame anyway. So ask for an early frame DIRECTLY: 5% in is
+            // past a black leader but shallow enough that the bytes are already streamed for the
+            // header, so it's fast and reliable, and the frame is no worse than the fallback we were
+            // getting. height 320 + the 20s hard timeout keep their defaults.
+            let data = try await thumbnailer.thumbnailData(for: ctx.url, options: ctx.vlcOptions, position: 0.05)
             // A nil from store() is a WRITE failure, not a decode failure — return .none but do
             // NOT poison the key, so the next scroll retries instead of hiding a decodable file.
             return (await cache.store(data, for: key)).map(ArtworkSource.local) ?? .none
