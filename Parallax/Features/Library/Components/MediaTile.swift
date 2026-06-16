@@ -7,12 +7,15 @@ import ParallaxCore
 /// grids pass `metadata: nil` and render the thumbnail alone (the poster carries identity). The
 /// footer-bearing shelves use `MediaThumbnail` directly, not this.
 struct MediaTile: View {
-    /// The optional text row under the thumbnail. Its primary line is the tile's `title` (one label
-    /// source, no duplication); this adds the supporting `secondary` line — duration, falling back
-    /// to file size for SMB. A non-nil value renders the row; nil hides it (Jellyfin posters carry
-    /// identity unaided).
+    /// The optional detail row under the thumbnail. Line one is the tile's `title` (one label
+    /// source, no duplication); line two is a two-ended detail line — `leading` hugs the left edge,
+    /// `trailing` the right. For SMB that's the file size on the left and the duration on the right,
+    /// so both show at once and neither replaces the other (the duration just fills in on the right
+    /// once the frame-grab resolves it). A non-nil value renders the row; nil hides it (Jellyfin
+    /// posters carry identity unaided).
     struct Metadata: Equatable {
-        let secondary: String?
+        let leading: String?
+        let trailing: String?
     }
 
     let title: String
@@ -76,25 +79,37 @@ struct MediaTile: View {
         }
     }
 
-    /// The secondary line folds into the thumbnail's single accessibility element ("Title, 1h 23m");
-    /// the visible row below is then hidden from VoiceOver so the tile reads as one element.
+    /// The detail line folds into the thumbnail's single accessibility element ("Title, 1.4 GB,
+    /// 1h 23m"); the visible row below is then hidden from VoiceOver so the tile reads as one element.
     private static func accessibilityLabel(title: String, metadata: Metadata?) -> String {
-        guard let secondary = metadata?.secondary, !secondary.isEmpty else { return title }
-        return "\(title), \(secondary)"
+        let details = [metadata?.leading, metadata?.trailing]
+            .compactMap { $0 }
+            .filter { !$0.isEmpty }
+        return ([title] + details).joined(separator: ", ")
     }
 
     @ViewBuilder
     private func metadataRow(_ metadata: Metadata) -> some View {
+        // Normalise empty strings to nil so a blank slot leaves no gap on the detail line.
+        let leading = metadata.leading.flatMap { $0.isEmpty ? nil : $0 }
+        let trailing = metadata.trailing.flatMap { $0.isEmpty ? nil : $0 }
         VStack(alignment: .leading, spacing: 2) {
             Text(title)
                 .font(.subheadline.weight(.medium))
                 .foregroundStyle(Color.label)
                 .lineLimit(1)
-            if let secondary = metadata.secondary, !secondary.isEmpty {
-                Text(secondary)
-                    .font(.caption2)
-                    .foregroundStyle(Color.secondaryLabel)
-                    .lineLimit(1)
+            if leading != nil || trailing != nil {
+                HStack(spacing: Space.s8) {
+                    if let leading {
+                        Text(leading).lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                    if let trailing {
+                        Text(trailing).lineLimit(1)
+                    }
+                }
+                .font(.caption2)
+                .foregroundStyle(Color.secondaryLabel)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -132,15 +147,16 @@ struct MediaTile: View {
     .background(Color.background)
 }
 
-/// The SMB landscape tile with its metadata row: filename on top, duration (or the file-size
-/// fallback) beneath, under a 16:9 frame-grab placeholder.
+/// The SMB landscape tile with its metadata row: filename on top, then file size (leading) and
+/// duration (trailing) beneath, under a 16:9 frame-grab placeholder. Second tile is the cached/old
+/// case — size only, no duration resolved yet.
 #Preview("SMB metadata row", traits: .sizeThatFitsLayout) {
     HStack(spacing: 16) {
         MediaTile(
             title: "The Grand Budapest Hotel (2014)",
             artwork: .none,
             aspectRatio: MediaImage.landscape,
-            metadata: .init(secondary: "1h 39m")
+            metadata: .init(leading: "1.4 GB", trailing: "1h 39m")
         )
         .frame(width: 280)
         MediaTile(
@@ -148,7 +164,7 @@ struct MediaTile: View {
             artwork: .none,
             watched: .inProgress(0.3),
             aspectRatio: MediaImage.landscape,
-            metadata: .init(secondary: "1.4 GB")
+            metadata: .init(leading: "2.1 GB", trailing: nil)
         )
         .frame(width: 280)
     }
@@ -167,7 +183,7 @@ struct MediaTile: View {
             title: "The Grand Budapest Hotel (2014)",
             artwork: .none,
             aspectRatio: MediaImage.landscape,
-            metadata: .init(secondary: "1h 39m")
+            metadata: .init(leading: "1.4 GB", trailing: "1h 39m")
         )
         .frame(width: 280)
     }

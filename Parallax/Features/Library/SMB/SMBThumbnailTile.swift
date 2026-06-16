@@ -29,7 +29,7 @@ struct SMBThumbnailTile: View {
             watched: .init(item),
             aspectRatio: aspectRatio,
             maxImageWidth: 600,
-            metadata: .init(secondary: secondaryLine)
+            metadata: .init(leading: fileSizeLabel, trailing: durationLabel)
         )
         // Pin the enclosing Button's hit region. The load-bearing half of the tap fix is
         // `allowsHitTesting(false)` on the artwork in `MediaImage` (a 16:9 frame aspect-fills a 2:3
@@ -43,19 +43,18 @@ struct SMBThumbnailTile: View {
         }
     }
 
-    /// Duration once the frame-grab has resolved it (the better line), else the file size we
-    /// already carry from the directory listing — so the row is never empty while a thumbnail
-    /// generates, and upgrades from "1.4 GB" to "1h 23m" when it lands. A duration that formats to
-    /// "" (a sub-1-second clip) falls through to the size rather than blanking the line.
-    private var secondaryLine: String? {
-        if let label = artwork.duration?.compactRuntimeLabel, !label.isEmpty {
-            return label
-        }
-        return fileSizeLabel
-    }
-
+    /// File size from the directory listing — the leading detail, available immediately, so the row
+    /// is never empty while a thumbnail generates.
     private var fileSizeLabel: String? {
         guard case .movie(let movie) = item, let size = movie.size, size > 0 else { return nil }
         return size.formatted(.byteCount(style: .file))
+    }
+
+    /// The clip's duration once the frame-grab resolves it — the trailing detail, sitting beside the
+    /// file size rather than replacing it. nil (no trailing detail) for a cached thumbnail with no
+    /// `.dur` sidecar yet, or a sub-1-second clip whose label is empty.
+    private var durationLabel: String? {
+        guard let label = artwork.duration?.compactRuntimeLabel, !label.isEmpty else { return nil }
+        return label
     }
 }
