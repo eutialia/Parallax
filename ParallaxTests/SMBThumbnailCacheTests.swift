@@ -176,6 +176,31 @@ struct SMBThumbnailCacheTests {
         #expect(pngBytes <= cap, "surviving PNG bytes \(pngBytes) must stay within the cap \(cap)")
     }
 
+    @Test("totalSize sums cached files; clear wipes them, recreating the dir on the next store")
+    func clearWipesCacheAndSize() async throws {
+        let dir = makeTempDir()
+        defer { cleanup(dir) }
+        let cache = SMBThumbnailCache(directory: dir)
+
+        #expect(await cache.totalSize() == 0)  // nothing stored yet
+
+        let blob = Data(count: 4 * 1024)
+        for i in 0..<3 {
+            let key = SMBThumbnailKey(serverID: "s", path: "f\(i).mkv", size: Int64(i), modifiedAt: nil)
+            _ = await cache.store(blob, duration: .seconds(60 + i), for: key)  // PNG + .dur sidecar each
+        }
+        #expect(await cache.totalSize() > 0, "stored files should count toward the size")
+
+        await cache.clear()
+        #expect(await cache.totalSize() == 0, "clear must wipe the cache")
+
+        // A previously-stored key now misses, and a fresh store still works (dir recreated).
+        let key = SMBThumbnailKey(serverID: "s", path: "f0.mkv", size: 0, modifiedAt: nil)
+        #expect(await cache.existing(for: key) == nil)
+        #expect(try #require(await cache.store(blob, duration: nil, for: key)).url.isFileURL,
+                "store must recreate the directory after a clear")
+    }
+
     @Test("two servers with the same share-relative path get distinct cache entries")
     func differentServerIDsDoNotCollide() async throws {
         let dir = makeTempDir()

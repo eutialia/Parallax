@@ -128,6 +128,25 @@ actor SMBThumbnailCache {
         return CachedThumbnail(url: url, duration: persistedDuration)
     }
 
+    /// Allocated size of every cached file (PNGs + `.dur` sidecars), for a "Clear Cache" readout.
+    /// 0 when the directory doesn't exist yet (SMB never browsed) or can't be listed.
+    func totalSize() -> Int64 {
+        guard let entries = try? fileManager.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: [.totalFileAllocatedSizeKey], options: [.skipsHiddenFiles]
+        ) else { return 0 }
+        return entries.reduce(Int64(0)) { sum, url in
+            let size = (try? url.resourceValues(forKeys: [.totalFileAllocatedSizeKey]))?.totalFileAllocatedSize ?? 0
+            return sum + Int64(size)
+        }
+    }
+
+    /// Wipes the whole cache directory (PNGs + sidecars). `store` recreates it on the next write.
+    /// Re-arms the first-write sweep so a freshly-refilled cache is bounded from the next launch.
+    func clear() {
+        try? fileManager.removeItem(at: directory)
+        writesSinceSweep = sweepInterval
+    }
+
     /// The `.dur` sidecar URL for a PNG: same base name, `dur` extension (`<name>.dur`). Holds the
     /// source duration in whole milliseconds as decimal text.
     private func durationSidecarURL(for pngURL: URL) -> URL {

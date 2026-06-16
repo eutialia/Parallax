@@ -130,6 +130,20 @@ actor MediaArtworkProvider {
         }
     }
 
+    // MARK: - Cache management
+
+    /// Total on-disk size of the generated thumbnail cache, for a Settings "Clear Cache" readout.
+    func cacheSize() async -> Int64 {
+        await cache.totalSize()
+    }
+
+    /// Wipes the thumbnail cache and the in-memory failure backoff, so old entries regenerate (now
+    /// with durations) and previously-undecodable files get a fresh attempt on next browse.
+    func clearCache() async {
+        await cache.clear()
+        failures.removeAll()
+    }
+
     // MARK: - Negative cache
 
     private func isNegativelyCached(_ key: SMBThumbnailKey) -> Bool {

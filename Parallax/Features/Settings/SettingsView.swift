@@ -92,6 +92,7 @@ struct SettingsView: View {
             ScrollView {
                 VStack(spacing: Space.s22) {
                     serversSection(vm)
+                    storageSection
                     if let message = vm.signOutErrorMessage {
                         Text(message)
                             .font(.footnote)
@@ -107,6 +108,19 @@ struct SettingsView: View {
         } else {
             ScrollView { ServerListLoadingSkeleton() }
                 .scrollDisabled(true)
+        }
+    }
+
+    // MARK: - Storage
+
+    private var storageSection: some View {
+        VStack(alignment: .leading, spacing: Space.s8) {
+            Text("Storage")
+                .font(.footnote.weight(.semibold))
+                .textCase(.uppercase)
+                .foregroundStyle(Color.secondaryLabel)
+                .padding(.horizontal, Space.s14)
+            ThumbnailCacheCard()
         }
     }
 
