@@ -204,6 +204,27 @@ struct SMBMediaRepositoryTests {
         #expect(page.nextCursor == nil)
     }
 
+    @Test("items() carries the file size into Movie.size, and it survives a user-data rebuild")
+    func itemsCarryFileSize() async throws {
+        let entries: [SMBDirectoryEntry] = [
+            .init(name: "Film.mkv", isDirectory: false, size: 1_234_567, modifiedAt: nil),
+        ]
+        let repo = makeRepo(share: "Media", roots: ["Movies"], entries: entries)
+        let cols = try await repo.collections()
+        let page = try await repo.items(in: .collection(cols[0].id), filter: .init(), sort: .defaultForLibrary, cursor: nil)
+        guard case .movie(let movie) = try #require(page.items.first) else {
+            Issue.record("expected a .movie item"); return
+        }
+        // The mapper forwards entry.size (was dropped before Task E — the thumbnail key needs it).
+        #expect(movie.size == 1_234_567)
+        // Footgun guard: a favorite/played toggle rebuilds the Movie field-by-field via
+        // withUserData; if size isn't echoed there, the cache key shifts and every thumbnail
+        // re-generates after any user-data mutation.
+        let toggled = Item.movie(movie).withUserData(movie.userData.withFavorite(true))
+        guard case .movie(let rebuilt) = toggled else { Issue.record("expected .movie"); return }
+        #expect(rebuilt.size == 1_234_567, "withUserData must preserve Movie.size (cache-key stability)")
+    }
+
     @Test("items() modeled as .movie case")
     func itemsAreMovieCase() async throws {
         let entries: [SMBDirectoryEntry] = [

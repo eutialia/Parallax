@@ -60,7 +60,7 @@ public enum Item: Sendable, Hashable, Identifiable {
                 primaryTag: m.primaryTag, backdropTags: m.backdropTags, logoTag: m.logoTag, thumbTag: m.thumbTag,
                 dateAdded: m.dateAdded,
                 userData: userData, width: m.width, height: m.height, videoRangeType: m.videoRangeType,
-                hasSubtitles: m.hasSubtitles
+                hasSubtitles: m.hasSubtitles, size: m.size
             ))
         case .series(let s):
             return .series(Series(

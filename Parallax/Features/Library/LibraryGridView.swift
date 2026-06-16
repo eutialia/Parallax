@@ -192,7 +192,7 @@ struct LibraryGridView: View {
                 case .jellyfin(let session):
                     ItemNavigator(item: item, session: session) { jellyfinTile(for: item, session: session) }
                 case .smb(let ref):
-                    Button { playback.playSMB(item, ref: ref) } label: { smbTile(for: item) }
+                    Button { playback.playSMB(item, ref: ref) } label: { smbTile(for: item, ref: ref) }
                         .tvPosterButton()
                 }
             }
@@ -354,19 +354,12 @@ struct LibraryGridView: View {
         )
     }
 
-    /// SMB tile: the same poster chrome as the Jellyfin tile but neutral (placeholder)
-    /// artwork — SMB thumbnails are a later task, so it shows the same gray placeholder
-    /// as a missing Jellyfin poster.
+    /// SMB tile: the same poster chrome as the Jellyfin tile, but its artwork is a frame-grab
+    /// generated + cached lazily from the video (`MediaArtworkProvider`), since an SMB file
+    /// carries no server poster. Falls back to the same gray placeholder while none exists.
     @ViewBuilder
-    private func smbTile(for item: Item) -> some View {
-        MediaTile(
-            title: item.displayTitle,
-            artwork: .none,
-            progress: nil,
-            watched: .init(item),
-            aspectRatio: MediaImage.poster,
-            maxImageWidth: 600
-        )
+    private func smbTile(for item: Item, ref: SMBServerRef) -> some View {
+        SMBThumbnailTile(item: item, ref: ref, provider: deps.mediaArtworkProvider)
     }
 
     private func image(for item: Item) -> ImageRef? {

@@ -146,7 +146,10 @@ public struct SMBMediaRepository: MediaRepository {
             width: nil,
             height: nil,
             videoRangeType: nil,
-            hasSubtitles: false
+            hasSubtitles: false,
+            // Carried for the thumbnail cache key (serverID+path+size+mtime). mtime rides
+            // `dateAdded` above; together they invalidate a stale thumbnail when the file changes.
+            size: entry.size
         )
         return .movie(movie)
     }

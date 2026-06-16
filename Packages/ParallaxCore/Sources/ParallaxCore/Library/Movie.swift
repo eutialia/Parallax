@@ -19,6 +19,10 @@ public struct Movie: Sendable, Hashable, Identifiable {
     public let height: Int?
     public let videoRangeType: String?
     public let hasSubtitles: Bool
+    /// File size in bytes for source-agnostic thumbnail cache keying (SMB). The
+    /// Jellyfin mapper leaves this nil — Jellyfin renders server artwork, never a
+    /// locally generated frame-grab, so it never needs to key a thumbnail by size.
+    public let size: Int64?
 
     public init(
         id: ItemID, title: String, overview: String?, year: Int?, runtime: Duration?,
@@ -27,7 +31,8 @@ public struct Movie: Sendable, Hashable, Identifiable {
         dateAdded: Date? = nil,
         userData: UserItemData,
         width: Int? = nil, height: Int? = nil, videoRangeType: String? = nil,
-        hasSubtitles: Bool = false
+        hasSubtitles: Bool = false,
+        size: Int64? = nil
     ) {
         self.id = id; self.title = title; self.overview = overview; self.year = year
         self.runtime = runtime; self.communityRating = communityRating
@@ -38,6 +43,7 @@ public struct Movie: Sendable, Hashable, Identifiable {
         self.userData = userData
         self.width = width; self.height = height; self.videoRangeType = videoRangeType
         self.hasSubtitles = hasSubtitles
+        self.size = size
     }
 
     public func imageRef(_ kind: ImageKind) -> ImageRef? {

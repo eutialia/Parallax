@@ -25,6 +25,10 @@ final class AppDependencies {
     /// credential options, matches sidecar subs). Owned here so it reaches the player
     /// via the environment with the same `keychain` the live media repos use.
     let smbPlaybackResolver: SMBPlaybackResolver
+    /// Generates + caches frame-grab posters for source-neutral items that carry no server
+    /// artwork (SMB). App-scoped so generated thumbnail URLs survive grid teardown/re-entry;
+    /// shares the same `keychain` as the media repos so it reads passwords from the same slot.
+    let mediaArtworkProvider: MediaArtworkProvider
 
     init(
         serverStore: ServerStore,
@@ -39,7 +43,8 @@ final class AppDependencies {
         playbackInfoFactory: @Sendable @escaping (Session) async -> PlaybackInfoService,
         playbackEngineFactory: @MainActor @Sendable @escaping (PlaybackEngineID) -> any PlaybackEngine,
         audioSession: any AudioSessionControlling,
-        smbPlaybackResolver: SMBPlaybackResolver
+        smbPlaybackResolver: SMBPlaybackResolver,
+        mediaArtworkProvider: MediaArtworkProvider
     ) {
         self.serverStore = serverStore
         self.sessionManager = sessionManager
@@ -54,6 +59,7 @@ final class AppDependencies {
         self.playbackEngineFactory = playbackEngineFactory
         self.audioSession = audioSession
         self.smbPlaybackResolver = smbPlaybackResolver
+        self.mediaArtworkProvider = mediaArtworkProvider
     }
 
     static func live() -> AppDependencies {
@@ -127,6 +133,14 @@ final class AppDependencies {
         // under. Default `makeLister` (the live AMSMB2 sidecar-subtitle lister).
         let smbPlaybackResolver = SMBPlaybackResolver(keychain: keychain)
 
+        // One app-scoped artwork provider. VLCThumbnailer is @MainActor — built here (live() is
+        // @MainActor) and handed to the provider actor. Same Keychain as the media repos so it
+        // reads SMB passwords from the slot a file was browsed under.
+        let mediaArtworkProvider = MediaArtworkProvider(
+            thumbnailer: VLCThumbnailer(),
+            keychain: keychain
+        )
+
         return AppDependencies(
             serverStore: store,
             sessionManager: manager,
@@ -143,7 +157,8 @@ final class AppDependencies {
             playbackInfoFactory: playbackInfoFactory,
             playbackEngineFactory: engineFactory,
             audioSession: audioSession,
-            smbPlaybackResolver: smbPlaybackResolver
+            smbPlaybackResolver: smbPlaybackResolver,
+            mediaArtworkProvider: mediaArtworkProvider
         )
     }
 
