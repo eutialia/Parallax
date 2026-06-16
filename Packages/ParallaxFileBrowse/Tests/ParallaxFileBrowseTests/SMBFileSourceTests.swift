@@ -32,17 +32,31 @@ struct SMBFileSourceTests {
         #expect(files.map(\.name) == ["Real.m4v"])
     }
 
-    @Test("SMBFileSource accepts all recognised media extensions")
+    @Test("SMBFileSource accepts every whitelisted media extension")
     func recognisesAllMediaExtensions() async throws {
-        let allExtensions = ["mkv", "mp4", "m4v", "mov", "avi", "ts",
-                             "webm", "wmv", "flv", "mpg", "mpeg", "m2ts"]
-        let entries = allExtensions.map { ext in
+        // Drive from the real allowlist so this can't go stale when the set is widened.
+        let extensions = Array(SMBFileSource.mediaExtensions)
+        let entries = extensions.map { ext in
             SMBDirectoryEntry(name: "file.\(ext)", isDirectory: false, size: 1, modifiedAt: nil)
         }
         let lister = FakeSMBLister(entries: entries)
         let source = SMBFileSource(lister: lister, host: "nas", share: "Media", root: "")
         let files = try await source.mediaFiles(in: "")
-        #expect(files.count == allExtensions.count)
+        #expect(files.count == extensions.count)
+        // Lock in the widened legacy set (RealMedia + the other libVLC-decodable containers).
+        let widened: Set<String> = ["rmvb", "rm", "3gp", "mts", "vob", "divx", "asf", "m2v", "ogv", "ogm"]
+        #expect(widened.isSubset(of: SMBFileSource.mediaExtensions))
+    }
+
+    @Test("SMBFileSource excludes a zero-byte media file (incomplete/stub)")
+    func excludesZeroByteMedia() async throws {
+        let lister = FakeSMBLister(entries: [
+            .init(name: "Complete.mkv", isDirectory: false, size: 1, modifiedAt: nil),
+            .init(name: "Stub.mkv",     isDirectory: false, size: 0, modifiedAt: nil),
+        ])
+        let source = SMBFileSource(lister: lister, host: "nas", share: "Media", root: "")
+        let files = try await source.mediaFiles(in: "")
+        #expect(files.map(\.name) == ["Complete.mkv"])
     }
 
     @Test("SMBFileSource extension check is case-insensitive")
