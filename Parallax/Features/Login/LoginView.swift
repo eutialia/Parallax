@@ -7,17 +7,15 @@ struct LoginView: View {
     var onSignedIn: (() -> Void)?
 
     @Environment(\.scenePhase) private var scenePhase
-    @Environment(\.appIdiom) private var idiom
     @Environment(AppDependencies.self) private var deps
     @Environment(AppRouter.self) private var router
     @State private var viewModel: LoginViewModel?
+    #if !os(tvOS)
     @State private var showPassword = false
-    /// Shared height for the form's text-field rows, scaling with Dynamic Type so labels
-    /// never clip at larger text sizes — and taller on tvOS via `FormControl`. The CTA
-    /// pills no longer use it: their native glass styles size themselves (~the same 50pt
-    /// for a `.headline` label at `.extraLarge` — see `formActionButton`).
+    /// Shared height for the iOS form's text-field rows, scaling with Dynamic Type so labels never
+    /// clip at larger text sizes. (tvOS uses `CredentialRowList`, not these inline rows.)
     @ScaledMetric(relativeTo: .headline) private var baseControlHeight: CGFloat = 50
-    private var controlHeight: CGFloat { FormControl.height(idiom: idiom, scaled: baseControlHeight) }
+    #endif
 
     var body: some View {
         content
@@ -126,7 +124,16 @@ struct LoginView: View {
             }
             #endif
 
-            // Field stack
+            // Field stack — tvOS uses the Settings-style row list (rows → single-field keyboard
+            // screen, no inline field pill); iOS keeps the inline grouped fields. See
+            // `CredentialRowList` for why the inline tvOS field pill is avoided.
+            #if os(tvOS)
+            CredentialRowList(rows: [
+                CredentialRow(id: "server", icon: "globe", title: "Server", placeholder: "https://jellyfin.example.com", text: $vm.serverURLInput, keyboard: .URL),
+                CredentialRow(id: "username", icon: "person", title: "Username", placeholder: "Username", text: $vm.username),
+                CredentialRow(id: "password", icon: "lock", title: "Password", placeholder: "Password", text: $vm.password, isSecure: true),
+            ])
+            #else
             VStack(spacing: 0) {
                 fieldRow(icon: "globe") {
                     TextField("", text: $vm.serverURLInput, prompt: Self.urlPrompt)
@@ -150,12 +157,12 @@ struct LoginView: View {
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                         Button(showPassword ? "Hide" : "Show") { showPassword.toggle() }
                             .font(.footnote).foregroundStyle(Color.secondaryLabel)
-                            // Native borderless: the system lifts/highlights it on tvOS focus.
                             .buttonStyle(.borderless)
                     }
                 }
             }
             .background(Color.fill, in: RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
+            #endif
 
             if let error = vm.errorMessage {
                 Text(error).font(.footnote).foregroundStyle(.red)
@@ -202,6 +209,9 @@ struct LoginView: View {
         if await vm.signIn() { await handleSuccess() }
     }
 
+    // MARK: - iOS inline field helpers (tvOS uses CredentialRowList)
+
+    #if !os(tvOS)
     /// URL-shaped placeholders get auto-styled as blue links, which ignores `.tint`
     /// and `.foregroundStyle`. Feeding the example as an `AttributedString` with an
     /// explicit color renders it in the normal placeholder gray instead.
@@ -222,8 +232,9 @@ struct LoginView: View {
             content()
         }
         .padding(.horizontal, Space.s14)
-        .frame(height: controlHeight)
+        .frame(height: baseControlHeight)
     }
+    #endif
 
     private func handleSuccess() async {
         if let onSignedIn {

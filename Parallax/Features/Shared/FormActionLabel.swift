@@ -8,17 +8,6 @@ enum FormActionStyle {
     case glass
 }
 
-/// Shared metrics for full-width form controls (text fields + CTA pills) so a screen's
-/// fields and buttons stay the same height.
-enum FormControl {
-    /// Resting height for a full-width form control: the Dynamic-Type-`scaled` iOS value,
-    /// floored at `AppLayout.tvControlHeight` on tvOS (at 50pt the 10-foot label nearly
-    /// filled the pill and read as cramped).
-    static func height(idiom: AppIdiom, scaled: CGFloat) -> CGFloat {
-        idiom == .tv ? max(scaled, AppLayout.tvControlHeight) : scaled
-    }
-}
-
 extension View {
     /// Lay a label out as a full-width form CTA: headline type, full width. The chrome
     /// (platter, padding, press/focus treatment) comes from the NATIVE glass style
@@ -42,8 +31,8 @@ extension View {
     /// label color, press feedback, and the tvOS focus platter). `.solid` = prominent
     /// tinted with the brand `buttonFill`; `.glass` = plain glass.
     /// `controlSize(.extraLarge)` lands the iOS pill at ~50pt for a `.headline` label —
-    /// the height the old hand-drawn chrome reserved and the text fields still use via
-    /// `FormControl` (tvOS has no controlSize; the style's own metrics rule, unchanged).
+    /// the height the old hand-drawn chrome reserved and the iOS text fields still match via
+    /// their `baseControlHeight` (tvOS has no controlSize; the style's own metrics rule, unchanged).
     @ViewBuilder
     func formActionButton(_ style: FormActionStyle) -> some View {
         switch style {

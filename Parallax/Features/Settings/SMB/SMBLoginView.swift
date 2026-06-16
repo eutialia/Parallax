@@ -33,7 +33,9 @@ struct SMBLoginView: View {
     @State private var pendingLister: AMSMB2Lister?
     @State private var showFolderPicker = false
 
+    #if !os(tvOS)
     @ScaledMetric(relativeTo: .headline) private var baseControlHeight: CGFloat = 50
+    #endif
 
     private var canConnect: Bool {
         !host.trimmingCharacters(in: .whitespaces).isEmpty
@@ -49,7 +51,7 @@ struct SMBLoginView: View {
                 discoveredServersSection
                 #endif
 
-                connectionFieldsSection
+                fieldsSection
 
                 if let error = connectionError {
                     Text(error)
@@ -126,6 +128,30 @@ struct SMBLoginView: View {
 
     // MARK: - Fields
 
+    /// tvOS uses the Settings-style row list (rows → single-field keyboard screen, no inline field
+    /// pill); iOS keeps the inline grouped fields. See `CredentialRowList` for why.
+    @ViewBuilder
+    private var fieldsSection: some View {
+        #if os(tvOS)
+        CredentialRowList(rows: credentialRows)
+        #else
+        connectionFieldsSection
+        #endif
+    }
+
+    #if os(tvOS)
+    private var credentialRows: [CredentialRow] {
+        [
+            CredentialRow(id: "host", icon: "server.rack", title: "Host", placeholder: "e.g. 192.168.1.10", text: $host, keyboard: .URL),
+            CredentialRow(id: "share", icon: "externaldrive.connected.to.line.below.fill", title: "Share name", placeholder: "Share name", text: $share),
+            CredentialRow(id: "username", icon: "person", title: "Username", placeholder: "Username", text: $username),
+            CredentialRow(id: "password", icon: "lock", title: "Password", placeholder: "Password", text: $password, isSecure: true),
+            CredentialRow(id: "domain", icon: "building.2", title: "Domain", placeholder: "Domain", text: $domain, autocapitalization: .characters),
+        ]
+    }
+    #endif
+
+    #if !os(tvOS)
     private var connectionFieldsSection: some View {
         VStack(spacing: 0) {
             fieldRow(icon: "server.rack") {
@@ -161,6 +187,7 @@ struct SMBLoginView: View {
         }
         .background(Color.fill, in: RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
     }
+    #endif
 
     // MARK: - Connect button
 
@@ -227,8 +254,9 @@ struct SMBLoginView: View {
         }
     }
 
-    // MARK: - Layout helpers
+    // MARK: - Layout helpers (iOS inline fields; tvOS uses CredentialRowList)
 
+    #if !os(tvOS)
     private var hairline: some View {
         Rectangle().fill(Color.separator).frame(height: 1).padding(.leading, 44)
     }
@@ -242,4 +270,5 @@ struct SMBLoginView: View {
         .padding(.horizontal, Space.s14)
         .frame(height: baseControlHeight)
     }
+    #endif
 }
