@@ -161,20 +161,22 @@ struct LoginView: View {
             // `CredentialRowList` for why the inline tvOS field pill is avoided.
             #if os(tvOS)
             CredentialRowList(rows: [
-                CredentialRow(id: "server", icon: "globe", title: "Server", placeholder: "https://jellyfin.example.com", text: $vm.serverURLInput, keyboard: .URL),
-                CredentialRow(id: "username", icon: "person", title: "Username", placeholder: "Username", text: $vm.username),
-                CredentialRow(id: "password", icon: "lock", title: "Password", placeholder: "Password", text: $vm.password, isSecure: true),
+                CredentialRow(id: "server", icon: "globe", title: "Server", placeholder: "https://jellyfin.example.com", text: $vm.serverURLInput, keyboard: .URL, textContentType: .URL),
+                CredentialRow(id: "username", icon: "person", title: "Username", placeholder: "Username", text: $vm.username, textContentType: .username),
+                CredentialRow(id: "password", icon: "lock", title: "Password", placeholder: "Password", text: $vm.password, isSecure: true, textContentType: .password),
             ])
             #else
             VStack(spacing: 0) {
                 fieldRow(icon: "globe") {
                     TextField("", text: $vm.serverURLInput, prompt: Self.urlPrompt)
                         .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .textContentType(.URL)
                 }
                 hairline
                 fieldRow(icon: "person") {
                     TextField("Username", text: $vm.username)
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .textContentType(.username)
                 }
                 hairline
                 fieldRow(icon: "lock") {
@@ -187,6 +189,11 @@ struct LoginView: View {
                             }
                         }
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        // Tag both states .password: the heuristics treat a non-secure field as
+                        // a password only when told, so the "Show" toggle's plain TextField keeps
+                        // AutoFill alive. Surfaces the QuickType key icon (all saved logins) even
+                        // without an associated domain — the realistic fill path for self-hosted URLs.
+                        .textContentType(.password)
                         Button(showPassword ? "Hide" : "Show") { showPassword.toggle() }
                             .font(.footnote).foregroundStyle(Color.secondaryLabel)
                             .buttonStyle(.borderless)

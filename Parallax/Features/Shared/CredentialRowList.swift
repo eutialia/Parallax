@@ -13,6 +13,10 @@ struct CredentialRow: Identifiable {
     var isSecure: Bool = false
     var keyboard: UIKeyboardType = .default
     var autocapitalization: TextInputAutocapitalization = .never
+    /// Drives Password AutoFill on the editor field. tvOS surfaces the QuickType bar over the
+    /// Continuity / Remote keyboard for `.username`/`.password` rows and auto-advances focus to the
+    /// login button once both fill. Left nil (SMB rows) it's a no-op.
+    var textContentType: UITextContentType?
 }
 
 /// tvOS credential entry, the Apple-Settings idiom. Each field is a focusable ROW
@@ -107,6 +111,7 @@ private struct CredentialEditor: View {
                 .keyboardType(row.keyboard)
                 .textInputAutocapitalization(row.autocapitalization)
                 .autocorrectionDisabled()
+                .textContentType(row.textContentType)
                 .focused($focused)
                 .frame(maxWidth: 760)
                 .onSubmit(onDone)
