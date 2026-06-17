@@ -31,19 +31,36 @@ extension View {
     /// `controlSize(.extraLarge)` lands the iOS pill at ~50pt for a `.headline` label —
     /// the height the old hand-drawn chrome reserved and the iOS text fields still match via
     /// their `baseControlHeight` (tvOS has no controlSize; the style's own metrics rule, unchanged).
-    @ViewBuilder
     func formActionButton(_ style: FormActionStyle) -> some View {
+        modifier(FormActionButtonModifier(style: style))
+    }
+}
+
+/// Applies the native glass platter + (iOS) a disabled dim for the plain `.glass` style. The plain
+/// glass style barely changes when disabled — the pill reads the same and only the label grays — so
+/// the whole pill fades to read as unavailable. `.solid` is left to its native disabled treatment:
+/// `.glassProminent` dims its tinted pill clearly, and stacking an opacity there is what made the
+/// label invisible before (the "blank Connect button" bug). tvOS stays system-owned (focus platter).
+private struct FormActionButtonModifier: ViewModifier {
+    let style: FormActionStyle
+    #if !os(tvOS)
+    @Environment(\.isEnabled) private var isEnabled
+    #endif
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
         switch style {
         case .solid:
-            self.buttonStyle(.glassProminent)
+            content.buttonStyle(.glassProminent)
                 .tint(Color.buttonFill)
                 #if !os(tvOS)
                 .controlSize(.extraLarge)
                 #endif
         case .glass:
-            self.buttonStyle(.glass)
+            content.buttonStyle(.glass)
                 #if !os(tvOS)
                 .controlSize(.extraLarge)
+                .opacity(isEnabled ? 1 : 0.55)
                 #endif
         }
     }
