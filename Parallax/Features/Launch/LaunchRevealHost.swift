@@ -42,6 +42,18 @@ struct LaunchRevealHost<Content: View>: View {
             #if !os(tvOS)
             .statusBarHidden(stageActive)
             #endif
+            // A `rearm()` (logged-out launch → first Home after sign-in) brings the
+            // stage back. Reset the settle zoom to its 1.09 start so the replay lifts
+            // into place again instead of resting at the identity it settled to.
+            .onChange(of: stageActive) { _, active in
+                if active { settleScale = LaunchStageMetrics.homeSettleScale }
+            }
+            .onChange(of: gate.isFinished) { _, finished in
+                // A rearm() under Reduce Motion brings the gate back to not-finished, but
+                // `stageActive` stays false (reduceMotion dominates) so no overlay ever mounts to
+                // finish it again — re-settle at once to keep the terminal "finished" invariant.
+                if !finished, reduceMotion { gate.finish() }
+            }
             .onAppear {
                 // Spec: Reduce Motion skips the story entirely.
                 if reduceMotion { gate.finish() }

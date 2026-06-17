@@ -38,19 +38,28 @@ struct RootView: View {
                     }
                     .background(Color.background.ignoresSafeArea())
                 case .login:
-                    // Login sits outside `RootTabView`, so it carries its own floor.
-                    // (`.containerBackground(for: .window)` is macOS-only; tabs use `.tabView`.)
-                    LoginView()
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .background(Color.background)
+                    // Login sits outside `RootTabView`, so it carries its own floor. The source
+                    // picker (Jellyfin / SMB) fronts the sign-in form; `LoggedOutRootView` owns
+                    // the sheet vs. full-screen presentation per platform.
+                    LoggedOutRootView()
                 }
             }
         }
-        // Cold launch with no server resolves to login — there's no Home fetch
-        // to wait on, so release the launch hold and reveal the login screen.
-        // (Home's own release lives in `HomeView`'s load task.)
-        .onChange(of: router.destination, initial: true) { _, destination in
-            if destination == .login { launchGate.markContentReady() }
+        // The launch reveal covers the first HOME boot, not login. A serverless
+        // cold launch resolves to login with nothing to reveal, so cut the stage
+        // (no story playing behind the sign-in sheet); when a server is finally
+        // added (login → home), rearm it so the reveal plays over THAT boot — the
+        // same cover a cold launch with a saved server already gets. (Home's own
+        // hold release lives in `HomeView`'s load task.)
+        .onChange(of: router.destination, initial: true) { previous, destination in
+            switch destination {
+            case .login:
+                launchGate.finish()
+            case .home where previous == .login:
+                launchGate.rearm()
+            case .home, .bootstrapping:
+                break
+            }
         }
         // Monochrome chrome: no brand accent anywhere. This overrides the system
         // accent for every control (selection, toggles, links) beneath the root.

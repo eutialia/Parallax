@@ -12,34 +12,14 @@ struct QuickConnectView: View {
     @State private var viewModel: QuickConnectViewModel?
     @State private var retryToken: Int = 0
 
+    /// Body only — the brand mark + scaffold are supplied by the host (`LoginView` in settings, the
+    /// source picker when logged out), so the shared "Parallax" mark stays put across the password
+    /// ↔ Quick Connect swap. The subtitle, code/status, and switch button sit directly on the floor.
     var body: some View {
-        AuthScreenScaffold { card }
-            .task(id: retryToken) {
-                // .task(id:) cancels the previous Task and starts a new one each time the
-                // id changes, so the stream lifetime is bound to view identity — no manual
-                // cancel() or onDisappear plumbing needed.
-                if viewModel == nil {
-                    viewModel = QuickConnectViewModel(sessionManager: deps.sessionManager)
-                }
-                await viewModel?.consume(serverURLInput: serverURLInput)
-            }
-            .onChange(of: viewModel?.didSignIn ?? false) { _, signedIn in
-                if signedIn { onSignedIn() }
-            }
-    }
-
-    /// Same glass card + 32pt padding as the sign-in card, so toggling between the two
-    /// modes keeps the box in the same place. Everything (header, code, status, switch
-    /// button) lives inside the box.
-    private var card: some View {
         VStack(spacing: Space.s22) {
-            AuthBrandHeader(
-                icon: "bolt.fill",
-                title: "Quick Connect",
-                subtitle: "Approve this device from a Jellyfin session that's already signed in"
-            )
+            AuthSubtitle("Approve this device from a Jellyfin session that's already signed in")
             content
-            // Switch back to password — occupies the exact slot the sign-in card's "Use
+            // Switch back to password — occupies the exact slot the sign-in body's "Use
             // Quick Connect" button does, so toggling between the two happens in one place.
             Button {
                 withAnimation(.smooth) { onSwitchToPassword() }
@@ -49,8 +29,18 @@ struct QuickConnectView: View {
             }
             .formActionButton(.glass)
         }
-        .padding(Space.s30)
-        .glassBar()
+        .task(id: retryToken) {
+            // .task(id:) cancels the previous Task and starts a new one each time the
+            // id changes, so the stream lifetime is bound to view identity — no manual
+            // cancel() or onDisappear plumbing needed.
+            if viewModel == nil {
+                viewModel = QuickConnectViewModel(sessionManager: deps.sessionManager)
+            }
+            await viewModel?.consume(serverURLInput: serverURLInput)
+        }
+        .onChange(of: viewModel?.didSignIn ?? false) { _, signedIn in
+            if signedIn { onSignedIn() }
+        }
     }
 
     @ViewBuilder

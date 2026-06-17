@@ -86,9 +86,14 @@ struct HomeView: View {
             viewModel = preloaded.viewModel
             return
         }
-        // Skeleton-only until bootstrap sets `activeServerID` — avoids a fetch that
-        // `RootTabView`'s `.id` remount would cancel when the session becomes active.
-        guard router.activeServerID != nil else { return }
+        // No Jellyfin session to feed Home. During bootstrapping this is transient
+        // (`activeServerID` lands shortly, the task re-fires) — hold on the skeleton.
+        // But once SMB-only routing reaches `.home` without a Jellyfin session, that's
+        // the revealable `HomeUnavailableView` placeholder, so release the launch hold.
+        guard router.activeServerID != nil else {
+            if router.destination == .home { launchGate.markContentReady() }
+            return
+        }
         if session == nil {
             session = await deps.serverStore.active
         }
@@ -146,6 +151,13 @@ struct HomeView: View {
             } message: { message in
                 Text(message)
             }
+        } else if router.destination == .home, router.activeServerID == nil {
+            // Reached Home with no Jellyfin session feeding it — an SMB-only /
+            // non-Jellyfin config. Distinct from the skeleton below, which is the
+            // transient bootstrapping state (still resolving the active session).
+            // Unreachable until SMB-only routing is unblocked; a no-op today.
+            HomeUnavailableView()
+                .padding(.top, Space.s60)
         } else {
             HomeLoadingSkeleton()
         }

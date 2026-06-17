@@ -205,7 +205,6 @@ struct SMBLoginView: View {
             .formActionLabel(.solid)
         }
         .formActionButton(.solid)
-        .opacity(canConnect ? 1 : 0.4)
         .disabled(!canConnect)
     }
 

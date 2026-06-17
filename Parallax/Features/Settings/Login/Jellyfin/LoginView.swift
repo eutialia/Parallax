@@ -6,6 +6,22 @@ struct LoginView: View {
     /// the router itself; the settings add-server flow passes a closure to refresh + pop.
     var onSignedIn: (() -> Void)?
 
+    /// Body-only mode: skip the scaffold + brand mark (the logged-out source picker supplies them,
+    /// rendering the "Parallax" mark ONCE above the sliding bodies so it stays put). Settings leaves
+    /// this false and gets the full chrome.
+    var chromeless: Bool = false
+
+    /// When set, the password body shows a bottom "Choose a different source" control. Used by the
+    /// logged-out picker (in-place swap, no system back); nil in settings, where the nav stack's
+    /// back button handles it.
+    var onBack: (() -> Void)?
+
+    /// An externally-owned view model. The logged-out source picker hands one it holds, so the
+    /// typed server URL / username / password survive the swap back to the picker and forward
+    /// again — the cover transition removes and re-inserts this subtree, which would otherwise
+    /// reset its own `@State` and wipe the form. Settings leaves this nil and the view owns its own.
+    var viewModelOverride: LoginViewModel?
+
     @Environment(\.scenePhase) private var scenePhase
     @Environment(AppDependencies.self) private var deps
     @Environment(AppRouter.self) private var router
@@ -40,7 +56,7 @@ struct LoginView: View {
         #endif
         .task {
             if viewModel == nil {
-                viewModel = LoginViewModel(sessionManager: deps.sessionManager)
+                viewModel = viewModelOverride ?? LoginViewModel(sessionManager: deps.sessionManager)
             }
             #if !os(tvOS)
             // Auto-fill the server URL from LAN discovery when the field is empty
@@ -62,13 +78,30 @@ struct LoginView: View {
         #endif
     }
 
+    /// Chromeless: just the body (picker supplies the mark + scaffold). Otherwise wrap the body in
+    /// the scaffold with the persistent "Parallax" mark above it (the mark sits OUTSIDE the
+    /// password ↔ Quick Connect swap, so it doesn't flicker when the mode changes).
     @ViewBuilder
     private var content: some View {
+        if chromeless {
+            signInBody
+        } else {
+            AuthScreenScaffold {
+                VStack(spacing: Space.s22) {
+                    AuthBrandMark(glyph: .brandIcon, title: "Parallax")
+                    signInBody
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var signInBody: some View {
         if let vm = viewModel {
             Group {
                 switch vm.mode {
                 case .password:
-                    AuthScreenScaffold { card(vm: vm) }
+                    passwordBody(vm: vm)
                 case .quickConnect:
                     QuickConnectView(
                         serverURLInput: vm.serverURLInput,
@@ -83,19 +116,18 @@ struct LoginView: View {
             .id(vm.mode)
             .transition(.blurReplace)
         } else {
-            AuthScreenScaffold { LoginCardLoadingSkeleton() }
+            VStack(spacing: Space.s22) {
+                AuthSubtitle("Sign in to your Jellyfin server")
+                LoginCardLoadingSkeleton()
+            }
         }
     }
 
     @ViewBuilder
-    private func card(vm: LoginViewModel) -> some View {
+    private func passwordBody(vm: LoginViewModel) -> some View {
         @Bindable var vm = vm
         VStack(spacing: Space.s22) {
-            AuthBrandHeader(
-                icon: "hexagon.fill",
-                title: "Parallax",
-                subtitle: "Sign in to your Jellyfin server"
-            )
+            AuthSubtitle("Sign in to your Jellyfin server")
 
             #if !os(tvOS)
             // LAN-discovered servers (relocated): tap to quick-fill the URL.
@@ -180,7 +212,6 @@ struct LoginView: View {
                 .formActionLabel(.solid)
             }
             .formActionButton(.solid)
-            .opacity(vm.canSubmitPassword ? 1 : 0.4)
             .disabled(vm.isWorking || !vm.canSubmitPassword)
 
             // OR divider
@@ -198,11 +229,21 @@ struct LoginView: View {
                     .formActionLabel(.glass)
             }
             .formActionButton(.glass)
-            .opacity(vm.canUseQuickConnect ? 1 : 0.4)
             .disabled(!vm.canUseQuickConnect)
+
+            // Logged-out picker only: a light return to the source choices, at the bottom (no system
+            // back, since the picker swaps this form in place rather than pushing it).
+            if let onBack {
+                Button(action: onBack) {
+                    Label("Choose a different source", systemImage: "chevron.left")
+                        .font(.subheadline)
+                        .foregroundStyle(Color.secondaryLabel)
+                }
+                .buttonStyle(.plain)
+                .padding(.top, Space.s8)
+                .accessibilityLabel("Back to connection options")
+            }
         }
-        .padding(Space.s30)
-        .glassBar()
     }
 
     private func submitSignIn(vm: LoginViewModel) async {

@@ -353,10 +353,12 @@ struct ServerListLoadingSkeleton: View {
     }
 }
 
+/// Placeholder for the sign-in form's body (the brand header is rendered by `LoginView` itself, so
+/// the matched mark stays put through the swap). Flattened to match the cardless auth screens — the
+/// field group + a CTA block straight on the floor, no inner panel.
 struct LoginCardLoadingSkeleton: View {
     var body: some View {
         VStack(spacing: Space.s22) {
-            SkeletonBlock(cornerRadius: Radius.card, height: 72)
             VStack(spacing: Space.s12) {
                 SkeletonBlock(cornerRadius: Radius.field, height: 50)
                 SkeletonBlock(cornerRadius: Radius.field, height: 50)
@@ -365,8 +367,6 @@ struct LoginCardLoadingSkeleton: View {
             SkeletonBlock(cornerRadius: Radius.field, height: 50)
         }
         .skeletonShimmer()
-        .padding(Space.s22)
-        .background(Color.fillSecondary, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
     }
 }
 
