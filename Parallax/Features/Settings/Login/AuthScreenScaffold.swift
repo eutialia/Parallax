@@ -12,6 +12,16 @@ import SwiftUI
 enum AuthLayout {
     /// Top inset as a fraction of the viewport height — lifts the card high in the viewport.
     static let topBias: CGFloat = 0.08
+
+    /// Max content width for every auth surface (sign-in card, source picker, Quick Connect). tvOS
+    /// gets a much wider measure: its 10-foot text styles render ~1.5–2× the iOS size, so the iOS
+    /// form width (444) crammed the rows into wrapping, oversized-looking lines. Shared so the
+    /// scaffold-hosted screens and the picker's own layout agree on one measure.
+    #if os(tvOS)
+    static let maxContentWidth: CGFloat = 600
+    #else
+    static let maxContentWidth: CGFloat = 444
+    #endif
 }
 
 struct AuthScreenScaffold<Content: View>: View {
@@ -21,11 +31,7 @@ struct AuthScreenScaffold<Content: View>: View {
         GeometryReader { proxy in
             ScrollView {
                 content
-                    #if os(tvOS)
-                    .frame(maxWidth: 600)
-                    #else
-                    .frame(maxWidth: 444)
-                    #endif
+                    .frame(maxWidth: AuthLayout.maxContentWidth)
                     .frame(maxWidth: .infinity)
                     .padding(.horizontal, Space.s18)
                     // Top-pinned with a fractional inset (not min-height centering) so the card sits

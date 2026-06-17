@@ -76,6 +76,10 @@ struct SMBFolderPickerView: View {
                 directoryList
             }
         }
+        // Centered content column — same measure as the other settings/form surfaces (widened on
+        // tvOS for the 10-foot type); a no-op on iPhone where the screen is narrower.
+        .frame(maxWidth: AppLayout.settingsContentWidth)
+        .frame(maxWidth: .infinity)
         .navigationTitle("Choose Folder")
         #if !os(tvOS)
         .navigationBarTitleDisplayMode(.inline)
@@ -109,18 +113,20 @@ struct SMBFolderPickerView: View {
                     } label: {
                         HStack(spacing: Space.s12) {
                             Image(systemName: "arrow.up.left")
-                                .foregroundStyle(Color.accentColor)
+                                .font(.rowBody)
+                                .foregroundStyle(Color.label)
                                 .frame(width: 20)
                             Text("Parent Folder")
-                                .font(.body)
+                                .font(.rowBody)
                                 .foregroundStyle(Color.label)
                             Spacer(minLength: 0)
                         }
                         .padding(.horizontal, Space.s14)
                         .frame(minHeight: 48)
                         .contentShape(.rect)
+                        .tvFocusListRow()
                     }
-                    .buttonStyle(.plain)
+                    .tvListRowButton()
 
                     Divider().padding(.leading, Space.s14 + 20 + Space.s12)
                 }
@@ -131,10 +137,11 @@ struct SMBFolderPickerView: View {
                     } label: {
                         HStack(spacing: Space.s12) {
                             Image(systemName: "folder.fill")
-                                .foregroundStyle(Color.accentColor)
+                                .font(.rowBody)
+                                .foregroundStyle(Color.label)
                                 .frame(width: 20)
                             Text(entry.name)
-                                .font(.body)
+                                .font(.rowBody)
                                 .foregroundStyle(Color.label)
                             Spacer(minLength: 0)
                             Image(systemName: "chevron.right")
@@ -144,8 +151,9 @@ struct SMBFolderPickerView: View {
                         .padding(.horizontal, Space.s14)
                         .frame(minHeight: 48)
                         .contentShape(.rect)
+                        .tvFocusListRow()
                     }
-                    .buttonStyle(.plain)
+                    .tvListRowButton()
 
                     Divider().padding(.leading, Space.s14 + 20 + Space.s12)
                 }

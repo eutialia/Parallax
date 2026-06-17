@@ -239,10 +239,16 @@ struct LoginView: View {
             if let onBack {
                 Button(action: onBack) {
                     Label("Choose a different source", systemImage: "chevron.left")
-                        .font(.subheadline)
+                        .font(.authSubtitle)
                         .foregroundStyle(Color.secondaryLabel)
+                        .padding(.vertical, Space.s8)
+                        .padding(.horizontal, Space.s12)
+                        .contentShape(.rect)
+                        .tvFocusListRow()
                 }
-                .buttonStyle(.plain)
+                // tvOS: quiet style + the link's own contained platter (`.plain` painted the
+                // overflowing white focus box here too). `.plain` on iOS.
+                .tvListRowButton()
                 .padding(.top, Space.s8)
                 .accessibilityLabel("Back to connection options")
             }

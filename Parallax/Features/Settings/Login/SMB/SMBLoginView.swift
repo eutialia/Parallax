@@ -64,7 +64,7 @@ struct SMBLoginView: View {
                 connectButton
             }
             .padding(Space.s18)
-            .frame(maxWidth: 560)
+            .frame(maxWidth: AppLayout.settingsContentWidth)
             .frame(maxWidth: .infinity)
         }
         #if !os(tvOS)

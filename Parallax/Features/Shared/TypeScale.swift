@@ -25,6 +25,78 @@ extension View {
     }
 }
 
+/// tvOS-tamed type for the dense settings / auth row surfaces. The iOS semantic styles balloon on
+/// the 10-foot UI (`.headline` ≈ 38pt, `.subheadline` ≈ 31pt), which read as oversized against the
+/// whole screen — so tvOS gets fixed, calmer sizes (the same fixed-metric approach the player's
+/// `MenuMetrics` uses for tvOS). iOS keeps the semantic styles unchanged. One home for these so the
+/// row surfaces can't drift apart; tune the tvOS sizes here.
+extension Font {
+    /// Primary row/card title (servers, sources, settings cards). iOS `.headline`.
+    static var rowTitle: Font {
+        #if os(tvOS)
+        .system(size: 26, weight: .semibold)
+        #else
+        .headline
+        #endif
+    }
+
+    /// Secondary caption line under a row title. iOS `.caption`.
+    static var rowSubtitle: Font {
+        #if os(tvOS)
+        .system(size: 18, weight: .regular)
+        #else
+        .caption
+        #endif
+    }
+
+    /// A settings row's body label (plain action rows). iOS `.body`.
+    static var rowBody: Font {
+        #if os(tvOS)
+        .system(size: 24, weight: .regular)
+        #else
+        .body
+        #endif
+    }
+
+    /// The centered secondary line under the auth brand mark ("Choose how to connect"). iOS
+    /// `.subheadline`.
+    static var authSubtitle: Font {
+        #if os(tvOS)
+        .system(size: 22, weight: .regular)
+        #else
+        .subheadline
+        #endif
+    }
+
+    /// Uppercase group header above a settings section ("SERVERS", "STORAGE", "THIS SERVER"). iOS
+    /// `.footnote` semibold.
+    static var sectionHeader: Font {
+        #if os(tvOS)
+        .system(size: 16, weight: .semibold)
+        #else
+        .footnote.weight(.semibold)
+        #endif
+    }
+
+    /// A connected-server / detail card's HEADER title (bigger than `.rowTitle`). iOS `.title3` bold.
+    static var cardHeaderTitle: Font {
+        #if os(tvOS)
+        .system(size: 30, weight: .bold)
+        #else
+        .title3.weight(.bold)
+        #endif
+    }
+
+    /// The host/detail line under a card header. iOS `.subheadline`.
+    static var cardHeaderSubtitle: Font {
+        #if os(tvOS)
+        .system(size: 20, weight: .regular)
+        #else
+        .subheadline
+        #endif
+    }
+}
+
 private struct ScaledFont: ViewModifier {
     @ScaledMetric private var size: CGFloat
     private let weight: Font.Weight

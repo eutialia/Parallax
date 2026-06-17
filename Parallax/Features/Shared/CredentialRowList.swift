@@ -39,11 +39,12 @@ struct CredentialRowList: View {
     var body: some View {
         VStack(spacing: 0) {
             ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
-                Button { editingID = row.id } label: { rowLabel(row) }
-                    // `.borderless` is the app's tvOS focusable-row style: the system highlights the
-                    // whole row on focus. A row highlighting is correct (it's a button) — unlike the
-                    // text-field pill we're avoiding.
-                    .buttonStyle(.borderless)
+                // `tvListRowButton` + `tvFocusListRow`: a contained focus platter, NOT `.borderless`.
+                // `.borderless` is the poster/content-lockup style — on a row with a leading SF Symbol
+                // it lifts that glyph into its own scaled, platter-backed icon (the "big globe with
+                // chrome"). The quiet style + the row's own platter keeps the icon flat in the row.
+                Button { editingID = row.id } label: { rowLabel(row).tvFocusListRow() }
+                    .tvListRowButton()
                 if index < rows.count - 1 {
                     Rectangle().fill(Color.separator).frame(height: 1).padding(.leading, 56)
                 }
@@ -64,17 +65,20 @@ struct CredentialRowList: View {
     private func rowLabel(_ row: CredentialRow) -> some View {
         HStack(spacing: Space.s18) {
             Image(systemName: row.icon)
+                .font(.rowBody)
                 .foregroundStyle(Color.secondaryLabel)
                 .frame(width: 38)
             Text(row.title)
+                .font(.rowBody)
                 .foregroundStyle(Color.label)
             Spacer(minLength: Space.s18)
             Text(displayValue(row))
+                .font(.rowBody)
                 .foregroundStyle(row.text.wrappedValue.isEmpty ? Color.tertiaryLabel : Color.secondaryLabel)
                 .lineLimit(1)
                 .truncationMode(.tail)
             Image(systemName: "chevron.right")
-                .font(.caption.weight(.semibold))
+                .font(.rowSubtitle.weight(.semibold))
                 .foregroundStyle(Color.tertiaryLabel)
         }
         .padding(.horizontal, Space.s22)

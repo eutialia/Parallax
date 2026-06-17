@@ -11,31 +11,70 @@ struct ThumbnailCacheCard: View {
     @State private var isClearing = false
     @State private var isConfirming = false
 
+    /// There's something to clear — gates the action on both platforms (and the tvOS card's focus).
+    private var hasContent: Bool { !isClearing && (byteCount ?? 0) > 0 }
+
     var body: some View {
+        cardSurface
+            .task { byteCount = await deps.mediaArtworkProvider.cacheSize() }
+            .confirmationDialog("Clear thumbnail cache?", isPresented: $isConfirming, titleVisibility: .visible) {
+                Button("Clear Cache", role: .destructive) { Task { await clear() } }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Removes generated SMB thumbnails and their durations. They regenerate as you browse.")
+            }
+            .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder
+    private var cardSurface: some View {
+        #if os(tvOS)
+        // tvOS: the WHOLE card is the focus target — a tiny trailing "Clear" button is a poor 10-foot
+        // target, and `.plain` painted a white platter on it. Pressing the focused card clears; an
+        // empty cache is non-actionable (nothing to clear), so the card simply isn't focusable then.
+        Button { isConfirming = true } label: {
+            card(trailing: clearHint)
+        }
+        .tvChipButton()
+        .disabled(!hasContent)
+        #else
+        card(trailing: clearButton)
+        #endif
+    }
+
+    private func card(trailing: some View) -> some View {
         HStack(spacing: Space.s14) {
             IconTile(systemImage: "photo.stack", size: 44, cornerRadius: 10, glyphSize: 18, glyphWeight: .regular)
             VStack(alignment: .leading, spacing: 2) {
-                Text("Thumbnail Cache").font(.headline).foregroundStyle(Color.label)
-                Text(sizeLabel).font(.caption).foregroundStyle(Color.secondaryLabel)
+                Text("Thumbnail Cache").font(.rowTitle).foregroundStyle(Color.label)
+                Text(sizeLabel).font(.rowSubtitle).foregroundStyle(Color.secondaryLabel)
             }
             Spacer(minLength: 0)
-            Button("Clear", role: .destructive) { isConfirming = true }
-                .buttonStyle(.plain)
-                .foregroundStyle(.red)
-                .disabled(isClearing || (byteCount ?? 0) == 0)
+            trailing
         }
         .padding(Space.s14)
         .glassPanel(cornerRadius: Radius.card)
         .contentShape(.rect)
-        .task { byteCount = await deps.mediaArtworkProvider.cacheSize() }
-        .confirmationDialog("Clear thumbnail cache?", isPresented: $isConfirming, titleVisibility: .visible) {
-            Button("Clear Cache", role: .destructive) { Task { await clear() } }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Removes generated SMB thumbnails and their durations. They regenerate as you browse.")
-        }
-        .accessibilityElement(children: .combine)
     }
+
+    #if os(tvOS)
+    /// Trailing affordance hinting what pressing the focused card does (hidden when nothing to clear).
+    @ViewBuilder
+    private var clearHint: some View {
+        if hasContent {
+            Text("Clear")
+                .font(.rowBody.weight(.semibold))
+                .foregroundStyle(.red)
+        }
+    }
+    #else
+    private var clearButton: some View {
+        Button("Clear", role: .destructive) { isConfirming = true }
+            .buttonStyle(.plain)
+            .foregroundStyle(.red)
+            .disabled(!hasContent)
+    }
+    #endif
 
     private var sizeLabel: String {
         if isClearing { return "Clearing…" }

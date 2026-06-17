@@ -28,10 +28,11 @@ extension View {
         modifier(FormActionLabelModifier(style: style, isWorking: isWorking))
     }
 
-    /// Apply to the Button/NavigationLink wrapping a `formActionLabel` label — the
-    /// native Liquid Glass styles on BOTH platforms (one body; the system owns metrics,
-    /// label color, press feedback, and the tvOS focus platter). `.solid` = prominent
-    /// tinted with the brand `buttonFill`; `.glass` = plain glass.
+    /// Apply to the Button/NavigationLink wrapping a `formActionLabel` label — native Liquid Glass
+    /// styles (the system owns metrics, label color, press feedback, and the tvOS focus platter).
+    /// iOS: `.solid` = `.glassProminent` tinted with the brand `buttonFill`; `.glass` = plain glass.
+    /// tvOS: BOTH resolve to plain `.glass` — a mono `buttonFill` tint renders `.glassProminent`
+    /// white-on-white at rest (the focus engine supplies the emphasis a tint would on iOS).
     /// `controlSize(.extraLarge)` lands the iOS pill at ~50pt for a `.headline` label —
     /// the height the old hand-drawn chrome reserved and the iOS text fields still match via
     /// their `baseControlHeight` (tvOS has no controlSize; the style's own metrics rule, unchanged).
@@ -55,11 +56,17 @@ private struct FormActionButtonModifier: ViewModifier {
     func body(content: Content) -> some View {
         switch style {
         case .solid:
+            #if os(tvOS)
+            // The mono `buttonFill` tint is WHITE in dark mode, so `.glassProminent` paints a white
+            // pill — and the tvOS label is system-owned (forcing a colour breaks the focus-platter
+            // inversion), so it renders white-on-white and the "Connect" text vanishes. tvOS uses
+            // plain `.glass` (a legible frosted pill) and lets the focus engine own the emphasis.
+            content.buttonStyle(.glass)
+            #else
             content.buttonStyle(.glassProminent)
                 .tint(Color.buttonFill)
-                #if !os(tvOS)
                 .controlSize(.extraLarge)
-                #endif
+            #endif
         case .glass:
             content.buttonStyle(.glass)
                 #if !os(tvOS)
@@ -82,7 +89,9 @@ private struct FormActionLabelModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .font(.headline)
+            // `.rowTitle` = `.headline` on iOS (unchanged), a tamer 26pt on tvOS where the 10-foot
+            // `.headline` made the full-width CTA label balloon.
+            .font(.rowTitle)
             .frame(maxWidth: .infinity)
             #if !os(tvOS)
             .foregroundStyle(labelColor)

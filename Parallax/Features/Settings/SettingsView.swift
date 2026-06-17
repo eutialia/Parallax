@@ -19,6 +19,12 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var viewModel: SettingsViewModel?
     @State private var path: [Route] = []
+    /// tvOS: the SMB card whose removal is being confirmed. A lone trash glyph is a poor 10-foot
+    /// focus target, so the whole card is the button and this drives the confirmation dialog. iOS
+    /// removes inline from the card's trash button and never sets this.
+    #if os(tvOS)
+    @State private var smbServerPendingRemoval: PersistedServer?
+    #endif
 
     /// Pushed leaves of the settings stack. `.addServer` hosts `LoginView`, so the sign-in
     /// form is literally part of settings rather than a separate sheet.
@@ -66,6 +72,27 @@ struct SettingsView: View {
                             #endif
                     }
                 }
+                #if os(tvOS)
+                // tvOS removal confirmation for the whole-card SMB remove button (see `smbServerCard`).
+                .confirmationDialog(
+                    "Remove this SMB server?",
+                    isPresented: Binding(
+                        get: { smbServerPendingRemoval != nil },
+                        set: { if !$0 { smbServerPendingRemoval = nil } }
+                    ),
+                    titleVisibility: .visible,
+                    presenting: smbServerPendingRemoval
+                ) { server in
+                    Button("Remove", role: .destructive) {
+                        Task { await viewModel?.removeSMBServer(server.id) }
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: { server in
+                    if case .smb(let data) = server.kind {
+                        Text("\(data.host) will be removed from your libraries.")
+                    }
+                }
+                #endif
         }
         // Centered floating card on iPad (regular width); a standard sheet on iPhone.
         #if !os(tvOS)
@@ -102,7 +129,7 @@ struct SettingsView: View {
                     }
                 }
                 .padding(Space.s18)
-                .frame(maxWidth: 560)
+                .frame(maxWidth: AppLayout.settingsContentWidth)
                 .frame(maxWidth: .infinity)
             }
         } else {
@@ -116,7 +143,7 @@ struct SettingsView: View {
     private var storageSection: some View {
         VStack(alignment: .leading, spacing: Space.s8) {
             Text("Storage")
-                .font(.footnote.weight(.semibold))
+                .font(.sectionHeader)
                 .textCase(.uppercase)
                 .foregroundStyle(Color.secondaryLabel)
                 .padding(.horizontal, Space.s14)
@@ -130,7 +157,7 @@ struct SettingsView: View {
     private func serversSection(_ vm: SettingsViewModel) -> some View {
         VStack(alignment: .leading, spacing: Space.s8) {
             Text("Servers")
-                .font(.footnote.weight(.semibold))
+                .font(.sectionHeader)
                 .textCase(.uppercase)
                 .foregroundStyle(Color.secondaryLabel)
                 .padding(.horizontal, Space.s14)
@@ -152,16 +179,16 @@ struct SettingsView: View {
             HStack(spacing: Space.s14) {
                 IconTile(systemImage: "server.rack", size: 44, cornerRadius: 10, glyphSize: 18, glyphWeight: .regular)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(session.serverName).font(.headline).foregroundStyle(Color.label)
+                    Text(session.serverName).font(.rowTitle).foregroundStyle(Color.label)
                     Text(host)
-                        .font(.caption).foregroundStyle(Color.secondaryLabel).lineLimit(1)
-                    Text(session.user.name).font(.caption).foregroundStyle(Color.tertiaryLabel)
+                        .font(.rowSubtitle).foregroundStyle(Color.secondaryLabel).lineLimit(1)
+                    Text(session.user.name).font(.rowSubtitle).foregroundStyle(Color.tertiaryLabel)
                 }
                 Spacer(minLength: 0)
                 if isActive {
                     HStack(spacing: 5) {
                         Circle().fill(.green).frame(width: 8, height: 8)
-                        Text("Active").font(.caption).foregroundStyle(Color.secondaryLabel)
+                        Text("Active").font(.rowSubtitle).foregroundStyle(Color.secondaryLabel)
                     }
                 }
                 Image(systemName: "chevron.right")
@@ -190,17 +217,14 @@ struct SettingsView: View {
             } label: {
                 Label("Jellyfin Server", systemImage: "hexagon.fill")
             }
-            // tvOS can't render an SMB-only home yet (its focus root gates on a Jellyfin session),
-            // so SMB-add stays off there entirely — matching the disabled logged-out picker row.
-            // Allowing it would let a tvOS user sign out their last Jellyfin server into an
-            // unrenderable SMB-only `.home` and strand on the launch spinner.
-            #if !os(tvOS)
+            // SMB is offered on every platform now that `FocusRootView` renders an SMB-only home —
+            // signing out the last Jellyfin server with an SMB source remaining lands there, not on
+            // a stranded launch spinner.
             Button {
                 path.append(Route.addSMBServer)
             } label: {
                 Label("SMB / Network Share", systemImage: "externaldrive.connected.to.line.below.fill")
             }
-            #endif
         } label: {
             Label("Add Server", systemImage: "plus")
                 .formActionLabel(.glass)
@@ -214,15 +238,18 @@ struct SettingsView: View {
     @ViewBuilder
     private func smbServerCard(_ server: PersistedServer, vm: SettingsViewModel) -> some View {
         if case .smb(let data) = server.kind {
-            HStack(spacing: Space.s14) {
+            let content = HStack(spacing: Space.s14) {
                 IconTile(systemImage: "externaldrive.connected.to.line.below.fill", size: 44, cornerRadius: 10, glyphSize: 18, glyphWeight: .regular)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(data.host).font(.headline).foregroundStyle(Color.label)
+                    Text(data.host).font(.rowTitle).foregroundStyle(Color.label)
                     Text(data.share + (data.root.isEmpty ? "" : "/\(data.root)"))
-                        .font(.caption).foregroundStyle(Color.secondaryLabel).lineLimit(1)
-                    Text(data.username).font(.caption).foregroundStyle(Color.tertiaryLabel)
+                        .font(.rowSubtitle).foregroundStyle(Color.secondaryLabel).lineLimit(1)
+                    Text(data.username).font(.rowSubtitle).foregroundStyle(Color.tertiaryLabel)
                 }
                 Spacer(minLength: 0)
+                // iOS removes inline from a trailing trash button; tvOS makes the whole card the
+                // remove action (below) — a lone trash glyph is a poor 10-foot focus target.
+                #if !os(tvOS)
                 Button(role: .destructive) {
                     Task { await vm.removeSMBServer(server.id) }
                 } label: {
@@ -231,10 +258,21 @@ struct SettingsView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Remove \(data.host)")
+                #endif
             }
             .padding(Space.s14)
             .glassPanel(cornerRadius: Radius.card)
             .contentShape(.rect)
+
+            #if os(tvOS)
+            // The whole card is the focus target (gentle glass-chip lift, like the Jellyfin server
+            // card). SMB servers have no detail page, so pressing asks to confirm removal.
+            Button { smbServerPendingRemoval = server } label: { content }
+                .tvChipButton()
+                .accessibilityLabel("Remove \(data.host)")
+            #else
+            content
+            #endif
         }
     }
 

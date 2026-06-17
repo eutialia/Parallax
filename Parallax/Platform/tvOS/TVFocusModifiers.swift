@@ -112,6 +112,34 @@ extension View {
         #endif
     }
 
+    /// Button style for a row in a grouped settings/picker list (the per-server cards' siblings:
+    /// the "Sign Out" / "Make Active" rows, the source picker, the credential rows, the SMB folder
+    /// browser). The quiet, no-chrome style avoids the `.plain` focus platter (a bright box that
+    /// OVERFLOWS the row over its neighbours) and the `.borderless` content lockup (which lifts a
+    /// leading SF Symbol into its own scaled, platter-backed glyph) — the row's own focus affordance
+    /// comes from `tvFocusListRow()` on its LABEL. Same primitive as `tvMenuRowButton()` (the player
+    /// track-menu rows); kept under this name for the settings-row call sites. Owns the button style.
+    @ViewBuilder
+    func tvListRowButton() -> some View {
+        tvMenuRowButton()
+    }
+
+    /// tvOS focus affordance for a grouped-list row: paint the HIG focus platter CONTAINED to the
+    /// row (an opaque white rounded fill that fades in on focus) and flip the row's `colorScheme`
+    /// to `.light` so every semantic token inside (label / secondaryLabel / fill / red) resolves to
+    /// its ink-on-white value for free — no per-view branch. Apply to the LABEL of a Button that
+    /// uses `tvListRowButton()` (the label is a descendant of the focusable Button, so the reader's
+    /// `\.isFocused` reports the Button's focus). Same recipe as the player track menu's `MenuRow`,
+    /// minus the selection fill. No-op on iOS, where focus doesn't exist.
+    @ViewBuilder
+    func tvFocusListRow(cornerRadius: CGFloat = Radius.tile) -> some View {
+        #if os(tvOS)
+        modifier(TVFocusListRowModifier(cornerRadius: cornerRadius))
+        #else
+        self
+        #endif
+    }
+
     /// Group a row/section so the tvOS focus engine treats it as one unit (preferred focus
     /// target, contained traversal). No-op on iOS.
     @ViewBuilder
@@ -189,6 +217,34 @@ struct TVQuietButtonStyle: ButtonStyle {
         configuration.label
             .opacity(configuration.isPressed ? pressedOpacity : 1)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
+
+/// Paints a grouped-list row's focus platter (see `tvFocusListRow()`). Reads the enclosing Button's
+/// focus via `TVFocusReader`, fades in an opaque white rounded fill BEHIND the row content, and
+/// flips `colorScheme` to `.light` on focus so the content inverts to ink-on-white. The platter is
+/// a fading layer (not a style swap, which would snap) on the same `.tvFocusChrome` curve as the
+/// other focus chrome.
+private struct TVFocusListRowModifier: ViewModifier {
+    let cornerRadius: CGFloat
+
+    func body(content: Content) -> some View {
+        TVFocusReader { focused in
+            content
+                .background(
+                    // Inset so the platter FLOATS clear of the enclosing card's rounded corners.
+                    // Edge-to-edge, the platter's corner radius mismatched the card's and left a dark
+                    // crescent at the first/last row's corners (the visible "seam between two borders").
+                    // A few points of margin makes it read as a deliberate floating selection instead.
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .fill(.white.opacity(0.97))
+                        .padding(.horizontal, Space.s8)
+                        .padding(.vertical, Space.s3)
+                        .opacity(focused ? 1 : 0)
+                )
+                .environment(\.colorScheme, focused ? .light : .dark)
+                .animation(.tvFocusChrome, value: focused)
+        }
     }
 }
 

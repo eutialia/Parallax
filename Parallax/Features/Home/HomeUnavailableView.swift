@@ -6,11 +6,9 @@ import SwiftUI
 /// endless skeleton, Home shows this; the libraries themselves stay reachable
 /// from the Library section.
 ///
-/// Not reachable in the shipping app yet: every tab root still gates on a Jellyfin
-/// `activeServerID`, so an SMB-only config lands on login (see
-/// `project-smb-only-routing-blocked`). `HomeView` already routes here for
-/// `destination == .home` with no Jellyfin session, so it lights up the instant
-/// that routing is unblocked — no extra wiring.
+/// Reachable on both platforms: iOS `RootTabView` and tvOS `FocusRootView` render an SMB-only
+/// config's Home, and `HomeView` routes here for `destination == .home` with no Jellyfin session.
+/// The libraries themselves stay reachable from the sidebar / Library section.
 struct HomeUnavailableView: View {
     var body: some View {
         ContentUnavailableView {

@@ -6,9 +6,9 @@ import ParallaxJellyfin
 /// sliding body, so it stays perfectly still while only the subtitle + rows/form slide past each
 /// other — no `matchedGeometryEffect` (which fades/jumps under rapid toggling). Tapping "Jellyfin
 /// Server" slides the sign-in form in from the right; the form's bottom "Choose a different source"
-/// button slides it back. "SMB / Network Share" opens the SMB add flow as a modal nav stack (iOS):
-/// saving the first SMB source routes straight to an SMB-only home. tvOS keeps it disabled — its
-/// focus root still gates on a Jellyfin session.
+/// button slides it back. "SMB / Network Share" opens the SMB add flow as a modal nav stack (a sheet
+/// on iOS, a fullScreenCover on tvOS): saving the first SMB source routes straight to an SMB-only
+/// home — `FocusRootView` now renders that on tvOS too, so SMB is no longer gated off there.
 ///
 /// A fixed-height sheet (see `LoggedOutRootView`) keeps the mark from drifting when the body's
 /// height changes between the two screens.
@@ -20,12 +20,12 @@ struct ConnectSourceView: View {
     /// Owned here, not inside `LoginView`, so the typed credentials outlive the cover swap (the
     /// form subtree is removed/re-inserted by the transition). Built lazily on first entry.
     @State private var jellyfinViewModel: LoginViewModel?
-    /// Drives the SMB add flow, presented as a sheet over the picker. The SMB add is a two-screen
-    /// nav flow (connect → folder picker), so it gets its own `NavigationStack` rather than being
-    /// forced into the picker's single-screen cover swap (which the Jellyfin form uses).
+    /// Drives the SMB add flow, presented over the picker (`smbAddCover`). The SMB add is a
+    /// two-screen nav flow (connect → folder picker), so it gets its own `NavigationStack` rather
+    /// than being forced into the picker's single-screen cover swap (which the Jellyfin form uses).
     @State private var addingSMB = false
-    /// Set when the SMB add succeeds so the sheet's `onDismiss` routes to home — see
-    /// `markSMBAddedThenDismiss()` for why routing waits until the sheet is fully dismissed.
+    /// Set when the SMB add succeeds so the presentation's `onDismiss` routes to home — see
+    /// `markSMBAddedThenDismiss()` for why routing waits until it's fully dismissed.
     @State private var smbAddSucceeded = false
 
     var body: some View {
@@ -51,26 +51,15 @@ struct ConnectSourceView: View {
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
         }
         .background(Color.background.ignoresSafeArea())
-        #if !os(tvOS)
         // SMB add presented as its own modal nav flow (connect → choose folder). On success we
-        // dismiss THIS sheet first, then route in `onDismiss` — see `markSMBAddedThenDismiss()`.
-        .sheet(isPresented: $addingSMB, onDismiss: routeAfterSMBAddIfNeeded) {
-            NavigationStack {
-                SMBLoginView(onAdded: { markSMBAddedThenDismiss() })
-                    .navigationTitle("Add SMB Server")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .cancellationAction) {
-                            Button("Cancel") { addingSMB = false }
-                        }
-                    }
-            }
-            .presentationBackground(Color.background)
+        // dismiss THIS presentation first, then route in `onDismiss` — see `markSMBAddedThenDismiss()`.
+        // iOS uses a sheet (Cancel toolbar item); tvOS a fullScreenCover (sheets clip there; the
+        // Menu button backs out via `onExitCommand`).
+        .smbAddCover(isPresented: $addingSMB, onDismiss: routeAfterSMBAddIfNeeded) {
+            SMBLoginView(onAdded: { markSMBAddedThenDismiss() })
         }
-        #endif
     }
 
-    #if !os(tvOS)
     /// A first SMB source was saved while logged out. Routing flips `destination` to `.home`, which
     /// unmounts the whole logged-out root — tearing the presenter out from under this still-presented
     /// child sheet is the fragile SwiftUI presentation pattern (dropped dismiss animation / wedged
@@ -94,7 +83,6 @@ struct ConnectSourceView: View {
             )
         }
     }
-    #endif
 
     /// One screen's body as a full-width, full-height OPAQUE layer: opaque so the outgoing screen is
     /// fully hidden behind the incoming one during the slide (transparent bodies bled through). Caps
@@ -103,7 +91,7 @@ struct ConnectSourceView: View {
     private func bodyLayer<C: View>(@ViewBuilder _ content: () -> C) -> some View {
         ScrollView {
             content()
-                .frame(maxWidth: 444)
+                .frame(maxWidth: AuthLayout.maxContentWidth)
                 .frame(maxWidth: .infinity)
                 .padding(.horizontal, Space.s18)
                 .padding(.bottom, Space.s40)
@@ -130,7 +118,8 @@ struct ConnectSourceView: View {
     }
 
     /// One grouped `fill` card holding both source rows with a hairline between — the same list
-    /// treatment as the LAN-discovered servers and the iOS sign-in fields.
+    /// treatment as the LAN-discovered servers and the iOS sign-in fields. SMB is offered on every
+    /// platform now that the tvOS focus root renders an SMB-only home (`FocusRootView`).
     private var sourceCard: some View {
         VStack(spacing: 0) {
             Button {
@@ -144,21 +133,12 @@ struct ConnectSourceView: View {
                 // Make the whole row (icon → trailing chevron, including the Spacer) the tap
                 // target, not just the glyph + text.
                 .contentShape(.rect)
+                .tvFocusListRow()
             }
-            .buttonStyle(.plain)
+            .tvListRowButton()
 
             hairline
 
-            #if os(tvOS)
-            // tvOS can't reach SMB-only home yet (the focus root still gates on a Jellyfin
-            // session) — shown disabled with a Jellyfin-first caption rather than a dead end.
-            SourceRow(
-                icon: "externaldrive.connected.to.line.below.fill",
-                title: "SMB / Network Share",
-                subtitle: "Sign in to a Jellyfin server first",
-                enabled: false
-            )
-            #else
             Button {
                 addingSMB = true
             } label: {
@@ -168,9 +148,9 @@ struct ConnectSourceView: View {
                     subtitle: "Connect to a network share"
                 )
                 .contentShape(.rect)
+                .tvFocusListRow()
             }
-            .buttonStyle(.plain)
-            #endif
+            .tvListRowButton()
         }
         .background(Color.fill, in: RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
     }
@@ -184,46 +164,37 @@ struct ConnectSourceView: View {
     }
 }
 
-/// A single source choice: leading glyph, title + caption, trailing chevron when actionable.
-/// Disabled rows drop the chevron and dim — the caption carries the "why".
+/// A single source choice: leading glyph, title + caption, trailing chevron.
 private struct SourceRow: View {
     let icon: String
     let title: String
     let subtitle: String
-    var enabled: Bool = true
 
     var body: some View {
         HStack(spacing: Space.s14) {
             Image(systemName: icon)
                 .scaledFont(20, relativeTo: .title3, weight: .regular)
                 .frame(width: 28)
-                .foregroundStyle(enabled ? Color.label : Color.tertiaryLabel)
+                .foregroundStyle(Color.label)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.headline)
-                    .foregroundStyle(enabled ? Color.label : Color.secondaryLabel)
+                    .font(.rowTitle)
+                    .foregroundStyle(Color.label)
                 Text(subtitle)
-                    .font(.caption)
-                    .foregroundStyle(enabled ? Color.secondaryLabel : Color.tertiaryLabel)
+                    .font(.rowSubtitle)
+                    .foregroundStyle(Color.secondaryLabel)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
-            if enabled {
-                Image(systemName: "chevron.right")
-                    .scaledFont(13, relativeTo: .footnote, weight: .semibold)
-                    .foregroundStyle(Color.tertiaryLabel)
-            }
+            Image(systemName: "chevron.right")
+                .scaledFont(13, relativeTo: .footnote, weight: .semibold)
+                .foregroundStyle(Color.tertiaryLabel)
         }
         .padding(.vertical, Space.s14)
         .padding(.horizontal, Space.s14)
-        .opacity(enabled ? 1 : 0.7)
-        // The actionable row gets its button trait + hit area from the wrapping Button; here we just
-        // fuse glyph + title + caption into one element so VoiceOver reads each choice as a single
-        // phrase (the disabled row stays plain static text — no button trait).
+        // The row gets its button trait + hit area from the wrapping Button; here we just fuse
+        // glyph + title + caption into one element so VoiceOver reads each choice as a single phrase.
         .accessibilityElement(children: .combine)
-        // VoiceOver otherwise reads the disabled row as a plain available choice; the hint says why
-        // it can't be picked (the caption already shows it sighted, but combine flattens emphasis).
-        .accessibilityHint(enabled ? "" : "Requires a Jellyfin server first")
     }
 }
 
@@ -265,6 +236,45 @@ struct LoggedOutRootView: View {
             }
     }
     #endif
+}
+
+private extension View {
+    /// The SMB add flow's modal container: a sheet on iOS (Cancel toolbar item), a fullScreenCover on
+    /// tvOS (sheets clip there, and the system keyboard wants the full screen). Both wrap the content
+    /// in a `NavigationStack` so the connect → folder-picker push works. tvOS has no nav-bar Cancel
+    /// (toolbar items aren't focusable there), so the Menu button backs out at the flow's root via
+    /// `onExitCommand`; a pushed folder picker pops through the NavigationStack first.
+    @ViewBuilder
+    func smbAddCover<C: View>(
+        isPresented: Binding<Bool>,
+        onDismiss: @escaping () -> Void,
+        @ViewBuilder content: @escaping () -> C
+    ) -> some View {
+        #if os(tvOS)
+        fullScreenCover(isPresented: isPresented, onDismiss: onDismiss) {
+            NavigationStack {
+                content()
+                    .navigationTitle("Add SMB Server")
+                    .onExitCommand { isPresented.wrappedValue = false }
+            }
+            .background(Color.background.ignoresSafeArea())
+        }
+        #else
+        sheet(isPresented: isPresented, onDismiss: onDismiss) {
+            NavigationStack {
+                content()
+                    .navigationTitle("Add SMB Server")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Cancel") { isPresented.wrappedValue = false }
+                        }
+                    }
+            }
+            .presentationBackground(Color.background)
+        }
+        #endif
+    }
 }
 
 #if !os(tvOS)

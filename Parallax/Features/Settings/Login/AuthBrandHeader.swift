@@ -22,8 +22,22 @@ struct AuthBrandMark: View {
             tile
                 .frame(width: 64, height: 64)
                 .clipShape(RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+                // The Graphite (dark) icon's own fill matches `Color.background`, so on a dark floor
+                // the tile edge vanishes and only the logo's rings show ("two circles floating").
+                // A hairline border gives the tile a defined edge so it reads as a contained app
+                // icon — the same edge the Home Screen draws around installed icons.
+                .overlay(
+                    RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
+                        .strokeBorder(Color.glassBorder, lineWidth: 1)
+                )
             Text(title)
+                // tvOS tames the 10-foot inflation (the iOS `.title`-scale mark balloons against
+                // the screen); iOS keeps the Dynamic-Type-scaled display size.
+                #if os(tvOS)
+                .font(.system(size: 30, weight: .bold))
+                #else
                 .scaledFont(30, relativeTo: .title, weight: .bold)
+                #endif
                 .foregroundStyle(Color.label)
         }
     }
@@ -48,6 +62,19 @@ struct AuthBrandMark: View {
     }
 }
 
+#if DEBUG
+/// Verifies the brand tile reads as a contained icon on a dark floor (the tvOS / dark-mode case):
+/// the Graphite icon's own fill matches `Color.background`, so without the hairline border the tile
+/// edge vanishes and only the logo rings show. Render in dark mode and confirm a defined tile edge.
+#Preview("Brand mark · dark floor", traits: .sizeThatFitsLayout) {
+    AuthBrandMark(glyph: .brandIcon, title: "Parallax")
+        .padding(60)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.background)
+        .preferredColorScheme(.dark)
+}
+#endif
+
 /// Centered, secondary subtitle that sits under the brand mark in each auth body. Pulled out of the
 /// old combined header so it travels with the sliding body while `AuthBrandMark` stays put.
 struct AuthSubtitle: View {
@@ -56,7 +83,7 @@ struct AuthSubtitle: View {
 
     var body: some View {
         Text(text)
-            .font(.subheadline)
+            .font(.authSubtitle)
             .foregroundStyle(Color.secondaryLabel)
             .multilineTextAlignment(.center)
             .frame(maxWidth: .infinity)

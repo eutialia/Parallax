@@ -35,6 +35,20 @@ enum AppLayout {
     /// and the player's error buttons. Pairs with `contentHMargin(.tv)` for the horizontal gutter.
     static let tvControlHeight: CGFloat = 64
 
+    /// Max content width for the settings / form surfaces (the Settings tab's server + storage cards,
+    /// the SMB add form). tvOS widens it for the same reason as `tvControlHeight`: the 10-foot type
+    /// renders ~1.5× the iOS size, so the iOS measure crammed the rows into wrapping, oversized lines.
+    /// Centered via a trailing `.frame(maxWidth: .infinity)` at each call site. One knob per family so
+    /// the surfaces can't drift apart; the tighter centered auth card uses `AuthLayout.maxContentWidth`.
+    #if os(tvOS)
+    static let settingsContentWidth: CGFloat = 680
+    /// Per-server detail (`ServerSettingsView`) — the widest reading measure of the settings family.
+    static let settingsDetailWidth: CGFloat = 780
+    #else
+    static let settingsContentWidth: CGFloat = 560
+    static let settingsDetailWidth: CGFloat = 720
+    #endif
+
     /// Compact is 16 and regular is 20 — the system's own layout margins, which is
     /// also exactly where the nav bar parks its trailing glass circles (measured in
     /// the "Sort button in toolbar" ruler preview: circle trailing edge at 16pt

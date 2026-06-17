@@ -32,8 +32,9 @@ struct ServerSettingsView: View {
                 }
             }
             .padding(Space.s18)
-            // Match the handoff's reading measure on wide (iPad) layouts, centered.
-            .frame(maxWidth: 720)
+            // Match the handoff's reading measure on wide (iPad) layouts, centered; tvOS widens it
+            // for the 10-foot type (see AppLayout).
+            .frame(maxWidth: AppLayout.settingsDetailWidth)
             .frame(maxWidth: .infinity)
         }
         .navigationTitle(session.serverName)
@@ -49,11 +50,12 @@ struct ServerSettingsView: View {
             IconTile(systemImage: "server.rack", size: 52, cornerRadius: 14, glyphSize: 22)
             VStack(alignment: .leading, spacing: 3) {
                 Text(session.serverName)
-                    .font(.title3.weight(.bold))
+                    // tvOS tames the 10-foot inflation; iOS unchanged. Centralized in TypeScale.
+                    .font(.cardHeaderTitle)
                     .foregroundStyle(Color.label)
                     .lineLimit(1)
                 Text(session.displayHost)
-                    .font(.subheadline)
+                    .font(.cardHeaderSubtitle)
                     .foregroundStyle(Color.secondaryLabel)
                     .lineLimit(1)
             }
@@ -120,7 +122,7 @@ struct ServerSettingsView: View {
     private func section<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: Space.s8) {
             Text(title)
-                .font(.footnote.weight(.semibold))
+                .font(.sectionHeader)
                 .textCase(.uppercase)
                 .foregroundStyle(Color.secondaryLabel)
                 .padding(.horizontal, Space.s14)

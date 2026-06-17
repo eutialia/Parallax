@@ -23,8 +23,11 @@ struct SettingsRow: View {
 
     var body: some View {
         if let action {
-            Button(role: role, action: action) { rowLabel }
-                .buttonStyle(.plain)
+            // tvOS: a quiet style (no system focus platter) + the row's own contained platter via
+            // `tvFocusListRow()` — `.plain` here painted an overflowing white box bleeding over the
+            // neighbouring rows. `.plain` on iOS (unchanged there).
+            Button(role: role, action: action) { rowLabel.tvFocusListRow() }
+                .tvListRowButton()
         } else {
             rowLabel
         }
@@ -41,12 +44,12 @@ struct SettingsRow: View {
                 foreground: isDestructive ? Color.red : Color.label
             )
             Text(title)
-                .font(.body)
+                .font(.rowBody)
                 .foregroundStyle(isDestructive ? Color.red : Color.label)
             Spacer(minLength: Space.s8)
             if let value {
                 Text(value)
-                    .font(.body)
+                    .font(.rowBody)
                     .foregroundStyle(Color.secondaryLabel)
                     .lineLimit(1)
             }
