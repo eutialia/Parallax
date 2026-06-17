@@ -97,7 +97,17 @@ struct HomeView: View {
         if session == nil {
             session = await deps.serverStore.active
         }
-        if viewModel == nil, let session {
+        // The router cached an active server the store can no longer produce a session for — a
+        // desync (session cleared elsewhere, or a failed credential/keychain rebuild). `active` is
+        // never transiently nil here (it's stable actor state and `load()` is already done), so a
+        // nil means the cached id is genuinely stale. Re-sync the router to the store's truth
+        // instead of releasing the launch reveal onto an endless skeleton: a nil session routes to
+        // `.login` (which finishes the launch stage), where the user can re-authenticate.
+        guard let session else {
+            router.updateForCurrentSession(nil)
+            return
+        }
+        if viewModel == nil {
             let repo = await deps.jellyfinLibraryRepoFactory(session)
             viewModel = HomeViewModel(repo: repo)
             await viewModel?.load()
