@@ -169,14 +169,8 @@ struct SMBFolderPickerView: View {
         Button {
             saveServer(root: currentPath)
         } label: {
-            Group {
-                if isSaving {
-                    ProgressView().tint(Color.buttonLabel)
-                } else {
-                    Label("Use This Folder", systemImage: "checkmark.circle.fill")
-                }
-            }
-            .formActionLabel(.solid)
+            Label("Use This Folder", systemImage: "checkmark.circle.fill")
+                .formActionLabel(.solid, isWorking: isSaving)
         }
         .formActionButton(.solid)
         .disabled(isSaving)

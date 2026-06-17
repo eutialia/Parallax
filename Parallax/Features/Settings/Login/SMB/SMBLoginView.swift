@@ -195,14 +195,7 @@ struct SMBLoginView: View {
         Button {
             connect()
         } label: {
-            Group {
-                if isConnecting {
-                    ProgressView().tint(Color.buttonLabel)
-                } else {
-                    Text("Connect")
-                }
-            }
-            .formActionLabel(.solid)
+            Text("Connect").formActionLabel(.solid, isWorking: isConnecting)
         }
         .formActionButton(.solid)
         .disabled(!canConnect)

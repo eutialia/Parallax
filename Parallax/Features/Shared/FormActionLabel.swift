@@ -20,8 +20,12 @@ extension View {
     /// a legible gray on the dimmed pill (pixel-verified in "CTA disabled state"). tvOS
     /// stays system-owned — the focused platter inverts the label, and a forced color
     /// breaks that.
-    func formActionLabel(_ style: FormActionStyle) -> some View {
-        modifier(FormActionLabelModifier(style: style))
+    /// Pass `isWorking: true` while the action runs to swap the label for a spinner WITHOUT
+    /// resizing the button: the title stays in the layout (hidden) so it keeps driving the height,
+    /// and the spinner is overlaid — otherwise the `.extraLarge`-sized `ProgressView` is taller than
+    /// the `.headline` text and grows a content-hugging button mid-task.
+    func formActionLabel(_ style: FormActionStyle, isWorking: Bool = false) -> some View {
+        modifier(FormActionLabelModifier(style: style, isWorking: isWorking))
     }
 
     /// Apply to the Button/NavigationLink wrapping a `formActionLabel` label — the
@@ -71,6 +75,7 @@ private struct FormActionButtonModifier: ViewModifier {
 /// must not be. tvOS keeps the system-owned label (focus platter inverts it).
 private struct FormActionLabelModifier: ViewModifier {
     let style: FormActionStyle
+    var isWorking = false
     #if !os(tvOS)
     @Environment(\.isEnabled) private var isEnabled
     #endif
@@ -82,6 +87,21 @@ private struct FormActionLabelModifier: ViewModifier {
             #if !os(tvOS)
             .foregroundStyle(labelColor)
             #endif
+            // Keep the title in the layout (hidden) while working so it still drives the button's
+            // height, and lay the spinner over it — an `.overlay` never changes the parent's size,
+            // so the button can't grow when the (extra-large) spinner outsizes the text.
+            .opacity(isWorking ? 0 : 1)
+            .overlay { spinner }
+    }
+
+    @ViewBuilder
+    private var spinner: some View {
+        if isWorking {
+            ProgressView()
+                #if !os(tvOS)
+                .tint(style == .solid ? Color.buttonLabel : Color.label)
+                #endif
+        }
     }
 
     #if !os(tvOS)
