@@ -60,7 +60,13 @@ struct HomeView: View {
         // counterpart and slides across the screen on dismiss.
         .toolbarBackground(.hidden, for: .navigationBar)
         .itemDetailNavigation()
-        .task(id: router.activeServerID) { await loadFeed() }
+        // Keyed on `libraryReloadToken`, NOT raw `activeServerID`: an SMB-only cold launch keeps
+        // `activeServerID` nil across the bootstrap→home flip, so a task keyed on it fires once
+        // during `.bootstrapping` (releasing nothing, since destination isn't `.home` yet) and never
+        // re-fires — the launch reveal then hangs until the 15s watchdog. The token folds in
+        // `hasAuxiliarySources`, so it moves when SMB-only home resolves and re-fires `loadFeed`
+        // (which then releases the hold). A Jellyfin switch still moves the token via `activeServerID`.
+        .task(id: router.libraryReloadToken) { await loadFeed() }
         // A finished playback session moved progress (incl. the new prev/next episode
         // jumps), so re-pull the progress-driven shelves the moment the player dismisses.
         // Home stays MOUNTED under the player layer/cover, so its `.task`/`.onAppear`
@@ -73,10 +79,10 @@ struct HomeView: View {
         }
     }
 
-    /// Per-server feed load for the `.task(id:)`. tvOS adopts the launch gate's
-    /// preloaded feed and skips the fetch; iOS self-loads once the session is active.
-    /// Re-runs on a server switch (the task id changes) — each step is guarded so an
-    /// already-built model isn't rebuilt.
+    /// Per-source feed load for the `.task(id: libraryReloadToken)`. tvOS adopts the launch gate's
+    /// preloaded feed and skips the fetch; iOS self-loads once the session is active. Re-runs on a
+    /// Jellyfin switch AND when SMB-only home resolves (both move the token) — each step is guarded
+    /// so an already-built model isn't rebuilt.
     private func loadFeed() async {
         // tvOS launch gate already fetched the feed — adopt it and skip the
         // redundant load. No gate release here: FocusRootView is the
@@ -86,10 +92,10 @@ struct HomeView: View {
             viewModel = preloaded.viewModel
             return
         }
-        // No Jellyfin session to feed Home. During bootstrapping this is transient
-        // (`activeServerID` lands shortly, the task re-fires) — hold on the skeleton.
-        // But once SMB-only routing reaches `.home` without a Jellyfin session, that's
-        // the revealable `HomeUnavailableView` placeholder, so release the launch hold.
+        // No Jellyfin session to feed Home. During bootstrapping this is transient (the source set
+        // lands shortly and the token moves, re-firing this task) — hold on the skeleton. But once
+        // SMB-only routing reaches `.home` without a Jellyfin session, that's the revealable
+        // `HomeUnavailableView` placeholder, so release the launch hold.
         guard router.activeServerID != nil else {
             if router.destination == .home { launchGate.markContentReady() }
             return
@@ -101,10 +107,14 @@ struct HomeView: View {
         // desync (session cleared elsewhere, or a failed credential/keychain rebuild). `active` is
         // never transiently nil here (it's stable actor state and `load()` is already done), so a
         // nil means the cached id is genuinely stale. Re-sync the router to the store's truth
-        // instead of releasing the launch reveal onto an endless skeleton: a nil session routes to
-        // `.login` (which finishes the launch stage), where the user can re-authenticate.
+        // instead of releasing the launch reveal onto an endless skeleton: with no Jellyfin session
+        // it falls to SMB-only home if an SMB source remains, else to `.login` (which finishes the
+        // launch stage), where the user can re-authenticate.
         guard let session else {
-            router.updateForCurrentSession(nil)
+            router.updateForSources(
+                activeSession: nil,
+                hasAuxiliarySources: await deps.serverStore.hasSMBServers
+            )
             return
         }
         if viewModel == nil {
@@ -165,9 +175,10 @@ struct HomeView: View {
             // Reached Home with no Jellyfin session feeding it — an SMB-only /
             // non-Jellyfin config. Distinct from the skeleton below, which is the
             // transient bootstrapping state (still resolving the active session).
-            // Unreachable until SMB-only routing is unblocked; a no-op today.
+            // Centered in the viewport (there's no feed to scroll), so it reads as a
+            // deliberate empty state rather than content pinned under the status bar.
             HomeUnavailableView()
-                .padding(.top, Space.s60)
+                .containerRelativeFrame(.vertical)
         } else {
             HomeLoadingSkeleton()
         }

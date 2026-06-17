@@ -44,12 +44,19 @@ final class SettingsViewModel {
         await reloadAfterSMBChange()
     }
 
-    /// Reload the settings list AND bump the router's library revision, so the navigation
-    /// roots rebuild their merged library list immediately after an SMB server is added or
-    /// removed. The active Jellyfin session is unchanged by an SMB change, so `activeServerID`
-    /// doesn't move — the revision bump is what re-fires the roots' library `.task`.
+    /// Reload the settings list, re-evaluate routing, AND bump the router's library revision,
+    /// so the navigation roots rebuild their merged library list immediately after an SMB
+    /// server is added or removed. The active Jellyfin session is unchanged by an SMB change,
+    /// so `activeServerID` doesn't move — the revision bump is what re-fires the roots' library
+    /// `.task`. Routing is still re-run because an SMB change can cross the login/home boundary
+    /// for an SMB-only config (adding the first source unblocks home; removing the last strands
+    /// an empty config that must fall back to login).
     func reloadAfterSMBChange() async {
         await refresh()
+        router.updateForSources(
+            activeSession: sessions.first { $0.id == activeID },
+            hasAuxiliarySources: !smbServers.isEmpty
+        )
         router.bumpLibraryRevision()
     }
 
@@ -82,13 +89,17 @@ final class SettingsViewModel {
         await syncRouterToActive()
     }
 
-    /// Reload the list, then point the router at whatever is active now: nil (no sessions
-    /// left) routes to login; otherwise the store's fallback active server, with a tab
-    /// remount so the screens leave the previous server's content. The active session is
-    /// taken from the freshly-loaded `sessions` rather than re-querying the store, so the
-    /// router and the list can't disagree (and it saves a second actor hop).
+    /// Reload the list, then point the router at whatever is active now: no Jellyfin session
+    /// left routes to login UNLESS an SMB source remains (then SMB-only home); otherwise the
+    /// store's fallback active server, with a tab remount so the screens leave the previous
+    /// server's content. The active session is taken from the freshly-loaded `sessions` rather
+    /// than re-querying the store, so the router and the list can't disagree (and it saves a
+    /// second actor hop).
     private func syncRouterToActive() async {
         await refresh()
-        router.updateForCurrentSession(sessions.first { $0.id == activeID })
+        router.updateForSources(
+            activeSession: sessions.first { $0.id == activeID },
+            hasAuxiliarySources: !smbServers.isEmpty
+        )
     }
 }

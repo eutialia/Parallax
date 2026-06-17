@@ -48,6 +48,13 @@ public actor ServerStore {
 
     public var sessions: [Session] { loadedSessions }
 
+    /// Whether any SMB server is configured. The app's router folds this into its
+    /// login-vs-home decision: an SMB server with no Jellyfin session is still a
+    /// browsable home, not a login dead-end.
+    public var hasSMBServers: Bool {
+        persistedServers.contains { if case .smb = $0.kind { return true }; return false }
+    }
+
     public var active: Session? {
         guard let activeID else { return loadedSessions.first }
         return loadedSessions.first(where: { $0.id == activeID })

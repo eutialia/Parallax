@@ -29,14 +29,28 @@ struct RootTabView: View {
         // remount above stays on the session only, so a revision bump rebuilds the merged
         // list without tearing every tab down.
         .task(id: router.libraryReloadToken) {
-            guard router.activeServerID != nil else { return }
-            session = await deps.serverStore.active
-            guard let session else { entries = []; return }
-            entries = await MergedLibrary.entries(
-                jellyfinSession: session,
+            guard router.hasAnySource else { entries = []; session = nil; return }
+            // `active` may be nil in an SMB-only config — `MergedLibrary` builds the SMB entries
+            // either way; a nil session just contributes no Jellyfin collections. Capture into
+            // locals across the awaits, then commit under a cancellation check: a token change
+            // cancels this task and starts a fresh one, and a now-stale snapshot must not clobber
+            // the newer state (or snap selection off a tab that's still valid in the latest entries).
+            let active = await deps.serverStore.active
+            let merged = await MergedLibrary.entries(
+                jellyfinSession: active,
                 smbServers: await deps.serverStore.servers,
                 repoFactory: deps.mediaRepoFactory
             )
+            guard !Task.isCancelled else { return }
+            session = active
+            entries = merged
+            // If the selected library tab's backing entry just vanished, snap to Home so the detail
+            // pane isn't left on a gone tab. The `.id(activeServerID)` remount resets selection on a
+            // Jellyfin switch/sign-out, but removing ONE of several SMB servers keeps `activeServerID`
+            // nil (no remount) while `entries` rebuilds without that library — the only path here.
+            if case .collection(let ref) = selectedTab, !merged.contains(where: { $0.id == ref }) {
+                selectedTab = .home
+            }
         }
         // Tabs that exist at only one width — Library + Settings are compact-only (regular browses
         // libraries from the sidebar and hosts Settings in its footer), the per-library tabs are
@@ -100,15 +114,20 @@ struct RootTabView: View {
                     }
                 }
             }
+            // Search is Jellyfin-backed (SMB has no search index), so it's hidden in an
+            // SMB-only config rather than shown as a permanently-empty tab.
+            //
             // Deliberately NOT `role: .search`, and JellyfinSearchView uses its own
             // in-content SearchBar rather than `.searchable`. In iPadOS 26 the system
             // search field (role-search tab or `.searchable`) gets hoisted into the
             // top-trailing Liquid Glass slot on focus, reflows the layout, and lets the
             // search presentation seize the sidebar toggle (it flips to "Hide Sidebar"
             // while the keyboard is up). A plain tab + custom field sidesteps all of it.
-            Tab("Search", systemImage: "magnifyingglass", value: AppTab.search) {
-                NavigationStack {
-                    JellyfinSearchView()
+            if router.activeServerID != nil {
+                Tab("Search", systemImage: "magnifyingglass", value: AppTab.search) {
+                    NavigationStack {
+                        JellyfinSearchView()
+                    }
                 }
             }
 
@@ -133,7 +152,7 @@ struct RootTabView: View {
             // appear as the lone dynamic slot to the right of Search; nothing shows before any
             // library is opened (`lastVisitedLibraryID` starts nil). The expanded sidebar ignores
             // `.tabBar` visibility and lists every library under the header.
-            if hSize == .regular, let session, !entries.isEmpty {
+            if hSize == .regular, !entries.isEmpty {
                 // TODO: per-server sections — one `TabSection` per source (each Jellyfin /
                 // SMB server its own titled group), instead of this single merged section.
                 // Deferred UI polish; the merge already tags every entry by source.
@@ -150,13 +169,16 @@ struct RootTabView: View {
                     }
                     // The virtual cross-library Favorites grid — movies + shows the user
                     // favorited, every server library merged. Rides the same dynamic
-                    // collapsed-bar slot as the real libraries.
-                    Tab("Favorites", systemImage: "heart", value: AppTab.favorites) {
-                        NavigationStack {
-                            LibraryGridView(scope: .favorites, title: "Favorites", session: session)
+                    // collapsed-bar slot as the real libraries. Jellyfin-only: favorites are a
+                    // Jellyfin concept, so an SMB-only config (nil session) omits it.
+                    if let session {
+                        Tab("Favorites", systemImage: "heart", value: AppTab.favorites) {
+                            NavigationStack {
+                                LibraryGridView(scope: .favorites, title: "Favorites", session: session)
+                            }
                         }
+                        .defaultVisibility(lastVisitedLibraryTab == .favorites ? .visible : .hidden, for: .tabBar)
                     }
-                    .defaultVisibility(lastVisitedLibraryTab == .favorites ? .visible : .hidden, for: .tabBar)
                 }
                 .defaultVisibility(.hidden, for: .tabBar)
             }

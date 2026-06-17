@@ -205,11 +205,7 @@ struct LoginView: View {
             Button {
                 Task { await submitSignIn(vm: vm) }
             } label: {
-                Group {
-                    if vm.isWorking { ProgressView().tint(Color.buttonLabel) }
-                    else { Text("Connect") }
-                }
-                .formActionLabel(.solid)
+                Text("Connect").formActionLabel(.solid, isWorking: vm.isWorking)
             }
             .formActionButton(.solid)
             .disabled(vm.isWorking || !vm.canSubmitPassword)
@@ -284,11 +280,14 @@ struct LoginView: View {
             onSignedIn()
         } else {
             // First sign-in (logged-out root): set destination AND activeServerID together.
-            // The per-server tasks (Home/Library/Search/RootTabView) are gated on
-            // `activeServerID != nil`, so routing through `updateForCurrentSession` is what
-            // actually lets them fetch — setting only `destination` would strand every tab
-            // on its loading skeleton.
-            router.updateForCurrentSession(await deps.serverStore.active)
+            // The per-source tasks (Home/Library/Search/RootTabView) are gated on the
+            // router's source state, so routing through `updateForSources` is what actually
+            // lets them fetch — setting only `destination` would strand every tab on its
+            // loading skeleton.
+            router.updateForSources(
+                activeSession: await deps.serverStore.active,
+                hasAuxiliarySources: await deps.serverStore.hasSMBServers
+            )
         }
     }
 }

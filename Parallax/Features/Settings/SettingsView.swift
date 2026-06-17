@@ -190,11 +190,17 @@ struct SettingsView: View {
             } label: {
                 Label("Jellyfin Server", systemImage: "hexagon.fill")
             }
+            // tvOS can't render an SMB-only home yet (its focus root gates on a Jellyfin session),
+            // so SMB-add stays off there entirely — matching the disabled logged-out picker row.
+            // Allowing it would let a tvOS user sign out their last Jellyfin server into an
+            // unrenderable SMB-only `.home` and strand on the launch spinner.
+            #if !os(tvOS)
             Button {
                 path.append(Route.addSMBServer)
             } label: {
                 Label("SMB / Network Share", systemImage: "externaldrive.connected.to.line.below.fill")
             }
+            #endif
         } label: {
             Label("Add Server", systemImage: "plus")
                 .formActionLabel(.glass)

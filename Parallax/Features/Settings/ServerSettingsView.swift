@@ -100,11 +100,13 @@ struct ServerSettingsView: View {
             ) {
                 Task {
                     await vm.signOut(session)
-                    // On success pop back to the list — unless that was the last server,
-                    // in which case the router already routed to login and tore this whole
-                    // panel down (calling dismiss() on the vanishing sheet would warn). On
-                    // failure stay so the error message (surfaced by the shared vm) shows.
-                    if vm.signOutErrorMessage == nil, !vm.sessions.isEmpty { dismiss() }
+                    // On success pop back to the list — this server is gone. Always dismiss the
+                    // detail page: if that was the last SOURCE the router routed to login and tore
+                    // the panel down (dismiss on the vanishing sheet is a harmless no-op); but if an
+                    // SMB source remains the router falls back to SMB-only home and KEEPS the panel,
+                    // so without this pop the user would be stranded on a ghost page for a server
+                    // that no longer exists. On failure stay so the shared vm's error message shows.
+                    if vm.signOutErrorMessage == nil { dismiss() }
                 }
             }
         }

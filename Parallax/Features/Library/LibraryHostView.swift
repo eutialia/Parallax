@@ -5,10 +5,9 @@ import ParallaxCore
 struct LibraryHostView: View {
     @Environment(AppDependencies.self) private var deps
     @Environment(AppRouter.self) private var router
-    /// The active Jellyfin session: drives the Jellyfin VM + its load/error states. The iPhone
-    /// host stays Jellyfin-anchored — SMB is additive, not a standalone source here, so with no
-    /// session we keep the existing "No active server" empty state even when `smbEntries` is
-    /// non-empty (SMB-only users are out of scope — known limitation).
+    /// The active Jellyfin session: drives the Jellyfin VM + its load/error states. With a session
+    /// the host shows the merged Jellyfin + SMB list (`LibraryListView`); with none but ≥1 SMB
+    /// source it shows the SMB-only list (`SMBLibraryListView`).
     @State private var session: Session?
     /// SMB libraries to surface alongside the Jellyfin collections, resolved SMB-only
     /// (`jellyfinSession: nil`). Empty when no SMB servers are configured (or all failed).
@@ -26,14 +25,18 @@ struct LibraryHostView: View {
                     #if !os(tvOS)
                     .navigationSubtitle(session.serverName)
                     #endif
+            } else if !smbEntries.isEmpty {
+                // SMB-only config: no Jellyfin session, so browse the SMB libraries directly.
+                SMBLibraryListView(entries: smbEntries)
+                    .navigationTitle("Library")
             } else if isResolvingSource {
                 LibraryListLoadingPlaceholder()
                     .navigationTitle("Library")
             } else {
                 ContentUnavailableView(
-                    "No active server",
-                    systemImage: "server.rack",
-                    description: Text("Sign in to a Jellyfin server to browse your library.")
+                    "No libraries",
+                    systemImage: "rectangle.stack.badge.xmark",
+                    description: Text("Add a Jellyfin or SMB source in Settings to browse your library.")
                 )
             }
         }
@@ -43,16 +46,22 @@ struct LibraryHostView: View {
         // RootTabView/FocusRootView refresh their merged lists, so the iPhone card-list picks up an
         // added SMB server without a relaunch.
         .task(id: router.libraryReloadToken) {
-            guard router.activeServerID != nil else { return }
+            // Clear, don't just early-return: a future caller that drops the last source without a
+            // remount must not leave a stale session/SMB list rendered (mirrors RootTabView's task).
+            guard router.hasAnySource else { session = nil; smbEntries = []; isResolvingSource = false; return }
             defer { isResolvingSource = false }
-            session = await deps.serverStore.active
             // SMB-only entries (nil session): the Jellyfin libraries come from LibraryListView's
-            // own VM, so MergedLibrary here contributes only the SMB cards.
-            smbEntries = await MergedLibrary.entries(
+            // own VM, so MergedLibrary here contributes only the SMB cards. Capture then commit
+            // under a cancellation check so a token change mid-flight can't land a stale snapshot.
+            let active = await deps.serverStore.active
+            let merged = await MergedLibrary.entries(
                 jellyfinSession: nil,
                 smbServers: await deps.serverStore.servers,
                 repoFactory: deps.mediaRepoFactory
             )
+            guard !Task.isCancelled else { return }
+            session = active
+            smbEntries = merged
         }
     }
 }

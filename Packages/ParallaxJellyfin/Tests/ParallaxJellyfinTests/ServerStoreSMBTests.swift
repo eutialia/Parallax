@@ -115,6 +115,31 @@ struct ServerStoreSMBTests {
         #expect(keychain.deleteCalls.contains("token-\(id.rawValue)"))
     }
 
+    @Test("hasSMBServers reflects SMB presence and ignores Jellyfin-only configs")
+    func hasSMBServersTracksSMBOnly() async throws {
+        let (store, _, _) = freshStore()
+
+        // Empty store: no SMB.
+        var hasSMB = await store.hasSMBServers
+        #expect(hasSMB == false)
+
+        // A Jellyfin session alone must NOT count as an SMB source (it drives login-vs-home
+        // via the active session, not the auxiliary-source flag).
+        try await store.add(sampleSession())
+        hasSMB = await store.hasSMBServers
+        #expect(hasSMB == false)
+
+        // Adding an SMB server flips it true.
+        let id = try await store.addSMBServer(smbData(), password: "pw")
+        hasSMB = await store.hasSMBServers
+        #expect(hasSMB == true)
+
+        // Removing the SMB server flips it back (the Jellyfin session remains).
+        try await store.remove(id)
+        hasSMB = await store.hasSMBServers
+        #expect(hasSMB == false)
+    }
+
     @Test("SMB server and Jellyfin session coexist: both in servers, only Jellyfin in sessions, active unchanged")
     func smbAndJellyfinCoexist() async throws {
         let (store, _, keychain) = freshStore()

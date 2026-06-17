@@ -1,23 +1,32 @@
 import SwiftUI
+import ParallaxJellyfin
 
 /// The logged-out entry point: a source picker in front of the Jellyfin sign-in form, all on ONE
 /// sheet floor (no inner card). The brand mark (logo + "Parallax") is rendered ONCE, above the
 /// sliding body, so it stays perfectly still while only the subtitle + rows/form slide past each
 /// other — no `matchedGeometryEffect` (which fades/jumps under rapid toggling). Tapping "Jellyfin
 /// Server" slides the sign-in form in from the right; the form's bottom "Choose a different source"
-/// button slides it back. "SMB / Network Share" is shown but gated — an SMB-only configuration can't
-/// reach a library yet (every tab root guards on an active Jellyfin session, see
-/// `2026-06-16-login-source-picker-design.md`); enabling it later is a one-line change.
+/// button slides it back. "SMB / Network Share" opens the SMB add flow as a modal nav stack (iOS):
+/// saving the first SMB source routes straight to an SMB-only home. tvOS keeps it disabled — its
+/// focus root still gates on a Jellyfin session.
 ///
 /// A fixed-height sheet (see `LoggedOutRootView`) keeps the mark from drifting when the body's
 /// height changes between the two screens.
 struct ConnectSourceView: View {
     private enum Step: Hashable { case choose, jellyfin }
     @Environment(AppDependencies.self) private var deps
+    @Environment(AppRouter.self) private var router
     @State private var step: Step = .choose
     /// Owned here, not inside `LoginView`, so the typed credentials outlive the cover swap (the
     /// form subtree is removed/re-inserted by the transition). Built lazily on first entry.
     @State private var jellyfinViewModel: LoginViewModel?
+    /// Drives the SMB add flow, presented as a sheet over the picker. The SMB add is a two-screen
+    /// nav flow (connect → folder picker), so it gets its own `NavigationStack` rather than being
+    /// forced into the picker's single-screen cover swap (which the Jellyfin form uses).
+    @State private var addingSMB = false
+    /// Set when the SMB add succeeds so the sheet's `onDismiss` routes to home — see
+    /// `markSMBAddedThenDismiss()` for why routing waits until the sheet is fully dismissed.
+    @State private var smbAddSucceeded = false
 
     var body: some View {
         GeometryReader { proxy in
@@ -42,7 +51,50 @@ struct ConnectSourceView: View {
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
         }
         .background(Color.background.ignoresSafeArea())
+        #if !os(tvOS)
+        // SMB add presented as its own modal nav flow (connect → choose folder). On success we
+        // dismiss THIS sheet first, then route in `onDismiss` — see `markSMBAddedThenDismiss()`.
+        .sheet(isPresented: $addingSMB, onDismiss: routeAfterSMBAddIfNeeded) {
+            NavigationStack {
+                SMBLoginView(onAdded: { markSMBAddedThenDismiss() })
+                    .navigationTitle("Add SMB Server")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Cancel") { addingSMB = false }
+                        }
+                    }
+            }
+            .presentationBackground(Color.background)
+        }
+        #endif
     }
+
+    #if !os(tvOS)
+    /// A first SMB source was saved while logged out. Routing flips `destination` to `.home`, which
+    /// unmounts the whole logged-out root — tearing the presenter out from under this still-presented
+    /// child sheet is the fragile SwiftUI presentation pattern (dropped dismiss animation / wedged
+    /// presentation). So mark success and dismiss the sheet FIRST; `onDismiss` routes once it's gone.
+    private func markSMBAddedThenDismiss() {
+        smbAddSucceeded = true
+        addingSMB = false
+    }
+
+    /// Fires after the SMB add sheet fully dismisses. Routes to SMB-only home (no Jellyfin session),
+    /// which unmounts the picker and rearms the launch reveal over the first Home boot — the same
+    /// path a Jellyfin sign-in takes. A user-cancelled dismiss leaves `smbAddSucceeded` false and
+    /// no-ops back to the picker.
+    private func routeAfterSMBAddIfNeeded() {
+        guard smbAddSucceeded else { return }
+        smbAddSucceeded = false
+        Task {
+            router.updateForSources(
+                activeSession: await deps.serverStore.active,
+                hasAuxiliarySources: await deps.serverStore.hasSMBServers
+            )
+        }
+    }
+    #endif
 
     /// One screen's body as a full-width, full-height OPAQUE layer: opaque so the outgoing screen is
     /// fully hidden behind the incoming one during the slide (transparent bodies bled through). Caps
@@ -97,15 +149,28 @@ struct ConnectSourceView: View {
 
             hairline
 
-            // SMB is additive to a Jellyfin session today, so at the logged-out root (no session)
-            // it can't lead anywhere — shown disabled with a Jellyfin-first caption rather than a
-            // dead-end action.
+            #if os(tvOS)
+            // tvOS can't reach SMB-only home yet (the focus root still gates on a Jellyfin
+            // session) — shown disabled with a Jellyfin-first caption rather than a dead end.
             SourceRow(
                 icon: "externaldrive.connected.to.line.below.fill",
                 title: "SMB / Network Share",
                 subtitle: "Sign in to a Jellyfin server first",
                 enabled: false
             )
+            #else
+            Button {
+                addingSMB = true
+            } label: {
+                SourceRow(
+                    icon: "externaldrive.connected.to.line.below.fill",
+                    title: "SMB / Network Share",
+                    subtitle: "Connect to a network share"
+                )
+                .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            #endif
         }
         .background(Color.fill, in: RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
     }
