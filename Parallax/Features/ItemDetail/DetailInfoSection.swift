@@ -34,12 +34,12 @@ struct DetailInfoSection: View {
                 .multilineTextAlignment(.leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .mask(teaserFade)
-            // A custom `glassPanel` background (not `.buttonStyle(.glass)`): the native glass
-            // button hugs its content, but the section must be full-width — `maxWidth: .infinity`
+            // A flat `surfacePanel` background (not `.buttonStyle(.glass)`): a styled button
+            // hugs its content, but the section must be full-width — `maxWidth: .infinity`
             // on a panel background fills the row. Mirrors Settings' tappable server card.
                 .padding(Space.s18)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .glassPanel(cornerRadius: Radius.card)
+                .surfacePanel(cornerRadius: Radius.card)
                 .contentShape(.rect)
         }
         // Chrome card → the gentle tvOS chip focus lift (`.plain` on iOS); see `tvChipButton`.

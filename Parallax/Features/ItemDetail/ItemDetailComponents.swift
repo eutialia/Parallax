@@ -59,28 +59,34 @@ struct DetailHeroMetadataRow: View {
     }
 }
 
-/// Filled glass capsule for a quality or accessibility label (4K, HDR, CC, …).
-/// Matches the hero's circular glass buttons — dark frosted fill over photography. Self-contained
-/// dark chrome (pins `.dark` + white ink), so it also reads on the info card's flat background.
+/// Flat filled badge for a quality or accessibility label (4K, HDR, CC, …) — radius-7
+/// rounded rect + hairline, caption-bold, per the handoff. Two surfaces: `.artwork` keeps
+/// the dark fill + white ink the hero needs to stay legible over photography; `.flat` uses
+/// the neutral `fill` + adaptive ink for the info card's solid background.
 struct DetailMetadataBadge: View {
+    enum Surface { case artwork, flat }
+
     let label: String
     let accessibilityLabel: String
+    var surface: Surface = .artwork
 
-    init(label: String, accessibilityLabel: String? = nil) {
+    init(label: String, accessibilityLabel: String? = nil, surface: Surface = .artwork) {
         self.label = label
         self.accessibilityLabel = accessibilityLabel ?? label
+        self.surface = surface
     }
 
     var body: some View {
+        let onArtwork = surface == .artwork
+        let shape = RoundedRectangle(cornerRadius: Radius.badge, style: .continuous)
         Text(label)
             .font(.caption2.weight(.bold))
-            .foregroundStyle(.white)
+            .foregroundStyle(onArtwork ? Color.white : Color.label)
             .padding(.horizontal, 7)
             .padding(.vertical, 4)
-            .glassEffect(.regular.tint(Color.heroGlass), in: Capsule())
-            .overlay(Capsule().strokeBorder(Color.heroGlassBorder, lineWidth: 1))
+            .background(onArtwork ? Color.heroGlass : Color.fill, in: shape)
+            .overlay(shape.strokeBorder(onArtwork ? Color.heroGlassBorder : Color.separator, lineWidth: 1))
             .accessibilityLabel(accessibilityLabel)
-            .environment(\.colorScheme, .dark)
     }
 }
 
@@ -99,9 +105,9 @@ struct DetailInfoFactsRow: View {
                         .foregroundStyle(Color.secondaryLabel)
                 }
                 // Index-keyed, not `id: \.self` — quality labels can repeat and would collide.
-                ForEach(Array(facts.qualityLabels.enumerated()), id: \.offset) { DetailMetadataBadge(label: $0.element) }
+                ForEach(Array(facts.qualityLabels.enumerated()), id: \.offset) { DetailMetadataBadge(label: $0.element, surface: .flat) }
                 if facts.hasSubtitles {
-                    DetailMetadataBadge(label: "CC", accessibilityLabel: "Subtitles available")
+                    DetailMetadataBadge(label: "CC", accessibilityLabel: "Subtitles available", surface: .flat)
                 }
             }
         }
@@ -148,6 +154,37 @@ struct DetailSectionLabel: View {
             .foregroundStyle(Color.secondaryLabel)
     }
 }
+
+#if DEBUG
+/// Badge parity: `.artwork` must stay legible over bright hero photography; `.flat` sits on
+/// the solid info-card floor. Render in both schemes to check the flat-fill contrast.
+#Preview("Metadata badges · artwork vs flat", traits: .sizeThatFitsLayout) {
+    VStack(spacing: 0) {
+        ZStack {
+            LinearGradient(
+                colors: [Color(red: 0.96, green: 0.93, blue: 0.86),
+                         Color(red: 0.82, green: 0.86, blue: 0.92)],
+                startPoint: .topLeading, endPoint: .bottomTrailing
+            )
+            HStack(spacing: 6) {
+                DetailMetadataBadge(label: "4K")
+                DetailMetadataBadge(label: "HDR")
+                DetailMetadataBadge(label: "CC", accessibilityLabel: "Subtitles available")
+            }
+        }
+        .frame(height: 110)
+        HStack(spacing: 6) {
+            DetailMetadataBadge(label: "4K", surface: .flat)
+            DetailMetadataBadge(label: "HDR", surface: .flat)
+            DetailMetadataBadge(label: "CC", accessibilityLabel: "Subtitles available", surface: .flat)
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 110)
+        .background(Color.background)
+    }
+    .frame(width: 360)
+}
+#endif
 
 /// A filled capsule token for a short metadata value (a genre) in the info card.
 private struct MetadataChip: View {

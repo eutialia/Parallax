@@ -39,7 +39,7 @@ struct MovieDetailView: View {
                                     if !meta.isEmpty {
                                         DetailHeroMetadataRow(metadata: meta)
                                     }
-                                    HStack(spacing: Space.s12) {
+                                    HStack(spacing: Space.s16) {
                                         // "Resume" when the movie is mid-watch — the player
                                         // already resumes from the saved position; the pill
                                         // just never admitted it.

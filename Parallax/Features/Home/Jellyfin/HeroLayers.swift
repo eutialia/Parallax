@@ -73,11 +73,11 @@ struct HeroForeground: View {
     /// falls through to `HomeHeroCarousel.onMoveCommand`. Pressing toward the centre just moves
     /// focus between the two buttons. iPhone/iPad page via the pan gesture instead.
     ///
-    /// No `layoutReserveTitle` here (unlike the detail screens): each hero entry carries its own
-    /// title, so the pill hugs it rather than reserving the widest "Resume S9 E9" width — the
-    /// carousel's settle animation smooths the small per-page width change.
+    /// Reserves the widest "Resume S9 E9" width (`layoutReserveTitle`) exactly like the detail
+    /// screens, so the Play pill is ONE fixed width — unchanged as the copy swaps Play→Resume and
+    /// identical to the detail pill — instead of hugging each hero entry's own title.
     private var actionRow: some View {
-        HStack(spacing: idiom == .tv ? Space.s18 : Space.s12) {
+        HStack(spacing: idiom == .tv ? Space.s18 : Space.s16) {
             primaryPlay
             FavoriteActionButton(isFavorite: isFavorite, action: onToggleFavorite)
         }
@@ -91,6 +91,7 @@ struct HeroForeground: View {
         let button = PrimaryPlayButton(
             title: entry.playButtonTitle,
             fillWidth: false,
+            layoutReserveTitle: ItemPlayButtonLabel.layoutReserveTitle,
             action: onPlay
         )
         #if os(tvOS)

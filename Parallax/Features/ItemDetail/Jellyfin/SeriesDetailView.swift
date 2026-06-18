@@ -44,7 +44,7 @@ struct SeriesDetailView: View {
                                     // and empty — series as watched), so the row falls back
                                     // to the first episode. Mid-series adds the prominent
                                     // Resume beside a from-the-beginning Play.
-                                    HStack(spacing: Space.s12) {
+                                    HStack(spacing: Space.s16) {
                                         let resume = vm.resumeEpisode
                                         let showsResume = resume.map(ItemPlayButtonLabel.shouldResumeSeries) ?? false
                                         if showsResume, let ep = resume {
