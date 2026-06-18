@@ -104,11 +104,16 @@ struct PlayerMetrics: Equatable {
     // sized to the TV app's player chrome; iPad (u ≈ 0.61) lands exactly on the
     // 44pt iOS control default. (56 is the tvOS minimum the old 54/58 sat under.)
     var closeSize: CGFloat { 72 * u }
-    var chipHeight: CGFloat { 72 * u }
-    var chipPadX: CGFloat { 20 * u }
-    var chipGap: CGFloat { 9 * u }
-    var chipFontSize: CGFloat { 25 * u }
-    var chipIconSize: CGFloat { 28 * u }
+    // iPhone chips are authored at fixed, compact sizes (the `phoneChip*` statics) rather
+    // than `72 * u`: the u-scaled chip was ~50pt tall and the four-to-five-chip row crowded
+    // the bottom edge against the home indicator in landscape (the only orientation iPhone
+    // plays in). The scrubber still rides `u`, so only the chips shrink. tvOS/iPad keep the
+    // big-screen formula.
+    var chipHeight: CGFloat { deviceClass == .phone ? Self.phoneChipHeight : 72 * u }
+    var chipPadX: CGFloat { deviceClass == .phone ? Self.phoneChipPadX : 20 * u }
+    var chipGap: CGFloat { deviceClass == .phone ? Self.phoneChipGap : 9 * u }
+    var chipFontSize: CGFloat { deviceClass == .phone ? Self.phoneChipFontSize : 25 * u }
+    var chipIconSize: CGFloat { deviceClass == .phone ? Self.phoneChipIconSize : 28 * u }
 
     // Split pill — height matches `chipHeight` so the pill rows with the chips.
     var splitPillHeight: CGFloat { 72 * u }
@@ -181,10 +186,19 @@ struct PlayerMetrics: Equatable {
     static let phoneTopBarTop: CGFloat = 22
     static let phoneTopBarGap: CGFloat = 14
     static let phoneTransportGap: CGFloat = 46
-    static let phoneChipRowGap: CGFloat = 9
-    static let phoneChipRowBottom: CGFloat = 18
+    static let phoneChipRowGap: CGFloat = 8
+    static let phoneChipRowBottom: CGFloat = 20
     static let phoneProgressBottom: CGFloat = 64
     static let phoneCloseSize: CGFloat = 44
     static let phoneTransportPlay: CGFloat = 84
     static let phoneTransportSkip: CGFloat = 58
+
+    // iPhone chip pill — compact, fixed (see `chipHeight` and friends for why the phone
+    // breaks from the `72 * u` big-screen formula). ~36pt tall reads like the system
+    // player's track chips and clears the home indicator once the row is this short.
+    static let phoneChipHeight: CGFloat = 36
+    static let phoneChipPadX: CGFloat = 12
+    static let phoneChipGap: CGFloat = 5
+    static let phoneChipFontSize: CGFloat = 14
+    static let phoneChipIconSize: CGFloat = 15
 }

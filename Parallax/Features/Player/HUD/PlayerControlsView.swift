@@ -56,6 +56,11 @@ struct PlayerControlsView: View {
     /// Reports drag-scrub activity to `PlayerView`, which hides the status bar and
     /// home indicator while the chrome is collapsed into the lone scrub bar.
     let onScrubActiveChange: (Bool) -> Void
+    /// True while the pull-to-dismiss drag (and its spring-back) is live. Freezes the
+    /// auto-hide: a chrome hide mid-drag collapses the status-bar inset, which would shear
+    /// the safe-area-bounded top bar away from the rigidly-translating card. See
+    /// `PlayerPullToDismiss`.
+    let pullDragging: Bool
     #endif
     /// Reports menu state (track panels / debug sheet) to `PlayerView`: iOS suspends
     /// the pull-to-dismiss gesture while a panel owns the screen; tvOS suspends the
@@ -96,7 +101,20 @@ struct PlayerControlsView: View {
     /// the panel and dismisses on Menu (`onExitCommand`).
     // nonisolated: `chipNearest` (and its tests) hash this off the main actor — the
     // app target's default-MainActor mode would otherwise isolate the conformance.
-    nonisolated enum TrackMenuKind: Hashable { case audio, subtitles, speed, chapters }
+    nonisolated enum TrackMenuKind: Hashable {
+        case audio, subtitles, speed, chapters
+        /// VoiceOver name for the open panel. The in-panel `MenuHeader` was removed, so the
+        /// panel container carries the menu's name instead — the opening chip is `.disabled`
+        /// (hence hidden from VoiceOver) while the panel is up.
+        var accessibilityTitle: String {
+            switch self {
+            case .audio: "Audio"
+            case .subtitles: "Subtitles"
+            case .speed: "Playback speed"
+            case .chapters: "Chapters"
+            }
+        }
+    }
     @State private var openMenu: TrackMenuKind? = nil
     /// Chip frames in the "hud" coordinate space — the inline panel's anchors.
     @State private var chipFrames: [TrackMenuKind: CGRect] = [:]
@@ -288,6 +306,12 @@ struct PlayerControlsView: View {
             seekFlashDismissTask?.cancel()
             scrubCommitTask?.cancel()
         }
+        // A live pull-drag (and its spring-back) suspends the auto-hide — see
+        // `pullDragging`. The hide task is already armed when the drag starts, so cancel
+        // it on engage and re-arm a fresh timer on release.
+        .onChange(of: pullDragging) { _, dragging in
+            if dragging { hideTask?.cancel() } else { scheduleHide() }
+        }
         #endif
         .onChange(of: menuOpen) { _, open in
             if open { hideTask?.cancel() } else { scheduleHide() }
@@ -349,7 +373,8 @@ struct PlayerControlsView: View {
                         bigControls(PlayerMetrics(width: hudPhysicalMax > 0
                                         ? hudPhysicalMax
                                         : max(geo.size.width, geo.size.height)),
-                                    topInset: hudTopInset)
+                                    topInset: hudTopInset,
+                                    dragging: pullDragging)
                             .modifier(TopInsetLatch(inset: geo.safeAreaInsets.top,
                                                     statusBarVisible: statusBarExpectedVisible,
                                                     isLandscape: hudPhysicalIsLandscape,
@@ -358,7 +383,8 @@ struct PlayerControlsView: View {
                     }
                 } else {
                     GeometryReader { geo in
-                        phoneControls(topInset: hudTopInset)
+                        phoneControls(topInset: hudTopInset,
+                                      dragging: pullDragging)
                             .modifier(TopInsetLatch(inset: geo.safeAreaInsets.top,
                                                     statusBarVisible: statusBarExpectedVisible,
                                                     isLandscape: hudPhysicalIsLandscape,
@@ -458,7 +484,10 @@ struct PlayerControlsView: View {
         #if os(tvOS)
         return base * 1.5
         #else
-        return base
+        // iPhone panels shrink to match the compact phone chips — a 320pt column ate a
+        // third of a landscape phone and dwarfed the chip it grew from. iPad keeps the
+        // roomier base. (Rows stay full height for touch targets; only the width tightens.)
+        return isPad ? base : base * 0.8
         #endif
     }
 
@@ -532,7 +561,7 @@ struct PlayerControlsView: View {
     // MARK: - Big layout (tvOS + iPad)
 
     @ViewBuilder
-    private func bigControls(_ m: PlayerMetrics, topInset: CGFloat = 0) -> some View {
+    private func bigControls(_ m: PlayerMetrics, topInset: CGFloat = 0, dragging: Bool = false) -> some View {
         // Everything but the progress row vanishes while a finger drag-scrubs, leaving
         // the lone bar over the dim — the same collapse as tvOS swipe-scrub.
         if !dragScrubbing {
@@ -557,14 +586,23 @@ struct PlayerControlsView: View {
                     #endif
                 }
                 .padding(.horizontal, m.padX)
-                .padding(.top, m.topBarTop + topInset)
+                // The top bar must ride the pull-to-dismiss card RIGIDLY yet not twitch when
+                // the status bar toggles on auto-hide — which pull opposite ways.
+                // `ignoresSafeArea(.top)` + latched inset is twitch-free (window-fixed, ignores
+                // the live inset) but SHEARS under the card offset (it re-pins to the window);
+                // safe-area-bounded rides the offset but twitches (its live inset collapses a
+                // frame off from the toggle). So SWITCH on `dragging`: the status bar is FROZEN
+                // visible during a drag (see `pullDragging`), so the live inset == the latched
+                // inset and the two modes share the exact resting spot — the switch is seamless.
+                //   • not dragging → `ignoresSafeArea(.top)` + `topBarTop + latched`  (original)
+                //   • dragging     → safe-area-bounded (`edges: []`) + `topBarTop`    (rigid)
+                // Same modifier, only its edge set flips — no structural churn. tvOS keeps the
+                // plain safe-area path (no status bar): `dragging` defaults false, `topInset` 0.
+                .padding(.top, m.topBarTop + (dragging ? 0 : topInset))
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 .offset(y: revealOffset(-m.hudSlide))
-                // Full-bleed + latched inset (iOS): the bar's coordinate space stops
-                // tracking the status bar, so show/hide travel is symmetric (±hudSlide
-                // only). tvOS has no status bar and keeps the safe-area path.
                 #if !os(tvOS)
-                .ignoresSafeArea(edges: .top)
+                .ignoresSafeArea(edges: dragging ? [] : .top)
                 #endif
 
                 // Centre transport — previous episode · play/pause · next episode (the
@@ -665,7 +703,7 @@ struct PlayerControlsView: View {
     // MARK: - Phone layout (iPhone landscape)
 
     @ViewBuilder
-    private func phoneControls(topInset: CGFloat) -> some View {
+    private func phoneControls(topInset: CGFloat, dragging: Bool) -> some View {
         let m = PlayerMetrics.phone
         // Same drag-scrub collapse as the big layout: only the progress row survives.
         if !dragScrubbing {
@@ -682,12 +720,12 @@ struct PlayerControlsView: View {
                     }
                 }
                 .padding(.horizontal, PlayerMetrics.phonePadX)
-                .padding(.top, PlayerMetrics.phoneTopBarTop + topInset)
+                // Switch the inset mode on `dragging` — see the iPad top bar. (Landscape has no
+                // status bar, so this only bites in portrait.)
+                .padding(.top, PlayerMetrics.phoneTopBarTop + (dragging ? 0 : topInset))
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 .offset(y: revealOffset(-m.hudSlide))
-                // Same status-bar pin as the iPad top bar (landscape has no status
-                // bar, so this only bites in portrait playback).
-                .ignoresSafeArea(edges: .top)
+                .ignoresSafeArea(edges: dragging ? [] : .top)
 
                 // Centre transport — previous episode · play/pause · next episode
                 // (±10s is gesture-only now; see the iPad transport above). See
@@ -808,6 +846,9 @@ struct PlayerControlsView: View {
         if !vm.availableAudioTracks.isEmpty {
             PlayerGlassChip(systemImage: "waveform",
                             label: vm.selectedAudioTrack?.displayName ?? "Audio",
+                            // Channels promoted onto the chip ("English 7.1"); the codec
+                            // stays on the menu detail line (channelLabel strips it).
+                            sub: vm.selectedAudioTrack?.channelLabel,
                             isActive: openMenu == .audio, isVacated: isVacated(.audio), metrics: m,
                             accessibilityLabel: "Audio, \(vm.selectedAudioTrack?.displayName ?? "default")") {
                 resetHideTimer(); openMenu = .audio
@@ -816,8 +857,10 @@ struct PlayerControlsView: View {
             .tvFocused($chipFocus, equals: .audio)
         }
         if !vm.availableSubtitleTracks.isEmpty {
-            PlayerGlassChip(systemImage: "captions.bubble", label: "Subtitles",
-                            sub: vm.selectedSubtitleTrack?.displayName ?? "Off",
+            // Language promoted to the primary label (the glyph carries the "subtitles"
+            // category, Apple-player style); VoiceOver still says "Subtitles, <lang>".
+            PlayerGlassChip(systemImage: "captions.bubble",
+                            label: vm.selectedSubtitleTrack?.displayName ?? "Off",
                             isActive: openMenu == .subtitles, isVacated: isVacated(.subtitles), metrics: m,
                             accessibilityLabel: "Subtitles, \(vm.selectedSubtitleTrack?.displayName ?? "Off")") {
                 resetHideTimer(); openMenu = .subtitles
@@ -1239,15 +1282,26 @@ struct PlayerControlsView: View {
     ) -> some View {
         let shape = RoundedRectangle(cornerRadius: Radius.panel, style: .continuous)
         ScrollView {
-            content().padding(Space.s8)
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { panelContentHeights[kind] = $0 }
+            // No in-panel title: the chip that opened this already names the menu. Just the rows,
+            // clipped to `shape` (below) so they scroll cleanly under the panel's rounded corners.
+            LazyVStack(alignment: .leading, spacing: 2) {
+                content()
+            }
+            .padding(Space.s8)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { panelContentHeights[kind] = $0 }
         }
+        .scrollIndicators(.hidden)
         .scrollBounceBehavior(.basedOnSize)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .clipShape(shape)
         .glassEffect(.regular, in: shape)
         .overlay { shape.strokeBorder(.white.opacity(0.12), lineWidth: 1) }
         .preferredColorScheme(.dark)
         .environment(\.colorScheme, .dark)
+        // The in-panel MenuHeader was removed; name the panel container for VoiceOver so the
+        // opened menu still announces which list it is (the opening chip is hidden while open).
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(kind.accessibilityTitle)
     }
 
     // MARK: - Auto-hide
@@ -1313,7 +1367,7 @@ struct PlayerControlsView: View {
         // mid-drag would unmount the gesture's view and strand the engine paused),
         // or playback is PAUSED — a paused frame with vanishing chrome reads as a
         // dead player. Loading counts as not-playing: the HUD stays over the scrim.
-        guard !menuOpen, !dragScrubbing, vm.isPlaying else { return }
+        guard !menuOpen, !dragScrubbing, !pullDragging, vm.isPlaying else { return }
         hideTask = Task {
             try? await Task.sleep(for: .seconds(3))
             if !Task.isCancelled { controlsVisible = false }

@@ -29,4 +29,15 @@ public struct AudioTrack: Sendable, Hashable {
         self.isTranscode = isTranscode
         self.transcodeTarget = transcodeTarget
     }
+
+    /// Channel layout only ("7.1"), pulled from `detailLabel`'s "codec · channels" so
+    /// the player's audio chip can read "English 7.1" — channels without the codec the
+    /// menu detail line already carries. Nil when detail is absent (VLC inventory /
+    /// direct-play) or codec-only, so the chip falls back to the language name alone.
+    public var channelLabel: String? {
+        guard let detailLabel else { return nil }
+        let parts = detailLabel.split(separator: "·").map { $0.trimmingCharacters(in: .whitespaces) }
+        guard parts.count >= 2, let channels = parts.last, !channels.isEmpty else { return nil }
+        return channels
+    }
 }

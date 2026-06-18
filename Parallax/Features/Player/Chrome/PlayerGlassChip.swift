@@ -129,10 +129,36 @@ struct PlayerGlassChip: View {
     }
 }
 
-#Preview {
+// The real iPhone bottom row at its compact `.phone` scale, over a dark wash so the
+// glass reads — checks the chip set doesn't crowd horizontally and the pill height is
+// the intended ~36pt (see `PlayerMetrics.phoneChip*`). `.fixedLayout` pins the canvas to
+// an iPhone-landscape-width slice so it renders without a portrait device frame.
+#Preview("iPhone chip row", traits: .fixedLayout(width: 852, height: 150)) {
+    ZStack {
+        LinearGradient(colors: [.black.opacity(0.2), .black], startPoint: .top, endPoint: .bottom)
+        HStack(spacing: PlayerMetrics.phoneChipRowGap) {
+            PlayerGlassChip(systemImage: "waveform", label: "Japanese", sub: "5.1",
+                            metrics: .phone, accessibilityLabel: "Audio") {}
+            PlayerGlassChip(systemImage: "captions.bubble", label: "Chinese (Simplified)",
+                            metrics: .phone, accessibilityLabel: "Subtitles") {}
+            PlayerGlassChip(systemImage: "timer", label: "1×",
+                            metrics: .phone, accessibilityLabel: "Speed") {}
+            PlayerGlassChip(systemImage: "list.bullet", label: "Chapters",
+                            metrics: .phone, accessibilityLabel: "Chapters") {}
+            PlayerGlassChip(systemImage: "ladybug", label: "Debug",
+                            metrics: .phone, accessibilityLabel: "Debug") {}
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, PlayerMetrics.phonePadX)
+        .frame(maxHeight: .infinity, alignment: .bottom)
+        .padding(.bottom, PlayerMetrics.phoneChipRowBottom)
+    }
+    .environment(\.colorScheme, .dark)
+}
+
+#Preview("Track chips · tv", traits: .fixedLayout(width: 820, height: 220)) {
     ZStack {
         LinearGradient(colors: [.indigo, .black], startPoint: .top, endPoint: .bottom)
-            .ignoresSafeArea()
         HStack(spacing: 14) {
             PlayerGlassChip(systemImage: "waveform", label: "English", sub: "5.1",
                             metrics: .tv, accessibilityLabel: "Audio") {}
@@ -142,6 +168,5 @@ struct PlayerGlassChip: View {
                             isActive: true, metrics: .tv, accessibilityLabel: "Speed") {}
         }
     }
-    .frame(width: 820, height: 220)   // fixed canvas so the .tv-scale chips don't truncate
     .environment(\.colorScheme, .dark)
 }
