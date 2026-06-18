@@ -14,6 +14,12 @@ import ParallaxPlayback
 
 @main
 struct ParallaxApp: App {
+    // Vends `OrientationController`'s mask to UIKit — the only orientation hook a SwiftUI
+    // lifecycle app reaches. iOS only: tvOS has no interface orientation.
+    #if !os(tvOS)
+    @UIApplicationDelegateAdaptor(OrientationAppDelegate.self) private var orientationDelegate
+    #endif
+
     @State private var dependencies: AppDependencies = .live()
     @State private var router: AppRouter = .init()
     @State private var playback: PlaybackPresenter = .init()
@@ -57,10 +63,10 @@ struct ParallaxApp: App {
                 // Rebuild the device profile on the next resolve whenever
                 // the audio route changes (e.g. AirPlay connects). Per the
                 // spec, in-flight playback is intentionally NOT interrupted.
-                Task {
-                    for await _ in dependencies.audioSession.routeChanges {
-                        await dependencies.deviceProfileBuilder.invalidate()
-                    }
+                // Structured (no wrapping `Task {}`): the loop is the tail of this
+                // `.task`, so it shares the view's cancellation instead of leaking.
+                for await _ in dependencies.audioSession.routeChanges {
+                    await dependencies.deviceProfileBuilder.invalidate()
                 }
             }
     }

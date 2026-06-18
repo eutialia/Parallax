@@ -145,11 +145,12 @@ struct PlayerView: View {
         // safe-area inset while the bar is expected visible — change one side
         // and the other must follow, or the top bars latch stale insets.
         .statusBarHidden(!chromeVisible || scrubHUDActive)
-        // The pull-to-dismiss owns the top zone, so the first top-edge swipe
-        // must be OURS — without this the notification-shade grabber steals
-        // (cancels) the drag mid-pull. Same deferral AVPlayerViewController
-        // applies in full screen; the shade stays one extra swipe away.
-        .defersSystemGestures(on: .top)
+        // No `.defersSystemGestures(on: .top)`: deferring the top edge is what made
+        // Control Center / Notification Center need TWO swipes (the first only surfaced
+        // the system grabber). We'd added it so the pull-to-dismiss owned the top zone,
+        // but the pull works from anywhere on the surface — so the cost of dropping it is
+        // only that a downward drag begun ON the very top edge goes to the system shade
+        // instead of dismissing. Single-swipe access to the system overlays wins.
         #endif
         .persistentSystemOverlays(systemOverlaysVisible ? .automatic : .hidden)
         .animation(.easeInOut(duration: 0.2), value: chromeVisible)
@@ -165,6 +166,12 @@ struct PlayerView: View {
         }
         #endif
         .task { await beginSession() }
+        #if !os(tvOS)
+        // Parallax doesn't offer portrait video: the iPhone player locks to landscape
+        // while it's on screen (no-op on iPad, which plays in any orientation) and the
+        // teardown below restores the browse default.
+        .onAppear { OrientationController.shared.lockLandscapeForPlayer() }
+        #endif
         .onDisappear {
             // THE teardown point for every dismissal: exitPlayer() only pauses
             // (so the last frame rides the slide-out and the teardown's
@@ -178,6 +185,8 @@ struct PlayerView: View {
             idleTask?.cancel()
             commitSeekTask?.cancel()
             DisplayCriteriaMatcher.clear()
+            #else
+            OrientationController.shared.releasePlayerLock()
             #endif
         }
         // A movie / series finale that played to its end dismisses the player the same
@@ -301,6 +310,7 @@ struct PlayerView: View {
                     PlayerControlsView(vm: vm, controlsVisible: $chromeVisible,
                                        debugHUD: $showDebugHUD,
                                        onScrubActiveChange: { scrubHUDActive = $0 },
+                                       pullDragging: presentation.isDragging,
                                        onMenuOpenChange: { trackMenuOpen = $0 }) { exitPlayer() }
                     #endif
                     // Contextual Skip Intro/Recap · Next Episode button — a sibling
