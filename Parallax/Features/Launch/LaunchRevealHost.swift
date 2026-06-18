@@ -38,10 +38,16 @@ struct LaunchRevealHost<Content: View>: View {
                     }
                 }
             }
-            .persistentSystemOverlays(stageActive ? .hidden : .automatic)
-            #if !os(tvOS)
-            .statusBarHidden(stageActive)
-            #endif
+            // The status-bar / system-overlay hide rides the stage OVERLAY (below), not
+            // here: emitting `.statusBarHidden(false)` on this base branch the rest of the
+            // session left a permanent EXPLICIT false competing with the player's
+            // `.statusBarHidden(true)` (a sibling `.overlay` at the root) — and on iPad,
+            // where the status bar exists in every orientation, the launch host's false won,
+            // so the player chrome could hide while the status bar stubbornly stayed. (The
+            // home indicator hid fine because `.persistentSystemOverlays(.automatic)` is a
+            // "no preference, defer" value, not a competing one.) Scoping the hide to the
+            // overlay — mounted only while `stageActive` — means nothing emits a status-bar
+            // preference once the stage is gone, so the player's preference stands alone.
             // A `rearm()` (logged-out launch → first Home after sign-in) brings the
             // stage back. Reset the settle zoom to its 1.09 start so the replay lifts
             // into place again instead of resting at the identity it settled to.
@@ -97,6 +103,15 @@ private struct LaunchStageOverlay: View {
                 }
         }
         .ignoresSafeArea()
+        // The stage hides the status bar + system overlays while it's up — and ONLY while
+        // it's up. Because this overlay is conditionally mounted (`if stageActive`), the
+        // preference simply vanishes when the stage tears down rather than flipping to an
+        // explicit `false`/`.automatic` that would fight the player's hide (see the note in
+        // `LaunchRevealHost.body`).
+        .persistentSystemOverlays(.hidden)
+        #if !os(tvOS)
+        .statusBarHidden(true)
+        #endif
         .task {
             try? await Task.sleep(for: Self.watchdogTimeout)
             gate.markContentReady()
