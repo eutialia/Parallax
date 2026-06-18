@@ -1,75 +1,64 @@
 import SwiftUI
 
-/// Primary action over hero/detail artwork — a native Liquid Glass pill on every
-/// platform (one body, system-owned behavior).
-/// - tvOS: bare `.glass` — the system owns rest/focus/platter/label colors; tinting or
-///   forcing a label color breaks the focus inversion (white label on white platter).
-/// - iOS: `.glassProminent` tinted the frozen espresso `playPillFill` + pure white
-///   label — pixel-matched to the approved row-3 prototype in "Action row parity".
-/// Label patterns: "Play", "Resume · 1h 02m left", "Resume S3 E1".
+/// Primary action over hero/detail artwork — a FLAT solid pill (Liquid Glass is reserved for the
+/// player + system bars). The fill flips with the face: espresso pill + white label by day, white
+/// pill + ink label by night. On tvOS it inverts to the HIG white platter + ink on focus, with the
+/// `tvChipButton()` lift. Label patterns: "Play", "Resume · 1h 02m left", "Resume S3 E1".
 struct PrimaryPlayButton: View {
     let title: String
     var systemImage: String = "play.fill"
-    /// Full-width pill (the default, used as a standalone row) vs an intrinsic-width
-    /// pill (used inline in the hero's action row, beside the glass buttons).
+    /// Full-width pill (the default, used as a standalone row) vs an intrinsic-width pill (used
+    /// inline in the hero's action row, beside the circle buttons).
     var fillWidth: Bool = true
-    /// When set, an invisible wider label reserves width so the pill stays one size as
-    /// the copy changes ("Play" → "Resume S9 E9") and doesn't reflow.
+    /// When set, an invisible wider label reserves width so the pill stays one size as the copy
+    /// changes ("Play" → "Resume S9 E9") and doesn't reflow.
     var layoutReserveTitle: String? = nil
     let action: () -> Void
 
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.appIdiom) private var idiom
+
     var body: some View {
-        // `Button { action() }`, not `Button(action: action)`: passing the stored
-        // closure directly trips Xcode's preview thunk (`__designTimeSelection` infers
-        // conflicting `() -> Void` vs `@MainActor () -> Void`), killing #Preview here.
+        // `Button { action() }`, not `Button(action: action)`: passing the stored closure directly
+        // trips Xcode's preview thunk (`__designTimeSelection` isolation inference), killing #Preview.
         Button {
             action()
         } label: {
-            playLabel
+            TVFocusReader { focused in
+                content(focused: focused)
+            }
         }
-        #if os(tvOS)
-        .buttonStyle(.glass)
-        #else
-        .buttonStyle(.glassProminent)
-        .tint(Color.playPillFill)
-        // controlSize is unavailable on tvOS; .extraLarge lands ~50pt at .headline,
-        // the closest native metric to the previous 46pt custom pill.
-        .controlSize(.extraLarge)
-        // Pin dark so light mode / bright artwork doesn't resolve the near-white glass
-        // variant (measured rgb(222,219,255) unpinned vs rgb(25,21,62) pinned —
-        // CircleGlassButton applies the same fix for the same reason).
-        .environment(\.colorScheme, .dark)
-        #endif
+        // Owns the button style (tvOS lift / `.plain` on iOS) — never pair an inner `.buttonStyle`.
+        .tvChipButton()
     }
 
     @ViewBuilder
-    private var playLabel: some View {
-        let label = sizedLabel(title)
+    private func content(focused: Bool) -> some View {
+        let restFill = colorScheme == .dark ? Color.white : Color.playPillFill
+        let restLabel = colorScheme == .dark ? Color.playerInk : Color.white
+        labelStack
+            .font(.headline)
+            .foregroundStyle(focused ? Color.playerInk : restLabel)
+            .padding(.horizontal, Space.s22)
+            .frame(height: ActionRow.controlHeight(idiom))
             .frame(maxWidth: fillWidth ? .infinity : nil)
-
-        if let layoutReserveTitle {
-            ZStack {
-                sizedLabel(layoutReserveTitle)
-                    .opacity(0)
-                    .accessibilityHidden(true)
-                label
-            }
-        } else {
-            label
-        }
+            .flatControlFill(focused: focused, rest: restFill, in: Capsule())
     }
 
-    /// Bare label: the native styles supply their own padding, height, and platter
-    /// metrics — hand-sizing fought the system geometry (and is ignored anyway).
-    private func sizedLabel(_ text: String) -> some View {
-        Label(text, systemImage: systemImage)
-            .font(.headline)
-            #if !os(tvOS)
-            // Pure white (not the warm buttonLabel): legible on the frozen espresso
-            // tint in both schemes. On tvOS the system picks the label color so the
-            // focused platter can invert it.
-            .foregroundStyle(.white)
-            #endif
+    /// The label, optionally reserving the widest copy's width behind the live title so the pill
+    /// never resizes as Play↔Resume swaps.
+    @ViewBuilder
+    private var labelStack: some View {
+        if let layoutReserveTitle {
+            ZStack {
+                Label(layoutReserveTitle, systemImage: systemImage)
+                    .opacity(0)
+                    .accessibilityHidden(true)
+                Label(title, systemImage: systemImage)
+            }
+        } else {
+            Label(title, systemImage: systemImage)
+        }
     }
 }
 
@@ -86,4 +75,5 @@ struct PrimaryPlayButton: View {
     }
     .padding(Space.s40)
     .background(Color.background)
+    .environment(\.appIdiom, .regular)
 }

@@ -131,8 +131,12 @@ extension View {
     /// uses `tvListRowButton()` (the label is a descendant of the focusable Button, so the reader's
     /// `\.isFocused` reports the Button's focus). Same recipe as the player track menu's `MenuRow`,
     /// minus the selection fill. No-op on iOS, where focus doesn't exist.
+    ///
+    /// Radius is `Radius.card` (not the smaller tile radius): on a tall 10-foot settings/credential
+    /// row a 12pt corner barely curves and the platter read as a plain white rectangle — a card-sized
+    /// radius makes the selection read as clearly rounded.
     @ViewBuilder
-    func tvFocusListRow(cornerRadius: CGFloat = Radius.tile) -> some View {
+    func tvFocusListRow(cornerRadius: CGFloat = Radius.card) -> some View {
         #if os(tvOS)
         modifier(TVFocusListRowModifier(cornerRadius: cornerRadius))
         #else

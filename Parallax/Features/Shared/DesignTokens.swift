@@ -58,7 +58,6 @@ extension Color {
     static let fillSecondary      = Color(light: 0x4A3A24, lightAlpha: 0.07, dark: 0x787887, darkAlpha: 0.16)
 
     static let glass              = Color(light: 0xF8F4ED, lightAlpha: 0.52, dark: 0x1C1C22, darkAlpha: 0.52)
-    static let glassStrong        = Color(light: 0xFAF6EF, lightAlpha: 0.74, dark: 0x1E1E26, darkAlpha: 0.74)
     static let glassBorder        = Color(light: 0xFFFDF7, lightAlpha: 0.80, dark: 0xFFFFFF, darkAlpha: 0.14)
 
     /// Hero/detail circular glass actions (Favorite, Watched, …). Fixed dark frosted
@@ -90,6 +89,10 @@ extension Color {
     /// owns the label color against it.
     static let chipSelectedFill   = Color(light: 0x2A241D, lightAlpha: 0.88, dark: 0xFFFFFF, darkAlpha: 0.78)
     static let selectionFill      = Color(light: 0x2D200F, lightAlpha: 0.09, dark: 0xFFFFFF, darkAlpha: 0.15)
+
+    /// Status "active" green — the server LED (`--ok #3DA45A`). The one sanctioned non-mono color
+    /// besides destructive red; it marks state, not brand, so the No-Accent rule still holds.
+    static let ok                 = Color(light: 0x3DA45A, dark: 0x3DA45A)
 }
 
 // MARK: - Metric tokens (radii, spacing)
@@ -104,6 +107,20 @@ enum Radius {
     static let field: CGFloat = 14    // text fields, form buttons
     static let tile: CGFloat = 12     // posters, thumbs, small tiles
     static let navItem: CGFloat = 12  // sidebar/tab item pills (panel − 12 inset)
+    static let badge: CGFloat = 7     // 4K/HDR/CC metadata badges (per handoff)
+}
+
+/// Hero / detail action row (Play pill + circle buttons). The pill height and circle diameter
+/// are matched so the row aligns; sizes per the handoff (iPhone 50 / iPad 52 / Apple TV 62).
+enum ActionRow {
+    static func controlHeight(_ idiom: AppIdiom) -> CGFloat {
+        #if os(tvOS)
+        62
+        #else
+        idiom == .regular ? 52 : 50
+        #endif
+    }
+    static let gap: CGFloat = Space.s16
 }
 
 /// Continue Watching / Next Up horizontal shelves (2:3 poster tiles).

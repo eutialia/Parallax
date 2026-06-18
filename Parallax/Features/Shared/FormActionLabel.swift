@@ -1,106 +1,59 @@
 import SwiftUI
 
-/// Visual treatment for a full-width form CTA (auth + settings).
+/// Visual treatment for a full-width form CTA (auth + settings). FLAT — Liquid Glass is reserved
+/// for the player + system bars.
 enum FormActionStyle {
-    /// Bright `buttonFill` pill — the screen's #1 action (Connect).
+    /// Bright `buttonFill` pill — the screen's #1 action (Connect). Espresso by day, white by night.
     case solid
-    /// Frosted glass pill — secondary actions (Quick Connect, Add Server, …).
+    /// Secondary flat pill — `fill` + hairline (Quick Connect, Add Server, …).
     case glass
 }
 
 extension View {
-    /// Lay a label out as a full-width form CTA: headline type, full width. The chrome
-    /// (platter, padding, press/focus treatment) comes from the NATIVE glass style
-    /// applied by `formActionButton(_:)` on both platforms. iOS additionally pins the
-    /// label color per `\.isEnabled`: the system does NOT flip the `.glassProminent`
-    /// label against a light tint, so dark mode (white `buttonFill`) rendered
-    /// white-on-white when ENABLED (hence the forced `buttonLabel`), and the dimmed
-    /// DISABLED pill rendered the forced `buttonLabel` invisible (cream on a faint pill —
-    /// the "blank Connect button" bug). So the disabled label drops to `secondaryLabel`,
-    /// a legible gray on the dimmed pill (pixel-verified in "CTA disabled state"). tvOS
-    /// stays system-owned — the focused platter inverts the label, and a forced color
-    /// breaks that.
-    /// Pass `isWorking: true` while the action runs to swap the label for a spinner WITHOUT
-    /// resizing the button: the title stays in the layout (hidden) so it keeps driving the height,
-    /// and the spinner is overlaid — otherwise the `.extraLarge`-sized `ProgressView` is taller than
-    /// the `.headline` text and grows a content-hugging button mid-task.
+    /// Lay a label out as a full-width form CTA: `.rowTitle` type (`.headline` on iOS, a tamer 26pt
+    /// on tvOS), full width, at the shared 50pt control height (66 on tvOS) so it matches the text
+    /// fields stacked above it. The label COLOR + fill come from `formActionButton(_:)`'s style, which
+    /// owns the focus inversion. Pass `isWorking: true` to swap the label for a spinner WITHOUT
+    /// resizing (the title stays hidden in the layout to drive the height; the spinner overlays).
     func formActionLabel(_ style: FormActionStyle, isWorking: Bool = false) -> some View {
         modifier(FormActionLabelModifier(style: style, isWorking: isWorking))
     }
 
-    /// Apply to the Button/NavigationLink wrapping a `formActionLabel` label — native Liquid Glass
-    /// styles (the system owns metrics, label color, press feedback, and the tvOS focus platter).
-    /// iOS: `.solid` = `.glassProminent` tinted with the brand `buttonFill`; `.glass` = plain glass.
-    /// tvOS: BOTH resolve to plain `.glass` — a mono `buttonFill` tint renders `.glassProminent`
-    /// white-on-white at rest (the focus engine supplies the emphasis a tint would on iOS).
-    /// `controlSize(.extraLarge)` lands the iOS pill at ~50pt for a `.headline` label —
-    /// the height the old hand-drawn chrome reserved and the iOS text fields still match via
-    /// their `baseControlHeight` (tvOS has no controlSize; the style's own metrics rule, unchanged).
+    /// Apply to the Button/NavigationLink wrapping a `formActionLabel` label. Draws the FLAT fill:
+    /// `.solid` = solid `buttonFill`; `.glass` = `fill` + hairline. On tvOS the pill inverts to the
+    /// HIG white platter + ink label and lifts on focus (the one focus treatment every flat control
+    /// shares); iOS dims on press / when disabled.
     func formActionButton(_ style: FormActionStyle) -> some View {
-        modifier(FormActionButtonModifier(style: style))
+        buttonStyle(FlatFormButtonStyle(role: style))
     }
 }
 
-/// Applies the native glass platter + (iOS) a disabled dim for the plain `.glass` style. The plain
-/// glass style barely changes when disabled — the pill reads the same and only the label grays — so
-/// the whole pill fades to read as unavailable. `.solid` is left to its native disabled treatment:
-/// `.glassProminent` dims its tinted pill clearly, and stacking an opacity there is what made the
-/// label invisible before (the "blank Connect button" bug). tvOS stays system-owned (focus platter).
-private struct FormActionButtonModifier: ViewModifier {
-    let style: FormActionStyle
-    #if !os(tvOS)
-    @Environment(\.isEnabled) private var isEnabled
-    #endif
-
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        switch style {
-        case .solid:
-            #if os(tvOS)
-            // The mono `buttonFill` tint is WHITE in dark mode, so `.glassProminent` paints a white
-            // pill — and the tvOS label is system-owned (forcing a colour breaks the focus-platter
-            // inversion), so it renders white-on-white and the "Connect" text vanishes. tvOS uses
-            // plain `.glass` (a legible frosted pill) and lets the focus engine own the emphasis.
-            content.buttonStyle(.glass)
-            #else
-            content.buttonStyle(.glassProminent)
-                .tint(Color.buttonFill)
-                .controlSize(.extraLarge)
-            #endif
-        case .glass:
-            content.buttonStyle(.glass)
-                #if !os(tvOS)
-                .controlSize(.extraLarge)
-                .opacity(isEnabled ? 1 : 0.55)
-                #endif
-        }
-    }
-}
-
-/// Picks the CTA label color from `\.isEnabled` so the disabled state stays legible — see
-/// `formActionLabel(_:)` for why the enabled `.solid` label must be forced yet the disabled one
-/// must not be. tvOS keeps the system-owned label (focus platter inverts it).
+/// Sizes the CTA label (full width, shared control height) and swaps in the spinner while working.
+/// Color is the button style's job (it knows focus/enabled), so this no longer sets a foreground.
 private struct FormActionLabelModifier: ViewModifier {
     let style: FormActionStyle
     var isWorking = false
     #if !os(tvOS)
-    @Environment(\.isEnabled) private var isEnabled
+    /// Matches the iOS text fields' `baseControlHeight` so the CTA reads as the same height; scales
+    /// with Dynamic Type so the label never clips.
+    @ScaledMetric(relativeTo: .headline) private var height: CGFloat = 50
     #endif
 
     func body(content: Content) -> some View {
         content
-            // `.rowTitle` = `.headline` on iOS (unchanged), a tamer 26pt on tvOS where the 10-foot
-            // `.headline` made the full-width CTA label balloon.
             .font(.rowTitle)
             .frame(maxWidth: .infinity)
-            #if !os(tvOS)
-            .foregroundStyle(labelColor)
-            #endif
-            // Keep the title in the layout (hidden) while working so it still drives the button's
-            // height, and lay the spinner over it — an `.overlay` never changes the parent's size,
-            // so the button can't grow when the (extra-large) spinner outsizes the text.
+            .frame(height: ctaHeight)
             .opacity(isWorking ? 0 : 1)
             .overlay { spinner }
+    }
+
+    private var ctaHeight: CGFloat {
+        #if os(tvOS)
+        66
+        #else
+        height
+        #endif
     }
 
     @ViewBuilder
@@ -112,19 +65,47 @@ private struct FormActionLabelModifier: ViewModifier {
                 #endif
         }
     }
+}
 
-    #if !os(tvOS)
-    private var labelColor: Color {
-        guard isEnabled else { return Color.secondaryLabel }
-        return style == .solid ? Color.buttonLabel : Color.label
+/// Flat form CTA: solid `buttonFill` (primary) or `fill` + hairline (secondary). On focus (tvOS) it
+/// inverts to the white platter + ink — platter ONLY, no scale lift: these CTAs are full-width, and
+/// `tvFocusEffect`'s 1.06× lift overflows a full-width pill into the rows above/below it (the same
+/// reason `tvMenuRowButton`/`tvFocusListRow` are platter-only). The compact Play pill / circle
+/// actions keep the lift since they don't span the width. iOS dims on press, reads as unavailable
+/// when disabled.
+private struct FlatFormButtonStyle: ButtonStyle {
+    let role: FormActionStyle
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        TVFocusReader { focused in
+            configuration.label
+                .foregroundStyle(labelColor(focused: focused))
+                .flatControlFill(focused: focused, rest: restFill, hairline: hairline, in: Capsule())
+                .opacity(opacity(pressed: configuration.isPressed))
+                .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+        }
     }
-    #endif
+
+    private var restFill: Color { role == .solid ? Color.buttonFill : Color.fill }
+    private var hairline: Color? { role == .solid ? nil : Color.separator }
+
+    private func labelColor(focused: Bool) -> Color {
+        if focused { return Color.playerInk }            // ink on the tvOS white focus platter
+        if !isEnabled { return Color.secondaryLabel }    // legible gray on the dimmed pill
+        return role == .solid ? Color.buttonLabel : Color.label
+    }
+
+    private func opacity(pressed: Bool) -> Double {
+        if !isEnabled { return role == .solid ? 0.5 : 0.55 }
+        return pressed ? 0.9 : 1
+    }
 }
 
 #Preview("Form CTA parity") {
     VStack(spacing: Space.s22) {
-        // Text-field stand-in at the shared form-control height — the CTAs below
-        // should read as the same height (LoginView stacks them in one column).
+        // Text-field stand-in at the shared form-control height — the CTAs below should read as the
+        // same height (LoginView stacks them in one column).
         RoundedRectangle(cornerRadius: Radius.field, style: .continuous)
             .fill(Color.fill)
             .frame(height: 50)
@@ -170,10 +151,8 @@ private struct FormActionLabelModifier: ViewModifier {
     .preferredColorScheme(.dark)
 }
 
-/// Disabled-state proof: the form CTAs must read as DISABLED (dimmed but legible label),
-/// never as a blank pill. Relying on the native `.disabled()` of the glass styles — no manual
-/// `.opacity()` stacked on top, which previously double-dimmed `.solid` into an unreadable
-/// washed-out pill (the "invisible Connect button" bug). Left column enabled, right disabled.
+/// Disabled-state proof: the CTAs must read as DISABLED (dimmed but legible label), never a blank
+/// pill. Left column enabled, right disabled.
 private struct DisabledCTAProof: View {
     var body: some View {
         Grid(horizontalSpacing: Space.s18, verticalSpacing: Space.s22) {
@@ -207,4 +186,3 @@ private struct DisabledCTAProof: View {
 #Preview("CTA disabled state · dark") {
     DisabledCTAProof().preferredColorScheme(.dark)
 }
-

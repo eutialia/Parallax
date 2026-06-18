@@ -1,18 +1,39 @@
 import SwiftUI
 
-// Liquid Glass surfaces, layered on the native material. iOS 26.5 deployment →
-// `.glassEffect` is always available (no fallback). The handoff's hairline is
-// added as a thin glassBorder stroke; if the native glass already reads as
-// bordered enough in preview, drop the overlay.
+// App-drawn surfaces are FLAT — Liquid Glass is reserved for the player + system bars (see
+// DESIGN.md's material rule). This file owns the flat card (`surfacePanel`), the flat control
+// fill + focus platter (`flatControlFill`), and the one remaining real-material surface: the
+// shelf footer's progressive blur over poster artwork.
 extension View {
-    /// Standard glass panel (cards, info groups). Default radius = card (18).
-    func glassPanel(cornerRadius: CGFloat = Radius.card) -> some View {
-        modifier(GlassSurfaceModifier(cornerRadius: cornerRadius, tint: .glass))
+    /// Flat paper-surface card — an opaque
+    /// `Color.surface` fill + hairline, for cards that sit on the flat screen floor and
+    /// read better solid than translucent (the detail description card, per the handoff's
+    /// "paper-surface, radius 18"). Default radius = card (18).
+    func surfacePanel(cornerRadius: CGFloat = Radius.card) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        return background(Color.surface, in: shape)
+            .overlay(shape.strokeBorder(Color.separator, lineWidth: 1))
     }
 
-    /// Strong glass for bars / modals. Default radius = panel (24).
-    func glassBar(cornerRadius: CGFloat = Radius.panel) -> some View {
-        modifier(GlassSurfaceModifier(cornerRadius: cornerRadius, tint: .glassStrong))
+    /// Flat control fill that inverts to the tvOS HIG white platter on focus. The whole
+    /// non-player button system (Play pill, circle actions, form CTAs, Genre/Sort chips) is
+    /// flat — Liquid Glass is reserved for the player + system bars — so this is the one place
+    /// the rest-fill / focus-platter swap lives. iOS never focuses (`focused` is always false),
+    /// so it's just the rest fill + hairline. The ink content on focus is the caller's job
+    /// (pass `focused ? ink : rest` to `.foregroundStyle`). Pair with `tvChipButton()` for the
+    /// focus lift.
+    func flatControlFill<S: InsettableShape>(
+        focused: Bool, rest: Color, hairline: Color? = nil, in shape: S
+    ) -> some View {
+        background(shape.fill(rest).opacity(focused ? 0 : 1))
+            .background(shape.fill(Color.white.opacity(0.97)).opacity(focused ? 1 : 0))
+            .overlay {
+                if let hairline {
+                    shape.strokeBorder(hairline.opacity(focused ? 0 : 1), lineWidth: 1)
+                }
+            }
+            .animation(.tvFocusChrome, value: focused)
+            .contentShape(shape)
     }
 
     /// Continue Watching / Next Up — TV-style footer: a frosted blur that **ramps up**
@@ -55,36 +76,6 @@ private var shelfTileFooterBlurRampMask: LinearGradient {
         startPoint: .top,
         endPoint: .bottom
     )
-}
-
-private struct GlassSurfaceModifier: ViewModifier {
-    let cornerRadius: CGFloat
-    let tint: Color
-
-    func body(content: Content) -> some View {
-        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        content
-            .glassEffect(.regular.tint(tint), in: shape)
-            .overlay(shape.strokeBorder(Color.glassBorder, lineWidth: 1))
-    }
-}
-
-#Preview("Glass over artwork") {
-    ZStack {
-        LinearGradient(colors: [.purple, .blue, .teal],
-                       startPoint: .topLeading, endPoint: .bottomTrailing)
-            .ignoresSafeArea()
-        VStack(spacing: Space.s22) {
-            Text("glassPanel")
-                .padding(Space.s22)
-                .glassPanel()
-            Text("glassBar")
-                .padding(Space.s22)
-                .glassBar()
-        }
-        .foregroundStyle(Color.label)
-        .padding(Space.s40)
-    }
 }
 
 /// Standalone footer-blur preview tile (no `Session`/network), so the progressive

@@ -76,14 +76,16 @@ components:
 
 Parallax is built to be the player you stop looking after — the definitive native client for a personally curated library. That positioning dictates the aesthetic: nothing here is allowed to feel provisional, ported, or generic. The system is theater-dark and content-forward; artwork and video are the interface, and the chrome is monochrome Liquid Glass that recedes. There is no brand accent anywhere — the global tint is the label color itself — because the only color that matters on screen is the user's own library.
 
-The palette has two committed faces, named for the app-icon assets that define them: **Paper** by day (warm stone background, espresso ink) and **Graphite** by night (near-black blue-leaning dark, screen-white ink). Controls are **tactile glass**: native `.glass` / `.glassProminent` materials with real weight and light response, pressed rather than clicked. The one sanctioned departure from native styling is the player — a self-contained monochrome white-on-ink island with its own geometric metrics — because system platter treatments fight video. Everything else defers to the platform: system button styles, system focus, system navigation.
+The palette has two committed faces, named for the app-icon assets that define them: **Paper** by day (warm stone background, espresso ink) and **Graphite** by night (near-black blue-leaning dark, screen-white ink).
+
+**The material rule (glass is earned, not default).** Liquid Glass is reserved for two places: the **player** (clear, refractive glass over video — `.glassEffect(.clear)`, so footage shows through) and the **system bars** the platform owns (the `.sidebarAdaptable` sidebar / tab bar, the navigation bar — left native). **Everything the app itself draws is flat:** buttons are solid or `fill` fills (the Play pill, circle actions, form CTAs), cards are `surface` panels (the detail description card, settings rows), fields and badges are `fill`. This mirrors Apple's own split — playback is glossy glass, the menus are opaque — and it keeps glass meaningful: when chrome refracts, it's because content (video) is behind it. The player remains the one custom island (monochrome white-on-ink, geometric metrics) because system platters fight video.
 
 This system explicitly rejects (from PRODUCT.md): **Plex's busy chrome**, the **Netflix-clone carousel-of-carousels home**, **hobby-app stock UI**, and **custom chrome that fights the platform**.
 
 **Key Characteristics:**
 - Monochrome, accentless: tint = label color; the library provides all color
 - Two-faced adaptive palette: Paper (light) / Graphite (dark), flat by design
-- Native Liquid Glass chrome; tactile, recessive controls
+- Flat app-drawn chrome; Liquid Glass reserved for the player (over video) + system bars
 - The player is a sanctioned custom island (white-on-ink, geometric `u` scaling)
 - One design language, two grammars: iOS touch and tvOS focus diverge in expression only
 - Warmth lives in copy and detail moments, never in decoration
@@ -152,14 +154,14 @@ Shadows exist only where something floats over *media*:
 
 ## 5. Components
 
-Controls are **tactile glass**: native materials with weight and light response. The system owns rest, focus, and label wherever possible; pinning happens only where the system fails (documented at each site).
+Controls are **flat**: each non-player control draws its own solid / `fill` fill via `flatControlFill` (the single rest-fill ↔ focus-platter helper). Liquid Glass is reserved for the player + system bars. The non-player tvOS focus model is ONE bespoke treatment — white platter + ink content + lift — applied uniformly, because the system platter doesn't recolor custom content (it would leave white-on-white).
 
 ### Buttons
-- **Shape:** Capsule pills and circles; form CTAs at field radius (14pt), continuous corners everywhere.
-- **Primary (Play pill, `PrimaryPlayButton`):** `.glassProminent` tinted Espresso Deep (#2A241D) with white label on iOS; bare `.glass` on tvOS so the system owns focus inversion. Reserves its widest title invisibly so Play/Resume swaps never resize.
-- **Icon buttons (`CircleGlassButton`):** circular `.glass` discs at `.headline` so they height-match the pill; iOS pins dark + white glyph with a 1.05 optical overshoot.
-- **Form CTAs (`formActionButton`):** `.solid` = `.glassProminent` espresso; `.glass` = plain glass. iOS pins the solid label (system would render white-on-white against a light tint).
-- **Focus (tvOS):** system-owned — focused = opaque platter + ink, per HIG. Never replicate focus with custom state.
+- **Shape:** Capsule pills and circles, continuous corners everywhere. Pill height = circle diameter, matched via `ActionRow.controlHeight` (iPhone 50 / iPad 52 / tvOS 62).
+- **Primary (Play pill, `PrimaryPlayButton`):** a flat solid pill that flips with the face — Espresso Deep (#2A241D) + white label by day, white + ink label by night. Reserves its widest title invisibly so Play/Resume swaps never resize.
+- **Icon buttons (`CircleGlassButton`):** circular `heroGlass` fill + hairline + white glyph — the SAME recipe as the 4K/HDR/CC badges; the active state is a glyph swap (heart→heart.fill). 1.05 optical overshoot on iOS.
+- **Form CTAs (`formActionButton`):** `.solid` = solid `buttonFill`; `.glass` (secondary) = `fill` + hairline. Disabled dims the pill but keeps the label legible (no blank-pill bug).
+- **Focus (tvOS):** one bespoke recipe for every flat control — white platter + ink + lift (`flatControlFill` inverts the fill, `tvChipButton`/`tvFocusEffect` lifts). Posters keep the native `.borderless` lockup (image content); the player keeps clear-glass-over-video with a platter on its active/focused state.
 
 ### Chips
 - **Player chips (`PlayerGlassChip`):** material ramp — rest = clear interactive glass + 30% dim; active = frosted tinted glass; focused (tvOS) = solid-white platter with ink, faded over an always-mounted glass base (a structural swap snaps the glass morph — prohibited).
