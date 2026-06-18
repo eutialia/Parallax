@@ -118,6 +118,12 @@ struct SettingsView: View {
         if let vm = viewModel {
             ScrollView {
                 VStack(spacing: Space.s22) {
+                    // App identity at the top of Settings — the app icon + "Parallax" moved here from
+                    // the add-server form so both add-server pages (Jellyfin / SMB) are mark-less and
+                    // identical; this is the one place the brand mark lives once you're signed in.
+                    BrandMark(glyph: .brandIcon, title: "Parallax")
+                        .frame(maxWidth: .infinity)
+                        .padding(.bottom, Space.s8)
                     serversSection(vm)
                     storageSection
                     if let message = vm.signOutErrorMessage {
@@ -169,6 +175,15 @@ struct SettingsView: View {
         }
     }
 
+    /// Server / SMB card icon tile — larger at 10 feet (per the audit: 46 iPad / 52 tvOS).
+    private var serverIconTileSize: CGFloat {
+        #if os(tvOS)
+        52
+        #else
+        46
+        #endif
+    }
+
     private func serverCard(_ session: Session, vm: SettingsViewModel) -> some View {
         let host = session.displayHost
         let isActive = session.id == vm.activeID
@@ -177,7 +192,7 @@ struct SettingsView: View {
         // there). The active server keeps its green status pill for a quick glance.
         return NavigationLink(value: Route.server(session)) {
             HStack(spacing: Space.s14) {
-                IconTile(systemImage: "server.rack", size: 44, cornerRadius: 10, glyphSize: 18, glyphWeight: .regular)
+                IconTile(systemImage: "server.rack", size: serverIconTileSize, cornerRadius: 10, glyphSize: 18, glyphWeight: .regular)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(session.serverName).font(.rowTitle).foregroundStyle(Color.label)
                     Text(host)
@@ -185,11 +200,11 @@ struct SettingsView: View {
                     Text(session.user.name).font(.rowSubtitle).foregroundStyle(Color.tertiaryLabel)
                 }
                 Spacer(minLength: 0)
-                if isActive {
-                    HStack(spacing: 5) {
-                        Circle().fill(.green).frame(width: 8, height: 8)
-                        Text("Active").font(.rowSubtitle).foregroundStyle(Color.secondaryLabel)
-                    }
+                // LED + state on every server row: Active (--ok green) vs Idle (dim), so a glance
+                // reads which session is live — per the audit's Active/Idle status.
+                HStack(spacing: 5) {
+                    Circle().fill(isActive ? Color.ok : Color.tertiaryLabel).frame(width: 8, height: 8)
+                    Text(isActive ? "Active" : "Idle").font(.rowSubtitle).foregroundStyle(Color.secondaryLabel)
                 }
                 Image(systemName: "chevron.right")
                     .scaledFont(13, relativeTo: .footnote, weight: .semibold)
@@ -198,7 +213,7 @@ struct SettingsView: View {
             // Chrome lives INSIDE the link's label so the tvOS focus lift scales the glass
             // card whole — applied outside, the content lifted while the panel stayed put.
             .padding(Space.s14)
-            .glassPanel(cornerRadius: Radius.card)
+            .surfacePanel(cornerRadius: Radius.card)
             .contentShape(.rect)
         }
         // A glass-panel row is chrome, not poster art — use the gentle chrome lift, not the
@@ -239,7 +254,7 @@ struct SettingsView: View {
     private func smbServerCard(_ server: PersistedServer, vm: SettingsViewModel) -> some View {
         if case .smb(let data) = server.kind {
             let content = HStack(spacing: Space.s14) {
-                IconTile(systemImage: "externaldrive.connected.to.line.below.fill", size: 44, cornerRadius: 10, glyphSize: 18, glyphWeight: .regular)
+                IconTile(systemImage: "externaldrive.connected.to.line.below.fill", size: serverIconTileSize, cornerRadius: 10, glyphSize: 18, glyphWeight: .regular)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(data.host).font(.rowTitle).foregroundStyle(Color.label)
                     Text(data.share + (data.root.isEmpty ? "" : "/\(data.root)"))
@@ -247,6 +262,12 @@ struct SettingsView: View {
                     Text(data.username).font(.rowSubtitle).foregroundStyle(Color.tertiaryLabel)
                 }
                 Spacer(minLength: 0)
+                // SMB shares aren't live sessions, so they read as Idle — the same status vocabulary
+                // as the Jellyfin rows (per the audit), so every server row stays visually consistent.
+                HStack(spacing: 5) {
+                    Circle().fill(Color.tertiaryLabel).frame(width: 8, height: 8)
+                    Text("Idle").font(.rowSubtitle).foregroundStyle(Color.secondaryLabel)
+                }
                 // iOS removes inline from a trailing trash button; tvOS makes the whole card the
                 // remove action (below) — a lone trash glyph is a poor 10-foot focus target.
                 #if !os(tvOS)
@@ -257,11 +278,12 @@ struct SettingsView: View {
                         .foregroundStyle(.red)
                 }
                 .buttonStyle(.plain)
+                .padding(.leading, Space.s8)
                 .accessibilityLabel("Remove \(data.host)")
                 #endif
             }
             .padding(Space.s14)
-            .glassPanel(cornerRadius: Radius.card)
+            .surfacePanel(cornerRadius: Radius.card)
             .contentShape(.rect)
 
             #if os(tvOS)

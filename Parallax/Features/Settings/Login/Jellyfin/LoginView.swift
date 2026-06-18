@@ -31,6 +31,10 @@ struct LoginView: View {
     /// Shared height for the iOS form's text-field rows, scaling with Dynamic Type so labels never
     /// clip at larger text sizes. (tvOS uses `CredentialRowList`, not these inline rows.)
     @ScaledMetric(relativeTo: .headline) private var baseControlHeight: CGFloat = 50
+    /// Drives the return-key field walk: return advances to the next field, and "go" on the last
+    /// (password) submits. Declared in `allCases` order, which `submitChain` reads as the sequence.
+    @FocusState private var focusedField: Field?
+    private enum Field: CaseIterable { case server, username, password }
     #endif
 
     var body: some View {
@@ -78,19 +82,20 @@ struct LoginView: View {
         #endif
     }
 
-    /// Chromeless: just the body (picker supplies the mark + scaffold). Otherwise wrap the body in
-    /// the scaffold with the persistent "Parallax" mark above it (the mark sits OUTSIDE the
-    /// password ↔ Quick Connect swap, so it doesn't flicker when the mode changes).
+    /// Chromeless: just the body (the logged-out picker supplies the mark + scaffold). Otherwise
+    /// (Settings "Add Jellyfin Server") wrap the body in the scaffold WITHOUT a brand mark — the app
+    /// icon + "Parallax" live on the Settings root now, and the nav title names this screen, so the
+    /// form matches the mark-less SMB add-server page.
     @ViewBuilder
     private var content: some View {
         if chromeless {
             signInBody
         } else {
-            AuthScreenScaffold {
-                VStack(spacing: Space.s22) {
-                    AuthBrandMark(glyph: .brandIcon, title: "Parallax")
-                    signInBody
-                }
+            // Settings add-server: the same top-aligned settings layout as the SMB add page, so the
+            // two add-server forms match (the auth card's upper-third bias would leave an empty gap
+            // now that the brand mark has moved to the Settings root).
+            SettingsFormScaffold {
+                signInBody
             }
         }
     }
@@ -127,7 +132,12 @@ struct LoginView: View {
     private func passwordBody(vm: LoginViewModel) -> some View {
         @Bindable var vm = vm
         VStack(spacing: Space.s22) {
-            AuthSubtitle("Sign in to your Jellyfin server")
+            // Only in the logged-out first-run flow (under the picker's brand mark). The Settings
+            // add-server page drops it: the "Add Jellyfin Server" nav title already labels the screen
+            // and the SMB add page has no subtitle, so the two add-server forms read identically.
+            if chromeless {
+                AuthSubtitle("Sign in to your Jellyfin server")
+            }
 
             #if !os(tvOS)
             // LAN-discovered servers (relocated): tap to quick-fill the URL.
@@ -171,12 +181,14 @@ struct LoginView: View {
                     TextField("", text: $vm.serverURLInput, prompt: Self.urlPrompt)
                         .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
                         .textContentType(.URL)
+                        .submitChain(.server, focus: $focusedField, onComplete: { handleSubmit(vm: vm) })
                 }
                 hairline
                 fieldRow(icon: "person") {
                     TextField("Username", text: $vm.username)
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                         .textContentType(.username)
+                        .submitChain(.username, focus: $focusedField, onComplete: { handleSubmit(vm: vm) })
                 }
                 hairline
                 fieldRow(icon: "lock") {
@@ -194,6 +206,7 @@ struct LoginView: View {
                         // AutoFill alive. Surfaces the QuickType key icon (all saved logins) even
                         // without an associated domain — the realistic fill path for self-hosted URLs.
                         .textContentType(.password)
+                        .submitChain(.password, focus: $focusedField, onComplete: { handleSubmit(vm: vm) })
                         Button(showPassword ? "Hide" : "Show") { showPassword.toggle() }
                             .font(.footnote).foregroundStyle(Color.secondaryLabel)
                             .buttonStyle(.borderless)
@@ -258,6 +271,17 @@ struct LoginView: View {
     private func submitSignIn(vm: LoginViewModel) async {
         if await vm.signIn() { await handleSuccess() }
     }
+
+    #if !os(tvOS)
+    /// "Go" on the password field: only fires a sign-in when all three fields are filled — pressing
+    /// return on an incomplete form should be a no-op, the same gate the Connect button enforces.
+    private func handleSubmit(vm: LoginViewModel) {
+        // `!vm.isWorking` too: the Button is disabled while signing in, but the keyboard
+        // "Go" bypasses it — without this a fast double-Go spawns two concurrent signIn()s.
+        guard vm.canSubmitPassword, !vm.isWorking else { return }
+        Task { await submitSignIn(vm: vm) }
+    }
+    #endif
 
     // MARK: - iOS inline field helpers (tvOS uses CredentialRowList)
 

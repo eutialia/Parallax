@@ -35,6 +35,10 @@ struct SMBLoginView: View {
 
     #if !os(tvOS)
     @ScaledMetric(relativeTo: .headline) private var baseControlHeight: CGFloat = 50
+    /// Return-key field walk: return advances to the next field, "go" on the last (domain) connects.
+    /// `allCases` order is the field sequence `submitChain` reads.
+    @FocusState private var focusedField: Field?
+    private enum Field: CaseIterable { case host, share, username, password, domain }
     #endif
 
     private var canConnect: Bool {
@@ -45,7 +49,7 @@ struct SMBLoginView: View {
     }
 
     var body: some View {
-        ScrollView {
+        SettingsFormScaffold {
             VStack(spacing: Space.s22) {
                 #if !os(tvOS)
                 discoveredServersSection
@@ -63,9 +67,6 @@ struct SMBLoginView: View {
 
                 connectButton
             }
-            .padding(Space.s18)
-            .frame(maxWidth: AppLayout.settingsContentWidth)
-            .frame(maxWidth: .infinity)
         }
         #if !os(tvOS)
         .onAppear { deps.smbDiscovery.start() }
@@ -159,33 +160,45 @@ struct SMBLoginView: View {
                     .keyboardType(.URL)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
+                    .submitChain(.host, focus: $focusedField, onComplete: handleSubmit)
             }
             hairline
             fieldRow(icon: "externaldrive.connected.to.line.below.fill") {
                 TextField("Share name", text: $share)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
+                    .submitChain(.share, focus: $focusedField, onComplete: handleSubmit)
             }
             hairline
             fieldRow(icon: "person") {
                 TextField("Username", text: $username)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
+                    .submitChain(.username, focus: $focusedField, onComplete: handleSubmit)
             }
             hairline
             fieldRow(icon: "lock") {
                 SecureField("Password", text: $password)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
+                    .submitChain(.password, focus: $focusedField, onComplete: handleSubmit)
             }
             hairline
             fieldRow(icon: "building.2") {
                 TextField("Domain", text: $domain)
                     .textInputAutocapitalization(.characters)
                     .autocorrectionDisabled()
+                    .submitChain(.domain, focus: $focusedField, onComplete: handleSubmit)
             }
         }
         .background(Color.fill, in: RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
+    }
+
+    /// "Go" on the last field connects, but only when host / share / username are filled — the same
+    /// gate the Connect button enforces, so return on an incomplete form is a no-op.
+    private func handleSubmit() {
+        guard canConnect else { return }
+        connect()
     }
     #endif
 

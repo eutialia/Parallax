@@ -53,7 +53,7 @@ struct ThumbnailCacheCard: View {
             trailing
         }
         .padding(Space.s14)
-        .glassPanel(cornerRadius: Radius.card)
+        .surfacePanel(cornerRadius: Radius.card)
         .contentShape(.rect)
     }
 

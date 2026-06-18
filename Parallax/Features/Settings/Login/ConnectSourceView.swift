@@ -33,7 +33,7 @@ struct ConnectSourceView: View {
             VStack(spacing: Space.s22) {
                 // Persistent — rendered once above the swap, never transitions, so the logo is
                 // rock-steady. Top inset lifts it high in the sheet.
-                AuthBrandMark(glyph: .brandIcon, title: "Parallax")
+                BrandMark(glyph: .brandIcon, title: "Parallax")
                     .padding(.top, max(Space.s26, proxy.size.height * AuthLayout.topBias))
 
                 // COVER transition: the picker is always the bottom layer and never moves; the
@@ -86,7 +86,7 @@ struct ConnectSourceView: View {
 
     /// One screen's body as a full-width, full-height OPAQUE layer: opaque so the outgoing screen is
     /// fully hidden behind the incoming one during the slide (transparent bodies bled through). Caps
-    /// the inner content width and scrolls it for overflow, matching `AuthScreenScaffold`.
+    /// the inner content width (`AuthLayout.maxContentWidth`) and scrolls it for overflow.
     @ViewBuilder
     private func bodyLayer<C: View>(@ViewBuilder _ content: () -> C) -> some View {
         ScrollView {

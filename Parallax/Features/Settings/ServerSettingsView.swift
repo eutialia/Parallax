@@ -60,17 +60,15 @@ struct ServerSettingsView: View {
                     .lineLimit(1)
             }
             Spacer(minLength: Space.s8)
-            if isActive {
-                HStack(spacing: 6) {
-                    Circle().fill(.green).frame(width: 8, height: 8)
-                    Text("Active")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(Color.label)
-                }
+            HStack(spacing: 6) {
+                Circle().fill(isActive ? Color.ok : Color.tertiaryLabel).frame(width: 8, height: 8)
+                Text(isActive ? "Active" : "Idle")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.label)
             }
         }
         .padding(Space.s18)
-        .glassBar(cornerRadius: Radius.card)
+        .surfacePanel(cornerRadius: Radius.card)
     }
 
     // MARK: - This Server
@@ -112,7 +110,7 @@ struct ServerSettingsView: View {
                 }
             }
         }
-        .glassPanel(cornerRadius: Radius.card)
+        .surfacePanel(cornerRadius: Radius.card)
     }
 
     // MARK: - Building blocks
