@@ -20,7 +20,7 @@ struct SeriesDetailView: View {
                 case .loaded(let sd, let seasons):
                     ScrollView {
                         VStack(alignment: .leading, spacing: Space.s22) {
-                            HeroBackdrop {
+                            HeroBand {
                                 HeroBandImage(
                                     landscapeRef: sd.series.imageRef(.backdrop(index: 0)),
                                     posterRef: sd.series.imageRef(.primary),
@@ -28,65 +28,59 @@ struct SeriesDetailView: View {
                                     regularWidth: idiom.usesLandscapeHeroBand
                                 )
                             } foreground: {
-                                VStack(alignment: .leading, spacing: Space.s12) {
-                                    HeroTitle(
+                                HeroForeground(
+                                    eyebrow: nil,
+                                    title: HeroTitle(
                                         item: .series(sd.series),
                                         session: session,
                                         regularWidth: idiom.usesLandscapeHeroBand,
                                         scale: .detail
                                     )
+                                ) {
                                     let meta = DetailMetadata(series: sd.series)
                                     if !meta.isEmpty {
                                         DetailHeroMetadataRow(metadata: meta)
                                     }
-                                    // Play never disappears: a fully-watched series gets
-                                    // no /Shows/NextUp episode (Jellyfin treats finished —
-                                    // and empty — series as watched), so the row falls back
-                                    // to the first episode. Mid-series adds the prominent
-                                    // Resume beside a from-the-beginning Play.
-                                    HStack(spacing: Space.s16) {
-                                        let resume = vm.resumeEpisode
-                                        let showsResume = resume.map(ItemPlayButtonLabel.shouldResumeSeries) ?? false
-                                        if showsResume, let ep = resume {
-                                            PrimaryPlayButton(
-                                                title: resumeLabel(ep),
-                                                fillWidth: false,
-                                                layoutReserveTitle: ItemPlayButtonLabel.layoutReserveTitle
+                                } actions: {
+                                    // Play never disappears: a fully-watched series gets no
+                                    // /Shows/NextUp episode (Jellyfin treats finished — and empty —
+                                    // series as watched), so the row falls back to the first episode.
+                                    // Mid-series adds the prominent Resume beside a from-the-beginning Play.
+                                    let resume = vm.resumeEpisode
+                                    let showsResume = resume.map(ItemPlayButtonLabel.shouldResumeSeries) ?? false
+                                    if showsResume, let ep = resume {
+                                        PrimaryPlayButton(
+                                            title: resumeLabel(ep),
+                                            fillWidth: false,
+                                            layoutReserveTitle: ItemPlayButtonLabel.layoutReserveTitle
+                                        ) {
+                                            playback.play(ep.id, in: session)
+                                        }
+                                        // From-the-beginning sibling — hidden when the resume
+                                        // target IS the first episode (one button, one meaning).
+                                        if let first = vm.firstEpisode, first.id != ep.id {
+                                            CircleGlassButton(
+                                                systemImage: "play",
+                                                accessibilityLabel: "Play from beginning"
                                             ) {
-                                                playback.play(ep.id, in: session)
-                                            }
-                                            // From-the-beginning sibling — hidden when the
-                                            // resume target IS the first episode (one button,
-                                            // one meaning).
-                                            if let first = vm.firstEpisode, first.id != ep.id {
-                                                CircleGlassButton(
-                                                    systemImage: "play",
-                                                    accessibilityLabel: "Play from beginning"
-                                                ) {
-                                                    playback.play(first.id, in: session)
-                                                }
-                                            }
-                                        } else if let target = resume ?? vm.firstEpisode {
-                                            PrimaryPlayButton(
-                                                title: "Play",
-                                                fillWidth: false,
-                                                layoutReserveTitle: ItemPlayButtonLabel.layoutReserveTitle
-                                            ) {
-                                                playback.play(target.id, in: session)
+                                                playback.play(first.id, in: session)
                                             }
                                         }
-                                        FavoriteActionButton(isFavorite: vm.isFavorite) {
-                                            Task { await vm.toggleFavorite() }
+                                    } else if let target = resume ?? vm.firstEpisode {
+                                        PrimaryPlayButton(
+                                            title: "Play",
+                                            fillWidth: false,
+                                            layoutReserveTitle: ItemPlayButtonLabel.layoutReserveTitle
+                                        ) {
+                                            playback.play(target.id, in: session)
                                         }
                                     }
-                                    // No `GlassEffectContainer` — it misrenders member glass on
-                                    // both platforms (see MovieDetailView / "Action row parity").
-                                    .padding(.top, Space.s8)
-                                    // One focus group so the action row is a coherent focus
-                                    // target (Resume default) on tvOS.
-                                    .tvFocusSection()
+                                    FavoriteActionButton(isFavorite: vm.isFavorite) {
+                                        Task { await vm.toggleFavorite() }
+                                    }
                                 }
                             }
+                            .heroBandFrame(regularWidth: idiom.usesLandscapeHeroBand)
 
                             // Overview + genres fold into one tappable info section (full card on
                             // tap); the season shelves stay below it. The section is focusable, so

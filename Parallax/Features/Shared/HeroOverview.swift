@@ -50,7 +50,36 @@ struct HeroOverview: View {
     }
 }
 
-extension HeroOverview {
+/// Hero overview that shrinks its line count to the space the foreground cap leaves. `ViewThatFits`
+/// tries 5→1 lines and renders the tallest that fits the height the column proposes, so a roomy band
+/// shows more of the blurb and a tight one shows less — the rest truncates with an ellipsis. Used in
+/// the hero foreground's flexible subtitle slot (the fixed title/actions hold their size).
+struct AdaptiveHeroOverview: View {
+    let text: String
+    let regularWidth: Bool
+
+    var body: some View {
+        ViewThatFits(in: .vertical) {
+            line(5)
+            line(4)
+            line(3)
+            line(2)
+            line(1)
+        }
+        .frame(maxWidth: HeroMetrics.overviewMaxWidth(regularWidth: regularWidth), alignment: .leading)
+    }
+
+    private func line(_ limit: Int) -> some View {
+        Text(text)
+            .font(.subheadline)
+            .foregroundStyle(.white)
+            .lineLimit(limit)
+            .truncationMode(.tail)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+extension AdaptiveHeroOverview {
     init?(item: Item, regularWidth: Bool) {
         guard let overview = item.overview?
             .trimmingCharacters(in: .whitespacesAndNewlines),

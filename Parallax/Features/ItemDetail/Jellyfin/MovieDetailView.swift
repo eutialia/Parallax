@@ -20,7 +20,7 @@ struct MovieDetailView: View {
                 case .loaded(let md):
                     ScrollView {
                         VStack(alignment: .leading, spacing: Space.s18) {
-                            HeroBackdrop {
+                            HeroBand {
                                 HeroBandImage(
                                     landscapeRef: md.movie.imageRef(.backdrop(index: 0)),
                                     posterRef: md.movie.imageRef(.primary),
@@ -28,47 +28,39 @@ struct MovieDetailView: View {
                                     regularWidth: idiom.usesLandscapeHeroBand
                                 )
                             } foreground: {
-                                VStack(alignment: .leading, spacing: Space.s12) {
-                                    HeroTitle(
+                                HeroForeground(
+                                    eyebrow: nil,
+                                    title: HeroTitle(
                                         item: .movie(md.movie),
                                         session: session,
                                         regularWidth: idiom.usesLandscapeHeroBand,
                                         scale: .detail
                                     )
+                                ) {
                                     let meta = DetailMetadata(movie: md.movie)
                                     if !meta.isEmpty {
                                         DetailHeroMetadataRow(metadata: meta)
                                     }
-                                    HStack(spacing: Space.s16) {
-                                        // "Resume" when the movie is mid-watch — the player
-                                        // already resumes from the saved position; the pill
-                                        // just never admitted it.
-                                        PrimaryPlayButton(
-                                            title: ItemPlayButtonLabel.title(for: .movie(md.movie), resumeEpisode: nil),
-                                            fillWidth: false,
-                                            layoutReserveTitle: ItemPlayButtonLabel.layoutReserveTitle
-                                        ) {
-                                            playback.play(.movie(md), in: session)
-                                        }
-                                        FavoriteActionButton(isFavorite: vm.isFavorite) {
-                                            Task { await vm.toggleFavorite() }
-                                        }
-                                        CircleGlassButton(
-                                            systemImage: vm.isPlayed ? "checkmark.circle.fill" : "checkmark.circle",
-                                            accessibilityLabel: vm.isPlayed ? "Watched" : "Mark Watched"
-                                        ) { Task { await vm.togglePlayed() } }
+                                } actions: {
+                                    // "Resume" when the movie is mid-watch — the player already
+                                    // resumes from the saved position; the pill just never admitted it.
+                                    PrimaryPlayButton(
+                                        title: ItemPlayButtonLabel.title(for: .movie(md.movie), resumeEpisode: nil),
+                                        fillWidth: false,
+                                        layoutReserveTitle: ItemPlayButtonLabel.layoutReserveTitle
+                                    ) {
+                                        playback.play(.movie(md), in: session)
                                     }
-                                    // No `GlassEffectContainer`: it re-renders member glass in its
-                                    // own layer, which nudged glyphs off the discs (tvOS), desynced
-                                    // from the focus lift, and gray-washed the iOS frost — all
-                                    // pixel-measured in the "Action row parity" preview. The native
-                                    // buttons never sit close enough to want the blend anyway.
-                                    .padding(.top, Space.s8)
-                                    // One focus group so the focus engine prefers the action row
-                                    // as a unit (Play default) over scattered geometry hits.
-                                    .tvFocusSection()
+                                    FavoriteActionButton(isFavorite: vm.isFavorite) {
+                                        Task { await vm.toggleFavorite() }
+                                    }
+                                    CircleGlassButton(
+                                        systemImage: vm.isPlayed ? "checkmark.circle.fill" : "checkmark.circle",
+                                        accessibilityLabel: vm.isPlayed ? "Watched" : "Mark Watched"
+                                    ) { Task { await vm.togglePlayed() } }
                                 }
                             }
+                            .heroBandFrame(regularWidth: idiom.usesLandscapeHeroBand)
 
                             // Overview + all metadata fold into one tappable info section that
                             // opens the full card — and gives tvOS a focusable target below the

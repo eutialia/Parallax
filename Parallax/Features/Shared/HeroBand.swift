@@ -2,66 +2,68 @@ import SwiftUI
 import ParallaxJellyfin
 import ParallaxCore
 
-/// The Apple-TV / Infuse-style hero band used by the movie/series detail header. It is
-/// built from two layers that deliberately share **no** modifiers, which is the whole point:
+/// The Apple-TV / Infuse-style hero band — the single container behind BOTH the Home carousel
+/// and the movie/series detail header. It is a dumb two-slot stacker and nothing more: it stacks
+/// an `artwork` layer under a `foreground` column (bottom-leading), turns hits off on the artwork,
+/// and places the column in the readable region. The ONLY effect it owns is the legibility
+/// treatment (an idiom-split frosted fade); everything else is delegated, because the band's
+/// effects don't all live at the same layer:
 ///
-///  • **Backdrop** — full-bleed artwork flush to the detail column’s leading edge.
-///    On iPad regular width it uses Apple’s `backgroundExtensionEffect()` (same approach
-///    as the Landmarks sample and HIG “Adopting Liquid Glass”): the leading strip is
-///    mirrored + blurred under the floating sidebar — **not** real content scrolled
-///    underneath. The image is `.clipped()` before the effect. Legibility uses
-///    `HeroBandScrim` — full-band eased gradient washes (bottom on every idiom, plus a
-///    leading wash on the landscape band), not text shadows — composited UNDER the
-///    effect so the mirrored strip continues the wash (see the body comment).
+///  • **Legibility** (`HeroBottomFade` compact / `HeroCornerFade` landscape) sits BETWEEN the
+///    artwork and the foreground, inserted here so all three call sites share one treatment. It
+///    rides the foreground side of the stack (not baked into the artwork), so it stays out of the
+///    iPad sidebar `backgroundExtensionEffect` reflection — only raw artwork is mirrored.
+///  • **Artwork-bound** (clip, parallax offset, stretch scale, the sidebar extension effect) ride
+///    the `artwork` slot, BELOW the legibility layer: parallax/stretch move the image while the
+///    fade + title/actions stay put — that differential IS the parallax. The caller bakes them
+///    into whatever it hands the slot (`HeroBandImage`'s `.heroBandExtension()` on detail; the
+///    transformed `CrossfadeArtwork` on Home).
+///  • **Foreground-bound** (`.id` + `.transition`) ride the `foreground` slot — Home hides the
+///    column while dragging while the artwork keeps crossfading underneath.
+///  • **Band-wrapping** (pan gesture, `onMoveCommand`, page dots) wrap the whole band at the Home
+///    call site. Detail wraps it in nothing.
 ///
-///  • **Foreground** — kicker, title, metadata, Play + glass actions, inset with
-///    `safeAreaPadding` so controls stay in the readable column.
+/// Sizing stays a call-site concern too (`heroBandFrame`): Home measures the band via a
+/// `GeometryReader` to drive the stretch/pan, so it can't be framed from in here.
 ///
-/// Parent `ScrollView`s should use `.scrollClipDisabled(true)` and
-/// `.ignoresSafeArea(edges: .top)`. That — not any offset math here — is what makes
-/// the hero paint under the status bar / sidebar: the parent drops the top content
-/// inset, so this band sits at y=0 and its artwork fills up to the screen edge.
-/// iPhone uses a 2:3 poster band; iPad uses 16:9 landscape. Keep the hero flush to
-/// the leading edge (no horizontal padding on its container).
+/// Parent `ScrollView`s should use `.scrollClipDisabled(true)` and `.ignoresSafeArea(edges: .top)`.
+/// That — not any offset math here — is what makes the hero paint under the status bar / sidebar:
+/// the parent drops the top content inset, so the band sits at y=0 and its artwork fills to the
+/// screen edge. iPhone uses a 2:3 poster band; iPad/tvOS use 16:9 landscape.
 ///
-/// The recently-added Home hero is `HomeHeroCarousel` (a SwiftUI crossfade), not this band;
-/// both share `HeroMetrics` so their geometry stays in lockstep.
-struct HeroBackdrop<Backdrop: View, Foreground: View>: View {
-    @ViewBuilder var backdrop: () -> Backdrop
+/// SIDEBAR SEAM (pixel-bisected + control-rendered 2026-06-11; do not re-investigate): the 1-2px
+/// hairline at the sidebar boundary is SYSTEM region-edge chrome — full window height, composited
+/// above all app content, present with the extension effect disabled, on the loading skeleton, and
+/// in a `NavigationSplitView` control render, so neither app-side layers nor a container migration
+/// can remove it. Legibility now lives on the foreground fade, so `heroBandExtension` mirrors RAW
+/// artwork under the sidebar — if a bright leading strip makes the seam resurface, re-add a faint
+/// leading seam-guard wash (reuse `HeroScrim`). Details: memory `ipad-sidebar-pane-rim`.
+struct HeroBand<Artwork: View, Foreground: View>: View {
+    @ViewBuilder var artwork: () -> Artwork
     @ViewBuilder var foreground: () -> Foreground
 
     @Environment(\.appIdiom) private var idiom
 
-    private var regularWidth: Bool { idiom.usesLandscapeHeroBand }
-
     var body: some View {
         ZStack(alignment: .bottomLeading) {
-            // SIDEBAR SEAM (pixel-bisected + control-rendered 2026-06-11; do not
-            // re-investigate): the 1-2px hairline at the sidebar boundary is SYSTEM
-            // region-edge chrome — full window height, composited above all app content,
-            // present with this effect disabled, on the loading skeleton, and in a
-            // `NavigationSplitView` control render, so neither app-side layers nor a
-            // container migration can remove it. What the app DOES own is the stage it
-            // performs on: `heroScrimmedExtension` mirrors the SCRIMMED artwork, putting
-            // the boundary dark-on-dark, where strip jump and rim fade to near-invisible
-            // (+192 → +13 luma, dark mode). Forensic details: memory `ipad-sidebar-pane-rim`.
-            backdrop()
-                .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
-                .clipped()
-                .heroScrimmedExtension(regularWidth: regularWidth)
+            artwork()
                 .allowsHitTesting(false)
-
+            // Legibility on the foreground side (stays out of the sidebar reflection). The tall
+            // poster band gets a full-width bottom fade; the wide landscape band gets a corner-
+            // focused glow so the darkening sits on the text, not the empty right side.
+            if idiom == .compact {
+                HeroBottomFade()
+            } else {
+                HeroCornerFade()
+            }
             foreground()
-                .frame(maxWidth: HeroMetrics.contentMaxWidth, alignment: .leading)
-                .safeAreaPadding(.horizontal, HeroMetrics.foregroundHorizontalInset(idiom: idiom))
-                .padding(.bottom, HeroMetrics.foregroundBottomInset(idiom: idiom))
+                .heroForegroundPlacement(idiom: idiom)
         }
-        .heroBandFrame(regularWidth: regularWidth)
     }
 }
 
-/// Shared hero geometry so the Home `HomeHeroCarousel` and the detail `HeroBackdrop` can't
-/// drift apart. A plain namespace (not a static on the generic `HeroBackdrop`, which would
+/// Shared hero geometry so the Home `HomeHeroCarousel` and the detail `HeroBand` can't
+/// drift apart. A plain namespace (not a static on the generic `HeroBand`, which would
 /// force callers to spell out its two type parameters just to read a constant).
 enum HeroMetrics {
     /// Readable column width for hero foreground content (title, meta, actions).
@@ -96,12 +98,11 @@ enum HeroMetrics {
     /// collapse and leaves the first shelf peeking (Apple-TV Home convention), giving the focused
     /// controls room so tvOS has no reason to scroll at all.
     static let tvHeroHeightFraction: CGFloat = 0.82
-    static let foregroundBottomInset: CGFloat = Space.s30
     /// On tvOS the full-bleed hero fills the whole viewport, so its bottom-anchored controls
     /// must clear the ~60pt bottom overscan or a real TV clips the Play button. iPhone/iPad have
     /// no overscan, so they keep the tight inset.
     static func foregroundBottomInset(idiom: AppIdiom) -> CGFloat {
-        idiom == .tv ? Space.s60 + Space.s12 : foregroundBottomInset
+        idiom == .tv ? Space.s60 + Space.s12 : Space.s30
     }
     static func foregroundHorizontalInset(idiom: AppIdiom) -> CGFloat {
         switch idiom {
@@ -112,6 +113,16 @@ enum HeroMetrics {
         // isn't under the `tvContentInset()` wrapper that re-insets the shelves/body. This keeps
         // the title/Play column aligned with the shelves at `overscan + contentHMargin`.
         case .tv: AppLayout.tvOverscanInset + AppLayout.contentHMargin(idiom: .tv)
+        }
+    }
+    /// Caps the hero foreground column so the title + actions never climb arbitrarily high up the
+    /// band; the overview blurb flexes its line count to fill whatever height is left under that cap
+    /// (see `AdaptiveHeroOverview`). A constant per idiom, not band-derived — the cap is the point.
+    static func foregroundMaxHeight(idiom: AppIdiom) -> CGFloat {
+        switch idiom {
+        case .compact: 300
+        case .regular: 340
+        case .tv: 460
         }
     }
 }
@@ -248,6 +259,16 @@ extension View {
         }
         .tvPlatformGated { $0.backgroundExtensionEffect(isEnabled: regularWidth) }
     }
+
+    /// The iPad sidebar bleed, WITHOUT a scrim — `backgroundExtensionEffect` mirrors the hero
+    /// artwork's leading strip under the floating sidebar. Legibility now lives on the foreground
+    /// (`HeroBottomFade` / `HeroCornerFade`), so the artwork stays clean. Trade-off: the mirrored
+    /// strip is now raw artwork, so the documented `ipad-sidebar-pane-rim` seam can resurface over
+    /// bright art — re-add a faint leading seam-guard wash here (reusing `HeroScrim`) if it does.
+    /// tvOS/iPhone: no-op.
+    func heroBandExtension(regularWidth: Bool) -> some View {
+        tvPlatformGated { $0.backgroundExtensionEffect(isEnabled: regularWidth) }
+    }
 }
 
 // MARK: - Preview harness
@@ -255,18 +276,19 @@ extension View {
 // iPad-only diagnostic (sidebarAdaptable + sidebar bottom bar don't exist on
 // tvOS); without the guard this preview alone breaks the whole tvOS build.
 #if !os(tvOS)
-#Preview("HeroBackdrop · sidebar bleed") {
+#Preview("HeroBand · sidebar bleed") {
     TabView {
         Tab("Home", systemImage: "house") {
             NavigationStack {
                 ScrollView {
                     VStack(alignment: .leading, spacing: Space.s30) {
-                        HeroBackdrop {
+                        HeroBand {
                             LinearGradient(
                                 colors: [Color(red: 0.42, green: 0.20, blue: 0.55),
                                          Color(red: 0.0, green: 0.40, blue: 0.74)],
                                 startPoint: .topLeading, endPoint: .bottomTrailing
                             )
+                            .heroScrimmedExtension(regularWidth: true)
                         } foreground: {
                             VStack(alignment: .leading, spacing: Space.s12) {
                                 Text("FEATURED")
@@ -286,6 +308,7 @@ extension View {
                                     .padding(.top, Space.s8)
                             }
                         }
+                        .heroBandFrame(regularWidth: true)
                         ForEach(0..<3) { i in
                             Text("Shelf \(i)")
                                 .font(.headline)
@@ -352,54 +375,62 @@ private struct WorstCaseArtwork: View {
     }
 }
 
-/// Shared fake foreground for the scrim previews — mirrors the real hero column (the
-/// `HeroTitle.Scale.home` point sizes, `HeroOverview`, the 46pt Play pill) so contrast
-/// measured here tracks what ships. Keep in sync with `HeroForeground`/`PrimaryPlayButton`.
+/// Shared fake foreground for the legibility previews — mirrors the REAL `HeroForeground`: eyebrow,
+/// heavy title, the height-adaptive `AdaptiveHeroOverview`, the 46pt Play pill, the
+/// `foregroundMaxHeight` cap, and the fixed-size rows. So the render exhibits the actual flex (the
+/// overview trims its line count to the cap) without needing a `Session` for a real `HeroTitle`.
 private struct PreviewHeroForeground: View {
     let regularWidth: Bool
 
+    @Environment(\.appIdiom) private var idiom
+
     var body: some View {
         VStack(alignment: .leading, spacing: Space.s12) {
+            Text("FEATURED")
+                .font(.caption.weight(.bold)).tracking(1.5)
+                .foregroundStyle(.white)
+                .padding(.horizontal, Space.s12).padding(.vertical, Space.s3)
+                .background(.black.opacity(0.5), in: Capsule())
+                .fixedSize(horizontal: false, vertical: true)
             Text("Orbital")
                 .scaledFont(regularWidth ? 52 : 32, relativeTo: .largeTitle, weight: .heavy)
                 .foregroundStyle(.white)
-            HeroOverview(
-                text: "A crew on humanity's last orbital station races to prevent a cascade failure before re-entry.",
+                .fixedSize(horizontal: false, vertical: true)
+            AdaptiveHeroOverview(
+                text: "A crew on humanity's last orbital station races to prevent a cascade failure before re-entry, rationing oxygen while the ground crew fights to reach them in time.",
                 regularWidth: regularWidth
             )
-            if regularWidth {
-                Label("Play", systemImage: "play.fill")
-                    .font(.headline).foregroundStyle(Color.buttonLabel)
-                    .padding(.horizontal, Space.s22).frame(height: 46)
-                    .background(Color.buttonFill, in: Capsule())
-                    .padding(.top, Space.s8)
-            }
+            Label("Play", systemImage: "play.fill")
+                .font(.headline).foregroundStyle(Color.buttonLabel)
+                .padding(.horizontal, Space.s22).frame(height: 46)
+                .background(Color.buttonFill, in: Capsule())
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, Space.s8)
         }
+        .frame(maxHeight: HeroMetrics.foregroundMaxHeight(idiom: idiom), alignment: .bottom)
     }
 }
 
 /// Permanent diagnostic: white text over deliberately hostile bright artwork, both band
 /// variants. Verify with `RenderPreview` + pixel sampling behind the text column (target:
 /// large heavy title ≥3:1, subheadline overview as close to 4.5:1 as the wash allows).
-#Preview("Hero scrim · worst case (regular)") {
-    HeroBackdrop {
+// `.fixedLayout` so the canvas IS the band size — otherwise a wide iPad band rendered on an
+// iPhone destination overflows and clips to the center, hiding the bottom-leading panel.
+#Preview("Hero legibility · panel (regular)", traits: .fixedLayout(width: 1024, height: 576)) {
+    HeroBand {
         WorstCaseArtwork()
     } foreground: {
         PreviewHeroForeground(regularWidth: true)
     }
-    // Pinned to a 13" iPad detail-column size so the render is destination-independent:
-    // on a short canvas (e.g. iPhone landscape) the fixed-size foreground climbs into the
-    // band's upper half, far above the fractional wash onsets, and every contrast number
-    // measured there is garbage.
-    .frame(width: 1080, height: 1080 / MediaImage.landscape)
+    .heroBandFrame(regularWidth: true)
     .environment(\.appIdiom, .regular)
 }
 
-#Preview("Hero scrim · worst case (compact)") {
-    HeroBackdrop {
+#Preview("Hero legibility · fade (compact)", traits: .fixedLayout(width: 420, height: 630)) {
+    HeroBand {
         WorstCaseArtwork()
     } foreground: {
         PreviewHeroForeground(regularWidth: false)
     }
-    .frame(width: 420)
+    .heroBandFrame(regularWidth: false)
 }

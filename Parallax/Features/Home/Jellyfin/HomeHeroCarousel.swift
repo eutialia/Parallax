@@ -70,31 +70,32 @@ struct HomeHeroCarousel: View {
         // gap, f4b64b3).
         let parallax = (reduceMotion || idiom == .tv)
             ? 0 : HeroMetrics.parallaxShift(forScrollAdjustment: scrollAdjustment)
-        return ZStack(alignment: .bottomLeading) {
+        return HeroBand {
+            // ARTWORK-BOUND effects ride the slot, UNDER the foreground (see `HeroBand`'s doc):
+            // the iPad sidebar extension, then the transforms move the artwork while the
+            // title/actions stay put — that differential IS the parallax. Legibility is now on the
+            // foreground (panel/fade), so the artwork carries no scrim here.
             CrossfadeArtwork(position: position, entries: entries, session: session, regularWidth: regularWidth)
-                // Scrim + sidebar extension effect over the crossfade as ONE composite —
-                // see `heroScrimmedExtension` for why the order is load-bearing. The
-                // transforms below then move artwork and wash together.
-                .heroScrimmedExtension(regularWidth: regularWidth)
+                .heroBandExtension(regularWidth: regularWidth)
                 .offset(y: parallax)
-                // Bottom-only clip: the lagging artwork must not slide over the shelves
-                // below (the parent ScrollView is `.scrollClipDisabled`), but the top and
-                // sides stay open — the stretch zoom paints up past the band, and the iPad
+                // Bottom-only clip: the lagging artwork must not slide over the shelves below
+                // (the parent ScrollView is `.scrollClipDisabled`), but the top and sides stay
+                // open — the stretch zoom paints up past the band, and the iPad
                 // `backgroundExtensionEffect` bleeds under the sidebar; a plain `.clipped()`
                 // would amputate both.
                 .clipShape(BottomBoundedRect())
-                // Stretchy hero: a pull-down zooms the artwork up from its bottom edge to
-                // fill the rubber-band gap instead of exposing the app background. Only the
-                // artwork scales — the title/actions stay put. `scaleEffect` is a render
-                // transform applied AFTER the clip, so the stretch still paints past the
-                // band exactly as before (parallax is 0 whenever the stretch is non-zero).
+                // Stretchy hero: a pull-down zooms the artwork up from its bottom edge to fill
+                // the rubber-band gap instead of exposing the app background. Only the artwork
+                // scales — the title/actions stay put. Applied AFTER the clip, so the stretch
+                // still paints past the band (parallax is 0 whenever the stretch is non-zero).
                 .scaleEffect(
                     HeroMetrics.stretchScale(forScrollAdjustment: scrollAdjustment, bandHeight: size.height),
                     anchor: .bottom
                 )
-
-            // Hidden while dragging (removed → fades out); on a settled page change its `.id`
-            // flips and SwiftUI crossfades the new page over the old. No manual opacity state.
+        } foreground: {
+            // FOREGROUND-BOUND transition: hidden while dragging (removed → fades out); on a
+            // settled page change its `.id` flips and SwiftUI crossfades the new page over the
+            // old. No manual opacity state — and the artwork keeps crossfading underneath.
             if !isDragging {
                 #if os(tvOS)
                 // No `.id` flip on tvOS: a changed identity would tear down the focused Play
@@ -108,7 +109,12 @@ struct HomeHeroCarousel: View {
                     .transition(.opacity)
                 #endif
             }
-
+        }
+        // BAND-WRAPPING chrome: the page dots as a top overlay (the gesture/move-command below
+        // are the other band-wrapping pieces). Tuck the dots toward the artwork bottom edge on
+        // iPhone's poster band so they stay clear of the foreground controls; iPad's landscape
+        // band has more room; tvOS lifts them off the bottom edge to sit above the peeking shelf.
+        .overlay(alignment: .bottom) {
             HeroPageIndicator(
                 numberOfPages: count,
                 currentPage: ((displayedPage % count) + count) % count,
@@ -118,9 +124,6 @@ struct HomeHeroCarousel: View {
                 onAdvance: { commit(to: displayedPage + 1) }
             )
             .frame(maxWidth: .infinity)
-            // Tuck the dots toward the artwork bottom edge on iPhone's poster band so they
-            // stay clear of the foreground controls; iPad's landscape band has more room. tvOS
-            // lifts them off the band's bottom edge so they sit above the peeking shelf.
             .padding(.bottom, idiom == .tv ? Space.s60 : (regularWidth ? Space.s12 : Space.s3))
         }
         .contentShape(Rectangle())
@@ -157,19 +160,44 @@ struct HomeHeroCarousel: View {
 
     private func foregroundLayer(page: Int) -> some View {
         let entry = entries[wrapping: page]
+        let item = entry.presentation
+        // Placement (readable column + insets) and the action-row focus section now live in
+        // `HeroBand`/`HeroForeground`; this just binds the slots for the settled page.
         return HeroForeground(
-            entry: entry,
-            session: session,
-            regularWidth: regularWidth,
-            isFavorite: entry.presentation.userData.isFavorite,
-            playFocus: $heroPlayFocused,
-            onPlay: { playback.play(entry.playTarget.id, in: session) },
-            onToggleFavorite: { Task { await viewModel.toggleFavorite(for: entry.presentation.id) } }
-        )
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .safeAreaPadding(.horizontal, HeroMetrics.foregroundHorizontalInset(idiom: idiom))
-        .padding(.bottom, HeroMetrics.foregroundBottomInset(idiom: idiom))
-        .tvFocusSection()
+            eyebrow: entry.eyebrow.rawValue,
+            title: HeroTitle(item: item, session: session, regularWidth: regularWidth, scale: .home)
+        ) {
+            if let overview = AdaptiveHeroOverview(item: item, regularWidth: regularWidth) {
+                overview
+            } else if let meta = item.heroMetadataLine {
+                Text(meta)
+                    .font(.subheadline)
+                    .foregroundStyle(.white)
+            }
+        } actions: {
+            primaryPlay(entry)
+            FavoriteActionButton(isFavorite: item.userData.isFavorite) {
+                Task { await viewModel.toggleFavorite(for: item.id) }
+            }
+        }
+    }
+
+    /// Play pill, bound to the carousel's `@FocusState` on tvOS so the carousel can pull launch
+    /// focus onto it (out of the `.sidebarAdaptable` menu) when the feed mounts; inert on iOS.
+    @ViewBuilder
+    private func primaryPlay(_ entry: HomeHeroFeedEntry) -> some View {
+        let button = PrimaryPlayButton(
+            title: entry.playButtonTitle,
+            fillWidth: false,
+            layoutReserveTitle: ItemPlayButtonLabel.layoutReserveTitle
+        ) {
+            playback.play(entry.playTarget.id, in: session)
+        }
+        #if os(tvOS)
+        button.focused($heroPlayFocused)
+        #else
+        button
+        #endif
     }
 
     private func panChanged(translationX: CGFloat, width: CGFloat) {
@@ -202,6 +230,30 @@ struct HomeHeroCarousel: View {
             isDragging = false
             displayedPage = target
         }
+    }
+}
+
+/// Full-bleed artwork for one hero item — the crossfading layers inside `CrossfadeArtwork`,
+/// which stacks two of these and carries the iPad sidebar `backgroundExtensionEffect`.
+private struct HeroArtwork: View {
+    let item: Item
+    let session: Session
+    let regularWidth: Bool
+
+    private var artwork: (ref: ImageRef?, kind: ImageKind) {
+        item.heroArtwork(regularWidth: regularWidth)
+    }
+
+    var body: some View {
+        MediaImage(
+            jellyfin: artwork.ref,
+            session: session,
+            maxWidth: 1600,
+            aspectRatio: HeroMetrics.bandAspectRatio(regularWidth: regularWidth),
+            style: .fill
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
     }
 }
 
