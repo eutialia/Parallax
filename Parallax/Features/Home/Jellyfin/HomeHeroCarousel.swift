@@ -260,9 +260,9 @@ private struct HeroArtwork: View {
 /// Just the artwork crossfade. `Animatable` on `position` is the crux: during a
 /// `withAnimation` `position` change, SwiftUI interpolates `animatableData` and re-evaluates
 /// `body` at each step, so the two images crossfade continuously rather than cutting between
-/// the start and end states. Scrim + sidebar extension effect are layered by the call site
-/// (`heroScrimmedExtension`), keeping this a pure crossfade — its per-tick body re-evaluation
-/// rebuilds nothing but the two images.
+/// the start and end states. The sidebar extension effect is layered by the call site
+/// (`heroBandExtension`) and legibility rides the foreground fade, keeping this a pure crossfade —
+/// its per-tick body re-evaluation rebuilds nothing but the two images.
 private struct CrossfadeArtwork: View, Animatable {
     var position: Double
     let entries: [HomeHeroFeedEntry]

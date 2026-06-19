@@ -36,8 +36,8 @@ import ParallaxCore
 /// above all app content, present with the extension effect disabled, on the loading skeleton, and
 /// in a `NavigationSplitView` control render, so neither app-side layers nor a container migration
 /// can remove it. Legibility now lives on the foreground fade, so `heroBandExtension` mirrors RAW
-/// artwork under the sidebar — if a bright leading strip makes the seam resurface, re-add a faint
-/// leading seam-guard wash (reuse `HeroScrim`). Details: memory `ipad-sidebar-pane-rim`.
+/// artwork under the sidebar; device-verified that this doesn't worsen the rim (the old scrim
+/// couldn't remove it either). Details: memory `ipad-sidebar-pane-rim`.
 struct HeroBand<Artwork: View, Foreground: View>: View {
     @ViewBuilder var artwork: () -> Artwork
     @ViewBuilder var foreground: () -> Foreground
@@ -154,118 +154,14 @@ extension View {
     }
 }
 
-// MARK: - Foreground legibility (HIG: background layer, not stacked text shadows)
-
-/// Scrim ramp math and the shipping wash recipes, kept off the view so `AppLayoutTests`
-/// can pin both the curve and the recipe invariants.
-enum HeroScrim {
-    /// One shared smoothstep ramp: `(location, eased)` pairs spanning `from`…1. Both stop
-    /// builders map over this, so the curve, step count, and location math can never
-    /// drift between the washes and their taper masks.
-    private static func easedRamp(from: Double, steps: Int) -> [(location: Double, eased: Double)] {
-        (0...steps).map { i in
-            let t = Double(i) / Double(steps)
-            return (from + (1 - from) * t, t * t * (3 - 2 * t))   // smoothstep
-        }
-    }
-
-    /// Smoothstep-eased gradient stops: fully clear through `from` (a 0…1 fraction of the
-    /// gradient axis), then easing to `maxOpacity` black at the far edge. The interpolated
-    /// curve is the point — a 2-3 hard-stop gradient paints a visible onset line across
-    /// bright artwork (the "shadow edge" the old scrims had), while an eased ramp has no
-    /// derivative jump anywhere, so there is no line to see.
-    static func easedStops(from: Double, maxOpacity: Double, steps: Int = 8) -> [Gradient.Stop] {
-        [.init(color: .black.opacity(0), location: 0)]
-            + easedRamp(from: from, steps: steps).map {
-                .init(color: .black.opacity(maxOpacity * $0.eased), location: $0.location)
-            }
-    }
-
-    /// Mask stops that TAPER a wash along its other axis: full strength (opaque white)
-    /// through `from`, easing down to `minimum` strength at the far edge. Used to relax a
-    /// stroke away from the foreground corner without cutting it off — a hard stop would
-    /// re-introduce the visible edge the eased ramps exist to avoid.
-    static func easedMaskStops(from: Double, minimum: Double, steps: Int = 8) -> [Gradient.Stop] {
-        [.init(color: .white, location: 0)]
-            + easedRamp(from: from, steps: steps).map {
-                .init(color: .white.opacity(1 - (1 - minimum) * $0.eased), location: $0.location)
-            }
-    }
-
-    // MARK: Shipping recipes (cached — the carousel re-evaluates every scroll frame)
-
-    static let compactBottom = easedStops(from: 0.36, maxOpacity: 0.78)
-    static let regularBottom = easedStops(from: 0.44, maxOpacity: 0.72)
-    /// Corner-biased: the higher max compensates the tapers right where the title/logo
-    /// sit (the wash peaks at the leading edge), without re-extending either reach.
-    static let regularLeading = easedStops(from: 0.55, maxOpacity: 0.60)
-    /// Bottom stroke taper: full strength under the foreground column, easing to 55% by
-    /// the trailing edge (the dots at bottom-center still sit on ~85%).
-    static let bottomTaper = easedMaskStops(from: 0.40, minimum: 0.55)
-    /// Leading stroke taper: full strength beside the foreground, easing to 50% at the
-    /// band top. NEVER let this reach zero — the leading column is what the sidebar
-    /// extension effect mirrors; a clear top re-brightens the strip and brings the
-    /// boundary seam back.
-    static let leadingTaper = easedMaskStops(from: 0.45, minimum: 0.50)
-}
-
-/// Legibility washes over the hero artwork, behind the foreground column. Full-band
-/// gradients sized by stop fractions, so the view needs no band geometry at all:
-///  • every idiom gets a bottom wash (title/overview/actions live in the bottom third);
-///  • the landscape band (iPad/tvOS) adds a leading wash — its foreground hugs the
-///    bottom-LEADING corner, and the two washes compound there (Apple-TV-style corner
-///    weighting) without the elliptical smudge the old oval scrim painted.
-///
-/// Both landscape strokes are TAPERED away from that corner (eased masks, never hard
-/// cuts): the bottom wash relaxes toward the trailing edge and the leading wash relaxes
-/// toward the top, hugging the actual foreground size. The leading wash deliberately
-/// keeps ~half strength at the very top — its leading column is what the sidebar
-/// `backgroundExtensionEffect` mirrors, so dropping it to zero up there would re-brighten
-/// the mirrored strip and bring the boundary seam back above the wash line.
-struct HeroBandScrim: View {
-    let regularWidth: Bool
-
-    var body: some View {
-        ZStack {
-            if regularWidth {
-                LinearGradient(stops: HeroScrim.regularBottom, startPoint: .top, endPoint: .bottom)
-                    .mask(
-                        LinearGradient(stops: HeroScrim.bottomTaper, startPoint: .leading, endPoint: .trailing)
-                    )
-                LinearGradient(stops: HeroScrim.regularLeading, startPoint: .trailing, endPoint: .leading)
-                    .mask(
-                        LinearGradient(stops: HeroScrim.leadingTaper, startPoint: .bottom, endPoint: .top)
-                    )
-            } else {
-                LinearGradient(stops: HeroScrim.compactBottom, startPoint: .top, endPoint: .bottom)
-            }
-        }
-        .allowsHitTesting(false)
-    }
-}
+// MARK: - Sidebar extension
 
 extension View {
-    /// Hero artwork composite: the legibility scrim layered over the content, then the iPad
-    /// sidebar `backgroundExtensionEffect` over BOTH. The ordering is the load-bearing part:
-    /// the effect mirrors the view it is attached to, so a scrim layered as a sibling ABOVE
-    /// it darkens only the real artwork and leaves the mirrored strip raw-bright — a hard
-    /// luminance jump at the sidebar boundary, and the brightest possible stage for the
-    /// system's edge rim. Routing every hero through this modifier makes the ordering
-    /// structural instead of a per-call-site convention.
-    func heroScrimmedExtension(regularWidth: Bool) -> some View {
-        ZStack {
-            self
-            HeroBandScrim(regularWidth: regularWidth)
-        }
-        .tvPlatformGated { $0.backgroundExtensionEffect(isEnabled: regularWidth) }
-    }
-
     /// The iPad sidebar bleed, WITHOUT a scrim — `backgroundExtensionEffect` mirrors the hero
     /// artwork's leading strip under the floating sidebar. Legibility now lives on the foreground
-    /// (`HeroBottomFade` / `HeroCornerFade`), so the artwork stays clean. Trade-off: the mirrored
-    /// strip is now raw artwork, so the documented `ipad-sidebar-pane-rim` seam can resurface over
-    /// bright art — re-add a faint leading seam-guard wash here (reusing `HeroScrim`) if it does.
-    /// tvOS/iPhone: no-op.
+    /// (`HeroBottomFade` / `HeroCornerFade`), so the artwork stays clean. The mirrored strip is raw
+    /// artwork; the `ipad-sidebar-pane-rim` hairline is system region-edge chrome the old scrim
+    /// couldn't remove anyway (device-verified — de-scrimming doesn't worsen it). tvOS/iPhone: no-op.
     func heroBandExtension(regularWidth: Bool) -> some View {
         tvPlatformGated { $0.backgroundExtensionEffect(isEnabled: regularWidth) }
     }
@@ -288,7 +184,7 @@ extension View {
                                          Color(red: 0.0, green: 0.40, blue: 0.74)],
                                 startPoint: .topLeading, endPoint: .bottomTrailing
                             )
-                            .heroScrimmedExtension(regularWidth: true)
+                            .heroBandExtension(regularWidth: true)
                         } foreground: {
                             VStack(alignment: .leading, spacing: Space.s12) {
                                 Text("FEATURED")

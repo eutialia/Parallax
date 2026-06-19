@@ -3,13 +3,15 @@ import SwiftUI
 // Hero legibility — the treatment that keeps the white title/actions readable over artwork we
 // don't control. It lives entirely on the FOREGROUND side of the band (never the artwork), so it
 // never appears in the iPad sidebar `backgroundExtensionEffect` reflection (only the raw artwork is
-// mirrored). It replaces the old full-band gradient wash (`HeroBandScrim`), which gambled on the
-// image and washed the whole frame.
+// mirrored). It replaces the old full-band gradient scrim, which gambled on the image and washed
+// the whole frame.
 //
-// One mechanism on both idioms now: a frosted bottom fade — the SAME progressive blur + scrim recipe
-// the Continue Watching shelf footers use (`shelfTileFooterGlass`). The earlier opaque floating
-// panel read as a dark box dropped in the corner of a wide photo; the fade reads as a cinematic base
-// the content sits on. iPhone and iPad differ only in how far up the fade rises (`coverage`).
+// Two idiom-split frosted treatments, both the SAME `.ultraThinMaterial` + scrim recipe the
+// Continue Watching shelf footers use (`shelfTileFooterGlass`), pinned dark: the tall poster band
+// (iPhone) gets a full-width bottom fade; the wide landscape band (iPad/tvOS) gets a corner-focused
+// glow so the darkening sits on the bottom-leading text, not the empty right side. The earlier
+// opaque floating panel read as a dark box dropped in the corner of a wide photo; the fades read as
+// a cinematic base the content sits on.
 
 /// Frosted bottom fade — the compact (iPhone) legibility. A full-width band-level layer: fills the
 /// band, then frosts + scrims the bottom `coverage` fraction (progressive `.ultraThinMaterial` ramp
