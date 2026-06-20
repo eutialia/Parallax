@@ -59,6 +59,11 @@ struct MediaThumbnail: View {
     let footer: Footer?
     let aspectRatio: CGFloat
     let maxImageWidth: Int
+    /// The point width the thumbnail renders at, when the caller knows it (fixed-width shelves).
+    /// Forwarded to `MediaImage` as `renderPointWidth` so the boxed Jellyfin request trims to the
+    /// panel's native pixels instead of always fetching the @3x `maxImageWidth`. nil = legacy
+    /// behavior (the grid passes nil and keeps requesting `maxImageWidth`).
+    let maxImageRenderWidth: CGFloat?
     /// The VoiceOver label for the thumbnail-as-element. `MediaTile` folds the metadata into this;
     /// shelves pass the title.
     let accessibilityLabel: String
@@ -70,6 +75,7 @@ struct MediaThumbnail: View {
         footer: Footer? = nil,
         aspectRatio: CGFloat = MediaImage.poster,
         maxImageWidth: Int = 600,
+        maxImageRenderWidth: CGFloat? = nil,
         accessibilityLabel: String
     ) {
         self.artworkSource = .jellyfin(ref, session)
@@ -77,6 +83,7 @@ struct MediaThumbnail: View {
         self.footer = footer
         self.aspectRatio = aspectRatio
         self.maxImageWidth = maxImageWidth
+        self.maxImageRenderWidth = maxImageRenderWidth
         self.accessibilityLabel = accessibilityLabel
     }
 
@@ -95,6 +102,7 @@ struct MediaThumbnail: View {
         self.footer = footer
         self.aspectRatio = aspectRatio
         self.maxImageWidth = maxImageWidth
+        self.maxImageRenderWidth = nil
         self.accessibilityLabel = accessibilityLabel
     }
 
@@ -216,7 +224,7 @@ struct MediaThumbnail: View {
     private var mediaImage: some View {
         switch artworkSource {
         case .jellyfin(let ref, let session):
-            MediaImage(jellyfin: ref, session: session, maxWidth: maxImageWidth, aspectRatio: aspectRatio)
+            MediaImage(jellyfin: ref, session: session, maxWidth: maxImageWidth, aspectRatio: aspectRatio, renderPointWidth: maxImageRenderWidth)
         case .artwork(let source):
             MediaImage(artwork: source, maxWidth: maxImageWidth, aspectRatio: aspectRatio)
         }

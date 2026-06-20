@@ -13,7 +13,13 @@ struct HomeView: View {
     private let preloaded: (session: Session, viewModel: HomeViewModel)?
     @State private var viewModel: HomeViewModel?
     @State private var session: Session?
-    @State private var heroScrollAdjustment: CGFloat = 0
+    // Reference-type scroll channel: the per-frame scroll value lives on an @Observable so a
+    // scroll write invalidates ONLY the artwork-transform view that reads it (`HeroScrollArtwork`),
+    // not HomeView's body or the whole carousel (title, actions, dots). When this was a plain
+    // `@State CGFloat` passed into the carousel, every scroll frame re-evaluated the entire hero —
+    // reloading the foreground's logo image on iOS (where parallax is live) and doing the same
+    // dead work on tvOS (parallax is 0 there). See `HeroScrollState`.
+    @State private var heroScroll = HeroScrollState()
 
     init(preloaded: (session: Session, viewModel: HomeViewModel)? = nil) {
         self.preloaded = preloaded
@@ -32,7 +38,7 @@ struct HomeView: View {
         .onScrollGeometryChange(for: CGFloat.self) { geo in
             max(-(geo.contentOffset.y + geo.contentInsets.top), -geo.containerSize.height)
         } action: { _, newValue in
-            heroScrollAdjustment = newValue
+            heroScroll.adjustment = newValue
         }
         .scrollClipDisabled(true)
         // Start at the very top so the full-bleed tvOS hero opens at full height, not mid-scroll
@@ -155,7 +161,7 @@ struct HomeView: View {
                             entries: vm.heroFeed,
                             session: session,
                             viewModel: vm,
-                            scrollAdjustment: heroScrollAdjustment
+                            scroll: heroScroll
                         )
                     }
                     HomeShelves(viewModel: vm, session: session)
@@ -190,14 +196,15 @@ struct HomeView: View {
 
 /// The progress-driven shelves below the hero (Continue Watching · Next Up, or the
 /// empty state). A standalone view — not an inline `@ViewBuilder` — so it's insulated
-/// from `HomeView`'s per-frame `heroScrollAdjustment` writes: only the carousel needs
-/// that, and rebuilding these shelves on every scroll frame is wasted work.
+/// from `HomeView`'s per-frame `heroScroll` writes: only the carousel's artwork layer
+/// needs them, and rebuilding these shelves on every scroll frame is wasted work.
 private struct HomeShelves: View {
     let viewModel: HomeViewModel
     let session: Session
 
     @Environment(\.appIdiom) private var idiom
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.displayScale) private var displayScale
 
     var body: some View {
         let vm = viewModel
@@ -209,11 +216,13 @@ private struct HomeShelves: View {
                 MetadataRow(title: "Continue Watching", items: vm.continueWatching, tileWidth: AppLayout.shelfTileWidth(idiom: idiom)) { item in
                     homeShelfTile(item: item, showProgress: true)
                 }
+                .prefetchArtwork(shelfArtworkURLs(vm.continueWatching), session: session)
             }
             if !vm.nextUp.isEmpty {
                 MetadataRow(title: "Next Up", items: vm.nextUp, tileWidth: AppLayout.shelfTileWidth(idiom: idiom)) { item in
                     homeShelfTile(item: item, showProgress: false)
                 }
+                .prefetchArtwork(shelfArtworkURLs(vm.nextUp), session: session)
             }
             if vm.heroFeed.isEmpty && vm.continueWatching.isEmpty && vm.nextUp.isEmpty {
                 StatusStateView(
@@ -232,6 +241,23 @@ private struct HomeShelves: View {
 
     // MARK: - Item rendering helpers
 
+    /// The exact artwork URLs the shelf tiles will request, built with `ArtworkRequest` so the
+    /// prefetch warms the SAME cache key the tiles read (any drift = a wasted double-download). Uses
+    /// the same ref (`homeShelfImageRef`), ceiling, render width, scale, and aspect as the tile.
+    private func shelfArtworkURLs(_ items: [Item]) -> [URL] {
+        let size = ArtworkRequest.boxedSize(
+            ceiling: HomeShelf.imageMaxWidth,
+            renderPointWidth: AppLayout.shelfTileWidth(idiom: idiom),
+            displayScale: displayScale,
+            aspectRatio: MediaImage.poster
+        )
+        return items.compactMap { item in
+            item.homeShelfImageRef.flatMap {
+                ImageURLBuilder.url(serverURL: session.serverURL, ref: $0, maxWidth: size.width, maxHeight: size.height)
+            }
+        }
+    }
+
     @ViewBuilder
     private func homeShelfTile(item: Item, showProgress: Bool) -> some View {
         // Home is play-first: a movie tile plays (and resumes) immediately instead of opening
@@ -246,6 +272,9 @@ private struct HomeShelves: View {
                 ),
                 aspectRatio: MediaImage.poster,
                 maxImageWidth: HomeShelf.imageMaxWidth,
+                // Trim the request to the tile's actual point width × display scale (capped at the
+                // @3x ceiling), so a 2x panel doesn't decode the full @3x thumb. No visual change.
+                maxImageRenderWidth: AppLayout.shelfTileWidth(idiom: idiom),
                 accessibilityLabel: item.displayTitle
             )
         }

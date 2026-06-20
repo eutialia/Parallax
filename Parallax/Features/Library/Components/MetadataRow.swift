@@ -18,9 +18,18 @@ struct MetadataRow<Item: Identifiable & Hashable, Content: View>: View {
                 .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
                 .accessibilityAddTraits(.isHeader)
             ScrollView(.horizontal, showsIndicators: false) {
+                // LazyHStack, not a plain HStack: a shelf realizes only the tiles near the
+                // viewport, so off-screen tiles don't build their view tree, decode their
+                // artwork, or hold a bitmap until focus scrolls them in. Identical layout to
+                // an eager stack (same tiles, same spacing) — purely WHEN each tile is
+                // instantiated — so there's no visual change on any platform; it just stops
+                // every shelf from materialising its full item list at once. This is Apple's
+                // own tvOS shelf recipe ("Creating a tvOS media catalog app in SwiftUI" →
+                // Display content shelves: `ScrollView(.horizontal) { LazyHStack(spacing: 40) }
+                // .scrollClipDisabled()`), which the lift below (`tvScrollClipDisabled`) matches.
                 // 40pt inter-tile gap on tvOS (Apple's canonical focusable-tile spacing) so a
                 // focused poster's lift doesn't crowd its neighbours.
-                HStack(alignment: .top, spacing: idiom == .tv ? Space.s40 : Space.s12) {
+                LazyHStack(alignment: .top, spacing: idiom == .tv ? Space.s40 : Space.s12) {
                     ForEach(items) { item in
                         content(item)
                             .frame(width: tileWidth)

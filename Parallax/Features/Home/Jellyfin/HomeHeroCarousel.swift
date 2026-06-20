@@ -17,11 +17,12 @@ struct HomeHeroCarousel: View {
     let entries: [HomeHeroFeedEntry]
     let session: Session
     let viewModel: HomeViewModel
-    /// Signed scroll adjustment (pt) supplied by the Home `ScrollView`'s geometry:
-    /// positive = pull-down rubber-band (drives the stretchy zoom), negative =
-    /// scrolled into the feed (drives the artwork's half-speed parallax lag),
-    /// 0 at rest. The two effects are mutually exclusive by sign.
-    var scrollAdjustment: CGFloat = 0
+    /// Scroll channel from the Home `ScrollView`'s geometry, held as a reference type so a per-frame
+    /// write invalidates ONLY `HeroScrollArtwork` (which reads `adjustment` to drive the
+    /// parallax/stretch transforms) and never this carousel's foreground. `adjustment` is signed:
+    /// positive = pull-down rubber-band (stretchy zoom), negative = scrolled into the feed
+    /// (half-speed parallax lag), 0 at rest — the two effects are mutually exclusive by sign.
+    let scroll: HeroScrollState
 
     @Environment(PlaybackPresenter.self) private var playback
     @Environment(\.appIdiom) private var idiom
@@ -65,37 +66,20 @@ struct HomeHeroCarousel: View {
     }
 
     private func content(size: CGSize) -> some View {
-        // Scrolling down lags the artwork — and its wash, like a canvas-baked gradient —
-        // at half speed behind the band; the title and actions ride the scroll 1:1, and
-        // that differential IS the parallax. Off under Reduce Motion, and on tvOS, where
-        // the hero fills the whole viewport and scrolling is focus-driven. Both transforms
-        // are render-only, so neither can feed the scroll geometry that drives them back
-        // into layout (the trap that killed the June '26 offset-math hero: rubber-band
-        // gap, f4b64b3).
-        let parallax = (reduceMotion || idiom == .tv)
-            ? 0 : HeroMetrics.parallaxShift(forScrollAdjustment: scrollAdjustment)
-        return HeroBand {
-            // ARTWORK-BOUND effects ride the slot, UNDER the foreground (see `HeroBand`'s doc):
-            // the iPad sidebar extension, then the transforms move the artwork while the
-            // title/actions stay put — that differential IS the parallax. Legibility is now on the
-            // foreground (panel/fade), so the artwork carries no scrim here.
-            CrossfadeArtwork(position: position, entries: entries, session: session, regularWidth: regularWidth)
-                .heroBandExtension(regularWidth: regularWidth)
-                .offset(y: parallax)
-                // Bottom-only clip: the lagging artwork must not slide over the shelves below
-                // (the parent ScrollView is `.scrollClipDisabled`), but the top and sides stay
-                // open — the stretch zoom paints up past the band, and the iPad
-                // `backgroundExtensionEffect` bleeds under the sidebar; a plain `.clipped()`
-                // would amputate both.
-                .clipShape(BottomBoundedRect())
-                // Stretchy hero: a pull-down zooms the artwork up from its bottom edge to fill
-                // the rubber-band gap instead of exposing the app background. Only the artwork
-                // scales — the title/actions stay put. Applied AFTER the clip, so the stretch
-                // still paints past the band (parallax is 0 whenever the stretch is non-zero).
-                .scaleEffect(
-                    HeroMetrics.stretchScale(forScrollAdjustment: scrollAdjustment, bandHeight: size.height),
-                    anchor: .bottom
-                )
+        HeroBand {
+            // ARTWORK-BOUND effects ride the slot, UNDER the foreground (see `HeroBand`'s doc): the
+            // iPad sidebar extension + the parallax/stretch transforms, all inside `HeroScrollArtwork`
+            // so the per-frame `scroll.adjustment` re-evaluates ONLY that wrapper — the foreground
+            // (title, actions, dots) below is insulated and never rebuilds on a scroll frame.
+            // Legibility is on the foreground (panel/fade), so the artwork carries no scrim here.
+            HeroScrollArtwork(
+                scroll: scroll,
+                bandHeight: size.height,
+                position: position,
+                entries: entries,
+                session: session,
+                regularWidth: regularWidth
+            )
         } foreground: {
             // FOREGROUND-BOUND transition: hidden while dragging (removed → fades out); on a
             // settled page change its `.id` flips and SwiftUI crossfades the new page over the
@@ -249,6 +233,57 @@ struct HomeHeroCarousel: View {
             isDragging = false
             displayedPage = target
         }
+    }
+}
+
+/// Reference-type carrier for the Home hero's per-frame scroll adjustment. An `@Observable` class
+/// (rather than a value passed down the view tree) so a scroll write invalidates only the view that
+/// READS `adjustment` — `HeroScrollArtwork` — leaving `HomeView`'s body and the carousel's
+/// foreground (title, actions, page dots) untouched on a scroll frame. See `HeroScrollArtwork`.
+@Observable
+@MainActor
+final class HeroScrollState {
+    var adjustment: CGFloat = 0
+}
+
+/// The hero's artwork layer plus its scroll-driven transforms, split out so the per-frame
+/// `HeroScrollState.adjustment` writes re-evaluate ONLY this wrapper — the carousel's foreground is
+/// insulated and never rebuilds on a scroll frame (the dead per-frame work this split removes; on
+/// iOS that included reloading the foreground's logo image every frame the parallax was live). The
+/// transforms are render-only (offset/scale), so they can't feed scroll geometry back into layout
+/// (the trap that killed the June '26 offset-math hero, f4b64b3). Reduce Motion and tvOS
+/// (focus-driven, full-viewport scroll) both zero the parallax; the stretch only acts on a pull-down.
+private struct HeroScrollArtwork: View {
+    let scroll: HeroScrollState
+    /// Band height only (the stretch-zoom divisor) — the wrapper doesn't need the full size.
+    let bandHeight: CGFloat
+    let position: Double
+    let entries: [HomeHeroFeedEntry]
+    let session: Session
+    let regularWidth: Bool
+
+    @Environment(\.appIdiom) private var idiom
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        let adjustment = scroll.adjustment
+        let parallax = (reduceMotion || idiom == .tv)
+            ? 0 : HeroMetrics.parallaxShift(forScrollAdjustment: adjustment)
+        return CrossfadeArtwork(position: position, entries: entries, session: session, regularWidth: regularWidth)
+            .heroBandExtension(regularWidth: regularWidth)
+            .offset(y: parallax)
+            // Bottom-only clip: the lagging artwork must not slide over the shelves below (the parent
+            // ScrollView is `.scrollClipDisabled`), but the top and sides stay open — the stretch
+            // zoom paints up past the band and the iPad `backgroundExtensionEffect` bleeds under the
+            // sidebar; a plain `.clipped()` would amputate both.
+            .clipShape(BottomBoundedRect())
+            // Stretchy hero: a pull-down zooms the artwork up from its bottom edge. Only the artwork
+            // scales — the title/actions stay put. Applied AFTER the clip so the stretch still paints
+            // past the band (parallax is 0 whenever the stretch is non-zero).
+            .scaleEffect(
+                HeroMetrics.stretchScale(forScrollAdjustment: adjustment, bandHeight: bandHeight),
+                anchor: .bottom
+            )
     }
 }
 

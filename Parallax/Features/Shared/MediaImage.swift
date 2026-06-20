@@ -15,8 +15,16 @@ struct MediaImage: View {
 
     private let content: Content
     private let maxWidth: Int
+    /// The point width the tile actually renders at, when the caller knows it (the fixed-width
+    /// shelves). Non-nil opts a boxed Jellyfin tile into display-scale-aware sizing: the server
+    /// request shrinks from the @3x `maxWidth` ceiling toward `renderPointWidth × displayScale`,
+    /// so a tile never decodes more pixels than its panel can show. nil = legacy behavior
+    /// (request exactly `maxWidth`) — hero, logo, grid, and search keep their current requests.
+    private let renderPointWidth: CGFloat?
     private let aspectRatio: CGFloat
     private let style: Style
+
+    @Environment(\.displayScale) private var displayScale
 
     /// Width ÷ height — matches Jellyfin season/series/movie primary posters.
     static let poster: CGFloat = 2.0 / 3.0
@@ -39,10 +47,12 @@ struct MediaImage: View {
         session: Session,
         maxWidth: Int,
         aspectRatio: CGFloat = MediaImage.poster,
-        style: Style = .boxed
+        style: Style = .boxed,
+        renderPointWidth: CGFloat? = nil
     ) {
         self.content = .jellyfin(ref, session)
         self.maxWidth = maxWidth
+        self.renderPointWidth = renderPointWidth
         self.aspectRatio = aspectRatio
         self.style = style
     }
@@ -58,6 +68,7 @@ struct MediaImage: View {
     ) {
         self.content = .artwork(artwork)
         self.maxWidth = maxWidth
+        self.renderPointWidth = nil
         self.aspectRatio = aspectRatio
         self.style = style
     }
@@ -90,11 +101,20 @@ struct MediaImage: View {
 
     private var placeholder: Color { Color(white: 0.15) }
 
-    /// When the layout box is poster-shaped, ask the source for a matching height so
-    /// the scaler doesn't squeeze width-only thumbs into a tall cell.
-    private var requestMaxHeight: Int? {
-        guard style == .boxed else { return nil }
-        return Int((Double(maxWidth) / aspectRatio).rounded())
+    /// The exact (maxWidth, maxHeight) to request, from the SAME `ArtworkRequest.boxedSize` the
+    /// prefetcher uses — one source for the box, so a tile and a warm-up prefetch always resolve the
+    /// identical URL (no drift = no double-download). A boxed tile trims toward native pixels when a
+    /// render width is known and otherwise keeps the @3x `maxWidth` ceiling; fill/logo keep the raw
+    /// ceiling and no height bound (the layout, not the scaler, sizes them).
+    private var requestBox: (width: Int, height: Int?) {
+        guard style == .boxed else { return (maxWidth, nil) }
+        let size = ArtworkRequest.boxedSize(
+            ceiling: maxWidth,
+            renderPointWidth: renderPointWidth,
+            displayScale: displayScale,
+            aspectRatio: aspectRatio
+        )
+        return (size.width, size.height)
     }
 
     @ViewBuilder
@@ -112,8 +132,8 @@ struct MediaImage: View {
         if let ref, let url = ImageURLBuilder.url(
             serverURL: session.serverURL,
             ref: ref,
-            maxWidth: maxWidth,
-            maxHeight: requestMaxHeight
+            maxWidth: requestBox.width,
+            maxHeight: requestBox.height
         ) {
             let renderer = LazyImageRenderer(
                 url: url,
@@ -173,5 +193,37 @@ struct MediaImage: View {
             request.setValue(value, forHTTPHeaderField: field)
         }
         return ImageRequest(urlRequest: request)
+    }
+}
+
+/// Sizing for Jellyfin artwork requests, shared by `MediaImage` (the on-screen tile) and
+/// `ArtworkPrefetcher` so both resolve the SAME server URL — a prefetch warms the exact cache
+/// entry the tile then reads, instead of a different size that double-downloads.
+enum ArtworkRequest {
+    /// Headroom for the tvOS focus lift: a focused poster scales ~1.1 (a render-only transform that
+    /// doesn't grow the layout box), so a layout-derived width must reserve a little extra to stay
+    /// crisp while lifted. Harmless on iOS (no lift) — it's capped by the ceiling either way.
+    private static let focusLiftHeadroom: CGFloat = 1.15
+
+    /// Pixel width to request for artwork drawn at `pointWidth`: `pointWidth × displayScale` (the
+    /// framebuffer can't show more) plus the lift headroom, CAPPED at `ceiling` (the legacy @3x
+    /// token). It can only REDUCE over-fetch — @3x iPhone stays at the ceiling (byte-identical),
+    /// lower-scale displays (tvOS / iPad @2x) trim toward native size — and never undersizes below
+    /// what's drawn, so there is no visual change on any platform.
+    static func width(pointWidth: CGFloat, displayScale: CGFloat, ceiling: Int) -> Int {
+        guard pointWidth > 0, displayScale > 0 else { return ceiling }
+        return min(ceiling, Int((pointWidth * displayScale * focusLiftHeadroom).rounded(.up)))
+    }
+
+    /// The (maxWidth, maxHeight) a `.boxed` Jellyfin tile requests — width via `width(...)`, height
+    /// from the aspect ratio (mirrors `MediaImage.requestMaxWidth`/`requestMaxHeight`). The
+    /// prefetcher builds its URL from this so the keys match.
+    static func boxedSize(
+        ceiling: Int, renderPointWidth: CGFloat?, displayScale: CGFloat, aspectRatio: CGFloat
+    ) -> (width: Int, height: Int) {
+        let w = renderPointWidth.map {
+            width(pointWidth: $0, displayScale: displayScale, ceiling: ceiling)
+        } ?? ceiling
+        return (w, Int((Double(w) / aspectRatio).rounded()))
     }
 }

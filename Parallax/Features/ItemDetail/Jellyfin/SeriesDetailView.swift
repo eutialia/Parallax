@@ -168,6 +168,9 @@ struct SeriesDetailView: View {
             ),
             aspectRatio: MediaImage.landscape,
             maxImageWidth: SeriesShelf.imageMaxWidth,
+            // Trim the request to the tile's actual point width × display scale (capped at the @3x
+            // ceiling), so a 2x panel doesn't decode the full @3x thumb. No visual change.
+            maxImageRenderWidth: AppLayout.seriesEpisodeTileWidth(idiom: idiom),
             accessibilityLabel: episode.name
         )
     }
