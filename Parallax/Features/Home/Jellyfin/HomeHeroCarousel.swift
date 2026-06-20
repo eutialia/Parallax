@@ -38,6 +38,10 @@ struct HomeHeroCarousel: View {
     // from the system sidebar (a declarative `prefersDefaultFocus`/`resetFocus` can't — it only
     // re-resolves *within* its own scope). Unused on iOS — `.focused` is tvOS-gated below.
     @FocusState private var heroPlayFocused: Bool
+    // Tracks whether the next-chevron specifically holds focus, so a right-press only advances the
+    // carousel when the chevron is focused — never on the ordinary Play↔Favorite↔chevron focus
+    // hops. tvOS-only; inert on iOS (the chevron + `.focused` below are tvOS-gated).
+    @FocusState private var chevronFocused: Bool
 
     private var regularWidth: Bool { idiom.usesLandscapeHeroBand }
     private var count: Int { entries.count }
@@ -64,7 +68,7 @@ struct HomeHeroCarousel: View {
         // Scrolling down lags the artwork — and its wash, like a canvas-baked gradient —
         // at half speed behind the band; the title and actions ride the scroll 1:1, and
         // that differential IS the parallax. Off under Reduce Motion, and on tvOS, where
-        // the hero is 82% of the viewport and scrolling is focus-driven. Both transforms
+        // the hero fills the whole viewport and scrolling is focus-driven. Both transforms
         // are render-only, so neither can feed the scroll geometry that drives them back
         // into layout (the trap that killed the June '26 offset-math hero: rubber-band
         // gap, f4b64b3).
@@ -99,9 +103,9 @@ struct HomeHeroCarousel: View {
             if !isDragging {
                 #if os(tvOS)
                 // No `.id` flip on tvOS: a changed identity would tear down the focused Play
-                // button on every page, dropping focus so the next left/right couldn't page.
-                // Keeping it stable retains focus and updates the content in place — the
-                // artwork still crossfades via `CrossfadeArtwork`.
+                // button / next-chevron on every page, dropping focus so the next right-press
+                // couldn't page. Keeping it stable retains focus and updates the content in place —
+                // the artwork still crossfades via `CrossfadeArtwork`.
                 foregroundLayer(page: displayedPage)
                 #else
                 foregroundLayer(page: displayedPage)
@@ -110,10 +114,10 @@ struct HomeHeroCarousel: View {
                 #endif
             }
         }
-        // BAND-WRAPPING chrome: the page dots as a top overlay (the gesture/move-command below
-        // are the other band-wrapping pieces). Tuck the dots toward the artwork bottom edge on
-        // iPhone's poster band so they stay clear of the foreground controls; iPad's landscape
-        // band has more room; tvOS lifts them off the bottom edge to sit above the peeking shelf.
+        // BAND-WRAPPING chrome: the page dots as a bottom overlay (the gesture/move-command below
+        // are the other band-wrapping pieces). One inset rule per idiom (`pageIndicatorBottomInset`)
+        // so the dots sit a consistent, comfortable clearance above the band's bottom edge on every
+        // platform instead of iPhone jamming them against the poster's bottom seam.
         .overlay(alignment: .bottom) {
             HeroPageIndicator(
                 numberOfPages: count,
@@ -124,7 +128,7 @@ struct HomeHeroCarousel: View {
                 onAdvance: { commit(to: displayedPage + 1) }
             )
             .frame(maxWidth: .infinity)
-            .padding(.bottom, idiom == .tv ? Space.s60 : (regularWidth ? Space.s12 : Space.s3))
+            .padding(.bottom, HeroMetrics.pageIndicatorBottomInset(idiom: idiom))
         }
         .contentShape(Rectangle())
         // A horizontal-only UIKit pan: vertical swipes fall through to the Home ScrollView,
@@ -140,20 +144,16 @@ struct HomeHeroCarousel: View {
         )
         #endif
         #if os(tvOS)
-        // Page the hero with the Siri Remote's left/right — replaces the old on-screen chevrons.
-        // The focus engine consumes a directional press only when there's an adjacent focusable
-        // in that direction, so this fires from the action row's OUTER edges (`HeroForeground`):
-        // left while Play (leftmost) is focused, or right while Favorite (rightmost) is focused,
-        // has no horizontal neighbour and lands here. Pressing toward the centre just moves focus
-        // between the two buttons; up/down fall through to the focus engine / shelves below.
-        // (Apple: focus navigation wins over `onMoveCommand`.)
+        // Advance ONLY on a right-press while the next-chevron itself is focused (`chevronFocused`).
+        // Without that gate, a right-press at the rightmost focusable falls through here regardless,
+        // so any sequence ending on the chevron could page; gating on the chevron's own focus makes
+        // "move the carousel" mean exactly "focused chevron + right-click" and nothing else. Ordinary
+        // Play↔Favorite↔chevron focus hops are consumed by focus navigation and never reach here.
+        // Left is deliberately unhandled (from Play it reveals the `.sidebarAdaptable` sidebar);
+        // forward-only by design (auto-advance still cycles); up/down fall through to the shelves.
         .onMoveCommand { direction in
-            guard count > 1 else { return }
-            switch direction {
-            case .left:  commit(to: displayedPage - 1)
-            case .right: commit(to: displayedPage + 1)
-            default: break   // up/down fall through to the focus engine / scroll view
-            }
+            guard count > 1, direction == .right, chevronFocused else { return }
+            commit(to: displayedPage + 1)
         }
         #endif
     }
@@ -179,6 +179,25 @@ struct HomeHeroCarousel: View {
             FavoriteActionButton(isFavorite: item.userData.isFavorite) {
                 Task { await viewModel.toggleFavorite(for: item.id) }
             }
+            #if os(tvOS)
+            // The forward pager affordance — the RIGHTMOST focusable in the action row. A bare
+            // chevron at rest (`bareUntilFocused`); on focus it lights up to the same white platter
+            // + lift as Favorite. Select advances; so does a right-press, but ONLY because the
+            // chevron is the focused control — `onMoveCommand` below gates on `chevronFocused`, so a
+            // right-press during ordinary Play→Favorite→chevron navigation never pages. There is no
+            // left/previous counterpart by design (left from Play just reveals the sidebar). Shown
+            // only for a real carousel.
+            if count > 1 {
+                CircleGlassButton(
+                    systemImage: "chevron.right",
+                    accessibilityLabel: "Next featured item",
+                    bareUntilFocused: true
+                ) {
+                    commit(to: displayedPage + 1)
+                }
+                .focused($chevronFocused)
+            }
+            #endif
         }
     }
 
@@ -298,4 +317,47 @@ private struct BottomBoundedRect: Shape {
 private extension Array {
     /// Index wrapped into bounds for the infinite carousel. Caller guarantees a non-empty array.
     subscript(wrapping index: Int) -> Element { self[((index % count) + count) % count] }
+}
+
+// MARK: - Preview harness
+
+/// Permanent diagnostic for the carousel's PAGE-DOT placement — the real carousel needs a
+/// `Session`, so this rebuilds the band's bottom chrome over a mock backdrop + the actual action
+/// row (Play pill + Favorite) so the dots' clearance above the band's bottom edge can be judged in
+/// pixels. The fixed-layout canvas IS the 2:3 poster band, so the canvas bottom == the band's
+/// bottom edge (the seam where the hero meets the shelves on iPhone). `.fixedLayout` defaults the
+/// idiom to `.compact`, which is exactly the case that was jamming the dots against that seam.
+#Preview("Home hero · pager chrome (compact)", traits: .fixedLayout(width: 393, height: 590)) {
+    HeroBand {
+        LinearGradient(
+            colors: [Color(red: 0.16, green: 0.10, blue: 0.28),
+                     Color(red: 0.46, green: 0.20, blue: 0.30)],
+            startPoint: .topLeading, endPoint: .bottomTrailing
+        )
+    } foreground: {
+        VStack(alignment: .leading, spacing: Space.s12) {
+            HeroEyebrowLabel(text: "FEATURED")
+            Text("Orbital Decay")
+                .scaledFont(32, relativeTo: .largeTitle, weight: .heavy)
+                .foregroundStyle(.white)
+            Text("A crew on humanity's last orbital station races to prevent a cascade failure.")
+                .font(.subheadline)
+                .foregroundStyle(.white.opacity(0.92))
+                .lineLimit(2)
+            HStack(spacing: ActionRow.gap) {
+                PrimaryPlayButton(title: "Play", fillWidth: false) {}
+                CircleGlassButton(systemImage: "heart", accessibilityLabel: "Favorite") {}
+            }
+            .padding(.top, Space.s8)
+        }
+    }
+    .heroBandFrame(regularWidth: false)
+    .overlay(alignment: .bottom) {
+        HeroPageIndicator(
+            numberOfPages: 5, currentPage: 1, autoAdvanceInterval: 6,
+            isPaused: false, reduceMotion: false, onAdvance: {}
+        )
+        .frame(maxWidth: .infinity)
+        .padding(.bottom, HeroMetrics.pageIndicatorBottomInset(idiom: .compact))
+    }
 }

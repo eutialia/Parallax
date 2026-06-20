@@ -8,6 +8,12 @@ import SwiftUI
 struct CircleGlassButton: View {
     let systemImage: String
     let accessibilityLabel: String
+    /// Drops the resting disc fill + hairline so the control reads as a bare glyph until focus,
+    /// then lights up to the SAME white focus platter as the standard variant. For lightweight
+    /// pager affordances (the tvOS hero carousel's "next" chevron) that shouldn't sit as a solid
+    /// peer of Favorite at rest. Keep it tvOS-only at the call site: iOS never focuses, so a bare
+    /// glyph would simply never gain its platter.
+    var bareUntilFocused: Bool = false
     let action: () -> Void
 
     @Environment(\.appIdiom) private var idiom
@@ -26,7 +32,12 @@ struct CircleGlassButton: View {
                     .font(.headline.weight(.semibold))
                     .foregroundStyle(focused ? Color.playerInk : .white)
                     .frame(width: d, height: d)
-                    .flatControlFill(focused: focused, rest: .heroGlass, hairline: .heroGlassBorder, in: Circle())
+                    .flatControlFill(
+                        focused: focused,
+                        rest: bareUntilFocused ? .clear : .heroGlass,
+                        hairline: bareUntilFocused ? nil : .heroGlassBorder,
+                        in: Circle()
+                    )
             }
         }
         // Owns the button style (tvOS lift / `.plain` on iOS) — never pair an inner `.buttonStyle`.

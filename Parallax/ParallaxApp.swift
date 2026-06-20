@@ -49,6 +49,10 @@ struct ParallaxApp: App {
             .environment(router)
             .environment(playback)
             .environment(launchGate)
+            // tvOS: measure the true window height here, OUTSIDE the TabView, so a full-bleed hero
+            // inside a `.sidebarAdaptable` tab (Home) fills the whole screen instead of its
+            // overscan-short tab region (see `\.heroViewportHeight`). No-op on iOS.
+            .measuresHeroViewport()
             .task {
                 do {
                     try await dependencies.serverStore.load()

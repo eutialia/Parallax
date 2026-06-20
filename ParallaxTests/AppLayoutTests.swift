@@ -92,4 +92,27 @@ struct AppLayoutTests {
         #expect(HeroMetrics.foregroundHorizontalInset(idiom: .compact) == Space.s22)
         #expect(HeroMetrics.foregroundHorizontalInset(idiom: .regular) == Space.s40)
     }
+
+    @Test("tvOS hero fills the screen: full-viewport fallback fraction + a 16:9 band for a 16:9 TV")
+    func tvHeroSpansViewport() {
+        // The band fills the true screen via the measured `heroViewportHeight` (runtime layout, not
+        // unit-testable); this pins the two constants that back it. The fallback fraction is 1.0 so
+        // the first frame (before the measurement lands) is already as close to full as the safe area
+        // allows — drop it and the hero would settle from a visibly shorter band. The landscape band
+        // is MediaImage.landscape (16:9), matching a 16:9 TV, so the backdrop fills with no crop.
+        #expect(HeroMetrics.tvHeroHeightFraction == 1.0)
+        #expect(HeroMetrics.bandAspectRatio(regularWidth: true) == MediaImage.landscape)
+    }
+
+    @Test("page dots: compact/regular tuck under the action row; tvOS dots clear overscan, below the lifted controls")
+    func pageIndicatorInset() {
+        // Compact + regular tuck the dots just below the action row — the old iPhone Space.s3
+        // jammed them against the poster's bottom seam.
+        #expect(HeroMetrics.pageIndicatorBottomInset(idiom: .compact) == Space.s22)
+        #expect(HeroMetrics.pageIndicatorBottomInset(idiom: .regular) == Space.s22)
+        // tvOS: dots sit at the title-safe line near the bottom; the focusable controls are lifted
+        // higher (clear of the focus-scroll zone on the full-bleed hero), so controls > dots.
+        #expect(HeroMetrics.pageIndicatorBottomInset(idiom: .tv) == AppLayout.tvOverscanInset)
+        #expect(HeroMetrics.foregroundBottomInset(idiom: .tv) > HeroMetrics.pageIndicatorBottomInset(idiom: .tv))
+    }
 }

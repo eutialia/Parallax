@@ -35,6 +35,10 @@ struct HomeView: View {
             heroScrollAdjustment = newValue
         }
         .scrollClipDisabled(true)
+        // Start at the very top so the full-bleed tvOS hero opens at full height, not mid-scroll
+        // (the focus engine otherwise leaves the launch position low until a focus change re-runs
+        // its scroll-to-focus). No-op on iOS, where the top is already the default anchor.
+        .defaultScrollAnchor(.top)
         // Suppress iOS 26's automatic top scroll-edge fade — the hero paints flush under the
         // status bar (`.ignoresSafeArea(.top)`), so the soft edge effect reads as a stray fade
         // on the artwork. Matches the movie/series detail screens.
@@ -46,7 +50,8 @@ struct HomeView: View {
         // width (~100pt for the loading spinner) until a later layout pass, showing a
         // narrow strip. Greedy frame pins it to the proposed width from the first pass.
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // tvOS bleeds the hero horizontally too (overscan); the shelves re-inset via
+        // tvOS bleeds the hero horizontally too (overscan) and measures the true screen height into
+        // `\.heroViewportHeight` so the band fills the whole screen; the shelves re-inset via
         // `tvContentInset()` below. iOS only drops the top inset (status-bar bleed).
         .heroScreenSafeArea()
         // Paint the screen floor in the content so the scroll region matches the chrome and lifts
@@ -137,7 +142,14 @@ struct HomeView: View {
             case .idle, .loading:
                 HomeLoadingSkeleton()
             case .loaded:
-                LazyVStack(alignment: .leading, spacing: Space.s30) {
+                // A plain VStack, NOT LazyVStack: the tvOS hero is a full-viewport band, so the
+                // shelves sit entirely below the fold — a lazy stack never builds them, leaving
+                // nothing focusable to move DOWN to (focus got stuck in the hero) and an unstable
+                // content height that threw off the launch scroll position. Eager build keeps the
+                // shelves focusable and the height fixed; the feed is only a hero + two shelves, so
+                // there's nothing to lazily defer. Parallax insulation still holds — `HomeShelves`
+                // is its own view, so it isn't re-evaluated on the hero's per-frame scroll writes.
+                VStack(alignment: .leading, spacing: Space.s30) {
                     if !vm.heroFeed.isEmpty {
                         HomeHeroCarousel(
                             entries: vm.heroFeed,
@@ -146,9 +158,6 @@ struct HomeView: View {
                             scrollAdjustment: heroScrollAdjustment
                         )
                     }
-                    // Everything below the full-bleed hero lives in its own view, so it isn't
-                    // re-evaluated on every hero-scroll frame — only `HomeHeroCarousel` reads
-                    // `heroScrollAdjustment`, which changes per frame while the hero is on screen.
                     HomeShelves(viewModel: vm, session: session)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)

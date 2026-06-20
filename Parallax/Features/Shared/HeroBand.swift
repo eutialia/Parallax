@@ -90,19 +90,37 @@ enum HeroMetrics {
         guard bandHeight > 0 else { return 1 }
         return 1 + max(0, value) / bandHeight
     }
-    /// tvOS hero height as a fraction of the viewport — deliberately NOT width-derived. A
-    /// width-derived (`aspectRatio`) band grows taller when the `.sidebarAdaptable` menu
-    /// collapses and the content widens; that shoves the bottom-anchored Play button down, and
-    /// the focus engine scrolls the band's top off-screen with nothing focusable up there to
-    /// scroll back. A constant viewport fraction holds the height steady across the sidebar
-    /// collapse and leaves the first shelf peeking (Apple-TV Home convention), giving the focused
-    /// controls room so tvOS has no reason to scroll at all.
-    static let tvHeroHeightFraction: CGFloat = 0.82
-    /// On tvOS the full-bleed hero fills the whole viewport, so its bottom-anchored controls
-    /// must clear the ~60pt bottom overscan or a real TV clips the Play button. iPhone/iPad have
-    /// no overscan, so they keep the tight inset.
+    /// tvOS hero height as a fraction of the viewport — the FALLBACK for the first layout pass only.
+    /// The band normally fills the true PHYSICAL screen via the measured `\.heroViewportHeight` (see
+    /// `HeroBandFrame` + `heroScreenSafeArea`), because `containerRelativeFrame` on its own is
+    /// safe-area-bounded and lands an overscan strip short — that shortfall peeked the next row and
+    /// read as a hero shifted up off a gap. 1.0 keeps the one-frame fallback as close to the final
+    /// full-screen height as possible (minimal settle), and at full height the 16:9 landscape artwork
+    /// fills a 16:9 TV edge-to-edge with no vertical crop. Deliberately NOT width-derived: a
+    /// width-derived band grows taller when the `.sidebarAdaptable` menu collapses, shoving the
+    /// bottom-anchored controls down and scrolling the band's top off-screen; a constant value holds.
+    static let tvHeroHeightFraction: CGFloat = 1.0
+    /// On tvOS the full-bleed hero fills the whole viewport, so its bottom-anchored controls must
+    /// sit well ABOVE the bottom — not merely past the ~90pt overscan, but far enough that the focus
+    /// engine doesn't auto-scroll the whole hero to lift the focused Play/Favorite into the title-safe
+    /// zone and reveal "look-ahead" context below them (a control near the bottom edge makes tvOS
+    /// scroll the band up, dragging the next shelf in and breaking the full-screen look). Two overscan
+    /// insets — the title-safe line plus a full overscan of clearance — parks the controls in the lower
+    /// third where Apple's own TV hero sits. iPhone/iPad have no overscan, so they keep the tight inset.
     static func foregroundBottomInset(idiom: AppIdiom) -> CGFloat {
-        idiom == .tv ? Space.s60 + Space.s12 : Space.s30
+        idiom == .tv ? AppLayout.tvOverscanInset * 2 : Space.s30
+    }
+    /// Bottom inset for the carousel's page dots, measured from the band's bottom edge. compact/regular
+    /// tuck them just below the action row (the old iPhone `Space.s3` jammed them against the poster's
+    /// bottom seam, reading as "falling out" of the hero into the shelves). tvOS keeps them near the
+    /// bottom edge — just clear of the overscan title-safe line — NOT lifted with the controls: the dots
+    /// aren't focusable, so they don't trigger the focus-scroll the controls' inset guards against, and a
+    /// page indicator reads better at the bottom than floating in the lower third.
+    static func pageIndicatorBottomInset(idiom: AppIdiom) -> CGFloat {
+        switch idiom {
+        case .compact, .regular: Space.s22
+        case .tv: AppLayout.tvOverscanInset
+        }
     }
     static func foregroundHorizontalInset(idiom: AppIdiom) -> CGFloat {
         switch idiom {
@@ -130,16 +148,25 @@ enum HeroMetrics {
 /// Sizes the hero band from container width and the platform aspect ratio.
 struct HeroBandFrame: ViewModifier {
     let regularWidth: Bool
+    #if os(tvOS)
+    // Only the tvOS branch reads this; declaring it iOS-side would leave a live env
+    // subscription that never feeds layout (the `#else` path is aspect-ratio derived).
+    @Environment(\.heroViewportHeight) private var viewportHeight
+    #endif
 
     func body(content: Content) -> some View {
         #if os(tvOS)
-        // Constant viewport fraction, not width-derived — see `HeroMetrics.tvHeroHeightFraction`.
-        // `containerRelativeFrame(.vertical)` measures the enclosing ScrollView's height, which
-        // the sidebar collapse doesn't change, so the band height stays put and the focused
-        // controls never get scrolled out of reach.
+        // Fill the WHOLE screen: prefer the measured true screen height (`heroViewportHeight`, from
+        // `heroScreenSafeArea()`), which includes the overscan strip that `containerRelativeFrame`'s
+        // own safe-area-bounded value omits — that shortfall is what peeked the next row. Fall back
+        // to that safe value × the fraction only for the first layout pass, before the measurement
+        // lands. A constant height (not width-derived) holds steady across the `.sidebarAdaptable`
+        // collapse, so the focused controls never get scrolled out of reach.
         content
             .frame(maxWidth: .infinity)
-            .containerRelativeFrame(.vertical) { height, _ in height * HeroMetrics.tvHeroHeightFraction }
+            .containerRelativeFrame(.vertical) { containerHeight, _ in
+                viewportHeight > 0 ? viewportHeight : containerHeight * HeroMetrics.tvHeroHeightFraction
+            }
         #else
         content
             .frame(maxWidth: .infinity)
