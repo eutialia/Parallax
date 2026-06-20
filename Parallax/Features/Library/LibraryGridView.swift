@@ -100,11 +100,7 @@ struct LibraryGridView: View {
         if isInitialLoad(vm) {
             LibraryGridLoadingPlaceholder(aspectRatio: tileAspectRatio, columns: columns, showsMetadata: showsTileMetadata)
         } else if case .failed(let message) = vm.state, vm.items.isEmpty {
-            ContentUnavailableView(
-                "Couldn't load \(title)",
-                systemImage: "exclamationmark.triangle",
-                description: Text(message)
-            )
+            StatusStateView.failure("Couldn't load \(title)", message: message)
         } else if showsEmptyState(vm) {
             emptyState
         } else {
@@ -150,16 +146,16 @@ struct LibraryGridView: View {
     @ViewBuilder
     private var emptyState: some View {
         if case .favorites = scope {
-            ContentUnavailableView(
-                "No Favorites",
+            StatusStateView(
+                title: "No Favorites",
                 systemImage: "heart",
-                description: Text("Movies and shows you favorite will show up here.")
+                message: "Movies and shows you favorite will show up here."
             )
         } else {
-            ContentUnavailableView(
-                "No Items",
+            StatusStateView(
+                title: "No Items",
                 systemImage: "rectangle.stack",
-                description: Text("Nothing in \(title) matches the current genre.")
+                message: "Nothing in \(title) matches the current genre."
             )
         }
     }

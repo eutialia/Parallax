@@ -33,10 +33,10 @@ struct LibraryHostView: View {
                 LibraryListLoadingPlaceholder()
                     .navigationTitle("Library")
             } else {
-                ContentUnavailableView(
-                    "No libraries",
+                StatusStateView(
+                    title: "No libraries",
                     systemImage: "rectangle.stack.badge.xmark",
-                    description: Text("Add a Jellyfin or SMB source in Settings to browse your library.")
+                    message: "Add a Jellyfin or SMB source in Settings to browse your library."
                 )
             }
         }

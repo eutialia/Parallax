@@ -53,11 +53,7 @@ struct LibraryListView: View {
                     // Don't clip a focused card's lift at the scroll bounds.
                     .tvScrollClipDisabled()
                 case .failed(let message):
-                    ContentUnavailableView(
-                        "Couldn't load libraries",
-                        systemImage: "exclamationmark.triangle",
-                        description: Text(message)
-                    )
+                    StatusStateView.failure("Couldn't load libraries", message: message)
                 }
             } else {
                 LibraryListLoadingPlaceholder()

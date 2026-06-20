@@ -81,11 +81,7 @@ struct MovieDetailView: View {
                     .scrollEdgeEffectHidden(true, for: .top)
                     #endif
                 case .failed(let message):
-                    ContentUnavailableView(
-                        "Couldn't load this title",
-                        systemImage: "exclamationmark.triangle",
-                        description: Text(message)
-                    )
+                    StatusStateView.failure("Couldn't load this title", message: message)
                 }
             } else {
                 DetailLoadingSkeleton()

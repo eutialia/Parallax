@@ -11,11 +11,11 @@ import SwiftUI
 /// The libraries themselves stay reachable from the sidebar / Library section.
 struct HomeUnavailableView: View {
     var body: some View {
-        ContentUnavailableView {
-            Label("No Home Feed", systemImage: "house")
-        } description: {
-            Text("Home highlights like Continue Watching and Next Up come from a Jellyfin server. Browse your other libraries from the Library section.")
-        }
+        StatusStateView(
+            title: "No Home Feed",
+            systemImage: "house",
+            message: "Home highlights like Continue Watching and Next Up come from a Jellyfin server. Browse your other libraries from the Library section."
+        )
     }
 }
 

@@ -104,7 +104,7 @@ struct SeriesDetailView: View {
                     .scrollEdgeEffectHidden(true, for: .top)
                     #endif
                 case .failed(let message):
-                    ContentUnavailableView("Couldn't load this series", systemImage: "exclamationmark.triangle", description: Text(message))
+                    StatusStateView.failure("Couldn't load this series", message: message)
                 }
             } else {
                 DetailLoadingSkeleton()

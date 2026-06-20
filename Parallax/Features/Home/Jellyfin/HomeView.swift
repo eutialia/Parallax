@@ -154,12 +154,7 @@ struct HomeView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.bottom, Space.s30)
             case .failed(let message):
-                ContentUnavailableView(
-                    "Couldn't load Home",
-                    systemImage: "exclamationmark.triangle",
-                    description: Text(message)
-                )
-                .padding(.top, Space.s60)
+                StatusStateView.failure("Couldn't load Home", message: message)
             }
             }
             .alert(
@@ -175,10 +170,9 @@ struct HomeView: View {
             // Reached Home with no Jellyfin session feeding it — an SMB-only /
             // non-Jellyfin config. Distinct from the skeleton below, which is the
             // transient bootstrapping state (still resolving the active session).
-            // Centered in the viewport (there's no feed to scroll), so it reads as a
+            // `StatusStateView` fills the viewport and centers itself, so it reads as a
             // deliberate empty state rather than content pinned under the status bar.
             HomeUnavailableView()
-                .containerRelativeFrame(.vertical)
         } else {
             HomeLoadingSkeleton()
         }
@@ -213,12 +207,11 @@ private struct HomeShelves: View {
                 }
             }
             if vm.heroFeed.isEmpty && vm.continueWatching.isEmpty && vm.nextUp.isEmpty {
-                ContentUnavailableView(
-                    "Nothing here yet",
+                StatusStateView(
+                    title: "Nothing here yet",
                     systemImage: "play.slash",
-                    description: Text("Play something from your library and it will appear here.")
+                    message: "Play something from your library and it will appear here."
                 )
-                .padding(.top, Space.s60)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

@@ -80,10 +80,10 @@ struct JellyfinSearchView: View {
     private func content(vm: JellyfinSearchViewModel, session: Session) -> some View {
         switch vm.state {
         case .idle:
-            ContentUnavailableView(
-                "Find something to watch",
+            StatusStateView(
+                title: "Find something to watch",
                 systemImage: "magnifyingglass",
-                description: Text("Movies, shows, and episodes from your library.")
+                message: "Movies, shows, and episodes from your library."
             )
                 #if !os(tvOS)
                 .tapToDismissKeyboard($searchFocused)
@@ -131,11 +131,7 @@ struct JellyfinSearchView: View {
                 }
             }
         case .failed(let message):
-            ContentUnavailableView(
-                "Couldn't search your library",
-                systemImage: "exclamationmark.triangle",
-                description: Text(message)
-            )
+            StatusStateView.failure("Couldn't search your library", message: message)
             #if !os(tvOS)
             .tapToDismissKeyboard($searchFocused)
             #endif
