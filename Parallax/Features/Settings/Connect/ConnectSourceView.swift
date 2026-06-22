@@ -21,7 +21,7 @@ struct ConnectSourceView: View {
             SettingsScaffold(brandSubtitle: "Choose how to connect") {
                 SettingsGroup {
                     SettingsListRow(
-                        systemImage: "hexagon.fill",
+                        image: "JellyfinGlyph",
                         title: "Jellyfin Server",
                         subtitle: "Sign in to your media server",
                         accessory: .chevron
@@ -87,7 +87,7 @@ struct LoggedOutRootView: View {
 #Preview("Connect · logged out", traits: .fixedLayout(width: 1920, height: 1080)) {
     SettingsScaffold(brandSubtitle: "Choose how to connect") {
         SettingsGroup {
-            SettingsListRow(systemImage: "hexagon.fill", title: "Jellyfin Server", subtitle: "Sign in to your media server", accessory: .chevron) {}
+            SettingsListRow(image: "JellyfinGlyph", title: "Jellyfin Server", subtitle: "Sign in to your media server", accessory: .chevron) {}
             SettingsListRow(systemImage: "externaldrive.connected.to.line.below.fill", title: "SMB / Network Share", subtitle: "Connect to a network share", accessory: .chevron) {}
         }
     }

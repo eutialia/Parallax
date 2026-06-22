@@ -28,6 +28,9 @@ struct SettingsRowStatus {
 /// just the flat rest pill (no focus state).
 struct SettingsRowLabel: View {
     var systemImage: String? = nil
+    /// A custom template asset for the leading glyph (e.g. the Jellyfin mark), used in place of an
+    /// SF Symbol when set. Tinted like the symbol, so a monochrome template is expected.
+    var image: String? = nil
     var title: String
     var subtitle: String? = nil
     var value: String? = nil
@@ -39,7 +42,13 @@ struct SettingsRowLabel: View {
         HStack(spacing: Space.s14) {
             // iOS keeps the leading icon column (iOS Settings idiom); tvOS Settings pills are icon-less.
             #if !os(tvOS)
-            if let systemImage {
+            if let image {
+                Image(image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: SettingsListRow.symbolColumnWidth, height: 22)
+                    .foregroundStyle(isDestructive ? Color.red : Color.secondaryLabel)
+            } else if let systemImage {
                 Image(systemName: systemImage)
                     .font(.rowBody)
                     .frame(width: SettingsListRow.symbolColumnWidth)
@@ -162,6 +171,8 @@ struct SettingsListRow: View {
     }
 
     var systemImage: String? = nil
+    /// Custom template asset for the leading glyph (e.g. the Jellyfin mark), in place of an SF Symbol.
+    var image: String? = nil
     var title: String
     var subtitle: String? = nil
     var value: String? = nil
@@ -182,6 +193,7 @@ struct SettingsListRow: View {
     private var label: some View {
         SettingsRowLabel(
             systemImage: systemImage,
+            image: image,
             title: title,
             subtitle: subtitle,
             value: value,

@@ -246,7 +246,7 @@ struct SettingsContentView<Storage: View>: View {
     private var addServerMenu: some View {
         Menu {
             Button { onAddJellyfin() } label: {
-                Label("Jellyfin Server", systemImage: "hexagon.fill")
+                Label("Jellyfin Server", image: "JellyfinGlyph")
             }
             Button { onAddSMB() } label: {
                 Label("SMB / Network Share", systemImage: "externaldrive.connected.to.line.below.fill")
