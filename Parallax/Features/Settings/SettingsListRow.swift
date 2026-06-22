@@ -9,13 +9,6 @@ enum SettingsRowAccessory {
     case none
 }
 
-/// A live/idle status pill (LED + label) shown at a row's trailing edge — the server "Active"/"Idle"
-/// indicator. The dot reads green when `isOn`, dim otherwise.
-struct SettingsRowStatus {
-    var text: String
-    var isOn: Bool
-}
-
 /// One settings/connect option, drawn as a STANDALONE PILL — a self-contained rounded row (title +
 /// optional subtitle, optional trailing status/value/accessory) sitting on its own flat fill, spaced
 /// from its neighbours by `SettingsGroup`. This is the tvOS Settings.app idiom: each option is its own
@@ -34,7 +27,6 @@ struct SettingsRowLabel: View {
     var title: String
     var subtitle: String? = nil
     var value: String? = nil
-    var status: SettingsRowStatus? = nil
     var accessory: SettingsRowAccessory = .none
     var isDestructive: Bool = false
 
@@ -67,16 +59,6 @@ struct SettingsRowLabel: View {
                 }
             }
             Spacer(minLength: Space.s14)
-            if let status {
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(status.isOn ? Color.ok : Color.tertiaryLabel)
-                        .frame(width: 9, height: 9)
-                    Text(status.text)
-                        .font(.rowSubtitle)
-                        .foregroundStyle(Color.secondaryLabel)
-                }
-            }
             if let value {
                 Text(value)
                     .font(.rowBody)
@@ -160,13 +142,17 @@ private struct SettingsPill: ViewModifier {
 struct SettingsListRow: View {
     /// Leading SF-Symbol column width.
     static let symbolColumnWidth: CGFloat = 38
-    /// Pill height; compact like the tvOS Settings pills, but tall enough at 10 feet to read as a
-    /// deliberate, liftable focus target.
+    /// Pill height. On iOS the floor is the natural height of a TWO-line row (title + subtitle) at the
+    /// default text size, so a single-line row clamps UP to match it and every pill reads as one height:
+    /// standalone capsules can't lean on a shared list separator to hide height variance, so uneven pills
+    /// read as misalignment. (It's a floor, not a fixed height — at large Dynamic Type a two-line row
+    /// still grows past it, which is correct; uniformity is the default-size guarantee.) tvOS pills are
+    /// all single-line (icon-less text), so they're uniform at the compact 58pt already.
     static var pillMinHeight: CGFloat {
         #if os(tvOS)
         58
         #else
-        52
+        64
         #endif
     }
 
@@ -176,7 +162,6 @@ struct SettingsListRow: View {
     var title: String
     var subtitle: String? = nil
     var value: String? = nil
-    var status: SettingsRowStatus? = nil
     var accessory: SettingsRowAccessory = .none
     var role: ButtonRole? = nil
     var action: (() -> Void)? = nil
@@ -197,7 +182,6 @@ struct SettingsListRow: View {
             title: title,
             subtitle: subtitle,
             value: value,
-            status: status,
             accessory: accessory,
             isDestructive: role == .destructive
         )

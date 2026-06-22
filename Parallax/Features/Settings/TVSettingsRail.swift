@@ -154,7 +154,6 @@ struct TVSettingsRail<Content: View>: View {
                     SettingsListRow(
                         title: "Living Room",
                         subtitle: "jellyfin.local · alice",
-                        status: SettingsRowStatus(text: "Active", isOn: true),
                         accessory: .chevron,
                         action: {}
                     )

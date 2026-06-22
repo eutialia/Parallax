@@ -122,8 +122,7 @@ struct SettingsView: View {
                         id: $0.id,
                         name: $0.serverName,
                         host: $0.displayHost,
-                        user: $0.user.name,
-                        isActive: $0.id == vm.activeID
+                        user: $0.user.name
                     )
                 },
                 smbServers: vm.smbServers.compactMap { server in
@@ -178,7 +177,6 @@ struct SettingsServerRow: Identifiable {
     let name: String
     let host: String
     let user: String
-    let isActive: Bool
 }
 
 /// An SMB server row's display data.
@@ -208,10 +206,9 @@ struct SettingsContentView<Storage: View>: View {
                 ForEach(servers) { server in
                     Button { onSelectServer(server.id) } label: {
                         SettingsRowLabel(
-                            systemImage: "server.rack",
-                            title: server.name,
-                            subtitle: "\(server.host) · \(server.user)",
-                            status: SettingsRowStatus(text: server.isActive ? "Active" : "Idle", isOn: server.isActive),
+                            image: "JellyfinGlyph",
+                            title: server.host,
+                            subtitle: "\(server.name) · \(server.user)",
                             accessory: .chevron
                         )
                     }
@@ -223,7 +220,6 @@ struct SettingsContentView<Storage: View>: View {
                         systemImage: "externaldrive.connected.to.line.below.fill",
                         title: server.host,
                         subtitle: "\(server.path) · \(server.user)",
-                        status: SettingsRowStatus(text: "Idle", isOn: false),
                         accessory: .trash,
                         action: { onRemoveSMB(server.id) }
                     )
@@ -265,8 +261,8 @@ struct SettingsContentView<Storage: View>: View {
 #Preview("Settings · grouped", traits: .fixedLayout(width: 1920, height: 1080)) {
     SettingsContentView(
         servers: [
-            .init(id: ServerID(rawValue: "1"), name: "Living Room", host: "jellyfin.local", user: "alice", isActive: true),
-            .init(id: ServerID(rawValue: "2"), name: "Basement NAS", host: "192.168.1.10", user: "alice", isActive: false),
+            .init(id: ServerID(rawValue: "1"), name: "Living Room", host: "jellyfin.local", user: "alice"),
+            .init(id: ServerID(rawValue: "2"), name: "Basement NAS", host: "192.168.1.10", user: "alice"),
         ],
         smbServers: [
             .init(id: ServerID(rawValue: "3"), host: "192.168.1.10", path: "Media/Movies", user: "guest"),

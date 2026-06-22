@@ -9,7 +9,9 @@ import ParallaxJellyfin
 final class SettingsViewModel {
     var sessions: [Session] = []
     var smbServers: [PersistedServer] = []
-    var activeID: ServerID?
+    /// The primary Jellyfin session's id — refreshed from `serverStore.active` (which defaults to the
+    /// first session). Read only inside this VM to wire the router; no view observes it, so it's private.
+    private var activeID: ServerID?
     /// Surfaces the most recent sign-out failure so the UI can show the user that their
     /// action did not fully take effect. Set at the start of `signOut` (cleared) and only
     /// on failure — `refresh()` deliberately leaves it alone so the message survives the
@@ -58,15 +60,6 @@ final class SettingsViewModel {
             hasAuxiliarySources: !smbServers.isEmpty
         )
         router.bumpLibraryRevision()
-    }
-
-    func setActive(_ id: ServerID) async {
-        do {
-            try await serverStore.setActive(id)
-        } catch {
-            Log.persistence.error("Settings setActive failed for \(id.rawValue): \(error.networkDiagnostic)")
-        }
-        await syncRouterToActive()
     }
 
     func signOut(_ session: Session) async {

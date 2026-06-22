@@ -18,6 +18,11 @@ struct SettingsScaffold<Content: View>: View {
     /// Page subtitle — e.g. "Choose how to connect". On tvOS it's the label under the rail icon when there's
     /// no `title`. Omit for none.
     var brandSubtitle: String? = nil
+    /// Whether the iOS surface leads with the "Parallax" brand lockup. The settings root and Connect want
+    /// it; a drill-in (the per-server detail) suppresses it and supplies its own subject hero instead, so
+    /// the app brand doesn't sit redundantly above a screen that's about one specific server. No effect on
+    /// tvOS, where the persistent rail — not this scaffold — owns the brand.
+    var showsBrand: Bool = true
     @ViewBuilder var content: Content
 
     var body: some View {
@@ -50,9 +55,11 @@ struct SettingsScaffold<Content: View>: View {
         #else
         ScrollView {
             VStack(spacing: Space.s22) {
-                brand
-                    .frame(maxWidth: .infinity)
-                    .padding(.bottom, Space.s8)
+                if showsBrand {
+                    brand
+                        .frame(maxWidth: .infinity)
+                        .padding(.bottom, Space.s8)
+                }
                 content
             }
             .padding(Space.s18)
