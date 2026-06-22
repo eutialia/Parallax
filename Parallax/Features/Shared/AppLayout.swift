@@ -39,11 +39,28 @@ enum AppLayout {
     /// the SMB add form). tvOS widens it for the same reason as `tvControlHeight`: the 10-foot type
     /// renders ~1.5× the iOS size, so the iOS measure crammed the rows into wrapping, oversized lines.
     /// Centered via a trailing `.frame(maxWidth: .infinity)` at each call site. One knob per family so
-    /// the surfaces can't drift apart; the tighter centered auth card uses `AuthLayout.maxContentWidth`.
+    /// the surfaces can't drift apart. The logged-out Connect flow now shares this same scaffold.
     #if os(tvOS)
     static let settingsContentWidth: CGFloat = 680
     /// Per-server detail (`ServerSettingsView`) — the widest reading measure of the settings family.
     static let settingsDetailWidth: CGFloat = 780
+    /// The right-hand option-pill column on the tvOS settings/connect surface; the persistent
+    /// brand-icon rail (`TVSettingsRail`) fills the rest of the width to its left. Shared by the rail
+    /// (which sizes the NavigationStack region) and `SettingsScaffold` (which lays the pills out at
+    /// this width) so the two can't drift.
+    static let tvSettingsColumnWidth: CGFloat = 560
+    /// Horizontal slack INSIDE the scroll clip on each side of the pill column: a focused pill lifts
+    /// (`scaleEffect(1.03)`) and casts a shadow, and without this margin the ScrollView clips its
+    /// frame and shaves the capsule's rounded ends flat. The pills stay `tvSettingsColumnWidth` wide —
+    /// only the scroll frame grows.
+    static let tvSettingsColumnBleed: CGFloat = 24
+    /// Top inset above the first option pill: clears the overscan AND drops the column's top below the
+    /// rail icon's eyeline so the first pill doesn't sit level with the pinned icon. One knob shared by
+    /// `SettingsScaffold` (production) and the focus-clip-guard preview so the guard can't drift from it.
+    static let tvSettingsColumnTopInset: CGFloat = 124
+    /// Bottom inset below the last pill: overscan clearance plus room for its focus lift before the
+    /// scroll edge. Shared with the focus-clip-guard preview alongside `tvSettingsColumnTopInset`.
+    static let tvSettingsColumnBottomInset: CGFloat = 80
     #else
     static let settingsContentWidth: CGFloat = 560
     static let settingsDetailWidth: CGFloat = 720

@@ -104,60 +104,17 @@ struct SMBFolderPickerView: View {
 
     private var directoryList: some View {
         ScrollView {
-            LazyVStack(spacing: 0) {
-                // Filter directories once per body pass, not twice (ForEach + empty-state check).
-                let dirs = entries.filter { $0.isDirectory }
+            // Filter directories once per body pass, not twice (ForEach + empty-state check).
+            let dirs = entries.filter { $0.isDirectory }
+            SettingsGroup {
                 if !currentPath.isEmpty {
-                    Button {
-                        ascend()
-                    } label: {
-                        HStack(spacing: Space.s12) {
-                            Image(systemName: "arrow.up.left")
-                                .font(.rowBody)
-                                .foregroundStyle(Color.label)
-                                .frame(width: 20)
-                            Text("Parent Folder")
-                                .font(.rowBody)
-                                .foregroundStyle(Color.label)
-                            Spacer(minLength: 0)
-                        }
-                        .padding(.horizontal, Space.s14)
-                        .frame(minHeight: 48)
-                        .contentShape(.rect)
-                        .tvFocusListRow()
-                    }
-                    .tvListRowButton()
-
-                    Divider().padding(.leading, Space.s14 + 20 + Space.s12)
+                    SettingsListRow(systemImage: "arrow.up.left", title: "Parent Folder") { ascend() }
                 }
-
                 ForEach(dirs, id: \.name) { entry in
-                    Button {
+                    SettingsListRow(systemImage: "folder.fill", title: entry.name, accessory: .chevron) {
                         descend(into: entry.name)
-                    } label: {
-                        HStack(spacing: Space.s12) {
-                            Image(systemName: "folder.fill")
-                                .font(.rowBody)
-                                .foregroundStyle(Color.label)
-                                .frame(width: 20)
-                            Text(entry.name)
-                                .font(.rowBody)
-                                .foregroundStyle(Color.label)
-                            Spacer(minLength: 0)
-                            Image(systemName: "chevron.right")
-                                .scaledFont(13, relativeTo: .footnote, weight: .semibold)
-                                .foregroundStyle(Color.tertiaryLabel)
-                        }
-                        .padding(.horizontal, Space.s14)
-                        .frame(minHeight: 48)
-                        .contentShape(.rect)
-                        .tvFocusListRow()
                     }
-                    .tvListRowButton()
-
-                    Divider().padding(.leading, Space.s14 + 20 + Space.s12)
                 }
-
                 if dirs.isEmpty {
                     Text("No subdirectories — use this folder")
                         .font(.callout)
@@ -166,7 +123,6 @@ struct SMBFolderPickerView: View {
                         .padding(Space.s30)
                 }
             }
-            .background(Color.fill, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
             .padding(Space.s18)
         }
     }

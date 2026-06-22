@@ -49,7 +49,7 @@ struct SMBLoginView: View {
     }
 
     var body: some View {
-        SettingsFormScaffold {
+        SettingsScaffold(brandSubtitle: "Connect to a network share") {
             VStack(spacing: Space.s22) {
                 #if !os(tvOS)
                 discoveredServersSection
@@ -134,7 +134,8 @@ struct SMBLoginView: View {
     @ViewBuilder
     private var fieldsSection: some View {
         #if os(tvOS)
-        CredentialRowList(rows: credentialRows)
+        // The last field's keyboard "go" connects, gated to a complete form — same as the Connect button.
+        CredentialRowList(rows: credentialRows, onSubmit: { if canConnect { connect() } })
         #else
         connectionFieldsSection
         #endif
@@ -143,11 +144,11 @@ struct SMBLoginView: View {
     #if os(tvOS)
     private var credentialRows: [CredentialRow] {
         [
-            CredentialRow(id: "host", icon: "server.rack", title: "Host", placeholder: "e.g. 192.168.1.10", text: $host, keyboard: .URL),
-            CredentialRow(id: "share", icon: "externaldrive.connected.to.line.below.fill", title: "Share name", placeholder: "Share name", text: $share),
-            CredentialRow(id: "username", icon: "person", title: "Username", placeholder: "Username", text: $username),
-            CredentialRow(id: "password", icon: "lock", title: "Password", placeholder: "Password", text: $password, isSecure: true),
-            CredentialRow(id: "domain", icon: "building.2", title: "Domain", placeholder: "Domain", text: $domain, autocapitalization: .characters),
+            CredentialRow(id: "host", title: "Host", placeholder: "e.g. 192.168.1.10", text: $host, keyboard: .URL),
+            CredentialRow(id: "share", title: "Share name", placeholder: "Share name", text: $share),
+            CredentialRow(id: "username", title: "Username", placeholder: "Username", text: $username),
+            CredentialRow(id: "password", title: "Password", placeholder: "Password", text: $password, isSecure: true),
+            CredentialRow(id: "domain", title: "Domain", placeholder: "Domain", text: $domain, autocapitalization: .characters),
         ]
     }
     #endif

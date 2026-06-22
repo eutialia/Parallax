@@ -1,26 +1,15 @@
 import SwiftUI
 import ParallaxJellyfin
 
+/// The Jellyfin sign-in form. Pushed as a screen on both paths now — from the logged-out Connect
+/// picker and from Settings' "Add Server" — so it owns its own view model and wears the shared
+/// `SettingsScaffold` (brand rail) like every other settings/connect surface. No more in-place slide
+/// (the picker pushes via its `NavigationStack`), so the chromeless / onBack / external-VM plumbing the
+/// slide needed is gone.
 struct LoginView: View {
-    /// Called after a successful sign-in. When nil (the logged-out root) the view drives
-    /// the router itself; the settings add-server flow passes a closure to refresh + pop.
+    /// Called after a successful sign-in. When nil (the logged-out Connect path) the view drives the
+    /// router itself; Settings' add-server flow passes a closure to refresh + pop.
     var onSignedIn: (() -> Void)?
-
-    /// Body-only mode: skip the scaffold + brand mark (the logged-out source picker supplies them,
-    /// rendering the "Parallax" mark ONCE above the sliding bodies so it stays put). Settings leaves
-    /// this false and gets the full chrome.
-    var chromeless: Bool = false
-
-    /// When set, the password body shows a bottom "Choose a different source" control. Used by the
-    /// logged-out picker (in-place swap, no system back); nil in settings, where the nav stack's
-    /// back button handles it.
-    var onBack: (() -> Void)?
-
-    /// An externally-owned view model. The logged-out source picker hands one it holds, so the
-    /// typed server URL / username / password survive the swap back to the picker and forward
-    /// again — the cover transition removes and re-inserts this subtree, which would otherwise
-    /// reset its own `@State` and wipe the form. Settings leaves this nil and the view owns its own.
-    var viewModelOverride: LoginViewModel?
 
     @Environment(\.scenePhase) private var scenePhase
     @Environment(AppDependencies.self) private var deps
@@ -38,33 +27,32 @@ struct LoginView: View {
     #endif
 
     var body: some View {
-        content
+        SettingsScaffold(brandSubtitle: "Sign in to your Jellyfin server") { signInBody }
         #if !os(tvOS)
         .onAppear {
-            // Discovery runs only while this screen is visible. Triggers the iOS
-            // Local Network permission prompt here (not mid-library browse) and
-            // fills the server URL / LAN list below. Retries catch a late grant
-            // during the permission alert; stop() on disappear cancels in-flight
-            // passes once the user leaves sign-in.
+            // Discovery runs only while this screen is visible. Triggers the iOS Local Network
+            // permission prompt here (not mid-library browse) and fills the server URL / LAN list
+            // below. Retries catch a late grant during the permission alert; stop() on disappear
+            // cancels in-flight passes once the user leaves sign-in.
             deps.lanDiscovery.start(retries: 3, retryInterval: .seconds(2))
         }
         .onDisappear {
             deps.lanDiscovery.stop()
         }
         .onChange(of: scenePhase) { _, newPhase in
-            // iOS exposes no Local Network authorization API — rescan when the
-            // scene becomes active again (e.g. user tapped Allow then returned).
+            // iOS exposes no Local Network authorization API — rescan when the scene becomes active
+            // again (e.g. user tapped Allow then returned).
             guard newPhase == .active else { return }
             deps.lanDiscovery.start()
         }
         #endif
         .task {
             if viewModel == nil {
-                viewModel = viewModelOverride ?? LoginViewModel(sessionManager: deps.sessionManager)
+                viewModel = LoginViewModel(sessionManager: deps.sessionManager)
             }
             #if !os(tvOS)
-            // Auto-fill the server URL from LAN discovery when the field is empty
-            // (most networks have a single Jellyfin server).
+            // Auto-fill the server URL from LAN discovery when the field is empty (most networks have
+            // a single Jellyfin server).
             if let vm = viewModel, vm.serverURLInput.isEmpty,
                let first = deps.lanDiscovery.discovered.first {
                 vm.serverURLInput = first.address.absoluteString
@@ -72,32 +60,14 @@ struct LoginView: View {
             #endif
         }
         #if !os(tvOS)
-        // Discovery usually completes AFTER the view appears (it races the Local
-        // Network permission prompt), so fill the URL in when it lands.
+        // Discovery usually completes AFTER the view appears (it races the Local Network permission
+        // prompt), so fill the URL in when it lands.
         .onChange(of: deps.lanDiscovery.discovered.first?.address) { _, address in
             if let address, let vm = viewModel, vm.serverURLInput.isEmpty {
                 vm.serverURLInput = address.absoluteString
             }
         }
         #endif
-    }
-
-    /// Chromeless: just the body (the logged-out picker supplies the mark + scaffold). Otherwise
-    /// (Settings "Add Jellyfin Server") wrap the body in the scaffold WITHOUT a brand mark — the app
-    /// icon + "Parallax" live on the Settings root now, and the nav title names this screen, so the
-    /// form matches the mark-less SMB add-server page.
-    @ViewBuilder
-    private var content: some View {
-        if chromeless {
-            signInBody
-        } else {
-            // Settings add-server: the same top-aligned settings layout as the SMB add page, so the
-            // two add-server forms match (the auth card's upper-third bias would leave an empty gap
-            // now that the brand mark has moved to the Settings root).
-            SettingsFormScaffold {
-                signInBody
-            }
-        }
     }
 
     @ViewBuilder
@@ -115,16 +85,13 @@ struct LoginView: View {
                     )
                 }
             }
-            // Identity tied to the mode so the swap is a real insert/remove that the
-            // transition animates (a transition on a stable wrapper wouldn't fire);
-            // driven by the withAnimation at the toggle sites.
+            // Identity tied to the mode so the swap is a real insert/remove that the transition
+            // animates (a transition on a stable wrapper wouldn't fire); driven by the withAnimation
+            // at the toggle sites.
             .id(vm.mode)
             .transition(.blurReplace)
         } else {
-            VStack(spacing: Space.s22) {
-                AuthSubtitle("Sign in to your Jellyfin server")
-                LoginCardLoadingSkeleton()
-            }
+            LoginCardLoadingSkeleton()
         }
     }
 
@@ -132,13 +99,6 @@ struct LoginView: View {
     private func passwordBody(vm: LoginViewModel) -> some View {
         @Bindable var vm = vm
         VStack(spacing: Space.s22) {
-            // Only in the logged-out first-run flow (under the picker's brand mark). The Settings
-            // add-server page drops it: the "Add Jellyfin Server" nav title already labels the screen
-            // and the SMB add page has no subtitle, so the two add-server forms read identically.
-            if chromeless {
-                AuthSubtitle("Sign in to your Jellyfin server")
-            }
-
             #if !os(tvOS)
             // LAN-discovered servers (relocated): tap to quick-fill the URL.
             if !deps.lanDiscovery.discovered.isEmpty {
@@ -171,10 +131,10 @@ struct LoginView: View {
             // `CredentialRowList` for why the inline tvOS field pill is avoided.
             #if os(tvOS)
             CredentialRowList(rows: [
-                CredentialRow(id: "server", icon: "globe", title: "Server", placeholder: "https://jellyfin.example.com", text: $vm.serverURLInput, keyboard: .URL, textContentType: .URL),
-                CredentialRow(id: "username", icon: "person", title: "Username", placeholder: "Username", text: $vm.username, textContentType: .username),
-                CredentialRow(id: "password", icon: "lock", title: "Password", placeholder: "Password", text: $vm.password, isSecure: true, textContentType: .password),
-            ])
+                CredentialRow(id: "server", title: "Server", placeholder: "https://jellyfin.example.com", text: $vm.serverURLInput, keyboard: .URL, textContentType: .URL),
+                CredentialRow(id: "username", title: "Username", placeholder: "Username", text: $vm.username, textContentType: .username),
+                CredentialRow(id: "password", title: "Password", placeholder: "Password", text: $vm.password, isSecure: true, textContentType: .password),
+            ], onSubmit: { handleSubmit(vm: vm) })
             #else
             VStack(spacing: 0) {
                 fieldRow(icon: "globe") {
@@ -201,8 +161,8 @@ struct LoginView: View {
                             }
                         }
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
-                        // Tag both states .password: the heuristics treat a non-secure field as
-                        // a password only when told, so the "Show" toggle's plain TextField keeps
+                        // Tag both states .password: the heuristics treat a non-secure field as a
+                        // password only when told, so the "Show" toggle's plain TextField keeps
                         // AutoFill alive. Surfaces the QuickType key icon (all saved logins) even
                         // without an associated domain — the realistic fill path for self-hosted URLs.
                         .textContentType(.password)
@@ -246,25 +206,6 @@ struct LoginView: View {
             }
             .formActionButton(.glass)
             .disabled(!vm.canUseQuickConnect)
-
-            // Logged-out picker only: a light return to the source choices, at the bottom (no system
-            // back, since the picker swaps this form in place rather than pushing it).
-            if let onBack {
-                Button(action: onBack) {
-                    Label("Choose a different source", systemImage: "chevron.left")
-                        .font(.authSubtitle)
-                        .foregroundStyle(Color.secondaryLabel)
-                        .padding(.vertical, Space.s8)
-                        .padding(.horizontal, Space.s12)
-                        .contentShape(.rect)
-                        .tvFocusListRow()
-                }
-                // tvOS: quiet style + the link's own contained platter (`.plain` painted the
-                // overflowing white focus box here too). `.plain` on iOS.
-                .tvListRowButton()
-                .padding(.top, Space.s8)
-                .accessibilityLabel("Back to connection options")
-            }
         }
     }
 
@@ -272,23 +213,22 @@ struct LoginView: View {
         if await vm.signIn() { await handleSuccess() }
     }
 
-    #if !os(tvOS)
-    /// "Go" on the password field: only fires a sign-in when all three fields are filled — pressing
-    /// return on an incomplete form should be a no-op, the same gate the Connect button enforces.
+    /// The keyboard's submit on the last field — the iOS return chain AND the tvOS `CredentialRowList`
+    /// "go" key both route here — only fires a sign-in when all three fields are filled; an incomplete
+    /// form is a no-op, the same gate the Connect button enforces.
     private func handleSubmit(vm: LoginViewModel) {
-        // `!vm.isWorking` too: the Button is disabled while signing in, but the keyboard
-        // "Go" bypasses it — without this a fast double-Go spawns two concurrent signIn()s.
+        // `!vm.isWorking` too: the Button is disabled while signing in, but the keyboard bypasses it —
+        // without this a fast double-submit spawns two concurrent signIn()s.
         guard vm.canSubmitPassword, !vm.isWorking else { return }
         Task { await submitSignIn(vm: vm) }
     }
-    #endif
 
     // MARK: - iOS inline field helpers (tvOS uses CredentialRowList)
 
     #if !os(tvOS)
-    /// URL-shaped placeholders get auto-styled as blue links, which ignores `.tint`
-    /// and `.foregroundStyle`. Feeding the example as an `AttributedString` with an
-    /// explicit color renders it in the normal placeholder gray instead.
+    /// URL-shaped placeholders get auto-styled as blue links, which ignores `.tint` and
+    /// `.foregroundStyle`. Feeding the example as an `AttributedString` with an explicit color renders
+    /// it in the normal placeholder gray instead.
     private static var urlPrompt: Text {
         var prompt = AttributedString("https://jellyfin.example.com")
         prompt.swiftUI.foregroundColor = Color.tertiaryLabel
@@ -312,15 +252,14 @@ struct LoginView: View {
 
     private func handleSuccess() async {
         if let onSignedIn {
-            // Settings add-server flow: the caller refreshes its list, re-points the
-            // router, and pops this view off the settings stack.
+            // Settings add-server flow: the caller refreshes its list, re-points the router, and pops
+            // this view off the settings stack.
             onSignedIn()
         } else {
-            // First sign-in (logged-out root): set destination AND activeServerID together.
-            // The per-source tasks (Home/Library/Search/RootTabView) are gated on the
-            // router's source state, so routing through `updateForSources` is what actually
-            // lets them fetch — setting only `destination` would strand every tab on its
-            // loading skeleton.
+            // First sign-in (logged-out Connect): set destination AND activeServerID together. The
+            // per-source tasks (Home/Library/Search/RootTabView) are gated on the router's source
+            // state, so routing through `updateForSources` is what actually lets them fetch — setting
+            // only `destination` would strand every tab on its loading skeleton.
             router.updateForSources(
                 activeSession: await deps.serverStore.active,
                 hasAuxiliarySources: await deps.serverStore.hasSMBServers

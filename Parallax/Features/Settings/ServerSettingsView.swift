@@ -1,15 +1,12 @@
 import SwiftUI
 import ParallaxJellyfin
 
-/// Per-server settings detail — the design handoff's `screen-settings`. Pushed from a
-/// server card in the floating `SettingsView`. This is the reuse-only build: a connected-
-/// server header plus the "This Server" actions that already exist (make active, sign out).
-/// The Playback section (engine / quality / bitrate / subtitle appearance), Quick Connect
-/// authorizing, Manage Devices, and the live stats strip are deferred until their
-/// settings/persistence plumbing lands.
+/// Per-server settings detail — pushed from a server row in `SettingsView`. A connected-server header
+/// plus the "This Server" actions (make active, sign out). Uses the shared `SettingsScaffold` (brand
+/// rail) + `SettingsGroup`/`SettingsListRow`, so it reads identically to the settings root.
 ///
-/// Actions reuse `SettingsViewModel` (passed in from the panel) so there's a single
-/// implementation of set-active / sign-out with their router side effects.
+/// Actions reuse `SettingsViewModel` (passed in from the panel) so there's a single implementation of
+/// set-active / sign-out with their router side effects.
 struct ServerSettingsView: View {
     let session: Session
     let vm: SettingsViewModel
@@ -19,23 +16,46 @@ struct ServerSettingsView: View {
     private var isActive: Bool { vm.activeID == session.id }
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: Space.s22) {
-                header
-                section(title: "This Server") { thisServerCard }
-                if let message = vm.signOutErrorMessage {
-                    Text(message)
-                        .font(.footnote)
-                        .foregroundStyle(.red)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, Space.s14)
+        SettingsScaffold(title: session.serverName) {
+            header
+            SettingsGroup(title: "This Server") {
+                SettingsListRow(
+                    systemImage: "person",
+                    title: "Signed in as",
+                    value: session.user.name
+                )
+                if !isActive {
+                    SettingsListRow(
+                        systemImage: "checkmark.circle",
+                        title: "Make This Server Active"
+                    ) {
+                        Task { await vm.setActive(session.id) }
+                    }
+                }
+                SettingsListRow(
+                    systemImage: "rectangle.portrait.and.arrow.right",
+                    title: "Sign Out",
+                    role: .destructive
+                ) {
+                    Task {
+                        await vm.signOut(session)
+                        // On success pop back — this server is gone. Always dismiss the detail: if that
+                        // was the last SOURCE the router routed to login and tore the panel down (dismiss
+                        // on the vanishing sheet is a harmless no-op); but if an SMB source remains the
+                        // router falls back to SMB-only home and KEEPS the panel, so without this pop the
+                        // user would be stranded on a ghost page for a server that no longer exists. On
+                        // failure stay so the shared vm's error message shows.
+                        if vm.signOutErrorMessage == nil { dismiss() }
+                    }
                 }
             }
-            .padding(Space.s18)
-            // Match the handoff's reading measure on wide (iPad) layouts, centered; tvOS widens it
-            // for the 10-foot type (see AppLayout).
-            .frame(maxWidth: AppLayout.settingsDetailWidth)
-            .frame(maxWidth: .infinity)
+            if let message = vm.signOutErrorMessage {
+                Text(message)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, Space.s14)
+            }
         }
         .navigationTitle(session.serverName)
         #if !os(tvOS)
@@ -45,12 +65,12 @@ struct ServerSettingsView: View {
 
     // MARK: - Header
 
+    /// The connected-server identity card — a flat surface panel (a header, not a list group).
     private var header: some View {
         HStack(spacing: Space.s14) {
             IconTile(systemImage: "server.rack", size: 52, cornerRadius: 14, glyphSize: 22)
             VStack(alignment: .leading, spacing: 3) {
                 Text(session.serverName)
-                    // tvOS tames the 10-foot inflation; iOS unchanged. Centralized in TypeScale.
                     .font(.cardHeaderTitle)
                     .foregroundStyle(Color.label)
                     .lineLimit(1)
@@ -69,68 +89,5 @@ struct ServerSettingsView: View {
         }
         .padding(Space.s18)
         .surfacePanel(cornerRadius: Radius.card)
-    }
-
-    // MARK: - This Server
-
-    private var thisServerCard: some View {
-        VStack(spacing: 0) {
-            SettingsRow(
-                systemImage: "person",
-                title: "Signed in as",
-                value: session.user.name,
-                showsChevron: false
-            )
-            if !isActive {
-                rowSeparator
-                SettingsRow(
-                    systemImage: "checkmark.circle",
-                    title: "Make This Server Active",
-                    showsChevron: false
-                ) {
-                    Task { await vm.setActive(session.id) }
-                }
-            }
-            rowSeparator
-            SettingsRow(
-                systemImage: "rectangle.portrait.and.arrow.right",
-                title: "Sign Out",
-                showsChevron: false,
-                role: .destructive
-            ) {
-                Task {
-                    await vm.signOut(session)
-                    // On success pop back to the list — this server is gone. Always dismiss the
-                    // detail page: if that was the last SOURCE the router routed to login and tore
-                    // the panel down (dismiss on the vanishing sheet is a harmless no-op); but if an
-                    // SMB source remains the router falls back to SMB-only home and KEEPS the panel,
-                    // so without this pop the user would be stranded on a ghost page for a server
-                    // that no longer exists. On failure stay so the shared vm's error message shows.
-                    if vm.signOutErrorMessage == nil { dismiss() }
-                }
-            }
-        }
-        .surfacePanel(cornerRadius: Radius.card)
-    }
-
-    // MARK: - Building blocks
-
-    /// Section label + content, matching the handoff's uppercase group heading.
-    @ViewBuilder
-    private func section<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: Space.s8) {
-            Text(title)
-                .font(.sectionHeader)
-                .textCase(.uppercase)
-                .foregroundStyle(Color.secondaryLabel)
-                .padding(.horizontal, Space.s14)
-            content()
-        }
-    }
-
-    /// Hairline between rows, inset to start past the icon tile (geometry owned by
-    /// `SettingsRow`, so this stays correct if the tile size ever changes).
-    private var rowSeparator: some View {
-        Divider().padding(.leading, SettingsRow.separatorLeadingInset)
     }
 }
