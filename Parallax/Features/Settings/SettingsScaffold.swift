@@ -29,6 +29,10 @@ struct SettingsScaffold<Content: View>: View {
             // rounded ends flat. (Padding OUTSIDE the ScrollView would inset the whole scroll, not give
             // the pills room — that clipped the focus platter.)
             VStack(alignment: .leading, spacing: Space.s26) { content }
+                // Bound focus traversal to the pill column. The brand rail to the left is
+                // non-focusable, so without this an up/left press past the edge pills can escape to the
+                // tvOS tab bar (signed-in Settings is a TabView tab); the section keeps focus contained.
+                .tvFocusSection()
                 .frame(width: AppLayout.tvSettingsColumnWidth, alignment: .leading)
                 .padding(.horizontal, AppLayout.tvSettingsColumnBleed)
                 .padding(.top, AppLayout.tvSettingsColumnTopInset)

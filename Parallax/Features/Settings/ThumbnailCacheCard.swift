@@ -14,16 +14,15 @@ struct ThumbnailCacheCard: View {
     @State private var isClearing = false
     @State private var isConfirming = false
 
-    /// There's something to clear — gates the Clear row (disabled ⇒ not focusable on tvOS).
-    private var hasContent: Bool { !isClearing && (byteCount ?? 0) > 0 }
-
     var body: some View {
         SettingsGroup(title: "Storage") {
             SettingsListRow(systemImage: "photo.stack", title: "Thumbnail Cache", value: sizeLabel)
+            // Always pressable — never `.disabled` on the row the user just focused (disabling the
+            // focused pill bounces tvOS focus to a neighbour). Clearing an empty cache is a harmless
+            // idempotent no-op, so the row can stay a live focus target regardless of size.
             SettingsListRow(systemImage: "trash", title: "Clear Cache", role: .destructive) {
                 isConfirming = true
             }
-            .disabled(!hasContent)
         }
         .task { byteCount = await deps.mediaArtworkProvider.cacheSize() }
         .confirmationDialog("Clear thumbnail cache?", isPresented: $isConfirming, titleVisibility: .visible) {

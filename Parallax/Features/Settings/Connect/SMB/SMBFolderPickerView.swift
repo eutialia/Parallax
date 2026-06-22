@@ -123,6 +123,9 @@ struct SMBFolderPickerView: View {
                         .padding(Space.s30)
                 }
             }
+            // Keep directory-pill focus contained so an up-press doesn't skip past the pinned
+            // "Use This Folder" button straight out of the list.
+            .tvFocusSection()
             .padding(Space.s18)
         }
     }
