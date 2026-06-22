@@ -59,6 +59,14 @@ struct SettingsScaffold<Content: View>: View {
             .frame(maxWidth: AppLayout.settingsContentWidth)
             .frame(maxWidth: .infinity)
         }
+        // The scaffold owns the iOS surface color — it's the one shell every settings/connect page
+        // (Settings, server detail, Connect, the pushed Login/SMB forms) wraps, so painting here covers
+        // them all from a single place. `SettingsView`'s `.presentationBackground` backs only the iPad
+        // SHEET container; embedded as a plain tab on iPhone there's no presentation to back, so without
+        // this the transparent scroll fell through to the system's pure-black `systemBackground`.
+        // (tvOS is the exception: there `TVSettingsRail` wraps both the rail and this column, so it owns
+        // the surface and the tvOS branch above paints none.)
+        .background(Color.background.ignoresSafeArea())
         #endif
     }
 
@@ -76,3 +84,18 @@ struct SettingsScaffold<Content: View>: View {
     }
     #endif
 }
+
+#if DEBUG && !os(tvOS)
+/// Self-fill proof: NO external `.background` — the only thing that can paint the surface is the
+/// scaffold's own `.background(Color.background)`. If this renders the dark charcoal (not pure black /
+/// canvas default), the iPhone-tab regression is fixed. Mirrors the production host, which is a plain
+/// tab with no presentation backing.
+#Preview("Scaffold · self-fill (dark)") {
+    SettingsScaffold(title: "Settings") {
+        SettingsGroup(title: "Servers") {
+            SettingsListRow(systemImage: "server.rack", title: "Living Room", subtitle: "jellyfin.local · alice")
+        }
+    }
+    .preferredColorScheme(.dark)
+}
+#endif

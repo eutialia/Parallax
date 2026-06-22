@@ -93,7 +93,10 @@ struct SettingsView: View {
         // tvOS: pin the big app icon to the left, outside the stack, so it stays put across pushes
         // (server detail / add-server). No-op on iOS, where the brand rides each page.
         .tvSettingsBrandRail()
-        // Centered floating card on iPad (regular width); a standard sheet on iPhone.
+        // Presentation modifiers — these only take effect when Settings is shown as a SHEET (iPad, from
+        // the sidebar footer). On iPhone/tvOS it's an embedded tab with no presentation to size or back,
+        // so both are inert there; the embedded surface color is owned by `SettingsScaffold` (iOS) /
+        // `TVSettingsRail` (tvOS). `presentationBackground` backs the iPad sheet's card container.
         #if !os(tvOS)
         .presentationSizing(.form)
         #endif
