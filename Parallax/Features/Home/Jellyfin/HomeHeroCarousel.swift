@@ -155,7 +155,7 @@ struct HomeHeroCarousel: View {
                 overview
             } else if let meta = item.heroMetadataLine {
                 Text(meta)
-                    .font(.subheadline)
+                    .font(.cardHeaderSubtitle)
                     .foregroundStyle(.white)
             }
         } actions: {
@@ -208,7 +208,7 @@ struct HomeHeroCarousel: View {
         gestureStart = start
         // Hide the foreground the moment the drag begins — any travel, not distance-based.
         // It stays hidden until release fades the page back in.
-        if !isDragging { withAnimation(.easeOut(duration: 0.15)) { isDragging = true } }
+        if !isDragging { withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) { isDragging = true } }
         position = clampedPage(start - Double(translationX) / Double(width), around: start)
     }
 
@@ -228,8 +228,10 @@ struct HomeHeroCarousel: View {
     /// Settle on `target`: spring the artwork there, and show the foreground for that page —
     /// re-inserting it after a drag (fade in) or crossfading its `.id` on auto-advance.
     private func commit(to target: Int) {
-        withAnimation(.spring(response: 0.4, dampingFraction: 0.86)) { position = Double(target) }
-        withAnimation(.easeInOut(duration: 0.22)) {
+        // Reduce Motion: jump the artwork and swap the foreground instantly — the full-bleed crossfade
+        // is the largest motion on Home, so it must not animate (mirrors the parallax/pill gating above).
+        withAnimation(reduceMotion ? nil : .spring(response: 0.4, dampingFraction: 0.86)) { position = Double(target) }
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.22)) {
             isDragging = false
             displayedPage = target
         }

@@ -18,7 +18,9 @@ struct HeroPageIndicator: UIViewRepresentable {
 
     func makeUIView(context: Context) -> UIPageControl {
         let pc = UIPageControl()
-        pc.accessibilityLabel = "Featured content"
+        // Decorative chrome: the carousel's hero items carry the accessible identity (title, metadata,
+        // Play), so this non-interactive dot row would only add an empty, value-less VoiceOver stop.
+        pc.isAccessibilityElement = false
         pc.currentPageIndicatorTintColor = .white
         pc.pageIndicatorTintColor = UIColor.white.withAlphaComponent(0.45)
         // tvOS resolves `.automatic` to `.prominent`, wrapping the dots in a bright glass

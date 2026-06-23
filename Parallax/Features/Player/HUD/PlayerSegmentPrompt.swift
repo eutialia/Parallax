@@ -103,7 +103,14 @@ struct PlayerSegmentPrompt: View {
     private func control(_ m: PlayerMetrics) -> some View {
         let button = SegmentPromptButton(icon: info.icon, label: info.label, sub: info.sub, drain: drain, metrics: m)
         #if os(tvOS)
-        button   // visual only — the floor remote drives it through PlayerView.send
+        // Visual only for sighted users — the floor remote drives it through PlayerView.send — but
+        // VoiceOver needs a labeled, activatable element or the Skip Intro / Next Episode affordance is
+        // invisible to it. The action mirrors the iOS tap (`onActivate` fires + one-shot-dismisses).
+        button
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(info.sub.map { "\(info.label), \($0)" } ?? info.label)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction { onActivate() }
         #else
         // `onActivate` fires the prompt AND one-shot-dismisses it (see PlayerView).
         Button(action: onActivate) { button }

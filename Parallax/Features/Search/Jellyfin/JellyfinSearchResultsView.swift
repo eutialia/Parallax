@@ -68,10 +68,13 @@ struct JellyfinSearchResultsView: View, Equatable {
     private func gridSection<Content: View>(_ title: String, count: Int, cols: Int, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: Space.s12) {
             HStack(spacing: 6) {
-                Text(title).font(.title3.weight(.bold))
-                    .accessibilityAddTraits(.isHeader)
+                Text(title).font(.cardHeaderTitle)
                 Text("\(count)").font(.subheadline).foregroundStyle(Color.secondaryLabel)
             }
+            // One header stop: VoiceOver reads "Shows, 5 results" instead of "Shows" then a stray "5".
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(title), \(count) result\(count == 1 ? "" : "s")")
+            .accessibilityAddTraits(.isHeader)
             LazyVGrid(columns: posterGridColumns(fixedColumns: cols, columnMinWidth: 0), spacing: Space.s18) {
                 content()
             }

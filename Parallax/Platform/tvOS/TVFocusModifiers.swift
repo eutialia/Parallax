@@ -52,18 +52,11 @@ extension View {
         #endif
     }
 
-    /// Horizontal shelf-item button style: same native `.borderless` recipe as
-    /// `tvPosterButton()` (see there for the label-side `tvPosterHighlight` pairing),
-    /// `.plain` on iOS. Owns the button style; don't pair an inner `.buttonStyle(.plain)`
-    /// (it wins and kills tvOS focus).
-    @ViewBuilder
-    func tvShelfItem() -> some View {
-        #if os(tvOS)
-        self.buttonStyle(.borderless)
-        #else
-        self.buttonStyle(.plain)
-        #endif
-    }
+    /// Horizontal shelf-item button style: the SAME native `.borderless`/`.plain` recipe as
+    /// `tvPosterButton()` (see there for the label-side `tvPosterHighlight` pairing). Forwards to it
+    /// so the two can't drift; kept under this name for shelf-item call-site clarity. Owns the button
+    /// style; don't pair an inner `.buttonStyle(.plain)` (it wins and kills tvOS focus).
+    func tvShelfItem() -> some View { tvPosterButton() }
 
     /// Apply to the tile content INSIDE a `tvPosterButton()`/`tvShelfItem()` label, with
     /// the tile's own clip radius. tvOS: the system highlight (projection + specular +
@@ -268,10 +261,13 @@ private struct TVFocusEffect: ViewModifier {
     var animation: Animation = .tvFocusChrome
 
     @Environment(\.isFocused) private var isFocused
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
         content
-            .scaleEffect(isFocused ? scale : 1)
+            // Reduce Motion pins the scale-lift: the white platter + drop shadow still mark focus at
+            // 10 feet (legibility cues, not motion), but the grow/shrink is the part WCAG 2.3.3 targets.
+            .scaleEffect(isFocused && !reduceMotion ? scale : 1)
             .brightness(isFocused ? brightness : 0)
             .shadow(
                 color: .black.opacity(isFocused ? 0.4 : 0),

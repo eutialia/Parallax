@@ -964,6 +964,12 @@ struct PlayerControlsView: View {
         let shownSeconds = isScrubbing ? scrubProgress * durSeconds : posSeconds
         let remaining = max(0, durSeconds - shownSeconds)
         let remainingText = remaining > 0 ? "-\(formatPlaybackTime(remaining))" : formatPlaybackTime(durSeconds)
+        // VoiceOver value for the scrub bar — elapsed of total time (AVPlayerViewController's idiom),
+        // not a bare percentage. Shared by both platforms so they announce identically; tracks the
+        // scrub head mid-adjust via `shownSeconds`.
+        let positionValue = durSeconds > 0
+            ? "\(formatPlaybackTime(shownSeconds)) of \(formatPlaybackTime(durSeconds))"
+            : ""
 
         #if os(tvOS)
         // tvOS: a focusable Button wraps the bar. Left/right step a ±10s scrub head
@@ -981,6 +987,9 @@ struct PlayerControlsView: View {
                               chapters: vm.chapterFractions)
         }
         .buttonStyle(TVQuietButtonStyle(pressedOpacity: 0.9))
+        // A VoiceOver user landing on the focusable bar otherwise hears no position; announce it.
+        .accessibilityLabel("Playback position")
+        .accessibilityValue(Text(positionValue))
         .focused($scrubberFocused)
         // The playhead-dot x for `playheadChip` (chip-row default focus) reads off
         // this frame plus the displayed fraction.
@@ -1086,7 +1095,7 @@ struct PlayerControlsView: View {
         // adjustable element so seeking survives the loss of the old UIKit Slider.
         .accessibilityElement()
         .accessibilityLabel("Playback position")
-        .accessibilityValue(Text("\(Int(displayed * 100)) percent"))
+        .accessibilityValue(Text(positionValue))
         .accessibilityAddTraits(.updatesFrequently)
         .accessibilityAdjustableAction { direction in
             guard playbackReady, durSeconds > 0 else { return }

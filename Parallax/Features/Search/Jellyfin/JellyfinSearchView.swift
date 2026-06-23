@@ -14,6 +14,7 @@ struct JellyfinSearchView: View {
     @State private var scope: SearchScope = .all
     @FocusState private var searchFocused: Bool
     @Environment(\.appIdiom) private var idiom
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(spacing: 0) {
@@ -30,13 +31,14 @@ struct JellyfinSearchView: View {
                         Text("Episodes").tag(SearchScope.episodes)
                     }
                     .pickerStyle(.segmented)
-                    .transition(.move(edge: .top).combined(with: .opacity))
+                    // Reduce Motion drops the slide for a plain fade (movement → cross-dissolve).
+                    .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
                 }
             }
             .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
             .padding(.top, Space.s8)
             .padding(.bottom, Space.s12)
-            .animation(.easeInOut(duration: 0.2), value: query.isEmpty)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: query.isEmpty)
 
             Group {
                 if let vm = viewModel, let session {
