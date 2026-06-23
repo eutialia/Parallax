@@ -97,6 +97,11 @@ extension Font {
         .subheadline
         #endif
     }
+
+    /// The persistent tvOS settings-rail page heading (`TVSettingsRail`), hung under the pinned app
+    /// icon. tvOS-only by construction; lives here so the rail draws no raw `.system(size:)` of its
+    /// own — TypeScale stays the single home for the 10-foot scale. Sits a touch above the 23pt floor.
+    static var railHeading: Font { .system(size: 26, weight: .medium) }
 }
 
 private struct ScaledFont: ViewModifier {

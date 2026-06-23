@@ -15,7 +15,6 @@ struct PrimaryPlayButton: View {
     var layoutReserveTitle: String? = nil
     let action: () -> Void
 
-    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.appIdiom) private var idiom
 
     var body: some View {
@@ -34,15 +33,16 @@ struct PrimaryPlayButton: View {
 
     @ViewBuilder
     private func content(focused: Bool) -> some View {
-        let restFill = colorScheme == .dark ? Color.white : Color.playPillFill
-        let restLabel = colorScheme == .dark ? Color.playerInk : Color.white
+        // No colorScheme branch: the fill is `buttonFill` (espresso by day / white by night) and the
+        // label is `playPillLabel` (white / ink) — both two-faced tokens, so the pill resolves per
+        // appearance without reading the environment.
         labelStack
             .font(.headline)
-            .foregroundStyle(focused ? Color.playerInk : restLabel)
+            .foregroundStyle(focused ? Color.playerInk : Color.playPillLabel)
             .padding(.horizontal, Space.s22)
             .frame(height: ActionRow.controlHeight(idiom))
             .frame(maxWidth: fillWidth ? .infinity : nil)
-            .flatControlFill(focused: focused, rest: restFill, in: Capsule())
+            .flatControlFill(focused: focused, rest: Color.buttonFill, in: Capsule())
     }
 
     /// The label, optionally reserving the widest copy's width behind the live title so the pill

@@ -50,8 +50,13 @@ extension Color {
     static let surface            = Color(light: 0xFAF7F0, lightAlpha: 0.92, dark: 0x1A1A22)  // dark tile opaque, light 0.92 — per handoff
 
     static let label              = Color(light: 0x221E17, dark: 0xFFFFFF)
-    static let secondaryLabel     = Color(light: 0x2C261C, lightAlpha: 0.62, dark: 0xEBEBF5, darkAlpha: 0.62)
-    static let tertiaryLabel      = Color(light: 0x2C261C, lightAlpha: 0.34, dark: 0xEBEBF5, darkAlpha: 0.34)
+    // Light alphas raised to clear WCAG AA against the BINDING backplate (the Color.fill settings
+    // pill, ~192/183/168 — darker than the screen floor). secondaryLabel carries body/caption text →
+    // 4.5:1 (0.80 → 4.92:1 on the pill); tertiaryLabel is the non-text glyph/placeholder tier → 3:1
+    // (light 0.60 → 3.13:1, dark 0.45 → 3.60:1). The old 0.62/0.34 measured 3.27:1 / 1.82:1 — below
+    // floor. Dark secondary already cleared (5.42:1) so it stays.
+    static let secondaryLabel     = Color(light: 0x2C261C, lightAlpha: 0.80, dark: 0xEBEBF5, darkAlpha: 0.62)
+    static let tertiaryLabel      = Color(light: 0x2C261C, lightAlpha: 0.60, dark: 0xEBEBF5, darkAlpha: 0.45)
     static let separator          = Color(light: 0x281E0F, lightAlpha: 0.12, dark: 0xFFFFFF, darkAlpha: 0.10)
 
     static let fill               = Color(light: 0x4A3A24, lightAlpha: 0.12, dark: 0x787887, darkAlpha: 0.24)
@@ -78,10 +83,11 @@ extension Color {
     // (espresso fill / cream label) — used everywhere including over hero photography.
     static let buttonFill         = Color(light: 0x2A241D, dark: 0xFFFFFF)
     static let buttonLabel        = Color(light: 0xF7F2EA, dark: 0x0A0A0C)
-    /// The hero/detail Play pill tint on iOS — espresso in BOTH schemes. Like `heroGlass`,
-    /// it sits over artwork (a dark-pinned region), so it must not flip with the theme;
-    /// pairs with a pure-white label (approved against the "Action row parity" prototype).
-    static let playPillFill       = Color(light: 0x2A241D, dark: 0x2A241D)
+    /// The hero/detail Play pill LABEL — pure white over the espresso pill by day, ink over the
+    /// white pill by night (approved against the "Action row parity" prototype). It differs from
+    /// `buttonLabel` only in light (white, not cream), so it earns its own token; the FILL is just
+    /// `buttonFill` (espresso/white), which is why the pill no longer branches on colorScheme.
+    static let playPillLabel      = Color(light: 0xFFFFFF, dark: 0x0A0A0C)
     /// Selected-chip glass tint (the library header chips' `.tint` when a genre is
     /// applied). Translucent on purpose: at the old 0.92 the tint was effectively opaque,
     /// so the "glass" chip read as flat paint — and on tvOS a solid white chip is the
@@ -93,6 +99,11 @@ extension Color {
     /// Status "active" green — the server LED (`--ok #3DA45A`). The one sanctioned non-mono color
     /// besides destructive red; it marks state, not brand, so the No-Accent rule still holds.
     static let ok                 = Color(light: 0x3DA45A, dark: 0x3DA45A)
+
+    /// The loading/missing artwork field behind every poster and thumbnail. Two-faced so it tracks
+    /// the palette: a recessed warm-stone block on Paper, a lifted graphite block at night — never a
+    /// fixed dark gray (which read as a hole punched in the light Matinee floor).
+    static let artworkPlaceholder = Color(light: 0xC2BAAC, dark: 0x26262C)
 }
 
 // MARK: - Metric tokens (radii, spacing)
@@ -107,6 +118,7 @@ enum Radius {
     static let field: CGFloat = 14    // text fields, form buttons
     static let tile: CGFloat = 12     // posters, thumbs, small tiles
     static let navItem: CGFloat = 12  // sidebar/tab item pills (panel − 12 inset)
+    static let chip: CGFloat = 10     // the library-banner type-glyph chip
     static let badge: CGFloat = 7     // 4K/HDR/CC metadata badges (per handoff)
 }
 
