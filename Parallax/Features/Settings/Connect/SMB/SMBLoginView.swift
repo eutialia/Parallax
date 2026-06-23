@@ -34,7 +34,6 @@ struct SMBLoginView: View {
     @State private var showFolderPicker = false
 
     #if !os(tvOS)
-    @ScaledMetric(relativeTo: .headline) private var baseControlHeight: CGFloat = 50
     /// Return-key field walk: return advances to the next field, "go" on the last (domain) connects.
     /// `allCases` order is the field sequence `submitChain` reads.
     @FocusState private var focusedField: Field?
@@ -60,7 +59,7 @@ struct SMBLoginView: View {
                 if let error = connectionError {
                     Text(error)
                         .font(.footnote)
-                        .foregroundStyle(.red)
+                        .foregroundStyle(Color.red)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, Space.s14)
                 }
@@ -97,32 +96,17 @@ struct SMBLoginView: View {
     @ViewBuilder
     private var discoveredServersSection: some View {
         if !deps.smbDiscovery.discovered.isEmpty {
-            VStack(spacing: 0) {
+            VStack(spacing: .credentialPillGap) {
                 ForEach(deps.smbDiscovery.discovered) { server in
-                    Button {
+                    SettingsListRow(
+                        systemImage: "network",
+                        title: server.name,
+                        subtitle: server.host
+                    ) {
                         host = server.host
-                    } label: {
-                        HStack(spacing: Space.s12) {
-                            Image(systemName: "network")
-                                .foregroundStyle(Color.secondaryLabel)
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(server.name)
-                                    .font(.subheadline)
-                                    .foregroundStyle(Color.label)
-                                Text(server.host)
-                                    .font(.caption)
-                                    .foregroundStyle(Color.secondaryLabel)
-                            }
-                            Spacer(minLength: 0)
-                        }
-                        .padding(.vertical, Space.s8)
-                        .padding(.horizontal, Space.s14)
-                        .contentShape(.rect)
                     }
-                    .buttonStyle(.plain)
                 }
             }
-            .background(Color.fill, in: RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
         }
     }
     #endif
@@ -155,44 +139,39 @@ struct SMBLoginView: View {
 
     #if !os(tvOS)
     private var connectionFieldsSection: some View {
-        VStack(spacing: 0) {
-            fieldRow(icon: "server.rack") {
+        VStack(spacing: .credentialPillGap) {
+            CredentialFieldPill(icon: "server.rack") {
                 TextField("Host (e.g. 192.168.1.10)", text: $host)
                     .keyboardType(.URL)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .submitChain(.host, focus: $focusedField, onComplete: handleSubmit)
             }
-            hairline
-            fieldRow(icon: "externaldrive.connected.to.line.below.fill") {
+            CredentialFieldPill(icon: "externaldrive.connected.to.line.below.fill") {
                 TextField("Share name", text: $share)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .submitChain(.share, focus: $focusedField, onComplete: handleSubmit)
             }
-            hairline
-            fieldRow(icon: "person") {
+            CredentialFieldPill(icon: "person") {
                 TextField("Username", text: $username)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .submitChain(.username, focus: $focusedField, onComplete: handleSubmit)
             }
-            hairline
-            fieldRow(icon: "lock") {
+            CredentialFieldPill(icon: "lock") {
                 SecureField("Password", text: $password)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .submitChain(.password, focus: $focusedField, onComplete: handleSubmit)
             }
-            hairline
-            fieldRow(icon: "building.2") {
+            CredentialFieldPill(icon: "building.2") {
                 TextField("Domain", text: $domain)
                     .textInputAutocapitalization(.characters)
                     .autocorrectionDisabled()
                     .submitChain(.domain, focus: $focusedField, onComplete: handleSubmit)
             }
         }
-        .background(Color.fill, in: RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
     }
 
     /// "Go" on the last field connects, but only when host / share / username are filled — the same
@@ -260,21 +239,4 @@ struct SMBLoginView: View {
         }
     }
 
-    // MARK: - Layout helpers (iOS inline fields; tvOS uses CredentialRowList)
-
-    #if !os(tvOS)
-    private var hairline: some View {
-        Rectangle().fill(Color.separator).frame(height: 1).padding(.leading, 44)
-    }
-
-    @ViewBuilder
-    private func fieldRow<Content: View>(icon: String, @ViewBuilder content: () -> Content) -> some View {
-        HStack(spacing: Space.s12) {
-            Image(systemName: icon).frame(width: 20).foregroundStyle(Color.tertiaryLabel)
-            content()
-        }
-        .padding(.horizontal, Space.s14)
-        .frame(height: baseControlHeight)
-    }
-    #endif
 }

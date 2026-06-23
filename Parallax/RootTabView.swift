@@ -45,12 +45,8 @@ struct RootTabView: View {
             session = active
             entries = merged
             // If the selected library tab's backing entry just vanished, snap to Home so the detail
-            // pane isn't left on a gone tab. The `.id(activeServerID)` remount resets selection on a
-            // Jellyfin switch/sign-out, but removing ONE of several SMB servers keeps `activeServerID`
-            // nil (no remount) while `entries` rebuilds without that library — the only path here.
-            if case .collection(let ref) = selectedTab, !merged.contains(where: { $0.id == ref }) {
-                selectedTab = .home
-            }
+            // pane isn't left on a gone tab (shared with FocusRootView via `snappedIfStale`).
+            selectedTab = selectedTab.snappedIfStale(against: merged)
         }
         // Tabs that exist at only one width — Library + Settings are compact-only (regular browses
         // libraries from the sidebar and hosts Settings in its footer), the per-library tabs are

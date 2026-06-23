@@ -80,13 +80,8 @@ struct FocusRootView: View {
             self.session = active
             self.homeViewModel = vm
             // If the selected library tab's backing entry just vanished, snap to Home so the tab host
-            // isn't left on a gone tab. The `.id(activeServerID)` remount resets selection on a
-            // Jellyfin switch/sign-out, but removing ONE of several SMB servers keeps `activeServerID`
-            // nil (no remount) while `entries` rebuilds without that library — the only path here
-            // (same guard RootTabView carries).
-            if case .collection(let ref) = selectedTab, !merged.contains(where: { $0.id == ref }) {
-                selectedTab = .home
-            }
+            // isn't left on a gone tab (shared with RootTabView via `snappedIfStale`).
+            selectedTab = selectedTab.snappedIfStale(against: merged)
             self.isReady = true
             // The launch stage's sync-hold releases here; the iris opens onto the ready UI.
             launchGate.markContentReady()

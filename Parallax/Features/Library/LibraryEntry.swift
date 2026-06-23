@@ -15,3 +15,16 @@ struct LibraryEntry: Identifiable, Hashable {
     let collection: MediaCollection
     var id: LibraryRef { LibraryRef(source: source.sourceID, collection: collection.id) }
 }
+
+extension AppTab {
+    /// Fall back to `.home` if this tab points at a library collection no longer present in `entries`
+    /// — the stale-tab snap both platform roots (`RootTabView`, `FocusRootView`) run after a
+    /// non-remounting SMB add/remove rebuilds the merged list (a Jellyfin switch/sign-out instead
+    /// resets selection via the `.id(activeServerID)` remount). Shared so the two roots can't drift.
+    func snappedIfStale(against entries: [LibraryEntry]) -> AppTab {
+        if case .collection(let ref) = self, !entries.contains(where: { $0.id == ref }) {
+            return .home
+        }
+        return self
+    }
+}

@@ -12,14 +12,12 @@ struct LoginView: View {
     var onSignedIn: (() -> Void)?
 
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(AppDependencies.self) private var deps
     @Environment(AppRouter.self) private var router
     @State private var viewModel: LoginViewModel?
     #if !os(tvOS)
     @State private var showPassword = false
-    /// Shared height for the iOS form's text-field rows, scaling with Dynamic Type so labels never
-    /// clip at larger text sizes. (tvOS uses `CredentialRowList`, not these inline rows.)
-    @ScaledMetric(relativeTo: .headline) private var baseControlHeight: CGFloat = 50
     /// Drives the return-key field walk: return advances to the next field, and "go" on the last
     /// (password) submits. Declared in `allCases` order, which `submitChain` reads as the sequence.
     @FocusState private var focusedField: Field?
@@ -89,7 +87,10 @@ struct LoginView: View {
             // animates (a transition on a stable wrapper wouldn't fire); driven by the withAnimation
             // at the toggle sites.
             .id(vm.mode)
-            .transition(.blurReplace)
+            // Reduce Motion swaps the blur-replace for a plain cross-fade (the app-wide gating idiom).
+            // Both arms are boxed as AnyTransition — `.blurReplace` is a `Transition`, not an
+            // `AnyTransition` member, so the ternary can't unify them unwrapped.
+            .transition(reduceMotion ? AnyTransition.opacity : AnyTransition(.blurReplace))
         } else {
             LoginCardLoadingSkeleton()
         }
@@ -100,29 +101,19 @@ struct LoginView: View {
         @Bindable var vm = vm
         VStack(spacing: Space.s22) {
             #if !os(tvOS)
-            // LAN-discovered servers (relocated): tap to quick-fill the URL.
+            // LAN-discovered servers as capsule pills (the settings-row idiom): tap to quick-fill the URL.
             if !deps.lanDiscovery.discovered.isEmpty {
-                VStack(spacing: 0) {
+                VStack(spacing: .credentialPillGap) {
                     ForEach(deps.lanDiscovery.discovered) { server in
-                        Button {
+                        SettingsListRow(
+                            systemImage: "wifi",
+                            title: server.name,
+                            subtitle: server.address.absoluteString
+                        ) {
                             vm.serverURLInput = server.address.absoluteString
-                        } label: {
-                            HStack(spacing: Space.s12) {
-                                Image(systemName: "wifi").foregroundStyle(Color.secondaryLabel)
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text(server.name).font(.subheadline).foregroundStyle(Color.label)
-                                    Text(server.address.absoluteString).font(.caption).foregroundStyle(Color.secondaryLabel)
-                                }
-                                Spacer(minLength: 0)
-                            }
-                            .padding(.vertical, Space.s8)
-                            .padding(.horizontal, Space.s14)
-                            .contentShape(.rect)
                         }
-                        .buttonStyle(.plain)
                     }
                 }
-                .background(Color.fill, in: RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
             }
             #endif
 
@@ -136,22 +127,20 @@ struct LoginView: View {
                 CredentialRow(id: "password", title: "Password", placeholder: "Password", text: $vm.password, isSecure: true, textContentType: .password),
             ], onSubmit: { handleSubmit(vm: vm) })
             #else
-            VStack(spacing: 0) {
-                fieldRow(icon: "globe") {
+            VStack(spacing: .credentialPillGap) {
+                CredentialFieldPill(icon: "globe") {
                     TextField("", text: $vm.serverURLInput, prompt: Self.urlPrompt)
                         .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
                         .textContentType(.URL)
                         .submitChain(.server, focus: $focusedField, onComplete: { handleSubmit(vm: vm) })
                 }
-                hairline
-                fieldRow(icon: "person") {
+                CredentialFieldPill(icon: "person") {
                     TextField("Username", text: $vm.username)
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                         .textContentType(.username)
                         .submitChain(.username, focus: $focusedField, onComplete: { handleSubmit(vm: vm) })
                 }
-                hairline
-                fieldRow(icon: "lock") {
+                CredentialFieldPill(icon: "lock") {
                     HStack {
                         Group {
                             if showPassword {
@@ -173,11 +162,10 @@ struct LoginView: View {
                     }
                 }
             }
-            .background(Color.fill, in: RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
             #endif
 
             if let error = vm.errorMessage {
-                Text(error).font(.footnote).foregroundStyle(.red)
+                Text(error).font(.footnote).foregroundStyle(Color.red)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
@@ -199,7 +187,7 @@ struct LoginView: View {
 
             // Quick Connect (glass) — needs a server URL to pair against.
             Button {
-                withAnimation(.smooth) { vm.switchToQuickConnect() }
+                withAnimation(reduceMotion ? nil : .smooth) { vm.switchToQuickConnect() }
             } label: {
                 Label("Use Quick Connect", systemImage: "bolt.fill")
                     .formActionLabel(.glass)
@@ -233,20 +221,6 @@ struct LoginView: View {
         var prompt = AttributedString("https://jellyfin.example.com")
         prompt.swiftUI.foregroundColor = Color.tertiaryLabel
         return Text(prompt)
-    }
-
-    private var hairline: some View {
-        Rectangle().fill(Color.separator).frame(height: 1).padding(.leading, 44)
-    }
-
-    @ViewBuilder
-    private func fieldRow<Content: View>(icon: String, @ViewBuilder content: () -> Content) -> some View {
-        HStack(spacing: Space.s12) {
-            Image(systemName: icon).frame(width: 20).foregroundStyle(Color.tertiaryLabel)
-            content()
-        }
-        .padding(.horizontal, Space.s14)
-        .frame(height: baseControlHeight)
     }
     #endif
 
