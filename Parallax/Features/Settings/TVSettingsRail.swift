@@ -80,7 +80,7 @@ struct TVSettingsRail<Content: View>: View {
                 .alignmentGuide(.railIconCenter) { $0[VerticalAlignment.center] }
             if let heading {
                 Text(heading)
-                    .font(.system(size: 26, weight: .medium))
+                    .font(.railHeading)
                     .foregroundStyle(Color.secondaryLabel)
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: iconSize + Space.s60 * 2)

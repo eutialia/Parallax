@@ -99,7 +99,7 @@ struct MediaImage: View {
         }
     }
 
-    private var placeholder: Color { Color(white: 0.15) }
+    private var placeholder: Color { Color.artworkPlaceholder }
 
     /// The exact (maxWidth, maxHeight) to request, from the SAME `ArtworkRequest.boxedSize` the
     /// prefetcher uses — one source for the box, so a tile and a warm-up prefetch always resolve the

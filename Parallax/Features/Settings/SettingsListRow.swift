@@ -99,7 +99,7 @@ extension View {
     func settingsPillLayout() -> some View {
         self
             .padding(.horizontal, Space.s26)
-            .padding(.vertical, Space.s12)
+            .padding(.vertical, Space.s8)
             .frame(minHeight: SettingsListRow.pillMinHeight)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(.capsule)
@@ -118,6 +118,9 @@ extension View {
 /// rest fill (no focus). Reuses the `TVFocusReader` focus-chrome contract.
 private struct SettingsPill: ViewModifier {
     private let shape = Capsule(style: .continuous)
+    #if os(tvOS)
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    #endif
 
     func body(content: Content) -> some View {
         #if os(tvOS)
@@ -126,7 +129,8 @@ private struct SettingsPill: ViewModifier {
                 .background(shape.fill(Color.fill).opacity(focused ? 0 : 1))
                 .background(shape.fill(Color.white).opacity(focused ? 1 : 0))
                 .environment(\.colorScheme, focused ? .light : .dark)
-                .scaleEffect(focused ? 1.03 : 1)
+                // Platter + shadow still signal focus under Reduce Motion; only the lift is gated.
+                .scaleEffect(focused && !reduceMotion ? 1.03 : 1)
                 .shadow(color: .black.opacity(focused ? 0.22 : 0), radius: focused ? 11 : 0, y: focused ? 6 : 0)
                 .animation(.tvFocusChrome, value: focused)
         }
@@ -143,16 +147,18 @@ struct SettingsListRow: View {
     /// Leading SF-Symbol column width.
     static let symbolColumnWidth: CGFloat = 38
     /// Pill height. On iOS the floor is the natural height of a TWO-line row (title + subtitle) at the
-    /// default text size, so a single-line row clamps UP to match it and every pill reads as one height:
-    /// standalone capsules can't lean on a shared list separator to hide height variance, so uneven pills
-    /// read as misalignment. (It's a floor, not a fixed height — at large Dynamic Type a two-line row
-    /// still grows past it, which is correct; uniformity is the default-size guarantee.) tvOS pills are
-    /// all single-line (icon-less text), so they're uniform at the compact 58pt already.
+    /// default text size (with the tighter `Space.s8` vertical inset), so a single-line row clamps UP to
+    /// match it and every pill reads as one height: standalone capsules can't lean on a shared list
+    /// separator to hide height variance, so uneven pills read as misalignment. (It's a floor, not a
+    /// fixed height — at large Dynamic Type a two-line row still grows past it, which is correct;
+    /// uniformity is the default-size guarantee.) Trimmed from 64 → 54 so the pills read slimmer and
+    /// sit closer to the 50pt form-control height. tvOS pills are all single-line (icon-less text), so
+    /// they're uniform at the compact 58pt already.
     static var pillMinHeight: CGFloat {
         #if os(tvOS)
         58
         #else
-        64
+        54
         #endif
     }
 

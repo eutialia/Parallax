@@ -390,8 +390,10 @@ struct SearchRefiningSkeleton: View {
             .frame(width: 72)
             .skeletonShimmer()
             .padding(10)
-            .glassEffect(.regular.tint(Color.glass), in: Capsule())
-            .overlay { Capsule().strokeBorder(Color.glassBorder, lineWidth: 1) }
+            // Flat app-drawn chrome (matches `surfacePanel`): this pill floats over the search RESULTS
+            // grid, not the player or a system bar, so Liquid Glass isn't earned here (material rule).
+            .background(Color.surface, in: Capsule())
+            .overlay { Capsule().strokeBorder(Color.separator, lineWidth: 1) }
             .padding(.top, Space.s8)
     }
 }

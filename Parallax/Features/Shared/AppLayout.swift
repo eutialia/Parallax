@@ -29,10 +29,13 @@ enum AppLayout {
     /// strays outside, so cards must stay inside it. (Apple HIG "Designing for tvOS" / WWDC19.)
     static let tvOverscanInset: CGFloat = 90
 
-    /// Resting height for a tvOS button/control. The 10-foot `.headline` type (~38pt vs ~17pt
-    /// on iOS) needs far more vertical room than the iOS metrics, so every tvOS pill floors at
-    /// this — the single knob for control height across the play pill, glass circles, form CTAs,
-    /// and the player's error buttons. Pairs with `contentHMargin(.tv)` for the horizontal gutter.
+    /// Resting height for the tvOS **library-header chip** (the genre/sort pills + their matching
+    /// loading skeleton in `LibraryGridView`) — the only consumer. The 10-foot `.headline` type
+    /// (~38pt vs ~17pt on iOS) needs more vertical room than the iOS metrics. This governs ONLY that
+    /// chip; the hero/detail action row uses `ActionRow.controlHeight(.tv)` (62, handoff-spec'd) and
+    /// the full-width form CTAs use their own field-matched height in `FormActionLabel` (66, sized to
+    /// the tvOS credential rows). Three deliberately distinct control families, not one knob — keep
+    /// each value with its own family. Pairs with `contentHMargin(.tv)` for the horizontal gutter.
     static let tvControlHeight: CGFloat = 64
 
     /// Max content width for the settings / form surfaces (the Settings tab's server + storage cards,

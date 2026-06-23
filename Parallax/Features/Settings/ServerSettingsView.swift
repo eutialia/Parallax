@@ -68,7 +68,7 @@ struct ServerSettingsContentView: View {
             if let signOutError {
                 Text(signOutError)
                     .font(.footnote)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(Color.red)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, Space.s14)
             }

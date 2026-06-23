@@ -51,7 +51,7 @@ struct SMBFolderPickerView: View {
             if let error = saveError {
                 Text(error)
                     .font(.footnote)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(Color.red)
                     .padding(.horizontal, Space.s18)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }

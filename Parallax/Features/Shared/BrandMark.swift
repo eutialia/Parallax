@@ -45,8 +45,9 @@ struct BrandTile: View, Equatable {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .strokeBorder(Color.glassBorder, lineWidth: 1)
             )
-            // Soft depth so the tile reads as a raised app-icon plate, not a flat sticker.
-            .shadow(color: .black.opacity(0.28), radius: size * 0.07, y: size * 0.035)
+            // No decorative shadow: depth in Parallax is glass + scrim, never shadow stacking off
+            // media (DESIGN.md). The hairline border + the colorScheme-inverted icon ground already
+            // separate the plate from the flat floor.
     }
 
     @ViewBuilder
@@ -56,12 +57,11 @@ struct BrandTile: View, Equatable {
             Image("BrandIcon")
                 .resizable()
                 .aspectRatio(contentMode: .fill)
-                // Force the variant whose GROUND contrasts the floor, so the tile reads as a solid,
-                // filled app-icon plate instead of a hollow ring. The Graphite (dark) art's ground
-                // matches `Color.background` and dissolves on a dark screen, leaving only the logo's
-                // rings floating; inverting the colorScheme picks Paper (cream ground) on a dark floor
-                // and Graphite on a light one — a defined square either way.
-                .environment(\.colorScheme, colorScheme == .dark ? .light : .dark)
+                // Match the current appearance so the tile shows the SAME variant as the installed app
+                // icon — Paper by day, Graphite by night — rather than inverting (which read as the
+                // wrong icon for the mode). The dark Graphite ground does sit close to `Color.background`,
+                // so the hairline border below carries the tile edge in dark mode.
+                .environment(\.colorScheme, colorScheme)
         case .symbol(let name):
             // The outer `.clipShape` rounds this fill, so the tile draws a flat label color here
             // rather than re-stating the same rounded rectangle.

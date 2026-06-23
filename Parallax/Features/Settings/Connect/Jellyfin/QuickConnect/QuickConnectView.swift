@@ -9,6 +9,7 @@ struct QuickConnectView: View {
     let onSignedIn: () -> Void
 
     @Environment(AppDependencies.self) private var deps
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var viewModel: QuickConnectViewModel?
     @State private var retryToken: Int = 0
 
@@ -22,7 +23,7 @@ struct QuickConnectView: View {
             // Switch back to password — occupies the exact slot the sign-in body's "Use
             // Quick Connect" button does, so toggling between the two happens in one place.
             Button {
-                withAnimation(.smooth) { onSwitchToPassword() }
+                withAnimation(reduceMotion ? nil : .smooth) { onSwitchToPassword() }
             } label: {
                 Label("Use password instead", systemImage: "person.fill")
                     .formActionLabel(.glass)
@@ -67,7 +68,7 @@ struct QuickConnectView: View {
                         .minimumScaleFactor(0.5)
                         .padding(.horizontal, Space.s22)
                         .padding(.vertical, Space.s16)
-                        .background(.tertiary, in: .rect(cornerRadius: Radius.card))
+                        .background(Color.surface, in: .rect(cornerRadius: Radius.card))
                     waitingIndicator
                 }
             case .signingIn:
@@ -81,7 +82,7 @@ struct QuickConnectView: View {
                 VStack(spacing: Space.s12) {
                     Image(systemName: "exclamationmark.triangle")
                         .font(.largeTitle)
-                        .foregroundStyle(.red)
+                        .foregroundStyle(Color.red)
                     Text(message)
                         .multilineTextAlignment(.center)
                         .foregroundStyle(Color.label)

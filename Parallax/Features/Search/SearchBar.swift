@@ -15,6 +15,8 @@ struct SearchBar: View {
     var focus: FocusState<Bool>.Binding
     var onSubmit: () -> Void = {}
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
         HStack(spacing: Space.s8) {
             Image(systemName: "magnifyingglass")
@@ -40,6 +42,13 @@ struct SearchBar: View {
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundStyle(Color.tertiaryLabel)
+                        // 44×44 tap target (HIG minimum) without growing the bar: the contentShape
+                        // stays 44pt and hittable, while the negative vertical padding reclaims the
+                        // height the glyph would otherwise add to the row (it overflows the padding
+                        // band, which the non-clipping HStack still hit-tests).
+                        .frame(width: 44, height: 44)
+                        .contentShape(.rect)
+                        .padding(.vertical, -Space.s12)
                 }
                 // Native borderless: the system lifts/highlights the glyph on tvOS focus.
                 .buttonStyle(.borderless)
@@ -49,9 +58,25 @@ struct SearchBar: View {
         }
         .padding(.vertical, Space.s12)
         .padding(.horizontal, Space.s14)
-        .background(Color.fill, in: RoundedRectangle(cornerRadius: Radius.field, style: .continuous))
+        // Capsule, not a 14pt rounded-rect: the search field joins the app's pill language (settings
+        // rows, sidebar highlight, the Play pill) instead of reading as a squared block beside them.
+        .background(Color.fill, in: Capsule())
         // Same duration as the scope row's show/hide in JellyfinSearchView — both fire on
-        // the same empty↔non-empty keystroke, so they should move together.
-        .animation(.easeInOut(duration: 0.2), value: text.isEmpty)
+        // the same empty↔non-empty keystroke, so they should move together. Instant under Reduce Motion.
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: text.isEmpty)
     }
 }
+
+#if DEBUG
+#Preview("SearchBar · empty + filled") {
+    @Previewable @FocusState var focus: Bool
+    @Previewable @State var empty = ""
+    @Previewable @State var filled = "Blade Runner"
+    return VStack(spacing: Space.s16) {
+        SearchBar(text: $empty, prompt: "Search your library", focus: $focus)
+        SearchBar(text: $filled, prompt: "Search your library", focus: $focus)
+    }
+    .padding()
+    .background(Color.background)
+}
+#endif

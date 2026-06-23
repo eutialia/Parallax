@@ -134,14 +134,14 @@ struct PlayerSeekFlash: View {
                         .foregroundStyle(.white)
                         .opacity(0.2 + 0.8 * pulse)
                         .scaleEffect(0.86 + 0.14 * pulse)
-                        .shadow(color: .black.opacity(0.6), radius: 4.5, y: 1)
+                        .shadow(color: .black.opacity(0.6), radius: 4.5 * metrics.u, y: 1 * metrics.u)
                 }
             }
             Text("\(seconds) seconds")
                 .font(.system(size: metrics.seekLabelSize, weight: .semibold))
                 .monospacedDigit()
                 .foregroundStyle(.white)
-                .shadow(color: .black.opacity(0.6), radius: 6, y: 2)
+                .shadow(color: .black.opacity(0.6), radius: 6 * metrics.u, y: 2 * metrics.u)
         }
     }
 

@@ -17,12 +17,21 @@ struct DetailInfoSection: View {
     @Environment(\.appIdiom) private var idiom
     @State private var isExpanded = false
 
+    /// There's something MORE to show than the teaser only when a real overview or metadata fields
+    /// exist. With neither, the modal would be just the header (title + facts) the teaser already
+    /// covers — so the tap is a no-op (and, on tvOS, this avoids presenting a `fullScreenCover` whose
+    /// card has no focusable element for the engine to land on). The section stays a Button regardless,
+    /// so it remains the tvOS focus target that lets the detail page scroll below the action row.
+    private var hasExpandableContent: Bool {
+        (info.overview?.isEmpty == false) || !info.fields.isEmpty
+    }
+
     var body: some View {
         // `info.teaser` flattens the overview to one flowing paragraph (so `lineLimit` counts
         // rendered lines, not Jellyfin's `\n` breaks) and falls back to tagline/genres/facts, so
         // the card is never just a lone "More" chevron. Bound once per body eval.
         let teaser = info.teaser
-        Button { isExpanded = true } label: {
+        Button { if hasExpandableContent { isExpanded = true } } label: {
             // No "More" affordance — the glass panel itself reads as tappable, and the tail
             // truncation already signals there's more. A bottom fade softens the cut-off line so
             // it reads as "continues" rather than a hard ellipsis.
