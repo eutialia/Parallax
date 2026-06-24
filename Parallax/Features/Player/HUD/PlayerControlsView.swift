@@ -24,11 +24,11 @@ import ParallaxPlayback
 /// scrubber's focus geography.
 ///
 /// Controls auto-hide after 3s of inactivity on iOS (suspended while a menu is open
-/// or playback is paused); tap anywhere to toggle — instantly, every tap — and
-/// double-tap the outer thirds to skip ±10s (the `PlayerSeekFlash` dome is the
-/// affordance; its second tap re-toggles the chrome back while the seek fires).
-/// tvOS visibility is owned by the HUD reducer in `PlayerView` (this view is
-/// mounted only in `.fullHUD`).
+/// or playback is paused). A middle-third tap toggles the chrome instantly; double-tap
+/// the outer thirds to skip ±10s (the `PlayerSeekFlash` dome is the affordance). An
+/// outer-third tap DEFERS its toggle by `doubleTapWindow` so a double-tap-seek never
+/// flashes the HUD — see `handleTap`. tvOS visibility is owned by the HUD reducer in
+/// `PlayerView` (this view is mounted only in `.fullHUD`).
 ///
 /// On iOS the chrome is mounted from `.loading` onward — the player is operable while
 /// the stream resolves/buffers (Close, tap-to-toggle, track chips as their lists
@@ -140,6 +140,12 @@ struct PlayerControlsView: View {
     /// otherwise still `seek` + `play` the captured engine after teardown (the
     /// generation guard can't help; dismissal never bumps it).
     @State private var scrubCommitTask: Task<Void, Never>?
+    /// A lone seek-zone tap's DEFERRED chrome toggle (touch only). A tap in an outer
+    /// third no longer toggles the chrome on the spot — it arms this, and a second tap
+    /// completing the double-tap cancels it, so a seek never flashes the HUD. If no pair
+    /// lands within the window it fires and toggles. The middle third still toggles
+    /// instantly (it has no seek action to wait on). See `handleTap`.
+    @State private var pendingChromeToggle: Task<Void, Never>?
 
     private struct SeekFlash {
         var direction: PlayerSeekFlash.Direction
@@ -247,12 +253,12 @@ struct PlayerControlsView: View {
                 .onTapGesture { toggleControls() }
                 .ignoresSafeArea()
             #else
-            // Tap surface: ONE single-tap recognizer, zero recognition delay — every
-            // tap-up toggles the chrome the instant it lands, so rapid tap·tap
-            // flicks the HUD on·off. Double-tap seek is paired MANUALLY inside
-            // `handleTap` (timestamp + zone): a count:2 recognizer — even composed
-            // `simultaneously` — gated the second tap's delivery by ~0.5s on device
-            // while it disambiguated, and `.exclusively` before it delayed the first.
+            // Tap surface: ONE single-tap recognizer. Double-tap seek is paired MANUALLY
+            // inside `handleTap` (timestamp + zone): a count:2 recognizer — even composed
+            // `simultaneously` — gated the second tap's delivery by ~0.5s on device while
+            // it disambiguated, and `.exclusively` before it delayed the first. The toggle
+            // is instant in the middle third and deferred in the outer thirds (so a seek
+            // never flashes the HUD); see `handleTap`.
             GeometryReader { geo in
                 ZStack {
                     Color.clear
@@ -305,6 +311,7 @@ struct PlayerControlsView: View {
             seekCommitTask?.cancel()
             seekFlashDismissTask?.cancel()
             scrubCommitTask?.cancel()
+            pendingChromeToggle?.cancel()
         }
         // A live pull-drag (and its spring-back) suspends the auto-hide — see
         // `pullDragging`. The hide task is already armed when the drag starts, so cancel
@@ -1125,13 +1132,27 @@ struct PlayerControlsView: View {
     // MARK: - Double-tap seek (touch platforms)
 
     #if !os(tvOS)
-    /// Every tap-up, handled instantly. The chrome toggles on EVERY tap; what makes
-    /// double-tap seek work without a count:2 recognizer is manual pairing — a tap
-    /// in an outer third within 0.3s of a previous tap in the SAME third is the
-    /// "second tap": it undoes its own toggle (the retargetable fade just reverses)
-    /// and fires the ±10s step instead. While the seek flash is up, further taps in
-    /// a third keep stepping (10, 20, 30… — the YouTube burst) and leave the chrome
-    /// alone. The middle third never seeks; not-ready playback just toggles.
+    /// The double-tap pairing window AND the deferred-toggle delay — ONE value because
+    /// they're the same window. A tap in an outer third within this of a previous tap in
+    /// the SAME third is the "second tap" (fires the ±10s step). It must be ≥ the largest
+    /// real double-tap gap, or the deferred toggle below fires before the second tap and
+    /// the chrome leaks through: measured ~150ms max on device, so 160ms is the practical
+    /// floor — just enough margin to keep the no-flash guarantee while the lone-tap toggle
+    /// stays as snappy as possible (0.3s read sluggish).
+    static let doubleTapWindow: TimeInterval = 0.16
+
+    /// Every tap-up, handled without a count:2 recognizer (which gated the second tap
+    /// ~0.5s on device). Manual pairing on `doubleTapWindow`.
+    ///
+    /// The chrome toggle is split by zone so a double-tap-seek never SHOWS the HUD:
+    /// - Middle third (and not-ready playback) toggles INSTANTLY — it has no seek to
+    ///   wait on, so there's nothing to pair and no reason to delay.
+    /// - An outer third DEFERS the toggle by `doubleTapWindow` (`pendingChromeToggle`): a
+    ///   lone edge tap toggles after the window; a completing second tap cancels that
+    ///   armed toggle and seeks instead — so a double-tap never touches the chrome at all.
+    ///   Because the window outlasts the real double-tap gap, the toggle is always
+    ///   cancelled in time. While the seek flash is up, further taps keep stepping (10,
+    ///   20, 30… — the YouTube burst).
     private func handleTap(at location: CGPoint, in size: CGSize) {
         let zone = seekZone(at: location, in: size)
         let now = Date()
@@ -1139,23 +1160,39 @@ struct PlayerControlsView: View {
         // the middle third (its recorded nil zone flattens out here — a middle tap
         // must never pair with a later outer-third tap as a seek).
         let pairedZone: PlayerSeekFlash.Direction? = lastTap.flatMap { prev in
-            now.timeIntervalSince(prev.date) < 0.3 ? prev.zone : nil
+            now.timeIntervalSince(prev.date) < Self.doubleTapWindow ? prev.zone : nil
         }
         lastTap = (now, zone)
 
+        // Any new tap supersedes a previous lone edge tap's armed (deferred) toggle.
+        pendingChromeToggle?.cancel()
+
         let durSeconds = CMTimeGetSeconds(vm.currentDuration)
         guard let zone, playbackReady, durSeconds > 0, size.width > 0 else {
-            toggleControls()
+            toggleControls()   // middle third / not ready — instant, never seeks
             return
         }
         if seekFlash != nil {
             // Burst already running — keep stepping, leave the chrome alone.
             seekStep(zone, at: location, durSeconds: durSeconds)
         } else if pairedZone == zone {
-            // Second tap of a fresh pair: undo the first tap's toggle, start the burst.
-            toggleControls()
+            // Second tap of a fresh pair: start the burst. The first tap only ARMED a
+            // toggle (cancelled above) — it never fired, so there's no flash to undo.
             seekStep(zone, at: location, durSeconds: durSeconds)
         } else {
+            // Lone edge tap: arm the toggle so an arriving pair can cancel it.
+            scheduleChromeToggle()
+        }
+    }
+
+    /// Defer a lone seek-zone tap's chrome toggle past the double-tap window so a second
+    /// tap can cancel it (a double-tap never shows the HUD). Same `doubleTapWindow` as the
+    /// pair threshold, so a real double-tap always cancels it before it fires. The sole
+    /// caller (`handleTap`) already cancels any prior armed toggle, so this just arms one.
+    private func scheduleChromeToggle() {
+        pendingChromeToggle = Task {
+            try? await Task.sleep(for: .seconds(Self.doubleTapWindow))
+            guard !Task.isCancelled else { return }
             toggleControls()
         }
     }
