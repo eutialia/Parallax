@@ -8,7 +8,7 @@ import ParallaxCore
 ///
 /// It is INDEPENDENT of the auto-hide HUD: driven purely by which segment the
 /// playhead is inside (`vm.segmentPrompt`), it appears over a clean frame on segment
-/// entry and runs a 3s reverse-fill countdown, then auto-hides. **One-shot**: once it
+/// entry and runs a 5s reverse-fill countdown, then auto-hides. **One-shot**: once it
 /// expires (or is dismissed) it stays suppressed for that segment until the playhead
 /// leaves and re-enters (a fresh edge crossing re-arms it). The suppression id lives in
 /// the parent (`PlayerView`) so the tvOS remote pipeline shares the same one-shot.
@@ -34,8 +34,8 @@ struct PlayerSegmentPrompt: View {
     let onActivate: () -> Void
 
     /// The reverse-fill countdown length, shared by both platforms (the user unified
-    /// iOS onto the tvOS 3s one-shot).
-    private let countdownSeconds: Double = 3
+    /// iOS onto the tvOS one-shot).
+    private let countdownSeconds: Double = 5
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var drain: Double = 1
@@ -88,7 +88,7 @@ struct PlayerSegmentPrompt: View {
         .onChange(of: currentID) { _, id in
             if id == nil { expiredSegmentID = nil }
         }
-        // The 3s auto-hide: suppress this segment once the countdown elapses. Keyed on
+        // The 5s auto-hide: suppress this segment once the countdown elapses. Keyed on
         // the shown segment, so it cancels the moment the button hides or the segment
         // changes.
         .task(id: shownKey) {
