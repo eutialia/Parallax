@@ -31,6 +31,14 @@ final class PlaybackPresenter {
 
     private(set) var request: Request?
 
+    /// True while the player owns the screen — presented OR still sliding out during the
+    /// teardown grace. The iOS overlay leaves the live UI mounted and tappable underneath
+    /// for the whole slide-out (see `isTearingDown`), so anything that must stay inert
+    /// beneath the player (e.g. RootView disabling the tab host so the iPad sidebar
+    /// gesture can't steal taps) has to gate on THIS, not the raw `request` — which clears
+    /// the instant dismiss begins, re-arming those gestures mid-dismissal.
+    var isPlayerPresent: Bool { request != nil || isTearingDown }
+
     /// True while a dismissed player's removal transition is still on screen.
     /// On iOS the outgoing PlayerView stays mounted (engine tearing down, audio
     /// session deactivating) for the whole slide-out, and the live UI underneath

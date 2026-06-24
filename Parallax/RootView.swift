@@ -11,8 +11,9 @@ struct RootView: View {
         // Eager body-scope read: Observation only tracks properties read DURING
         // body evaluation, and the tvOS cover's `Binding(get:)` closure runs
         // outside it — without this line the tvOS player would never present or
-        // dismiss. (iOS doesn't read the request here at all: the presentation
-        // host observes it itself, so RootView never re-evaluates for playback.)
+        // dismiss. (iOS reads playback state only via `isPlayerPresent` in the
+        // `.disabled` gate below, so RootView re-evaluates twice per playback
+        // session — present and teardown — which is cheap: nothing under it churns.)
         let playerRequest = playback.request
         #endif
         // The launch animation plays over the real root from process start; the
@@ -33,7 +34,15 @@ struct RootView: View {
                         #if os(tvOS)
                         FocusRootView()
                         #else
+                        // While the player overlay owns the screen, disable the tab host
+                        // beneath it: the iPad `.sidebarAdaptable` TabView (a UISplitViewController)
+                        // keeps its sidebar gesture live on an ancestor of the overlay, so it was
+                        // stealing taps in the left ~sidebar-width band — the double-tap-seek
+                        // "left half dead" bug. Nothing under the player should be interactive anyway.
+                        // `isPlayerPresent` (not `request`) so the gate holds through the slide-out
+                        // teardown, when the player still covers the screen but `request` is already nil.
                         RootTabView()
+                            .disabled(playback.isPlayerPresent)
                         #endif
                     }
                     .background(Color.background.ignoresSafeArea())
