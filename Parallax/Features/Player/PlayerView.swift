@@ -711,17 +711,32 @@ struct PlayerView: View {
             remainingSeconds: remaining,
             chapters: vm.chapterFractions,
             bubbleTime: formatPlaybackTime(shown),
-            bubbleChapter: vm.chapterTitle(atSeconds: shown)
+            bubbleChapter: vm.chapterTitle(atSeconds: shown),
+            // The timestamp keeps rolling on its OWN transaction even when the head is
+            // pinned 1:1 below — the digit roll is the position-free half of the
+            // "aliveness" that the old single spring bundled together with the
+            // (accuracy-killing) glide.
+            scrubDigitRoll: Self.scrubSpring
         )
-        // One snappy spring for both scrub flavors: a ±10s click-seek step glides to
-        // its target instead of snapping, and swipe deltas retarget the same spring
-        // for smooth analog tracking (with rolling digits via `.numericText`).
-        .animation(.snappy(duration: 0.25, extraBounce: 0), value: p)
+        // Position: click-seek's discrete ±step glides to its target; analog swipe tracks
+        // the head 1:1 so the displayed position == the value Select commits. A follow
+        // spring desyncs them — worst on the 23.976/24Hz panel Match-Frame-Rate pins for
+        // 24p film, where its settle spans ~6 frames (felt as "trails my finger" AND a
+        // missed seek). 1:1 isn't lifeless: the bubble digits still roll (scrubDigitRoll).
+        .animation(isAnalogScrubbing ? nil : Self.scrubSpring, value: p)
         .padding(.horizontal, m.padX)
         .padding(.bottom, m.progressBottom)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         .environment(\.colorScheme, .dark)
         .allowsHitTesting(false)
+    }
+
+    /// Analog swipe-scrub only (not click-seek): the live finger drives the head, so it
+    /// tracks 1:1 (no position spring) for an accurate, framerate-proof seek. The bubble's
+    /// timestamp still rolls (see `scrubDigitRoll`), so 1:1 keeps its life.
+    private var isAnalogScrubbing: Bool {
+        if case .swipeScrub = hudState { return true }
+        return false
     }
 
     private var isFullHUD: Bool { if case .fullHUD = hudState { return true }; return false }
@@ -848,6 +863,12 @@ struct PlayerView: View {
         chromeVisible = isFullHUD
         restartIdleTimer()
     }
+
+    /// One curve for both halves of the scrub feel: the head's position glide (the
+    /// click-seek path) and the bubble's digit roll. Keeping it a single constant is what
+    /// holds the two in lockstep when both ride it; during analog scrub the head opts out
+    /// (pinned 1:1, `isAnalogScrubbing`) while the digits keep rolling on their own pass.
+    private static let scrubSpring: Animation = .snappy(duration: 0.25, extraBounce: 0)
 
     /// The quiet-time before a scrub auto-commits, SHARED by ±10s click-seek (this
     /// debounce) and analog swipe-scrub (the `.swipeScrub` idle in `restartIdleTimer`),

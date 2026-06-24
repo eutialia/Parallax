@@ -40,6 +40,13 @@ struct PlayerProgressBar: View {
     /// iOS drag handlers (nil on tvOS).
     var onScrubChanged: ((Double) -> Void)? = nil
     var onScrubEnded: ((Double) -> Void)? = nil
+    /// Drives the floating bubble's `.numericText` digit roll on its OWN transaction,
+    /// decoupled from the scrub head's position animation — so tvOS analog scrub can pin
+    /// the head 1:1 (accurate at 24fps, display == the value Select commits) while the
+    /// timestamp still rolls. The position-free half of the "aliveness" that the single
+    /// position spring used to bundle together with the accuracy-killing glide. Nil =
+    /// ambient behavior (iOS drag, the full-HUD scrubber), so those paths are untouched.
+    var scrubDigitRoll: Animation? = nil
 
     private var trackH: CGFloat { metrics.trackHeight }
     private var labelSize: CGFloat { metrics.timeLabelSize }
@@ -170,6 +177,7 @@ struct PlayerProgressBar: View {
             Text(time)
                 .font(.system(size: metrics.scrubBubbleSize, weight: .bold).monospacedDigit())
                 .contentTransition(.numericText(value: elapsedSeconds))
+                .modifier(OptionalDigitRoll(animation: scrubDigitRoll, value: elapsedSeconds))
                 .foregroundStyle(.white)
                 .shadow(color: .black.opacity(0.6), radius: 20 * metrics.u, y: 2)
             if let bubbleChapter {
@@ -262,6 +270,18 @@ private struct ScrubGesture: ViewModifier {
             }
         }
         #endif
+    }
+}
+
+/// Applies a content-transition animation ONLY when one is supplied. A nil leaves the
+/// ambient behavior untouched (other callers' digit roll), whereas `.animation(nil, value:)`
+/// would actively DISABLE it — stopping the bubble's roll on the iOS/full-HUD paths.
+private struct OptionalDigitRoll: ViewModifier {
+    let animation: Animation?
+    let value: Double
+    func body(content: Content) -> some View {
+        if let animation { content.animation(animation, value: value) }
+        else { content }
     }
 }
 
