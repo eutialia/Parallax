@@ -1,10 +1,10 @@
 import SwiftUI
 
 // Hero legibility — the treatment that keeps the white title/actions readable over artwork we
-// don't control. It lives entirely on the FOREGROUND side of the band (never the artwork), so it
-// never appears in the iPad sidebar `backgroundExtensionEffect` reflection (only the raw artwork is
-// mirrored). It replaces the old full-band gradient scrim, which gambled on the image and washed
-// the whole frame.
+// don't control. It sits between the artwork and the foreground, and `HeroBand` composites it WITH
+// the artwork into the layer the iPad sidebar `backgroundExtensionEffect` samples — so the mirrored
+// sidebar strip carries the same veil as the main side (no luminance seam at the boundary). It
+// replaces the old full-band gradient scrim, which gambled on the image and washed the whole frame.
 //
 // Two idiom-split frosted treatments, both the SAME `.ultraThinMaterial` + scrim recipe the
 // Continue Watching shelf footers use (`shelfTileFooterGlass`), pinned dark: the tall poster band

@@ -5,19 +5,22 @@ import ParallaxCore
 /// The Apple-TV / Infuse-style hero band — the single container behind BOTH the Home carousel
 /// and the movie/series detail header. It is a dumb two-slot stacker and nothing more: it stacks
 /// an `artwork` layer under a `foreground` column (bottom-leading), turns hits off on the artwork,
-/// and places the column in the readable region. The ONLY effect it owns is the legibility
-/// treatment (an idiom-split frosted fade); everything else is delegated, because the band's
-/// effects don't all live at the same layer:
+/// and places the column in the readable region. It owns the legibility treatment (an idiom-split
+/// frosted fade) AND the iPad sidebar extension; the rest is delegated, because the band's effects
+/// don't all live at the same layer:
 ///
 ///  • **Legibility** (`HeroBottomFade` compact / `HeroCornerFade` landscape) sits BETWEEN the
-///    artwork and the foreground, inserted here so all three call sites share one treatment. It
-///    rides the foreground side of the stack (not baked into the artwork), so it stays out of the
-///    iPad sidebar `backgroundExtensionEffect` reflection — only raw artwork is mirrored.
-///  • **Artwork-bound** (clip, parallax offset, stretch scale, the sidebar extension effect) ride
-///    the `artwork` slot, BELOW the legibility layer: parallax/stretch move the image while the
-///    fade + title/actions stay put — that differential IS the parallax. The caller bakes them
-///    into whatever it hands the slot (`HeroBandImage`'s `.heroBandExtension()` on detail; the
-///    transformed `CrossfadeArtwork` on Home).
+///    artwork and the foreground, inserted here so all three call sites share one treatment, and
+///    composited WITH the artwork into the layer that carries the sidebar extension (below) — so
+///    the `backgroundExtensionEffect` reflection mirrors artwork AND veil together and the mirrored
+///    sidebar strip darkens in lockstep with the main side (no luminance seam at the boundary).
+///  • **Artwork-bound transforms** (clip, parallax offset, stretch scale) ride the `artwork` slot:
+///    parallax/stretch move the image while the legibility veil + title/actions stay put — that
+///    differential IS the parallax. The caller bakes them into whatever it hands the slot (a plain
+///    `HeroBandImage` on detail; the transformed `CrossfadeArtwork` on Home).
+///  • **Sidebar extension** (`heroBandExtension`, iPad-only) is owned HERE, wrapping the
+///    artwork+legibility composite so the mirror carries the veil. The foreground column stays
+///    OUTSIDE it (Apple's Landmarks rule: extend the artwork under the sidebar, never the title).
 ///  • **Foreground-bound** (`.id` + `.transition`) ride the `foreground` slot — Home hides the
 ///    column while dragging while the artwork keeps crossfading underneath.
 ///  • **Band-wrapping** (pan gesture, `onMoveCommand`, page dots) wrap the whole band at the Home
@@ -35,9 +38,9 @@ import ParallaxCore
 /// hairline at the sidebar boundary is SYSTEM region-edge chrome — full window height, composited
 /// above all app content, present with the extension effect disabled, on the loading skeleton, and
 /// in a `NavigationSplitView` control render, so neither app-side layers nor a container migration
-/// can remove it. Legibility now lives on the foreground fade, so `heroBandExtension` mirrors RAW
-/// artwork under the sidebar; device-verified that this doesn't worsen the rim (the old scrim
-/// couldn't remove it either). Details: memory `ipad-sidebar-pane-rim`.
+/// can remove it. This 1-2px system hairline is DISTINCT from the wide luminance seam the legibility
+/// veil used to cause (raw-bright mirror beside a darkened main side); compositing the veil into the
+/// extension-sampled layer (see body) fixes that one. Details: memory `ipad-sidebar-pane-rim`.
 struct HeroBand<Artwork: View, Foreground: View>: View {
     @ViewBuilder var artwork: () -> Artwork
     @ViewBuilder var foreground: () -> Foreground
@@ -46,16 +49,28 @@ struct HeroBand<Artwork: View, Foreground: View>: View {
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
-            artwork()
-                .allowsHitTesting(false)
-            // Legibility on the foreground side (stays out of the sidebar reflection). The tall
-            // poster band gets a full-width bottom fade; the wide landscape band gets a corner-
-            // focused glow so the darkening sits on the text, not the empty right side.
-            if idiom == .compact {
-                HeroBottomFade()
-            } else {
-                HeroCornerFade()
+            // Artwork + legibility composited as ONE layer that carries the iPad sidebar extension,
+            // so `backgroundExtensionEffect` mirrors the artwork AND the legibility veil under the
+            // sidebar — the mirrored strip darkens in lockstep with the main side, instead of
+            // reflecting raw-bright artwork while the veil darkens only the main side (the old hard
+            // left/right luminance seam at the sidebar boundary). The veil still stays put relative
+            // to the parallaxing artwork: the artwork transforms inside its own slot (Home's
+            // `HeroScrollArtwork`) and the veil layers over that result here, so the parallax
+            // differential is unchanged. The tall poster band gets a full-width bottom fade; the
+            // wide landscape band gets a corner-focused glow so the darkening sits on the bottom-
+            // leading text, not the empty right side.
+            ZStack(alignment: .bottomLeading) {
+                artwork()
+                if idiom == .compact {
+                    HeroBottomFade()
+                } else {
+                    HeroCornerFade()
+                }
             }
+            .heroBandExtension(regularWidth: idiom.usesLandscapeHeroBand)
+            .allowsHitTesting(false)
+            // Foreground (title/actions) stays OUTSIDE the extension — Apple's Landmarks rule:
+            // extend the artwork under the sidebar, never the title/buttons.
             foreground()
                 .heroForegroundPlacement(idiom: idiom)
         }
@@ -184,11 +199,11 @@ extension View {
 // MARK: - Sidebar extension
 
 extension View {
-    /// The iPad sidebar bleed, WITHOUT a scrim — `backgroundExtensionEffect` mirrors the hero
-    /// artwork's leading strip under the floating sidebar. Legibility now lives on the foreground
-    /// (`HeroBottomFade` / `HeroCornerFade`), so the artwork stays clean. The mirrored strip is raw
-    /// artwork; the `ipad-sidebar-pane-rim` hairline is system region-edge chrome the old scrim
-    /// couldn't remove anyway (device-verified — de-scrimming doesn't worsen it). tvOS/iPhone: no-op.
+    /// The iPad sidebar bleed: `backgroundExtensionEffect` mirrors the band's leading strip (flipped
+    /// + blurred) under the floating sidebar. `HeroBand` applies this to the artwork+legibility
+    /// COMPOSITE — not raw artwork — so the mirrored strip carries the same legibility veil as the
+    /// main side and the two meet without a luminance seam at the boundary. The residual
+    /// `ipad-sidebar-pane-rim` hairline is unrelated system region-edge chrome. tvOS/iPhone: no-op.
     func heroBandExtension(regularWidth: Bool) -> some View {
         tvPlatformGated { $0.backgroundExtensionEffect(isEnabled: regularWidth) }
     }
@@ -206,12 +221,13 @@ extension View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: Space.s30) {
                         HeroBand {
+                            // Raw artwork only — HeroBand now owns `heroBandExtension`, applied to
+                            // the artwork+legibility composite so the mirror carries the veil.
                             LinearGradient(
                                 colors: [Color(red: 0.42, green: 0.20, blue: 0.55),
                                          Color(red: 0.0, green: 0.40, blue: 0.74)],
                                 startPoint: .topLeading, endPoint: .bottomTrailing
                             )
-                            .heroBandExtension(regularWidth: true)
                         } foreground: {
                             VStack(alignment: .leading, spacing: Space.s12) {
                                 Text("FEATURED")
@@ -265,6 +281,33 @@ extension View {
     // The key default is .compact — without this the preview silently renders the
     // COMPACT band with backgroundExtensionEffect(isEnabled: false), which is not
     // what ships on iPad (and cost a whole seam investigation a false acquittal).
+    .environment(\.appIdiom, .regular)
+}
+
+// Seam diagnostic that works on ANY destination (no iPad sim required): a manual leading
+// `.safeAreaInset` stands in for the floating sidebar's safe-area inset — the region the leading
+// `backgroundExtensionEffect` mirrors into — over the bright `WorstCaseArtwork` (toughest case for
+// the boundary seam). Watch the inset↔hero boundary: the mirrored strip should darken with the same
+// `HeroCornerFade` veil as the main side, NOT show raw-bright reflection beside a darkened main side.
+#Preview("HeroBand · sidebar seam (simulated inset)", traits: .fixedLayout(width: 980, height: 560)) {
+    ScrollView {
+        VStack(alignment: .leading, spacing: Space.s30) {
+            HeroBand {
+                WorstCaseArtwork()
+            } foreground: {
+                PreviewHeroForeground(regularWidth: true)
+            }
+            .heroBandFrame(regularWidth: true)
+            Rectangle().fill(Color.fill).frame(height: 120).padding(.horizontal, Space.s40)
+        }
+    }
+    .scrollClipDisabled(true)
+    .background(Color.background)
+    .ignoresSafeArea(edges: .top)
+    .safeAreaInset(edge: .leading, spacing: 0) {
+        // Stand-in for the floating sidebar: a fixed-width leading inset the band extends under.
+        Color.gray.opacity(0.25).frame(width: 150).ignoresSafeArea()
+    }
     .environment(\.appIdiom, .regular)
 }
 #endif

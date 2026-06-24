@@ -67,11 +67,11 @@ struct HomeHeroCarousel: View {
 
     private func content(size: CGSize) -> some View {
         HeroBand {
-            // ARTWORK-BOUND effects ride the slot, UNDER the foreground (see `HeroBand`'s doc): the
-            // iPad sidebar extension + the parallax/stretch transforms, all inside `HeroScrollArtwork`
-            // so the per-frame `scroll.adjustment` re-evaluates ONLY that wrapper — the foreground
-            // (title, actions, dots) below is insulated and never rebuilds on a scroll frame.
-            // Legibility is on the foreground (panel/fade), so the artwork carries no scrim here.
+            // ARTWORK-BOUND transforms ride the slot, UNDER the legibility veil (see `HeroBand`'s
+            // doc): the parallax/stretch transforms live inside `HeroScrollArtwork` so the per-frame
+            // `scroll.adjustment` re-evaluates ONLY that wrapper — the foreground (title, actions,
+            // dots) below is insulated and never rebuilds on a scroll frame. The sidebar extension
+            // and the legibility veil are both owned by `HeroBand`, one layer out.
             HeroScrollArtwork(
                 scroll: scroll,
                 bandHeight: size.height,
@@ -272,12 +272,12 @@ private struct HeroScrollArtwork: View {
         let parallax = (reduceMotion || idiom == .tv)
             ? 0 : HeroMetrics.parallaxShift(forScrollAdjustment: adjustment)
         return CrossfadeArtwork(position: position, entries: entries, session: session, regularWidth: regularWidth)
-            .heroBandExtension(regularWidth: regularWidth)
             .offset(y: parallax)
             // Bottom-only clip: the lagging artwork must not slide over the shelves below (the parent
-            // ScrollView is `.scrollClipDisabled`), but the top and sides stay open — the stretch
-            // zoom paints up past the band and the iPad `backgroundExtensionEffect` bleeds under the
-            // sidebar; a plain `.clipped()` would amputate both.
+            // ScrollView is `.scrollClipDisabled`), but the top and sides stay open — the stretch zoom
+            // paints up past the band, and the leading edge stays un-amputated so HeroBand's
+            // `backgroundExtensionEffect` (applied to the artwork+veil composite, one layer out) can
+            // sample it under the sidebar; a plain `.clipped()` would cut both.
             .clipShape(BottomBoundedRect())
             // Stretchy hero: a pull-down zooms the artwork up from its bottom edge. Only the artwork
             // scales — the title/actions stay put. Applied AFTER the clip so the stretch still paints
@@ -290,7 +290,7 @@ private struct HeroScrollArtwork: View {
 }
 
 /// Full-bleed artwork for one hero item — the crossfading layers inside `CrossfadeArtwork`,
-/// which stacks two of these and carries the iPad sidebar `backgroundExtensionEffect`.
+/// which stacks two of these. The iPad sidebar `backgroundExtensionEffect` is owned by `HeroBand`.
 private struct HeroArtwork: View {
     let item: Item
     let session: Session
@@ -316,9 +316,9 @@ private struct HeroArtwork: View {
 /// Just the artwork crossfade. `Animatable` on `position` is the crux: during a
 /// `withAnimation` `position` change, SwiftUI interpolates `animatableData` and re-evaluates
 /// `body` at each step, so the two images crossfade continuously rather than cutting between
-/// the start and end states. The sidebar extension effect is layered by the call site
-/// (`heroBandExtension`) and legibility rides the foreground fade, keeping this a pure crossfade —
-/// its per-tick body re-evaluation rebuilds nothing but the two images.
+/// the start and end states. The legibility veil and the sidebar extension are both owned by
+/// `HeroBand` (one layer out), keeping this a pure crossfade — its per-tick body re-evaluation
+/// rebuilds nothing but the two images.
 private struct CrossfadeArtwork: View, Animatable {
     var position: Double
     let entries: [HomeHeroFeedEntry]
@@ -343,7 +343,8 @@ private struct CrossfadeArtwork: View, Animatable {
 
 /// The parallax clip: closed at the band's bottom edge, effectively unbounded on the
 /// top and sides. See the call-site comment — a symmetric `.clipped()` would cut the
-/// stretch zoom's upward overflow and the iPad sidebar `backgroundExtensionEffect`.
+/// stretch zoom's upward overflow and amputate the leading edge that HeroBand's sidebar
+/// `backgroundExtensionEffect` samples.
 private struct BottomBoundedRect: Shape {
     func path(in rect: CGRect) -> Path {
         Path(CGRect(x: rect.minX - 10_000, y: rect.minY - 10_000,
