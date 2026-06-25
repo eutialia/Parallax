@@ -56,16 +56,6 @@ struct SeriesDetailView: View {
                                         ) {
                                             playback.play(ep.id, in: session)
                                         }
-                                        // From-the-beginning sibling — hidden when the resume
-                                        // target IS the first episode (one button, one meaning).
-                                        if let first = vm.firstEpisode, first.id != ep.id {
-                                            CircleGlassButton(
-                                                systemImage: "play",
-                                                accessibilityLabel: "Play from beginning"
-                                            ) {
-                                                playback.play(first.id, in: session)
-                                            }
-                                        }
                                     } else if let target = resume ?? vm.firstEpisode {
                                         PrimaryPlayButton(
                                             title: "Play",
