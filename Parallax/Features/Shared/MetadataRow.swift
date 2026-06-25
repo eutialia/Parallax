@@ -9,7 +9,12 @@ struct MetadataRow<Item: Identifiable & Hashable, Content: View>: View {
     @Environment(\.appIdiom) private var idiom
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Space.s8) {
+        // tvOS posters wear the native `.borderless` focus lockup (~1.1× lift): a focused 2:3
+        // tile's top edge rises ≈ height × (scale−1)/2 (≈16.5pt for the 330pt Home poster),
+        // and `tvScrollClipDisabled()` lets it paint past the row bounds. At the old 8pt gap
+        // that lift crossed into the section header, so give the header→row gap enough headroom
+        // to clear the lift on tvOS. iPhone/iPad have no focus lift, so they keep the tight gap.
+        VStack(alignment: .leading, spacing: idiom == .tv ? Space.s22 : Space.s8) {
             Text(title)
                 // tvOS renders type a step larger than iOS at the same style; `.title2`
                 // dominated the shelf there, so drop the TV header to `.title3` (still a
@@ -49,3 +54,33 @@ struct MetadataRow<Item: Identifiable & Hashable, Content: View>: View {
         }
     }
 }
+
+#if DEBUG
+private struct ShelfPreviewTile: Identifiable, Hashable { let id: Int }
+
+/// Focus-lift clearance check (render on the tvOS destination, dark mode). A 2:3 poster row under
+/// a section header with the 2nd tile scaled 1.1× to stand in for the native `.borderless` focus
+/// lockup — a static preview has no real focus. The red line marks the lifted tile's top edge; it
+/// must sit BELOW the "Continue Watching" header. Proves the `idiom == .tv` header→row gap clears
+/// the lift (the bug: at the old 8pt gap the lift crossed into the header).
+#Preview("Shelf focus-lift clearance (tv)", traits: .fixedLayout(width: 900, height: 560)) {
+    MetadataRow(
+        title: "Continue Watching",
+        items: (0..<5).map { ShelfPreviewTile(id: $0) },
+        tileWidth: 220
+    ) { tile in
+        RoundedRectangle(cornerRadius: Radius.tile)
+            .fill(Color.artworkPlaceholder)
+            .aspectRatio(2.0 / 3.0, contentMode: .fit)
+            .scaleEffect(tile.id == 1 ? 1.1 : 1.0, anchor: .center)
+            .overlay(alignment: .top) {
+                if tile.id == 1 { Rectangle().fill(.red).frame(height: 2) }
+            }
+    }
+    .environment(\.appIdiom, .tv)
+    .padding(.top, 80)
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    .background(Color.background)
+    .preferredColorScheme(.dark)
+}
+#endif
