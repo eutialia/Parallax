@@ -288,6 +288,34 @@ struct PlayerViewModelTests {
         #expect(engine.calls.contains("setSubtitleTrack(nil)"))
     }
 
+    @Test("direct-play: a server-preferred EXTERNAL sub wins even when the engine already auto-selected an embedded sub (the residual double-subtitle race)")
+    func directPlayExternalSubtitleOverridesEnginePreselectedEmbedded() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let resolved = PlayerFixtures.resolvedDirectPlayExternalSub()
+        let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
+        await vm.start(item: PlayerFixtures.movieDetail())
+
+        // The race the prior fix left open: by the time .ready lands, VLC has ALREADY
+        // discovered AND auto-selected an embedded text track, so the inventory carries it
+        // and marks it selected. The server's default is still the EXTERNAL sidecar (index
+        // 2). The engine's embedded pick must NOT win the `selectedSubtitleTrack == nil`
+        // guard and strand the external default.
+        let inventory = TrackInventory(
+            audio: [AudioTrack(id: .vlc("a1"), displayName: "English", languageCode: "en")],
+            subtitles: [SubtitleTrack(id: .vlc("s1"), displayName: "English (embedded)", languageCode: "en", isForced: false)],
+            selectedAudioID: .vlc("a1"),
+            selectedSubtitleID: .vlc("s1")
+        )
+        engine.push(.ready(duration: resolved.runtime!, tracks: inventory))
+        try await Task.sleep(for: .milliseconds(50))
+
+        // The external sidecar is the active selection (it overrode the engine's embedded pick)…
+        #expect(vm.selectedSubtitleTrack?.id == .jellyfinStream(2))
+        // …and the engine was told to drop its embedded track so it can't bleed through the overlay.
+        #expect(engine.calls.contains("setSubtitleTrack(nil)"))
+    }
+
     @Test("transcode: menus come from MediaStreams; selecting audio re-resolves at position with that index")
     func transcodeAudioSwitch() async throws {
         let reporting = StubPlaybackReporting()

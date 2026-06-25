@@ -345,6 +345,15 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(500))
                 guard let self else { return }
+                // Re-assert the no-engine-subtitle latch every tick. VLC can SELECT a
+                // late-discovered embedded text track at any point during the demux — a selection
+                // change the add-time `mediaPlayerTrackAdded` hook never sees. If the app is drawing
+                // its own sidecar (or subs are Off), force the engine subtitle back off so it can't
+                // render THROUGH the overlay. Guaranteed self-healing within one tick; the
+                // `mediaPlayerTrackSelected` delegate below is the instant path.
+                if self.subtitlesDisabled, self.player.textTracks.contains(where: { $0.isSelected }) {
+                    self.player.deselectAllTextTracks()
+                }
                 guard self.player.isPlaying else { continue }
                 // Hold beats until the resume seek has applied, so the first beat reports
                 // the resume position rather than the pre-seek clock (no 0:00 flash).
@@ -519,6 +528,19 @@ extension VLCKitEngine: VLCMediaPlayerDelegate {
             // Off), re-assert that here so the late track can't render through the overlay.
             if subtitlesDisabled { player.deselectAllTextTracks() }
             emitReady()
+        }
+    }
+
+    /// VLC selected (or deselected) a track. `mediaPlayerTrackAdded` only fires when a track first
+    /// appears — VLC can auto-SELECT an already-discovered embedded text track *later* (default/
+    /// forced flags resolved as the demux settles), which that hook never sees and which would
+    /// render through the client sidecar overlay. When the app wants no engine subtitle, re-assert
+    /// the deselect the instant a text track is selected. Our own `deselectAllTextTracks()` fires
+    /// this again with a nil `selectedId`, so gating on `selectedId != nil` avoids a feedback loop.
+    public nonisolated func mediaPlayerTrackSelected(_ trackType: VLCMedia.TrackType, selectedId: String?, unselectedId: String?) {
+        guard trackType == .text, selectedId != nil else { return }
+        MainActor.assumeIsolated {
+            if subtitlesDisabled { player.deselectAllTextTracks() }
         }
     }
 

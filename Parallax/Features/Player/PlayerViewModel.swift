@@ -1133,23 +1133,26 @@ final class PlayerViewModel {
             selectedAudioTrack = match
         }
 
-        // SUBTITLES — only when the server's mode+language logic says one should
-        // show, and the engine didn't already auto-select one (AVKit honors the
-        // system's accessibility caption setting; never fight that).
-        guard selectedSubtitleTrack == nil,
-              let index = resolved.defaultSubtitleStreamIndex,
+        // SUBTITLES — only when the server's mode+language logic says one should show.
+        guard let index = resolved.defaultSubtitleStreamIndex,
               let preferred = resolved.mediaStreams.first(where: { $0.kind == .subtitle && $0.index == index })
         else { return }
         if let external = availableSubtitleTracks.first(where: { $0.id == .jellyfinStream(index) }) {
-            // External sidecar subs carry their Jellyfin index — exact match, rendered
-            // client-side like every external pick (engine subtitle held off so VLC's
-            // late-discovered embedded default can't show through it).
+            // An external sidecar default is an EXPLICIT server preference, so it overrides the
+            // engine's own auto-pick. VLC selects a default/forced embedded sub on its own, and the
+            // `.ready` inventory seed above adopts it into `selectedSubtitleTrack`; gating this
+            // branch on `selectedSubtitleTrack == nil` (as it used to) let that embedded pick win
+            // the race and strand the external default while the embedded one rendered THROUGH the
+            // overlay (the double-subtitle bug). `activateSidecarSubtitle` holds the engine subtitle
+            // off (`setSubtitleTrack(nil)`) so only the client-drawn sidecar shows.
             await activateSidecarSubtitle(external, index: index)
-        } else if let match = availableSubtitleTracks.first(where: {
+        } else if selectedSubtitleTrack == nil, let match = availableSubtitleTracks.first(where: {
             !$0.isExternal
                 && TrackLanguage.matches($0.languageCode, preferred.language)
                 && $0.isForced == preferred.isForced
         }) {
+            // An EMBEDDED-language match applies only when the engine didn't already auto-select a
+            // subtitle (AVKit honors the system's accessibility caption setting; never fight that).
             await engine.setSubtitleTrack(match)
             selectedSubtitleTrack = match
         }
