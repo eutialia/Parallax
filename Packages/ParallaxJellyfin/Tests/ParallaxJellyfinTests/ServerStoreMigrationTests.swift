@@ -232,7 +232,13 @@ struct ServerStoreMigrationTests {
         // second element is the OLD-shape SMB row (share/root — no shares array).
         let validData = try JSONEncoder().encode(validJellyfin)
         let validString = String(decoding: validData, as: UTF8.self)
-        let oldSMB = #"{"id":"smb-old","kind":{"smb":{"host":"nas","share":"Media","root":"/Movies","username":"a","domain":"W"}}}"#
+        // Swift's synthesized enum Codable wraps an associated value under "_0"; the
+        // REAL on-disk shape for `.smb` is `{"smb":{"_0":{...}}}`. The element below
+        // uses the correct envelope so the decoder reaches `SMBServerData` and fails
+        // on the missing `shares` key (old pre-release fields `share`/`root`) — the
+        // real-world drop path. Without `_0` the element would fail earlier (missing
+        // `_0`) for the wrong reason, undermining the test's fidelity.
+        let oldSMB = #"{"id":"smb-old","kind":{"smb":{"_0":{"host":"nas","share":"Media","root":"/Movies","username":"a","domain":"W"}}}}"#
         let json = "[\(validString),\(oldSMB)]"
         do {
             let seeder = UserDefaults(suiteName: suiteName)!
@@ -262,6 +268,41 @@ struct ServerStoreMigrationTests {
         let persisted = try await reread.tryValue(for: key)
         #expect(persisted?.count == 1)
         #expect(persisted?.first?.id == jellyfinID)
+    }
+
+    /// Locks the retain-over-wipe safety guard: an array whose ONLY element is an
+    /// old-shape SMB row (with the verified `{"smb":{"_0":{...}}}` envelope, so the
+    /// decoder reaches `SMBServerData` and fails on missing `shares`) must NOT
+    /// silently return `[]`. The tolerant pass yields zero survivors, which is
+    /// indistinguishable from "bad blob that could still hold recoverable data", so
+    /// `loadPersistedServers()` falls through to `decodeFailed` rather than
+    /// persisting an empty array over the still-valid raw bytes. The raw blob must
+    /// remain unchanged after the throw — no silent wipe.
+    @Test("all-incompatible array throws (retain-over-wipe) and leaves the blob intact")
+    func allOldSMBThrowsAndRetains() async throws {
+        let suiteName = "ServerStoreMigrationTests-retain-\(UUID().uuidString)"
+        // One element: old-shape SMB with the REAL `_0` envelope (verified above).
+        let oldSMBOnly = #"[{"id":"smb-old","kind":{"smb":{"_0":{"host":"nas","share":"Media","root":"/Movies","username":"a","domain":"W"}}}}]"#
+        let seededBytes = oldSMBOnly.data(using: .utf8)!
+        do {
+            let seeder = UserDefaults(suiteName: suiteName)!
+            seeder.removePersistentDomain(forName: suiteName)
+            seeder.set(seededBytes, forKey: Self.persistedSessionsKeyName)
+            seeder.synchronize()
+        }
+
+        let settings = SettingsStore(defaults: UserDefaults(suiteName: suiteName)!)
+        let keychain = FakeKeychain()
+        let store = ServerStore(settings: settings, keychain: keychain)
+
+        // Must THROW — zero survivors must not silently return [] and wipe the blob.
+        await #expect(throws: ServerStore.ServerStoreError.self) {
+            try await store.load()
+        }
+
+        // Re-read the raw bytes — must equal the seeded data (not wiped or emptied).
+        let rawAfter = UserDefaults(suiteName: suiteName)!.data(forKey: Self.persistedSessionsKeyName)
+        #expect(rawAfter == seededBytes)
     }
 
     /// Cold-reload contract (A1 review nit): an SMB server added at runtime must
