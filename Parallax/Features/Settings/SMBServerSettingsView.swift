@@ -111,10 +111,7 @@ struct SMBServerSettingsView: View {
 
     @ViewBuilder
     private var sharesSection: some View {
-        SettingsGroup(
-            title: "Shares",
-            footer: "Choose which shares on this server appear as libraries in Parallax."
-        ) {
+        SettingsGroup(title: "Shares", footer: sharesFooter) {
             switch loadState {
             case .loading:
                 ProgressView()
@@ -124,16 +121,45 @@ struct SMBServerSettingsView: View {
                 SettingsRetryError(message: message) { Task { await loadShares() } }
 
             case .loaded(let shares):
-                if shares.isEmpty {
-                    SettingsSectionFooter("No shares found on this server.")
-                } else {
-                    ForEach(shares, id: \.name) { share in
-                        ShareToggleRow(
-                            share: share,
-                            isOn: enabledShares.contains(share.name)
-                        ) { toggle(share.name) }
-                    }
-                }
+                loadedShares(shares)
+            }
+        }
+    }
+
+    /// Group footer — gains a recovery hint only while at least one unavailable row is on screen, so
+    /// the "turn it off to remove" affordance is spelled out exactly when it applies (and never when
+    /// every share is live).
+    private var sharesFooter: String {
+        let base = "Choose which shares on this server appear as libraries in Parallax."
+        if case .loaded(let shares) = loadState,
+           !Self.unavailableShares(enabled: enabledShares, live: shares).isEmpty {
+            return base + " Turn off an unavailable share to remove its library."
+        }
+        return base
+    }
+
+    /// The live shares as selectable rows, then any enabled-but-absent share (removed/renamed
+    /// server-side) as an "unavailable" row the user can switch OFF to drop the now-dead library —
+    /// the union closes the trap where such a share is invisible in settings yet still mounted as a
+    /// failing sidebar tab, removable only by deleting the whole server.
+    @ViewBuilder
+    private func loadedShares(_ shares: [SMBShare]) -> some View {
+        let unavailable = Self.unavailableShares(enabled: enabledShares, live: shares)
+        if shares.isEmpty && unavailable.isEmpty {
+            SettingsSectionFooter("No shares found on this server.")
+        } else {
+            ForEach(shares, id: \.name) { share in
+                ShareSelectionRow(
+                    share: share,
+                    isSelected: enabledShares.contains(share.name)
+                ) { toggle(share.name) }
+            }
+            ForEach(unavailable, id: \.self) { name in
+                ShareSelectionRow(
+                    share: SMBShare(name: name, comment: ""),
+                    isSelected: true,
+                    isUnavailable: true
+                ) { toggle(name) }
             }
         }
     }
@@ -208,48 +234,16 @@ struct SMBServerSettingsView: View {
     }
 }
 
-// MARK: - Share toggle row
+// MARK: - Share reconciliation
 
-/// One share row in the toggle list: a leading `SelectionCircle` + drive icon + name + optional comment.
-private struct ShareToggleRow: View {
-    let share: SMBShare
-    let isOn: Bool
-    let onToggle: () -> Void
-
-    var body: some View {
-        Button(action: onToggle) {
-            HStack(spacing: Space.s12) {
-                SelectionCircle(state: isOn ? .on : .off)
-
-                HStack(spacing: Space.s12) {
-                    Image(systemName: "externaldrive")
-                        .font(.system(size: 18, weight: .medium))
-                        .foregroundStyle(Color.secondaryLabel)
-                        .frame(width: SettingsListRow.glyphColumnWidth, alignment: .center)
-
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(share.name)
-                            .font(.rowBody)
-                            .foregroundStyle(Color.label)
-                            .lineLimit(1)
-                        if !share.comment.isEmpty {
-                            Text(share.comment)
-                                .font(.rowSubtitle)
-                                .foregroundStyle(Color.secondaryLabel)
-                                .lineLimit(1)
-                        }
-                    }
-                    Spacer(minLength: Space.s12)
-                }
-            }
-            .padding(.horizontal, SettingsMetrics.rowHInset)
-            .padding(.vertical, Space.s12)
-            .frame(minHeight: SettingsListRow.rowMinHeight, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .contentShape(.rect)
-        .buttonStyle(.plain)
-        .tvListRowButton()
-        .accessibilityValue(isOn ? "Enabled" : "Disabled")
+extension SMBServerSettingsView {
+    /// The enabled-but-absent share names: persisted/enabled shares the live `listShares()` no longer
+    /// returns (removed or renamed server-side). Sorted for a stable row order. Rendered as
+    /// "unavailable" rows so the user can switch them off and drop the dead library — without this they
+    /// stay invisible in settings yet mounted as a failing sidebar tab. NOT auto-pruned: this is only
+    /// computed in the `.loaded` state, so a transient connect blip (which surfaces `.failed`) never
+    /// silently drops a momentarily-missing share.
+    static func unavailableShares(enabled: Set<String>, live: [SMBShare]) -> [String] {
+        enabled.subtracting(live.map(\.name)).sorted()
     }
 }
