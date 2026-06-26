@@ -31,6 +31,9 @@ struct SMBServerSettingsView: View {
     @State private var enabledShares: Set<String> = []
     /// The lister, held for disconnect on disappear.
     @State private var lister: AMSMB2Lister?
+    /// Serialises share-toggle writes so rapid taps persist in tap order — an unordered `Task` per
+    /// tap can let a stale snapshot land last, desyncing the store from the on-screen circles.
+    @State private var saveTask: Task<Void, Never>?
 
     // MARK: - Derived
 
@@ -147,11 +150,22 @@ struct SMBServerSettingsView: View {
         do {
             let fetched = try await newLister.listShares()
             let sorted = fetched.sorted { $0.name.localizedCompare($1.name) == .orderedAscending }
-            enabledShares = Set(data.shares)
+            // Seed the toggles from the LIVE store, not the navigation snapshot: `server` is captured
+            // when the row is tapped and the parent's list isn't refreshed on a toggle, so re-entering
+            // this screen after toggling would otherwise revert the circles to the stale snapshot.
+            enabledShares = await persistedShares()
             loadState = .loaded(sorted)
         } catch {
             loadState = .failed("Couldn't load shares from \(host).")
         }
+    }
+
+    /// The shares currently persisted for this server, read fresh from the store (the source of
+    /// truth). Falls back to the navigation snapshot if the server was removed out from under us.
+    private func persistedShares() async -> Set<String> {
+        let current = await deps.serverStore.servers.first { $0.id == server.id }
+        if case .smb(let d) = current?.kind { return Set(d.shares) }
+        return Set(data?.shares ?? [])
     }
 
     private func toggle(_ name: String) {
@@ -159,7 +173,11 @@ struct SMBServerSettingsView: View {
         if wasOn { enabledShares.remove(name) } else { enabledShares.insert(name) }
         let snapshot = enabledShares.sorted()
         let id = server.id
-        Task {
+        // Chain off the previous write so concurrent toggles persist in tap order — an independent
+        // Task per tap isn't ordered, so a stale snapshot could land last and desync the store.
+        let previous = saveTask
+        saveTask = Task {
+            await previous?.value
             do {
                 try await deps.serverStore.setShares(snapshot, for: id)
                 // Rebuild the merged library list so the sidebar updates immediately — same call as

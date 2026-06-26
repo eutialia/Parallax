@@ -32,11 +32,11 @@ struct SMBSourceContext: Sendable {
 /// encoded credential-free URL, and derive the libVLC credential options. Shared by `SMBPlaybackResolver`
 /// (playback) and `MediaArtworkProvider` (thumbnails) so credential assembly lives in one place.
 enum SMBSourceResolver {
-    /// The share-relative path encoded in the item's ID — decoded with NO Keychain read, so a
-    /// caller can build a cache key and check caches before paying for credential assembly.
-    /// Returns nil if the ItemID wasn't minted by `SMBFileSource` (no colon / empty path).
-    static func sharePath(for item: Item, ref: SMBServerRef) -> String? {
-        SMBFileSource.decodeItemID(item.id)?.path
+    /// The share + share-relative path encoded in the item's ID — decoded with NO Keychain read, so
+    /// a caller can build a cache key and check caches before paying for credential assembly. Returns
+    /// nil if the ItemID wasn't minted by `SMBFileSource` (no colon / empty share or path).
+    static func shareAndPath(for item: Item) -> (share: String, path: String)? {
+        SMBFileSource.decodeItemID(item.id)
     }
 
     /// - Throws: `AppError.source(.notFound)` if the `ItemID` wasn't minted by `SMBFileSource`, or

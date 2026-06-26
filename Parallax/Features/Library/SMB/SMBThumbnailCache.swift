@@ -3,13 +3,15 @@ import Foundation
 
 /// Identity of an SMB file for thumbnail caching.
 ///
-/// Keyed on the owning server's id PLUS the share-relative path, then the file's size and
-/// modification date. The server id discriminates two different SMB servers that happen to
-/// hold the same share-relative path (e.g. both have `Movies/Film.mkv`), and size+mtime mean
-/// a changed file produces a different key — the stale thumbnail is bypassed rather than served.
+/// Keyed on the owning server's id, the share, and the share-relative path, then the file's size
+/// and modification date. Since the move to one server-id per host (`smb-<host>`), a single server
+/// hosts many shares, so the SHARE is what keeps two files at the same share-relative path on
+/// different shares of one host (both `Movies/Film.mkv`) from colliding; size+mtime mean a changed
+/// file produces a different key — the stale thumbnail is bypassed rather than served.
 struct SMBThumbnailKey: Hashable, Sendable {
-    let serverID: String  // unique per SMB server (ServerID.rawValue)
-    let path: String      // smb path within the share, e.g. "Movies/Film.mkv"
+    let serverID: String  // per SMB server — host-level since the migration (ServerID.rawValue == "smb-<host>")
+    let share: String     // the share the file lives on; one host serves many, so this discriminates them
+    let path: String      // share-relative path, e.g. "Movies/Film.mkv"
     let size: Int64
     let modifiedAt: Date?
 }
@@ -227,13 +229,13 @@ actor SMBThumbnailCache {
         }
     }
 
-    /// `<sha256(serverID + path)>-<size>-<mtimeEpoch>.png`. Hashing the server id together
-    /// with the path keeps two servers' identical relative paths in distinct cache files; the
-    /// size + modification-date suffix means a changed file never collides with its own stale
-    /// entry. The NUL separator can't appear in a host id or a filename, so the digest input
-    /// is unambiguous.
+    /// `<sha256(serverID + share + path)>-<size>-<mtimeEpoch>.png`. Hashing the server id, the share,
+    /// and the path keeps two shares' (or two servers') identical relative paths in distinct cache
+    /// files; the size + modification-date suffix means a changed file never collides with its own
+    /// stale entry. The NUL separator can't appear in a host id, a share name, or a filename, so the
+    /// digest input is unambiguous.
     private func fileName(for key: SMBThumbnailKey) -> String {
-        let digest = SHA256.hash(data: Data("\(key.serverID)\u{0}\(key.path)".utf8))
+        let digest = SHA256.hash(data: Data("\(key.serverID)\u{0}\(key.share)\u{0}\(key.path)".utf8))
         let hash = digest.map { String(format: "%02x", $0) }.joined()
         let mtime = key.modifiedAt.map { String(Int64($0.timeIntervalSince1970.rounded())) } ?? "na"
         return "\(hash)-\(key.size)-\(mtime).png"

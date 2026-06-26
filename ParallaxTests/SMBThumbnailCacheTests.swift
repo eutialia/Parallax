@@ -36,7 +36,7 @@ struct SMBThumbnailCacheTests {
         let dir = makeTempDir()
         defer { cleanup(dir) }
         let cache = SMBThumbnailCache(directory: dir)
-        let key = SMBThumbnailKey(serverID: "smb-nas|Media|", path: "Movies/Film.mkv", size: 1234, modifiedAt: Date(timeIntervalSince1970: 1_000))
+        let key = SMBThumbnailKey(serverID: "smb-nas", share: "Media", path: "Movies/Film.mkv", size: 1234, modifiedAt: Date(timeIntervalSince1970: 1_000))
 
         // Fresh key: a miss, no file written.
         #expect(await cache.existing(for: key) == nil)
@@ -55,7 +55,7 @@ struct SMBThumbnailCacheTests {
         let dir = makeTempDir()
         defer { cleanup(dir) }
         let cache = SMBThumbnailCache(directory: dir)
-        let key = SMBThumbnailKey(serverID: "smb-nas|Media|", path: "Movies/Film.mkv", size: 1234, modifiedAt: Date(timeIntervalSince1970: 1_000))
+        let key = SMBThumbnailKey(serverID: "smb-nas", share: "Media", path: "Movies/Film.mkv", size: 1234, modifiedAt: Date(timeIntervalSince1970: 1_000))
 
         let duration = Duration.seconds(5_025)  // 1h 23m 45s — sub-minute precision survives the ms round-trip
         let stored = try #require(await cache.store(Self.pngData, duration: duration, for: key))
@@ -71,7 +71,7 @@ struct SMBThumbnailCacheTests {
         let dir = makeTempDir()
         defer { cleanup(dir) }
         let cache = SMBThumbnailCache(directory: dir)
-        let key = SMBThumbnailKey(serverID: "smb-nas|Media|", path: "Shows/E02.mkv", size: 7, modifiedAt: nil)
+        let key = SMBThumbnailKey(serverID: "smb-nas", share: "Media", path: "Shows/E02.mkv", size: 7, modifiedAt: nil)
 
         _ = try #require(await cache.store(Self.pngData, duration: nil, for: key))
         let hit = try #require(await cache.existing(for: key))
@@ -83,7 +83,7 @@ struct SMBThumbnailCacheTests {
         let dir = makeTempDir()
         defer { cleanup(dir) }
         let cache = SMBThumbnailCache(directory: dir)
-        let key = SMBThumbnailKey(serverID: "smb-nas|Media|", path: "Shows/E01.mkv", size: 42, modifiedAt: Date(timeIntervalSince1970: 2_000))
+        let key = SMBThumbnailKey(serverID: "smb-nas", share: "Media", path: "Shows/E01.mkv", size: 42, modifiedAt: Date(timeIntervalSince1970: 2_000))
 
         let stored = try #require(await cache.store(Self.pngData, duration: nil, for: key))
         let first = await cache.existing(for: key)
@@ -98,8 +98,8 @@ struct SMBThumbnailCacheTests {
         defer { cleanup(dir) }
         let cache = SMBThumbnailCache(directory: dir)
 
-        let original = SMBThumbnailKey(serverID: "smb-nas|Media|", path: "Movies/Film.mkv", size: 1234, modifiedAt: Date(timeIntervalSince1970: 1_000))
-        let edited = SMBThumbnailKey(serverID: "smb-nas|Media|", path: "Movies/Film.mkv", size: 1234, modifiedAt: Date(timeIntervalSince1970: 9_999))
+        let original = SMBThumbnailKey(serverID: "smb-nas", share: "Media", path: "Movies/Film.mkv", size: 1234, modifiedAt: Date(timeIntervalSince1970: 1_000))
+        let edited = SMBThumbnailKey(serverID: "smb-nas", share: "Media", path: "Movies/Film.mkv", size: 1234, modifiedAt: Date(timeIntervalSince1970: 9_999))
 
         let firstURL = try #require(await cache.store(Self.pngData, duration: nil, for: original)).url
         let secondURL = try #require(await cache.store(Self.pngData, duration: nil, for: edited)).url
@@ -124,7 +124,7 @@ struct SMBThumbnailCacheTests {
         )
 
         for i in 0..<8 {
-            let key = SMBThumbnailKey(serverID: "s", path: "f\(i).mkv", size: Int64(i), modifiedAt: nil)
+            let key = SMBThumbnailKey(serverID: "s", share: "Media", path: "f\(i).mkv", size: Int64(i), modifiedAt: nil)
             _ = await cache.store(blob, duration: nil, for: key)
         }
 
@@ -155,7 +155,7 @@ struct SMBThumbnailCacheTests {
 
         // Every store carries a positive duration, so each PNG also writes a .dur sidecar.
         for i in 0..<8 {
-            let key = SMBThumbnailKey(serverID: "s", path: "f\(i).mkv", size: Int64(i), modifiedAt: nil)
+            let key = SMBThumbnailKey(serverID: "s", share: "Media", path: "f\(i).mkv", size: Int64(i), modifiedAt: nil)
             _ = await cache.store(blob, duration: .seconds(60 + i), for: key)
         }
 
@@ -186,7 +186,7 @@ struct SMBThumbnailCacheTests {
 
         let blob = Data(count: 4 * 1024)
         for i in 0..<3 {
-            let key = SMBThumbnailKey(serverID: "s", path: "f\(i).mkv", size: Int64(i), modifiedAt: nil)
+            let key = SMBThumbnailKey(serverID: "s", share: "Media", path: "f\(i).mkv", size: Int64(i), modifiedAt: nil)
             _ = await cache.store(blob, duration: .seconds(60 + i), for: key)  // PNG + .dur sidecar each
         }
         #expect(await cache.totalSize() > 0, "stored files should count toward the size")
@@ -195,7 +195,7 @@ struct SMBThumbnailCacheTests {
         #expect(await cache.totalSize() == 0, "clear must wipe the cache")
 
         // A previously-stored key now misses, and a fresh store still works (dir recreated).
-        let key = SMBThumbnailKey(serverID: "s", path: "f0.mkv", size: 0, modifiedAt: nil)
+        let key = SMBThumbnailKey(serverID: "s", share: "Media", path: "f0.mkv", size: 0, modifiedAt: nil)
         #expect(await cache.existing(for: key) == nil)
         #expect(try #require(await cache.store(blob, duration: nil, for: key)).url.isFileURL,
                 "store must recreate the directory after a clear")
@@ -206,14 +206,32 @@ struct SMBThumbnailCacheTests {
         let dir = makeTempDir()
         defer { cleanup(dir) }
         let cache = SMBThumbnailCache(directory: dir)
-        // Same path, size, and mtime — only the owning server differs.
-        let serverA = SMBThumbnailKey(serverID: "smb-a|Media|", path: "Movies/Film.mkv", size: 1234, modifiedAt: Date(timeIntervalSince1970: 1_000))
-        let serverB = SMBThumbnailKey(serverID: "smb-b|Media|", path: "Movies/Film.mkv", size: 1234, modifiedAt: Date(timeIntervalSince1970: 1_000))
+        // Same share, path, size, and mtime — only the owning server differs.
+        let serverA = SMBThumbnailKey(serverID: "smb-a", share: "Media", path: "Movies/Film.mkv", size: 1234, modifiedAt: Date(timeIntervalSince1970: 1_000))
+        let serverB = SMBThumbnailKey(serverID: "smb-b", share: "Media", path: "Movies/Film.mkv", size: 1234, modifiedAt: Date(timeIntervalSince1970: 1_000))
 
         let urlA = try #require(await cache.store(Self.pngData, duration: nil, for: serverA)).url
         let urlB = try #require(await cache.store(Self.pngData, duration: nil, for: serverB)).url
         #expect(urlA != urlB, "Different servers must not share one cache file for the same relative path")
         #expect(FileManager.default.fileExists(atPath: urlA.path))
         #expect(FileManager.default.fileExists(atPath: urlB.path))
+    }
+
+    @Test("two shares on ONE host with the same relative path get distinct cache entries")
+    func differentSharesDoNotCollide() async throws {
+        let dir = makeTempDir()
+        defer { cleanup(dir) }
+        let cache = SMBThumbnailCache(directory: dir)
+        // One host now maps to one serverID ("smb-<host>"), so the share is the only discriminator
+        // here. Without it in the key these two files would overwrite each other's frame-grab — the
+        // cross-share collision the share-hierarchy migration introduced.
+        let media = SMBThumbnailKey(serverID: "smb-nas", share: "Media", path: "Movies/Film.mkv", size: 1234, modifiedAt: Date(timeIntervalSince1970: 1_000))
+        let backups = SMBThumbnailKey(serverID: "smb-nas", share: "Backups", path: "Movies/Film.mkv", size: 1234, modifiedAt: Date(timeIntervalSince1970: 1_000))
+
+        let urlMedia = try #require(await cache.store(Self.pngData, duration: nil, for: media)).url
+        let urlBackups = try #require(await cache.store(Self.pngData, duration: nil, for: backups)).url
+        #expect(urlMedia != urlBackups, "Two shares on one host must not share one cache file for the same relative path")
+        #expect(FileManager.default.fileExists(atPath: urlMedia.path))
+        #expect(FileManager.default.fileExists(atPath: urlBackups.path))
     }
 }

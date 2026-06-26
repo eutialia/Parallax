@@ -70,11 +70,14 @@ actor MediaArtworkProvider {
     func artwork(for item: Item, ref: SMBServerRef) async -> MediaArtwork {
         // SMB library items are flat movies; anything else carries server artwork already.
         guard case .movie(let movie) = item else { return .none }
-        // The share-relative path decodes from the ItemID with no Keychain read, so the key (and
-        // thus the cache + negative-cache lookups) is available before any I/O.
-        guard let path = SMBSourceResolver.sharePath(for: item, ref: ref) else { return .none }
+        // The share + share-relative path decode from the ItemID with no Keychain read, so the key
+        // (and thus the cache + negative-cache lookups) is available before any I/O. The share is
+        // part of the key: one server-id now spans every share on a host, so without it two shares'
+        // identical relative paths would share — and overwrite — one cached frame-grab.
+        guard let (share, path) = SMBSourceResolver.shareAndPath(for: item) else { return .none }
         let key = SMBThumbnailKey(
             serverID: ref.id.rawValue,
+            share: share,
             path: path,
             size: movie.size ?? 0,
             modifiedAt: movie.dateAdded
