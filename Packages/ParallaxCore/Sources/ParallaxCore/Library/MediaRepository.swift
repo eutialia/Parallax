@@ -12,9 +12,8 @@ public protocol MediaRepository: Sendable {
     func collections() async throws -> [MediaCollection]
     func items(in scope: LibraryScope, filter: ItemFilter, sort: ItemSort, cursor: PageCursor?) async throws -> Page<Item>
     func genres(in scope: LibraryScope) async throws -> [String]
-    /// Releases any live connection the repository holds. SMB opens a share connection on
-    /// first `items()` and must close it when the browsing surface goes away; HTTP-backed
-    /// repositories (Jellyfin) are stateless, so the default is a no-op.
+    /// Releases any live connection a conformer holds. HTTP-backed repositories (Jellyfin)
+    /// are stateless, so the default is a no-op.
     func teardown() async
 }
 

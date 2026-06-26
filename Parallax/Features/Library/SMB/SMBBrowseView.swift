@@ -114,9 +114,8 @@ struct SMBBrowseView: View {
 
     // MARK: - Breadcrumb
 
-    /// Share ⇄ path-component trail (ported from `SMBFolderPickerView.breadcrumb`). Read-only here:
-    /// it shows where the level sits in the share. Back-navigation is the stack's job (swipe / the
-    /// nav-bar back button), so the segments aren't tappable jumps.
+    /// Share ⇄ path-component trail. Read-only — the nav stack owns back-navigation (swipe /
+    /// back button), so the segments are labels, not tappable jumps.
     private var breadcrumb: some View {
         HStack(spacing: Space.s8) {
             Image(systemName: "externaldrive.badge.wifi")

@@ -8,13 +8,12 @@ import ParallaxJellyfin
 /// `SMBBrowseView` builds its own lister/`SMBFileSource` (an `AMSMB2Lister` is an actor, so it
 /// can't ride the `Hashable` nav value) and tears it down on disappear.
 ///
-/// Loading mirrors `SMBFolderPickerView.loadCurrentDirectory`: cancel any in-flight load and guard
-/// the post-await writes on `path == self.path` so a slow earlier list can't land over the current
-/// directory. The level's path is fixed for the model's lifetime, so the guard collapses to the
-/// cancellation check — but it's kept explicit so the pattern reads identically to the picker it
-/// was ported from. Failures map through `SMBFileSource.mapListError` to the same `AppError`
-/// `userMessage` the Jellyfin grid surfaces (`LibraryGridViewModel`), so SMB and Jellyfin errors
-/// read in one voice.
+/// Loading cancels any in-flight task before starting a new one; a stale-guard on the current
+/// path ensures a slow, cancelled load can't overwrite the live directory. The level's path is
+/// fixed for the model's lifetime, so the guard collapses to the cancellation check — but it's
+/// kept explicit so the pattern remains readable. Failures map through `SMBFileSource.mapListError`
+/// to the same `AppError` `userMessage` the Jellyfin grid surfaces (`LibraryGridViewModel`), so
+/// SMB and Jellyfin errors read in one voice.
 @Observable
 @MainActor
 final class SMBBrowseViewModel {

@@ -161,6 +161,30 @@ struct ServerStoreSMBTests {
         #expect(pw == "pw")
     }
 
+    @Test("setShares is a no-op for an unknown id and for a non-SMB (Jellyfin) server")
+    func setSharesNoOpForNonSMB() async throws {
+        let (store, _, _) = freshStore()
+        try await store.add(sampleSession(id: "jf-1"))
+        let smbID = try await store.addSMBServer(smbData(shares: ["Media"]), password: "pw")
+
+        try await store.setShares(["X"], for: ServerID(rawValue: "jf-1"))           // non-SMB
+        try await store.setShares(["X"], for: ServerID(rawValue: "does-not-exist")) // unknown
+
+        let servers = await store.servers
+        #expect(servers.count == 2)
+        #expect(servers.contains {
+            $0.id == ServerID(rawValue: "jf-1") && {
+                if case .jellyfin = $0.kind { return true }
+                return false
+            }($0)
+        })
+        guard let smb = servers.first(where: { $0.id == smbID }),
+              case .smb(let d) = smb.kind else {
+            Issue.record("smb server missing or wrong kind"); return
+        }
+        #expect(d.shares == ["Media"])   // untouched
+    }
+
     @Test("SMB server and Jellyfin session coexist: both in servers, only Jellyfin in sessions, active unchanged")
     func smbAndJellyfinCoexist() async throws {
         let (store, _, keychain) = freshStore()

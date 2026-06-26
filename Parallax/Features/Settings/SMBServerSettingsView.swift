@@ -139,6 +139,7 @@ struct SMBServerSettingsView: View {
 
     private func loadShares() async {
         guard let data else { return }
+        if let existing = lister { await existing.disconnect() }
         loadState = .loading
         let ref = SMBServerRef(id: server.id, data: data)
         let newLister = await deps.makeSMBLister(ref)
