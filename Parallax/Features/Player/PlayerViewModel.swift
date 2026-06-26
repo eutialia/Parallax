@@ -85,14 +85,18 @@ final class PlayerViewModel {
     var title: String { itemTitle }
 
     /// Caption for the loading scrim. A transcode audio switch reloads the
-    /// stream ("Switching audio · <track>"); a mid-stream stall over a live frame
-    /// is "Buffering"; a first play is "Loading video".
+    /// stream ("Switching audio · <track>"); a seek that re-anchors the transcode, or
+    /// a mid-stream stall over a live frame, reads "Buffering"; a first play is
+    /// "Loading video". The re-anchor seek reuses the track-switch reload (so it sets
+    /// `isSwitchingTracks` too) — `isReanchoring` must win first, since a scrub is not
+    /// an audio switch.
     var loaderTitle: String {
+        if isReanchoring { return "Buffering" }
         if isSwitchingTracks { return "Switching audio" }
         if showsStallScrim { return "Buffering" }
         return "Loading video"
     }
-    var loaderSubtitle: String? { isSwitchingTracks ? selectedAudioTrack?.displayName : nil }
+    var loaderSubtitle: String? { isSwitchingTracks && !isReanchoring ? selectedAudioTrack?.displayName : nil }
 
     /// Mid-stream stall (engine waiting for media while the user's intent is
     /// "playing") — drives the light buffering scrim over the frozen frame.
@@ -239,7 +243,7 @@ final class PlayerViewModel {
     func seekToChapter(_ chapter: Chapter) async {
         let c = chapter.start.components
         let seconds = Double(c.seconds) + Double(c.attoseconds) / 1e18
-        await engine?.seek(to: CMTime(seconds: seconds, preferredTimescale: 600))
+        await seek(to: CMTime(seconds: seconds, preferredTimescale: 600))
     }
 
     /// Optimistic transport toggle: flip `isPlaying` to the target NOW so the
@@ -363,6 +367,12 @@ final class PlayerViewModel {
     private var currentAudioStreamIndex: Int?
     private var currentSubtitleStreamIndex: Int?
 
+    // Transcode seek re-anchoring: an out-of-buffer seek re-resolves a fresh transcode
+    // at the target (see `seek(to:)`). The newest target wins, drained single-flight so
+    // a scrub past the buffer can't stack reloads or strand on a stale position.
+    private var pendingReanchorTarget: CMTime?
+    private var isReanchoring = false
+
     /// The resolve surface, narrowed so the integration test can inject a stub
     /// without standing up a full PlaybackInfoService. Mirrors
     /// PlaybackInfoService.resolve(item:capabilities:startTime:audioStreamIndex:subtitleStreamIndex:).
@@ -472,8 +482,8 @@ final class PlayerViewModel {
 
     /// Seek just past the active intro/recap and keep playing.
     func skipActiveSegment() async {
-        guard let segment = activeSegment, segment.kind.playerAction == .skip, let engine else { return }
-        await engine.seek(to: CMTime(seconds: segment.endSeconds, preferredTimescale: 600))
+        guard let segment = activeSegment, segment.kind.playerAction == .skip else { return }
+        await seek(to: CMTime(seconds: segment.endSeconds, preferredTimescale: 600))
     }
 
     /// Play the next episode now (the outro button, or the prev/next transport).
@@ -799,7 +809,7 @@ final class PlayerViewModel {
             self.engine = engine
             subscribe(to: engine)
             nowPlaying.configure(
-                onSeek: { [weak self] time in Task { await self?.engine?.seek(to: time) } },
+                onSeek: { [weak self] time in Task { await self?.seek(to: time) } },
                 onPlay: { [weak self] in Task { await self?.engine?.play() } },
                 onPause: { [weak self] in Task { await self?.engine?.pause() } }
             )
@@ -902,6 +912,10 @@ final class PlayerViewModel {
         smbResolve = nil
         currentAudioStreamIndex = nil
         currentSubtitleStreamIndex = nil
+        // A re-anchor in flight is abandoned by reloadTranscode's exit fence; clear its
+        // state too so a retry()/replay can't inherit a stale target or a stuck flag.
+        pendingReanchorTarget = nil
+        isReanchoring = false
         availableAudioTracks = []
         availableSubtitleTracks = []
         selectedAudioTrack = nil
@@ -1199,28 +1213,83 @@ final class PlayerViewModel {
         case failed
     }
 
-    /// Rebuilds the transcode around new stream indices, resuming at the current
-    /// position. Costs a brief re-buffer — the server has to re-encode around the
-    /// chosen track. The engine instance is REUSED (reloaded), so the video surface
-    /// stays mounted and holds the last frame through the swap instead of blinking to
-    /// black; the audio session stays active too.
-    private func switchTranscodeTrack(audioStreamIndex: Int?, subtitleStreamIndex: Int?) async -> TrackSwitchOutcome {
-        // The chips stay mounted through a switch's .loading phase now — a second
-        // pick mid-switch must wait for (not race) the in-flight reload.
-        guard !isSwitchingTracks, let item = playingItem else { return .abandoned }
-        // The transcode plays a full-timeline HLS playlist that the engine SEEKS to
-        // the resume offset (Jellyfin ignores StartTimeTicks for the playlist start),
-        // so currentPosition is already absolute media time — resume the new stream
-        // right there. (Adding the old origin double-counted it, so resume drifted
-        // further forward on every track switch.)
-        let resumePosition = currentPosition
+    /// The one seek entry point for every source: scrub, chapter jump, segment skip,
+    /// and the Now Playing remote. An OUT-OF-BUFFER seek on a TRANSCODE re-resolves a
+    /// fresh transcode at the target instead of seeking in-stream — Jellyfin transcodes
+    /// fMP4 with `-noaccurate_seek`, so an in-playlist seek restarts ffmpeg mid-session
+    /// and the new segments' video clock drifts from the player clock, desyncing the
+    /// client subtitle overlay (jellyfin#15845). A fresh session's resume-seek lands
+    /// frame-accurate (that's why "dismiss + restart fixes it"). In-buffer transcode
+    /// seeks, and every direct-play / VLC / SMB seek, stay in-stream — instant, and on a
+    /// fresh-anchored session never drifting. Cost: the re-anchor re-buffers, but an
+    /// out-of-buffer transcode seek already re-buffers today (the engine fetches the
+    /// segment), so this swaps a drifting in-place restart for an aligned fresh one.
+    func seek(to target: CMTime) async {
+        guard let engine else { return }
+        // Only the transcode path drifts; everything else seeks in-stream as before.
+        guard resolved?.method == .transcode else {
+            await engine.seek(to: target)
+            return
+        }
+        // A re-anchor already in flight makes the engine's buffer state meaningless
+        // (it's mid-reload) — hand the newest target to the drain and let it win.
+        if isReanchoring {
+            pendingReanchorTarget = target
+            return
+        }
+        if await engine.isBuffered(at: target) {
+            await engine.seek(to: target)
+        } else {
+            pendingReanchorTarget = target
+            await drainReanchorSeeks()
+        }
+    }
 
-        // Keep the engine + its layer alive across the switch (beginPlayback reloads
+    /// Single-flight drain of `pendingReanchorTarget`: the first caller re-resolves the
+    /// transcode at the latest pending target, then loops to pick up any newer target
+    /// that arrived during the (multi-second) re-buffer — so a scrub past the buffer
+    /// settles on where the user stopped, not the first overshoot.
+    private func drainReanchorSeeks() async {
+        guard !isReanchoring else { return }
+        isReanchoring = true
+        defer { isReanchoring = false }
+        while let target = pendingReanchorTarget {
+            pendingReanchorTarget = nil
+            // Newest-wins: a seek arriving during the reload re-sets the target and the
+            // loop picks it up next iteration. But STOP on any non-`.completed` outcome —
+            // `.abandoned` (a concurrent track switch holds the reload, or the player is
+            // exiting) would otherwise spin against the block, and `.failed`/`.fellBack`
+            // would reload into a torn-down or fallback surface. The rare dropped seek
+            // (scrub during an audio switch) is re-issued by the next scrub.
+            guard case .completed = await reloadTranscode(
+                resumeAt: target,
+                audioStreamIndex: currentAudioStreamIndex,
+                subtitleStreamIndex: currentSubtitleStreamIndex
+            ) else { break }
+        }
+    }
+
+    /// Re-resolve a fresh transcode session resuming at `resume`, reusing the engine so
+    /// its video layer + audio session stay live (the surface holds the last frame
+    /// through the swap instead of blinking to black). Shared by the audio/subtitle
+    /// track switch (new indices, resume at the current position) and the re-anchor seek
+    /// (same indices, `resume` = the seek target). Costs a brief re-buffer — the server
+    /// re-encodes around the new anchor.
+    private func reloadTranscode(
+        resumeAt resume: CMTime,
+        audioStreamIndex: Int?,
+        subtitleStreamIndex: Int?
+    ) async -> TrackSwitchOutcome {
+        // The chips stay mounted through .loading — a second pick (or seek) mid-reload
+        // must wait for (not race) the in-flight reload.
+        guard !isSwitchingTracks, let item = playingItem else { return .abandoned }
+
+        // Keep the engine + its layer alive across the reload (beginPlayback reloads
         // it). Suppress the outgoing stream's trailing beats while we do.
         isSwitchingTracks = true
         defer { isSwitchingTracks = false }
 
-        // Freeze the current frame at the moment of selection — the frosted cover
+        // Freeze the current frame at the moment of the swap — the frosted cover
         // frosts over it while the new transcode buffers, and pausing stops the
         // outgoing audio instead of letting it play on under the cover.
         await engine?.pause()
@@ -1235,7 +1304,7 @@ final class PlayerViewModel {
         // terms. Trade-off: if the re-resolve FAILS, the silent fallback
         // resumes the old stream on a dead encoding — it plays out its buffer
         // and may stall into the failure scrim, which is still strictly better
-        // than every successful switch livelocking.
+        // than every successful reload livelocking.
         await stopEncodingIfNeeded()
         await reportStoppedIfNeeded()
         didReportStart = false
@@ -1245,23 +1314,41 @@ final class PlayerViewModel {
         do {
             try await beginPlayback(
                 item: item,
-                startTime: resumePosition,
+                startTime: resume,
                 audioStreamIndex: audioStreamIndex,
                 subtitleStreamIndex: subtitleStreamIndex,
                 reusingEngine: true
             )
             return .completed
         } catch is CancellationError {
-            // Exit raced the track switch — stop() already owns the teardown.
+            // Exit raced the reload — stop() already owns the teardown.
             return .abandoned
         } catch let error as AppError {
             return await fallBackAfterFailedSwitch(error)
         } catch {
-            Log.playback.error("track switch failed: \(error.networkDiagnostic)")
+            Log.playback.error("transcode reload failed: \(error.networkDiagnostic)")
             return await fallBackAfterFailedSwitch(
-                .unexpected("track switch failed", underlying: AnySendableError(error))
+                .unexpected("transcode reload failed", underlying: AnySendableError(error))
             )
         }
+    }
+
+    /// Rebuilds the transcode around new stream indices, resuming at the current
+    /// position. Costs a brief re-buffer — the server has to re-encode around the
+    /// chosen track. The engine instance is REUSED (reloaded), so the video surface
+    /// stays mounted and holds the last frame through the swap instead of blinking to
+    /// black; the audio session stays active too.
+    private func switchTranscodeTrack(audioStreamIndex: Int?, subtitleStreamIndex: Int?) async -> TrackSwitchOutcome {
+        // The transcode plays a full-timeline HLS playlist the engine SEEKS to the
+        // resume offset (Jellyfin ignores StartTimeTicks for the playlist start), so
+        // currentPosition is already absolute media time — resume the new stream right
+        // there. (Adding the old origin double-counted it, so resume drifted further
+        // forward on every track switch.)
+        await reloadTranscode(
+            resumeAt: currentPosition,
+            audioStreamIndex: audioStreamIndex,
+            subtitleStreamIndex: subtitleStreamIndex
+        )
     }
 
     /// The design's "failures are loud, fallbacks are silent": when the re-resolve

@@ -942,7 +942,7 @@ struct PlayerView: View {
             let dur = CMTimeGetSeconds(vm.currentDuration)
             guard dur > 0 else { return }
             let target = CMTime(seconds: p * dur, preferredTimescale: 600)
-            await vm.engine?.seek(to: target)
+            await vm.seek(to: target)
         case .togglePlayPause:
             // Optimistic flip inside the vm — the paused overlay reacts on the
             // press, not a beat later, and remote-press spam coalesces to the

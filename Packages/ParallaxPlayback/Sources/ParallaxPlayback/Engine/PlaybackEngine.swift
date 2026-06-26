@@ -39,6 +39,14 @@ public protocol PlaybackEngine: AnyObject, Sendable {
     /// Seek to an arbitrary position. No-op if no item is loaded.
     func seek(to time: CMTime) async
 
+    /// Whether `time` lies within the engine's buffered media, so a seek there
+    /// completes without a server fetch. The transcode path reads this to choose
+    /// between an in-stream seek (in-buffer: instant, stays on the current aligned
+    /// session) and a fresh-session re-resolve (out-of-buffer: an in-playlist seek
+    /// would restart ffmpeg mid-session, which Jellyfin's `-noaccurate_seek`
+    /// misaligns → client subtitle drift, jellyfin#15845).
+    func isBuffered(at time: CMTime) async -> Bool
+
     /// Select an audio track by id. No-op if the id is not in the current inventory.
     func setAudioTrack(_ track: AudioTrack) async
 
@@ -66,6 +74,10 @@ public protocol PlaybackEngine: AnyObject, Sendable {
 public extension PlaybackEngine {
     /// Default: zero. Real engines override with their live clock.
     nonisolated var currentTime: CMTime { .zero }
+
+    /// Default: always buffered, so the seek goes in-stream. Only an engine whose
+    /// buffer can fall behind the seek target (the AVKit HLS transcode) overrides.
+    func isBuffered(at time: CMTime) async -> Bool { true }
 
     /// Default: no debug info. Concrete engines override with real telemetry.
     func debugSnapshot() async -> PlaybackDebugInfo { .empty }

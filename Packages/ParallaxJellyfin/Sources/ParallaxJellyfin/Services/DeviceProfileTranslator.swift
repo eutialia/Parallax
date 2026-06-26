@@ -111,11 +111,24 @@ enum DeviceProfileTranslator {
         TranscodingProfile(
             protocol: .hls,
             audioCodec: "aac,ac3,eac3",
+            // fMP4, NOT mpegts — even though mpegts would fix the subtitle desync.
+            // AVPlayer only decodes HEVC in fMP4; Apple's HLS spec bans HEVC-in-TS, so
+            // a `ts` transcode black-screens every HEVC remux/transcode while audio +
+            // subs keep playing (verified on device 2026-06-26; cf. Swiftfin#1805). The
+            // cost of staying on fMP4 is Jellyfin's `-noaccurate_seek` (jellyfin#15845):
+            // a seek that restarts ffmpeg misaligns the transcoded video clock, so the
+            // client subtitle overlay (absolute cues vs the player clock) drifts by a
+            // fixed, seek-direction-dependent offset until a fresh transcode re-anchors.
+            // TS lands seeks frame-accurate (Jellyfin disables `-noaccurate_seek` there)
+            // and DID fix the drift on device — but black video rules it out. The
+            // subtitle drift is handled above the container, not by switching to TS.
             container: "mp4",
             context: .streaming,
             // Client-side subtitle rendering: we fetch each text subtitle as a
-            // correctly-timed sidecar VTT and draw it ourselves, so the server
-            // must NOT embed the mis-timed in-manifest WebVTT (jellyfin#16647).
+            // sidecar VTT and draw it ourselves through one cross-engine overlay
+            // (AVKit + VLC) we fully control — own styling today, user-customizable
+            // size/position/color later — so the server must NOT embed a legible
+            // group for AVPlayer to auto-select underneath it.
             enableSubtitlesInManifest: false,
             // Startup-latency knobs, matching Swiftfin's native-AVPlayer profile.
             // BreakOnNonKeyFrames matters most on the REMUX path (MKV+HEVC →

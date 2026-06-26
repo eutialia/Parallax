@@ -269,6 +269,16 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         }
     }
 
+    /// Whether `time` sits inside a contiguous loaded range — a seek there needs no
+    /// network fetch and, on a transcode, no ffmpeg restart. The view model uses this
+    /// to keep in-buffer transcode seeks in-stream and re-anchor only the out-of-buffer
+    /// ones (which would otherwise restart ffmpeg mid-session → `-noaccurate_seek`
+    /// subtitle drift, jellyfin#15845).
+    public func isBuffered(at time: CMTime) async -> Bool {
+        guard let item = currentItem else { return false }
+        return Self.bufferedEnd(of: item, at: time) != nil
+    }
+
     public func setAudioTrack(_ track: AudioTrack) async {
         await select(trackID: track.id, characteristic: .audible)
     }

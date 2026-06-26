@@ -51,6 +51,10 @@ public final class FakePlaybackEngine: PlaybackEngine {
     public nonisolated(unsafe) var loadError: Error? = nil
     public nonisolated(unsafe) private(set) var selectedAudioTrackID: TrackID? = nil
     public nonisolated(unsafe) private(set) var selectedSubtitleTrackID: TrackID? = nil
+    /// Drives `isBuffered(at:)`. `nil` (default) → always buffered, matching the
+    /// protocol default so seek-path tests are unaffected. Set a range to make a
+    /// target outside it read as out-of-buffer (→ the transcode re-anchor path).
+    public nonisolated(unsafe) var bufferedRange: ClosedRange<Double>? = nil
 
     private let continuation: AsyncStream<PlaybackState>.Continuation
 
@@ -86,6 +90,11 @@ public final class FakePlaybackEngine: PlaybackEngine {
         let seconds = CMTimeGetSeconds(time)
         let formatted = String(format: "%.1f", seconds)
         calls.append("seek(\(formatted))")
+    }
+
+    public func isBuffered(at time: CMTime) async -> Bool {
+        guard let bufferedRange else { return true }
+        return bufferedRange.contains(CMTimeGetSeconds(time))
     }
 
     public func setAudioTrack(_ track: AudioTrack) async {

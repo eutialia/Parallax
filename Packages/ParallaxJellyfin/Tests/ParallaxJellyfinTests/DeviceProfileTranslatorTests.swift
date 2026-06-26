@@ -195,12 +195,15 @@ struct DeviceProfileTranslatorTests {
 
     // MARK: — TranscodingProfile
 
-    @Test("TranscodingProfile targets HLS mp4; subtitles are NOT in the manifest (client renders sidecar VTT)")
+    @Test("TranscodingProfile targets HLS fMP4 (HEVC needs fMP4; TS black-screens HEVC); subtitles are NOT in the manifest (client renders sidecar VTT)")
     func transcoding() {
         let profile = DeviceProfileTranslator.deviceProfile(from: tieredCaps())
         let trans = profile.transcodingProfiles ?? []
         #expect(trans.count == 1)
         #expect(trans.first?.protocol == .hls)
+        // fMP4, not TS: AVPlayer only decodes HEVC in fMP4 (Apple HLS spec), so a TS
+        // transcode black-screens HEVC content (Swiftfin#1805). fMP4's cost is the
+        // `-noaccurate_seek` subtitle drift (jellyfin#15845), handled above the container.
         #expect(trans.first?.container == "mp4")
         #expect(trans.first?.type == .video)
         #expect(trans.first?.videoCodec == "h264,hevc")
@@ -208,7 +211,9 @@ struct DeviceProfileTranslatorTests {
         // Always request up to 7.1 (8ch); the OS downmixes/spatializes per route.
         // Without this Jellyfin defaults the transcode to 5.1 and downmixes 7.1 sources.
         #expect(trans.first?.maxAudioChannels == "8")
-        // In-manifest WebVTT mis-times on fMP4 (jellyfin#16647); we fetch a sidecar.
+        // Keep subtitles out of the manifest: the client renders each sidecar VTT
+        // itself, so the look is ours (one cross-engine overlay, future user-
+        // customizable size/position/color) instead of AVKit's OS-overridable native pass.
         #expect(trans.first?.enableSubtitlesInManifest == false)
         // Startup-latency knobs (Swiftfin-matched): on the remux path the
         // segmenter can't force keyframes, so without BreakOnNonKeyFrames the

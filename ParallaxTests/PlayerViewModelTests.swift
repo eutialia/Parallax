@@ -376,6 +376,53 @@ struct PlayerViewModelTests {
         #expect(engine.loadedAssets.count == 2)                         // engine reloaded
     }
 
+    @Test("transcode seek: in-buffer stays in-stream; out-of-buffer re-resolves a fresh aligned transcode at the target (jellyfin#15845 subtitle drift)")
+    func transcodeOutOfBufferSeekReanchors() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
+        let builder = DeviceProfileBuilder(probe: probe)
+        let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
+
+        nonisolated(unsafe) var resolveCalls: [(start: CMTime?, audio: Int?, sub: Int?)] = []
+        let vm = PlayerViewModel(
+            deviceProfileBuilder: builder,
+            playbackInfo: reporting,
+            resolve: { _, _, start, audio, sub in
+                resolveCalls.append((start, audio, sub))
+                return resolved
+            },
+            engineFactory: { _ in engine },
+            audioSession: NoopAudioSession()
+        )
+
+        await vm.start(item: PlayerFixtures.movieDetail())
+        #expect(resolveCalls.count == 1)                         // initial resolve only
+        let loadsAfterStart = engine.loadedAssets.count
+
+        // Buffer covers 0…120s: a seek to 60s is IN buffer → in-stream seek, no reload,
+        // no fresh transcode — the segments are already aligned.
+        engine.bufferedRange = 0...120
+        await vm.seek(to: CMTime(seconds: 60, preferredTimescale: 600))
+        #expect(engine.calls.contains("seek(60.0)"))
+        #expect(resolveCalls.count == 1)
+        #expect(engine.loadedAssets.count == loadsAfterStart)
+
+        // A seek to 3000s is OUT of buffer → re-resolve a FRESH transcode AT 3000s and
+        // reload the engine. An in-stream seek there would restart ffmpeg mid-session
+        // and desync the client subtitles, so it must NOT happen.
+        await vm.seek(to: CMTime(seconds: 3000, preferredTimescale: 600))
+        #expect(resolveCalls.count == 2)
+        let reanchor = try #require(resolveCalls.last)
+        #expect(CMTimeGetSeconds(reanchor.start ?? .zero) == 3000)
+        // The re-anchor forwards the CURRENT audio + subtitle selection — a fresh
+        // transcode must not silently drop the user's tracks (e.g. back to nil/default).
+        #expect(reanchor.audio.map(TrackID.jellyfinStream) == vm.selectedAudioTrack?.id)
+        #expect(reanchor.sub.map(TrackID.jellyfinStream) == vm.selectedSubtitleTrack?.id)
+        #expect(engine.loadedAssets.count == loadsAfterStart + 1)
+        #expect(!engine.calls.contains("seek(3000.0)"))
+    }
+
     @Test("transcode resumes by client seek: the asset carries the offset and a switch resumes at the live position (no origin double-count)")
     func transcodeResumeSeeksClientSide() async throws {
         let reporting = StubPlaybackReporting()
