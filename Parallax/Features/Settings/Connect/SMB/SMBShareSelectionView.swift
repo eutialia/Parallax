@@ -53,7 +53,7 @@ struct SMBShareSelectionView: View {
 
                 SettingsGroup(title: "Shares") {
                     ForEach(shares, id: \.name) { share in
-                        ShareSelectRow(
+                        ShareSelectionRow(
                             share: share,
                             isSelected: selected.contains(share.name),
                             onToggle: { toggle(share.name) }
@@ -115,48 +115,6 @@ struct SMBShareSelectionView: View {
     }
 }
 
-/// One selectable share row: a leading `SelectionCircle` + share name + optional comment subtitle.
-private struct ShareSelectRow: View {
-    let share: SMBShare
-    let isSelected: Bool
-    let onToggle: () -> Void
-
-    var body: some View {
-        Button(action: onToggle) {
-            HStack(spacing: Space.s12) {
-                SelectionCircle(state: isSelected ? .on : .off)
-
-                HStack(spacing: Space.s12) {
-                    Image(systemName: "externaldrive")
-                        .font(.system(size: 18, weight: .medium))
-                        .foregroundStyle(Color.secondaryLabel)
-                        .frame(width: SettingsListRow.glyphColumnWidth, alignment: .center)
-
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(share.name)
-                            .font(.rowBody)
-                            .foregroundStyle(Color.label)
-                            .lineLimit(1)
-                        if !share.comment.isEmpty {
-                            Text(share.comment)
-                                .font(.rowSubtitle)
-                                .foregroundStyle(Color.secondaryLabel)
-                                .lineLimit(1)
-                        }
-                    }
-                    Spacer(minLength: Space.s12)
-                }
-                .contentShape(.rect)
-            }
-            .padding(.horizontal, SettingsMetrics.rowHInset)
-            .padding(.vertical, Space.s12)
-            .frame(minHeight: SettingsListRow.rowMinHeight, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .buttonStyle(.plain)
-    }
-}
-
 #if DEBUG
 #Preview("SMB share selector · rows", traits: .fixedLayout(width: 540, height: 600)) {
     let stubShares = [
@@ -169,7 +127,7 @@ private struct ShareSelectRow: View {
         VStack(spacing: Space.s18) {
             SettingsGroup(title: "Shares") {
                 ForEach(stubShares, id: \.name) { share in
-                    ShareSelectRow(
+                    ShareSelectionRow(
                         share: share,
                         isSelected: share.name == "Media" || share.name == "Photos",
                         onToggle: {}
