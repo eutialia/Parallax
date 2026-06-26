@@ -109,19 +109,6 @@ enum AppLayout {
         }
     }
 
-    /// Column count for a LANDSCAPE (16:9) library grid — the SMB sources, whose tiles are video
-    /// frame-grabs rather than portrait posters. Deliberately fewer columns than
-    /// `posterGridColumns`: a 16:9 tile is far wider than a 2:3 poster at the same column width, so
-    /// reusing the poster count would leave each landscape tile short and cramped. These keep a
-    /// landscape tile a comfortable size on each idiom (tune here if the on-device density drifts).
-    static func landscapeGridColumns(idiom: AppIdiom) -> Int {
-        switch idiom {
-        case .compact: 2
-        case .regular: 4
-        case .tv: 4
-        }
-    }
-
     static func shelfTileWidth(idiom: AppIdiom) -> CGFloat {
         switch idiom {
         case .compact, .regular: HomeShelf.tileWidth

@@ -16,43 +16,32 @@ private enum LibraryHeaderChip {
 struct LibraryGridView: View {
     let scope: LibraryScope
     let title: String
-    /// The library's source — drives the repo (`mediaRepoFactory(source)`) and the per-tile
-    /// tap: a Jellyfin tile pushes detail (via `ItemNavigator`), an SMB tile plays directly.
-    let source: LibrarySource
+    /// The Jellyfin session backing this grid. The grid is Jellyfin-only — SMB shares route to
+    /// `SMBBrowseView` from the sidebar/list, never here — so the session drives both the repo
+    /// (`mediaRepoFactory(session)`) and per-tile detail pushes (via `ItemNavigator`).
+    let session: Session
 
     /// A server collection (the common case — sidebar tab or Library-list drill-down).
-    init(collection: MediaCollection, source: LibrarySource) {
+    init(collection: MediaCollection, session: Session) {
         self.scope = .collection(collection.id)
         self.title = collection.name
-        self.source = source
+        self.session = session
     }
 
-    /// The cross-library Favorites grid (movies + shows merged). Jellyfin-only — Favorites is a
-    /// cross-Jellyfin-library grid; SMB has no favorites — so it pins `source` to `.jellyfin`.
+    /// The cross-library Favorites grid (movies + shows merged) — a cross-Jellyfin-library grid.
     init(scope: LibraryScope, title: String, session: Session) {
         self.scope = scope
         self.title = title
-        self.source = .jellyfin(session)
+        self.session = session
     }
 
     @Environment(AppDependencies.self) private var deps
-    @Environment(PlaybackPresenter.self) private var playback
     @Environment(\.appIdiom) private var idiom
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    /// Tile shape comes from the source (`LibrarySource.usesLandscapeTiles`): SMB frame-grabs read
-    /// as 16:9 landscape, Jellyfin posters as 2:3. One fact drives BOTH the tile aspect ratio and
-    /// the column count, so the grid, its first-load placeholder, and the load-more strip stay in
-    /// lockstep (a 16:9 thumbnail in a 2:3 box was the overflow that broke tile taps).
-    private var tileAspectRatio: CGFloat { source.usesLandscapeTiles ? MediaImage.landscape : MediaImage.poster }
-    /// Fixed columns — shared by the grid, its first-load placeholder, and the load-more strip so
-    /// all three stay aligned. Fewer columns for the wider landscape (SMB) tiles. Denser on iPad.
-    private var columns: Int {
-        source.usesLandscapeTiles ? AppLayout.landscapeGridColumns(idiom: idiom) : AppLayout.posterGridColumns(idiom: idiom)
-    }
-    /// SMB landscape tiles carry a filename + duration row under the thumbnail; Jellyfin posters
-    /// don't. Drives both the loaded tiles (via `SMBThumbnailTile`) and the skeletons, so the
-    /// loading→loaded swap reserves the same height.
-    private var showsTileMetadata: Bool { source.usesLandscapeTiles }
+    /// Jellyfin items carry 2:3 portrait posters; this drives BOTH the tile aspect ratio and the
+    /// column count so the grid, its first-load placeholder, and the load-more strip stay in
+    /// lockstep. (SMB's 16:9 landscape wall lives in `SMBBrowseView`, not here.)
+    private var columns: Int { AppLayout.posterGridColumns(idiom: idiom) }
     @State private var viewModel: LibraryGridViewModel?
 
     var body: some View {
@@ -60,7 +49,7 @@ struct LibraryGridView: View {
             if let vm = viewModel {
                 gridContent(vm: vm)
             } else {
-                LibraryGridLoadingPlaceholder(aspectRatio: tileAspectRatio, columns: columns, showsMetadata: showsTileMetadata)
+                LibraryGridLoadingPlaceholder(columns: columns)
             }
         }
         // The grid owns its own title (the library name) so both iOS entry points — iPhone's
@@ -89,12 +78,7 @@ struct LibraryGridView: View {
     /// already present is a no-op.
     private func loadViewModel() async {
         guard viewModel == nil else { return }
-        // C5: `mediaRepoFactory` is now Jellyfin-only (`(Session) -> MediaRepository`); SMB no
-        // longer flows through a `MediaRepository`. This grid still takes `source: LibrarySource`
-        // and must branch — Jellyfin builds the repo-backed VM (via `.jellyfin(session)`), SMB
-        // lists a share directly via `deps.makeSMBLister` + `SMBFileSource`. Reworked in C5
-        // (SMB grid path); until then this `mediaRepoFactory(source)` call doesn't type-check.
-        let repo = await deps.mediaRepoFactory(source)
+        let repo = await deps.mediaRepoFactory(session)
         let vm = LibraryGridViewModel(repo: repo, scope: scope)
         viewModel = vm
         await vm.load()
@@ -103,7 +87,7 @@ struct LibraryGridView: View {
     @ViewBuilder
     private func gridContent(vm: LibraryGridViewModel) -> some View {
         if isInitialLoad(vm) {
-            LibraryGridLoadingPlaceholder(aspectRatio: tileAspectRatio, columns: columns, showsMetadata: showsTileMetadata)
+            LibraryGridLoadingPlaceholder(columns: columns)
         } else if case .failed(let message) = vm.state, vm.items.isEmpty {
             StatusStateView.failure("Couldn't load \(title)", message: message)
         } else if showsEmptyState(vm) {
@@ -190,29 +174,22 @@ struct LibraryGridView: View {
     @ViewBuilder
     private func gridScrollContent(vm: LibraryGridViewModel) -> some View {
         if vm.items.isEmpty, vm.state == .loading {
-            AdaptivePosterGridLoadingSkeleton(tileCount: columns * 3, fixedColumns: columns, aspectRatio: tileAspectRatio, showsMetadata: showsTileMetadata)
+            AdaptivePosterGridLoadingSkeleton(tileCount: columns * 3, fixedColumns: columns)
         } else {
             MediaGrid(
                 items: vm.items,
                 fixedColumns: columns,
                 onAppearLast: { Task { await vm.loadMore() } }
             ) { item in
-                // Jellyfin tiles browse-first (ItemNavigator pushes detail); SMB files are flat and
-                // play-only, so the tile IS the play button — wearing the same `.tvPosterButton()`
-                // poster focus treatment as ItemNavigator's so focus/lift behaves identically.
-                switch source {
-                case .jellyfin(let session):
-                    ItemNavigator(item: item, session: session) { jellyfinTile(for: item, session: session) }
-                case .smb(let ref):
-                    Button { playback.playSMB(item, ref: ref) } label: { smbTile(for: item, ref: ref) }
-                        .tvPosterButton()
-                }
+                // Jellyfin tiles browse-first: ItemNavigator pushes detail, wearing the
+                // `.tvPosterButton()` poster focus treatment.
+                ItemNavigator(item: item, session: session) { jellyfinTile(for: item, session: session) }
             }
             // Stale-while-revalidate dim → crossfade during the sort/filter/genre API
             // round-trip (shared with the Home shelves so the two never drift).
             .staleWhileRevalidate(isRefreshing: vm.isRefreshing, reduceMotion: reduceMotion)
             if vm.isLoadingMore {
-                AdaptivePosterGridLoadingSkeleton(tileCount: columns, fixedColumns: columns, aspectRatio: tileAspectRatio, showsMetadata: showsTileMetadata)
+                AdaptivePosterGridLoadingSkeleton(tileCount: columns, fixedColumns: columns)
                     .padding(.vertical, Space.s12)
             }
         }
@@ -365,14 +342,6 @@ struct LibraryGridView: View {
         )
     }
 
-    /// SMB tile: the same poster chrome as the Jellyfin tile, but its artwork is a frame-grab
-    /// generated + cached lazily from the video (`MediaArtworkProvider`), since an SMB file
-    /// carries no server poster. Falls back to the same gray placeholder while none exists.
-    @ViewBuilder
-    private func smbTile(for item: Item, ref: SMBServerRef) -> some View {
-        SMBThumbnailTile(item: item, ref: ref, provider: deps.mediaArtworkProvider, aspectRatio: tileAspectRatio)
-    }
-
     private func image(for item: Item) -> ImageRef? {
         switch item {
         case .movie(let m): return m.imageRef(.primary)
@@ -431,12 +400,9 @@ private func libraryHeaderMenu<Content: View>(
 /// standalone view (not a `@ViewBuilder` on the grid) so it owns its own body
 /// invalidation and renders identically from both the pre-VM and initial-load branches.
 private struct LibraryGridLoadingPlaceholder: View {
-    /// Tile shape + column count come from `LibraryGridView` (source-derived) so the placeholder
-    /// lays out the exact grid the loaded content will — no shift when the real grid swaps in.
-    var aspectRatio: CGFloat = MediaImage.poster
+    /// Column count comes from `LibraryGridView` so the placeholder lays out the exact poster grid
+    /// the loaded content will — no shift when the real grid swaps in.
     let columns: Int
-    /// SMB grids reserve the under-thumbnail metadata row; forwarded to the tile skeletons.
-    var showsMetadata: Bool = false
 
     @Environment(\.appIdiom) private var idiom
 
@@ -461,7 +427,7 @@ private struct LibraryGridLoadingPlaceholder: View {
                     .padding(.top, Space.s8)
                     .padding(.bottom, Space.s30)
                 }
-                AdaptivePosterGridLoadingSkeleton(tileCount: columns * 3, fixedColumns: columns, aspectRatio: aspectRatio, showsMetadata: showsMetadata)
+                AdaptivePosterGridLoadingSkeleton(tileCount: columns * 3, fixedColumns: columns)
             }
         }
         .scrollDisabled(true)

@@ -25,18 +25,6 @@ enum LibrarySource: Hashable {
         case .smb(let ref): return ref.data.host
         }
     }
-
-    /// Tile shape for this source's library grid: SMB items are video frame-grabs that read as 16:9
-    /// landscape; Jellyfin items carry 2:3 portrait posters. Drives BOTH the tile aspect ratio and
-    /// the (sparser) landscape column count in `LibraryGridView`. The switch is exhaustive on
-    /// purpose — a new source must declare its shape here, or it won't compile, instead of silently
-    /// defaulting to a poster box that overflows a wide thumbnail and steals the cell's taps.
-    var usesLandscapeTiles: Bool {
-        switch self {
-        case .jellyfin: false
-        case .smb: true
-        }
-    }
 }
 
 // Navigation value used by every NavigationLink that drills into a

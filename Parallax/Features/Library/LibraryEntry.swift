@@ -14,6 +14,20 @@ struct LibraryEntry: Identifiable, Hashable {
     let source: LibrarySource
     let collection: MediaCollection
     var id: LibraryRef { LibraryRef(source: source.sourceID, collection: collection.id) }
+
+    /// SF Symbol for this entry's sidebar tab (iPad `RootTabView` / tvOS `FocusRootView`): a
+    /// network-share glyph for an SMB share, the media-type glyph for a Jellyfin collection.
+    /// `externaldrive.badge.wifi` reads as a networked drive — the clearest "network share" of the
+    /// candidates (rendered side by side in RootTabView's preview; `network`'s globe says "web" and
+    /// plain `externaldrive` says "local disk"), and the same glyph the SMB browse breadcrumb +
+    /// share picker already use, so the SMB visual language stays consistent. Outline (non-filled)
+    /// per Apple's sidebar convention — the system fills the selected row.
+    var tabSymbolName: String {
+        switch source {
+        case .smb: return "externaldrive.badge.wifi"
+        case .jellyfin: return collection.collectionType.symbolName
+        }
+    }
 }
 
 extension AppTab {

@@ -1,5 +1,6 @@
 import SwiftUI
 import ParallaxJellyfin
+import ParallaxCore
 
 /// The iPhone Library tab for an SMB-only configuration (no Jellyfin session). Renders just
 /// the configured SMB libraries in the same banner grid as `LibraryListView`, drilling into
@@ -43,14 +44,27 @@ struct SMBLibraryCell: View {
     }
 }
 
+/// The destination view for a `LibraryEntry`, branching by source: an SMB share opens the folder
+/// browser (`SMBBrowseView` at the share root), a Jellyfin collection opens the poster grid. The ONE
+/// place this branch lives — shared by the iPhone list drill-down (`smbLibraryDestination`) and the
+/// iPad/tvOS sidebar tabs (`RootTabView` / `FocusRootView`) so they can't dispatch a source two ways.
+@ViewBuilder
+func libraryEntryDestination(for entry: LibraryEntry) -> some View {
+    switch entry.source {
+    case .smb(let ref):
+        SMBBrowseView(path: SMBBrowsePath(ref: ref, share: entry.collection.name, path: ""))
+    case .jellyfin(let session):
+        // Title is owned by the grid (from the collection) so the iPhone Library-list
+        // drill-down and the direct sidebar tab show it identically.
+        LibraryGridView(collection: entry.collection, session: session)
+    }
+}
+
 extension View {
-    /// The `LibraryEntry` drill-down destination: an entry carries its own source, so the grid
-    /// builds the right repo and plays on tap. A distinct value type from the Jellyfin
-    /// `MediaCollection` destination, so the two never collide. Shared by every screen that lists
-    /// SMB libraries.
+    /// The `LibraryEntry` drill-down destination for screens that push entries as navigation values
+    /// (the merged + SMB-only iPhone lists). A distinct value type from the Jellyfin
+    /// `MediaCollection` destination, so the two never collide.
     func smbLibraryDestination() -> some View {
-        navigationDestination(for: LibraryEntry.self) { entry in
-            LibraryGridView(collection: entry.collection, source: entry.source)
-        }
+        navigationDestination(for: LibraryEntry.self) { libraryEntryDestination(for: $0) }
     }
 }

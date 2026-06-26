@@ -157,11 +157,11 @@ struct RootTabView: View {
                 // Deferred UI polish; the merge already tags every entry by source.
                 TabSection("Libraries") {
                     ForEach(entries) { entry in
-                        Tab(entry.collection.name, systemImage: entry.collection.collectionType.symbolName, value: AppTab.collection(entry.id)) {
+                        Tab(entry.collection.name, systemImage: entry.tabSymbolName, value: AppTab.collection(entry.id)) {
                             NavigationStack {
-                                // Title is owned by the grid (from the collection) so the iPhone
-                                // Library-list drill-down and this direct tab show it identically.
-                                LibraryGridView(collection: entry.collection, source: entry.source)
+                                // SMB shares drill into the folder browser; Jellyfin collections into
+                                // the poster grid (shared with the iPhone list — one dispatch site).
+                                libraryEntryDestination(for: entry)
                             }
                         }
                         .defaultVisibility(AppTab.collection(entry.id) == lastVisitedLibraryTab ? .visible : .hidden, for: .tabBar)
@@ -228,4 +228,61 @@ struct RootTabView: View {
         router.presentingSettings = true
     }
 }
+
+#if DEBUG
+/// Sidebar library-tab labels, the way `TabSection("Libraries")` renders them: a Jellyfin
+/// collection takes its media-type glyph, an SMB share the network-share glyph (`tabSymbolName`).
+/// The point is to confirm an SMB share reads as a NETWORK SHARE next to the Jellyfin rows — and to
+/// compare glyph candidates side by side so the clearest one wins (the task started on
+/// `externaldrive.connected.to.line.below`). Mirrors RootView's app-wide `Color.label` tint so the
+/// resting glyph color matches the real sidebar.
+private struct SMBSidebarTabGlyphPreview: View {
+    private let smbEntry = LibraryEntry(
+        source: .smb(SMBServerRef(id: ServerID(rawValue: "preview"), data: SMBServerData(host: "nas.local", username: "guest", domain: "", shares: ["Media"]))),
+        collection: MediaCollection(id: CollectionID(rawValue: "Media"), name: "Media", collectionType: .movies, primaryTag: nil)
+    )
+
+    private func tabRowLabel(_ title: String, _ symbol: String) -> some View {
+        Label(title, systemImage: symbol)
+            .font(.body)
+            .labelStyle(.titleAndIcon)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, Space.s16)
+            .padding(.vertical, Space.s12)
+    }
+
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(Color.secondaryLabel)
+            .padding(.horizontal, Space.s16)
+            .padding(.bottom, Space.s8)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            sectionHeader("LIBRARIES")
+            // The real mix: two Jellyfin libraries + the SMB share, each via its own glyph rule.
+            tabRowLabel("Movies", CollectionType.movies.symbolName)
+            tabRowLabel("Shows", CollectionType.tvShows.symbolName)
+            tabRowLabel(smbEntry.collection.name, smbEntry.tabSymbolName)
+
+            Divider().padding(.vertical, Space.s12)
+
+            sectionHeader("SMB GLYPH CANDIDATES")
+            tabRowLabel("connected.to.line.below", "externaldrive.connected.to.line.below")
+            tabRowLabel("badge.wifi", "externaldrive.badge.wifi")
+            tabRowLabel("network", "network")
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(.vertical, Space.s26)
+        .background(Color.background)
+        .tint(Color.label)
+    }
+}
+
+#Preview("SMB sidebar tab glyph", traits: .fixedLayout(width: 360, height: 460)) {
+    SMBSidebarTabGlyphPreview()
+}
+#endif
 #endif

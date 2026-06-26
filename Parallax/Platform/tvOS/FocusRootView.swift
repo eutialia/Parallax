@@ -122,9 +122,11 @@ struct FocusRootView: View {
             if !entries.isEmpty {
                 TabSection("Libraries") {
                     ForEach(entries) { entry in
-                        Tab(entry.collection.name, systemImage: entry.collection.collectionType.symbolName, value: AppTab.collection(entry.id)) {
+                        Tab(entry.collection.name, systemImage: entry.tabSymbolName, value: AppTab.collection(entry.id)) {
                             NavigationStack {
-                                LibraryGridView(collection: entry.collection, source: entry.source)
+                                // SMB shares drill into the folder browser; Jellyfin collections into
+                                // the poster grid (shared with the iPhone list — one dispatch site).
+                                libraryEntryDestination(for: entry)
                             }
                         }
                     }

@@ -61,7 +61,7 @@ struct LibraryListView: View {
             }
         }
         .navigationDestination(for: MediaCollection.self) { coll in
-            LibraryGridView(collection: coll, source: .jellyfin(session))
+            LibraryGridView(collection: coll, session: session)
         }
         // SMB drill-down — shared with the SMB-only list; distinct value type from the Jellyfin
         // `MediaCollection` destination above, so the two never collide.
