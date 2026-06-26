@@ -98,7 +98,19 @@ struct SMBBrowseView: View {
             ProgressView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let error = model.error, model.folders.isEmpty, model.media.isEmpty {
-            StatusStateView.failure("Couldn't open \(levelTitle)", message: error)
+            if path.path.isEmpty {
+                // Share-root failure: the share itself wouldn't open — gone server-side (the same
+                // orphan the Settings share list now surfaces as removable) or the server's
+                // unreachable. A dedicated warning beats the generic per-folder error and points at
+                // the recovery; deeper folders keep the plain "Couldn't open" with the raw reason.
+                StatusStateView(
+                    title: "Share Unavailable",
+                    systemImage: "externaldrive.badge.xmark",
+                    message: "The \(path.share) share isn’t available on \(path.ref.data.host). It may be offline, renamed, or no longer shared. If it’s gone for good, remove it from this server in Settings."
+                )
+            } else {
+                StatusStateView.failure("Couldn't open \(levelTitle)", message: error)
+            }
         } else if model.folders.isEmpty, model.media.isEmpty {
             StatusStateView(
                 title: "Nothing Here",
@@ -312,5 +324,19 @@ private struct SMBBrowseGridPreview: View {
 
 #Preview("SMB browse · folders + media", traits: .fixedLayout(width: 900, height: 760)) {
     SMBBrowseGridPreview()
+}
+
+/// The share-root failure state (the #1 complement): opening a share that's gone server-side or
+/// offline lands the library view here instead of a generic "Couldn't open" — same StatusStateView
+/// the no-Home / no-network states use, with the recovery hint pointing back at Settings.
+#Preview("SMB share unavailable", traits: .fixedLayout(width: 640, height: 520)) {
+    StatusStateView(
+        title: "Share Unavailable",
+        systemImage: "externaldrive.badge.xmark",
+        message: "The Media share isn’t available on nas.local. It may be offline, renamed, or no longer shared. If it’s gone for good, remove it from this server in Settings."
+    )
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+    .background(Color.background)
+    .preferredColorScheme(.dark)
 }
 #endif
