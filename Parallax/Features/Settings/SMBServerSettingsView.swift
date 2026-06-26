@@ -1,4 +1,6 @@
+import os
 import SwiftUI
+import ParallaxCore
 import ParallaxFileBrowse
 import ParallaxJellyfin
 
@@ -43,6 +45,17 @@ struct SMBServerSettingsView: View {
         return data.username
     }
 
+    private var connectionPill: StatusPillData {
+        switch loadState {
+        case .loading:
+            return StatusPillData(lead: .led(Color.tertiaryLabel), text: "Connecting…")
+        case .failed:
+            return StatusPillData(lead: .led(Color.destructive), text: "Can't connect")
+        case .loaded:
+            return StatusPillData(lead: .led(Color.ok), text: "Connected")
+        }
+    }
+
     // MARK: - Body
 
     var body: some View {
@@ -52,7 +65,7 @@ struct SMBServerSettingsView: View {
                 name: host,
                 meta: "SMB · \(host)",
                 pills: [
-                    StatusPillData(lead: .led(Color.ok), text: "Connected"),
+                    connectionPill,
                     StatusPillData(lead: .symbol("person"), text: account),
                 ]
             )
@@ -161,7 +174,11 @@ struct SMBServerSettingsView: View {
     /// Remove the server from the store and re-evaluate routing (same logic as
     /// `SettingsViewModel.removeSMBServer` + `reloadAfterSMBChange`).
     private func removeServer() async {
-        do { try await deps.serverStore.remove(server.id) } catch {}
+        do {
+            try await deps.serverStore.remove(server.id)
+        } catch {
+            Log.persistence.error("SMBServerSettings remove failed for \(server.id.rawValue): \(error.localizedDescription)")
+        }
         // Re-read the store to determine the updated sources state for routing.
         let remaining = await deps.serverStore.servers
         let activeSession = await deps.serverStore.active
@@ -205,13 +222,13 @@ private struct ShareToggleRow: View {
                     }
                     Spacer(minLength: Space.s12)
                 }
-                .contentShape(.rect)
             }
             .padding(.horizontal, SettingsMetrics.rowHInset)
             .padding(.vertical, Space.s12)
             .frame(minHeight: SettingsListRow.rowMinHeight, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .contentShape(.rect)
         .buttonStyle(.plain)
         .tvListRowButton()
         .accessibilityValue(isOn ? "Enabled" : "Disabled")
