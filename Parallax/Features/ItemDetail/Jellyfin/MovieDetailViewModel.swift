@@ -14,6 +14,9 @@ final class MovieDetailViewModel {
     private(set) var state: LoadState = .idle
     private(set) var isFavorite = false
     private(set) var isPlayed = false
+    /// Drives the stale-while-revalidate dim during `refresh()` (re-pull after a
+    /// playback session ends). Also a re-entrancy guard.
+    private(set) var isRefreshing = false
     private var playedInFlight = false
     private let repo: LibraryRepository
     private let itemID: ItemID
@@ -40,6 +43,29 @@ final class MovieDetailViewModel {
         } catch {
             Log.ui.error("MovieDetail load unexpected: \(String(describing: type(of: error)))")
             state = .failed("Something went wrong. Go back and open it again.")
+        }
+    }
+
+    /// Re-pull the movie after a playback session ends so its progress-driven UI — the
+    /// Resume/Play label and the watched check — reflects the position the player just
+    /// moved. Stays on `.loaded` (no skeleton flash) and lets the `staleWhileRevalidate`
+    /// dim cover the swap. Re-fetch failure is non-fatal: keep the stale detail, log.
+    func refresh() async {
+        guard case .loaded = state, !isRefreshing else { return }
+        isRefreshing = true
+        defer { isRefreshing = false }
+        do {
+            let detail = try await repo.detail(for: itemID)
+            guard case .movie(let md) = detail else { return }
+            state = .loaded(md)
+            // Finishing a movie marks it played server-side, so pick that up — but not
+            // while a manual Mark-Watched toggle is still round-tripping (`togglePlayed`
+            // owns the field until its write resolves). Favorite is never moved by
+            // playback, so refresh leaves `isFavorite` alone rather than race an
+            // in-flight favorite toggle.
+            if !playedInFlight { isPlayed = md.movie.userData.played }
+        } catch {
+            Log.ui.error("MovieDetail refresh failed: \(String(describing: type(of: error)))")
         }
     }
 

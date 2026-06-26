@@ -9,6 +9,7 @@ struct SeriesDetailView: View {
     @Environment(AppDependencies.self) private var deps
     @Environment(PlaybackPresenter.self) private var playback
     @Environment(\.appIdiom) private var idiom
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var viewModel: SeriesDetailViewModel?
 
     var body: some View {
@@ -88,6 +89,11 @@ struct SeriesDetailView: View {
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.bottom, Space.s30)
+                        // Dim + crossfade the page while `refresh()` re-pulls progress after
+                        // playback, so the episode progress bars / watched checks and the Resume
+                        // target swap under the dim instead of snapping — same recipe as Home's
+                        // shelves. tvOS swaps instantly (no crossfade); see the modifier.
+                        .staleWhileRevalidate(isRefreshing: vm.isRefreshing, reduceMotion: reduceMotion)
                     }
                     .scrollClipDisabled(true)
                     #if !os(tvOS)
@@ -110,6 +116,15 @@ struct SeriesDetailView: View {
                 let repo = await deps.jellyfinLibraryRepoFactory(session)
                 viewModel = SeriesDetailViewModel(repo: repo, itemID: itemID)
                 await viewModel?.load()
+            }
+        }
+        // A finished playback session moved an episode's position (incl. prev/next jumps),
+        // so re-pull the series the moment the player dismisses. The view stays MOUNTED
+        // under the player layer/cover, so `.task` never re-fires — `playback.request`
+        // clearing (id → nil) is the only "back from watching" edge. Mirrors HomeView.
+        .onChange(of: playback.request?.id) { oldID, newID in
+            if oldID != nil, newID == nil {
+                Task { await viewModel?.refresh() }
             }
         }
     }

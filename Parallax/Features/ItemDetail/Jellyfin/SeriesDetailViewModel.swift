@@ -16,6 +16,9 @@ final class SeriesDetailViewModel {
     private(set) var episodesLoading = false
     private(set) var isFavorite = false
     private(set) var resumeEpisode: Episode?
+    /// Drives the stale-while-revalidate dim during `refresh()` (re-pull after a
+    /// playback session ends). Also a re-entrancy guard.
+    private(set) var isRefreshing = false
 
     private let repo: LibraryRepository
     private let itemID: ItemID
@@ -55,6 +58,29 @@ final class SeriesDetailViewModel {
         }
     }
 
+    /// Re-pull the progress-driven data after a playback session ends so the season
+    /// shelves' progress bars / watched checks and the hero's Resume target reflect the
+    /// position the player just moved. Stays on `.loaded` and — crucially — does NOT set
+    /// `episodesLoading`, so the shelves never flash their skeleton; the `staleWhileRevalidate`
+    /// dim covers the swap instead. Both fields land in one `@Observable` transaction (no
+    /// `await` between the assignments and the `defer`'d flag clear) so the dim lifts on fully
+    /// fresh data. Re-fetch failure is non-fatal: keep the stale shelves, log.
+    ///
+    /// Only the episode-level state moves when an episode finishes, so refresh re-pulls just
+    /// the episodes and the next-up Resume target. The series detail (overview, seasons) and
+    /// `isFavorite` are untouched by playback, so it skips the `detail` re-pull entirely —
+    /// fewer round-trips, and no race against an in-flight favorite toggle.
+    func refresh() async {
+        guard case .loaded(_, let seasons) = state, !isRefreshing else { return }
+        isRefreshing = true
+        defer { isRefreshing = false }
+        async let resumeTask = repo.resumeEpisode(forSeries: itemID)
+        let refreshedEpisodes = await fetchEpisodes(for: seasons)
+        let refreshedResume = try? await resumeTask
+        episodesBySeasonID = refreshedEpisodes
+        resumeEpisode = refreshedResume
+    }
+
     func episodes(for seasonID: ItemID) -> [Episode] {
         episodesBySeasonID[seasonID] ?? []
     }
@@ -90,6 +116,14 @@ final class SeriesDetailViewModel {
 
     private func loadEpisodes(for seasons: [Season]) async {
         episodesLoading = true
+        episodesBySeasonID = await fetchEpisodes(for: seasons)
+        episodesLoading = false
+    }
+
+    /// Concurrently fetch every season's episodes, swallowing a per-season failure to an
+    /// empty list. Pure fetch — no state side effects — so `load()` (with the
+    /// `episodesLoading` skeleton) and `refresh()` (dimmed, no skeleton) share it.
+    private func fetchEpisodes(for seasons: [Season]) async -> [ItemID: [Episode]] {
         var bySeason: [ItemID: [Episode]] = [:]
         await withTaskGroup(of: (ItemID, [Episode]).self) { group in
             for season in seasons {
@@ -108,7 +142,6 @@ final class SeriesDetailViewModel {
                 bySeason[seasonID] = episodes
             }
         }
-        episodesBySeasonID = bySeason
-        episodesLoading = false
+        return bySeason
     }
 }
