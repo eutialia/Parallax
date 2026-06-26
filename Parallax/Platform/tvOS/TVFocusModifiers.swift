@@ -224,6 +224,12 @@ struct TVQuietButtonStyle: ButtonStyle {
 /// other focus chrome.
 private struct TVFocusListRowModifier: ViewModifier {
     let cornerRadius: CGFloat
+    /// The screen's real appearance. The focus platter is always white, so a FOCUSED row forces
+    /// `.light` (ink on white). At REST the row must keep the ambient appearance — NOT force `.dark`:
+    /// the redesign's Paper face renders the screen light, and forcing dark made `Color.label` resolve
+    /// to its dark-face white, washing every unfocused row out on the tan floor. Ambient-at-rest is
+    /// correct both ways: ink-on-Paper in light, white-on-graphite in dark.
+    @Environment(\.colorScheme) private var ambient
 
     func body(content: Content) -> some View {
         TVFocusReader { focused in
@@ -239,7 +245,7 @@ private struct TVFocusListRowModifier: ViewModifier {
                         .padding(.vertical, Space.s3)
                         .opacity(focused ? 1 : 0)
                 )
-                .environment(\.colorScheme, focused ? .light : .dark)
+                .environment(\.colorScheme, focused ? .light : ambient)
                 .animation(.tvFocusChrome, value: focused)
         }
     }

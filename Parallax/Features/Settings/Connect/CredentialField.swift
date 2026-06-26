@@ -1,63 +1,99 @@
 #if !os(tvOS)
 import SwiftUI
 
-/// One iOS credential field, drawn as a standalone capsule PILL — a leading glyph + the editor on a
-/// flat `Color.fill` capsule. This is the same pill language as the settings rows and the tvOS
-/// credential rows (`CredentialRowList`), replacing the old fused group-with-hairlines that read as a
-/// squared-off block beside the app's capsules. Shared by `LoginView` and `SMBLoginView` so the two
-/// sign-in forms can't drift apart (they previously duplicated the row/hairline/height scaffolding
-/// verbatim). tvOS uses `CredentialRowList` instead — single-field editor screens, not inline pills.
-struct CredentialFieldPill<Content: View>: View {
+/// One iOS credential field inside an inset-grouped form section — a leading glyph + the editor, drawn
+/// FLAT so the rounded `Color.surface` card and the inter-field hairlines come from the enclosing
+/// `SettingsGroup` (the same grouped-card idiom as the settings rows, replacing the old standalone
+/// capsule pill). Shared by `LoginView` and `SMBLoginView` so the two sign-in forms can't drift apart.
+/// tvOS uses `CredentialRowList` instead — single-field editor screens, not inline fields.
+struct CredentialFieldRow<Content: View>: View {
     let icon: String
     @ViewBuilder var content: Content
 
-    /// Scales with Dynamic Type so the editor never clips, and matches the form CTA's 50pt height so
-    /// the field stack and the Connect button below it read as one control family.
-    @ScaledMetric(relativeTo: .headline) private var height: CGFloat = 50
+    /// Scales with Dynamic Type so the editor never clips; the handoff field row is ~50pt tall.
+    @ScaledMetric(relativeTo: .body) private var minHeight: CGFloat = 50
 
     var body: some View {
         HStack(spacing: Space.s12) {
             Image(systemName: icon)
-                .frame(width: 20)
+                .font(.system(size: 18, weight: .medium))
                 .foregroundStyle(Color.tertiaryLabel)
+                .frame(width: SettingsListRow.glyphColumnWidth, alignment: .center)
             content
+                .font(.rowBody)
+                .tint(Color.label)
         }
-        // Wider horizontal inset than the old 14pt rows: a capsule's rounded ends eat ~half the height
-        // in curve, so the glyph + text need to clear it (the same reason the settings pills inset s26).
-        .padding(.horizontal, Space.s22)
-        .frame(height: height)
-        .background(Color.fill, in: Capsule())
+        .padding(.horizontal, SettingsMetrics.rowHInset)
+        .frame(minHeight: minHeight)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
-/// The inter-pill gap for a credential form — one source so `LoginView` and `SMBLoginView` space their
-/// field pills and LAN-discovered rows identically.
-extension CGFloat {
-    static let credentialPillGap = Space.s8
+/// A trailing "Show"/"Hide" reveal toggle for a password field, styled like the handoff's `.trail`.
+struct PasswordRevealToggle: View {
+    @Binding var isRevealed: Bool
+
+    var body: some View {
+        Button(isRevealed ? "Hide" : "Show") { isRevealed.toggle() }
+            .font(.rowValue.weight(.semibold))
+            .foregroundStyle(Color.secondaryLabel)
+            .buttonStyle(.borderless)
+    }
 }
 
 #if DEBUG
-#Preview("Credential field pills") {
-    @Previewable @State var server = "https://jellyfin.example.com"
+#Preview("Credential fields · grouped", traits: .fixedLayout(width: 540, height: 420)) {
+    @Previewable @State var server = "http://jellyfin.example.lan"
     @Previewable @State var user = ""
     @Previewable @State var pass = "hunter2"
     @Previewable @State var reveal = false
-    return VStack(spacing: Space.s8) {
-        CredentialFieldPill(icon: "globe") {
-            TextField("Server", text: $server)
+    return VStack(spacing: Space.s18) {
+        SettingsGroup(title: "Server") {
+            CredentialFieldRow(icon: "globe") { TextField("Server", text: $server) }
         }
-        CredentialFieldPill(icon: "person") {
-            TextField("Username", text: $user)
-        }
-        CredentialFieldPill(icon: "lock") {
-            HStack {
-                Group { if reveal { TextField("Password", text: $pass) } else { SecureField("Password", text: $pass) } }
-                Button(reveal ? "Hide" : "Show") { reveal.toggle() }
-                    .font(.footnote).foregroundStyle(Color.secondaryLabel).buttonStyle(.borderless)
+        SettingsGroup(title: "Account") {
+            CredentialFieldRow(icon: "person") { TextField("Username", text: $user) }
+            CredentialFieldRow(icon: "lock") {
+                HStack {
+                    Group { if reveal { TextField("Password", text: $pass) } else { SecureField("Password", text: $pass) } }
+                    PasswordRevealToggle(isRevealed: $reveal)
+                }
             }
         }
     }
-    .padding()
+    .padding(Space.s18)
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    .background(Color.background)
+}
+
+#Preview("SMB form · fields", traits: .fixedLayout(width: 540, height: 460)) {
+    @Previewable @State var host = "mynas.local"
+    @Previewable @State var share = "Media"
+    @Previewable @State var user = ""
+    @Previewable @State var pass = ""
+    @Previewable @State var reveal = false
+    return VStack(spacing: Space.s18) {
+        SettingsGroup(title: "Server", footer: "Your server’s address, then the name of the shared folder to open.") {
+            CredentialFieldRow(icon: "externaldrive.badge.wifi") {
+                HStack(spacing: 0) {
+                    Text("smb://").foregroundStyle(Color.tertiaryLabel)
+                    TextField("mynas.local", text: $host)
+                }
+            }
+            CredentialFieldRow(icon: "folder") { TextField("Share name", text: $share) }
+        }
+        SettingsGroup(title: "Sign In", footer: "Leave blank to connect as a guest.") {
+            CredentialFieldRow(icon: "person") { TextField("Username", text: $user) }
+            CredentialFieldRow(icon: "lock") {
+                HStack {
+                    Group { if reveal { TextField("Password", text: $pass) } else { SecureField("Password", text: $pass) } }
+                    PasswordRevealToggle(isRevealed: $reveal)
+                }
+            }
+        }
+    }
+    .padding(Space.s18)
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     .background(Color.background)
 }
 #endif

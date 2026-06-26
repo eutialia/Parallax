@@ -25,7 +25,10 @@ struct LoginView: View {
     #endif
 
     var body: some View {
-        SettingsScaffold(brandSubtitle: "Sign in to your Jellyfin server") { signInBody }
+        // No brand on the sign-in form itself: it's always PUSHED from a choose-type screen (first-run's
+        // ConnectSourceView or Settings' AddServerChooseView) which owns the brand/intro, so it reads
+        // under its "Jellyfin" nav title — re-showing the lockup here would double-brand the flow.
+        SettingsScaffold(showsBrand: false) { signInBody }
         #if !os(tvOS)
         .onAppear {
             // Discovery runs only while this screen is visible. Triggers the iOS Local Network
@@ -99,11 +102,22 @@ struct LoginView: View {
     @ViewBuilder
     private func passwordBody(vm: LoginViewModel) -> some View {
         @Bindable var vm = vm
-        VStack(spacing: Space.s22) {
+        VStack(spacing: Space.s18) {
+            #if os(tvOS)
+            // tvOS has no nav bar (the native pill only reads "Settings"), so the form carries its own
+            // identity inline (handoff `.fhead`). iOS shows the "Jellyfin" nav title instead.
+            FormIntroHeader(
+                glyph: .symbol("server.rack"),
+                title: "Sign in to Jellyfin",
+                subtitle: "Enter your server address and account. Or use Quick Connect to approve from your phone — no typing on the remote."
+            )
+            .padding(.bottom, Space.s8)
+            #endif
+
             #if !os(tvOS)
-            // LAN-discovered servers as capsule pills (the settings-row idiom): tap to quick-fill the URL.
+            // LAN-discovered servers as a grouped section: tap to quick-fill the URL.
             if !deps.lanDiscovery.discovered.isEmpty {
-                VStack(spacing: .credentialPillGap) {
+                SettingsGroup(title: "Discovered") {
                     ForEach(deps.lanDiscovery.discovered) { server in
                         SettingsListRow(
                             systemImage: "wifi",
@@ -117,9 +131,8 @@ struct LoginView: View {
             }
             #endif
 
-            // Field stack — tvOS uses the Settings-style row list (rows → single-field keyboard
-            // screen, no inline field pill); iOS keeps the inline grouped fields. See
-            // `CredentialRowList` for why the inline tvOS field pill is avoided.
+            // Field stack — tvOS uses the Settings-style row list (rows → single-field keyboard screen);
+            // iOS uses the inset-grouped fields. See `CredentialRowList` for why the inline tvOS field is avoided.
             #if os(tvOS)
             CredentialRowList(rows: [
                 CredentialRow(id: "server", title: "Server", placeholder: "https://jellyfin.example.com", text: $vm.serverURLInput, keyboard: .URL, textContentType: .URL),
@@ -127,20 +140,22 @@ struct LoginView: View {
                 CredentialRow(id: "password", title: "Password", placeholder: "Password", text: $vm.password, isSecure: true, textContentType: .password),
             ], onSubmit: { handleSubmit(vm: vm) })
             #else
-            VStack(spacing: .credentialPillGap) {
-                CredentialFieldPill(icon: "globe") {
+            SettingsGroup(title: "Server") {
+                CredentialFieldRow(icon: "globe") {
                     TextField("", text: $vm.serverURLInput, prompt: Self.urlPrompt)
                         .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
                         .textContentType(.URL)
                         .submitChain(.server, focus: $focusedField, onComplete: { handleSubmit(vm: vm) })
                 }
-                CredentialFieldPill(icon: "person") {
+            }
+            SettingsGroup(title: "Account") {
+                CredentialFieldRow(icon: "person") {
                     TextField("Username", text: $vm.username)
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                         .textContentType(.username)
                         .submitChain(.username, focus: $focusedField, onComplete: { handleSubmit(vm: vm) })
                 }
-                CredentialFieldPill(icon: "lock") {
+                CredentialFieldRow(icon: "lock") {
                     HStack {
                         Group {
                             if showPassword {
@@ -150,23 +165,19 @@ struct LoginView: View {
                             }
                         }
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
-                        // Tag both states .password: the heuristics treat a non-secure field as a
-                        // password only when told, so the "Show" toggle's plain TextField keeps
-                        // AutoFill alive. Surfaces the QuickType key icon (all saved logins) even
-                        // without an associated domain — the realistic fill path for self-hosted URLs.
+                        // Tag both states .password so the "Show" toggle's plain TextField keeps AutoFill alive.
                         .textContentType(.password)
                         .submitChain(.password, focus: $focusedField, onComplete: { handleSubmit(vm: vm) })
-                        Button(showPassword ? "Hide" : "Show") { showPassword.toggle() }
-                            .font(.footnote).foregroundStyle(Color.secondaryLabel)
-                            .buttonStyle(.borderless)
+                        PasswordRevealToggle(isRevealed: $showPassword)
                     }
                 }
             }
             #endif
 
             if let error = vm.errorMessage {
-                Text(error).font(.footnote).foregroundStyle(Color.red)
+                Text(error).font(.footnote).foregroundStyle(Color.destructive)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, SettingsMetrics.headerInset)
             }
 
             // Connect (solid primary) — needs all three fields before it's tappable.
@@ -177,6 +188,7 @@ struct LoginView: View {
             }
             .formActionButton(.solid)
             .disabled(vm.isWorking || !vm.canSubmitPassword)
+            .padding(.top, Space.s3)
 
             // OR divider
             HStack(spacing: Space.s12) {
@@ -194,6 +206,14 @@ struct LoginView: View {
             }
             .formActionButton(.glass)
             .disabled(!vm.canUseQuickConnect)
+
+            // Quick Connect explainer footer (parity with the other forms' grouped footers).
+            Text("Quick Connect signs you in with a code from your server — no password needed.")
+                .font(.rowSubtitle)
+                .foregroundStyle(Color.secondaryLabel)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity)
+                .padding(.top, Space.s3)
         }
     }
 

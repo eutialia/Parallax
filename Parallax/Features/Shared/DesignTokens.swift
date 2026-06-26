@@ -100,6 +100,11 @@ extension Color {
     /// besides destructive red; it marks state, not brand, so the No-Accent rule still holds.
     static let ok                 = Color(light: 0x3DA45A, dark: 0x3DA45A)
 
+    /// Destructive action red — Clear / Remove Server (handoff `--destructive #D8513E`). A warm red
+    /// tuned to the Matinee palette rather than the cooler system red; the dark face brightens a touch
+    /// so it clears contrast on the graphite floor. The sanctioned destructive color across Settings.
+    static let destructive        = Color(light: 0xD8513E, dark: 0xE0604D)
+
     /// The loading/missing artwork field behind every poster and thumbnail. Two-faced so it tracks
     /// the palette: a recessed warm-stone block on Paper, a lifted graphite block at night — never a
     /// fixed dark gray (which read as a hole punched in the light Matinee floor).

@@ -47,20 +47,20 @@ enum AppLayout {
     static let settingsContentWidth: CGFloat = 680
     /// Per-server detail (`ServerSettingsView`) — the widest reading measure of the settings family.
     static let settingsDetailWidth: CGFloat = 780
-    /// The right-hand option-pill column on the tvOS settings/connect surface; the persistent
-    /// brand-icon rail (`TVSettingsRail`) fills the rest of the width to its left. Shared by the rail
-    /// (which sizes the NavigationStack region) and `SettingsScaffold` (which lays the pills out at
-    /// this width) so the two can't drift.
-    static let tvSettingsColumnWidth: CGFloat = 560
-    /// Horizontal slack INSIDE the scroll clip on each side of the pill column: a focused pill lifts
-    /// (`scaleEffect(1.03)`) and casts a shadow, and without this margin the ScrollView clips its
-    /// frame and shaves the capsule's rounded ends flat. The pills stay `tvSettingsColumnWidth` wide —
+    /// The centered settings/connect column on tvOS — the handoff's `.tv-col` (792px on its 1280 canvas
+    /// = 61.9% of width → 1188pt on the 1920 screen). The native `.sidebarAdaptable` tab collapses into
+    /// the "Settings" pill in the left gutter and the build tag sits in the right gutter, both flanking
+    /// this column. Shared by `SettingsScaffold` (lays the rows out at this width). Was a cramped 560 —
+    /// the "squashed into the center" bug — back when a pinned left brand rail stole half the screen.
+    static let tvSettingsColumnWidth: CGFloat = 1188
+    /// Horizontal slack INSIDE the scroll clip on each side of the column so a focused row's platter +
+    /// shadow isn't shaved flat by the ScrollView's clip. The column stays `tvSettingsColumnWidth` wide —
     /// only the scroll frame grows.
     static let tvSettingsColumnBleed: CGFloat = 24
-    /// Top inset above the first option pill: clears the overscan AND drops the column's top below the
-    /// rail icon's eyeline so the first pill doesn't sit level with the pinned icon. One knob shared by
-    /// `SettingsScaffold` (production) and the focus-clip-guard preview so the guard can't drift from it.
-    static let tvSettingsColumnTopInset: CGFloat = 124
+    /// Top inset above the first section — clears the native collapsed-sidebar "Settings" pill (which
+    /// the system parks at the top-leading overscan). Matches the handoff's `.tv-col top:140px` (×1.5 =
+    /// 210pt absolute), minus the tvOS top safe area the ScrollView already reserves.
+    static let tvSettingsColumnTopInset: CGFloat = 150
     /// Bottom inset below the last pill: overscan clearance plus room for its focus lift before the
     /// scroll edge. Shared with the focus-clip-guard preview alongside `tvSettingsColumnTopInset`.
     static let tvSettingsColumnBottomInset: CGFloat = 80

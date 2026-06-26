@@ -30,12 +30,20 @@ public actor ServerStore {
         name: "ParallaxJellyfin.activeServerID",
         defaultValue: nil
     )
+    /// Per-server hidden library collections, keyed by `serverID.rawValue` → the collection IDs the
+    /// user has de-selected on that server's "Visible Libraries" screen. Encoded as arrays for stable
+    /// JSON; held as sets in memory. Absent / empty = every library visible.
+    private static let hiddenCollectionsKey = SettingKey<[String: [String]]>(
+        name: "ParallaxJellyfin.hiddenCollections",
+        defaultValue: [:]
+    )
 
     private let settings: SettingsStore
     private let keychain: any KeychainStoring
     private var persistedServers: [PersistedServer] = []
     private var loadedSessions: [Session] = []
     private var activeID: ServerID?
+    private var hiddenCollections: [String: Set<String>] = [:]
 
     public init(settings: SettingsStore, keychain: any KeychainStoring) {
         self.settings = settings
@@ -58,6 +66,28 @@ public actor ServerStore {
     public var active: Session? {
         guard let activeID else { return loadedSessions.first }
         return loadedSessions.first(where: { $0.id == activeID })
+    }
+
+    /// The library collection IDs hidden on a server (empty = all visible). Read by the navigation
+    /// roots to filter the merged library and by the "Visible Libraries" screen to seed its toggles.
+    public func hiddenCollectionIDs(for id: ServerID) -> Set<String> {
+        hiddenCollections[id.rawValue] ?? []
+    }
+
+    /// Replace a server's hidden-collections set and persist it. An empty set drops the server's entry
+    /// entirely (keeps the stored dict tidy). Callers bump the router's library revision afterward so
+    /// the roots rebuild the merged list.
+    public func setHiddenCollectionIDs(_ ids: Set<String>, for id: ServerID) async throws {
+        if ids.isEmpty {
+            hiddenCollections.removeValue(forKey: id.rawValue)
+        } else {
+            hiddenCollections[id.rawValue] = ids
+        }
+        do {
+            try await settings.set(hiddenCollections.mapValues(Array.init), for: Self.hiddenCollectionsKey)
+        } catch {
+            throw ServerStoreError.persistenceFailed(underlying: String(describing: error))
+        }
     }
 
     public func load() async throws {
@@ -115,6 +145,8 @@ public actor ServerStore {
         } else {
             activeID = rebuilt.first?.id
         }
+
+        hiddenCollections = (await settings.value(for: Self.hiddenCollectionsKey)).mapValues(Set.init)
     }
 
     /// Decodes the persisted server list, migrating the legacy flat shape on
@@ -245,6 +277,17 @@ public actor ServerStore {
                 try await persistActiveID()
             } catch {
                 Log.persistence.error("ServerStore.remove: activeID persist failed — \(error.localizedDescription)")
+            }
+        }
+
+        // Drop any per-server hidden-collections set so a later re-add of the same id can't inherit
+        // stale visibility (a Jellyfin re-add reuses the deterministic id). Best-effort: the server is
+        // already gone; a lingering entry only wastes a little storage until the next successful write.
+        if hiddenCollections.removeValue(forKey: id.rawValue) != nil {
+            do {
+                try await settings.set(hiddenCollections.mapValues(Array.init), for: Self.hiddenCollectionsKey)
+            } catch {
+                Log.persistence.error("ServerStore.remove: hiddenCollections purge persist failed — \(error.localizedDescription)")
             }
         }
     }

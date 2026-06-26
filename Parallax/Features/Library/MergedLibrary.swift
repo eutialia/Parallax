@@ -16,6 +16,7 @@ enum MergedLibrary {
     static func entries(
         jellyfinSession: Session?,
         smbServers: [PersistedServer],
+        hiddenJellyfinCollectionIDs: Set<String> = [],
         repoFactory: @Sendable (LibrarySource) async -> any MediaRepository
     ) async -> [LibraryEntry] {
         var entries: [LibraryEntry] = []
@@ -23,7 +24,10 @@ enum MergedLibrary {
         if let session = jellyfinSession {
             let source: LibrarySource = .jellyfin(session)
             let collections = (try? await repoFactory(source).collections()) ?? []
-            entries += collections.map { LibraryEntry(source: source, collection: $0) }
+            // De-selected libraries (the server's "Visible Libraries" screen) drop out of every root.
+            entries += collections
+                .filter { !hiddenJellyfinCollectionIDs.contains($0.id.rawValue) }
+                .map { LibraryEntry(source: source, collection: $0) }
         }
 
         for server in smbServers {

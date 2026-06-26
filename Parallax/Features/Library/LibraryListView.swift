@@ -10,6 +10,7 @@ struct LibraryListView: View {
     var smbEntries: [LibraryEntry] = []
 
     @Environment(AppDependencies.self) private var deps
+    @Environment(AppRouter.self) private var router
     @Environment(\.appIdiom) private var idiom
     @State private var viewModel: LibraryListViewModel?
 
@@ -68,12 +69,17 @@ struct LibraryListView: View {
         .navigationDestination(for: FavoritesRoute.self) { _ in
             LibraryGridView(scope: .favorites, title: "Favorites", session: session)
         }
-        .task {
+        // Keyed on the library revision so a "Visible Libraries" change (which bumps it) re-applies the
+        // hidden set + reloads — the iPhone list then matches the iPad sidebar / tvOS column live.
+        .task(id: router.libraryReloadToken) {
+            let hidden = await deps.serverStore.hiddenCollectionIDs(for: session.id)
             if viewModel == nil {
                 let repo = await deps.mediaRepoFactory(.jellyfin(session))
-                viewModel = LibraryListViewModel(repo: repo)
-                await viewModel?.load()
+                viewModel = LibraryListViewModel(repo: repo, hiddenCollectionIDs: hidden)
+            } else {
+                viewModel?.hiddenCollectionIDs = hidden
             }
+            await viewModel?.load()
         }
     }
 

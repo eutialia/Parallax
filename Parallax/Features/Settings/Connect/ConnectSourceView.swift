@@ -19,32 +19,22 @@ struct ConnectSourceView: View {
     var body: some View {
         NavigationStack(path: $path) {
             SettingsScaffold(brandSubtitle: "Choose how to connect") {
-                SettingsGroup {
-                    SettingsListRow(
-                        image: "JellyfinGlyph",
-                        title: "Jellyfin Server",
-                        subtitle: "Sign in to your media server",
-                        accessory: .chevron
-                    ) { path.append(.jellyfin) }
-                    SettingsListRow(
-                        systemImage: "externaldrive.connected.to.line.below.fill",
-                        title: "SMB / Network Share",
-                        subtitle: "Connect to a network share",
-                        accessory: .chevron
-                    ) { path.append(.smb) }
-                }
+                ServerTypeChoiceGroup(
+                    onChooseJellyfin: { path.append(.jellyfin) },
+                    onChooseSMB: { path.append(.smb) }
+                )
             }
             .navigationDestination(for: ConnectRoute.self) { route in
                 switch route {
                 case .jellyfin:
                     LoginView()
-                        .navigationTitle("Sign In")
+                        .navigationTitle("Jellyfin")
                         #if !os(tvOS)
                         .navigationBarTitleDisplayMode(.inline)
                         #endif
                 case .smb:
                     SMBLoginView(onAdded: { routeAfterSMBAdd() })
-                        .navigationTitle("Add SMB Server")
+                        .navigationTitle("Network Share")
                         #if !os(tvOS)
                         .navigationBarTitleDisplayMode(.inline)
                         #endif
@@ -87,9 +77,9 @@ struct LoggedOutRootView: View {
 /// `AppDependencies`/`AppRouter`, so it can't render in a preview. Mirrors the body's scaffold + group.
 #Preview("Connect · logged out", traits: .fixedLayout(width: 1920, height: 1080)) {
     SettingsScaffold(brandSubtitle: "Choose how to connect") {
-        SettingsGroup {
-            SettingsListRow(image: "JellyfinGlyph", title: "Jellyfin Server", subtitle: "Sign in to your media server", accessory: .chevron) {}
-            SettingsListRow(systemImage: "externaldrive.connected.to.line.below.fill", title: "SMB / Network Share", subtitle: "Connect to a network share", accessory: .chevron) {}
+        SettingsGroup(footer: "More server types are on the way.") {
+            SettingsListRow(systemImage: "server.rack", iconSize: 22, title: "Jellyfin Server", subtitle: "Sign in to your media server", accessory: .chevron) {}
+            SettingsListRow(systemImage: "externaldrive.badge.wifi", iconSize: 22, title: "Network Share", subtitle: "Connect over SMB to a shared folder", accessory: .chevron) {}
         }
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)

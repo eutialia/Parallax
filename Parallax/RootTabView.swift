@@ -36,9 +36,12 @@ struct RootTabView: View {
             // cancels this task and starts a fresh one, and a now-stale snapshot must not clobber
             // the newer state (or snap selection off a tab that's still valid in the latest entries).
             let active = await deps.serverStore.active
+            var hiddenJellyfin: Set<String> = []
+            if let active { hiddenJellyfin = await deps.serverStore.hiddenCollectionIDs(for: active.id) }
             let merged = await MergedLibrary.entries(
                 jellyfinSession: active,
                 smbServers: await deps.serverStore.servers,
+                hiddenJellyfinCollectionIDs: hiddenJellyfin,
                 repoFactory: deps.mediaRepoFactory
             )
             guard !Task.isCancelled else { return }

@@ -11,7 +11,7 @@ struct CredentialRow: Identifiable {
     let text: Binding<String>
     var isSecure: Bool = false
     var keyboard: UIKeyboardType = .default
-    var autocapitalization: TextInputAutocapitalization = .never
+    var autocapitalization: UITextAutocapitalizationType = .none
     /// Drives Password AutoFill / the QuickType bar over the Continuity / Remote keyboard for
     /// `.username`/`.password` rows. Left nil (SMB rows) it's a no-op.
     var textContentType: UITextContentType?
@@ -88,9 +88,10 @@ struct CredentialRowList: View {
 }
 
 /// The single-field editor the cover presents, walking forward through the fields. A lone centered
-/// field on its own screen is exactly what Apple Settings shows (so the focus pill it DOES get reads as
-/// intentional); submit advances to the next field IN PLACE instead of dismissing, so the user isn't
-/// bounced back to the form between fields.
+/// field on its own screen is exactly what Apple Settings shows; the field is a `TVKeyboardField`
+/// (a UIKit `UITextField` bridge) that RAISES the system keyboard itself, so submitting one field
+/// walks to the next with the keyboard staying up — the iOS return-chain experience — instead of
+/// dropping back to a bare field that needs another Select to reopen the keyboard.
 private struct CredentialEditorFlow: View {
     let rows: [CredentialRow]
     let startIndex: Int
@@ -98,8 +99,9 @@ private struct CredentialEditorFlow: View {
     let onComplete: () -> Void
 
     @State private var index: Int
-    @FocusState private var focused: Bool
     @State private var reveal = false
+    /// Bumped on each advance so `TVKeyboardField` re-raises the keyboard for the new field.
+    @State private var activation = 0
 
     init(rows: [CredentialRow], startIndex: Int, onClose: @escaping () -> Void, onComplete: @escaping () -> Void) {
         self.rows = rows
@@ -118,15 +120,20 @@ private struct CredentialEditorFlow: View {
                 .font(.title2.weight(.semibold))
                 .foregroundStyle(Color.label)
 
-            field
-                .keyboardType(row.keyboard)
-                .textInputAutocapitalization(row.autocapitalization)
-                .autocorrectionDisabled()
-                .textContentType(row.textContentType)
-                .focused($focused)
-                .frame(maxWidth: 760)
-                .submitLabel(isLast ? .go : .next)
-                .onSubmit(advance)
+            // The keyboard-raising field. `activation` bumps on each walk forward so the keyboard
+            // re-presents for the new field instead of the user having to click Select again.
+            TVKeyboardField(
+                text: row.text,
+                isSecure: row.isSecure && !reveal,
+                keyboard: row.keyboard,
+                autocapitalization: row.autocapitalization,
+                contentType: row.textContentType,
+                placeholder: row.placeholder,
+                returnKey: isLast ? .go : .next,
+                activation: activation,
+                onSubmit: advance
+            )
+            .frame(maxWidth: 760, minHeight: 64)
 
             if row.isSecure {
                 Button(reveal ? "Hide" : "Show") { reveal.toggle() }
@@ -134,53 +141,109 @@ private struct CredentialEditorFlow: View {
                     .font(.callout)
                     .foregroundStyle(Color.secondaryLabel)
             }
-
-            Button(isLast ? "Done" : "Next", action: advance)
-                .buttonStyle(.borderless)
-                .font(.headline)
         }
         .padding(Space.s60)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.background)
         // Menu backs out of the whole editor without committing.
         .onExitCommand(perform: onClose)
-        // tvOS can drop a focus set synchronously on first appear; defer a hair so the field reliably
-        // takes focus (and is one click from raising the keyboard).
-        .task { await refocusField() }
-        // Walking to the next field rebuilds the field; re-assert focus so it's ready to type.
+        // Walking to the next field rebuilds it; bump `activation` so it re-raises the keyboard.
         .onChange(of: index) {
             reveal = false
-            Task { await refocusField() }
+            activation += 1
         }
-    }
-
-    /// Re-assert field focus after a short defer — tvOS can drop a focus set made synchronously while
-    /// the field's editor is still settling (on first appear AND on each walk to the next field).
-    private func refocusField() async {
-        try? await Task.sleep(for: .milliseconds(50))
-        focused = true
     }
 
     /// Advance to the next field's editor, or finish (last field's "go").
     private func advance() {
         if isLast { onComplete() } else { index += 1 }
     }
+}
 
-    @ViewBuilder
-    private var field: some View {
-        if row.isSecure && !reveal {
-            SecureField("", text: row.text, prompt: prompt)
-        } else {
-            TextField("", text: row.text, prompt: prompt)
+/// A tvOS credential field that RAISES THE SYSTEM KEYBOARD itself. SwiftUI's `@FocusState` only
+/// *focuses* a `TextField` on tvOS — it lands on the field but leaves the keyboard closed, so the
+/// user had to click Select to open it (and again for every field as the chain advanced: the
+/// reported "press Next → land on a bare field + unfocusable button → click center again" bug).
+/// UIKit's `UITextField.becomeFirstResponder()` *presents* the keyboard directly (UITextField docs:
+/// "When a text field becomes first responder, the system automatically shows the keyboard"), so the
+/// editor walks field→field with the keyboard staying up.
+///
+/// NOT unit-tested: keyboard presentation + focus behavior depend on the focus engine and the
+/// physical remote, which the simulator doesn't reproduce — verified on device, like
+/// `TVRemoteInputView` and `FocusableScrollText`.
+private struct TVKeyboardField: UIViewRepresentable {
+    let text: Binding<String>
+    var isSecure: Bool
+    var keyboard: UIKeyboardType
+    var autocapitalization: UITextAutocapitalizationType
+    var contentType: UITextContentType?
+    var placeholder: String
+    var returnKey: UIReturnKeyType
+    /// A change re-raises the keyboard for the (possibly new) field, so the chain never drops back
+    /// to a closed keyboard. The editor bumps it on each advance.
+    var activation: Int
+    var onSubmit: () -> Void
+
+    func makeUIView(context: Context) -> UITextField {
+        let field = UITextField()
+        field.delegate = context.coordinator
+        field.addTarget(context.coordinator, action: #selector(Coordinator.editingChanged(_:)), for: .editingChanged)
+        field.textAlignment = .center
+        field.font = .preferredFont(forTextStyle: .title2)
+        field.adjustsFontForContentSizeCategory = true
+        field.autocorrectionType = .no
+        field.textColor = UIColor(Color.label)
+        return field
+    }
+
+    func updateUIView(_ field: UITextField, context: Context) {
+        context.coordinator.parent = self
+        if field.text != text.wrappedValue { field.text = text.wrappedValue }
+        field.isSecureTextEntry = isSecure
+        field.keyboardType = keyboard
+        field.autocapitalizationType = autocapitalization
+        field.textContentType = contentType
+        field.returnKeyType = returnKey
+        field.attributedPlaceholder = NSAttributedString(
+            string: placeholder,
+            attributes: [.foregroundColor: UIColor(Color.tertiaryLabel)]
+        )
+        // Present the text-entry scene for this field. tvOS shows text entry as a full-screen SCENE
+        // that COMMITS + DISMISSES when the user taps the keyboard's return key (unlike iOS, where the
+        // keyboard persists). The reused field stays `isFirstResponder` across that dismissal, so on the
+        // walk to the next field a plain `becomeFirstResponder()` no-ops and never re-presents the
+        // scene — leaving a focused, keyboardless field rendering its giant tvOS focus halo (the
+        // reported "big ball"). On an advance, BOUNCE the responder (resign, then become on the next
+        // runloop) so the scene reliably re-presents for the new field; first appear just becomes.
+        // Deferred to the next runloop either way so the field is in the hierarchy first (tvOS drops a
+        // first-responder set made mid-update).
+        if context.coordinator.lastActivation != activation {
+            let isAdvance = context.coordinator.lastActivation >= 0
+            context.coordinator.lastActivation = activation
+            DispatchQueue.main.async {
+                if isAdvance {
+                    field.resignFirstResponder()
+                    DispatchQueue.main.async { field.becomeFirstResponder() }
+                } else {
+                    field.becomeFirstResponder()
+                }
+            }
         }
     }
 
-    /// The placeholder forced to the dimmed gray (a URL-shaped placeholder otherwise auto-styles as a
-    /// blue link that ignores `.foregroundStyle`).
-    private var prompt: Text {
-        var attributed = AttributedString(row.placeholder)
-        attributed.swiftUI.foregroundColor = Color.tertiaryLabel
-        return Text(attributed)
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    final class Coordinator: NSObject, UITextFieldDelegate {
+        var parent: TVKeyboardField
+        var lastActivation = -1
+        init(_ parent: TVKeyboardField) { self.parent = parent }
+        @objc func editingChanged(_ field: UITextField) { parent.text.wrappedValue = field.text ?? "" }
+        func textFieldShouldReturn(_ field: UITextField) -> Bool {
+            parent.onSubmit()
+            // The editor drives the chain (advance bumps `activation`); don't resign here or the
+            // keyboard would drop before the next field re-raises it.
+            return false
+        }
     }
 }
 

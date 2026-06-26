@@ -21,6 +21,16 @@ public protocol JellyfinAuthClient: Sendable {
     func quickConnectEvents() -> AsyncThrowingStream<QuickConnect.Event, Error>
 }
 
+public extension JellyfinAuthClient {
+    /// The server's version string from the public-info endpoint, decoupled from the SDK's
+    /// `PublicSystemInfo` so app-target callers (e.g. the server-detail screen) don't import `JellyfinAPI`.
+    /// A thrown call doubles as the offline signal — there's no live status stream, so a successful fetch
+    /// IS the point-in-time "reachable" proof.
+    func serverVersion() async throws -> String? {
+        try await fetchPublicSystemInfo().version
+    }
+}
+
 public final class DefaultJellyfinAuthClient: JellyfinAuthClient, Sendable {
     public let serverURL: URL
     private let identity: DeviceIdentity

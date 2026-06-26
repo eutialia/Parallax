@@ -15,15 +15,20 @@ final class LibraryListViewModel {
     private(set) var collections: [MediaCollection] = []
 
     private let repo: any MediaRepository
+    /// Library collection IDs hidden via the server's "Visible Libraries" screen — filtered out of
+    /// `collections` so the iPhone library list matches the iPad sidebar / tvOS column.
+    var hiddenCollectionIDs: Set<String>
 
-    init(repo: any MediaRepository) {
+    init(repo: any MediaRepository, hiddenCollectionIDs: Set<String> = []) {
         self.repo = repo
+        self.hiddenCollectionIDs = hiddenCollectionIDs
     }
 
     func load() async {
         state = .loading
         do {
-            collections = try await repo.collections()
+            let all = try await repo.collections()
+            collections = all.filter { !hiddenCollectionIDs.contains($0.id.rawValue) }
             state = .loaded
         } catch let error as AppError {
             Log.ui.error("LibraryList load failed: \(error.userMessage)")

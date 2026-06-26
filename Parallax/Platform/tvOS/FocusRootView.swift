@@ -57,11 +57,15 @@ struct FocusRootView: View {
             if let active {
                 vm = HomeViewModel(repo: await deps.jellyfinLibraryRepoFactory(active))
             }
+            var hiddenJellyfin: Set<String> = []
+            if let active { hiddenJellyfin = await deps.serverStore.hiddenCollectionIDs(for: active.id) }
+            let smbServers = await deps.serverStore.servers
             // Load the sidebar's libraries and Home's feed concurrently, then reveal once both
             // settle — so the UI appears whole, with the hero (if any) already focusable.
             async let libs: [LibraryEntry] = MergedLibrary.entries(
                 jellyfinSession: active,
-                smbServers: await deps.serverStore.servers,
+                smbServers: smbServers,
+                hiddenJellyfinCollectionIDs: hiddenJellyfin,
                 repoFactory: deps.mediaRepoFactory
             )
             let merged: [LibraryEntry]
