@@ -2,23 +2,22 @@ import SwiftUI
 import ParallaxFileBrowse
 import ParallaxJellyfin
 
-/// Add-SMB-server form: collects host / share / credentials, validates the connection by
-/// doing a real `list(share:path:"")`, then hands off to `SMBFolderPickerView` to let the
-/// user choose which subfolder of the share is the library root.
+/// Add-SMB-server form: collects host + credentials, validates the connection by
+/// enumerating shares, then hands off to `SMBShareSelectionView` to let the user
+/// choose which shares to mount as libraries.
 ///
 /// Discovery lifecycle mirrors `LoginView`: `deps.smbDiscovery.start()` on appear,
 /// `stop()` on disappear, `#if !os(tvOS)` gated because tvOS has no mDNS LAN discovery
 /// prompt and the Bonjour browser is unconditional (no permission gate — safe to run on
 /// tvOS too, but the picker rows are irrelevant on the 10-foot UI).
 struct SMBLoginView: View {
-    /// Called after a server is successfully saved (folder selected + stored in Keychain).
+    /// Called after a server is successfully saved (shares selected + stored in Keychain).
     var onAdded: () -> Void
 
     @Environment(AppDependencies.self) private var deps
     @Environment(\.scenePhase) private var scenePhase
 
     @State private var host = ""
-    @State private var share = ""
     @State private var username = ""
     @State private var password = ""
     /// Defaulted, not user-editable — the redesign drops the Domain field (4 fields per the handoff);
@@ -31,12 +30,13 @@ struct SMBLoginView: View {
     @State private var isConnecting = false
     @State private var connectionError: String?
 
-    /// The live lister handed to the picker AFTER a successful connection test.
+    /// The live lister handed to the share selector AFTER a successful enumeration.
     /// Holding it here (not as a navigation value) because `AMSMB2Lister` is an actor
     /// and can't be made `Hashable` for `.navigationDestination(for:)`. Instead we push
     /// by setting this and using a `navigationDestination(isPresented:)` binding.
     @State private var pendingLister: AMSMB2Lister?
-    @State private var showFolderPicker = false
+    @State private var discoveredShares: [SMBShare] = []
+    @State private var showShareSelector = false
 
     /// The in-flight connection test. Held so backing out (Menu → onDisappear) or a fresh tap can
     /// CANCEL it — without a handle the connect was fire-and-forget and couldn't be stopped, so a
@@ -47,13 +47,12 @@ struct SMBLoginView: View {
     /// Return-key field walk: return advances to the next field, "go" on the last (password) connects.
     /// `allCases` order is the field sequence `submitChain` reads.
     @FocusState private var focusedField: Field?
-    private enum Field: CaseIterable { case host, share, username, password }
+    private enum Field: CaseIterable { case host, username, password }
     #endif
 
-    /// Host + share are required; the account is optional (blank = guest, per the handoff footer).
+    /// Host is required; the account is optional (blank = guest, per the handoff footer).
     private var canConnect: Bool {
         !host.trimmingCharacters(in: .whitespaces).isEmpty
-        && !share.trimmingCharacters(in: .whitespaces).isEmpty
         && !isConnecting
     }
 
@@ -99,15 +98,15 @@ struct SMBLoginView: View {
         // Cancel any in-flight connection test when leaving the form (Menu/Back) so a slow or dead
         // host's attempt is torn down instead of completing into a dismissed view.
         .onDisappear { connectTask?.cancel() }
-        .navigationDestination(isPresented: $showFolderPicker) {
+        .navigationDestination(isPresented: $showShareSelector) {
             if let lister = pendingLister {
-                SMBFolderPickerView(
+                SMBShareSelectionView(
                     lister: lister,
                     host: host,
-                    share: share,
                     username: username,
                     password: password,
                     domain: domain,
+                    shares: discoveredShares,
                     onAdded: onAdded
                 )
             }
@@ -153,7 +152,6 @@ struct SMBLoginView: View {
     private var credentialRows: [CredentialRow] {
         [
             CredentialRow(id: "host", title: "Server", placeholder: "e.g. 192.168.1.10", text: $host, keyboard: .URL),
-            CredentialRow(id: "share", title: "Share", placeholder: "Share name", text: $share),
             CredentialRow(id: "username", title: "Username", placeholder: "Optional", text: $username),
             CredentialRow(id: "password", title: "Password", placeholder: "Optional", text: $password, isSecure: true),
         ]
@@ -163,10 +161,7 @@ struct SMBLoginView: View {
     #if !os(tvOS)
     private var connectionFieldsSection: some View {
         VStack(spacing: Space.s18) {
-            SettingsGroup(
-                title: "Server",
-                footer: "Your server’s address, then the name of the shared folder to open."
-            ) {
+            SettingsGroup(title: "Server") {
                 CredentialFieldRow(icon: "externaldrive.badge.wifi") {
                     HStack(spacing: 0) {
                         Text("smb://").foregroundStyle(Color.tertiaryLabel)
@@ -176,12 +171,6 @@ struct SMBLoginView: View {
                             .autocorrectionDisabled()
                             .submitChain(.host, focus: $focusedField, onComplete: handleSubmit)
                     }
-                }
-                CredentialFieldRow(icon: "folder") {
-                    TextField("Share name", text: $share)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .submitChain(.share, focus: $focusedField, onComplete: handleSubmit)
                 }
             }
             SettingsGroup(title: "Sign In", footer: "Leave blank to connect as a guest.") {
@@ -207,7 +196,7 @@ struct SMBLoginView: View {
         }
     }
 
-    /// "Go" on the last field connects, but only when host / share / username are filled — the same
+    /// "Go" on the last field connects, but only when the host is filled — the same
     /// gate the Connect button enforces, so return on an incomplete form is a no-op.
     private func handleSubmit() {
         guard canConnect else { return }
@@ -241,7 +230,6 @@ struct SMBLoginView: View {
 
     private func connect() {
         let trimHost = host.trimmingCharacters(in: .whitespaces)
-        let trimShare = share.trimmingCharacters(in: .whitespaces)
         let trimUser = username.trimmingCharacters(in: .whitespaces)
 
         connectionError = nil
@@ -253,7 +241,7 @@ struct SMBLoginView: View {
 
         // Replace any prior in-flight attempt and HOLD the handle so onDisappear / Cancel can stop
         // it. Post-`await` writes are gated on `!Task.isCancelled` so a backed-out attempt never
-        // resurrects the spinner or pushes the folder picker over a dismissed view.
+        // resurrects the spinner or pushes the share selector over a dismissed view.
         connectTask?.cancel()
         connectTask = Task {
             let lister = AMSMB2Lister(
@@ -263,26 +251,26 @@ struct SMBLoginView: View {
                 domain: capturedDomain
             )
             do {
-                _ = try await lister.list(share: trimShare, path: "")
+                let shares = try await lister.listShares()
                 guard !Task.isCancelled else { await lister.disconnect(); return }
                 // Adopt the validated (trimmed) values so what we persist EXACTLY matches
-                // what connected. SMBFolderPickerView reads these straight into the saved
+                // what connected. SMBShareSelectionView reads these straight into the saved
                 // SMBServerData, and the media-repo factory later reconnects with them — if
                 // we persisted the raw, untrimmed fields, a stray space would reconnect to a
-                // different host/share and fail (browse works, the grid throws). Password +
-                // domain are left as typed: those are exactly what the connection used.
+                // different host and fail. Password + domain are left as typed: those are
+                // exactly what the connection used.
                 host = trimHost
-                share = trimShare
                 username = trimUser
-                // Hand the connected lister to the folder picker.
+                // Hand the connected lister + discovered shares to the selector.
                 pendingLister = lister
-                showFolderPicker = true
+                discoveredShares = shares
+                showShareSelector = true
             } catch {
                 // Disconnect so the actor doesn't hold a dangling connection.
                 await lister.disconnect()
                 guard !Task.isCancelled else { return }
                 // Never expose the password in the error message.
-                connectionError = "Couldn't connect to \(trimHost)/\(trimShare). Check the host, share, and credentials."
+                connectionError = "Couldn't connect to \(trimHost). Check the host and credentials."
             }
             isConnecting = false
         }
