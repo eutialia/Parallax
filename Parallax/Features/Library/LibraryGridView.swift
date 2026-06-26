@@ -89,6 +89,11 @@ struct LibraryGridView: View {
     /// already present is a no-op.
     private func loadViewModel() async {
         guard viewModel == nil else { return }
+        // C5: `mediaRepoFactory` is now Jellyfin-only (`(Session) -> MediaRepository`); SMB no
+        // longer flows through a `MediaRepository`. This grid still takes `source: LibrarySource`
+        // and must branch — Jellyfin builds the repo-backed VM (via `.jellyfin(session)`), SMB
+        // lists a share directly via `deps.makeSMBLister` + `SMBFileSource`. Reworked in C5
+        // (SMB grid path); until then this `mediaRepoFactory(source)` call doesn't type-check.
         let repo = await deps.mediaRepoFactory(source)
         let vm = LibraryGridViewModel(repo: repo, scope: scope)
         viewModel = vm

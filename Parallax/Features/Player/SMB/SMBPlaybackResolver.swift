@@ -22,7 +22,7 @@ struct SMBPlaybackResolver {
     /// Resolves a browsed SMB `Item` into a ready-to-play `SMBPlaybackItem`.
     ///
     /// Throws `AppError.source(.notFound)` if the `ItemID` can't be decoded back to a share path
-    /// (i.e. it wasn't minted by `SMBMediaRepository` for the given server's share).
+    /// (i.e. it wasn't minted by `SMBFileSource.itemID(share:path:)`).
     func resolve(_ item: Item, ref: SMBServerRef) async throws -> SMBPlaybackItem {
         // Decode the share path, read the Keychain password, build the credential-free smb:// URL
         // + libVLC credential options — one assembly site shared with the thumbnail provider.
@@ -33,7 +33,7 @@ struct SMBPlaybackResolver {
         do {
             let (directory, filename) = splitPath(ctx.path)
             let lister = makeLister(ref, ctx.password)
-            let resolver = SMBSubtitleResolver(lister: lister, host: ref.data.host, share: ref.data.share, root: "")
+            let resolver = SMBSubtitleResolver(lister: lister, host: ref.data.host, share: ctx.share, root: "")
             let matches = try await resolver.subtitles(for: filename, in: directory)
             // Sort by label, then filename, for deterministic index assignment. The filename
             // tie-break matters: loosened matching can emit colliding labels (e.g. several "Default"

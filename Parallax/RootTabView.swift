@@ -42,7 +42,7 @@ struct RootTabView: View {
                 jellyfinSession: active,
                 smbServers: await deps.serverStore.servers,
                 hiddenJellyfinCollectionIDs: hiddenJellyfin,
-                repoFactory: deps.mediaRepoFactory
+                jellyfinRepo: deps.mediaRepoFactory
             )
             guard !Task.isCancelled else { return }
             session = active

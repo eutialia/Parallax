@@ -74,7 +74,7 @@ struct LibraryListView: View {
         .task(id: router.libraryReloadToken) {
             let hidden = await deps.serverStore.hiddenCollectionIDs(for: session.id)
             if viewModel == nil {
-                let repo = await deps.mediaRepoFactory(.jellyfin(session))
+                let repo = await deps.mediaRepoFactory(session)
                 viewModel = LibraryListViewModel(repo: repo, hiddenCollectionIDs: hidden)
             } else {
                 viewModel?.hiddenCollectionIDs = hidden

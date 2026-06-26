@@ -1,8 +1,9 @@
 import Foundation
 
-/// The source-agnostic browse surface. Jellyfin's `LibraryRepository` and the
-/// Phase-2 `SMBMediaRepository` both conform; the library list/grid view models
-/// depend on `any MediaRepository`, so a non-Jellyfin source drives the same UI.
+/// The source-agnostic browse surface. Jellyfin's `LibraryRepository` conforms;
+/// the library list/grid view models depend on `any MediaRepository` so the same
+/// UI can be driven by any conforming source. (SMB browses shares directly via
+/// `SMBFileSource` rather than through this protocol — it carries no collections.)
 ///
 /// Deliberately narrow: this is *only* the browse surface. Jellyfin-specific
 /// reads (home feed, detail, search, favorites, episode succession) stay on the

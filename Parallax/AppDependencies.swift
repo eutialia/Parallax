@@ -14,7 +14,14 @@ final class AppDependencies {
     let lanDiscovery: LANServerDiscovery
     let smbDiscovery: SMBBonjourDiscovery
     let jellyfinLibraryRepoFactory: @Sendable (Session) async -> LibraryRepository
-    let mediaRepoFactory: @Sendable (LibrarySource) async -> any MediaRepository
+    /// Builds the browse repository for a Jellyfin session. SMB no longer flows through a
+    /// `MediaRepository`: shares are listed directly via `makeSMBLister` + `SMBFileSource`, so
+    /// this is Jellyfin-only.
+    let mediaRepoFactory: @Sendable (Session) async -> any MediaRepository
+    /// Builds an `AMSMB2Lister` for a configured SMB server, reading the password from the
+    /// Keychain (slot `token-<id>`). The one place SMB listers are constructed for browsing,
+    /// so every SMB surface (folder picker, file browse) shares the same credential read.
+    let makeSMBLister: @Sendable (SMBServerRef) async -> AMSMB2Lister
     let imagePipelineFactory: ImagePipelineFactory
     let deviceProfileBuilder: DeviceProfileBuilder
     let playbackInfoFactory: @Sendable (Session) async -> PlaybackInfoService
@@ -37,7 +44,8 @@ final class AppDependencies {
         lanDiscovery: LANServerDiscovery,
         smbDiscovery: SMBBonjourDiscovery,
         jellyfinLibraryRepoFactory: @Sendable @escaping (Session) async -> LibraryRepository,
-        mediaRepoFactory: @Sendable @escaping (LibrarySource) async -> any MediaRepository,
+        mediaRepoFactory: @Sendable @escaping (Session) async -> any MediaRepository,
+        makeSMBLister: @Sendable @escaping (SMBServerRef) async -> AMSMB2Lister,
         imagePipelineFactory: ImagePipelineFactory,
         deviceProfileBuilder: DeviceProfileBuilder,
         playbackInfoFactory: @Sendable @escaping (Session) async -> PlaybackInfoService,
@@ -53,6 +61,7 @@ final class AppDependencies {
         self.smbDiscovery = smbDiscovery
         self.jellyfinLibraryRepoFactory = jellyfinLibraryRepoFactory
         self.mediaRepoFactory = mediaRepoFactory
+        self.makeSMBLister = makeSMBLister
         self.imagePipelineFactory = imagePipelineFactory
         self.deviceProfileBuilder = deviceProfileBuilder
         self.playbackInfoFactory = playbackInfoFactory
@@ -83,21 +92,21 @@ final class AppDependencies {
         let jellyfinRepoFactory: @Sendable (Session) async -> LibraryRepository = { session in
             await repoStore.repository(for: session)
         }
-        let mediaRepoFactory: @Sendable (LibrarySource) async -> any MediaRepository = { [keychain] source in
-            switch source {
-            case .jellyfin(let session):
-                return await repoStore.repository(for: session)
-            case .smb(let ref):
-                let key = KeychainKey<String>(account: ServerStore.tokenAccount(for: ref.id))
-                let password = (try? await keychain.read(key)) ?? ""
-                let lister = AMSMB2Lister(
-                    host: ref.data.host,
-                    username: ref.data.username,
-                    password: password,
-                    domain: ref.data.domain
-                )
-                return SMBMediaRepository(lister: lister, share: ref.data.share, roots: [ref.data.root])
-            }
+        let mediaRepoFactory: @Sendable (Session) async -> any MediaRepository = { session in
+            await repoStore.repository(for: session)
+        }
+        // The single SMB-lister construction site, sharing the same Keychain as the repos above so
+        // a browsed share reads its password from the slot it was added under. SMB browsing lists
+        // shares directly via SMBFileSource — no MediaRepository involved.
+        let makeSMBLister: @Sendable (SMBServerRef) async -> AMSMB2Lister = { [keychain] ref in
+            let key = KeychainKey<String>(account: ServerStore.tokenAccount(for: ref.id))
+            let password = (try? await keychain.read(key)) ?? ""
+            return AMSMB2Lister(
+                host: ref.data.host,
+                username: ref.data.username,
+                password: password,
+                domain: ref.data.domain
+            )
         }
 
         // Playback wiring. The profile builder probes HDR/audio at runtime via
@@ -149,6 +158,7 @@ final class AppDependencies {
             smbDiscovery: SMBBonjourDiscovery(),
             jellyfinLibraryRepoFactory: jellyfinRepoFactory,
             mediaRepoFactory: mediaRepoFactory,
+            makeSMBLister: makeSMBLister,
             // Resolve the image-pipeline device identity from the same provider
             // as auth, so image traffic presents the persisted deviceID rather
             // than a per-launch random UUID.

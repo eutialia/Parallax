@@ -66,7 +66,7 @@ struct FocusRootView: View {
                 jellyfinSession: active,
                 smbServers: smbServers,
                 hiddenJellyfinCollectionIDs: hiddenJellyfin,
-                repoFactory: deps.mediaRepoFactory
+                jellyfinRepo: deps.mediaRepoFactory
             )
             let merged: [LibraryEntry]
             if let vm {

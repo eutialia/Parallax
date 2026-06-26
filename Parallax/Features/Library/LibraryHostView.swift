@@ -57,7 +57,7 @@ struct LibraryHostView: View {
             let merged = await MergedLibrary.entries(
                 jellyfinSession: nil,
                 smbServers: await deps.serverStore.servers,
-                repoFactory: deps.mediaRepoFactory
+                jellyfinRepo: deps.mediaRepoFactory
             )
             guard !Task.isCancelled else { return }
             session = active
