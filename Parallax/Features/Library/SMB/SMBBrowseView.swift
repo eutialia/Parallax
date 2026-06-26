@@ -54,6 +54,11 @@ struct SMBBrowseView: View {
         // level deeper. Registered on every level so the stack can keep descending.
         .navigationDestination(for: SMBBrowsePath.self) { SMBBrowseView(path: $0) }
         .screenFloor()
+        // Lifecycle: drilling into a child folder triggers this level's `onDisappear`, disconnecting
+        // the per-level lister and freeing the SMB connection while off-screen. On back-navigation
+        // the `.task` guard (`model != nil`) intentionally skips a reload and shows the cached
+        // listing — fast and stale-tolerant; each level owns an independent lister so the child
+        // level is completely unaffected by this level's teardown/reconnect cycle.
         .task {
             guard model == nil else { return }
             let lister = await deps.makeSMBLister(path.ref)
@@ -159,7 +164,7 @@ struct SMBBrowseGrid: View {
     var body: some View {
         LazyVGrid(columns: columns, spacing: AppLayout.libraryListSpacing(idiom: idiom)) {
             // Folders first — they're the structure you navigate; media is the level's leaves.
-            ForEach(folders, id: \.name) { folder in
+            ForEach(folders, id: \.self) { folder in
                 NavigationLink(value: childPath(folder.name)) {
                     FolderBrowseCard(name: folder.name)
                 }

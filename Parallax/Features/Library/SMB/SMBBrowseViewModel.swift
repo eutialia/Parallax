@@ -39,6 +39,7 @@ final class SMBBrowseViewModel {
         error = nil
         loadTask?.cancel()
         loadTask = Task { [source, share, path] in
+            defer { isLoading = false }
             do {
                 let listing = try await source.browse(in: path)
                 guard !Task.isCancelled else { return }
@@ -48,8 +49,6 @@ final class SMBBrowseViewModel {
                 guard !Task.isCancelled else { return }
                 self.error = SMBFileSource.mapListError(error, share: share, path: path).userMessage
             }
-            guard !Task.isCancelled else { return }
-            isLoading = false
         }
     }
 
