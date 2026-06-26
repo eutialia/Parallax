@@ -37,15 +37,6 @@ final class SettingsViewModel {
         }
     }
 
-    /// The persisted SMB sources mounted from one host — one per `(host, share, root)`. The grouped
-    /// host detail + Mounted Folders list both read this instead of re-filtering `smbServers` inline.
-    func smbSources(for host: String) -> [PersistedServer] {
-        smbServers.filter {
-            if case .smb(let data) = $0.kind { return data.host == host }
-            return false
-        }
-    }
-
     func removeSMBServer(_ id: ServerID) async {
         do {
             try await serverStore.remove(id)

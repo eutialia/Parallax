@@ -32,7 +32,7 @@ struct SettingsView: View {
     /// add task is literally part of Settings.
     enum Route: Hashable {
         case server(Session)
-        case smbHost(String)
+        case smbServer(PersistedServer)
         case addServerChoose
         case addJellyfin
         case addSMB
@@ -96,10 +96,8 @@ struct SettingsView: View {
             if let vm = viewModel {
                 ServerSettingsView(session: session, vm: vm)
             }
-        case .smbHost(let host):
-            if let vm = viewModel {
-                SMBServerSettingsView(host: host, vm: vm)
-            }
+        case .smbServer(let server):
+            SMBServerSettingsView(server: server)
         case .addServerChoose:
             AddServerChooseView(
                 onChooseJellyfin: { path.append(.addJellyfin) },
@@ -127,14 +125,14 @@ struct SettingsView: View {
                 jellyfinServers: vm.sessions.map {
                     SettingsJellyfinRow(id: $0.id, name: $0.serverName, host: $0.displayHost)
                 },
-                smbHosts: Self.groupedSMBHosts(vm.smbServers),
+                smbServers: Self.smbServerRows(vm.smbServers),
                 signOutError: vm.signOutErrorMessage,
                 onSelectJellyfin: { id in
                     if let session = vm.sessions.first(where: { $0.id == id }) {
                         path.append(.server(session))
                     }
                 },
-                onSelectSMBHost: { host in path.append(.smbHost(host)) },
+                onSelectSMBServer: { server in path.append(.smbServer(server)) },
                 onAddServer: {
                     // iPad (Settings IS a form sheet) and tvOS push the task in place; iPhone presents it
                     // as its own page sheet so Cancel aborts the whole flow in one tap (option #1).
@@ -152,25 +150,11 @@ struct SettingsView: View {
         }
     }
 
-    /// Groups the persisted SMB sources by host into one row each. Each `(host, share, root)` is its own
-    /// source under the hood; the root list collapses them so a host with several mounted folders reads
-    /// as one server (its detail manages the folders). Preserves first-seen host order.
-    static func groupedSMBHosts(_ servers: [PersistedServer]) -> [SettingsSMBHostRow] {
-        var order: [String] = []
-        var pathsByHost: [String: [String]] = [:]
-        for server in servers {
-            guard case .smb(let data) = server.kind else { continue }
-            let path = data.displayPath
-            if pathsByHost[data.host] == nil { order.append(data.host) }
-            pathsByHost[data.host, default: []].append(path)
-        }
-        return order.map { host in
-            let paths = pathsByHost[host] ?? []
-            return SettingsSMBHostRow(
-                host: host,
-                folderCount: paths.count,
-                singlePath: paths.count == 1 ? paths.first : nil
-            )
+    /// Maps each `.smb` `PersistedServer` to a display row — one row per server, one server per host.
+    static func smbServerRows(_ servers: [PersistedServer]) -> [SettingsSMBServerRow] {
+        servers.compactMap { server in
+            guard case .smb(let data) = server.kind else { return nil }
+            return SettingsSMBServerRow(server: server, host: data.host, subtitle: data.shareCountSubtitle)
         }
     }
 
@@ -245,18 +229,14 @@ struct SettingsJellyfinRow: Identifiable {
     let host: String
 }
 
-/// An SMB host's grouped row data — one row per host, however many folders are mounted under it.
-struct SettingsSMBHostRow: Identifiable {
+/// An SMB server's row data — one row per persisted server (one server per host).
+struct SettingsSMBServerRow: Identifiable {
+    let server: PersistedServer
     let host: String
-    let folderCount: Int
-    /// The single mounted path, when exactly one folder is mounted; nil when grouped.
-    let singlePath: String?
-    var id: String { host }
-    /// Row meta line: the lone path, or the folder count when several are grouped.
-    var meta: String {
-        if folderCount == 1, let singlePath { return "SMB · \(singlePath)" }
-        return "SMB · \(folderCount) folders"
-    }
+    let subtitle: String
+    var id: ServerID { server.id }
+    /// Row meta line: "SMB · N shares".
+    var meta: String { "SMB · \(subtitle)" }
 }
 
 /// Pure, previewable presentation of the settings root: the Servers, Playback, and Storage sections,
@@ -264,10 +244,10 @@ struct SettingsSMBHostRow: Identifiable {
 /// so this renders in a `#Preview` with mock data (the real screen, minus the network).
 struct SettingsContentView<Storage: View>: View {
     let jellyfinServers: [SettingsJellyfinRow]
-    let smbHosts: [SettingsSMBHostRow]
+    let smbServers: [SettingsSMBServerRow]
     var signOutError: String? = nil
     let onSelectJellyfin: (ServerID) -> Void
-    let onSelectSMBHost: (String) -> Void
+    let onSelectSMBServer: (PersistedServer) -> Void
     let onAddServer: () -> Void
     @ViewBuilder var storage: Storage
 
@@ -309,13 +289,13 @@ struct SettingsContentView<Storage: View>: View {
                 .tvListRowButton()
                 .accessibilityHint("Opens server settings")
             }
-            ForEach(smbHosts) { host in
-                Button { onSelectSMBHost(host.host) } label: {
+            ForEach(smbServers) { row in
+                Button { onSelectSMBServer(row.server) } label: {
                     SettingsRowLabel(
                         systemImage: "externaldrive.badge.wifi",
                         iconSize: 22,
-                        title: host.host,
-                        subtitle: host.meta,
+                        title: row.host,
+                        subtitle: row.meta,
                         accessory: .chevron
                     )
                 }
@@ -378,12 +358,12 @@ private struct SettingsRootPreview: View {
             jellyfinServers: [
                 .init(id: ServerID(rawValue: "1"), name: "home-jellyfin", host: "jellyfin.example.lan"),
             ],
-            smbHosts: [
-                .init(host: "mynas.local", folderCount: 1, singlePath: "/YouTube"),
-                .init(host: "nas2.local", folderCount: 2, singlePath: nil),
+            smbServers: [
+                .init(server: PersistedServer(id: ServerID(rawValue: "s1"), kind: .smb(SMBServerData(host: "mynas.local", username: "", domain: "", shares: ["Media"]))), host: "mynas.local", subtitle: "1 share"),
+                .init(server: PersistedServer(id: ServerID(rawValue: "s2"), kind: .smb(SMBServerData(host: "nas2.local", username: "", domain: "", shares: ["Media", "TV"]))), host: "nas2.local", subtitle: "2 shares"),
             ],
             onSelectJellyfin: { _ in },
-            onSelectSMBHost: { _ in },
+            onSelectSMBServer: { _ in },
             onAddServer: {},
             storage: {
                 SettingsGroup(
