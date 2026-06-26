@@ -48,6 +48,18 @@ public actor SettingsStore {
         }
     }
 
+    /// Decodes the raw stored bytes for `key` as an arbitrary `Decodable` `T`,
+    /// independent of the key's declared `Value`. Returns `nil` when nothing is
+    /// stored or when the bytes don't decode as `T` — never throws. The escape
+    /// hatch for recovery reads that must tolerate a shape the key's `Value`
+    /// can't express (e.g. an element-tolerant `[Failable<…>]` decode that drops
+    /// incompatible rows). Reuses the same `JSONDecoder` as `value`/`tryValue`,
+    /// so it sees byte-identical input.
+    public func decode<T: Decodable>(_ type: T.Type, for key: SettingKey<some Codable & Sendable>) -> T? {
+        guard let data = defaults.data(forKey: key.name) else { return nil }
+        return try? decoder.decode(T.self, from: data)
+    }
+
     public func set<Value>(_ value: Value, for key: SettingKey<Value>) throws {
         do {
             let data = try encoder.encode(value)

@@ -204,6 +204,103 @@ struct ServerStoreMigrationTests {
         #expect(persisted?.isEmpty == true)
     }
 
+    // MARK: - Element-tolerant decode (drop incompatible pre-release SMB rows)
+
+    /// A pre-release build could have written an SMB row in the OLD host/share/root
+    /// shape (`{"smb":{"host","share","root",...}}`) that no longer decodes against
+    /// the current `SMBServerData` (`host/username/domain/shares`). A single such
+    /// element must NOT fail the whole array (which would log a valid Jellyfin user
+    /// out): the tolerant pass drops the bad element and keeps every still-valid row,
+    /// then persists the cleaned array so the next launch re-reads cleanly.
+    ///
+    /// The valid `.jellyfin` half is encoded from a real `PersistedServer` so its
+    /// bytes are byte-faithful to what the app writes; only the deliberately
+    /// incompatible old `.smb` half is hand-authored.
+    @Test("load drops an old-shape SMB entry but keeps a valid Jellyfin entry")
+    func tolerantDecodeDropsOldSMB() async throws {
+        let suiteName = "ServerStoreMigrationTests-tolerant-\(UUID().uuidString)"
+        let jellyfinID = ServerID(rawValue: "jf-1")
+        let validJellyfin = PersistedServer(
+            id: jellyfinID,
+            kind: .jellyfin(JellyfinServerData(
+                serverURL: URL(string: "https://jf-1.example.com")!,
+                serverName: "S",
+                user: UserSnapshot(id: "u", name: "a", serverLastUpdatedAt: nil)
+            ))
+        )
+        // Encode the valid element, then splice it into a two-element array whose
+        // second element is the OLD-shape SMB row (share/root — no shares array).
+        let validData = try JSONEncoder().encode(validJellyfin)
+        let validString = String(decoding: validData, as: UTF8.self)
+        let oldSMB = #"{"id":"smb-old","kind":{"smb":{"host":"nas","share":"Media","root":"/Movies","username":"a","domain":"W"}}}"#
+        let json = "[\(validString),\(oldSMB)]"
+        do {
+            let seeder = UserDefaults(suiteName: suiteName)!
+            seeder.removePersistentDomain(forName: suiteName)
+            seeder.set(json.data(using: .utf8)!, forKey: Self.persistedSessionsKeyName)
+            seeder.synchronize()
+        }
+
+        let settings = SettingsStore(defaults: UserDefaults(suiteName: suiteName)!)
+        let keychain = FakeKeychain()
+        // Token present → the surviving Jellyfin server resolves and is kept.
+        try keychain.setValue("bearer", for: tokenKey(for: jellyfinID))
+        let store = ServerStore(settings: settings, keychain: keychain)
+
+        // Must NOT throw — one bad element does not fail the array.
+        try await store.load()
+
+        let servers = await store.servers
+        #expect(servers.count == 1)
+        #expect(servers.first?.id == jellyfinID)
+        #expect(servers.allSatisfy { if case .smb = $0.kind { return false }; return true })
+
+        // The cleaned array was written back: the same key now re-reads as the
+        // NEW type with the bad row already gone — no repeated salvage next launch.
+        let reread = SettingsStore(defaults: UserDefaults(suiteName: suiteName)!)
+        let key = SettingKey<[PersistedServer]>(name: Self.persistedSessionsKeyName, defaultValue: [])
+        let persisted = try await reread.tryValue(for: key)
+        #expect(persisted?.count == 1)
+        #expect(persisted?.first?.id == jellyfinID)
+    }
+
+    /// Cold-reload contract (A1 review nit): an SMB server added at runtime must
+    /// survive a fresh `ServerStore` over the SAME persisted defaults with its
+    /// `shares` intact — i.e. `SMBServerData` round-trips through `UserDefaults`
+    /// and the tolerant/strict decode keeps every share. Builds a SECOND store on
+    /// the same `SettingsStore`+`FakeKeychain` and asserts the reload.
+    @Test("SMB server reloads on a fresh store with its shares intact")
+    func smbServerColdReloadKeepsShares() async throws {
+        let suiteName = "ServerStoreMigrationTests-smb-reload-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        let settings = SettingsStore(defaults: defaults)
+        let keychain = FakeKeychain()
+
+        // First store: add an SMB server with multiple shares.
+        let writer = ServerStore(settings: settings, keychain: keychain)
+        let id = try await writer.addSMBServer(
+            SMBServerData(host: "nas", username: "alice", domain: "WORKGROUP", shares: ["Media", "TV"]),
+            password: "pw"
+        )
+
+        // Second store on the SAME settings + keychain → cold reload.
+        let reloaded = ServerStore(settings: settings, keychain: keychain)
+        try await reloaded.load()
+
+        let servers = await reloaded.servers
+        #expect(servers.count == 1)
+        guard let server = servers.first(where: { $0.id == id }),
+              case .smb(let data) = server.kind else {
+            Issue.record("expected the reloaded .smb server")
+            return
+        }
+        #expect(data.host == "nas")
+        #expect(data.username == "alice")
+        #expect(data.domain == "WORKGROUP")
+        #expect(data.shares == ["Media", "TV"])
+    }
+
     /// A Keychain READ ERROR (locked device / missing entitlement) is NOT proof
     /// the token is gone, so the persisted record is RETAINED — only its
     /// session is skipped this launch. Locks the keep-on-error safety contract.

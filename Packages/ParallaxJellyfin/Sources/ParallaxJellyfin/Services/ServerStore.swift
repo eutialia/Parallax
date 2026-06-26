@@ -18,6 +18,19 @@ public actor ServerStore {
         let user: UserSnapshot
     }
 
+    /// Decodes `T` but never fails the enclosing container: an element whose
+    /// shape no longer matches `T` decodes to `nil` instead of throwing, so a
+    /// single incompatible row can't take the whole array down. Used by the
+    /// element-tolerant decode fallback in `loadPersistedServers()`. `Sendable`
+    /// (immutable `value`) so a `[Failable<T>]` can cross the `SettingsStore`
+    /// actor boundary.
+    private struct Failable<T: Decodable & Sendable>: Decodable, Sendable {
+        let value: T?
+        init(from decoder: any Decoder) throws {
+            value = try? T(from: decoder)
+        }
+    }
+
     private static let persistedServersKey = SettingKey<[PersistedServer]>(
         name: "ParallaxJellyfin.persistedSessions",
         defaultValue: []
@@ -149,44 +162,95 @@ public actor ServerStore {
         hiddenCollections = (await settings.value(for: Self.hiddenCollectionsKey)).mapValues(Set.init)
     }
 
-    /// Decodes the persisted server list, migrating the legacy flat shape on
-    /// the fly. Tries the current `[PersistedServer]` shape first; on decode
-    /// failure, falls back to the legacy `[LegacyPersistedSession]` shape,
-    /// rewrites each entry as `.jellyfin`, persists the upgraded form, and
-    /// returns it. Throws `decodeFailed` only when BOTH shapes fail — refusing
-    /// to wipe (which would orphan Keychain tokens / log the user out).
+    /// Decodes the persisted server list across three fallbacks, ordered so the
+    /// safest interpretation always wins:
+    ///
+    /// 1. **Strict `[PersistedServer]`** — the current shape; the common path.
+    /// 2. **Legacy `[LegacyPersistedSession]`** — a genuine v1 flat array (no
+    ///    `kind` field); migrated to `.jellyfin`, persisted upgraded, returned.
+    /// 3. **Element-tolerant `[PersistedServer]`** — the current shape decoded
+    ///    per-element via `Failable`, dropping only the rows that no longer match
+    ///    (e.g. pre-release SMB rows from the old host/share/root model) while
+    ///    keeping every still-valid Jellyfin/SMB row; the cleaned array is
+    ///    persisted so the next launch re-reads cleanly.
+    ///
+    /// Order is load-bearing: the legacy pass MUST precede the tolerant pass.
+    /// A v1 flat array fed to the tolerant `[Failable<PersistedServer>]` decoder
+    /// would yield all-`nil` (no `kind` field on any element) and silently wipe a
+    /// v1 Jellyfin user; running legacy first migrates them correctly instead.
+    /// As a second guard, the tolerant pass commits ONLY when it keeps at least
+    /// one row — an all-dropped result is indistinguishable from "not a new-shape
+    /// array" (e.g. a partially-corrupt v1 blob), so it falls through to
+    /// `decodeFailed` rather than persisting an empty array over recoverable data.
+    /// `decodeFailed` is thrown only when ALL THREE fail — never wiping a blob we
+    /// could still partially recover.
     private func loadPersistedServers() async throws -> [PersistedServer] {
         do {
             return try await settings.tryValue(for: Self.persistedServersKey) ?? []
         } catch let newShapeError {
-            let legacy: [LegacyPersistedSession]
-            do {
-                legacy = try await settings.tryValue(for: Self.legacyPersistedSessionsKey) ?? []
-            } catch {
-                // Both the current and the legacy shape failed to decode — a
-                // genuine schema mismatch we can't recover. Refuse to wipe.
-                Log.persistence.error("ServerStore.load: persistedServers decode failed (new + legacy) — refusing to wipe. new=\(String(describing: newShapeError)) legacy=\(String(describing: error))")
-                throw ServerStoreError.decodeFailed(underlying: String(describing: newShapeError))
+            // Fallback 2: a genuine v1 legacy array (flat Jellyfin, no `kind`).
+            if let upgraded = try await migrateLegacyShapeIfPossible() {
+                return upgraded
             }
 
-            let upgraded = legacy.map { entry in
-                PersistedServer(
-                    id: entry.id,
-                    kind: .jellyfin(JellyfinServerData(
-                        serverURL: entry.serverURL,
-                        serverName: entry.serverName,
-                        user: entry.user
-                    ))
-                )
+            // Fallback 3: element-tolerant decode of the CURRENT shape. This drops
+            // entries whose kind no longer matches (e.g. pre-release SMB rows from
+            // the old host/share/root model) while keeping every still-valid row.
+            // Decoded as `[Failable<PersistedServer>]` over the SAME key's raw bytes
+            // via `settings.decode`, so a bad element becomes `nil` instead of failing
+            // the array — reusing the store's `JSONDecoder`, no separate key needed.
+            // Commits only with ≥1 survivor: an all-dropped result is not a safe
+            // signal to wipe (it could be a v1 array the legacy pass couldn't fully
+            // decode), so we leave the blob and fall through to `decodeFailed`.
+            if let failable = await settings.decode([Failable<PersistedServer>].self, for: Self.persistedServersKey) {
+                let survivors = failable.compactMap(\.value)
+                if !survivors.isEmpty {
+                    let dropped = failable.count - survivors.count
+                    Log.persistence.info("ServerStore.load: tolerant decode kept \(survivors.count) of \(failable.count) persisted server(s), dropped \(dropped)")
+                    do {
+                        try await settings.set(survivors, for: Self.persistedServersKey)
+                    } catch {
+                        throw ServerStoreError.persistenceFailed(underlying: String(describing: error))
+                    }
+                    return survivors
+                }
             }
-            Log.persistence.info("ServerStore.load: migrated \(upgraded.count) legacy Jellyfin session(s) to PersistedServer")
-            do {
-                try await settings.set(upgraded, for: Self.persistedServersKey)
-            } catch {
-                throw ServerStoreError.persistenceFailed(underlying: String(describing: error))
-            }
-            return upgraded
+
+            // All three shapes failed to decode (or tolerant salvaged nothing) — a
+            // genuine schema mismatch we can't safely recover. Refuse to wipe (which
+            // would orphan Keychain tokens / log the user out).
+            Log.persistence.error("ServerStore.load: persistedServers decode failed (strict + legacy + tolerant) — refusing to wipe. \(String(describing: newShapeError))")
+            throw ServerStoreError.decodeFailed(underlying: String(describing: newShapeError))
         }
+    }
+
+    /// Attempts the v1 legacy migration: decodes the blob as the flat
+    /// `[LegacyPersistedSession]` shape, rewrites each entry as `.jellyfin`,
+    /// persists the upgraded form, and returns it. Returns `nil` when the blob is
+    /// NOT the legacy shape (decode throws) so the caller can try the next
+    /// fallback. Throws only on a persistence write failure.
+    private func migrateLegacyShapeIfPossible() async throws -> [PersistedServer]? {
+        guard let legacy = try? await settings.tryValue(for: Self.legacyPersistedSessionsKey),
+              !legacy.isEmpty else {
+            return nil
+        }
+        let upgraded = legacy.map { entry in
+            PersistedServer(
+                id: entry.id,
+                kind: .jellyfin(JellyfinServerData(
+                    serverURL: entry.serverURL,
+                    serverName: entry.serverName,
+                    user: entry.user
+                ))
+            )
+        }
+        Log.persistence.info("ServerStore.load: migrated \(upgraded.count) legacy Jellyfin session(s) to PersistedServer")
+        do {
+            try await settings.set(upgraded, for: Self.persistedServersKey)
+        } catch {
+            throw ServerStoreError.persistenceFailed(underlying: String(describing: error))
+        }
+        return upgraded
     }
 
     /// Adds (or replaces) a session. Coordinates the two stores so a partial
