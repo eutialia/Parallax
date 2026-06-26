@@ -198,4 +198,24 @@ struct SMBFileSourceTests {
     func decodeItemIDEmptyPath() {
         #expect(SMBFileSource.decodeItemID(ItemID(rawValue: "Media:")) == nil)
     }
+
+    // MARK: - browse
+
+    @Test("browse partitions into name-sorted folders and media, excluding non-media and zero-byte")
+    func browsePartitions() async throws {
+        let lister = FakeSMBLister(entries: [
+            SMBDirectoryEntry(name: "TV", isDirectory: true, size: 0, modifiedAt: nil),
+            SMBDirectoryEntry(name: "Movies", isDirectory: true, size: 0, modifiedAt: nil),
+            SMBDirectoryEntry(name: "B.mkv", isDirectory: false, size: 5, modifiedAt: nil),
+            SMBDirectoryEntry(name: "A.mp4", isDirectory: false, size: 5, modifiedAt: nil),
+            SMBDirectoryEntry(name: "readme.txt", isDirectory: false, size: 5, modifiedAt: nil),
+            SMBDirectoryEntry(name: "stub.mkv", isDirectory: false, size: 0, modifiedAt: nil),
+        ])
+        let source = SMBFileSource(lister: lister, host: "nas", share: "Media", root: "")
+        let listing = try await source.browse(in: "")
+
+        #expect(listing.folders.map(\.name) == ["Movies", "TV"])      // name-sorted dirs
+        #expect(listing.media.count == 2)                              // txt + zero-byte excluded
+        #expect(listing.media.first?.id == ItemID(rawValue: "Media:A.mp4")) // name-sorted, path-encoded
+    }
 }

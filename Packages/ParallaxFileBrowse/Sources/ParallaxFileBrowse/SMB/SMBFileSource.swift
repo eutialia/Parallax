@@ -146,8 +146,36 @@ public struct SMBFileSource: Sendable {
         return SMBURL.make(host: host, share: share, path: filePath)
     }
 
+    // MARK: - browse
+
+    /// One directory level at `path` (or the configured root when empty), partitioned into
+    /// name-sorted subfolders and name-sorted media mapped to `Item`. Non-media and zero-byte
+    /// files are excluded (same rule as `mediaFiles`). No recursion.
+    public func browse(in path: String) async throws -> SMBBrowseListing {
+        let dirPath = path.isEmpty ? root : path
+        let entries = try await allEntries(in: path)
+        let folders = entries.filter(\.isDirectory)
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        let media = entries.filter { Self.isMediaFile($0) && $0.size > 0 }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            .map { Self.item(from: $0, share: share, in: dirPath) }
+        return SMBBrowseListing(folders: folders, media: media)
+    }
+
     /// Forwards disconnect to the underlying lister.
     public func disconnect() async {
         await lister.disconnect()
+    }
+}
+
+// MARK: - SMBBrowseListing
+
+/// A single directory listing partitioned into subfolders and playable media items.
+public struct SMBBrowseListing: Sendable {
+    public let folders: [SMBDirectoryEntry]
+    public let media: [Item]
+    public init(folders: [SMBDirectoryEntry], media: [Item]) {
+        self.folders = folders
+        self.media = media
     }
 }
