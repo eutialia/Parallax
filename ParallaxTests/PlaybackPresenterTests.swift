@@ -21,7 +21,7 @@ struct PlaybackPresenterTests {
     private func smbRef(id: String = "smb-nas|Media|Movies") -> SMBServerRef {
         SMBServerRef(
             id: ServerID(rawValue: id),
-            data: SMBServerData(host: "nas.local", share: "Media", root: "Movies", username: "alice", domain: "WORKGROUP")
+            data: SMBServerData(host: "nas.local", username: "alice", domain: "WORKGROUP", shares: ["Media"])
         )
     }
 

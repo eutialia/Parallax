@@ -67,13 +67,14 @@ public struct SMBFileSource: Sendable {
 
     /// Decodes an `ItemID` produced by `itemID(share:path:)`.
     /// Splits on the FIRST colon only — share names never contain colons.
-    /// Returns `nil` if the value has no colon (foreign / malformed ID),
-    /// or if the path portion is empty (e.g. `"Media:"`) — an empty path is not playable.
+    /// Returns `nil` if the value has no colon (foreign / malformed ID), if the share portion is
+    /// empty (e.g. `":Movies/Film.mkv"` — no share to anchor a URL on), or if the path portion is
+    /// empty (e.g. `"Media:"`) — none of these is playable.
     public static func decodeItemID(_ id: ItemID) -> (share: String, path: String)? {
         guard let colon = id.rawValue.firstIndex(of: ":") else { return nil }
         let share = String(id.rawValue[..<colon])
         let path = String(id.rawValue[id.rawValue.index(after: colon)...])
-        guard !path.isEmpty else { return nil }
+        guard !share.isEmpty, !path.isEmpty else { return nil }
         return (share, path)
     }
 
@@ -149,15 +150,14 @@ public struct SMBFileSource: Sendable {
     // MARK: - browse
 
     /// One directory level at `path` (or the configured root when empty), partitioned into
-    /// name-sorted subfolders and name-sorted media mapped to `Item`. Non-media and zero-byte
-    /// files are excluded (same rule as `mediaFiles`). No recursion.
-    public func browse(in path: String) async throws -> SMBBrowseListing {
+    /// subfolders and media (mapped to `Item`), each ordered by `sort`. Folders are kept in their
+    /// own array so they ALWAYS render above media regardless of `sort`; the sort only orders within
+    /// each group. Non-media and zero-byte files are excluded (same rule as `mediaFiles`). No recursion.
+    public func browse(in path: String, sort: SMBBrowseSort = .default) async throws -> SMBBrowseListing {
         let dirPath = path.isEmpty ? root : path
         let entries = try await allEntries(in: path)
-        let folders = entries.filter(\.isDirectory)
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-        let media = entries.filter { Self.isMediaFile($0) && $0.size > 0 }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        let folders = sort.sorted(entries.filter(\.isDirectory))
+        let media = sort.sorted(entries.filter { Self.isMediaFile($0) && $0.size > 0 })
             .map { Self.item(from: $0, share: share, in: dirPath) }
         return SMBBrowseListing(folders: folders, media: media)
     }

@@ -80,7 +80,8 @@ public actor AMSMB2Lister: SMBLister {
                 name: attrs.name ?? "",
                 isDirectory: attrs.isDirectory,
                 size: attrs.fileSize ?? 0,
-                modifiedAt: attrs.contentModificationDate
+                modifiedAt: attrs.contentModificationDate,
+                createdAt: attrs.creationDate
             )
         }
     }

@@ -53,6 +53,23 @@ struct SMBBrowseView: View {
         // Recurse: drilling into a folder pushes a child `SMBBrowsePath`, which lands back here a
         // level deeper. Registered on every level so the stack can keep descending.
         .navigationDestination(for: SMBBrowsePath.self) { SMBBrowseView(path: $0) }
+        #if !os(tvOS)
+        // iPhone/iPad carry the sort control in the nav bar's trailing edge. (tvOS instead rides it
+        // in-content above the grid — toolbar items can't join the tvOS focus engine; see `sortHeader`.)
+        // Mounted unconditionally so it doesn't blink in after the push settles; inert until the
+        // per-level view model exists.
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                SMBBrowseSortButton(
+                    field: model?.sortField ?? SMBBrowseSort.default.field,
+                    direction: model?.sortDirection ?? SMBBrowseSort.default.direction,
+                    isEnabled: model != nil,
+                    onSelectField: { model?.sortField = $0 },
+                    onSelectDirection: { model?.sortDirection = $0 }
+                )
+            }
+        }
+        #endif
         .screenFloor()
         // Lifecycle: drilling into a child folder triggers this level's `onDisappear`, disconnecting
         // the per-level lister and freeing the SMB connection while off-screen. On back-navigation
@@ -70,13 +87,9 @@ struct SMBBrowseView: View {
         .onDisappear { model?.teardown() }
     }
 
-    /// Inline title: the current folder's name, or the share name at the root.
+    /// Inline title: the current folder's name (last path component), or the share name at the root.
     private var levelTitle: String {
-        pathComponents.last ?? path.share
-    }
-
-    private var pathComponents: [String] {
-        path.path.isEmpty ? [] : path.path.split(separator: "/").map(String.init)
+        path.path.split(separator: "/").last.map(String.init) ?? path.share
     }
 
     @ViewBuilder
@@ -95,7 +108,9 @@ struct SMBBrowseView: View {
         } else {
             ScrollView {
                 VStack(spacing: 0) {
-                    breadcrumb
+                    #if os(tvOS)
+                    sortHeader(model: model)
+                    #endif
                     SMBBrowseGrid(
                         folders: model.folders,
                         media: model.media,
@@ -112,41 +127,31 @@ struct SMBBrowseView: View {
         }
     }
 
-    // MARK: - Breadcrumb
+    // MARK: - tvOS sort header
 
-    /// Share ⇄ path-component trail. Read-only — the nav stack owns back-navigation (swipe /
-    /// back button), so the segments are labels, not tappable jumps.
-    private var breadcrumb: some View {
-        HStack(spacing: Space.s8) {
-            Image(systemName: "externaldrive.badge.wifi")
-                .font(.caption)
-                .foregroundStyle(Color.tertiaryLabel)
-            breadcrumbSegment(path.share, isCurrent: pathComponents.isEmpty)
-            ForEach(Array(pathComponents.enumerated()), id: \.offset) { index, component in
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(Color.tertiaryLabel)
-                breadcrumbSegment(component, isCurrent: index == pathComponents.count - 1)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, Space.s8)
-        .padding(.bottom, Space.s12)
-        .frame(maxWidth: .infinity, alignment: .leading)
+    #if os(tvOS)
+    /// tvOS in-content sort control, centered above the grid: toolbar items can't join the tvOS
+    /// focus engine, so Sort rides inside the focusable scroll (iPhone/iPad keep it in the nav bar).
+    /// Mirrors `LibraryGridView.headerControls` in its lone-chip case — SMB browse has no genre, so
+    /// the chip centers alone. `tvFocusSection` makes the full-width row one focus target so pressing
+    /// Up from any poster column diverts to the chip; the 30pt bottom gap clears the first poster row's
+    /// focus lift. The `@Bindable` lens lives only here, so iOS carries no unused binding.
+    private func sortHeader(model: SMBBrowseViewModel) -> some View {
+        @Bindable var model = model
+        return SMBBrowseSortChip(field: $model.sortField, direction: $model.sortDirection)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.top, Space.s8)
+            .padding(.bottom, Space.s30)
+            .tvFocusSection()
     }
-
-    private func breadcrumbSegment(_ label: String, isCurrent: Bool) -> some View {
-        Text(label)
-            .font(.footnote.weight(.semibold))
-            .foregroundStyle(isCurrent ? Color.label : Color.secondaryLabel)
-            .lineLimit(1)
-    }
+    #endif
 }
 
 /// The folders-then-media wall for one browse level. Standalone (plain inputs, no `deps`/network)
 /// so it renders in a `#Preview` and stays the single place the two cell kinds + layout live.
-/// Folders use the shared `LibraryBannerCard` chrome wrapped in a `NavigationLink` to the child
-/// path; media use the same `SMBThumbnailTile` the library grid uses, wrapped in a play button.
+/// Folders are compact `FolderBrowseCard`s wrapped in a `NavigationLink` to the child path; media use
+/// the same `SMBThumbnailTile` the library grid uses, wrapped in a play button. Each kind is its own
+/// titled section so the boundary reads as an intentional group break, not a ragged half-empty row.
 struct SMBBrowseGrid: View {
     let folders: [SMBDirectoryEntry]
     let media: [Item]
@@ -161,27 +166,59 @@ struct SMBBrowseGrid: View {
     @Environment(\.appIdiom) private var idiom
 
     var body: some View {
-        LazyVGrid(columns: columns, spacing: AppLayout.libraryListSpacing(idiom: idiom)) {
-            // Folders first — they're the structure you navigate; media is the level's leaves.
-            ForEach(folders, id: \.self) { folder in
-                NavigationLink(value: childPath(folder.name)) {
-                    FolderBrowseCard(name: folder.name)
+        // Folders above media, each in its own titled section at the dense landscape column count
+        // (4-up on iPad). The section header turns the folder→media boundary into a deliberate break
+        // (an incomplete folder row otherwise just reads as ragged empty space).
+        VStack(alignment: .leading, spacing: AppLayout.posterGridRowSpacing(idiom: idiom) + Space.s12) {
+            if !folders.isEmpty {
+                browseSection("Folders") {
+                    LazyVGrid(columns: columns, spacing: AppLayout.posterGridRowSpacing(idiom: idiom)) {
+                        ForEach(folders, id: \.self) { folder in
+                            NavigationLink(value: childPath(folder.name)) {
+                                FolderBrowseCard(name: folder.name)
+                            }
+                            .tvPosterButton()
+                        }
+                    }
                 }
-                .tvPosterButton()
             }
-            ForEach(media) { item in
-                Button { onPlay(item) } label: {
-                    SMBThumbnailTile(item: item, ref: ref, provider: artworkProvider, aspectRatio: MediaImage.landscape)
+            if !media.isEmpty {
+                browseSection("Videos") {
+                    LazyVGrid(columns: columns, spacing: AppLayout.posterGridRowSpacing(idiom: idiom)) {
+                        ForEach(media) { item in
+                            Button { onPlay(item) } label: {
+                                SMBThumbnailTile(item: item, ref: ref, provider: artworkProvider, aspectRatio: MediaImage.landscape)
+                            }
+                            .tvPosterButton()
+                        }
+                    }
                 }
-                .tvPosterButton()
             }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// A titled group (Folders / Videos). Reuses the Settings section-header vocabulary
+    /// (`.sectionHeader`, uppercase, secondary label) so the browse wall reads in the same voice as
+    /// the rest of the app and the header sits flush above its grid's leading card.
+    @ViewBuilder
+    private func browseSection(_ title: String, @ViewBuilder content: () -> some View) -> some View {
+        VStack(alignment: .leading, spacing: Space.s8) {
+            Text(title)
+                .font(.sectionHeader)
+                .textCase(.uppercase)
+                .foregroundStyle(Color.secondaryLabel)
+                .accessibilityAddTraits(.isHeader)
+            content()
         }
     }
 
     private var columns: [GridItem] {
-        let count = AppLayout.libraryListColumns(idiom: idiom)
-        let spacing = AppLayout.libraryListSpacing(idiom: idiom)
-        return Array(repeating: GridItem(.flexible(), spacing: spacing, alignment: .top), count: count)
+        posterGridColumns(
+            fixedColumns: AppLayout.landscapeGridColumns(idiom: idiom),
+            columnMinWidth: 0,   // unused: a fixed count is always supplied
+            columnSpacing: AppLayout.posterGridColumnSpacing(idiom: idiom)
+        )
     }
 
     private func childPath(_ name: String) -> SMBBrowsePath {
@@ -190,29 +227,47 @@ struct SMBBrowseGrid: View {
     }
 }
 
-/// A folder cell: the shared 16:9 `LibraryBannerCard` chrome with a network-folder glyph and the
-/// folder name set in text (no server art, like the SMB library card), so a browsed folder reads as
-/// the same family as the library banners it sits under.
+/// A folder cell sized to match the media tiles in the same wall: a 16:9 glyph card (a folder symbol
+/// on the neutral SMB fill) with the name beneath, mirroring `MediaTile`'s thumbnail-over-title
+/// layout so subfolders and videos align column-for-column. The big `LibraryBannerCard` is reserved
+/// for the handful of top-level library banners; a directory of season folders wants this denser
+/// tile, not a wall of two-up banners.
 private struct FolderBrowseCard: View {
     let name: String
 
     var body: some View {
-        LibraryBannerCard(
-            chipGlyph: "folder.fill",
-            displayName: name,
-            accessibilityName: name,
-            watermark: ("externaldrive.connected.to.line.below.fill", 92)
-        ) {
-            Rectangle().fill(Color.fill)
+        VStack(alignment: .leading, spacing: MediaTile.metadataGap) {
+            ZStack {
+                Color.fill
+                Image(systemName: "folder.fill")
+                    .font(.system(size: 40, weight: .regular))
+                    .foregroundStyle(Color.secondaryLabel)
+            }
+            .aspectRatio(MediaImage.landscape, contentMode: .fit)
+            .clipShape(.rect(cornerRadius: Radius.tile))
+            // tvOS system highlight masked to the tile's corners — pairs with `.borderless` (tvPosterButton).
+            .tvPosterHighlight(cornerRadius: Radius.tile)
+            Text(name)
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(Color.label)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
+        // Pin the whole VStack (glyph card + name + the gap between) as the tap target, matching
+        // `SMBThumbnailTile` — without it only the opaque art + name glyphs are tappable, leaving the
+        // inter-element gap and the trailing space beside a short name dead.
+        .contentShape(.rect(cornerRadius: Radius.tile))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(name)
     }
 }
 
 #if DEBUG
-/// Stub-data host for the browse grid (no network, no `deps`): ~3 folders + ~3 media so the
-/// folders-then-media wall and both cell kinds render. Media tiles show the gray placeholder — the
-/// real provider is wired but never resolves a frame-grab without an SMB connection. Stored as a
-/// view (not a `let`-then-`return` preview closure) so the macro's ViewBuilder accepts it.
+/// Stub-data host for the browse grid (no network, no `deps`): a directory of season folders + a
+/// wall of episodes so the dense 4-up landscape layout (folders on top, then media), both cell
+/// kinds, and the column density are all verifiable. Media tiles show the gray placeholder — the
+/// real provider is wired but never resolves a frame-grab without an SMB connection. The
+/// `appIdiom: .regular` injection forces the iPad column count (the "4-up not 2-up" fix).
 private struct SMBBrowseGridPreview: View {
     private let ref = SMBServerRef(
         id: ServerID(rawValue: "preview"),
@@ -222,12 +277,18 @@ private struct SMBBrowseGridPreview: View {
         SMBDirectoryEntry(name: "Winter 2024", isDirectory: true, size: 0, modifiedAt: nil),
         SMBDirectoryEntry(name: "Spring 2024", isDirectory: true, size: 0, modifiedAt: nil),
         SMBDirectoryEntry(name: "OVAs & Specials", isDirectory: true, size: 0, modifiedAt: nil),
+        SMBDirectoryEntry(name: "Extras", isDirectory: true, size: 0, modifiedAt: nil),
+        SMBDirectoryEntry(name: "Movies", isDirectory: true, size: 0, modifiedAt: nil),
     ]
     private let media: [Item] = [
-        SMBFileSource.item(from: SMBDirectoryEntry(name: "The Grand Budapest Hotel (2014).mkv", isDirectory: false, size: 1_500_000_000, modifiedAt: nil), share: "Media", in: "Anime"),
-        SMBFileSource.item(from: SMBDirectoryEntry(name: "Sintel.2010.1080p.mp4", isDirectory: false, size: 2_100_000_000, modifiedAt: nil), share: "Media", in: "Anime"),
-        SMBFileSource.item(from: SMBDirectoryEntry(name: "Big Buck Bunny.webm", isDirectory: false, size: 900_000_000, modifiedAt: nil), share: "Media", in: "Anime"),
-    ]
+        "The Grand Budapest Hotel (2014).mkv", "Sintel.2010.1080p.mp4", "Big Buck Bunny.webm",
+        "Tears of Steel.mkv", "Cosmos Laundromat.mp4", "Spring.mkv", "Caminandes.webm",
+    ].map { name in
+        SMBFileSource.item(
+            from: SMBDirectoryEntry(name: name, isDirectory: false, size: 1_500_000_000, modifiedAt: nil),
+            share: "Media", in: "Anime"
+        )
+    }
 
     var body: some View {
         NavigationStack {
@@ -245,6 +306,7 @@ private struct SMBBrowseGridPreview: View {
             }
             .background(Color.background)
         }
+        .environment(\.appIdiom, .regular)
     }
 }
 

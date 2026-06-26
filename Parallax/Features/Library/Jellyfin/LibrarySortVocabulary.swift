@@ -7,14 +7,10 @@ import ParallaxCore
 /// names and the same human direction pairs, so "Newest" means the same thing
 /// everywhere or nowhere.
 enum LibrarySortVocabulary {
-    /// Human-language direction pair for a field — what ascending/descending
-    /// MEAN for that field, natural order first. Replaces the old
-    /// Ascending/Descending arrows nobody should have to decode.
-    struct DirectionOption {
-        let title: String
-        let icon: String
-        let direction: ItemSort.Direction
-    }
+    /// Human-language direction pair for a field — what ascending/descending MEAN for that field,
+    /// natural order first. Replaces the old Ascending/Descending arrows nobody should have to decode.
+    /// Shares the generic `SortDirectionOption` shape with the SMB sort vocabulary.
+    typealias DirectionOption = SortDirectionOption<ItemSort.Direction>
 
     static func label(for field: ItemSort.Field) -> String {
         switch field {

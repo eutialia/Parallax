@@ -125,7 +125,7 @@ struct ServerSettingsContentView: View {
     var body: some View {
         SettingsScaffold(showsBrand: false) {
             ServerIdentityHero(
-                systemImage: "server.rack",
+                image: "JellyfinGlyph",
                 name: serverName,
                 meta: "Jellyfin · \(userName)",
                 pills: [
@@ -190,8 +190,8 @@ private struct JellyfinServerDetailPreview: View {
 }
 
 #if os(tvOS)
-#Preview("Jellyfin server detail", traits: .fixedLayout(width: 1920, height: 1080)) { JellyfinServerDetailPreview() }
+#Preview("Jellyfin server detail (tvOS)", traits: .fixedLayout(width: 1920, height: 1080)) { JellyfinServerDetailPreview() }
 #else
-#Preview("Jellyfin server detail", traits: .fixedLayout(width: 540, height: 800)) { JellyfinServerDetailPreview() }
+#Preview("Jellyfin server detail (iOS)", traits: .fixedLayout(width: 540, height: 800)) { JellyfinServerDetailPreview() }
 #endif
 #endif

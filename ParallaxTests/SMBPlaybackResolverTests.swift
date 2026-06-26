@@ -17,6 +17,8 @@ private final class StubSMBLister: SMBLister, @unchecked Sendable {
         self.entries = entries
     }
 
+    func listShares() async throws -> [SMBShare] { [] }
+
     func list(share: String, path: String) async throws -> [SMBDirectoryEntry] {
         if shouldThrow { throw StubError.listFailed }
         return entries
@@ -33,22 +35,22 @@ private func makeRef(
     id: String = "smb-nas.local|Media|Movies",
     host: String = "nas.local",
     share: String = "Media",
-    root: String = "Movies",
     username: String = "alice",
     domain: String = "WORKGROUP"
 ) -> SMBServerRef {
     SMBServerRef(
         id: ServerID(rawValue: id),
-        data: SMBServerData(host: host, share: share, root: root, username: username, domain: domain)
+        data: SMBServerData(host: host, username: username, domain: domain, shares: [share])
     )
 }
 
 /// Returns a `.movie` `Item` whose `ItemID` is encoded the same way `SMBMediaRepository` encodes it.
-private func makeItem(share: String = "Media", path: String = "Movies/Example.mkv") -> Item {
+/// `rawID` overrides the encoded id outright — used to mint an undecodable (no `share:path` colon) id.
+private func makeItem(share: String = "Media", path: String = "Movies/Example.mkv", rawID: String? = nil) -> Item {
     let title = (path as NSString).lastPathComponent
     let displayTitle = (title as NSString).deletingPathExtension
     let movie = Movie(
-        id: ItemID(rawValue: "\(share):\(path)"),
+        id: ItemID(rawValue: rawID ?? "\(share):\(path)"),
         title: displayTitle,
         overview: nil,
         year: nil,
@@ -136,9 +138,13 @@ struct SMBPlaybackResolverTests {
         // Sibling entries alongside "Example.mkv":
         //   Example.en.srt  → matches (language token "en")
         //   readme.txt      → not a subtitle extension, excluded
-        //   Other.srt       → unrelated filename, excluded
+        //   Other.srt       → unrelated filename, excluded by STRICT matching
+        //   Sibling.mkv     → a second video, so the listing is NOT a lonely-video folder; that keeps
+        //                     the tiered matcher's lonely-video fallback OFF, so "Other.srt" (which
+        //                     matches no video by name) is correctly excluded rather than cross-attached.
         let entries: [SMBDirectoryEntry] = [
             .init(name: "Example.mkv",    isDirectory: false, size: 1, modifiedAt: nil),
+            .init(name: "Sibling.mkv",    isDirectory: false, size: 1, modifiedAt: nil),
             .init(name: "Example.en.srt", isDirectory: false, size: 1, modifiedAt: nil),
             .init(name: "readme.txt",     isDirectory: false, size: 1, modifiedAt: nil),
             .init(name: "Other.srt",      isDirectory: false, size: 1, modifiedAt: nil),
@@ -188,13 +194,16 @@ struct SMBPlaybackResolverTests {
 
     // MARK: - Invalid ItemID
 
-    @Test("undecodable ItemID (wrong share prefix) throws AppError.source(.notFound)")
-    func wrongSharePrefixThrows() async throws {
+    @Test("undecodable ItemID (no share:path separator) throws AppError.source(.notFound)")
+    func undecodableItemIDThrows() async throws {
         let lister = StubSMBLister(entries: [])
         let resolver = makeResolver(lister: lister)
-        // Item minted for share "OtherShare", not "Media"
-        let item = makeItem(share: "OtherShare", path: "Movies/Example.mkv")
-        let ref = makeRef(share: "Media")
+        // After the share-hierarchy refactor the share rides in the ItemID, so a cross-share item
+        // resolves against the id's own share (the ref no longer carries a single authoritative
+        // share). The only un-resolvable id now is one that can't be decoded at all — no colon, so
+        // `decodeItemID` returns nil → `.notFound`.
+        let item = makeItem(rawID: "not-a-valid-smb-id")
+        let ref = makeRef()
 
         do {
             _ = try await resolver.resolve(item, ref: ref)

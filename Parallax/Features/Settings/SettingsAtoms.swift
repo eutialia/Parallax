@@ -109,7 +109,13 @@ struct StatusPillData: Identifiable {
 /// in a filled surface tile. The status `pills` — connection state + version (Jellyfin) or account (SMB)
 /// — render the SAME on every platform: separate chips, not a single combined pill.
 struct ServerIdentityHero: View {
-    var systemImage: String
+    var systemImage: String? = nil
+    /// A template image asset for the glyph, used in place of an SF Symbol when set (tinted like the
+    /// symbol — a monochrome template, e.g. `JellyfinGlyph`). Drawn smaller than the symbol point size
+    /// on each platform: the asset fills its frame, an SF Symbol only inks ~⅞ of its em box, so the
+    /// matched-by-eye frame is ~0.88× the symbol size — render-calibrated against the sibling SMB hero's
+    /// `externaldrive.badge.wifi` (28 vs the iOS 32; 35 vs the tvOS tile's 40).
+    var image: String? = nil
     let name: String
     let meta: String
     /// Header status chips — the connection LED plus the version (Jellyfin) or account (SMB) badge.
@@ -119,12 +125,20 @@ struct ServerIdentityHero: View {
     var body: some View {
         VStack(spacing: heroSpacing) {
             #if os(tvOS)
-            IconTile(systemImage: systemImage, size: 76, cornerRadius: 20, glyphSize: 40,
-                     fill: Color.surface, foreground: Color.label)
+            IconTile(systemImage: systemImage, image: image, size: 76, cornerRadius: 20,
+                     glyphSize: image == nil ? 40 : 35, fill: Color.surface, foreground: Color.label)
             #else
-            Image(systemName: systemImage)
-                .font(.system(size: 32, weight: .medium))
-                .foregroundStyle(Color.label)
+            if let image {
+                Image(image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 28, height: 28)
+                    .foregroundStyle(Color.label)
+            } else if let systemImage {
+                Image(systemName: systemImage)
+                    .font(.system(size: 32, weight: .medium))
+                    .foregroundStyle(Color.label)
+            }
             #endif
             VStack(spacing: 4) {
                 Text(name)

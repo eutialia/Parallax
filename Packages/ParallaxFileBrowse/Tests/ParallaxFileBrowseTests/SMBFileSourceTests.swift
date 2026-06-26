@@ -199,6 +199,68 @@ struct SMBFileSourceTests {
         #expect(SMBFileSource.decodeItemID(ItemID(rawValue: "Media:")) == nil)
     }
 
+    @Test("decodeItemID returns nil for a leading-colon id (empty share)")
+    func decodeItemIDEmptyShare() {
+        // No share to anchor an smb:// URL on — must reject rather than yield share == "".
+        #expect(SMBFileSource.decodeItemID(ItemID(rawValue: ":Movies/Film.mkv")) == nil)
+    }
+
+    @Test("withUserData preserves Movie.size — the SMB thumbnail cache key depends on it")
+    func withUserDataPreservesSize() {
+        // Toggling favorite/played rebuilds the Movie; if size isn't echoed, the thumbnail cache key
+        // (serverID+share+path+size+mtime) shifts and every frame-grab regenerates after a user-data
+        // change. Guards the Item.withUserData invariant the SMB grid leans on.
+        let item = SMBFileSource.item(
+            from: SMBDirectoryEntry(name: "Film.mkv", isDirectory: false, size: 1_234_567, modifiedAt: nil),
+            share: "Media", in: ""
+        )
+        let toggled = item.withFavorite(true)
+        guard case .movie(let rebuilt) = toggled else { Issue.record("expected .movie"); return }
+        #expect(rebuilt.size == 1_234_567, "withUserData must echo Movie.size (cache-key stability)")
+        #expect(rebuilt.userData.isFavorite, "the favorite toggle must take effect")
+    }
+
+    // MARK: - Error mapping
+
+    @Test("mapListError maps EACCES/EPERM to permissionDenied")
+    func mapListErrorPermissionDenied() {
+        for code in [POSIXErrorCode.EACCES, .EPERM] {
+            let error = NSError(domain: NSPOSIXErrorDomain, code: Int(code.rawValue))
+            guard case .source(.permissionDenied) = SMBFileSource.mapListError(error, share: "Media", path: "x") else {
+                Issue.record("EACCES/EPERM (\(code)) must map to .source(.permissionDenied)")
+                continue
+            }
+        }
+    }
+
+    @Test("mapListError maps ENOENT/ENOTDIR/ENODEV to notFound")
+    func mapListErrorNotFound() {
+        for code in [POSIXErrorCode.ENOENT, .ENOTDIR, .ENODEV] {
+            let error = NSError(domain: NSPOSIXErrorDomain, code: Int(code.rawValue))
+            guard case .source(.notFound) = SMBFileSource.mapListError(error, share: "Media", path: "x") else {
+                Issue.record("\(code) must map to .source(.notFound)")
+                continue
+            }
+        }
+    }
+
+    @Test("mapListError maps an unrecognised error to connectionLost")
+    func mapListErrorGenericToConnectionLost() {
+        let generic = NSError(domain: "SomeOtherDomain", code: 42)
+        guard case .source(.connectionLost) = SMBFileSource.mapListError(generic, share: "Media", path: "x") else {
+            Issue.record("a non-POSIX error must fall through to .source(.connectionLost)")
+            return
+        }
+    }
+
+    @Test("mapListError reads a POSIXError value, not just an NSPOSIXErrorDomain bridge")
+    func mapListErrorReadsPOSIXErrorValue() {
+        guard case .source(.permissionDenied) = SMBFileSource.mapListError(POSIXError(.EACCES), share: "Media", path: "x") else {
+            Issue.record("a thrown POSIXError(.EACCES) must map to .source(.permissionDenied)")
+            return
+        }
+    }
+
     // MARK: - browse
 
     @Test("browse partitions into name-sorted folders and media, excluding non-media and zero-byte")
@@ -217,5 +279,103 @@ struct SMBFileSourceTests {
         #expect(listing.folders.map(\.name) == ["Movies", "TV"])      // name-sorted dirs
         #expect(listing.media.count == 2)                              // txt + zero-byte excluded
         #expect(listing.media.first?.id == ItemID(rawValue: "Media:A.mp4")) // name-sorted, path-encoded
+    }
+
+    @Test("default sort is Date Created, newest first")
+    func defaultSortIsNewestCreated() {
+        #expect(SMBBrowseSort.default == SMBBrowseSort(field: .dateCreated, direction: .descending))
+    }
+
+    @Test("browse default sort lists newest-created first, name A→Z when no creation date")
+    func browseDefaultsToNewestCreated() async throws {
+        // With creation dates, the default (Date Created, newest first) surfaces the freshest at top.
+        let dated = FakeSMBLister(entries: [
+            SMBDirectoryEntry(name: "Old", isDirectory: true, size: 0, modifiedAt: nil, createdAt: Date(timeIntervalSince1970: 100)),
+            SMBDirectoryEntry(name: "New", isDirectory: true, size: 0, modifiedAt: nil, createdAt: Date(timeIntervalSince1970: 900)),
+            SMBDirectoryEntry(name: "old.mkv", isDirectory: false, size: 5, modifiedAt: nil, createdAt: Date(timeIntervalSince1970: 100)),
+            SMBDirectoryEntry(name: "new.mkv", isDirectory: false, size: 5, modifiedAt: nil, createdAt: Date(timeIntervalSince1970: 900)),
+        ])
+        let datedListing = try await SMBFileSource(lister: dated, host: "nas", share: "Media", root: "").browse(in: "")
+        #expect(datedListing.folders.map(\.name) == ["New", "Old"])
+        #expect(datedListing.media.map(\.displayTitle) == ["new", "old"])
+
+        // No creation dates (server omits btime) → graceful fallback to name A→Z, never random.
+        let undated = FakeSMBLister(entries: [
+            SMBDirectoryEntry(name: "Zelda", isDirectory: true, size: 0, modifiedAt: nil),
+            SMBDirectoryEntry(name: "Alpha", isDirectory: true, size: 0, modifiedAt: nil),
+            SMBDirectoryEntry(name: "z.mkv", isDirectory: false, size: 5, modifiedAt: nil),
+            SMBDirectoryEntry(name: "a.mkv", isDirectory: false, size: 5, modifiedAt: nil),
+        ])
+        let undatedListing = try await SMBFileSource(lister: undated, host: "nas", share: "Media", root: "").browse(in: "")
+        #expect(undatedListing.folders.map(\.name) == ["Alpha", "Zelda"])
+        #expect(undatedListing.media.map(\.displayTitle) == ["a", "z"])
+    }
+
+    @Test("browse name descending reverses both folders and media")
+    func browseNameDescending() async throws {
+        let lister = FakeSMBLister(entries: [
+            SMBDirectoryEntry(name: "Alpha", isDirectory: true, size: 0, modifiedAt: nil),
+            SMBDirectoryEntry(name: "Zelda", isDirectory: true, size: 0, modifiedAt: nil),
+            SMBDirectoryEntry(name: "a.mkv", isDirectory: false, size: 5, modifiedAt: nil),
+            SMBDirectoryEntry(name: "z.mkv", isDirectory: false, size: 5, modifiedAt: nil),
+        ])
+        let source = SMBFileSource(lister: lister, host: "nas", share: "Media", root: "")
+        let listing = try await source.browse(in: "", sort: .init(field: .name, direction: .descending))
+        #expect(listing.folders.map(\.name) == ["Zelda", "Alpha"])
+        #expect(listing.media.map(\.displayTitle) == ["z", "a"])
+    }
+
+    @Test("browse date-modified descending lists newest first")
+    func browseDateModifiedNewestFirst() async throws {
+        let old = Date(timeIntervalSince1970: 1_000)
+        let new = Date(timeIntervalSince1970: 9_000)
+        let lister = FakeSMBLister(entries: [
+            SMBDirectoryEntry(name: "old.mkv", isDirectory: false, size: 5, modifiedAt: old),
+            SMBDirectoryEntry(name: "new.mkv", isDirectory: false, size: 5, modifiedAt: new),
+        ])
+        let source = SMBFileSource(lister: lister, host: "nas", share: "Media", root: "")
+        let listing = try await source.browse(in: "", sort: .init(field: .dateModified, direction: .descending))
+        #expect(listing.media.map(\.displayTitle) == ["new", "old"])
+    }
+
+    @Test("browse date-created ascending lists oldest first, using btime not mtime")
+    func browseDateCreatedOldestFirst() async throws {
+        // createdAt order is the REVERSE of modifiedAt order — proves the comparator reads btime.
+        let lister = FakeSMBLister(entries: [
+            SMBDirectoryEntry(name: "first.mkv", isDirectory: false, size: 5,
+                              modifiedAt: Date(timeIntervalSince1970: 9_000), createdAt: Date(timeIntervalSince1970: 100)),
+            SMBDirectoryEntry(name: "second.mkv", isDirectory: false, size: 5,
+                              modifiedAt: Date(timeIntervalSince1970: 1_000), createdAt: Date(timeIntervalSince1970: 200)),
+        ])
+        let source = SMBFileSource(lister: lister, host: "nas", share: "Media", root: "")
+        let listing = try await source.browse(in: "", sort: .init(field: .dateCreated, direction: .ascending))
+        #expect(listing.media.map(\.displayTitle) == ["first", "second"])
+    }
+
+    @Test("browse date sort puts entries with a missing date last in both directions")
+    func browseDateSortMissingLast() async throws {
+        let dated = Date(timeIntervalSince1970: 5_000)
+        let lister = FakeSMBLister(entries: [
+            SMBDirectoryEntry(name: "nodate.mkv", isDirectory: false, size: 5, modifiedAt: nil),
+            SMBDirectoryEntry(name: "dated.mkv", isDirectory: false, size: 5, modifiedAt: dated),
+        ])
+        let source = SMBFileSource(lister: lister, host: "nas", share: "Media", root: "")
+        for direction in [SMBBrowseSort.Direction.ascending, .descending] {
+            let listing = try await source.browse(in: "", sort: .init(field: .dateModified, direction: direction))
+            #expect(listing.media.map(\.displayTitle) == ["dated", "nodate"], "missing date sorts last (\(direction))")
+        }
+    }
+
+    @Test("a media file newer than a folder still sorts below it — folders are always on top")
+    func browseFoldersAlwaysAboveMedia() async throws {
+        let lister = FakeSMBLister(entries: [
+            SMBDirectoryEntry(name: "Old Folder", isDirectory: true, size: 0, modifiedAt: Date(timeIntervalSince1970: 1)),
+            SMBDirectoryEntry(name: "brand-new.mkv", isDirectory: false, size: 5, modifiedAt: Date(timeIntervalSince1970: 9_999)),
+        ])
+        let source = SMBFileSource(lister: lister, host: "nas", share: "Media", root: "")
+        let listing = try await source.browse(in: "", sort: .init(field: .dateModified, direction: .descending))
+        // The grid renders folders then media, so the (newer) file never leapfrogs the (older) folder.
+        #expect(listing.folders.map(\.name) == ["Old Folder"])
+        #expect(listing.media.map(\.displayTitle) == ["brand-new"])
     }
 }

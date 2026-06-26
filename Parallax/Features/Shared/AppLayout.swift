@@ -126,6 +126,19 @@ enum AppLayout {
         }
     }
 
+    /// Column count for a wall of 16:9 landscape tiles — the SMB folder browser's subfolders +
+    /// video thumbnails. Denser than `libraryListColumns` (which sizes the big top-level library
+    /// BANNERS, one-/two-up): a browsed video is a small frame-grab, so it wants the same 4-up
+    /// density the SMB library grid used before the share-hierarchy refactor folded it into the
+    /// banner grid (the "only two columns" regression).
+    static func landscapeGridColumns(idiom: AppIdiom) -> Int {
+        switch idiom {
+        case .compact: 2
+        case .regular: 4
+        case .tv: 4
+        }
+    }
+
     /// Inter-card gap (both axes) for the library-banner grid. On tvOS the cards take the same
     /// 1.1× focus lift as posters, so they need the same 40pt canonical spacing — at 12pt a
     /// focused 16:9 banner's lift grew wider than the gap and overlapped its neighbour. iPhone/iPad

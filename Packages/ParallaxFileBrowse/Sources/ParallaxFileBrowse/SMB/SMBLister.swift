@@ -5,13 +5,18 @@ public struct SMBDirectoryEntry: Sendable, Hashable {
     public let name: String
     public let isDirectory: Bool
     public let size: Int64
+    /// Last content-write time (SMB `mtime`). nil when the server omits it.
     public let modifiedAt: Date?
+    /// Birth time (SMB `btime` / `creationDate`). nil when the server omits it — not every SMB
+    /// server fills it, so the date-sort comparator treats a missing value as unknown (sorts last).
+    public let createdAt: Date?
 
-    public init(name: String, isDirectory: Bool, size: Int64, modifiedAt: Date?) {
+    public init(name: String, isDirectory: Bool, size: Int64, modifiedAt: Date?, createdAt: Date? = nil) {
         self.name = name
         self.isDirectory = isDirectory
         self.size = size
         self.modifiedAt = modifiedAt
+        self.createdAt = createdAt
     }
 }
 

@@ -4,18 +4,12 @@ import UIKit
 import ParallaxJellyfin
 import ParallaxCore
 
-/// The library's nav-bar sort button, bridged to UIKit for ONE reason: the
-/// Photos-style direction row — two tiles with the icon ABOVE its title and a
-/// selected pill — is `UIMenu.preferredElementSize = .medium`, an API SwiftUI
-/// doesn't expose. SwiftUI's `.palette` picker renders the same row as bare
-/// icon circles under a stray "Order" header (shipped, looked broken).
-///
-/// The menu is rebuilt from the latest state on every SwiftUI update; UIKit
-/// snapshots children at presentation and every row tap dismisses, so the
-/// rebuild always lands before the next open. Mounting the button needs no
-/// view model (it renders from plain values), which also fixes the toolbar
-/// item only appearing after the push animation settled.
-struct LibrarySortMenuButton: UIViewRepresentable {
+/// The library's nav-bar sort+genre button. The Photos-style `.medium` direction tiles + the
+/// monochrome bridge live in the shared `SortMenuButton`; this just builds the Jellyfin field set
+/// and the genre submenu (the one piece SMB browse doesn't share) and hands over a `UIMenu`.
+/// Mounting needs no view model (it renders from plain values), which keeps the toolbar item from
+/// only appearing after the push animation settled.
+struct LibrarySortMenuButton: View {
     let sortField: ItemSort.Field
     let sortDirection: ItemSort.Direction
     let selectedGenre: String?
@@ -27,65 +21,35 @@ struct LibrarySortMenuButton: UIViewRepresentable {
     let onSelectDirection: (ItemSort.Direction) -> Void
     let onSelectGenre: (String?) -> Void
 
-    func makeUIView(context: Context) -> UIButton {
-        let button = UIButton(type: .system)
-        button.showsMenuAsPrimaryAction = true
-        // Monochrome chrome rule: never the inherited accent. (tintColor = nil
-        // here resolves to the SAME label color anyway — RootView pins
-        // `.tint(Color.label)` — so a tint flip can't signal anything.)
-        button.tintColor = .label
-        button.accessibilityLabel = "Sort and genre"
-        return button
-    }
-
-    func updateUIView(_ button: UIButton, context: Context) {
-        // Resting: the bare funnel, no enclosing circle — the glass toolbar
-        // platter already provides the shape. A genre filter flips it to the
-        // filled-disc variant: the stock active-filter signal, and the only
-        // in-palette state change a monochrome bar has (a tint swap is
-        // invisible when everything is already label-colored).
-        // Body + large scale matches the symbol metrics SwiftUI gives its own
-        // toolbar items (UIButton's bare default renders a beat smaller than
-        // the neighbouring bar glyphs).
-        let config = UIImage.SymbolConfiguration(textStyle: .body, scale: .large)
-        let glyph = selectedGenre != nil
-            ? "line.3.horizontal.decrease.circle.fill"
-            : "line.3.horizontal.decrease"
-        button.setImage(UIImage(systemName: glyph, withConfiguration: config), for: .normal)
-        button.menu = menu()
-        button.isEnabled = isEnabled
-        button.accessibilityValue = selectedGenre ?? ""
-    }
-
-    /// Report the glyph's intrinsic size: without this the representable takes
-    /// the whole proposed toolbar slot and the glass platter stretches into a
-    /// bar-wide pill instead of the standard item circle.
-    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UIButton, context: Context) -> CGSize? {
-        uiView.intrinsicContentSize
+    var body: some View {
+        // Resting: the bare funnel — the glass toolbar platter already provides the shape. A genre
+        // filter flips it to the filled-disc variant: the stock active-filter signal, and the only
+        // in-palette state change a monochrome bar has (a tint swap is invisible when everything is
+        // already label-colored).
+        SortMenuButton(
+            glyph: "line.3.horizontal.decrease",
+            activeGlyph: "line.3.horizontal.decrease.circle.fill",
+            isActive: selectedGenre != nil,
+            menu: menu(),
+            isEnabled: isEnabled,
+            accessibilityLabel: "Sort and genre",
+            accessibilityValue: selectedGenre ?? ""
+        )
     }
 
     private func menu() -> UIMenu {
-        // Direction tiles — icon over title, selected pill: the `.medium`
-        // element size this whole bridge exists for.
-        let directionRow = UIMenu(
-            options: .displayInline,
-            children: LibrarySortVocabulary.directionOptions(for: sortField).map { option in
-                UIAction(
-                    title: option.title,
-                    image: UIImage(systemName: option.icon),
-                    state: sortDirection == option.direction ? .on : .off
-                ) { _ in onSelectDirection(option.direction) }
+        let directionRow = SortMenuButton.directionRow(
+            LibrarySortVocabulary.directionOptions(for: sortField).map { option in
+                .init(title: option.title, icon: option.icon, isOn: sortDirection == option.direction) {
+                    onSelectDirection(option.direction)
+                }
             }
         )
-        directionRow.preferredElementSize = .medium
-
-        let fields = UIMenu(
-            options: .displayInline,
-            children: ItemSort.Field.allCases.map { field in
-                UIAction(
-                    title: LibrarySortVocabulary.label(for: field),
-                    state: sortField == field ? .on : .off
-                ) { _ in onSelectField(field) }
+        let fields = SortMenuButton.fieldRows(
+            ItemSort.Field.allCases.map { field in
+                .init(title: LibrarySortVocabulary.label(for: field), isOn: sortField == field) {
+                    onSelectField(field)
+                }
             }
         )
 

@@ -279,8 +279,11 @@ struct SettingsContentView<Storage: View>: View {
             ForEach(jellyfinServers) { server in
                 Button { onSelectJellyfin(server.id) } label: {
                     SettingsRowLabel(
-                        systemImage: "server.rack",
-                        iconSize: 22,
+                        image: "JellyfinGlyph",
+                        // 18, not the sibling rows' 22: `JellyfinGlyph` fills its frame edge-to-edge,
+                        // while an SF Symbol at `size:` only inks ~75% of its em box — so 18 here lands
+                        // the mark at the same visual height as `externaldrive.badge.wifi`@22 next to it.
+                        iconSize: 18,
                         title: server.name,
                         subtitle: "Jellyfin · \(server.host)",
                         accessory: .chevron
@@ -380,8 +383,8 @@ private struct SettingsRootPreview: View {
 }
 
 #if os(tvOS)
-#Preview("Settings · root", traits: .fixedLayout(width: 1920, height: 1080)) { SettingsRootPreview() }
+#Preview("Settings · root (tvOS)", traits: .fixedLayout(width: 1920, height: 1080)) { SettingsRootPreview() }
 #else
-#Preview("Settings · root", traits: .fixedLayout(width: 540, height: 980)) { SettingsRootPreview() }
+#Preview("Settings · root (iOS)", traits: .fixedLayout(width: 540, height: 980)) { SettingsRootPreview() }
 #endif
 #endif

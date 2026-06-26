@@ -8,12 +8,11 @@ struct SMBCredentialOptionsTests {
 
     private func makeData(
         host: String = "nas.local",
-        share: String = "Media",
-        root: String = "Movies",
         username: String = "alice",
-        domain: String = "WORKGROUP"
+        domain: String = "WORKGROUP",
+        shares: [String] = ["Media"]
     ) -> SMBServerData {
-        SMBServerData(host: host, share: share, root: root, username: username, domain: domain)
+        SMBServerData(host: host, username: username, domain: domain, shares: shares)
     }
 
     @Test("vlcCredentialOptions returns the three smb option strings with the supplied password")
