@@ -1,9 +1,13 @@
 import Foundation
+import OSLog
+import ParallaxCore
 
 /// Top-level media file accessor for a single SMB share + root path.
 /// Lists one directory level only (no recursion), filters to known media extensions.
 /// Credentials are never embedded in URLs — callers supply them via transport options.
 public struct SMBFileSource: Sendable {
+
+    private static let logger = Logger(subsystem: "Parallax", category: "SMBFileSource")
 
     // Extensions recognised as playable media — a libVLC-decodable ALLOWLIST (not a blocklist),
     // so non-media siblings and temp-suffix partials (.part/.crdownload/.!qB/.aria2) never reach
@@ -51,6 +55,74 @@ public struct SMBFileSource: Sendable {
     static func isMediaFile(_ entry: SMBDirectoryEntry) -> Bool {
         guard !entry.isDirectory else { return false }
         return mediaExtensions.contains((entry.name as NSString).pathExtension.lowercased())
+    }
+
+    // MARK: - ItemID codec (public statics, shared by browse path + playback resolver)
+
+    /// Encodes share + share-relative path into a stable `ItemID`.
+    /// Format: `"<share>:<path>"` — colons are not valid in SMB share names.
+    public static func itemID(share: String, path: String) -> ItemID {
+        ItemID(rawValue: "\(share):\(path)")
+    }
+
+    /// Decodes an `ItemID` produced by `itemID(share:path:)`.
+    /// Splits on the FIRST colon only — share names never contain colons.
+    /// Returns `nil` if the value has no colon (foreign / malformed ID).
+    public static func decodeItemID(_ id: ItemID) -> (share: String, path: String)? {
+        guard let colon = id.rawValue.firstIndex(of: ":") else { return nil }
+        let share = String(id.rawValue[..<colon])
+        let path = String(id.rawValue[id.rawValue.index(after: colon)...])
+        return (share, path)
+    }
+
+    // MARK: - Entry → Item mapping
+
+    /// Maps a single `SMBDirectoryEntry` to an `Item`, embedding the full share-relative path in
+    /// the `ItemID`. `dirPath` is the directory being listed; when empty the entry is at the root.
+    public static func item(from entry: SMBDirectoryEntry, share: String, in dirPath: String) -> Item {
+        let path = dirPath.isEmpty ? entry.name : "\(dirPath)/\(entry.name)"
+        let title = (entry.name as NSString).deletingPathExtension
+        let movie = Movie(
+            id: itemID(share: share, path: path),
+            title: title,
+            overview: nil,
+            year: nil,
+            runtime: nil,
+            communityRating: nil,
+            officialRating: nil,
+            genres: [],
+            primaryTag: nil,
+            backdropTags: [],
+            logoTag: nil,
+            thumbTag: nil,
+            dateAdded: entry.modifiedAt,
+            userData: UserItemData(played: false, playbackPositionTicks: 0, playCount: 0, isFavorite: false),
+            width: nil,
+            height: nil,
+            videoRangeType: nil,
+            hasSubtitles: false,
+            size: entry.size
+        )
+        return .movie(movie)
+    }
+
+    // MARK: - Error mapping
+
+    /// Maps a raw libsmb2/AMSMB2 enumeration failure to a typed `AppError`, logging the
+    /// underlying `NSError` (domain/code/message). Only share/path are logged — never credentials.
+    public static func mapListError(_ error: Error, share: String, path: String) -> AppError {
+        let ns = error as NSError
+        logger.error("SMB list failed [share=\(share, privacy: .public) path=\(path, privacy: .public)]: \(ns.domain, privacy: .public)#\(ns.code) — \(ns.localizedDescription, privacy: .public)")
+        let posixCode: Int32? = (error as? POSIXError).map { $0.code.rawValue }
+            ?? (ns.domain == NSPOSIXErrorDomain ? Int32(ns.code) : nil)
+        switch posixCode {
+        case POSIXErrorCode.EACCES.rawValue, POSIXErrorCode.EPERM.rawValue:
+            return .source(.permissionDenied)
+        case POSIXErrorCode.ENOENT.rawValue, POSIXErrorCode.ENOTDIR.rawValue, POSIXErrorCode.ENODEV.rawValue:
+            return .source(.notFound)
+        default:
+            return .source(.connectionLost)
+        }
     }
 
     /// Lists top-level media files in `path` (or the configured `root` when `path` is empty).

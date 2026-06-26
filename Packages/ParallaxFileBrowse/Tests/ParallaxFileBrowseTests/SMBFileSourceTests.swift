@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import ParallaxCore
 @testable import ParallaxFileBrowse
 
 @Suite("SMBFileSource")
@@ -158,5 +159,27 @@ struct SMBFileSourceTests {
         ])
         let shares = try await lister.listShares()
         #expect(shares.map(\.name) == ["Media", "Backups"])
+    }
+
+    // MARK: - ItemID codec
+
+    @Test("decodeItemID round-trips itemID(share:path:)")
+    func itemIDRoundTrips() {
+        let id = SMBFileSource.itemID(share: "Media", path: "Movies/Film.mkv")
+        let decoded = SMBFileSource.decodeItemID(id)
+        #expect(decoded?.share == "Media")
+        #expect(decoded?.path == "Movies/Film.mkv")
+    }
+
+    @Test("decodeItemID returns nil for an id with no share prefix")
+    func decodeItemIDNoColon() {
+        #expect(SMBFileSource.decodeItemID(ItemID(rawValue: "nocolon")) == nil)
+    }
+
+    @Test("item(from:in:) encodes the full share-relative path in the ItemID")
+    func itemEncodesPath() {
+        let entry = SMBDirectoryEntry(name: "Film.mkv", isDirectory: false, size: 10, modifiedAt: nil)
+        let item = SMBFileSource.item(from: entry, share: "Media", in: "Movies")
+        #expect(item.id == ItemID(rawValue: "Media:Movies/Film.mkv"))
     }
 }

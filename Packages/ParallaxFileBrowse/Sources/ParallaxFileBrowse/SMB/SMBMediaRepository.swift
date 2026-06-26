@@ -1,5 +1,4 @@
 import Foundation
-import OSLog
 import ParallaxCore
 
 /// A `MediaRepository` that surfaces flat media files from SMB share roots.
@@ -20,7 +19,7 @@ public struct SMBMediaRepository: MediaRepository {
     private let share: String
     private let roots: [String]
 
-    private static let logger = Logger(subsystem: "Parallax", category: "SMBMediaRepository")
+    // No local logger — mapListError now lives on SMBFileSource (same category).
 
     public init(lister: any SMBLister, share: String, roots: [String]) {
         self.lister = lister
@@ -60,10 +59,10 @@ public struct SMBMediaRepository: MediaRepository {
             // Map the raw libsmb2/AMSMB2 error to a typed AppError so the grid shows a
             // meaningful message (and logs the real cause) instead of letting a bare NSError
             // fall through to LibraryGridViewModel's generic "Something went wrong."
-            throw Self.mapListError(error, share: share, root: root)
+            throw SMBFileSource.mapListError(error, share: share, path: root)
         }
         let items: [Item] = entries.map { entry in
-            item(from: entry, share: share, root: root)
+            SMBFileSource.item(from: entry, share: share, in: root)
         }
         return Page(items: items, total: items.count, nextCursor: nil)
     }
@@ -118,64 +117,4 @@ public struct SMBMediaRepository: MediaRepository {
         return String(itemID.rawValue.dropFirst(prefix.count))
     }
 
-    // MARK: - Entry → Item mapping
-
-    private func item(from entry: SMBDirectoryEntry, share: String, root: String) -> Item {
-        // ItemID encodes the full SMB path so two files at different roots with
-        // the same name don't collide, and the ID is stable across sessions.
-        let path = root.isEmpty ? entry.name : "\(root)/\(entry.name)"
-        let itemID = ItemID(rawValue: "\(share):\(path)")
-
-        let title = (entry.name as NSString).deletingPathExtension
-
-        let movie = Movie(
-            id: itemID,
-            title: title,
-            overview: nil,
-            year: nil,
-            runtime: nil,
-            communityRating: nil,
-            officialRating: nil,
-            genres: [],
-            primaryTag: nil,
-            backdropTags: [],
-            logoTag: nil,
-            thumbTag: nil,
-            dateAdded: entry.modifiedAt,
-            userData: UserItemData(played: false, playbackPositionTicks: 0, playCount: 0, isFavorite: false),
-            width: nil,
-            height: nil,
-            videoRangeType: nil,
-            hasSubtitles: false,
-            // Carried for the thumbnail cache key (serverID+path+size+mtime). mtime rides
-            // `dateAdded` above; together they invalidate a stale thumbnail when the file changes.
-            size: entry.size
-        )
-        return .movie(movie)
-    }
-
-    // MARK: - Error mapping
-
-    /// Maps a raw libsmb2/AMSMB2 enumeration failure to a typed `AppError`, logging the
-    /// underlying `NSError` (domain/code/message) so the cause is diagnosable — a bare
-    /// NSError otherwise surfaced as "Something went wrong." with nothing in the log.
-    /// Credentials never appear here: the error carries none, and only the share/root are
-    /// logged, never the lister's `URLCredential`.
-    private static func mapListError(_ error: Error, share: String, root: String) -> AppError {
-        let ns = error as NSError
-        logger.error("SMB list failed [share=\(share, privacy: .public) root=\(root, privacy: .public)]: \(ns.domain, privacy: .public)#\(ns.code) — \(ns.localizedDescription, privacy: .public)")
-        // libsmb2/AMSMB2 surface POSIX errnos either as a bridged POSIXError or as a raw
-        // NSError in NSPOSIXErrorDomain — accept both. A non-POSIX error (custom domain) maps
-        // to the general "connection lost".
-        let posixCode: Int32? = (error as? POSIXError).map { $0.code.rawValue }
-            ?? (ns.domain == NSPOSIXErrorDomain ? Int32(ns.code) : nil)
-        switch posixCode {
-        case POSIXErrorCode.EACCES.rawValue, POSIXErrorCode.EPERM.rawValue:
-            return .source(.permissionDenied)
-        case POSIXErrorCode.ENOENT.rawValue, POSIXErrorCode.ENOTDIR.rawValue, POSIXErrorCode.ENODEV.rawValue:
-            return .source(.notFound)
-        default:
-            return .source(.connectionLost)
-        }
-    }
 }
