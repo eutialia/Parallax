@@ -20,6 +20,13 @@ public actor AMSMB2Lister: SMBLister {
     private let domain: String
     private let credential: URLCredential
 
+    /// Per-operation response timeout. AMSMB2 defaults to 60s, which on an unreachable or
+    /// wrong host turns `connectShare`/`list` into a full-minute hang with no feedback — the
+    /// SMB-login "spins forever" bug. A short LAN-appropriate ceiling fails fast instead; the
+    /// SMB handshake and a single non-recursive directory level both complete in well under a
+    /// second on a reachable share, so this only ever bites a dead host.
+    private let connectTimeout: TimeInterval
+
     /// The live manager + the share it is currently connected to. Both are reset
     /// by `disconnect()` and rebuilt on the next `list` against a (possibly new) share.
     private var manager: SMB2Manager?
@@ -31,7 +38,9 @@ public actor AMSMB2Lister: SMBLister {
     ///   - password: account password — supplied by the caller (Keychain at the call site).
     ///     Never logged, never placed in a URL.
     ///   - domain: SMB/NT domain or workgroup (e.g. `"WORKGROUP"`). Empty is allowed.
-    public init(host: String, username: String, password: String, domain: String = "") {
+    ///   - connectTimeout: per-operation response ceiling (default 15s). Bounds the connect/list
+    ///     so a dead host fails fast instead of hanging on AMSMB2's 60s default.
+    public init(host: String, username: String, password: String, domain: String = "", connectTimeout: TimeInterval = 15) {
         // Scheme-only URL; AMSMB2 derives the connection target from it. No credentials here.
         // Percent-encode the host so a Bonjour-synthesised name with a space (e.g.
         // "My NAS.local") forms a real URL and attempts a resolve, instead of silently
@@ -44,6 +53,7 @@ public actor AMSMB2Lister: SMBLister {
         // user string maps to the NTLM *workstation* field, not the domain
         // (verified against AMSMB2 4.0.3 source), so folding it there is wrong.
         self.credential = URLCredential(user: username, password: password, persistence: .forSession)
+        self.connectTimeout = connectTimeout
     }
 
     /// Lists one directory level of `share` at `path`. Connects (or reconnects to a
@@ -94,6 +104,9 @@ public actor AMSMB2Lister: SMBLister {
         guard let client = SMB2Manager(url: serverURL, domain: domain, credential: credential) else {
             throw SMBListerError.managerInitFailed
         }
+        // Bound every operation so a dead/wrong host fails in `connectTimeout` seconds instead of
+        // AMSMB2's 60s default (the SMB-login spin-forever bug).
+        client.timeout = connectTimeout
         try await client.connectShare(name: share)
         self.manager = client
         self.connectedShare = share
