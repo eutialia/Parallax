@@ -181,5 +181,21 @@ struct SMBFileSourceTests {
         let entry = SMBDirectoryEntry(name: "Film.mkv", isDirectory: false, size: 10, modifiedAt: nil)
         let item = SMBFileSource.item(from: entry, share: "Media", in: "Movies")
         #expect(item.id == ItemID(rawValue: "Media:Movies/Film.mkv"))
+        if case .movie(let m) = item {
+            #expect(m.title == "Film")   // name minus extension
+            #expect(m.size == 10)        // entry.size carried through
+        } else { Issue.record("expected .movie") }
+    }
+
+    @Test("item(from:in:) at root (empty dirPath) encodes name without a leading slash")
+    func itemEncodesPathAtRoot() {
+        let entry = SMBDirectoryEntry(name: "Film.mkv", isDirectory: false, size: 10, modifiedAt: nil)
+        let item = SMBFileSource.item(from: entry, share: "Media", in: "")
+        #expect(item.id == ItemID(rawValue: "Media:Film.mkv"))
+    }
+
+    @Test("decodeItemID returns nil for a trailing-colon id (empty path)")
+    func decodeItemIDEmptyPath() {
+        #expect(SMBFileSource.decodeItemID(ItemID(rawValue: "Media:")) == nil)
     }
 }

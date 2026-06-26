@@ -67,11 +67,13 @@ public struct SMBFileSource: Sendable {
 
     /// Decodes an `ItemID` produced by `itemID(share:path:)`.
     /// Splits on the FIRST colon only — share names never contain colons.
-    /// Returns `nil` if the value has no colon (foreign / malformed ID).
+    /// Returns `nil` if the value has no colon (foreign / malformed ID),
+    /// or if the path portion is empty (e.g. `"Media:"`) — an empty path is not playable.
     public static func decodeItemID(_ id: ItemID) -> (share: String, path: String)? {
         guard let colon = id.rawValue.firstIndex(of: ":") else { return nil }
         let share = String(id.rawValue[..<colon])
         let path = String(id.rawValue[id.rawValue.index(after: colon)...])
+        guard !path.isEmpty else { return nil }
         return (share, path)
     }
 
