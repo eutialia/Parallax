@@ -81,6 +81,7 @@ struct SMBFileSourceTests {
             var count = 0
             let inner: FakeSMBLister
             init(inner: FakeSMBLister) { self.inner = inner }
+            func listShares() async throws -> [SMBShare] { try await inner.listShares() }
             func list(share: String, path: String) async throws -> [SMBDirectoryEntry] {
                 count += 1
                 return try await inner.list(share: share, path: path)
@@ -145,5 +146,17 @@ struct SMBFileSourceTests {
         let source = SMBFileSource(lister: lister, host: "nas", share: "Media", root: "")
         await source.disconnect()
         #expect(lister.disconnectCalled)
+    }
+
+    // MARK: - listShares
+
+    @Test("FakeSMBLister.listShares returns the canned shares")
+    func listSharesReturnsCanned() async throws {
+        let lister = FakeSMBLister(entries: [], shares: [
+            SMBShare(name: "Media", comment: "Movies & TV"),
+            SMBShare(name: "Backups", comment: ""),
+        ])
+        let shares = try await lister.listShares()
+        #expect(shares.map(\.name) == ["Media", "Backups"])
     }
 }

@@ -56,6 +56,18 @@ public actor AMSMB2Lister: SMBLister {
         self.connectTimeout = connectTimeout
     }
 
+    /// Enumerates the server's shares via AMSMB2 (connects to IPC$ + srvsvc internally).
+    /// `enumerateHidden: false` excludes `$`-admin shares. Server-level: does not retain
+    /// the manager as the per-share connection.
+    public func listShares() async throws -> [SMBShare] {
+        guard let client = SMB2Manager(url: serverURL, domain: domain, credential: credential) else {
+            throw SMBListerError.managerInitFailed
+        }
+        client.timeout = connectTimeout
+        let raw = try await client.listShares(enumerateHidden: false)
+        return raw.map { SMBShare(name: $0.name, comment: $0.comment) }
+    }
+
     /// Lists one directory level of `share` at `path`. Connects (or reconnects to a
     /// different share) on demand, then maps each AMSMB2 attribute dictionary to a
     /// neutral `SMBDirectoryEntry`. Non-recursive.

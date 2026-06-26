@@ -23,6 +23,7 @@ struct SMBMediaRepositoryTests {
     private final class ThrowingSMBLister: SMBLister, @unchecked Sendable {
         let error: Error
         init(error: Error) { self.error = error }
+        func listShares() async throws -> [SMBShare] { throw error }
         func list(share: String, path: String) async throws -> [SMBDirectoryEntry] { throw error }
         func disconnect() async {}
     }
