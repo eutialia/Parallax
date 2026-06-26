@@ -144,6 +144,23 @@ struct ServerStoreSMBTests {
         #expect(hasSMB == false)
     }
 
+    @Test("setShares replaces an SMB server's shares and leaves its password intact")
+    func setSharesUpdatesShares() async throws {
+        let (store, _, keychain) = freshStore()
+        let id = try await store.addSMBServer(smbData(shares: ["Media"]), password: "pw")
+
+        try await store.setShares(["Media", "TV", "Music"], for: id)
+
+        let servers = await store.servers
+        guard let server = servers.first(where: { $0.id == id }),
+              case .smb(let data) = server.kind else {
+            Issue.record("expected the .smb server"); return
+        }
+        #expect(data.shares == ["Media", "TV", "Music"])
+        let pw: String? = try await keychain.read(tokenKey(for: id))
+        #expect(pw == "pw")
+    }
+
     @Test("SMB server and Jellyfin session coexist: both in servers, only Jellyfin in sessions, active unchanged")
     func smbAndJellyfinCoexist() async throws {
         let (store, _, keychain) = freshStore()

@@ -357,6 +357,23 @@ public actor ServerStore {
         return id
     }
 
+    /// Replaces the selected `shares` on an already-persisted SMB server. No-op for an
+    /// unknown id or a non-SMB server. Persists with the same revert-on-failure discipline
+    /// as the other writers; the password slot is untouched.
+    public func setShares(_ shares: [String], for id: ServerID) async throws {
+        guard let index = persistedServers.firstIndex(where: { $0.id == id }),
+              case .smb(let data) = persistedServers[index].kind else { return }
+        let updated = SMBServerData(host: data.host, username: data.username, domain: data.domain, shares: shares)
+        let previous = persistedServers
+        persistedServers[index] = PersistedServer(id: id, kind: .smb(updated))
+        do {
+            try await settings.set(persistedServers, for: Self.persistedServersKey)
+        } catch {
+            persistedServers = previous
+            throw ServerStoreError.persistenceFailed(underlying: String(describing: error))
+        }
+    }
+
     public func setActive(_ id: ServerID) async throws {
         guard loadedSessions.contains(where: { $0.id == id }) else { return }
         activeID = id
