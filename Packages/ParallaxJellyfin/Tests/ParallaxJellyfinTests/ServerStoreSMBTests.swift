@@ -19,10 +19,9 @@ struct ServerStoreSMBTests {
 
     private func smbData(
         host: String = "nas.local",
-        share: String = "Media",
-        root: String = "/Movies"
+        shares: [String] = ["Media", "Backups"]
     ) -> SMBServerData {
-        SMBServerData(host: host, share: share, root: root, username: "alice", domain: "WORKGROUP")
+        SMBServerData(host: host, username: "alice", domain: "WORKGROUP", shares: shares)
     }
 
     private func sampleSession(id: String = "jf-1", token: String = "tok-jf") -> Session {
@@ -47,8 +46,8 @@ struct ServerStoreSMBTests {
 
         let id = try await store.addSMBServer(data, password: "s3cr3t")
 
-        // ID scheme: "smb-<host>|<share>|<root>"
-        #expect(id.rawValue == "smb-nas.local|Media|/Movies")
+        // ID scheme: "smb-<host>"
+        #expect(id.rawValue == "smb-nas.local")
 
         let servers = await store.servers
         #expect(servers.count == 1)
@@ -58,8 +57,7 @@ struct ServerStoreSMBTests {
         }
         #expect(server.id == id)
         #expect(stored.host == "nas.local")
-        #expect(stored.share == "Media")
-        #expect(stored.root == "/Movies")
+        #expect(stored.shares == ["Media", "Backups"])
         #expect(stored.username == "alice")
 
         // Password stored under token-<id>
@@ -75,20 +73,26 @@ struct ServerStoreSMBTests {
         #expect(active == nil)
     }
 
-    @Test("Re-adding the same (host, share, root) reuses the same id and updates the stored password")
+    @Test("Re-adding the same host reuses the same id, updates shares, and updates the stored password")
     func reAddIsIdempotent() async throws {
         let (store, _, keychain) = freshStore()
-        let data = smbData()
 
-        let id1 = try await store.addSMBServer(data, password: "old-pass")
-        let id2 = try await store.addSMBServer(data, password: "new-pass")
+        let id1 = try await store.addSMBServer(smbData(shares: ["Media"]), password: "old-pass")
+        let id2 = try await store.addSMBServer(smbData(shares: ["Media", "TV"]), password: "new-pass")
 
-        // Same id
+        // Same id — host-keyed
         #expect(id1 == id2)
 
         // Only one server row — no duplicate
         let servers = await store.servers
         #expect(servers.count == 1)
+
+        // Shares updated to the latest add
+        guard let server = servers.first, case .smb(let stored) = server.kind else {
+            Issue.record("expected one .smb PersistedServer")
+            return
+        }
+        #expect(stored.shares == ["Media", "TV"])
 
         // Password updated
         let storedPassword: String? = try await keychain.read(tokenKey(for: id1))

@@ -35,10 +35,9 @@ struct ModelsTests {
             id: ServerID(rawValue: "nas-1"),
             kind: .smb(SMBServerData(
                 host: "192.168.1.10",
-                share: "Media",
-                root: "Movies",
                 username: "guest",
-                domain: "WORKGROUP"
+                domain: "WORKGROUP",
+                shares: ["Media", "Movies"]
             ))
         )
         let data = try JSONEncoder().encode(server)
@@ -48,7 +47,7 @@ struct ModelsTests {
             Issue.record("expected .smb kind"); return
         }
         #expect(smb.host == "192.168.1.10")
-        #expect(smb.share == "Media")
+        #expect(smb.shares == ["Media", "Movies"])
     }
 
     @Test("Jellyfin server data decodes legacy user primaryImageTag without failing")
@@ -80,7 +79,7 @@ struct ModelsTests {
         // An .smb PersistedServer never produces a Session.
         let smbServer = PersistedServer(
             id: ServerID(rawValue: "nas-1"),
-            kind: .smb(SMBServerData(host: "h", share: "s", root: "", username: "u", domain: "d"))
+            kind: .smb(SMBServerData(host: "h", username: "u", domain: "d", shares: ["s"]))
         )
         #expect(Session(persisted: smbServer, accessToken: "pw") == nil)
     }

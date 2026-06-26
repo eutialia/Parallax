@@ -296,18 +296,18 @@ public actor ServerStore {
     /// Keychain slot Jellyfin uses for bearer tokens (`token-<id>`), so
     /// `remove(_:)` already cleans it up.
     ///
-    /// The `ServerID` is derived deterministically from `(host, share, root)` as
-    /// `"smb-\(host)|\(share)|\(root)"` — a URL-like composite that is stable
-    /// across re-adds, never collides with a Jellyfin id (which has no `smb-`
-    /// prefix), and is human-readable in logs. Re-adding the same target reuses
-    /// the same id, so credentials update rather than duplicating the row.
+    /// The `ServerID` is derived deterministically from `host` as
+    /// `"smb-\(host)"` — stable across re-adds, never collides with a Jellyfin id
+    /// (which has no `smb-` prefix), and human-readable in logs. Re-adding the
+    /// same host reuses the same id, so shares and credentials update in-place
+    /// rather than duplicating the row.
     ///
     /// Does NOT touch `loadedSessions` and does NOT call `setActive` — SMB
     /// servers have no `Session`, and making one "active" would nil-route the
     /// Jellyfin-keyed router to the login screen.
     @discardableResult
     public func addSMBServer(_ data: SMBServerData, password: String) async throws -> ServerID {
-        let id = ServerID(rawValue: "smb-\(data.host)|\(data.share)|\(data.root)")
+        let id = ServerID(rawValue: "smb-\(data.host)")
         let key = KeychainKey<String>(account: Self.tokenAccount(for: id))
 
         // Capture previous state for rollback. A THROWN read (transient Keychain fault) is NOT

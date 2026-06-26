@@ -19,21 +19,20 @@ public struct JellyfinServerData: Sendable, Hashable, Codable {
     }
 }
 
-/// SMB-specific persisted metadata. The password is NOT held here — it lives in
-/// the Keychain under the server's id, like the Jellyfin bearer token.
+/// SMB-specific persisted metadata: one record per *server* (host). The selected
+/// `shares` are the libraries; each share's root is browsed in-app. The password is
+/// NOT held here — it lives in the Keychain under the server's id.
 public struct SMBServerData: Sendable, Hashable, Codable {
     public let host: String
-    public let share: String
-    public let root: String
     public let username: String
     public let domain: String
+    public let shares: [String]
 
-    public init(host: String, share: String, root: String, username: String, domain: String) {
+    public init(host: String, username: String, domain: String, shares: [String]) {
         self.host = host
-        self.share = share
-        self.root = root
         self.username = username
         self.domain = domain
+        self.shares = shares
     }
 }
 
