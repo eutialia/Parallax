@@ -1,4 +1,3 @@
-import os
 import SwiftUI
 import ParallaxCore
 import ParallaxFileBrowse
@@ -11,6 +10,9 @@ import ParallaxJellyfin
 /// so the sidebar updates immediately. A Remove action drops the server entirely.
 struct SMBServerSettingsView: View {
     let server: PersistedServer
+    /// The shared settings view model (same instance the server-list root holds). Removal is handed to
+    /// it so its published `smbServers` refreshes in lockstep with the store — see `removeServer()`.
+    let vm: SettingsViewModel
 
     @Environment(AppDependencies.self) private var deps
     @Environment(AppRouter.self) private var router
@@ -216,20 +218,14 @@ struct SMBServerSettingsView: View {
         }
     }
 
-    /// Remove the server from the store and re-evaluate routing (same logic as
-    /// `SettingsViewModel.removeSMBServer` + `reloadAfterSMBChange`).
+    /// Hand removal to the shared settings view model so its published server list refreshes in lockstep
+    /// with the store + sidebar. The view used to carry its own copy of this (store remove + router
+    /// re-evaluate) that never refreshed the parent's `smbServers`, so the removed server lingered as a
+    /// ghost row in the settings list until the panel was torn down and reopened. Always dismiss after:
+    /// if it was the last source the router tears the panel down (a no-op pop); otherwise this pops off
+    /// the detail page of a server that no longer exists.
     private func removeServer() async {
-        do {
-            try await deps.serverStore.remove(server.id)
-        } catch {
-            Log.persistence.error("SMBServerSettings remove failed for \(server.id.rawValue): \(error.localizedDescription)")
-        }
-        // Re-read the store to determine the updated sources state for routing.
-        let remaining = await deps.serverStore.servers
-        let activeSession = await deps.serverStore.active
-        let hasAux = remaining.contains { if case .smb = $0.kind { return true }; return false }
-        router.updateForSources(activeSession: activeSession, hasAuxiliarySources: hasAux)
-        router.bumpLibraryRevision()
+        await vm.removeSMBServer(server.id)
         dismiss()
     }
 }

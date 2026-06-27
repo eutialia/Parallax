@@ -97,7 +97,9 @@ struct SettingsView: View {
                 ServerSettingsView(session: session, vm: vm)
             }
         case .smbServer(let server):
-            SMBServerSettingsView(server: server)
+            if let vm = viewModel {
+                SMBServerSettingsView(server: server, vm: vm)
+            }
         case .addServerChoose:
             AddServerChooseView(
                 onChooseJellyfin: { path.append(.addJellyfin) },
