@@ -106,7 +106,7 @@ struct SettingsScaffold<Content: View>: View {
 #Preview("Scaffold · self-fill (dark)") {
     SettingsScaffold {
         SettingsGroup(title: "Servers") {
-            SettingsListRow(systemImage: "server.rack", title: "Living Room", subtitle: "jellyfin.local · alice")
+            SettingsListRow(image: "JellyfinGlyph", iconSize: 22, title: "Living Room", subtitle: "jellyfin.local · alice")
         }
     }
     .preferredColorScheme(.dark)

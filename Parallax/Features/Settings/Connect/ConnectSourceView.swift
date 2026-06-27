@@ -78,7 +78,7 @@ struct LoggedOutRootView: View {
 #Preview("Connect · logged out", traits: .fixedLayout(width: 1920, height: 1080)) {
     SettingsScaffold(brandSubtitle: "Choose how to connect") {
         SettingsGroup(footer: "More server types are on the way.") {
-            SettingsListRow(systemImage: "server.rack", iconSize: 22, title: "Jellyfin Server", subtitle: "Sign in to your media server", accessory: .chevron) {}
+            SettingsListRow(image: "JellyfinGlyph", iconSize: 22, title: "Jellyfin Server", subtitle: "Sign in to your media server", accessory: .chevron) {}
             SettingsListRow(systemImage: "externaldrive.badge.wifi", iconSize: 22, title: "Network Share", subtitle: "Connect over SMB to a shared folder", accessory: .chevron) {}
         }
     }

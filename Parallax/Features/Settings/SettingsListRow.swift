@@ -80,10 +80,7 @@ struct SettingsRowLabel: View {
     private var leadingGlyph: some View {
         Group {
             if let image {
-                Image(image)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: iconSize, height: iconSize)
+                TemplateGlyph(name: image, size: iconSize)
             } else if let systemImage {
                 Image(systemName: systemImage)
                     .font(.system(size: iconSize, weight: .medium))

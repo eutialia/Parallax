@@ -282,10 +282,7 @@ struct SettingsContentView<Storage: View>: View {
                 Button { onSelectJellyfin(server.id) } label: {
                     SettingsRowLabel(
                         image: "JellyfinGlyph",
-                        // 18, not the sibling rows' 22: `JellyfinGlyph` fills its frame edge-to-edge,
-                        // while an SF Symbol at `size:` only inks ~75% of its em box — so 18 here lands
-                        // the mark at the same visual height as `externaldrive.badge.wifi`@22 next to it.
-                        iconSize: 18,
+                        iconSize: 22,
                         title: server.name,
                         subtitle: "Jellyfin · \(server.host)",
                         accessory: .chevron

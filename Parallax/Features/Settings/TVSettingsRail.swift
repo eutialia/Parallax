@@ -70,7 +70,7 @@ struct TVSettingsRail<Content: View>: View {
             SettingsScaffold(showsBrand: false) {
                 SettingsGroup(title: "Servers") {
                     SettingsListRow(
-                        systemImage: "server.rack",
+                        image: "JellyfinGlyph",
                         iconSize: 22,
                         title: "home-jellyfin",
                         subtitle: "Jellyfin · jellyfin.example.lan",

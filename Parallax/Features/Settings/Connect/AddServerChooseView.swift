@@ -32,7 +32,7 @@ struct ServerTypeChoiceGroup: View {
     var body: some View {
         SettingsGroup(footer: "More server types are on the way.") {
             SettingsListRow(
-                systemImage: "server.rack",
+                image: "JellyfinGlyph",
                 iconSize: 22,
                 title: "Jellyfin Server",
                 subtitle: "Sign in to your media server",

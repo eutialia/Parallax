@@ -111,10 +111,8 @@ struct StatusPillData: Identifiable {
 struct ServerIdentityHero: View {
     var systemImage: String? = nil
     /// A template image asset for the glyph, used in place of an SF Symbol when set (tinted like the
-    /// symbol — a monochrome template, e.g. `JellyfinGlyph`). Drawn smaller than the symbol point size
-    /// on each platform: the asset fills its frame, an SF Symbol only inks ~⅞ of its em box, so the
-    /// matched-by-eye frame is ~0.88× the symbol size — render-calibrated against the sibling SMB hero's
-    /// `externaldrive.badge.wifi` (28 vs the iOS 32; 35 vs the tvOS tile's 40).
+    /// symbol — a monochrome template, e.g. `JellyfinGlyph`). Rendered via `TemplateGlyph`, which sizes
+    /// it slightly larger than a symbol so the light mark reads the same size as a wide SF Symbol.
     var image: String? = nil
     let name: String
     let meta: String
@@ -126,13 +124,10 @@ struct ServerIdentityHero: View {
         VStack(spacing: heroSpacing) {
             #if os(tvOS)
             IconTile(systemImage: systemImage, image: image, size: 76, cornerRadius: 20,
-                     glyphSize: image == nil ? 40 : 35, fill: Color.surface, foreground: Color.label)
+                     glyphSize: 40, fill: Color.surface, foreground: Color.label)
             #else
             if let image {
-                Image(image)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 28, height: 28)
+                TemplateGlyph(name: image, size: 32)
                     .foregroundStyle(Color.label)
             } else if let systemImage {
                 Image(systemName: systemImage)
@@ -243,3 +238,20 @@ extension Font {
         #endif
     }
 }
+
+#if DEBUG
+/// The Jellyfin sign-in header glyph: the `JellyfinGlyph` template mark on the inverted brand tile
+/// (`BrandTile.Glyph.templateImage`), sized to match an SF Symbol on the same tile. Confirms the mark
+/// reads balanced on the tile (not lost) after the asset's optical padding.
+#Preview("Form intro · Jellyfin tile", traits: .sizeThatFitsLayout) {
+    FormIntroHeader(
+        glyph: .templateImage("JellyfinGlyph"),
+        title: "Sign in to Jellyfin",
+        subtitle: "Enter your server address and account."
+    )
+    .padding(40)
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+    .background(Color.background)
+    .preferredColorScheme(.dark)
+}
+#endif

@@ -11,6 +11,8 @@ struct BrandTile: View, Equatable {
         case brandIcon
         /// An SF Symbol on the solid `label` tile.
         case symbol(String)
+        /// A template image asset on the solid `label` tile (e.g. `JellyfinGlyph`), drawn like a symbol.
+        case templateImage(String)
     }
 
     let glyph: Glyph
@@ -69,6 +71,15 @@ struct BrandTile: View, Equatable {
                 .overlay {
                     Image(systemName: name)
                         .scaledFont(30, relativeTo: .title, weight: .semibold)
+                        .foregroundStyle(Color.background)
+                }
+        case .templateImage(let name):
+            // Same inverted treatment as `.symbol`, for a template asset (e.g. `JellyfinGlyph`). A light
+            // template mark must out-size a symbol to read equal, so the symbol case's `scaledFont(30)`
+            // becomes a `TemplateGlyph` at size 30 (which applies the optical upsize).
+            Color.label
+                .overlay {
+                    TemplateGlyph(name: name, size: 30)
                         .foregroundStyle(Color.background)
                 }
         }
