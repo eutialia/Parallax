@@ -107,7 +107,7 @@ struct LoginView: View {
             // tvOS has no nav bar (the native pill only reads "Settings"), so the form carries its own
             // identity inline (handoff `.fhead`). iOS shows the "Jellyfin" nav title instead.
             FormIntroHeader(
-                glyph: .symbol("server.rack"),
+                glyph: .templateImage("JellyfinGlyph"),
                 title: "Sign in to Jellyfin",
                 subtitle: "Enter your server address and account. Or use Quick Connect to approve from your phone — no typing on the remote."
             )
@@ -138,7 +138,7 @@ struct LoginView: View {
                 CredentialRow(id: "server", title: "Server", placeholder: "https://jellyfin.example.com", text: $vm.serverURLInput, keyboard: .URL, textContentType: .URL),
                 CredentialRow(id: "username", title: "Username", placeholder: "Username", text: $vm.username, textContentType: .username),
                 CredentialRow(id: "password", title: "Password", placeholder: "Password", text: $vm.password, isSecure: true, textContentType: .password),
-            ], onSubmit: { handleSubmit(vm: vm) })
+            ])
             #else
             SettingsGroup(title: "Server") {
                 CredentialFieldRow(icon: "globe") {
@@ -221,15 +221,17 @@ struct LoginView: View {
         if await vm.signIn() { await handleSuccess() }
     }
 
-    /// The keyboard's submit on the last field — the iOS return chain AND the tvOS `CredentialRowList`
-    /// "go" key both route here — only fires a sign-in when all three fields are filled; an incomplete
-    /// form is a no-op, the same gate the Connect button enforces.
+    #if !os(tvOS)
+    /// The iOS return chain's submit on the last field — only fires a sign-in when all three fields are
+    /// filled; an incomplete form is a no-op, the same gate the Connect button enforces. tvOS has no
+    /// last-field submit: its system keyboard's Done returns to the form and the Connect button signs in.
     private func handleSubmit(vm: LoginViewModel) {
         // `!vm.isWorking` too: the Button is disabled while signing in, but the keyboard bypasses it —
         // without this a fast double-submit spawns two concurrent signIn()s.
         guard vm.canSubmitPassword, !vm.isWorking else { return }
         Task { await submitSignIn(vm: vm) }
     }
+    #endif
 
     // MARK: - iOS inline field helpers (tvOS uses CredentialRowList)
 

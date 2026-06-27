@@ -141,8 +141,9 @@ struct SMBLoginView: View {
     @ViewBuilder
     private var fieldsSection: some View {
         #if os(tvOS)
-        // The last field's keyboard "go" connects, gated to a complete form — same as the Connect button.
-        CredentialRowList(rows: credentialRows, onSubmit: { if canConnect { connect() } })
+        // No last-field auto-connect: tvOS's system keyboard Done returns to the form, and the
+        // always-present Connect button submits (gated to a complete form).
+        CredentialRowList(rows: credentialRows)
         #else
         connectionFieldsSection
         #endif
