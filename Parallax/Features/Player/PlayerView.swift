@@ -604,7 +604,9 @@ struct PlayerView: View {
             // One pattern, one view identity: swipeScrub↔clickSeek must NOT cross-fade
             // two bars — the shared bar just retargets its progress (animated below).
             case .swipeScrub(let progress, _), .clickSeek(targetProgress: let progress):
-                tvScrubBar(progress: progress, vm: vm).transition(.opacity)
+                PlayerScrubBar(metrics: .tv, vm: vm, progress: progress,
+                               positionAnimation: isAnalogScrubbing ? nil : PlayerScrubBar.scrubSpring)
+                    .transition(.opacity)
             case .fullHUD:
                 // Back handling lives INSIDE the controls (one root handler that
                 // closes an open panel before folding); `onExitHUD` is the no-menu
@@ -690,45 +692,6 @@ struct PlayerView: View {
             }
             chromeVisible = isFullHUD
         }
-    }
-
-    /// The lone progress bar shown during swipe-scrub / click-seek: chrome is gone,
-    /// the video is dimmed, and a big time bubble + chapter ticks appear. It shares
-    /// the full-HUD scrubber's exact geometry (inset, track, labels, row height) so
-    /// the floor↔HUD switch reads as one persistent bar, not a jump-cut.
-    @ViewBuilder
-    private func tvScrubBar(progress: Double, vm: PlayerViewModel) -> some View {
-        let m = PlayerMetrics.tv
-        let dur = CMTimeGetSeconds(vm.currentDuration)
-        let p = min(max(progress, 0), 1)
-        let shown = p * dur
-        let remaining = max(0, dur - shown)
-        PlayerProgressBar(
-            metrics: m, mode: .scrub, played: p, buffered: vm.bufferedFraction,
-            elapsed: formatPlaybackTime(shown),
-            remaining: remaining > 0 ? "-\(formatPlaybackTime(remaining))" : formatPlaybackTime(dur),
-            elapsedSeconds: shown,
-            remainingSeconds: remaining,
-            chapters: vm.chapterFractions,
-            bubbleTime: formatPlaybackTime(shown),
-            bubbleChapter: vm.chapterTitle(atSeconds: shown),
-            // The timestamp keeps rolling on its OWN transaction even when the head is
-            // pinned 1:1 below — the digit roll is the position-free half of the
-            // "aliveness" that the old single spring bundled together with the
-            // (accuracy-killing) glide.
-            scrubDigitRoll: Self.scrubSpring
-        )
-        // Position: click-seek's discrete ±step glides to its target; analog swipe tracks
-        // the head 1:1 so the displayed position == the value Select commits. A follow
-        // spring desyncs them — worst on the 23.976/24Hz panel Match-Frame-Rate pins for
-        // 24p film, where its settle spans ~6 frames (felt as "trails my finger" AND a
-        // missed seek). 1:1 isn't lifeless: the bubble digits still roll (scrubDigitRoll).
-        .animation(isAnalogScrubbing ? nil : Self.scrubSpring, value: p)
-        .padding(.horizontal, m.padX)
-        .padding(.bottom, m.progressBottom)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-        .environment(\.colorScheme, .dark)
-        .allowsHitTesting(false)
     }
 
     /// Analog swipe-scrub only (not click-seek): the live finger drives the head, so it
@@ -863,12 +826,6 @@ struct PlayerView: View {
         chromeVisible = isFullHUD
         restartIdleTimer()
     }
-
-    /// One curve for both halves of the scrub feel: the head's position glide (the
-    /// click-seek path) and the bubble's digit roll. Keeping it a single constant is what
-    /// holds the two in lockstep when both ride it; during analog scrub the head opts out
-    /// (pinned 1:1, `isAnalogScrubbing`) while the digits keep rolling on their own pass.
-    private static let scrubSpring: Animation = .snappy(duration: 0.25, extraBounce: 0)
 
     /// The quiet-time before a scrub auto-commits, SHARED by ±10s click-seek (this
     /// debounce) and analog swipe-scrub (the `.swipeScrub` idle in `restartIdleTimer`),

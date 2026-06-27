@@ -10,6 +10,10 @@ import SwiftUI
 /// infinite march) while only the ripple re-blooms per tap; the fade-out runs
 /// `PlayerSeekFlash.duration` after the last tap, when the owner clears the state.
 ///
+/// The shared `PlayerScrubBar` riding the bottom during a double-tap burst is a SIBLING
+/// (owned by `PlayerControlsView`, pinned to the HUD scrubber's exact spot), faded on
+/// this dome's `envelope` — exposed `static` — so the two show and hide together.
+///
 /// App target only: pure SwiftUI, no platform conditionals (the double-tap gesture
 /// driving it is wired by the touch platforms; tvOS seeks through its HUD reducer).
 struct PlayerSeekFlash: View {
@@ -73,7 +77,7 @@ struct PlayerSeekFlash: View {
         let domeWidth = size.width * 0.46
         let domeHeight = size.height * 1.16   // bleeds ±8% past the surface
         let domeCenterX = forward ? size.width - domeWidth / 2 : domeWidth / 2
-        let fade = envelope(sinceStart: sinceStart, sinceLast: sinceLast)
+        let fade = Self.envelope(sinceBurstStart: sinceStart, sinceLastTap: sinceLast)
 
         return ZStack {
             dome(forward: forward, width: domeWidth, height: domeHeight)
@@ -147,13 +151,15 @@ struct PlayerSeekFlash: View {
 
     /// Dome + content visibility: rise once at the burst's start, hold while taps
     /// keep landing, fall in the tail after the LAST tap — so a repeat tap extends
-    /// the flash instead of blinking it back to frame zero.
-    private func envelope(sinceStart: TimeInterval, sinceLast: TimeInterval) -> Double {
-        let rise = min(sinceStart / (0.15 * Self.duration), 1)
-        let fallStart = 0.6 * Self.duration
-        let fall = sinceLast < fallStart
+    /// the flash instead of blinking it back to frame zero. `static` so the shared
+    /// `PlayerScrubBar` riding the bottom can fade on the IDENTICAL curve (it shows and
+    /// hides WITH this dome — see `PlayerControlsView`'s seek-bar overlay).
+    static func envelope(sinceBurstStart: TimeInterval, sinceLastTap: TimeInterval) -> Double {
+        let rise = min(sinceBurstStart / (0.15 * duration), 1)
+        let fallStart = 0.6 * duration
+        let fall = sinceLastTap < fallStart
             ? 1
-            : max(0, 1 - (sinceLast - fallStart) / (0.4 * Self.duration))
+            : max(0, 1 - (sinceLastTap - fallStart) / (0.4 * duration))
         return min(rise, fall)
     }
 

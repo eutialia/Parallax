@@ -24,11 +24,11 @@ import ParallaxPlayback
 /// scrubber's focus geography.
 ///
 /// Controls auto-hide after 3s of inactivity on iOS (suspended while a menu is open
-/// or playback is paused). A middle-third tap toggles the chrome instantly; double-tap
-/// the outer thirds to skip ±10s (the `PlayerSeekFlash` dome is the affordance). An
-/// outer-third tap DEFERS its toggle by `doubleTapWindow` so a double-tap-seek never
-/// flashes the HUD — see `handleTap`. tvOS visibility is owned by the HUD reducer in
-/// `PlayerView` (this view is mounted only in `.fullHUD`).
+/// or playback is paused); tap anywhere to toggle — instantly, every tap. Double-tap the
+/// outer thirds to skip ±10s: the `PlayerSeekFlash` dome is the affordance and the shared
+/// `PlayerScrubBar` rides its bottom, and the pair's second tap HIDES the chrome so the
+/// HUD never conflicts with them — see `handleTap`. tvOS visibility is owned by the HUD
+/// reducer in `PlayerView` (this view is mounted only in `.fullHUD`).
 ///
 /// On iOS the chrome is mounted from `.loading` onward — the player is operable while
 /// the stream resolves/buffers (Close, tap-to-toggle, track chips as their lists
@@ -140,18 +140,20 @@ struct PlayerControlsView: View {
     /// otherwise still `seek` + `play` the captured engine after teardown (the
     /// generation guard can't help; dismissal never bumps it).
     @State private var scrubCommitTask: Task<Void, Never>?
-    /// A lone seek-zone tap's DEFERRED chrome toggle (touch only). A tap in an outer
-    /// third no longer toggles the chrome on the spot — it arms this, and a second tap
-    /// completing the double-tap cancels it, so a seek never flashes the HUD. If no pair
-    /// lands within the window it fires and toggles. The middle third still toggles
-    /// instantly (it has no seek action to wait on). See `handleTap`.
-    @State private var pendingChromeToggle: Task<Void, Never>?
 
     private struct SeekFlash {
         var direction: PlayerSeekFlash.Direction
         var seconds: Int
         var tapPoint: CGPoint
         var trigger: Int
+        /// Absolute seek target as a 0...1 fraction — drives the shared `PlayerScrubBar`
+        /// riding the dome, so its head sits where the accumulated burst will land.
+        var targetFraction: Double
+        /// Burst clock for the bar's fade — mirrors the dome's internal clock so the bar
+        /// fades on the IDENTICAL `PlayerSeekFlash.envelope`. `burstStart` resets on a
+        /// direction reversal (the dome remounts via `.id`); `lastTap` bumps every tap.
+        var burstStart: Date
+        var lastTap: Date
     }
     /// Timestamp + zone of the previous tap — the manual double-tap pairing in
     /// `handleTap` that replaced the count:2 recognizer.
@@ -253,12 +255,13 @@ struct PlayerControlsView: View {
                 .onTapGesture { toggleControls() }
                 .ignoresSafeArea()
             #else
-            // Tap surface: ONE single-tap recognizer. Double-tap seek is paired MANUALLY
-            // inside `handleTap` (timestamp + zone): a count:2 recognizer — even composed
+            // Tap surface: ONE single-tap recognizer, zero recognition delay — every
+            // tap-up toggles the chrome the instant it lands, so a lone edge tap flicks
+            // the HUD on·off with no delay. Double-tap seek is paired MANUALLY inside
+            // `handleTap` (timestamp + zone): a count:2 recognizer — even composed
             // `simultaneously` — gated the second tap's delivery by ~0.5s on device while
-            // it disambiguated, and `.exclusively` before it delayed the first. The toggle
-            // is instant in the middle third and deferred in the outer thirds (so a seek
-            // never flashes the HUD); see `handleTap`.
+            // it disambiguated, and `.exclusively` before it delayed the first. The pair's
+            // second tap hides the chrome and seeks; see `handleTap`.
             GeometryReader { geo in
                 ZStack {
                     Color.clear
@@ -268,8 +271,13 @@ struct PlayerControlsView: View {
                                 .onEnded { value in handleTap(at: value.location, in: geo.size) }
                         )
                     // Hidden the moment playback drops out (track switch → loading
-                    // scrim) instead of lingering its 0.9s tail over the new scrim.
-                    if let flash = seekFlash, playbackReady {
+                    // scrim) instead of lingering its 0.9s tail over the new scrim. The
+                    // scrub bar that rides this dome is a SIBLING (`seekScrubBar` below) so
+                    // it can sit in the safe area at the HUD scrubber's exact spot — this
+                    // full-bleed layer is the dome only. Gated `!controlsVisible` in lockstep
+                    // with the bar so the two always show and hide together (handleTap keeps
+                    // the chrome down for a live burst, so this is normally always true).
+                    if let flash = seekFlash, playbackReady, !controlsVisible {
                         PlayerSeekFlash(
                             direction: flash.direction, seconds: flash.seconds,
                             tapPoint: flash.tapPoint, trigger: flash.trigger,
@@ -294,6 +302,19 @@ struct PlayerControlsView: View {
             controls
                 .opacity(controlsVisible ? 1 : 0)
                 .allowsHitTesting(controlsVisible)
+
+            #if !os(tvOS)
+            // The scrub bar riding the double-tap dome — the SAME `PlayerProgressBar(.scrub)`
+            // the tvOS seek shows. A safe-area SIBLING (not inside the full-bleed dome
+            // layer), so it pins to the HUD scrubber's EXACT height/width via the shared
+            // `scrubberInsetX`/`scrubberBottom`. Faded on the dome's own envelope so it
+            // shows/hides WITH the scrim. Gated on `!controlsVisible`: the full-HUD scrubber
+            // sits at the IDENTICAL rect, so the two must never render together (a middle
+            // tap can raise the HUD mid-burst — this yields the bar to it, no double-exposure).
+            if let flash = seekFlash, playbackReady, !controlsVisible {
+                seekScrubBar(flash)
+            }
+            #endif
         }
         .animation(.easeOut(duration: 0.15), value: controlsVisible)
         .animation(.easeInOut(duration: 0.2), value: dragScrubbing)
@@ -311,7 +332,6 @@ struct PlayerControlsView: View {
             seekCommitTask?.cancel()
             seekFlashDismissTask?.cancel()
             scrubCommitTask?.cancel()
-            pendingChromeToggle?.cancel()
         }
         // A live pull-drag (and its spring-back) suspends the auto-hide — see
         // `pullDragging`. The hide task is already armed when the drag starts, so cancel
@@ -699,10 +719,12 @@ struct PlayerControlsView: View {
             .transition(.opacity)
         }
 
-        // Progress — anchored bottom; persists through the drag-scrub collapse.
+        // Progress — anchored bottom; persists through the drag-scrub collapse. Placement
+        // is the shared `scrubberInsetX`/`scrubberBottom` (== `padX`/`progressBottom` on
+        // big screens) so the double-tap seek bar can pin to this exact spot.
         scrubber(m)
-            .padding(.horizontal, m.padX)
-            .padding(.bottom, m.progressBottom)
+            .padding(.horizontal, m.scrubberInsetX)
+            .padding(.bottom, m.scrubberBottom)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
             .offset(y: revealOffset(m.hudSlide))
     }
@@ -781,10 +803,12 @@ struct PlayerControlsView: View {
             .transition(.opacity)
         }
 
-        // Progress — persists through the drag-scrub collapse.
+        // Progress — persists through the drag-scrub collapse. Placement is the shared
+        // `scrubberInsetX`/`scrubberBottom` (== the phone statics) so the double-tap seek
+        // bar can pin to this exact spot.
         scrubber(m)
-            .padding(.horizontal, PlayerMetrics.phonePadX)
-            .padding(.bottom, PlayerMetrics.phoneProgressBottom)
+            .padding(.horizontal, m.scrubberInsetX)
+            .padding(.bottom, m.scrubberBottom)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
             .offset(y: revealOffset(m.hudSlide))
     }
@@ -964,13 +988,14 @@ struct PlayerControlsView: View {
 
     @ViewBuilder
     private func scrubber(_ m: PlayerMetrics) -> some View {
-        let posSeconds = CMTimeGetSeconds(vm.currentPosition)
         let durSeconds = CMTimeGetSeconds(vm.currentDuration)
         let liveProgress = liveProgressFraction
         let displayed = isScrubbing ? scrubProgress : liveProgress
-        let shownSeconds = isScrubbing ? scrubProgress * durSeconds : posSeconds
-        let remaining = max(0, durSeconds - shownSeconds)
-        let remainingText = remaining > 0 ? "-\(formatPlaybackTime(remaining))" : formatPlaybackTime(durSeconds)
+        // `displayed * dur` — the SAME clamped value the shared `PlayerProgressBar(scrubbingTo:)`
+        // init derives the visible label from (`liveProgress` is already clamped). Used for the
+        // VoiceOver value below so it can't diverge from the bar at an out-of-range live
+        // position (a beat reporting past-duration would otherwise read past the total in VO).
+        let shownSeconds = displayed * durSeconds
         // VoiceOver value for the scrub bar — elapsed of total time (AVPlayerViewController's idiom),
         // not a bare percentage. Shared by both platforms so they announce identically; tracks the
         // scrub head mid-adjust via `shownSeconds`.
@@ -987,11 +1012,9 @@ struct PlayerControlsView: View {
         Button {
             commitScrub(durSeconds: durSeconds)
         } label: {
-            PlayerProgressBar(metrics: m, mode: scrubberFocused ? .focused : .normal,
-                              played: displayed, buffered: vm.bufferedFraction,
-                              elapsed: formatPlaybackTime(shownSeconds), remaining: remainingText,
-                              elapsedSeconds: shownSeconds, remainingSeconds: remaining,
-                              chapters: vm.chapterFractions)
+            // No bubble on tvOS — the focusable bar is its own indicator.
+            PlayerProgressBar(scrubbingTo: displayed, vm: vm, metrics: m,
+                              mode: scrubberFocused ? .focused : .normal, showsBubble: false)
         }
         .buttonStyle(TVQuietButtonStyle(pressedOpacity: 0.9))
         // A VoiceOver user landing on the focusable bar otherwise hears no position; announce it.
@@ -1015,8 +1038,9 @@ struct PlayerControlsView: View {
             switch direction {
             case .left, .right:
                 if !isScrubbing { scrubProgress = liveProgress; isScrubbing = true; scrubGeneration += 1 }
-                // Animated so the ±10s step glides and the time digits roll (`.numericText`).
-                withAnimation(.snappy(duration: 0.25, extraBounce: 0)) {
+                // Animated so the ±10s step glides and the time digits roll (`.numericText`) —
+                // the same curve the bar's head/digit-roll ride (`PlayerScrubBar.scrubSpring`).
+                withAnimation(PlayerScrubBar.scrubSpring) {
                     scrubProgress = direction == .left
                         ? max(0, scrubProgress - step)
                         : min(1, scrubProgress + step)
@@ -1036,14 +1060,12 @@ struct PlayerControlsView: View {
         // ONE seek at finger-up and resume iff playback was live — the same
         // pause → [seek, play] ordering as the tvOS reducer (a per-move seek burst
         // thrashes a transcode and wedges the player).
+        // The bubble shows only while the finger's down (`.scrub`); at rest it's the
+        // plain `.normal` dot. Same shared readout as the seek bar — only the driver
+        // (this DragGesture) and the `.normal`↔`.scrub` morph are this caller's.
         PlayerProgressBar(
-            metrics: m, mode: dragScrubbing ? .scrub : .normal, played: displayed,
-            buffered: vm.bufferedFraction,
-            elapsed: formatPlaybackTime(shownSeconds), remaining: remainingText,
-            elapsedSeconds: shownSeconds, remainingSeconds: remaining,
-            chapters: vm.chapterFractions,
-            bubbleTime: dragScrubbing ? formatPlaybackTime(shownSeconds) : nil,
-            bubbleChapter: dragScrubbing ? vm.chapterTitle(atSeconds: shownSeconds) : nil,
+            scrubbingTo: displayed, vm: vm, metrics: m,
+            mode: dragScrubbing ? .scrub : .normal, showsBubble: dragScrubbing,
             onScrubChanged: { frac in
                 // playbackReady: during a track-switch re-buffer the duration is
                 // stale-positive — entering a drag then would pause + seek the
@@ -1144,27 +1166,23 @@ struct PlayerControlsView: View {
     // MARK: - Double-tap seek (touch platforms)
 
     #if !os(tvOS)
-    /// The double-tap pairing window AND the deferred-toggle delay — ONE value because
-    /// they're the same window. A tap in an outer third within this of a previous tap in
-    /// the SAME third is the "second tap" (fires the ±10s step). It must be ≥ the largest
-    /// real double-tap gap, or the deferred toggle below fires before the second tap and
-    /// the chrome leaks through: measured ~150ms max on device, so 160ms is the practical
-    /// floor — just enough margin to keep the no-flash guarantee while the lone-tap toggle
-    /// stays as snappy as possible (0.3s read sluggish).
-    static let doubleTapWindow: TimeInterval = 0.16
+    /// The double-tap PAIRING window: a tap in an outer third within this of a previous
+    /// tap in the SAME third is the "second tap" that fires the ±10s step. The standard
+    /// iOS double-tap gap (0.3s) — long enough to pair a relaxed double-tap, short enough
+    /// that a lone edge tap's chrome toggle reads as instant.
+    static let doubleTapWindow: TimeInterval = 0.3
 
     /// Every tap-up, handled without a count:2 recognizer (which gated the second tap
     /// ~0.5s on device). Manual pairing on `doubleTapWindow`.
     ///
-    /// The chrome toggle is split by zone so a double-tap-seek never SHOWS the HUD:
-    /// - Middle third (and not-ready playback) toggles INSTANTLY — it has no seek to
-    ///   wait on, so there's nothing to pair and no reason to delay.
-    /// - An outer third DEFERS the toggle by `doubleTapWindow` (`pendingChromeToggle`): a
-    ///   lone edge tap toggles after the window; a completing second tap cancels that
-    ///   armed toggle and seeks instead — so a double-tap never touches the chrome at all.
-    ///   Because the window outlasts the real double-tap gap, the toggle is always
-    ///   cancelled in time. While the seek flash is up, further taps keep stepping (10,
-    ///   20, 30… — the YouTube burst).
+    /// Every tap toggles the chrome the instant it lands — a lone edge tap shows/hides the
+    /// HUD with no delay. What makes double-tap-seek coexist with that: the SECOND tap of a
+    /// pair doesn't toggle, it HIDES the chrome and starts the seek burst — so the dome +
+    /// shared scrub bar take over a clean surface, never fighting a half-shown HUD. (A first
+    /// tap that raised the HUD is dropped by that hide; one that lowered it stays lowered.)
+    /// While the burst is up, further taps in a third keep stepping (10, 20, 30… — the
+    /// YouTube burst) and leave the chrome down. The middle third never seeks; not-ready
+    /// playback just toggles.
     private func handleTap(at location: CGPoint, in size: CGSize) {
         let zone = seekZone(at: location, in: size)
         let now = Date()
@@ -1176,37 +1194,44 @@ struct PlayerControlsView: View {
         }
         lastTap = (now, zone)
 
-        // Any new tap supersedes a previous lone edge tap's armed (deferred) toggle.
-        pendingChromeToggle?.cancel()
-
         let durSeconds = CMTimeGetSeconds(vm.currentDuration)
-        guard let zone, playbackReady, durSeconds > 0, size.width > 0 else {
-            toggleControls()   // middle third / not ready — instant, never seeks
+
+        // A LIVE burst owns the surface — the dome + seek bar are up, chrome down. Route
+        // EVERY tap through it: an outer third steps the burst, a middle third is ignored.
+        // Crucially nothing here toggles the chrome, so a stray tap can't raise the HUD
+        // over the affordance (which would strand the chrome and desync the dome — gated
+        // `!controlsVisible` — from the still-marching dome). The burst self-dismisses
+        // ~0.9s after the last tap.
+        if seekFlash != nil {
+            if let zone, playbackReady, durSeconds > 0, size.width > 0 {
+                seekStep(zone, at: location, durSeconds: durSeconds, now: now)
+            }
             return
         }
-        if seekFlash != nil {
-            // Burst already running — keep stepping, leave the chrome alone.
-            seekStep(zone, at: location, durSeconds: durSeconds)
-        } else if pairedZone == zone {
-            // Second tap of a fresh pair: start the burst. The first tap only ARMED a
-            // toggle (cancelled above) — it never fired, so there's no flash to undo.
-            seekStep(zone, at: location, durSeconds: durSeconds)
+
+        guard let zone, playbackReady, durSeconds > 0, size.width > 0 else {
+            toggleControls()   // middle third / not ready — instant toggle, never seeks
+            return
+        }
+        if pairedZone == zone {
+            // Second tap of a fresh pair: drop the chrome the first tap may have raised
+            // (so the HUD never conflicts with the dome + bar) and start the burst.
+            hideControls()
+            seekStep(zone, at: location, durSeconds: durSeconds, now: now)
         } else {
-            // Lone edge tap: arm the toggle so an arriving pair can cancel it.
-            scheduleChromeToggle()
+            // Lone edge tap: toggle the chrome instantly. A following paired tap will
+            // hide it again before the seek.
+            toggleControls()
         }
     }
 
-    /// Defer a lone seek-zone tap's chrome toggle past the double-tap window so a second
-    /// tap can cancel it (a double-tap never shows the HUD). Same `doubleTapWindow` as the
-    /// pair threshold, so a real double-tap always cancels it before it fires. The sole
-    /// caller (`handleTap`) already cancels any prior armed toggle, so this just arms one.
-    private func scheduleChromeToggle() {
-        pendingChromeToggle = Task {
-            try? await Task.sleep(for: .seconds(Self.doubleTapWindow))
-            guard !Task.isCancelled else { return }
-            toggleControls()
-        }
+    /// Force the chrome down for a starting seek burst — the dome + scrub bar own the
+    /// surface, so a half-shown HUD from the first tap must clear (a plain toggle could
+    /// instead SHOW it when the surface was already bare). Mirrors `toggleControls`'
+    /// drag-scrub guard: a live drag must keep its bar.
+    private func hideControls() {
+        guard !dragScrubbing else { return }
+        controlsVisible = false   // `onChange(of: controlsVisible)` closes any open menu
     }
 
     /// Outer thirds are the seek surfaces; the middle third is nil (toggle only).
@@ -1219,7 +1244,7 @@ struct PlayerControlsView: View {
 
     /// One ±10s step: accumulate the debounced target and drive the flash. The
     /// engine seek is debounced — the whole burst lands as ONE seek.
-    private func seekStep(_ direction: PlayerSeekFlash.Direction, at location: CGPoint, durSeconds: Double) {
+    private func seekStep(_ direction: PlayerSeekFlash.Direction, at location: CGPoint, durSeconds: Double, now: Date) {
         let delta: Double = direction == .forward ? 10 : -10
         // While a scrub's commit is still in flight (`isScrubbing` holds until the
         // engine seek lands), the bar's target is the truth — `vm.currentPosition`
@@ -1227,15 +1252,42 @@ struct PlayerControlsView: View {
         // drag would accumulate from the pre-scrub position.
         let livePosition = isScrubbing ? scrubProgress * durSeconds : CMTimeGetSeconds(vm.currentPosition)
         let base = pendingSeekTarget ?? livePosition
-        pendingSeekTarget = min(max(base + delta, 0), durSeconds)
+        let target = min(max(base + delta, 0), durSeconds)
+        pendingSeekTarget = target
 
-        // The label accumulates within one direction; reversing starts a fresh count
-        // (the pending target still nets both directions out).
-        let seconds = (seekFlash?.direction == direction ? seekFlash?.seconds ?? 0 : 0) + 10
+        // Same direction = the same burst extends (label accumulates, dome's clock holds);
+        // a reversal is a fresh burst (label resets, dome remounts via `.id`, so its
+        // `burstStart` must reset too — the bar's fade keys off it).
+        let sameDirection = seekFlash?.direction == direction
+        let seconds = (sameDirection ? seekFlash?.seconds ?? 0 : 0) + 10
+        let burstStart = sameDirection ? (seekFlash?.burstStart ?? now) : now
         seekFlash = SeekFlash(direction: direction, seconds: seconds,
-                              tapPoint: location, trigger: (seekFlash?.trigger ?? 0) + 1)
+                              tapPoint: location, trigger: (seekFlash?.trigger ?? 0) + 1,
+                              targetFraction: durSeconds > 0 ? target / durSeconds : 0,
+                              burstStart: burstStart, lastTap: now)
         scheduleSeekCommit()
         scheduleSeekFlashDismissal()
+    }
+
+    /// The scrub bar riding the double-tap dome. Mounted in the body's safe-area context
+    /// (a SIBLING of the controls, NOT inside the full-bleed dome), so `PlayerScrubBar`'s
+    /// shared `scrubberInsetX`/`scrubberBottom` resolve to the HUD scrubber's exact screen
+    /// spot — same height, same width. The bar opacity rides the dome's own
+    /// `PlayerSeekFlash.envelope` (keyed off the burst clock) so the two fade as one.
+    @ViewBuilder
+    private func seekScrubBar(_ flash: SeekFlash) -> some View {
+        // iPad metrics ride `hudPhysicalMax` (the physical-bounds probe, populated
+        // `initial: true` on appear — always > 0 by the time a seek can run); `PlayerScrubBar`
+        // self-pins to the safe-area bottom, so no GeometryReader is needed here.
+        let m = isPad ? PlayerMetrics(width: hudPhysicalMax) : .phone
+        TimelineView(.animation(paused: reduceMotion)) { context in
+            let fade = reduceMotion ? 1.0 : PlayerSeekFlash.envelope(
+                sinceBurstStart: context.date.timeIntervalSince(flash.burstStart),
+                sinceLastTap: context.date.timeIntervalSince(flash.lastTap))
+            PlayerScrubBar(metrics: m, vm: vm, progress: flash.targetFraction)
+                .opacity(fade)
+        }
+        .allowsHitTesting(false)
     }
 
     /// ~0.45s of quiet after the last double-tap before the accumulated seek fires —

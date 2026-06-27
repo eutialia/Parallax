@@ -78,6 +78,15 @@ struct PlayerMetrics: Equatable {
     /// (only the handle, bubble, and ticks change) instead of a jump-cut.
     var progressBottom: CGFloat { 148 * u }
 
+    /// The full-HUD scrubber's resting placement — the ONE source the HUD scrubber AND
+    /// the double-tap / scrub bar both pad by, so the two are pixel-identical in height
+    /// and width (the tvOS lesson: a seek bar at a different spot than the HUD scrubber
+    /// reads as a jump). iPhone is authored at its fixed `phone*` insets; iPad/tvOS ride
+    /// the big-screen formulas. Both surfaces respect the safe area, so equal pads land
+    /// on the same screen point.
+    var scrubberInsetX: CGFloat { deviceClass == .phone ? Self.phonePadX : padX }
+    var scrubberBottom: CGFloat { deviceClass == .phone ? Self.phoneProgressBottom : progressBottom }
+
     // Progress
     var trackHeight: CGFloat { 8 * u }
     var progressRowGap: CGFloat { 20 * u }
