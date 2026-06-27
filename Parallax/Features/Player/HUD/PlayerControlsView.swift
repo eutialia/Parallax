@@ -1061,6 +1061,10 @@ struct PlayerControlsView: View {
                     // itself, so re-reading vm.isPlaying here would turn a
                     // drag-while-fetching into a stuck pause (manual play to fix).
                     if !isScrubbing { scrubWasPlaying = vm.isPlaying }
+                    // Pin the transport glyph to the pre-scrub play state for the whole commit
+                    // so the engine's transient pause/seek/resume beats can't flash it. Re-armed
+                    // every press; `scrubWasPlaying` (chain-start) is the source of truth.
+                    vm.beginScrubLatch(resumePlaying: scrubWasPlaying)
                     // The ambient `.animation(value: dragScrubbing)` covers this flip
                     // symmetrically with the release; a grab-side "missing" morph on
                     // device was a Debug-build frame drop (the chrome collapse lands
@@ -1080,7 +1084,7 @@ struct PlayerControlsView: View {
                 onScrubActiveChange(false)
                 resetHideTimer()
                 scrubProgress = frac
-                guard playbackReady, let engine = vm.engine, durSeconds > 0 else { isScrubbing = false; return }
+                guard playbackReady, let engine = vm.engine, durSeconds > 0 else { isScrubbing = false; vm.endScrubLatch(); return }
                 let gen = scrubGeneration
                 let resume = scrubWasPlaying
                 let target = CMTime(seconds: frac * durSeconds, preferredTimescale: 600)
@@ -1091,10 +1095,18 @@ struct PlayerControlsView: View {
                     // Cancellation = the player was dismissed mid-seek (onDisappear):
                     // don't resume a torn-down engine on the way out.
                     guard !Task.isCancelled, scrubGeneration == gen else { return }
-                    if resume { await engine.play() }
+                    if resume {
+                        // The scrub latch (armed at drag start) holds the glyph on "pause" across
+                        // the commit; the engine's resume `.playing` beat both confirms it and
+                        // releases the latch. (The seek already restored the position.)
+                        await engine.play()
+                    }
                     // Keep the bar pinned at the committed target until the engine's live
                     // position catches up, so it never flashes the stale pre-seek frame.
                     await releaseScrubLatch(at: frac, durSeconds: durSeconds, generation: gen)
+                    // Commit settled — release the transport latch. Generation-guarded so a newer
+                    // drag that took over keeps its own latch (it re-armed it on its first press).
+                    if scrubGeneration == gen { vm.endScrubLatch() }
                 }
             }
         )

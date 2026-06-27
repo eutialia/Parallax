@@ -265,6 +265,7 @@ final class PlayerViewModel {
     /// optimistic write there would corrupt the capture.
     func togglePlayPause() {
         guard engine != nil else { return }
+        scrubResumeIntent = nil   // a manual transport tap overrides any pending scrub latch
         isPlaying.toggle()
         let target = isPlaying
         transportTask?.cancel()
@@ -274,6 +275,33 @@ final class PlayerViewModel {
             guard !Task.isCancelled, let engine else { return }
             if target { await engine.play() } else { await engine.pause() }
         }
+    }
+
+    /// Pins the transport state across a scrub commit. The drag-scrub pauses the engine to hold
+    /// the still frame and re-plays it on release, so the engine emits transient `.paused` beats
+    /// — the drag pause, then `seek()` re-reading the now-paused `isPlaying` — followed by the
+    /// resume `.playing` beat up to a poll (500ms) later. Honoring those beats flashes the glyph
+    /// to "play" for that gap (the bug a one-shot optimistic write couldn't win, since the stale
+    /// `.paused` beat is consumed *after* it). While an intent is latched, `handle()` pins
+    /// `isPlaying` to it and ignores the mismatched transient beats; the scrub commit clears the
+    /// latch (`endScrubLatch`) once it settles. nil = not scrubbing, so beats drive `isPlaying`
+    /// directly. Touch-drag only: the tvOS/VoiceOver seek paths don't pause the engine, so
+    /// `seek()` keeps `isPlaying == true` and they never arm this.
+    private var scrubResumeIntent: Bool?
+
+    /// Arm the scrub transport latch with the user's pre-scrub play state. Re-armed on every
+    /// drag press (with the chain-start play state) so a re-drag mid-commit can't strand it.
+    /// See `scrubResumeIntent`.
+    func beginScrubLatch(resumePlaying: Bool) {
+        scrubResumeIntent = resumePlaying
+        isPlaying = resumePlaying
+    }
+
+    /// Release the scrub transport latch once the commit has settled (seek + optional resume +
+    /// position converged). Explicit — not auto-cleared on a matching beat — so a `.playing` beat
+    /// already queued when the drag began can't drop the latch early and re-expose the flicker.
+    func endScrubLatch() {
+        scrubResumeIntent = nil
     }
 
     private let deviceProfileBuilder: DeviceProfileBuilder
@@ -936,6 +964,7 @@ final class PlayerViewModel {
         adjacentEpisodes = .none
         clearStall()
         isPlaying = false
+        scrubResumeIntent = nil
         mediaSummary = nil
         // NOTE: playbackRate is deliberately NOT reset here. retry() routes through
         // stop()→start(); zeroing it would silently drop the user's chosen speed on
@@ -1442,7 +1471,10 @@ final class PlayerViewModel {
             }
         case .playing(let position, let duration, let buffered):
             phase = .playing
-            isPlaying = true
+            // A scrub commit pins isPlaying to the user's intent across the engine's transient
+            // pause/seek/resume beats (see scrubResumeIntent); the commit clears the latch when it
+            // settles. nil = honor the beat directly.
+            isPlaying = scrubResumeIntent ?? true
             clearStall()
             lastPosition = position
             currentPosition = position
@@ -1459,7 +1491,10 @@ final class PlayerViewModel {
                 }
             }
         case .paused(let position, let duration, let buffered):
-            isPlaying = false
+            // While a scrub latch holds an intent, ignore the transient .paused beats the
+            // drag/seek emit (they'd flash the glyph); the commit clears the latch when it
+            // settles. nil = honor the beat directly. See scrubResumeIntent.
+            isPlaying = scrubResumeIntent ?? false
             clearStall()
             lastPosition = position
             currentPosition = position
