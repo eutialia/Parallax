@@ -110,6 +110,24 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// track. Set by `setSubtitleTrack`; reset on each fresh `load`.
     private var subtitlesDisabled = false
 
+    /// User-selected playback speed (1.0 = normal). libvlc applies `rate` to the *active
+    /// input*, so a rate set before the demux is up is dropped — exactly when
+    /// `PlayerViewModel.beginPlayback` re-applies the persisted speed (right after `play()`).
+    /// Persist the intent here and have the progress poll re-assert it once playback is live,
+    /// mirroring `AVKitEngine`'s `desiredRate`. A *live* mid-playback change is otherwise inaudible
+    /// until the old-rate buffer drains (≈ network-caching) — `flushForImmediateRate` re-decodes in
+    /// place to apply it promptly.
+    private var desiredRate: Float = 1
+
+    /// Position (ms) captured when a rate-change flush re-decode began, or nil. While set, the
+    /// progress poll publishes buffering beats at this hold point until VLC's clock advances past
+    /// it (re-decode done) — so the rate-change re-buffer reads as a brief buffering moment, not a
+    /// silently frozen counter. See `flushForImmediateRate`.
+    private var rateFlushAnchorMs: Int32?
+    /// Poll ticks elapsed in the current flush bridge; a budget so a re-decode that never cleanly
+    /// advances past the anchor still resumes live tracking instead of holding forever.
+    private var rateFlushTicks = 0
+
     // MARK: - Init
 
     public override init() {
@@ -123,6 +141,17 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         self.player = VLCMediaPlayer()
         super.init()
         player.delegate = self
+        // VLC quantizes `player.time` to its time-changed cadence, which DEFAULTS TO 1.0s
+        // (`timeChangeUpdateInterval`, VLCMediaPlayer.h). So the polled position refreshes
+        // only once a second and the scrubber counter steps a whole tick per refresh:
+        // invisible at 1× (+1/s) but a +2/s skip-jump at 2× (every other second never shown).
+        // Tighten it — plus `minimalTimePeriod` (the floor, default 0.5s, which would re-gate
+        // a finer interval) — so `player.time` is fine-grained and the counter advances
+        // smoothly at the playback rate. `timeChangeUpdateInterval` is only read at `play()`,
+        // so set it here, before the first play. Cheap: we poll `player.time` rather than
+        // consume the notification, so a finer cadence is just a fresher read (no flood).
+        player.minimalTimePeriod = 100_000      // µs (0.1s) — below the interval so it can't gate it
+        player.timeChangeUpdateInterval = 0.25  // s — 4×/s, finer than the 500ms poll
         continuation.yield(.idle)
     }
 
@@ -134,6 +163,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         subtitlesDisabled = false
         pendingStartMs = Self.startMs(from: asset.startTime)
         pendingSeekMs = nil
+        rateFlushAnchorMs = nil   // a reused engine (track switch) must not bridge a stale flush
         // VLCMedia(url:) returns optional; a nil result means the URL was rejected
         // by libvlc at construction time (e.g. empty path). Treat as unplayable.
         guard let media = VLCMedia(url: asset.url) else {
@@ -192,12 +222,44 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     }
 
     public func setRate(_ rate: Float) async {
+        // Store the intent so the progress poll re-asserts it once playing (libvlc drops a rate
+        // set before the input is live — the fresh-engine re-apply right after play()).
+        let rateChanged = abs(player.rate - rate) > 0.001
+        desiredRate = rate
         player.rate = rate
+        // A live rate change otherwise stays inaudible until the old-rate buffer drains
+        // (≈ network-caching). Flush in place so VLC re-decodes at the new rate now; the poll
+        // bridges the brief re-buffer as buffering, not a frozen clock.
+        if rateChanged { flushForImmediateRate() }
+    }
+
+    /// Force a just-changed `rate` to take effect promptly by re-decoding from the current
+    /// position — a seek-in-place flushes the already-decoded old-rate buffer that would
+    /// otherwise play out first (the ~3s "speed applies late" lag, proven ≈ `network-caching`).
+    /// The re-decode briefly re-buffers; `startProgressPolling` publishes buffering beats at the
+    /// hold point (debounced — invisible if quick, a spinner only if it runs long) until the clock
+    /// advances past it, instead of a silently frozen counter. Clean at 3000ms (no pixelation,
+    /// the same buffer that keeps a 2× seek clean), unlike the 1000ms shrink we reverted.
+    private func flushForImmediateRate() {
+        // Skip during initial load / resume (would seek off the resume point before it applies)
+        // and while a user seek is still settling (that seek already re-filled at this rate).
+        guard player.isPlaying, pendingStartMs == nil, pendingSeekMs == nil else { return }
+        let pos = player.time.intValue
+        guard pos > 0 else { return }
+        rateFlushAnchorMs = pos
+        rateFlushTicks = 0
+        player.time = VLCTime(int: pos)
     }
 
     public func seek(to time: CMTime) async {
         let seconds = CMTimeGetSeconds(time)
         guard seconds.isFinite else { return }
+        // Capture the play/pause intent BEFORE the seek: libvlc transiently reports
+        // `isPlaying == false` while the demux re-buffers right after `setTime`, so reading
+        // it for the beat below emitted a phantom `.paused` (transport glyph flashed). A seek
+        // doesn't change whether the user is playing. (Note: the drag-scrub pauses the engine
+        // itself before seeking — that path is handled in the controls, not here.)
+        let wasPlaying = player.isPlaying
         // A user seek supersedes a still-pending resume seek: cancel the resume
         // task and clear the saved offset so an in-flight seekToPendingStart()
         // can't overwrite this position with the stale resume point during the
@@ -211,8 +273,9 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         pendingSeekMs = ms
         pendingSeekPolls = 0
         // Publish the new position now so the scrubber tracks the seek instead of
-        // snapping back to the last polled position on release.
-        emitPosition(isPlaying: player.isPlaying, positionMs: ms)
+        // snapping back to the last polled position on release. Carry the pre-seek intent
+        // so a playing seek stays `.playing` (no phantom paused glyph).
+        emitPosition(isPlaying: wasPlaying, positionMs: ms)
     }
 
     public func setAudioTrack(_ track: AudioTrack) async {
@@ -284,6 +347,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         resumeTask?.cancel()
         resumeTask = nil
         pendingSeekMs = nil
+        rateFlushAnchorMs = nil
         player.drawable = nil
         player.delegate = nil
         player.stop()
@@ -294,6 +358,11 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     // MARK: - Private helpers
 
     private func applyOptions(to media: VLCMedia, asset: PlayableAsset) {
+        // Demux/network buffer depth (ms). Shrinking this to 1000 to ease rate changes in faster
+        // backfired: at 2× a far seek empties the buffer and AV1 software decode can't refill
+        // 1000ms (= 500ms wall-clock at 2×) before the vout needs frames → macroblocked playback
+        // until it catches up. 3000ms gives the decoder enough runway to seek cleanly at speed; a
+        // live rate change applies promptly via `flushForImmediateRate` instead, so this stays high.
         media.addOption(":network-caching=3000")
         // iOS gives VLC's text renderers no font provider, so without explicit fonts
         // they render nothing ("can't find selected font provider"). libass (ASS/SSA)
@@ -345,6 +414,24 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(500))
                 guard let self else { return }
+                // Rate-change flush bridge: while VLC re-decodes at the new rate its clock holds at
+                // the flush point and it transiently reports not-playing. Surface that as buffering
+                // (the app debounces it — invisible if quick, a spinner only if it runs long)
+                // instead of a silently frozen counter, re-asserting the rate so the re-decode runs
+                // at the new speed, and resume once the clock advances past the hold (or the budget
+                // elapses). Runs before the isPlaying guard because the re-decode reports not-playing.
+                if let anchor = self.rateFlushAnchorMs {
+                    self.rateFlushTicks += 1
+                    if Self.shouldReassertRate(current: self.player.rate, desired: self.desiredRate) {
+                        self.player.rate = self.desiredRate
+                    }
+                    if Self.flushBridgeShouldResume(now: self.player.time.intValue, anchor: anchor, ticks: self.rateFlushTicks) {
+                        self.rateFlushAnchorMs = nil
+                    } else {
+                        self.emitBuffering(positionMs: anchor)
+                        continue
+                    }
+                }
                 // Re-assert the no-engine-subtitle latch every tick. VLC can SELECT a
                 // late-discovered embedded text track at any point during the demux — a selection
                 // change the add-time `mediaPlayerTrackAdded` hook never sees. If the app is drawing
@@ -355,6 +442,13 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
                     self.player.deselectAllTextTracks()
                 }
                 guard self.player.isPlaying else { continue }
+                // Re-assert the playback rate now the input is live. libvlc applies `rate` to
+                // the active input, so the speed chosen before the demux was up (the
+                // fresh-engine re-apply right after play()) was dropped — this is where it
+                // sticks. Self-heals if VLC resets rate across a re-buffer; no-op once matched.
+                if Self.shouldReassertRate(current: self.player.rate, desired: self.desiredRate) {
+                    self.player.rate = self.desiredRate
+                }
                 // Hold beats until the resume seek has applied, so the first beat reports
                 // the resume position rather than the pre-seek clock (no 0:00 flash).
                 guard self.pendingStartMs == nil else { continue }
@@ -395,6 +489,20 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         let durationMs = media.length.intValue
         guard durationMs > 0, positionMs >= 0 else { return }
         continuation.yield(Self.positionState(isPlaying: isPlaying, positionMs: positionMs, durationMs: durationMs))
+    }
+
+    /// Publish a buffering beat (same value-guarding as `emitPosition`). Used by the rate-change
+    /// flush bridge so a re-decode hold reads as buffering (the app debounces it) rather than a
+    /// frozen position.
+    private func emitBuffering(positionMs: Int32) {
+        guard let media = currentMedia else { return }
+        let durationMs = media.length.intValue
+        guard durationMs > 0, positionMs >= 0 else { return }
+        continuation.yield(.buffering(
+            position: Self.vlcTimeToCMTime(ms: positionMs),
+            duration: Self.vlcTimeToCMTime(ms: durationMs),
+            buffered: nil
+        ))
     }
 
     /// Emit `.ready` with the current duration + track inventory. Called both at
@@ -466,6 +574,25 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// exactly. Pure so the seek-overshoot guard can be tested without a live player.
     static func seekHasSettled(now: Int32, target: Int32, polls: Int) -> Bool {
         abs(now - target) <= 3_000 || polls >= 10
+    }
+
+    /// Whether the progress poll should push `desired` onto the live player. libvlc applies
+    /// `rate` to the active input, so a rate chosen before the input existed (the re-apply
+    /// right after `play()`) never took and must be re-asserted once playing. The epsilon
+    /// stops a redundant write on every 500ms tick when the live rate already matches. Pure
+    /// so the gate is testable without a live decode (the `player.rate` write itself needs a
+    /// real input, like the rest of this engine).
+    static func shouldReassertRate(current: Float, desired: Float) -> Bool {
+        abs(current - desired) > 0.001
+    }
+
+    /// Whether the rate-change flush bridge should stop holding and resume live position tracking:
+    /// VLC's clock has advanced past the flush anchor (the re-decode produced output at the new
+    /// rate), or the poll budget elapsed (resume even if it never cleanly advances, so the counter
+    /// can't hold forever). The +200ms margin tolerates clock jitter at the hold point; 8 ticks ≈
+    /// 4s at the 500ms poll. Pure so the gate is testable without a live decode. Mirrors `seekHasSettled`.
+    static func flushBridgeShouldResume(now: Int32, anchor: Int32, ticks: Int) -> Bool {
+        now > anchor + 200 || ticks >= 8
     }
 
     static func positionState(isPlaying: Bool, positionMs: Int32, durationMs: Int32) -> PlaybackState {

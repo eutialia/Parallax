@@ -14,6 +14,32 @@ struct VLCKitEngineTests {
         #expect(engine.id == .vlcKit)
     }
 
+    @Test("init tightens the time-update cadence so player.time isn't quantized to 1s")
+    func fineGrainedTimeUpdates() {
+        let engine = VLCKitEngine()
+        // VLC defaults `timeChangeUpdateInterval` to 1.0s, quantizing `player.time`: the
+        // polled position refreshes once a second, so the scrubber counter skip-jumped +2/s
+        // at 2× instead of +1 twice a second. Pin it to 0.25s and drop `minimalTimePeriod`
+        // (the 0.5s floor) below it so it can't re-gate the finer interval.
+        #expect(engine.vlcPlayer.timeChangeUpdateInterval == 0.25)
+        #expect(engine.vlcPlayer.minimalTimePeriod == 100_000)
+    }
+
+    @Test("shouldReassertRate: re-applies when the live rate drifted from the chosen speed")
+    func reassertRateOnDrift() {
+        // The fresh-engine re-apply ran before the input was up → live rate still 1.0× while
+        // the user chose 1.5×; and the reverse after dropping back to normal.
+        #expect(VLCKitEngine.shouldReassertRate(current: 1.0, desired: 1.5))
+        #expect(VLCKitEngine.shouldReassertRate(current: 1.5, desired: 1.0))
+    }
+
+    @Test("shouldReassertRate: no redundant write once the live rate matches")
+    func noReassertWhenMatched() {
+        #expect(VLCKitEngine.shouldReassertRate(current: 1.0, desired: 1.0) == false)
+        #expect(VLCKitEngine.shouldReassertRate(current: 2.0, desired: 2.0) == false)
+        #expect(VLCKitEngine.shouldReassertRate(current: 1.4999, desired: 1.5) == false)  // float tolerance
+    }
+
     @Test("capabilities: supportsPiP true, supportsVideoAirPlay false, supportsAudioAirPlay true, supportsNowPlayingIntegration true")
     func capabilities() {
         let engine = VLCKitEngine()
@@ -100,6 +126,28 @@ struct VLCKitEngineTests {
         // Still far off, but the poll budget is spent → resume so the bar can't freeze.
         #expect(VLCKitEngine.seekHasSettled(now: 600_000, target: 480_000, polls: 10))
         #expect(VLCKitEngine.seekHasSettled(now: 600_000, target: 480_000, polls: 9) == false)
+    }
+
+    @Test("flushBridgeShouldResume: holds while the clock sits at the flush anchor")
+    func flushBridgeHolds() {
+        // Re-decode in progress: VLC's clock is pinned at the flush point (±jitter), so keep
+        // publishing the buffering hold rather than resume to a frozen counter.
+        #expect(VLCKitEngine.flushBridgeShouldResume(now: 60_000, anchor: 60_000, ticks: 1) == false)
+        #expect(VLCKitEngine.flushBridgeShouldResume(now: 60_150, anchor: 60_000, ticks: 2) == false)  // within +200 jitter
+    }
+
+    @Test("flushBridgeShouldResume: resumes once the clock advances past the anchor")
+    func flushBridgeResumesOnAdvance() {
+        // The re-decode produced output at the new rate and the clock moved on → resume tracking.
+        #expect(VLCKitEngine.flushBridgeShouldResume(now: 61_000, anchor: 60_000, ticks: 2))
+    }
+
+    @Test("flushBridgeShouldResume: the budget resumes even if the clock never advances")
+    func flushBridgeBudgetFallback() {
+        // Re-decode never cleanly advanced past the anchor, but the budget is spent → resume so
+        // the counter can't hold forever.
+        #expect(VLCKitEngine.flushBridgeShouldResume(now: 60_000, anchor: 60_000, ticks: 8))
+        #expect(VLCKitEngine.flushBridgeShouldResume(now: 60_000, anchor: 60_000, ticks: 7) == false)
     }
 }
 
