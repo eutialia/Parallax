@@ -246,34 +246,41 @@ final class PlayerViewModel {
         await seek(to: CMTime(seconds: seconds, preferredTimescale: 600))
     }
 
-    /// Optimistic transport toggle: flip `isPlaying` to the target NOW so the
-    /// play/pause glyph swaps on the tap itself, then command the engine. The
-    /// next engine beat (.playing/.paused) confirms or corrects — `handle()`
-    /// stays the source of truth; this only removes the tap→engine→beat
-    /// round-trip from the button (play especially: AVPlayer emits no beat
-    /// until its transport actually flips, hundreds of ms on a transcode).
-    ///
-    /// Spam-safe by cancel-previous coalescing: each tap retargets ONE
-    /// `transportTask`, so a burst of taps flips the glyph with every press
-    /// (parity — instant, like the system player) but only the LAST intent is
-    /// still alive to command the engine; stale commands die before their
-    /// `await`. The synchronous flip happens before any suspension, so intent
-    /// order can't interleave.
-    ///
-    /// The scrub and reducer pause/resume paths must KEEP commanding the
-    /// engine directly: they capture `isPlaying` as resume intent, and an
-    /// optimistic write there would corrupt the capture.
+    /// Optimistic transport toggle from the play/pause button. Flips to the
+    /// opposite of the current intent via `setPlaying`.
     func togglePlayPause() {
+        setPlaying(!isPlaying)
+    }
+
+    /// Drive the transport to an explicit play state NOW so the play/pause glyph swaps on the
+    /// tap itself, then command the engine. The next engine beat (.playing/.paused) confirms or
+    /// corrects — `handle()` stays the source of truth; this only removes the tap→engine→beat
+    /// round-trip from the button (play especially: AVPlayer emits no beat until its transport
+    /// actually flips, hundreds of ms on a transcode).
+    ///
+    /// Shared by the button (`togglePlayPause`) AND the Now Playing remote commands so EVERY
+    /// explicit transport intent clears the scrub latch and wins: a remote pause/play landing in
+    /// the scrub-commit window must not be swallowed by `scrubResumeIntent` (which pins `isPlaying`
+    /// across the scrub's own transient beats) and strand the glyph on the stale pre-scrub state —
+    /// AVKit emits no further beat while paused, so it wouldn't self-heal.
+    ///
+    /// Spam-safe by cancel-previous coalescing: each call retargets ONE `transportTask`, so a
+    /// burst flips the glyph with every press (parity — instant, like the system player) but only
+    /// the LAST intent is still alive to command the engine; stale commands die before their
+    /// `await`. The synchronous flip happens before any suspension, so intent order can't interleave.
+    ///
+    /// The scrub and reducer pause/resume paths must KEEP commanding the engine directly: they
+    /// capture `isPlaying` as resume intent, and an optimistic write there would corrupt the capture.
+    func setPlaying(_ playing: Bool) {
         guard engine != nil else { return }
-        scrubResumeIntent = nil   // a manual transport tap overrides any pending scrub latch
-        isPlaying.toggle()
-        let target = isPlaying
+        scrubResumeIntent = nil   // an explicit transport command overrides any pending scrub latch
+        isPlaying = playing
         transportTask?.cancel()
         transportTask = Task {
             // Re-read the engine at execution time: a pending command after
             // stop() must no-op, not poke a torn-down engine.
             guard !Task.isCancelled, let engine else { return }
-            if target { await engine.play() } else { await engine.pause() }
+            if playing { await engine.play() } else { await engine.pause() }
         }
     }
 
@@ -838,8 +845,10 @@ final class PlayerViewModel {
             subscribe(to: engine)
             nowPlaying.configure(
                 onSeek: { [weak self] time in Task { await self?.seek(to: time) } },
-                onPlay: { [weak self] in Task { await self?.engine?.play() } },
-                onPause: { [weak self] in Task { await self?.engine?.pause() } }
+                // Route through setPlaying (not engine.play/pause directly) so a remote command
+                // clears any pending scrub latch — otherwise it's swallowed and the glyph sticks.
+                onPlay: { [weak self] in self?.setPlaying(true) },
+                onPause: { [weak self] in self?.setPlaying(false) }
             )
         }
 
@@ -1534,6 +1543,7 @@ final class PlayerViewModel {
             }
         case .ended:
             isPlaying = false
+            scrubResumeIntent = nil   // a terminal beat drops any pending scrub latch
             clearStall()
             // Auto-advance: capture the target episode NOW and raise the loading veil
             // synchronously — both before the `await` below can yield. Capturing the id
@@ -1563,6 +1573,7 @@ final class PlayerViewModel {
             }
         case .failed(let error):
             isPlaying = false
+            scrubResumeIntent = nil   // a terminal beat drops any pending scrub latch
             clearStall()
             phase = .failed(Self.map(error))
         }

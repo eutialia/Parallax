@@ -739,6 +739,61 @@ struct PlayerViewModelTests {
         #expect(transport.last == "pause")
     }
 
+    @Test("scrub latch pins isPlaying across the engine's transient pause beats, then honors beats once released")
+    func scrubLatchPinsTransportThenReleases() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let resolved = PlayerFixtures.resolved()
+        let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(vm.isPlaying == true)
+
+        // Drag-scrub from playing arms the latch with the pre-scrub state. The drag pauses the
+        // engine + seeks, so the engine emits transient .paused beats — they must NOT flip the
+        // glyph while the latch holds (the flicker the latch exists to kill).
+        vm.beginScrubLatch(resumePlaying: true)
+        engine.push(.paused(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(vm.isPlaying == true)   // pinned, not flashed to pause
+
+        // Commit settled → latch released → the next beat drives isPlaying directly again.
+        vm.endScrubLatch()
+        engine.push(.paused(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(vm.isPlaying == false)  // honored once unlatched
+    }
+
+    @Test("a remote (Now Playing) command during a scrub commit wins and clears the latch — not swallowed")
+    func remoteCommandDuringScrubClearsLatch() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let resolved = PlayerFixtures.resolved()
+        let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+        try await Task.sleep(for: .milliseconds(50))
+
+        // Scrub commit in flight: the latch is armed to the playing pre-scrub state.
+        vm.beginScrubLatch(resumePlaying: true)
+        #expect(vm.isPlaying == true)
+
+        // The user hits Pause on the lock screen / headset — the Now Playing onPause routes
+        // through setPlaying(false). It must win immediately and clear the latch, NOT be pinned
+        // away by scrubResumeIntent (the regression: it left the glyph stuck on "play").
+        vm.setPlaying(false)
+        #expect(vm.isPlaying == false)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(engine.calls.contains("pause"))
+
+        // Latch cleared: AVKit's single transient .paused beat is now honored (before the fix it
+        // was swallowed and isPlaying stayed pinned to the stale `true`, with no self-heal beat).
+        engine.push(.paused(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(vm.isPlaying == false)
+    }
+
     @Test("buffered beat → bufferedFraction; nil beat (VLC) hides the layer; stop() clears it")
     func bufferedFractionTracksBeats() async throws {
         let reporting = StubPlaybackReporting()

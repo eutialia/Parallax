@@ -224,7 +224,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     public func setRate(_ rate: Float) async {
         // Store the intent so the progress poll re-asserts it once playing (libvlc drops a rate
         // set before the input is live — the fresh-engine re-apply right after play()).
-        let rateChanged = abs(player.rate - rate) > 0.001
+        let rateChanged = Self.shouldReassertRate(current: player.rate, desired: rate)
         desiredRate = rate
         player.rate = rate
         // A live rate change otherwise stays inaudible until the old-rate buffer drains
@@ -251,6 +251,16 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         player.time = VLCTime(int: pos)
     }
 
+    /// Push the user's chosen speed onto the live player if it has drifted (libvlc applies
+    /// `rate` to the active input, so a rate chosen before the input existed never took). The
+    /// `shouldReassertRate` epsilon gate keeps this a no-op once matched. Called from both the
+    /// flush-bridge hold and the live-input poll pass — one place so the policy can't diverge.
+    private func reassertRateIfNeeded() {
+        if Self.shouldReassertRate(current: player.rate, desired: desiredRate) {
+            player.rate = desiredRate
+        }
+    }
+
     public func seek(to time: CMTime) async {
         let seconds = CMTimeGetSeconds(time)
         guard seconds.isFinite else { return }
@@ -266,6 +276,11 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         // ~3s readiness window.
         resumeTask?.cancel()
         pendingStartMs = nil
+        // A user seek supersedes an in-flight rate-flush bridge: clear its anchor so the poll
+        // doesn't keep republishing the stale pre-seek hold position. This seek's own
+        // `pendingSeekMs` gate (below) now drives the settle; the rate stays re-asserted by the
+        // poll's live-input pass once the seek lands.
+        rateFlushAnchorMs = nil
         let ms = Int32(min(max(seconds * 1000, Double(Int32.min)), Double(Int32.max)))
         player.time = VLCTime(int: ms)
         // Gate the poll until VLC's clock settles on this target so its transient
@@ -414,6 +429,17 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(500))
                 guard let self else { return }
+                // Re-assert the no-engine-subtitle latch every tick. VLC can SELECT a
+                // late-discovered embedded text track at any point during the demux — a selection
+                // change the add-time `mediaPlayerTrackAdded` hook never sees. If the app is drawing
+                // its own sidecar (or subs are Off), force the engine subtitle back off so it can't
+                // render THROUGH the overlay. Guaranteed self-healing within one tick; the
+                // `mediaPlayerTrackSelected` delegate below is the instant path. Runs FIRST so the
+                // rate-flush bridge's `continue` can't starve it for the hold (a re-decode can
+                // silently re-select an embedded track during that window).
+                if self.subtitlesDisabled, self.player.textTracks.contains(where: { $0.isSelected }) {
+                    self.player.deselectAllTextTracks()
+                }
                 // Rate-change flush bridge: while VLC re-decodes at the new rate its clock holds at
                 // the flush point and it transiently reports not-playing. Surface that as buffering
                 // (the app debounces it — invisible if quick, a spinner only if it runs long)
@@ -422,9 +448,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
                 // elapses). Runs before the isPlaying guard because the re-decode reports not-playing.
                 if let anchor = self.rateFlushAnchorMs {
                     self.rateFlushTicks += 1
-                    if Self.shouldReassertRate(current: self.player.rate, desired: self.desiredRate) {
-                        self.player.rate = self.desiredRate
-                    }
+                    self.reassertRateIfNeeded()
                     if Self.flushBridgeShouldResume(now: self.player.time.intValue, anchor: anchor, ticks: self.rateFlushTicks) {
                         self.rateFlushAnchorMs = nil
                     } else {
@@ -432,23 +456,11 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
                         continue
                     }
                 }
-                // Re-assert the no-engine-subtitle latch every tick. VLC can SELECT a
-                // late-discovered embedded text track at any point during the demux — a selection
-                // change the add-time `mediaPlayerTrackAdded` hook never sees. If the app is drawing
-                // its own sidecar (or subs are Off), force the engine subtitle back off so it can't
-                // render THROUGH the overlay. Guaranteed self-healing within one tick; the
-                // `mediaPlayerTrackSelected` delegate below is the instant path.
-                if self.subtitlesDisabled, self.player.textTracks.contains(where: { $0.isSelected }) {
-                    self.player.deselectAllTextTracks()
-                }
                 guard self.player.isPlaying else { continue }
                 // Re-assert the playback rate now the input is live. libvlc applies `rate` to
                 // the active input, so the speed chosen before the demux was up (the
-                // fresh-engine re-apply right after play()) was dropped — this is where it
-                // sticks. Self-heals if VLC resets rate across a re-buffer; no-op once matched.
-                if Self.shouldReassertRate(current: self.player.rate, desired: self.desiredRate) {
-                    self.player.rate = self.desiredRate
-                }
+                // fresh-engine re-apply right after play()) was dropped — this is where it sticks.
+                self.reassertRateIfNeeded()
                 // Hold beats until the resume seek has applied, so the first beat reports
                 // the resume position rather than the pre-seek clock (no 0:00 flash).
                 guard self.pendingStartMs == nil else { continue }
