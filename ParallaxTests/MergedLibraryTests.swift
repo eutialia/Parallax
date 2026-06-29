@@ -45,6 +45,16 @@ struct MergedLibraryTests {
         }
     }
 
+    /// A Jellyfin repo factory whose `collections()` always throws — the offline / server-down case
+    /// that drives `jellyfinCollectionsFailed`.
+    private func failingJellyfinRepo() -> @Sendable (Session) async -> any MediaRepository {
+        { _ in
+            let repo = FakeMediaRepository()
+            repo.collectionsResult = .failure(AppError.network(URLError(.notConnectedToInternet)))
+            return repo
+        }
+    }
+
     // MARK: - Tests
 
     @Test("Jellyfin + one SMB server: Jellyfin collections first, then one entry per SMB share")
@@ -53,11 +63,12 @@ struct MergedLibraryTests {
         let smb = smbServer("nas-1", host: "nas.local", shares: ["Films", "Series"])
         let repo = jellyfinRepo([jSession.id: [collection("c1", "Movies"), collection("c2", "Shows")]])
 
-        let entries = await MergedLibrary.entries(
+        let outcome = await MergedLibrary.resolve(
             jellyfinSession: jSession,
             smbServers: [smb],
             jellyfinRepo: repo
         )
+        let entries = outcome.entries
 
         #expect(entries.count == 4)
         // Order: Jellyfin collections first, then the SMB shares in configured order.
@@ -72,6 +83,8 @@ struct MergedLibraryTests {
 
         // No two entries collide on a LibraryRef (the source disambiguates).
         #expect(Set(entries.map(\.id)).count == entries.count)
+        // A successful fetch is never a stall.
+        #expect(outcome.jellyfinCollectionsFailed == false)
     }
 
     @Test("A Jellyfin collection and an SMB share sharing a raw id still get distinct ids")
@@ -82,11 +95,11 @@ struct MergedLibraryTests {
         let smb = smbServer("nas-1", host: "nas.local", shares: ["shared"])
         let repo = jellyfinRepo([jSession.id: [collection("shared", "J Movies")]])
 
-        let entries = await MergedLibrary.entries(
+        let entries = await MergedLibrary.resolve(
             jellyfinSession: jSession,
             smbServers: [smb],
             jellyfinRepo: repo
-        )
+        ).entries
 
         #expect(entries.count == 2)
         #expect(entries[0].id != entries[1].id)
@@ -98,11 +111,11 @@ struct MergedLibraryTests {
         let jSession = session("jelly")
         let repo = jellyfinRepo([jSession.id: [collection("c1", "Movies"), collection("c2", "Shows")]])
 
-        let entries = await MergedLibrary.entries(
+        let entries = await MergedLibrary.resolve(
             jellyfinSession: jSession,
             smbServers: [],
             jellyfinRepo: repo
-        )
+        ).entries
 
         #expect(entries.count == 2)
         #expect(entries.allSatisfy { $0.source.sourceID == .jellyfin(jSession.id) })
@@ -112,14 +125,50 @@ struct MergedLibraryTests {
     func smbOnly() async {
         let smb = smbServer("nas-1", host: "nas.local", shares: ["Films"])
 
-        let entries = await MergedLibrary.entries(
+        let outcome = await MergedLibrary.resolve(
             jellyfinSession: nil,
             smbServers: [smb],
             jellyfinRepo: jellyfinRepo([:])
         )
 
-        #expect(entries.count == 1)
-        #expect(entries[0].source.sourceID == .smb(smb.id))
-        #expect(entries[0].collection.name == "Films")
+        #expect(outcome.entries.count == 1)
+        #expect(outcome.entries[0].source.sourceID == .smb(smb.id))
+        #expect(outcome.entries[0].collection.name == "Films")
+        // No Jellyfin session means no Jellyfin fetch — never a stall (an SMB-only config must not
+        // trigger offline recovery on a network it doesn't need).
+        #expect(outcome.jellyfinCollectionsFailed == false)
+    }
+
+    @Test("Jellyfin collections() throws: flags the failure but keeps the SMB shares")
+    func jellyfinFetchFailureFlaggedSMBPreserved() async {
+        let jSession = session("jelly")
+        let smb = smbServer("nas-1", host: "nas.local", shares: ["Films", "Series"])
+
+        let outcome = await MergedLibrary.resolve(
+            jellyfinSession: jSession,
+            smbServers: [smb],
+            jellyfinRepo: failingJellyfinRepo()
+        )
+
+        // The Jellyfin half drops out, but the local SMB shares survive — a down server can't blank
+        // the configured shares.
+        #expect(outcome.entries.map(\.collection.name) == ["Films", "Series"])
+        #expect(outcome.entries.allSatisfy { $0.source.sourceID == .smb(smb.id) })
+        // ...and the failure is reported so the nav roots auto-recover on reconnect.
+        #expect(outcome.jellyfinCollectionsFailed)
+    }
+
+    @Test("Jellyfin-only fetch failure: empty entries AND flagged stalled")
+    func jellyfinOnlyFetchFailureStalled() async {
+        let jSession = session("jelly")
+
+        let outcome = await MergedLibrary.resolve(
+            jellyfinSession: jSession,
+            smbServers: [],
+            jellyfinRepo: failingJellyfinRepo()
+        )
+
+        #expect(outcome.entries.isEmpty)
+        #expect(outcome.jellyfinCollectionsFailed)
     }
 }

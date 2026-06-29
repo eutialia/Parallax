@@ -9,6 +9,12 @@ struct FocusRootView: View {
     @State private var selectedTab: AppTab = .home
     @State private var session: Session?
     @State private var entries: [LibraryEntry] = []
+    /// True while a Jellyfin session is active but its `collections()` fetch failed — the sidebar
+    /// shows SMB-only (or nothing) because the network is down, not because the server has no
+    /// libraries. Gates `.recoversFromOffline` so the libraries repopulate on reconnect; the local
+    /// SMB shares are unaffected. Home recovers itself via `HomeView`'s own modifier (it shares the
+    /// preloaded view model), so recovery here re-resolves only the libraries.
+    @State private var librariesStalled = false
     @State private var homeViewModel: HomeViewModel?
     /// Flips true once the first library load settles — the readiness signal that reveals the tab
     /// host. Independent of `session`: an SMB-only config has no Jellyfin session yet is fully ready
@@ -47,49 +53,65 @@ struct FocusRootView: View {
             // but `hasAuxiliarySources == true`, so it passes here — where the old `activeServerID`
             // gate stranded it on the launch spinner.
             guard router.hasAnySource else { return }
-            let active = await deps.serverStore.active
             // Home's feed (hero / Continue Watching / Next Up) is Jellyfin-only, so build its model
             // only for a live session — its concrete repo carries the feed methods the merged list
             // doesn't. SMB-only: no model; Home renders `HomeUnavailableView` and the libraries come
-            // from the sidebar. The merged list builds via `mediaRepoFactory` either way (nil session
-            // contributes no Jellyfin collections, every SMB server folds in).
+            // from the sidebar.
             var vm: HomeViewModel?
-            if let active {
+            if let active = await deps.serverStore.active {
                 vm = HomeViewModel(repo: await deps.jellyfinLibraryRepoFactory(active))
             }
-            var hiddenJellyfin: Set<String> = []
-            if let active { hiddenJellyfin = await deps.serverStore.hiddenCollectionIDs(for: active.id) }
-            let smbServers = await deps.serverStore.servers
             // Load the sidebar's libraries and Home's feed concurrently, then reveal once both
             // settle — so the UI appears whole, with the hero (if any) already focusable.
-            async let libs: [LibraryEntry] = MergedLibrary.entries(
-                jellyfinSession: active,
-                smbServers: smbServers,
-                hiddenJellyfinCollectionIDs: hiddenJellyfin,
-                jellyfinRepo: deps.mediaRepoFactory
-            )
-            let merged: [LibraryEntry]
+            // `loadLibraries()` commits entries/session/stall under its own cancellation check; it's
+            // the shared recovery path too, so the launch and reconnect loads never drift.
+            async let librariesLoaded: Void = loadLibraries()
             if let vm {
                 async let homeLoaded: Void = vm.load()
-                merged = await libs
-                _ = await homeLoaded
+                _ = await (librariesLoaded, homeLoaded)
             } else {
-                merged = await libs
+                await librariesLoaded
             }
             // A token change cancels this task and starts a fresh one; a now-stale snapshot must not
-            // clobber the newer state (mirrors RootTabView — captured into locals across the awaits,
-            // committed under one cancellation check).
+            // clobber the newer state.
             guard !Task.isCancelled else { return }
-            self.entries = merged
-            self.session = active
             self.homeViewModel = vm
-            // If the selected library tab's backing entry just vanished, snap to Home so the tab host
-            // isn't left on a gone tab (shared with RootTabView via `snappedIfStale`).
-            selectedTab = selectedTab.snappedIfStale(against: merged)
             self.isReady = true
             // The launch stage's sync-hold releases here; the iris opens onto the ready UI.
             launchGate.markContentReady()
         }
+        // Repopulate the sidebar's Jellyfin libraries when the network returns (or the app
+        // foregrounds online) after a launch that couldn't reach the server. Gated on
+        // `librariesStalled` so a healthy list — and the local SMB shares — are never re-pulled; the
+        // reload token doesn't move on a reconnect, so without this the libraries stayed gone until a
+        // server switch. Home recovers separately via its own modifier. Event-based, no pull-to-refresh.
+        .recoversFromOffline(isStalled: librariesStalled) { await loadLibraries() }
+    }
+
+    /// Resolve + commit just the sidebar's merged library list. Shared by the launch `.task` (run
+    /// concurrently with the Home feed) and offline recovery, so the two never drift. Reads its own
+    /// `active`/hidden/servers snapshot and commits under a cancellation check: a token change
+    /// cancels the launch task, and a now-stale snapshot must not clobber newer state (or snap
+    /// selection off a tab still valid in the latest entries). Does NOT touch `isReady` / the launch
+    /// gate / the Home model — those are the launch task's to commit once both loads settle.
+    private func loadLibraries() async {
+        guard router.hasAnySource else { entries = []; session = nil; librariesStalled = false; return }
+        let active = await deps.serverStore.active
+        var hiddenJellyfin: Set<String> = []
+        if let active { hiddenJellyfin = await deps.serverStore.hiddenCollectionIDs(for: active.id) }
+        let outcome = await MergedLibrary.resolve(
+            jellyfinSession: active,
+            smbServers: await deps.serverStore.servers,
+            hiddenJellyfinCollectionIDs: hiddenJellyfin,
+            jellyfinRepo: deps.mediaRepoFactory
+        )
+        guard !Task.isCancelled else { return }
+        session = active
+        entries = outcome.entries
+        librariesStalled = outcome.jellyfinCollectionsFailed
+        // If the selected library tab's backing entry just vanished, snap to Home so the tab host
+        // isn't left on a gone tab (shared with RootTabView via `snappedIfStale`).
+        selectedTab = selectedTab.snappedIfStale(against: outcome.entries)
     }
 
     private var tabView: some View {

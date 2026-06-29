@@ -11,6 +11,11 @@ struct RootTabView: View {
     @State private var selectedTab: AppTab = .home
     @State private var session: Session?
     @State private var entries: [LibraryEntry] = []
+    /// True while a Jellyfin session is active but its `collections()` fetch failed — the sidebar is
+    /// showing SMB-only (or nothing) because the network is down, not because the server has no
+    /// libraries. Gates `.recoversFromOffline` so the libraries repopulate when connectivity returns;
+    /// SMB entries, being local, are unaffected. Mirrors the content views' `isStalled`.
+    @State private var librariesStalled = false
     /// The last library opened from the sidebar's Libraries section (a server collection or
     /// the virtual Favorites grid), surfaced as the lone dynamic tab in the collapsed tab bar
     /// (Apple Music style). In-memory only: this `@State` resets on the `.id(activeServerID)`
@@ -28,29 +33,13 @@ struct RootTabView: View {
         // AND an SMB add/remove (token's revision part) both rebuild `entries`. The `.id`
         // remount above stays on the session only, so a revision bump rebuilds the merged
         // list without tearing every tab down.
-        .task(id: router.libraryReloadToken) {
-            guard router.hasAnySource else { entries = []; session = nil; return }
-            // `active` may be nil in an SMB-only config — `MergedLibrary` builds the SMB entries
-            // either way; a nil session just contributes no Jellyfin collections. Capture into
-            // locals across the awaits, then commit under a cancellation check: a token change
-            // cancels this task and starts a fresh one, and a now-stale snapshot must not clobber
-            // the newer state (or snap selection off a tab that's still valid in the latest entries).
-            let active = await deps.serverStore.active
-            var hiddenJellyfin: Set<String> = []
-            if let active { hiddenJellyfin = await deps.serverStore.hiddenCollectionIDs(for: active.id) }
-            let merged = await MergedLibrary.entries(
-                jellyfinSession: active,
-                smbServers: await deps.serverStore.servers,
-                hiddenJellyfinCollectionIDs: hiddenJellyfin,
-                jellyfinRepo: deps.mediaRepoFactory
-            )
-            guard !Task.isCancelled else { return }
-            session = active
-            entries = merged
-            // If the selected library tab's backing entry just vanished, snap to Home so the detail
-            // pane isn't left on a gone tab (shared with FocusRootView via `snappedIfStale`).
-            selectedTab = selectedTab.snappedIfStale(against: merged)
-        }
+        .task(id: router.libraryReloadToken) { await loadLibraries() }
+        // Repopulate the sidebar's Jellyfin libraries when the network returns (or the app
+        // foregrounds online) after a launch that couldn't reach the server. Gated on
+        // `librariesStalled`, so a healthy list — and the local SMB shares — are never re-pulled. The
+        // reload token (above) doesn't move on a reconnect, so without this the libraries stayed gone
+        // until a server switch. Event-based — no pull-to-refresh.
+        .recoversFromOffline(isStalled: librariesStalled) { await loadLibraries() }
         // Tabs that exist at only one width — Library + Settings are compact-only (regular browses
         // libraries from the sidebar and hosts Settings in its footer), the per-library tabs are
         // regular-only. Crossing the size-class boundary (iPad Split View / Stage Manager resize)
@@ -63,6 +52,32 @@ struct RootTabView: View {
                 selectedTab = .library
             }
         }
+    }
+
+    /// Resolve + commit the sidebar's merged library list. Shared by the launch `.task` and offline
+    /// recovery so the two never drift. `active` may be nil in an SMB-only config — `MergedLibrary`
+    /// builds the SMB entries either way; a nil session just contributes no Jellyfin collections.
+    /// Captures into locals across the awaits, then commits under a cancellation check: a token
+    /// change cancels the launch task and starts a fresh one, and a now-stale snapshot must not
+    /// clobber the newer state (or snap selection off a tab that's still valid in the latest entries).
+    private func loadLibraries() async {
+        guard router.hasAnySource else { entries = []; session = nil; librariesStalled = false; return }
+        let active = await deps.serverStore.active
+        var hiddenJellyfin: Set<String> = []
+        if let active { hiddenJellyfin = await deps.serverStore.hiddenCollectionIDs(for: active.id) }
+        let outcome = await MergedLibrary.resolve(
+            jellyfinSession: active,
+            smbServers: await deps.serverStore.servers,
+            hiddenJellyfinCollectionIDs: hiddenJellyfin,
+            jellyfinRepo: deps.mediaRepoFactory
+        )
+        guard !Task.isCancelled else { return }
+        session = active
+        entries = outcome.entries
+        librariesStalled = outcome.jellyfinCollectionsFailed
+        // If the selected library tab's backing entry just vanished, snap to Home so the detail
+        // pane isn't left on a gone tab (shared with FocusRootView via `snappedIfStale`).
+        selectedTab = selectedTab.snappedIfStale(against: outcome.entries)
     }
 
     /// Tab selection that records the last sidebar-opened library *in the same transaction* as the

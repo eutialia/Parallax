@@ -54,14 +54,16 @@ struct LibraryHostView: View {
             // own VM, so MergedLibrary here contributes only the SMB cards. Capture then commit
             // under a cancellation check so a token change mid-flight can't land a stale snapshot.
             let active = await deps.serverStore.active
-            let merged = await MergedLibrary.entries(
+            // `jellyfinSession: nil`, so this contributes only the SMB cards (the Jellyfin libraries
+            // come from `LibraryListView`'s own VM) — `jellyfinCollectionsFailed` is always false here.
+            let outcome = await MergedLibrary.resolve(
                 jellyfinSession: nil,
                 smbServers: await deps.serverStore.servers,
                 jellyfinRepo: deps.mediaRepoFactory
             )
             guard !Task.isCancelled else { return }
             session = active
-            smbEntries = merged
+            smbEntries = outcome.entries
         }
     }
 }
