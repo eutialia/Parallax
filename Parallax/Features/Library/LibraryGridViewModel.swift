@@ -31,6 +31,11 @@ final class LibraryGridViewModel {
     /// row so the grid below doesn't shift when genres arrive.
     private(set) var isLoadingGenres: Bool = false
 
+    /// Showing the blocking full-screen failure with no items — the state an offline→online
+    /// recovery should re-`load()`. The refresh-error *banner* (`refreshErrorMessage`, stale
+    /// items still visible) is deliberately excluded: it keeps its manual "Try again".
+    var isStalled: Bool { if case .failed = state, items.isEmpty { true } else { false } }
+
     var sort: ItemSort = .defaultForLibrary {
         didSet { if sort != oldValue { Task { await reload() } } }
     }

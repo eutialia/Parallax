@@ -24,6 +24,9 @@ struct ParallaxApp: App {
     @State private var router: AppRouter = .init()
     @State private var playback: PlaybackPresenter = .init()
     @State private var launchGate: LaunchGate = .init()
+    /// App-wide network reachability. Views stuck on an error subscribe via
+    /// `.recoversFromOffline` and auto-reload when this flips back online.
+    @State private var connectivity: ConnectivityMonitor = .init()
 
     /// Boot into the poster-tile focus spike screen (PosterFocusSpike.swift) instead of
     /// the app — Debug-only diagnostic for on-device focus A/Bs.
@@ -49,6 +52,7 @@ struct ParallaxApp: App {
             .environment(router)
             .environment(playback)
             .environment(launchGate)
+            .environment(connectivity)
             // tvOS: measure the true window height here, OUTSIDE the TabView, so a full-bleed hero
             // inside a `.sidebarAdaptable` tab (Home) fills the whole screen instead of its
             // overscan-short tab region (see `\.heroViewportHeight`). No-op on iOS.
@@ -73,5 +77,10 @@ struct ParallaxApp: App {
                     await dependencies.deviceProfileBuilder.invalidate()
                 }
             }
+            // Republish network reachability into `connectivity` for the app's lifetime. A
+            // SEPARATE `.task` so it runs concurrently with the route-change loop above (which
+            // never returns); both share the view's cancellation. Drives `.recoversFromOffline`
+            // on views stuck in an error state.
+            .task { await connectivity.observe() }
     }
 }

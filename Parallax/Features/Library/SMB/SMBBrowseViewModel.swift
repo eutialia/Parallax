@@ -22,6 +22,10 @@ final class SMBBrowseViewModel {
     private(set) var isLoading = false
     private(set) var error: String?
 
+    /// Showing the blocking full-screen failure with nothing listed (share-root or per-folder
+    /// error) — the state an offline→online recovery should re-`load()`. Drives `.recoversFromOffline`.
+    var isStalled: Bool { error != nil && folders.isEmpty && media.isEmpty }
+
     /// The level's ordering. A directory level is small and the share is already connected, so a
     /// change just re-lists this one directory (fast, and picks up any on-disk changes) instead of
     /// caching + re-sorting in memory. The previous listing stays on screen until the new one

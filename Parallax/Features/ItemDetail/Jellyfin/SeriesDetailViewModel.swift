@@ -13,6 +13,10 @@ final class SeriesDetailViewModel {
 
     private(set) var state: LoadState = .idle
     private(set) var episodesBySeasonID: [ItemID: [Episode]] = [:]
+
+    /// Showing the blocking full-screen failure — the state an offline→online recovery should
+    /// re-`load()`. Drives `.recoversFromOffline`.
+    var isStalled: Bool { if case .failed = state { true } else { false } }
     private(set) var episodesLoading = false
     private(set) var isFavorite = false
     private(set) var resumeEpisode: Episode?

@@ -113,6 +113,9 @@ struct MovieDetailView: View {
                 Task { await viewModel?.refresh() }
             }
         }
+        // Auto-recover the error screen when the network returns (or the app foregrounds online).
+        // Gated on `isStalled` so a loaded title is never re-pulled.
+        .recoversFromOffline(isStalled: viewModel?.isStalled ?? false) { await viewModel?.load() }
     }
 
 }

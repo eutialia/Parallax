@@ -14,6 +14,10 @@ final class LibraryListViewModel {
     private(set) var state: LoadState = .idle
     private(set) var collections: [MediaCollection] = []
 
+    /// Showing the blocking full-screen failure — the state an offline→online recovery should
+    /// re-`load()`. Drives `.recoversFromOffline`.
+    var isStalled: Bool { if case .failed = state { true } else { false } }
+
     private let repo: any MediaRepository
     /// Library collection IDs hidden via the server's "Visible Libraries" screen — filtered out of
     /// `collections` so the iPhone library list matches the iPad sidebar / tvOS column.

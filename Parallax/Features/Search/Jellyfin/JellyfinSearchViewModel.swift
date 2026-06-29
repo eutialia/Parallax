@@ -31,9 +31,18 @@ final class JellyfinSearchViewModel {
     /// True while a refine query is in flight on top of existing results — drives an
     /// inline indicator instead of tearing the whole results page down.
     private(set) var isSearching = false
+
+    /// Showing the blocking full-screen failure — the state an offline→online recovery should
+    /// re-run the last query for. Drives `.recoversFromOffline`.
+    var isStalled: Bool { if case .failed = state { true } else { false } }
     private let repo: LibraryRepository
     private let debouncer: AsyncDebouncer<String>
     private var consumerTask: Task<Void, Never>?
+    /// Monotonic token so only the LATEST query may write results. The consumer loop serializes
+    /// debounced queries, but `retry()` calls `runQuery` directly (offline recovery), so a recovery
+    /// query can overlap an in-flight debounced one (MainActor is reentrant across `await search`).
+    /// Last query wins — mirrors `LibraryGridViewModel`/`SMBBrowseViewModel`'s generation guard.
+    private var queryGeneration = 0
 
     init(repo: LibraryRepository) {
         self.repo = repo
@@ -64,7 +73,15 @@ final class JellyfinSearchViewModel {
         consumerTask?.cancel()
     }
 
+    /// Re-run the current query after an offline→online recovery (search has no `load()`; the
+    /// query drives everything). A no-op for an empty field — there's nothing to re-search.
+    func retry() async {
+        await runQuery(query)
+    }
+
     private func runQuery(_ q: String) async {
+        queryGeneration += 1
+        let generation = queryGeneration
         let trimmed = q.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
             state = .idle
@@ -77,14 +94,18 @@ final class JellyfinSearchViewModel {
         // small inline indicator via `isSearching` instead.
         if case .loaded = state {} else { state = .loading }
         isSearching = true
-        defer { isSearching = false }
+        // A newer query owns `isSearching` once it starts, so only the latest clears it.
+        defer { if generation == queryGeneration { isSearching = false } }
         do {
             let results = try await repo.search(trimmed, scope: scope)
+            guard generation == queryGeneration else { return }
             state = .loaded(results)
         } catch let error as AppError {
+            guard generation == queryGeneration else { return }
             Log.ui.error("JellyfinSearch failed: \(error.userMessage)")
             state = .failed(error.userMessage)
         } catch {
+            guard generation == queryGeneration else { return }
             Log.ui.error("JellyfinSearch unexpected: \(String(describing: type(of: error)))")
             state = .failed("Something went wrong.")
         }

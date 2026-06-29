@@ -127,6 +127,9 @@ struct SeriesDetailView: View {
                 Task { await viewModel?.refresh() }
             }
         }
+        // Auto-recover the error screen when the network returns (or the app foregrounds online).
+        // Gated on `isStalled` so a loaded series is never re-pulled.
+        .recoversFromOffline(isStalled: viewModel?.isStalled ?? false) { await viewModel?.load() }
     }
 
     @ViewBuilder

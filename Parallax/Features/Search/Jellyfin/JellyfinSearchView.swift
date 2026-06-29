@@ -76,6 +76,9 @@ struct JellyfinSearchView: View {
                 viewModel = vm
             }
         }
+        // Auto-recover a failed search when the network returns (or the app foregrounds online) by
+        // re-running the current query. Gated on `isStalled` so a results page is never re-queried.
+        .recoversFromOffline(isStalled: viewModel?.isStalled ?? false) { await viewModel?.retry() }
     }
 
     @ViewBuilder

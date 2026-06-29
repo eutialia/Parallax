@@ -28,6 +28,10 @@ final class HomeViewModel {
         set { if !newValue { favoriteErrorMessage = nil } }
     }
 
+    /// Showing the blocking full-screen failure with no content — the state an offline→online
+    /// recovery should re-`load()`. Drives `.recoversFromOffline`.
+    var isStalled: Bool { if case .failed = state { true } else { false } }
+
     private let repo: LibraryRepository
 
     init(repo: LibraryRepository) {

@@ -85,6 +85,11 @@ struct SMBBrowseView: View {
             vm.load()
         }
         .onDisappear { model?.teardown() }
+        // Auto-recover a "Share Unavailable" / "Couldn't open" level when the network returns (or
+        // the app foregrounds online) — re-lists this level. Gated on `isStalled` (errored AND
+        // nothing listed) so a populated level isn't re-listed. `load()` is sync (spawns its own
+        // task); the discarded result is fine in this Void closure.
+        .recoversFromOffline(isStalled: model?.isStalled ?? false) { model?.load() }
     }
 
     /// Inline title: the current folder's name (last path component), or the share name at the root.

@@ -14,6 +14,10 @@ final class MovieDetailViewModel {
     private(set) var state: LoadState = .idle
     private(set) var isFavorite = false
     private(set) var isPlayed = false
+
+    /// Showing the blocking full-screen failure — the state an offline→online recovery should
+    /// re-`load()`. Drives `.recoversFromOffline`.
+    var isStalled: Bool { if case .failed = state { true } else { false } }
     /// Drives the stale-while-revalidate dim during `refresh()` (re-pull after a
     /// playback session ends). Also a re-entrancy guard.
     private(set) var isRefreshing = false

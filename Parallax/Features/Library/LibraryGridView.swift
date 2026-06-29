@@ -71,6 +71,10 @@ struct LibraryGridView: View {
         .itemDetailNavigation()
         .screenFloor()
         .task { await loadViewModel() }
+        // Auto-recover the full-screen error when the network returns (or the app foregrounds
+        // online). Gated on `isStalled` (failed AND no items) so a loaded grid — and the
+        // stale-content refresh banner, which keeps its own "Try again" — are untouched.
+        .recoversFromOffline(isStalled: viewModel?.isStalled ?? false) { await viewModel?.load() }
     }
 
     /// One-shot view-model construction for the `.task`: build the repo-backed model and

@@ -81,6 +81,9 @@ struct LibraryListView: View {
             }
             await viewModel?.load()
         }
+        // Auto-recover the error screen when the network returns (or the app foregrounds online).
+        // Gated on `isStalled` so a loaded list is never re-pulled.
+        .recoversFromOffline(isStalled: viewModel?.isStalled ?? false) { await viewModel?.load() }
     }
 
     private func isSupported(_ type: CollectionType) -> Bool {
