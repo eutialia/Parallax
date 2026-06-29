@@ -81,8 +81,15 @@ final class PlayerViewModel {
 
     // MARK: - Player chrome (P4)
 
-    /// The playing item's title — surfaced in the player's top bar.
-    var title: String { itemTitle }
+    /// The playing item's title — surfaced in the player's top bar. Episodes
+    /// prepend their episode number (e.g. `"2. Winter Is Coming"`) so the HUD reads
+    /// which episode is playing; movies/SMB show the bare title. `itemTitle` itself
+    /// stays unprefixed — the Now Playing info center wants the clean episode name in
+    /// its title field, the show goes elsewhere.
+    var title: String {
+        guard let episodeNumber else { return itemTitle }
+        return "\(episodeNumber). \(itemTitle)"
+    }
 
     /// Caption for the loading scrim. A transcode audio switch reloads the
     /// stream ("Switching audio · <track>"); a seek that re-anchors the transcode, or
@@ -388,6 +395,9 @@ final class PlayerViewModel {
     private var lastPosition: CMTime = .zero
     private let nowPlaying = NowPlayingController()
     private var itemTitle: String = ""
+    /// HUD-only episode number prepended to `title` (e.g. `"2. <name>"`); nil for
+    /// movies and SMB. Reset on every `start*` so an episode→movie swap clears it.
+    private var episodeNumber: Int?
 
     // Transcode track switching: the server bakes one audio + only text subs
     // into a transcode, so switching tracks means re-resolving the stream around
@@ -620,10 +630,12 @@ final class PlayerViewModel {
             positionTicks = d.movie.userData.playbackPositionTicks
             runtime = d.movie.runtime
             itemTitle = d.movie.title
+            episodeNumber = nil
         case .episode(let d):
             positionTicks = d.episode.userData.playbackPositionTicks
             runtime = d.episode.runtime
             itemTitle = d.episode.name
+            episodeNumber = d.episode.indexNumber
         case .series, .season:
             phase = .failed(.playback(.unsupportedFormat))
             return
@@ -718,6 +730,7 @@ final class PlayerViewModel {
         defer { isStartingPlayback = false }
         phase = .loading
         itemTitle = smbItem.title
+        episodeNumber = nil
         // No Jellyfin item: skip resolve, DeviceProfile, keepalive, segments, and
         // neighbor lookups (all server features). `resolved` stays nil.
         do {
