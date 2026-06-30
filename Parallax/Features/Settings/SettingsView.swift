@@ -36,6 +36,7 @@ struct SettingsView: View {
         case addServerChoose
         case addJellyfin
         case addSMB
+        case subtitles
     }
 
     var body: some View {
@@ -117,6 +118,8 @@ struct SettingsView: View {
                 #if !os(tvOS)
                 .navigationBarTitleDisplayMode(.inline)
                 #endif
+        case .subtitles:
+            SubtitleSettingsView()
         }
     }
 
@@ -144,6 +147,7 @@ struct SettingsView: View {
                     if isModal { path.append(.addServerChoose) } else { presentingAddServer = true }
                     #endif
                 },
+                onSelectSubtitles: { path.append(.subtitles) },
                 storage: { ThumbnailCacheCard() }
             )
         } else {
@@ -251,6 +255,7 @@ struct SettingsContentView<Storage: View>: View {
     let onSelectJellyfin: (ServerID) -> Void
     let onSelectSMBServer: (PersistedServer) -> Void
     let onAddServer: () -> Void
+    let onSelectSubtitles: () -> Void
     @ViewBuilder var storage: Storage
 
     var body: some View {
@@ -312,10 +317,11 @@ struct SettingsContentView<Storage: View>: View {
     }
 
     private var playbackSection: some View {
-        SettingsGroup(title: "Playback", footer: "Playback preferences are coming in a future update.") {
+        SettingsGroup(title: "Playback") {
+            SettingsListRow(systemImage: "captions.bubble", title: "Subtitles",
+                            accessory: .chevron, action: onSelectSubtitles)
             SettingsListRow(systemImage: "film", title: "Video", accessory: .soon)
             SettingsListRow(systemImage: "waveform", title: "Audio", accessory: .soon)
-            SettingsListRow(systemImage: "captions.bubble", title: "Subtitles", accessory: .soon)
         }
     }
 }
@@ -367,6 +373,7 @@ private struct SettingsRootPreview: View {
             onSelectJellyfin: { _ in },
             onSelectSMBServer: { _ in },
             onAddServer: {},
+            onSelectSubtitles: {},
             storage: {
                 SettingsGroup(
                     title: "Storage",
