@@ -832,9 +832,8 @@ struct PlayerControlsView: View {
     /// Live playback position as a clamped 0...1 fraction — shared by the scrubber's
     /// display math and `playheadChip` so the clamp can't drift between them.
     private var liveProgressFraction: Double {
-        let durSeconds = CMTimeGetSeconds(vm.currentDuration)
-        guard durSeconds > 0 else { return 0 }
-        return min(max(CMTimeGetSeconds(vm.currentPosition) / durSeconds, 0), 1)
+        guard vm.hasKnownDuration else { return 0 }   // canonical "is the runtime usable?" predicate
+        return min(max(CMTimeGetSeconds(vm.currentPosition) / CMTimeGetSeconds(vm.currentDuration), 0), 1)
     }
 
     #if os(tvOS)
@@ -999,7 +998,7 @@ struct PlayerControlsView: View {
         // VoiceOver value for the scrub bar — elapsed of total time (AVPlayerViewController's idiom),
         // not a bare percentage. Shared by both platforms so they announce identically; tracks the
         // scrub head mid-adjust via `shownSeconds`.
-        let positionValue = durSeconds > 0
+        let positionValue = vm.hasKnownDuration
             ? "\(formatPlaybackTime(shownSeconds)) of \(formatPlaybackTime(durSeconds))"
             : ""
 

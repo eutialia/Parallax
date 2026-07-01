@@ -59,6 +59,18 @@ final class PlayerViewModel {
     private(set) var clientSubtitleDelayMs: Int = 0
     private(set) var currentPosition: CMTime = .zero
     private(set) var currentDuration: CMTime = .zero
+
+    /// The single source of truth for "do we have a real, scrubbable runtime?" — the player is
+    /// interactive (`phase == .playing`) the instant frames render, but the timeline is only
+    /// seekable once a length is known. Incomplete media (a truncated SMB file whose trailing
+    /// moov atom isn't downloaded) plays with an `.indefinite` duration that never resolves;
+    /// `CMTime.isNumeric` is false for `.indefinite`/`.invalid`, and the `> 0` rejects the `.zero`
+    /// the duration inits to before the first beat. Every "is the duration usable?" check (the
+    /// scrubber's seek guards, the progress bar's indeterminate affordance, chapter ticks) reads
+    /// this one predicate so they can't drift.
+    var hasKnownDuration: Bool {
+        currentDuration.isNumeric && CMTimeGetSeconds(currentDuration) > 0
+    }
     /// Absolute media time the contiguous buffer around the playhead extends to
     /// (from the engine's beats). Nil when the engine doesn't report it (VLC) or
     /// while a (re)load is buffering fresh.
@@ -756,7 +768,8 @@ final class PlayerViewModel {
                     container: nil,
                     videoCodec: nil,
                     audioCodec: nil,
-                    subtitleFormats: []
+                    subtitleFormats: [],
+                    fileSizeBytes: smbItem.fileSizeBytes
                 ),
                 startTime: smbItem.startTime,
                 mediaStreams: [],

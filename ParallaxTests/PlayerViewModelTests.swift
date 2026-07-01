@@ -82,6 +82,43 @@ struct PlayerViewModelTests {
         ])
     }
 
+    @Test("incomplete media: a live beat with an unknown duration is controllable but not seekable")
+    func unknownDurationIsControllableNotSeekable() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let resolved = PlayerFixtures.resolved()
+        let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
+
+        await vm.start(item: PlayerFixtures.movieDetail())
+
+        // libvlc never resolves the length of a truncated/incomplete file, so the engine ships
+        // a live beat with an `.indefinite` duration (instead of suppressing it and wedging the
+        // player in `.loading`). The player must become controllable (`phase == .playing`) yet
+        // report itself non-seekable — there's no scrubbable timeline without a known length.
+        engine.push(.playing(position: CMTime(seconds: 5, preferredTimescale: 1), duration: .indefinite, buffered: nil))
+        engine.finish()
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(vm.phase == .playing)
+        #expect(vm.hasKnownDuration == false)
+    }
+
+    @Test("complete media: a live beat with a real duration reports a known, seekable duration")
+    func knownDurationIsSeekable() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let resolved = PlayerFixtures.resolved()
+        let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
+
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(position: CMTime(seconds: 5, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+        engine.finish()
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(vm.phase == .playing)
+        #expect(vm.hasKnownDuration == true)
+    }
+
     @Test("audio session activation failure surfaces a distinct error and short-circuits before resolve")
     func audioSessionFailureIsDistinctAndShortCircuits() async {
         let reporting = StubPlaybackReporting()

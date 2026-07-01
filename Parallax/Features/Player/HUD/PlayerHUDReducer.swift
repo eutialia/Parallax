@@ -58,6 +58,21 @@ nonisolated func reduce(_ state: PlayerHUDState, _ event: RemoteEvent, _ ctx: Re
     /// in-HUD skip buttons. Zero when the duration is unknown so a click is a no-op seek.
     let clickStep = ctx.durationSeconds > 0 ? 10.0 / ctx.durationSeconds : 0
 
+    // Incomplete media whose runtime never resolved plays with an indefinite duration
+    // (`durationSeconds` is NaN → `> 0` is false): there's no scrubbable timeline. Analog swipe +
+    // ±10s click events are inert so they can't PAUSE the video into a dead, non-committable,
+    // information-free scrub surface (the seek effect is swallowed downstream by `dur > 0`, and the
+    // scrub bar renders blank when indeterminate). Vertical (full HUD), play/pause, select, and
+    // menu stay live.
+    if !(ctx.durationSeconds > 0) {
+        switch event {
+        case .swipeHorizontal, .click(.left), .click(.right):
+            return (state, [])
+        default:
+            break
+        }
+    }
+
     switch state {
     case .floor:
         switch event {

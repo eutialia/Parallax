@@ -15,18 +15,25 @@ public struct PlaybackHints: Sendable, Hashable {
     public let audioCodec: AudioCodec?
     /// The subtitle formats present, used to decide sidecar vs embedded rendering.
     public let subtitleFormats: [SubtitleFormat]
+    /// Total size of the source file in bytes, when the caller knows it (the SMB lister does).
+    /// Lets the engine estimate a runtime for incomplete media whose container length never
+    /// resolves — see `VLCKitEngine.estimateDurationMs`. Nil for streamed/Jellyfin sources, where
+    /// the server already supplies the real runtime.
+    public let fileSizeBytes: Int64?
 
     public init(
         scheme: String?,
         container: Container?,
         videoCodec: VideoCodec?,
         audioCodec: AudioCodec?,
-        subtitleFormats: [SubtitleFormat]
+        subtitleFormats: [SubtitleFormat],
+        fileSizeBytes: Int64? = nil
     ) {
         self.scheme = scheme
         self.container = container
         self.videoCodec = videoCodec
         self.audioCodec = audioCodec
         self.subtitleFormats = subtitleFormats
+        self.fileSizeBytes = fileSizeBytes
     }
 }

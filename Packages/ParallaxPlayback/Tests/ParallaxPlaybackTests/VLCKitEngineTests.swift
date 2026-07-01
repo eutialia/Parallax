@@ -149,6 +149,85 @@ struct VLCKitEngineTests {
         #expect(VLCKitEngine.flushBridgeShouldResume(now: 60_000, anchor: 60_000, ticks: 8))
         #expect(VLCKitEngine.flushBridgeShouldResume(now: 60_000, anchor: 60_000, ticks: 7) == false)
     }
+
+    // MARK: — Unknown / indeterminate duration (incomplete media)
+
+    @Test("vlcDurationToCMTime maps an unresolved length (<= 0) to .indefinite, positive to seconds")
+    func vlcDurationToCMTimeUnknown() {
+        // libvlc leaves `media.length` at 0 (or the -1 sentinel) when the container's total
+        // length isn't in the downloaded bytes — a truncated/incomplete file whose trailing
+        // moov atom is missing. That is "unknown duration", NOT 0:00 — represent it with
+        // AVFoundation's own sentinel so the app derives one `hasKnownDuration` truth.
+        #expect(VLCKitEngine.vlcDurationToCMTime(ms: 0) == .indefinite)
+        #expect(VLCKitEngine.vlcDurationToCMTime(ms: -1) == .indefinite)
+        let known = VLCKitEngine.vlcDurationToCMTime(ms: 4000)
+        #expect(known.isNumeric)
+        #expect(CMTimeGetSeconds(known) == 4.0)
+    }
+
+    @Test("positionState carries .indefinite duration when the length is unknown, but a real position")
+    func positionStateIndefiniteDuration() {
+        // Frames are rendering (position is a real clock value) but the length never resolved.
+        // The beat must still ship — with an indeterminate duration — so the player leaves
+        // `.loading`. Position stays exact; only the duration is unknown.
+        let beat = VLCKitEngine.positionState(isPlaying: true, positionMs: 5000, durationMs: 0)
+        guard case .playing(let position, let duration, _) = beat else {
+            Issue.record("expected .playing, got \(beat)"); return
+        }
+        #expect(CMTimeGetSeconds(position) == 5.0)
+        #expect(duration == .indefinite)
+    }
+
+    @Test("liveBeat emits a beat for a live player even when the length is unknown")
+    func liveBeatEmitsOnUnknownLength() {
+        // THE FIX: the old guard required `durationMs > 0`, so an incomplete file (length
+        // unresolvable) never produced a beat and the player wedged in `.loading` forever.
+        // Readiness is "frames are rendering" (a valid position), not "duration is known".
+        let beat = VLCKitEngine.liveBeat(isPlaying: true, positionMs: 5000, durationMs: 0)
+        guard case .playing(let position, let duration, _) = beat else {
+            Issue.record("expected a .playing beat, got \(String(describing: beat))"); return
+        }
+        #expect(CMTimeGetSeconds(position) == 5.0)
+        #expect(duration == .indefinite)
+    }
+
+    @Test("liveBeat suppresses the pre-first-frame sentinel position to protect the resume point")
+    func liveBeatSuppressesSentinelPosition() {
+        // `player.time` reads the VLC_TICK_INVALID sentinel (-1) before the first frame.
+        // Emitting it would snap `lastPosition` to 0:00 and risk losing the resume point —
+        // THAT is the real guard, on POSITION, not on duration.
+        #expect(VLCKitEngine.liveBeat(isPlaying: true, positionMs: -1, durationMs: 4000) == nil)
+    }
+
+    @Test("estimateDurationMs derives the total from file size ÷ observed DEMUX rate; nil in the early window")
+    func estimateDurationFromDemuxRate() {
+        // libvlc's `position` is `time / length`, so it's ~0 when the container length never
+        // resolves (truncated/incomplete media) — useless here. The length-INDEPENDENT signal is
+        // `statistics.demuxReadBytes` (bytes actually consumed by the demuxer — NOT the input
+        // `readBytes`, which races ahead with the network read-ahead cache). demux-rate =
+        // demuxReadBytes / playedTime, and total = fileSize × playedMs / demuxReadBytes.
+        // Real device trace: 297 MB file, 3.05s played, 154 KB demuxed → ~100 min (6_023_873 ms).
+        #expect(VLCKitEngine.estimateDurationMs(fileSizeBytes: 311_758_144, playedMs: 3_050, demuxReadBytes: 157_849) == 6_023_873)
+        // Early window: below the 3s floor → no estimate yet (indeterminate bar holds).
+        #expect(VLCKitEngine.estimateDurationMs(fileSizeBytes: 311_758_144, playedMs: 1_000, demuxReadBytes: 50_000) == nil)
+        // Missing inputs → nil (no divide blow-up, no nonsense total).
+        #expect(VLCKitEngine.estimateDurationMs(fileSizeBytes: 0, playedMs: 60_000, demuxReadBytes: 157_849) == nil)
+        #expect(VLCKitEngine.estimateDurationMs(fileSizeBytes: 311_758_144, playedMs: 60_000, demuxReadBytes: 0) == nil)
+        // Degenerate: demuxed more than the whole file (re-reads/seek) → est would be < played → nil.
+        #expect(VLCKitEngine.estimateDurationMs(fileSizeBytes: 1_000_000, playedMs: 60_000, demuxReadBytes: 2_000_000) == nil)
+    }
+
+    @Test("clampSeekMs floors a rewind-before-zero to 0 so seek() agrees with the positionMs>=0 emit guard")
+    func clampSeekMsFloorsNegative() {
+        // `seek()` used to clamp its lower bound to Int32.min, admitting a negative ms for a
+        // rewind-before-zero scrub. But `liveBeat` suppresses any `positionMs < 0`, so the seek's
+        // own optimistic beat vanished AND the poll's `pendingSeekMs` sat at a negative target
+        // `player.time` (>= 0) could never reach — freezing live tracking until the 10-poll
+        // fallback. Floor to 0 (matching `startMs`) so the engine agrees with its own contract.
+        #expect(VLCKitEngine.clampSeekMs(seconds: -5) == 0)
+        #expect(VLCKitEngine.clampSeekMs(seconds: 0) == 0)
+        #expect(VLCKitEngine.clampSeekMs(seconds: 8) == 8000)
+    }
 }
 
 @Suite("VLCKitEngine — track mapping")

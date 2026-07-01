@@ -65,19 +65,27 @@ extension PlayerProgressBar {
          scrubDigitRoll: Animation? = nil,
          onScrubChanged: ((Double) -> Void)? = nil,
          onScrubEnded: ((Double) -> Void)? = nil) {
+        // Incomplete media plays with an `.indefinite` duration that never resolves (`dur` is NaN).
+        // Without a known runtime there's no scrubbable timeline: show the LIVE elapsed position
+        // only (no fraction, no total/remaining, no bubble, no scrub handlers), and let the bar
+        // render its indeterminate dim-track form. `vm.hasKnownDuration` is the one truth every
+        // such check reads. (`formatPlaybackTime` already maps a NaN to "0:00" defensively.)
+        let known = vm.hasKnownDuration
         let dur = CMTimeGetSeconds(vm.currentDuration)
         let p = min(max(fraction, 0), 1)
-        let shown = p * dur
+        let shown = known ? p * dur : CMTimeGetSeconds(vm.currentPosition)
         let remaining = max(0, dur - shown)
         self.init(
-            metrics: metrics, mode: mode, played: p, buffered: vm.bufferedFraction,
+            metrics: metrics, mode: mode, indeterminate: !known,
+            played: known ? p : 0, buffered: known ? vm.bufferedFraction : nil,
             elapsed: formatPlaybackTime(shown),
-            remaining: remaining > 0 ? "-\(formatPlaybackTime(remaining))" : formatPlaybackTime(dur),
-            elapsedSeconds: shown, remainingSeconds: remaining,
-            chapters: vm.chapterFractions,
-            bubbleTime: showsBubble ? formatPlaybackTime(shown) : nil,
-            bubbleChapter: showsBubble ? vm.chapterTitle(atSeconds: shown) : nil,
-            onScrubChanged: onScrubChanged, onScrubEnded: onScrubEnded,
+            remaining: known ? (remaining > 0 ? "-\(formatPlaybackTime(remaining))" : formatPlaybackTime(dur)) : "",
+            elapsedSeconds: shown, remainingSeconds: known ? remaining : 0,
+            chapters: known ? vm.chapterFractions : [],
+            bubbleTime: showsBubble && known ? formatPlaybackTime(shown) : nil,
+            bubbleChapter: showsBubble && known ? vm.chapterTitle(atSeconds: shown) : nil,
+            onScrubChanged: known ? onScrubChanged : nil,
+            onScrubEnded: known ? onScrubEnded : nil,
             scrubDigitRoll: scrubDigitRoll
         )
     }

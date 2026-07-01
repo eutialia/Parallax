@@ -37,6 +37,15 @@ public enum Item: Sendable, Hashable, Identifiable {
         }
     }
 
+    /// Total source file size in bytes, when known. Populated for file-source (SMB) items from the
+    /// directory listing; nil for server (Jellyfin) items, which carry a real `runtime` instead.
+    public var sizeBytes: Int64? {
+        switch self {
+        case .movie(let m): return m.size
+        case .series, .episode: return nil
+        }
+    }
+
     public var userData: UserItemData {
         switch self {
         case .movie(let m): return m.userData

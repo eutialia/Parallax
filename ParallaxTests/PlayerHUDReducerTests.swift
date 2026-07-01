@@ -6,6 +6,33 @@ struct PlayerHUDReducerTests {
     // on binary-exact values and the enum's Double equality stays reliable.
     private let playing = ReduceContext(liveProgress: 0.5, durationSeconds: 100, isPlaying: true)
     private let paused = ReduceContext(liveProgress: 0.5, durationSeconds: 100, isPlaying: false)
+    // Incomplete media whose runtime never resolved: `CMTimeGetSeconds(.indefinite)` is NaN, so
+    // `durationSeconds > 0` is false and there's no scrubbable timeline.
+    private let indeterminate = ReduceContext(liveProgress: 0, durationSeconds: .nan, isPlaying: true)
+
+    // MARK: indeterminate duration (incomplete media)
+
+    @Test("indeterminate: horizontal swipe is inert — never pauses into a dead scrub surface")
+    func indeterminateSwipeIsInert() {
+        let (state, fx) = reduce(.floor, .swipeHorizontal(deltaProgress: 0.3), indeterminate)
+        #expect(state == .floor)
+        #expect(fx.isEmpty)
+    }
+
+    @Test("indeterminate: left/right click is inert — no clickSeek state")
+    func indeterminateClickIsInert() {
+        let (l, lfx) = reduce(.floor, .click(.left), indeterminate)
+        #expect(l == .floor); #expect(lfx.isEmpty)
+        let (r, rfx) = reduce(.floor, .click(.right), indeterminate)
+        #expect(r == .floor); #expect(rfx.isEmpty)
+    }
+
+    @Test("indeterminate: vertical / play-pause / menu stay live")
+    func indeterminateNonScrubStillWorks() {
+        #expect(reduce(.floor, .swipeVertical, indeterminate).0 == .fullHUD)
+        #expect(reduce(.floor, .playPause, indeterminate).1 == [.togglePlayPause])
+        #expect(reduce(.floor, .menu, indeterminate).1 == [.exit])
+    }
 
     // MARK: floor
 

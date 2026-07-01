@@ -98,6 +98,29 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     private var pendingSeekMs: Int32?
     private var pendingSeekPolls = 0
 
+    /// Read-rate duration estimate (ms) for media whose container length never resolves — see
+    /// `estimateDurationMs`. CAPTURED ONCE (the first settled sample past the floor) and HELD: the
+    /// read-rate stays representative only before a seek re-reads bytes out of order, and a stable
+    /// total is what the scrub bar needs. 0 until captured (→ `.indefinite`, indeterminate bar);
+    /// reset on every fresh `load`. Never used once `media.length` resolves to a real value.
+    private var lastEstimateMs: Int32 = 0
+
+    /// Source file size in bytes (from the SMB lister via `PlaybackHints`), or nil for streamed
+    /// sources. The only way to convert the demux read-rate into a total runtime once `position`
+    /// is out (see `estimateDurationMs`). Set on `load`.
+    private var fileSizeBytes: Int64?
+
+    /// Whether playback started from 0 (no resume offset). The read-rate runtime estimate divides
+    /// `fileSize × playedMs / demuxBytes` and assumes both counters are zero-anchored; a resume
+    /// seek makes `player.time` the resume offset while the demux counter starts near the seek
+    /// target, so the estimate is only valid from a cold start. Set on `load` from the resume hint.
+    private var estimateAnchoredAtZero = true
+
+    /// Surfaces a `.failed` if no first frame arrives within the deadline — so a source that opens
+    /// but never decodes can't strand the player on the loading scrim forever. Armed in `play()`,
+    /// disarmed by the first beat / teardown / terminal state. See `LoadWatchdog`.
+    private let loadWatchdog = LoadWatchdog()
+
     /// The resume seek runs concurrently with playback (not awaited in `play()`), so it's
     /// stored here for `teardown()` to cancel — otherwise a dismiss during the readiness
     /// window would leave it polling and then write `player.time` on a stopped player.
@@ -164,6 +187,10 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         pendingStartMs = Self.startMs(from: asset.startTime)
         pendingSeekMs = nil
         rateFlushAnchorMs = nil   // a reused engine (track switch) must not bridge a stale flush
+        lastEstimateMs = 0        // new media → re-estimate from scratch (a reused engine must not
+                                  // carry the previous item's read-rate runtime estimate)
+        fileSizeBytes = asset.hints.fileSizeBytes
+        estimateAnchoredAtZero = pendingStartMs == nil   // a resume offset invalidates the read-rate estimate
         // VLCMedia(url:) returns optional; a nil result means the URL was rejected
         // by libvlc at construction time (e.g. empty path). Treat as unplayable.
         guard let media = VLCMedia(url: asset.url) else {
@@ -187,6 +214,23 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         startProgressPolling()
         resumeTask?.cancel()
         resumeTask = Task { [weak self] in await self?.seekToPendingStart() }
+        // Deadline the load: if no first frame arrives (a truncated container the demuxer can't
+        // finish, a dead SMB mount), surface a failure instead of an endless spinner. Disarmed by
+        // the first beat (emitPosition/emitReady), teardown, or a terminal state.
+        loadWatchdog.arm { [weak self] in self?.handleLoadTimeout() }
+    }
+
+    /// The source never opened within the watchdog deadline (a dead mount — VLC never left
+    /// `.opening`). Surface `.failed` so the error scrim + offline-recovery take over. Stop the
+    /// progress poll too: the app's `.failed` handler only sets `phase = .failed` (it does NOT tear
+    /// the engine down — the user's exit/retry does), so a late beat from the wedged demux would
+    /// otherwise flip `phase` back to `.playing` over the error. Guarded by `currentMedia` so a
+    /// beat that already disarmed-then-this-somehow-raced is a no-op.
+    private func handleLoadTimeout() {
+        guard currentMedia != nil else { return }
+        progressTask?.cancel()
+        progressTask = nil
+        continuation.yield(.failed(.assetNotPlayable))
     }
 
     /// Resume by SEEKING to the saved offset once the demux reports seekable. This
@@ -281,7 +325,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         // `pendingSeekMs` gate (below) now drives the settle; the rate stays re-asserted by the
         // poll's live-input pass once the seek lands.
         rateFlushAnchorMs = nil
-        let ms = Int32(min(max(seconds * 1000, Double(Int32.min)), Double(Int32.max)))
+        let ms = Self.clampSeekMs(seconds: seconds)
         player.time = VLCTime(int: ms)
         // Gate the poll until VLC's clock settles on this target so its transient
         // post-seek reads can't surface as an overshoot (see pendingSeekMs).
@@ -357,6 +401,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// off-thread. (Host-side: `VLCVideoHost.Coordinator.mediaLength()` additionally gates
     /// the getter on `hasVideoOut`.)
     public func teardown() async {
+        loadWatchdog.disarm()
         progressTask?.cancel()
         progressTask = nil
         resumeTask?.cancel()
@@ -487,45 +532,80 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         }
     }
 
-    /// Publish a single position beat, guarding the values VLC leaves unresolved during
-    /// buffering: `player.time` returns the VLC_TICK_INVALID sentinel (-1) before the first
-    /// frame and `media.length` is 0 until `mediaPlayerLengthChanged`. Emitting either would
-    /// collapse to .zero downstream (positionState → vlcTimeToCMTime), snapping the scrubber
-    /// and `lastPosition` to 0:00 and risking a 0:00 progress/stop report that loses the
-    /// resume point — so skip the beat until both resolve. VLC's analogue of AVKit's
-    /// `item.status == .readyToPlay` gate; shared by pause(), seek(), and the progress poll.
-    /// Playing-vs-paused comes from the caller (the poll/seek read `player.isPlaying`; pause
-    /// forces false), never from `player.state` (which is stuck on `.buffering`).
-    private func emitPosition(isPlaying: Bool, positionMs: Int32) {
-        guard let media = currentMedia else { return }
-        let durationMs = media.length.intValue
-        guard durationMs > 0, positionMs >= 0 else { return }
-        continuation.yield(Self.positionState(isPlaying: isPlaying, positionMs: positionMs, durationMs: durationMs))
+    /// The duration (ms) to publish: the container's real length once libvlc resolves it, else the
+    /// read-rate runtime estimate for incomplete media (captured once and held), else 0 (→
+    /// `.indefinite`). See `estimateDurationMs` / `lastEstimateMs`.
+    private func effectiveDurationMs() -> Int32 {
+        guard let media = currentMedia else { return 0 }
+        let real = media.length.intValue
+        if real > 0 { return real }
+        // No container length (incomplete/truncated media). Capture the read-rate estimate ONCE,
+        // while settled (no pending seek/resume/flush — a seek re-reads bytes and skews the demux
+        // counter), then hold it. `fileSizeBytes` (from the SMB lister) is the only way to a total
+        // once `position` is out. Skipped when a resume offset was applied (`estimateAnchoredAtZero`
+        // == false): the estimate assumes playback ran from 0, so a resume would divide
+        // fileSize × (resumeOffset + played) by the demux bytes read only SINCE the seek and yield a
+        // garbage total. `demuxReadBytes` is widened UNSIGNED — libvlc's counter is a C int that
+        // wraps negative past ~2 GB, which the `> 0` guard would otherwise reject. (VBR note:
+        // capturing once ~3s in can over/under-read a file with an atypical-bitrate opening; the
+        // runtime is approximate by design.)
+        if lastEstimateMs == 0, estimateAnchoredAtZero, let size = fileSizeBytes,
+           pendingSeekMs == nil, pendingStartMs == nil, rateFlushAnchorMs == nil,
+           let est = Self.estimateDurationMs(
+               fileSizeBytes: size,
+               playedMs: player.time.intValue,
+               demuxReadBytes: Int(UInt32(bitPattern: media.statistics.demuxReadBytes))
+           ) {
+            lastEstimateMs = est
+        }
+        return lastEstimateMs
     }
 
-    /// Publish a buffering beat (same value-guarding as `emitPosition`). Used by the rate-change
+    /// Publish a single position beat. The ONLY thing gated is `player.time` reading the
+    /// VLC_TICK_INVALID sentinel (-1) before the first frame — emitting that would snap the
+    /// scrubber and `lastPosition` to 0:00 and risk a 0:00 progress/stop report that loses the
+    /// resume point (`liveBeat` does that guard, on POSITION). An unresolved length is NOT a
+    /// reason to skip: `media.length` stays 0 forever on incomplete media (truncated tail → no
+    /// moov atom), and gating the beat on it wedged the player in `.loading` even while frames
+    /// rendered. Readiness is "frames are rendering" (a valid position), not "duration is known"
+    /// — the beat ships with an `.indefinite` duration when length is unknown. VLC's analogue of
+    /// AVKit's `.playing`-off-`timeControlStatus` (which is likewise not duration-gated). Shared
+    /// by pause(), seek(), and the progress poll. Playing-vs-paused comes from the caller (the
+    /// poll/seek read `player.isPlaying`; pause forces false), never from `player.state` (stuck
+    /// on `.buffering`).
+    private func emitPosition(isPlaying: Bool, positionMs: Int32) {
+        guard currentMedia != nil,
+              let beat = Self.liveBeat(isPlaying: isPlaying, positionMs: positionMs, durationMs: effectiveDurationMs())
+        else { return }
+        loadWatchdog.disarm()   // a real position beat = frames are rendering, the load is alive
+        continuation.yield(beat)
+    }
+
+    /// Publish a buffering beat (same position-guarding as `emitPosition`). Used by the rate-change
     /// flush bridge so a re-decode hold reads as buffering (the app debounces it) rather than a
     /// frozen position.
     private func emitBuffering(positionMs: Int32) {
-        guard let media = currentMedia else { return }
-        let durationMs = media.length.intValue
-        guard durationMs > 0, positionMs >= 0 else { return }
+        guard currentMedia != nil, positionMs >= 0 else { return }
         continuation.yield(.buffering(
             position: Self.vlcTimeToCMTime(ms: positionMs),
-            duration: Self.vlcTimeToCMTime(ms: durationMs),
+            duration: Self.vlcDurationToCMTime(ms: effectiveDurationMs()),
             buffered: nil
         ))
     }
 
-    /// Emit `.ready` with the current duration + track inventory. Called both at
-    /// `mediaPlayerLengthChanged` and once more from the poll after VLC settles the
-    /// default track selection (so the menus reflect the playing track).
+    /// Emit `.ready` with the current duration + track inventory. Called at
+    /// `mediaPlayerLengthChanged`, when a text track appears, and from the poll after VLC settles
+    /// the default track selection (so the menus reflect the playing track). Not gated on a known
+    /// length: the app's `.ready` handler only adopts the track inventory (duration rides the
+    /// position beats), so publishing tracks while the length is still unknown is correct — the
+    /// duration carried here is `.indefinite` until `mediaPlayerLengthChanged` resolves it.
     private func emitReady() {
-        guard let media = currentMedia else { return }
-        let durMs = media.length.intValue
-        guard durMs > 0 else { return }
-        let duration = CMTime(value: CMTimeValue(durMs), timescale: 1000)
-        continuation.yield(.ready(duration: duration, tracks: buildTrackInventory()))
+        guard currentMedia != nil else { return }
+        loadWatchdog.disarm()   // tracks/length resolved = the demux is progressing, the load is alive
+        continuation.yield(.ready(
+            duration: Self.vlcDurationToCMTime(ms: effectiveDurationMs()),
+            tracks: buildTrackInventory()
+        ))
     }
 
     private func buildTrackInventory() -> TrackInventory {
@@ -567,17 +647,78 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     // MARK: - Pure static helpers (testable without a live VLC decode)
 
     /// Clamp a resume `CMTime` to a positive VLC millisecond offset, or nil if there's
-    /// nothing to resume to (no time, non-finite, or ≤ 0).
+    /// nothing to resume to (no time, non-finite, or ≤ 0). The reject-if-≤0 policy is the only
+    /// difference from `clampSeekMs`; the floor/overflow clamp itself is shared.
     static func startMs(from time: CMTime?) -> Int32? {
         guard let time else { return nil }
         let seconds = CMTimeGetSeconds(time)
         guard seconds.isFinite, seconds > 0 else { return nil }
-        return Int32(min(max(seconds * 1000, 0), Double(Int32.max)))
+        return clampSeekMs(seconds: seconds)
+    }
+
+    /// Clamp a millisecond offset (from an already-finite seconds value) into `0...Int32.max` — the
+    /// shared floor/overflow clamp for both `startMs` and user seeks. A seek to 0:00 is valid
+    /// (rewind to start), so this FLOORS negatives to 0 rather than rejecting them — keeping seek in
+    /// agreement with the `positionMs >= 0` emit guard (`liveBeat`): a rewind-before-zero lands at
+    /// 0:00 instead of a negative target the poll could never converge on.
+    nonisolated static func clampSeekMs(seconds: Double) -> Int32 {
+        Int32(min(max(seconds * 1000, 0), Double(Int32.max)))
+    }
+
+    /// Playback (ms) that must elapse before the read-rate estimate is trusted — long enough for
+    /// the bounded read-ahead cache (network-caching, ~3s) to amortize so `readBytes / playedTime`
+    /// approximates the content byte-rate rather than the cache-fill spike.
+    nonisolated private static let estimateFloorMs: Int32 = 3_000
+
+    /// Estimate the total runtime (ms) of media whose container length never resolves — a
+    /// truncated/incomplete file (no trailing `moov` atom). libvlc's `position` is `time / length`,
+    /// so it's ~0 when length is 0 and useless here. The length-INDEPENDENT signal is the DEMUX
+    /// byte counter (`statistics.demuxReadBytes`) — NOT the input `readBytes`: a device trace showed
+    /// `readBytes` racing 100× ahead of the demuxer (16.9 MB read vs 154 KB demuxed in 3 s) because
+    /// it counts the network read-ahead cache, which yielded a nonsense 56 s total. `demuxReadBytes`
+    /// tracks what's actually been consumed into frames, so demux-rate = `demuxReadBytes / playedTime`
+    /// ≈ the content byte-rate, and the whole file's runtime = `fileSize / demux-rate = fileSize ×
+    /// playedMs / demuxReadBytes`. `fileSize` comes from the SMB lister (the engine can't derive
+    /// total bytes any other way once `position` is out). Accurate for CBR; VBR is within the intro's
+    /// bitrate skew, which the user accepts. Nil until the floor, and for any degenerate input
+    /// (missing size/bytes, or an estimate below what already played) so a bad signal falls back to
+    /// the indeterminate bar rather than a nonsense total. Pure: testable without a live decode.
+    nonisolated static func estimateDurationMs(fileSizeBytes: Int64, playedMs: Int32, demuxReadBytes: Int) -> Int32? {
+        guard fileSizeBytes > 0, demuxReadBytes > 0, playedMs >= estimateFloorMs else { return nil }
+        let est = Double(fileSizeBytes) * Double(playedMs) / Double(demuxReadBytes)
+        guard est.isFinite, est >= Double(playedMs), est <= Double(Int32.max) else { return nil }
+        return Int32(est)
     }
 
     nonisolated static func vlcTimeToCMTime(ms: Int32) -> CMTime {
         guard ms > 0 else { return .zero }
         return CMTime(value: CMTimeValue(ms), timescale: 1000)
+    }
+
+    /// A *duration* from libvlc, where a non-positive value means "not resolvable from the
+    /// bytes we have" — NOT 0:00. libvlc leaves `media.length` at 0 (or the -1 sentinel)
+    /// when the container's total length isn't downloaded yet: a truncated/incomplete file
+    /// whose trailing index (MP4 `moov` atom, MKV `Cues`) is in the missing tail. That is an
+    /// *indeterminate* duration, so map it to AVFoundation's own sentinel `.indefinite` —
+    /// the same value AVKit passes through for an unknown-length item — rather than `.zero`.
+    /// Downstream the app reads one `hasKnownDuration` truth (`CMTime.isNumeric`) off this, so
+    /// the player becomes interactive with a non-seekable bar instead of wedging in `.loading`.
+    /// Distinct from `vlcTimeToCMTime`, which is for POSITION (where 0 legitimately means 0:00).
+    nonisolated static func vlcDurationToCMTime(ms: Int32) -> CMTime {
+        guard ms > 0 else { return .indefinite }
+        return CMTime(value: CMTimeValue(ms), timescale: 1000)
+    }
+
+    /// The live position beat to publish for a poll/seek/pause sample, or nil to SKIP it.
+    /// Skips only when the position is libvlc's pre-first-frame sentinel (`player.time` == -1
+    /// before the first frame) — emitting that would snap `lastPosition` to 0:00 and risk
+    /// losing the resume point. An UNKNOWN length (`durationMs` <= 0) does NOT skip: readiness
+    /// is "frames are rendering" (a valid position), not "duration is known", so the beat ships
+    /// with an `.indefinite` duration and the player leaves `.loading` even on incomplete media
+    /// whose length never resolves. Pure so the gate is testable without a live decode.
+    nonisolated static func liveBeat(isPlaying: Bool, positionMs: Int32, durationMs: Int32) -> PlaybackState? {
+        guard positionMs >= 0 else { return nil }
+        return positionState(isPlaying: isPlaying, positionMs: positionMs, durationMs: durationMs)
     }
 
     /// Whether a post-seek poll should resume publishing live position beats: VLC's clock
@@ -607,9 +748,9 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         now > anchor + 200 || ticks >= 8
     }
 
-    static func positionState(isPlaying: Bool, positionMs: Int32, durationMs: Int32) -> PlaybackState {
+    nonisolated static func positionState(isPlaying: Bool, positionMs: Int32, durationMs: Int32) -> PlaybackState {
         let position = vlcTimeToCMTime(ms: positionMs)
-        let duration = vlcTimeToCMTime(ms: durationMs)
+        let duration = vlcDurationToCMTime(ms: durationMs)
         // buffered: nil — libvlc exposes no loaded-range query; its small network
         // cache wouldn't meaningfully feed the bar's instant-seek layer anyway.
         return isPlaying
@@ -693,18 +834,24 @@ extension VLCKitEngine: VLCMediaPlayerDelegate {
             // Natural end-of-stream. During teardown the delegate is nilled BEFORE
             // player.stop(), so this branch is never reached from teardown — no
             // spurious .ended beat.
+            loadWatchdog.disarm()
             if currentMedia != nil {
                 continuation.yield(.ended)
             }
         case .error:
+            loadWatchdog.disarm()   // libvlc surfaced the failure itself; don't also time out
             continuation.yield(.failed(.assetNotPlayable))
         case .buffering, .playing, .paused:
-            // Deliberately ignored. VLC 4.x sticks in `.buffering` during normal
+            // Deliberately ignored for BEATS. VLC 4.x sticks in `.buffering` during normal
             // playback and rarely emits `.playing`/`.paused` correctly
             // (VideoLAN VLCKit#578/#128/#80). Progress and play/pause state come
             // from `startProgressPolling()` reading `player.isPlaying`, not from
             // these unreliable transitions.
-            break
+            // BUT they're the "input opened, data is flowing" signal, so they disarm the load
+            // watchdog — the deadline only guards "stuck opening a dead mount". Without this, a
+            // remote pause landing before the first frame (pause() emits nothing: player.time is
+            // the -1 sentinel) or a slow first frame would let the deadline fire on healthy media.
+            loadWatchdog.disarm()
         @unknown default:
             break
         }

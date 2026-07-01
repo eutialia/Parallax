@@ -17,6 +17,11 @@ struct PlayerProgressBar: View {
 
     let metrics: PlayerMetrics
     var mode: Mode = .normal
+    /// No known runtime (incomplete media playing with an `.indefinite` duration): the timeline
+    /// isn't scrubbable, so suppress the draggable handle and the played fill — the bar becomes a
+    /// dim track carrying only the live elapsed label. The caller also blanks `remaining` and the
+    /// scrub handlers. Derived once from `vm.hasKnownDuration` in `init(scrubbingTo:vm:)`.
+    var indeterminate: Bool = false
     let played: Double
     /// 0...1 fraction the buffer extends to — the spec's middle layer (track
     /// `white 0.20` → buffered `white 0.36` → played `#fff`). Seeks inside it are
@@ -87,18 +92,26 @@ struct PlayerProgressBar: View {
                         Capsule().fill(.white.opacity(0.36))
                             .frame(width: w * clamp(buffered), height: trackH)
                     }
-                    Capsule().fill(.white).frame(width: w * p, height: trackH)
+                    // No played fill / handle without a known runtime — there's no fraction to
+                    // show and nothing to grab. The dim track + live elapsed label carry it.
+                    // NOTE: when the VLC read-rate estimate lands (~3s into incomplete media),
+                    // `indeterminate` flips false and these elements insert with no transition — a
+                    // one-time pop, accepted (a crossfade here fights the normal↔scrub morph and the
+                    // reserved-geometry invariant, and the estimate makes the flip a once-per-item event).
+                    if !indeterminate {
+                        Capsule().fill(.white).frame(width: w * p, height: trackH)
 
-                    ForEach(chapters, id: \.self) { c in
-                        Rectangle()
-                            .fill(c <= p ? Color.playerInk.opacity(0.5) : .white.opacity(0.5))
-                            .frame(width: metrics.chapterTickWidth, height: trackH)
-                            .offset(x: w * clamp(c) - metrics.chapterTickWidth / 2)
+                        ForEach(chapters, id: \.self) { c in
+                            Rectangle()
+                                .fill(c <= p ? Color.playerInk.opacity(0.5) : .white.opacity(0.5))
+                                .frame(width: metrics.chapterTickWidth, height: trackH)
+                                .offset(x: w * clamp(c) - metrics.chapterTickWidth / 2)
+                        }
+
+                        handle.offset(x: w * p - handleWidth / 2)
                     }
 
-                    handle.offset(x: w * p - handleWidth / 2)
-
-                    if mode == .scrub, let bubbleTime {
+                    if !indeterminate, mode == .scrub, let bubbleTime {
                         bubble(bubbleTime)
                             .position(x: w * p, y: -(bubbleHeight / 2 + 14 * metrics.u))
                     }
@@ -283,6 +296,27 @@ private struct OptionalDigitRoll: ViewModifier {
         if let animation { content.animation(animation, value: value) }
         else { content }
     }
+}
+
+// Incomplete media (unknown runtime): a dim track with the live elapsed ticking on the
+// left, NO total/remaining, NO played fill, NO draggable handle — the honest "playing,
+// length unknown, not seekable" form. Compare against the normal bar above it.
+#Preview("indeterminate (unknown runtime)") {
+    ZStack {
+        LinearGradient(colors: [.purple, .black], startPoint: .topLeading, endPoint: .bottomTrailing)
+            .ignoresSafeArea()
+        VStack(spacing: 90) {
+            PlayerProgressBar(metrics: .tv, mode: .normal, indeterminate: false, played: 0.5,
+                              buffered: 0.64, elapsed: "1:04:18", remaining: "-1:02:42",
+                              elapsedSeconds: 3858, remainingSeconds: 3762)
+            PlayerProgressBar(metrics: .tv, mode: .normal, indeterminate: true, played: 0,
+                              elapsed: "0:42", remaining: "",
+                              elapsedSeconds: 42, remainingSeconds: 0)
+        }
+        .padding(60)
+    }
+    .frame(width: 1200, height: 460)
+    .environment(\.colorScheme, .dark)
 }
 
 #Preview("normal / focused / scrub") {

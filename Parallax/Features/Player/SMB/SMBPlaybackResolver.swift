@@ -53,7 +53,8 @@ struct SMBPlaybackResolver {
             title: item.displayTitle,
             vlcOptions: ctx.vlcOptions,
             startTime: nil,
-            subtitleURLs: subtitleURLs
+            subtitleURLs: subtitleURLs,
+            fileSizeBytes: item.sizeBytes
         )
     }
 

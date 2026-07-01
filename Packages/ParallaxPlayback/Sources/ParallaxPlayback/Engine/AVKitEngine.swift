@@ -35,6 +35,11 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     private var timeControlObservation: NSKeyValueObservation?
     private var timeObserverToken: Any?
     private var endObserver: NSObjectProtocol?
+    /// Surfaces a `.failed` if the item never becomes playable within the deadline — `load()` never
+    /// throws here (every AVFoundation setter is non-throwing), so without this a dead URL / stuck
+    /// segment fetch would strand the player on the loading scrim forever. Armed in `play()`,
+    /// disarmed by the first beat / `.ready` / terminal state / detach. See `LoadWatchdog`.
+    private let loadWatchdog = LoadWatchdog()
     /// Loads the media-selection inventory off the actor. Held so `teardown()`
     /// can cancel it — otherwise a slow `loadMediaSelectionGroup` keeps the
     /// AVPlayerItem (and its open network connection) alive after dismissal.
@@ -75,6 +80,7 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     /// owned by `pause()` and the periodic observer.
     private func handleTimeControlChange() {
         guard let item = currentItem, item.status == .readyToPlay else { return }
+        loadWatchdog.disarm()   // transport is responding — the load is alive
         let position = player.currentTime()
         let buffered = Self.bufferedEnd(of: item, at: position)
         switch player.timeControlStatus {
@@ -179,7 +185,21 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         }
     }
 
-    public func play() async { player.playImmediately(atRate: desiredRate) }
+    public func play() async {
+        player.playImmediately(atRate: desiredRate)
+        // Deadline the load: a URL that never reaches `.readyToPlay` (dead mount, stuck segment)
+        // can't strand the player on the scrim. Disarmed by the first beat / `.ready` / terminal /
+        // detach.
+        loadWatchdog.arm { [weak self] in self?.handleLoadTimeout() }
+    }
+
+    /// The item never became playable within the watchdog deadline — surface `.failed` so the
+    /// error scrim takes over instead of an endless spinner. Guarded by `currentItem` so a beat
+    /// that already disarmed makes this a no-op.
+    private func handleLoadTimeout() {
+        guard currentItem != nil else { return }
+        continuation.yield(.failed(.assetNotPlayable))
+    }
 
     public func pause() async {
         player.pause()
@@ -310,6 +330,7 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     /// new item on the same player). Deliberately does NOT finish the state stream or
     /// drop the AVPlayer, so a reload keeps the surface — and the layer — alive.
     private func detachCurrentItem() {
+        loadWatchdog.disarm()   // teardown or reload — cancel the deadline (play() re-arms on reload)
         inventoryTask?.cancel()
         inventoryTask = nil
         statusObservation?.invalidate()
@@ -429,6 +450,7 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     private func handleStatusChange(_ item: AVPlayerItem) {
         switch item.status {
         case .readyToPlay:
+            loadWatchdog.disarm()   // item is playable — the load succeeded
             // (The resume seek already happened at load time, pre-ready — see
             // load(). Seeking here re-targeted an already-position-0 player.)
             // Media-selection groups load asynchronously: the synchronous
@@ -465,6 +487,7 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
                 url=\((item.asset as? AVURLAsset)?.url.absoluteString ?? "<no-url>", privacy: .private(mask: .hash))
                 """
             )
+            loadWatchdog.disarm()   // the item surfaced its own failure; don't also time out
             continuation.yield(.failed(.assetNotPlayable))
         case .unknown:
             break
@@ -474,11 +497,15 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     }
 
     private func handleEnded() {
+        loadWatchdog.disarm()
         continuation.yield(.ended)
     }
 
     private func emitTimeUpdate(at time: CMTime) {
         guard let item = currentItem, item.status == .readyToPlay else { return }
+        loadWatchdog.disarm()   // a periodic beat = the item is live; without this a redundant
+                                // play() while already playing (lock-screen/Bluetooth) re-arms the
+                                // watchdog with no timeControlStatus KVO to disarm it → false timeout
         let buffered = Self.bufferedEnd(of: item, at: time)
         switch player.timeControlStatus {
         case .paused:
