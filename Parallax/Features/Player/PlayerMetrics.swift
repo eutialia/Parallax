@@ -154,12 +154,28 @@ struct PlayerMetrics: Equatable {
     var subtitleInsetX: CGFloat { deviceClass == .tv ? 80 : 32 }
 
     // Scrims — loading ring + caption (see PlayerLoadingScrim).
-    // ONE ring geometry for every flavor (buffering / audio switch / stall):
-    // the modes cross-fade into each other over live video, so per-mode ring
-    // sizes and caption metrics made the circle jump scale and height at every
-    // flip (device-rejected). Only the dim differs per mode.
-    var scrimRing: CGFloat { 92 * u }
+    // The ring's diameter MATCHES the centre play/pause disc (`transportPlay` /
+    // `phoneTransportPlay`) so the loading arc traces the disc's exact
+    // circumference: the veil's ring and the transport swap in place (see
+    // `PlayerControlsView.showsCenterTransport`) — when the stream goes live the
+    // ring fades out and the disc fades in occupying the identical circle. EVERY
+    // platform shows the centre disc (tvOS too — the full HUD keeps it up, see
+    // `showsCenterTransport`), so tvOS/iPad share the big-screen `transportPlay`
+    // and iPhone rides its fixed `phoneTransportPlay`. Still ONE geometry across
+    // flavors (buffering / audio switch / stall) — only the dim differs per mode.
+    var scrimRing: CGFloat {
+        deviceClass == .phone ? Self.phoneTransportPlay : transportPlay
+    }
     var scrimRingStroke: CGFloat { 5.5 * u }
+    /// Whether the veil shows its caption (label + sublabel) under the ring. Big
+    /// screens only: on a landscape iPhone (the only phone playback orientation)
+    /// a center-pinned ring leaves NO room for the caption above the bottom
+    /// scrubber — center + 42 (ring radius) + gap + two caption lines lands 15–43pt
+    /// into the scrubber band on every phone size, and the HUD is up throughout a
+    /// load. The bare centered spinner is also the system phone-player idiom
+    /// (AVPlayerViewController). VoiceOver is unaffected — the scrim announces the
+    /// caption from its root accessibility label, not the caption view.
+    var scrimShowsCaption: Bool { deviceClass != .phone }
     var scrimCaptionGap: CGFloat { 26 * u }
     var scrimCaptionLineGap: CGFloat { 6 * u }
     var scrimLabelSize: CGFloat { 24 * u }

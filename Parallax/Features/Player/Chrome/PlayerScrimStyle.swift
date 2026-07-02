@@ -20,6 +20,14 @@ enum PlayerScrimStyle {
     /// shipped scrims always sit over real player output.
     static let previewBackdrop = Color(red: 0.05, green: 0.05, blue: 0.06)
 
+    /// The full-bleed preview stand-in as a view — the gradient wash every scrim
+    /// preview beds on. One home so the treatment can't drift per preview.
+    static var previewBed: some View {
+        LinearGradient(colors: [previewBackdrop, .black],
+                       startPoint: .topLeading, endPoint: .bottomTrailing)
+            .ignoresSafeArea()
+    }
+
     /// State dim factors: a cold start is heaviest (there's nothing to watch yet),
     /// a live-frame reload/stall lightest (the picture is still the subject),
     /// errors between. Paused matches the live-frame weight — the frozen frame

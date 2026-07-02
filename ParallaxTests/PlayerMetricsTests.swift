@@ -54,6 +54,34 @@ import CoreGraphics
         #expect(PlayerMetrics.phoneProgressBottom == 64)
     }
 
+    @Test func loadingRingTracesThePlayDisc() {
+        // The veil's loading ring shares the centre play/pause disc's diameter so the
+        // arc traces the disc's EXACT circumference and the two swap in place
+        // (PlayerControlsView.showsCenterTransport / PlayerLoadingScrim). This locks
+        // them together so a future tweak to the disc size carries the ring with it.
+        // iPad: rides the big-screen `transportPlay` formula, at any window scale.
+        let full = PlayerMetrics(width: 1920)
+        #expect(full.scrimRing == full.transportPlay)
+        let pad = PlayerMetrics(width: 1366)
+        #expect(pad.scrimRing == pad.transportPlay)
+        // iPhone: the fixed compact play-disc static.
+        #expect(PlayerMetrics.phone.scrimRing == PlayerMetrics.phoneTransportPlay)
+        // tvOS DOES show the centre disc (the full HUD keeps the transport up — see
+        // PlayerControlsView.showsCenterTransport), so its ring tracks `transportPlay` too.
+        #expect(PlayerMetrics.tv.scrimRing == PlayerMetrics.tv.transportPlay)
+    }
+
+    @Test func scrimCaptionIsBigScreenOnly() {
+        // A landscape iPhone has no room for the veil's caption between the
+        // center-pinned ring and the bottom scrubber (center + ring radius + gap +
+        // two caption lines overshoots the scrubber band on every phone size), so
+        // the phone shows the bare ring — the system phone-player idiom. Big
+        // screens keep the caption.
+        #expect(!PlayerMetrics.phone.scrimShowsCaption)
+        #expect(PlayerMetrics(width: 1366).scrimShowsCaption)
+        #expect(PlayerMetrics.tv.scrimShowsCaption)
+    }
+
     @Test func scrubBarPlacementMatchesTheHudScrubber() {
         // The double-tap seek bar (`PlayerScrubBar`) and the full-HUD scrubber MUST pin to
         // the same screen spot — same horizontal inset, same bottom offset — or a seek

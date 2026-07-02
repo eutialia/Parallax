@@ -13,9 +13,10 @@ import ParallaxPlayback
 /// `PlayerView` pins the whole surface to `.dark` so the glass resolves consistently.
 ///
 /// Big screens (tvOS + iPad) scale every size from `PlayerMetrics(width:)`; iPhone uses
-/// the fixed `.phone` set with the `phone*` round-button statics. tvOS drops the centre
-/// transport (the remote drives play/pause/skip) and the AirPlay/PiP pill (neither is
-/// available on tvOS). Touch chrome follows the TV app's player: Close top-left (the
+/// the fixed `.phone` set with the `phone*` round-button statics. tvOS keeps the centre
+/// transport (the full HUD holds play/pause up so it can't blink out under scrubber
+/// nudges — see `showsCenterTransport`) but drops the AirPlay/PiP pill (unavailable on
+/// tvOS). Touch chrome follows the TV app's player: Close top-left (the
 /// Music-style collapse corner), the AirPlay/PiP pill top-right, chips + scrubber
 /// alone at the bottom. (The HIG's "AirPlay lower-right" line lost to Apple's own TV
 /// app, which clusters these accessories at the top — and the bottom row needed the

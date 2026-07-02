@@ -90,13 +90,19 @@ struct PlayerScrimRing: View {
     private nonisolated static func easeInOut(_ x: Double) -> Double { x * x * (3 - 2 * x) }
 }
 
+// The shipped sizes, derived from the live metrics so this can't go stale: the
+// ring traces the centre play/pause disc (`scrimRing == transportPlay` — see
+// PlayerMetrics), one geometry per device class.
 #Preview("Ring sizes") {
     ZStack {
         Color.black.ignoresSafeArea()
         HStack(spacing: 48) {
-            PlayerScrimRing(size: 92, stroke: 5.5)   // buffering
-            PlayerScrimRing(size: 80, stroke: 5)     // audio switch
-            PlayerScrimRing(size: 64, stroke: 3.9)   // phone scale
+            PlayerScrimRing(size: PlayerMetrics.tv.scrimRing,
+                            stroke: PlayerMetrics.tv.scrimRingStroke)      // tvOS (u = 1)
+            PlayerScrimRing(size: PlayerMetrics(width: 1366).scrimRing,
+                            stroke: PlayerMetrics(width: 1366).scrimRingStroke)  // iPad
+            PlayerScrimRing(size: PlayerMetrics.phone.scrimRing,
+                            stroke: PlayerMetrics.phone.scrimRingStroke)   // iPhone
         }
     }
 }
