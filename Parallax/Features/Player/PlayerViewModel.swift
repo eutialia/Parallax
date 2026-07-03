@@ -2283,4 +2283,44 @@ extension PlayerViewModel {
         }
     }
 }
+
+// MARK: - Preview support
+
+/// A view model frozen in a live `.playing` state with representative tracks, for the
+/// HUD `#Preview`s (`PlayerControlsView`). No engine, no network: the display fields are
+/// set directly. The injected deps are inert stubs never exercised (playback never
+/// starts), so this render exercises the chrome layout alone.
+extension PlayerViewModel {
+    @MainActor
+    static func previewPlaying() -> PlayerViewModel {
+        let vm = PlayerViewModel(
+            deviceProfileBuilder: DeviceProfileBuilder(probe: LiveCapabilityProbe()),
+            playbackInfo: NoOpPlaybackReporting(),
+            resolve: { _, _, _, _, _ in throw AppError.playback(.unsupportedFormat) },
+            engineFactory: { _ in fatalError("preview VM never starts playback") },
+            audioSession: PreviewAudioSession()
+        )
+        vm.itemTitle = "The Grand Budapest Hotel"
+        vm.phase = .playing
+        vm.isPlaying = true
+        vm.currentDuration = CMTime(seconds: 5_460, preferredTimescale: 600)   // 1:31:00
+        vm.currentPosition = CMTime(seconds: 1_920, preferredTimescale: 600)   // 0:32:00
+        let audio = AudioTrack(id: .jellyfinStream(1), displayName: "English",
+                               languageCode: "eng", detailLabel: "TrueHD · 7.1")
+        vm.availableAudioTracks = [audio]
+        vm.selectedAudioTrack = audio
+        let subtitle = SubtitleTrack(id: .jellyfinStream(2), displayName: "English",
+                                     languageCode: "eng", isForced: false,
+                                     detailLabel: "SRT · External", isExternal: true)
+        vm.availableSubtitleTracks = [subtitle]
+        vm.selectedSubtitleTrack = subtitle
+        return vm
+    }
+}
+
+private struct PreviewAudioSession: AudioSessionControlling {
+    func activate() async throws {}
+    func deactivate() async {}
+    let routeChanges = AsyncStream<Void> { _ in }
+}
 #endif
