@@ -269,6 +269,43 @@ struct SMBPlaybackStartTests {
         #expect(engine.calls.contains("load"))
     }
 
+    /// Records how many times the bridge cleanup was invoked.
+    private actor CleanupSpy {
+        private(set) var count = 0
+        func invoke() { count += 1 }
+    }
+
+    @Test("resolving start: an exit racing the resolve reaps the bridge cleanup (no orphan)")
+    func resolvingStartExitRaceReapsBridge() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let vm = makeVM(reporting: reporting, engine: engine)
+
+        let spy = CleanupSpy()
+        let base = smbItem()
+        // A bridge-route item: cleanup holds a LIVE bridge the session must reap on exit.
+        let resolvedItem = SMBPlaybackItem(
+            url: base.url,
+            title: base.title,
+            vlcOptions: base.vlcOptions,
+            cleanup: { await spy.invoke() }
+        )
+
+        // The resolve runs stop() to completion mid-flight (the onDisappear backstop landing
+        // in the resolve window), THEN returns the item. Before the fix the cleanup was
+        // stashed only inside start(smbItem:) — never reached past the exit fence — so the
+        // bridge orphaned: stop() ran with smbCleanup still nil and never runs again.
+        await vm.start(resolvingSMB: {
+            await vm.stop()
+            return resolvedItem
+        })
+
+        // The exit fence bailed before start(smbItem:), so the engine never loaded — but the
+        // stashed cleanup was reaped exactly once by the CancellationError branch.
+        #expect(!engine.calls.contains("load"))
+        #expect(await spy.count == 1)
+    }
+
     @Test("NoOpPlaybackReporting swallows every call without recording")
     func noOpReportingIsInert() async {
         let noop = NoOpPlaybackReporting()

@@ -716,13 +716,25 @@ final class PlayerViewModel {
         smbResolve = resolve
         do {
             let item = try await resolve()
+            // Stash the bridge cleanup BEFORE the exit fence below: `resolve()` already
+            // started the bridge (bridge route), and `checkStillActive()` throws when a
+            // dismissal landed in the resolve window (the common exit case). Stashing here
+            // means the live bridge is reachable — the `stop()` backstop (onDisappear always
+            // runs it) reads this property — instead of being dropped un-reaped. `start(smbItem:)`
+            // re-stashes the same value; idempotent.
+            smbCleanup = item.cleanup
             // The resolve is the off-tap window an exit usually lands in — bail before
             // delegating so a dismissed player can't start audio. `start(smbItem:)`
             // re-checks after activating the session.
             try checkStillActive()
             await start(smbItem: item)
         } catch is CancellationError {
-            // Exit raced the resolve — the view is gone; nothing to surface.
+            // Exit raced the resolve — the view is gone. Reap the bridge we just stashed:
+            // if `stop()` already ran (onDisappear backstop firing during the resolve), it
+            // reaped nothing — `smbCleanup` was still nil then — and won't run again (its
+            // `didStop` guard), so the bridge would strand. `tearDownSMBBridge()` is idempotent
+            // (nil-before-await), so it's safe even if a concurrent `stop()` also reaps it.
+            await tearDownSMBBridge()
         } catch let error as AppError {
             phase = .failed(error)
         } catch {

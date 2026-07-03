@@ -87,3 +87,47 @@ struct SMBPlaybackRouteTests {
         #expect(hints.audioCodec == nil)
     }
 }
+
+/// The container-probe deadline race: a wedged SMB read must be abandoned at the
+/// deadline so the loading veil is never held hostage to AMSMB2's 15s socket timeout.
+@Suite("SMBPlaybackResolver.probeWithDeadline")
+struct SMBProbeDeadlineTests {
+
+    /// A reader whose `read` never returns — models an SMB share stuck in a native
+    /// socket read that cancellation can't unwedge (exactly the AMSMB2 failure mode).
+    private struct HangingReader: RandomAccessReading {
+        var fileSize: UInt64 { get async throws { 1_000_000 } }
+        func read(offset: UInt64, length: Int) async throws -> Data {
+            // Never resumes; not resumed on cancellation either — the point of the test.
+            await withCheckedContinuation { (_: CheckedContinuation<Void, Never>) in }
+            return Data()
+        }
+    }
+
+    @Test("a wedged reader is abandoned at the deadline, returning nil")
+    func wedgedReaderTimesOut() async {
+        let clock = ContinuousClock()
+        let start = clock.now
+        // 0.2s deadline (not the 4s default) so the test proves the race without a
+        // wall-clock stall; the generous 6s bound only guards against CI scheduling flake.
+        let result = await SMBPlaybackResolver.probeWithDeadline(HangingReader(), seconds: 0.2)
+        let elapsed = start.duration(to: clock.now)
+
+        #expect(result == nil)
+        #expect(elapsed < .seconds(6))
+    }
+
+    @Test("a fast in-memory probe returns its result well before the deadline")
+    func fastProbeReturnsResult() async {
+        // A minimal ftyp/qt header is enough for the probe to classify the container;
+        // it returns immediately, so the deadline task never fires.
+        var bytes = Data([0, 0, 0, 12])
+        bytes.append(contentsOf: Array("ftypqt  ".utf8))
+        let reader = InMemoryRandomAccessReader(data: bytes)
+
+        let result = await SMBPlaybackResolver.probeWithDeadline(reader, seconds: 5)
+
+        #expect(result != nil)
+        #expect(result?.container == .mov)
+    }
+}

@@ -4,6 +4,7 @@ import ParallaxJellyfin
 import ParallaxFileBrowse
 import ParallaxPlayback
 import OSLog
+import Synchronization
 
 private let logger = Logger(subsystem: "Parallax", category: "SMBPlaybackResolver")
 
@@ -56,12 +57,7 @@ struct SMBPlaybackResolver {
         let reader = SMBRandomAccessReader(host: ref.data.host, username: ref.data.username,
                                            password: ctx.password, domain: ref.data.domain,
                                            share: ctx.share, path: ctx.path)
-        let probeResult: MediaProbeResult? = try? await withThrowingTaskGroup(of: MediaProbeResult.self) { group in
-            group.addTask { try await MediaProbe.probe(reader) }
-            group.addTask { try await Task.sleep(for: .seconds(4)); throw CancellationError() }
-            defer { group.cancelAll() }
-            return try await group.next()
-        }
+        let probeResult = await Self.probeWithDeadline(reader)
 
         let (hints, useBridge) = Self.route(probe: probeResult, sizeBytes: item.sizeBytes)
 
@@ -95,7 +91,18 @@ struct SMBPlaybackResolver {
 
         // VLC route — release the probe's SMB connection (libVLC opens its own) and carry
         // whatever the probe learned so the engine can size its cache; scheme stays smb.
-        await reader.disconnect()
+        if probeResult == nil {
+            // Probe timed out or failed: the reader may be wedged in a native AMSMB2 read
+            // that won't return until its socket timeout. Awaiting disconnect() inline would
+            // serialize behind that wedge on the reader's actor and re-stall resolve()'s
+            // return — the very veil-stall the 4s deadline just avoided. Fire-and-forget:
+            // disconnect is best-effort cleanup, and it drains behind the wedged read either
+            // way once the native call unwinds.
+            Task { await reader.disconnect() }
+        } else {
+            // Probe completed; the reader is idle — release it inline before returning.
+            await reader.disconnect()
+        }
         return SMBPlaybackItem(
             url: ctx.url,
             title: item.displayTitle,
@@ -146,6 +153,28 @@ struct SMBPlaybackResolver {
         )
     }
 
+    /// Races a container probe against a hard `seconds` deadline, abandoning the probe
+    /// if the deadline wins. Returns the probe result, or `nil` on timeout/failure —
+    /// `route(probe:sizeBytes:)` reads `nil` as "fall back to the VLC route."
+    ///
+    /// Unstructured on purpose: a task group would await the probe child even after
+    /// `cancelAll()`, so a wedged share stalls the loading veil until AMSMB2's own
+    /// socket timeout. Racing an abandoned `Task` keeps the deadline promise; the zombie
+    /// probe self-terminates within the reader's connect timeout and holds only memory
+    /// (the reader outlives it either way — the bridge route hands it to the bridge, the
+    /// VLC route fire-and-forget-disconnects it behind the in-flight read).
+    static func probeWithDeadline(_ reader: any RandomAccessReading, seconds: Double = 4) async -> MediaProbeResult? {
+        await withCheckedContinuation { (continuation: CheckedContinuation<MediaProbeResult?, Never>) in
+            let latch = OneShotLatch(continuation)
+            let probe = Task { latch.resume(try? await MediaProbe.probe(reader)) }
+            Task {
+                try? await Task.sleep(for: .seconds(seconds))
+                probe.cancel()          // cooperative only; the latch already unblocked the caller
+                latch.resume(nil)
+            }
+        }
+    }
+
     // MARK: - Private helpers
 
     /// Splits a share-relative path into (directory, filename).
@@ -158,5 +187,26 @@ struct SMBPlaybackResolver {
         let directory = String(path[path.startIndex..<slashIndex])
         let filename  = String(path[path.index(after: slashIndex)...])
         return (directory, filename)
+    }
+}
+
+/// Resumes a `CheckedContinuation` exactly once, thread-safe. The probe race has two
+/// racers that can each try to complete the continuation (the probe finishing, or the
+/// deadline firing); whichever wins takes the continuation out under the lock, and the
+/// loser's `resume` is a no-op. A double-resume of a `CheckedContinuation` traps, so the
+/// mutual exclusion here is load-bearing, not defensive.
+private final class OneShotLatch: Sendable {
+    private let box: Mutex<CheckedContinuation<MediaProbeResult?, Never>?>
+
+    init(_ continuation: CheckedContinuation<MediaProbeResult?, Never>) {
+        box = Mutex(continuation)
+    }
+
+    func resume(_ value: MediaProbeResult?) {
+        let continuation = box.withLock { stored -> CheckedContinuation<MediaProbeResult?, Never>? in
+            defer { stored = nil }
+            return stored
+        }
+        continuation?.resume(returning: value)
     }
 }
