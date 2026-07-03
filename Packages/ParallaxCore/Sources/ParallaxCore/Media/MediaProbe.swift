@@ -21,8 +21,11 @@ public struct MediaProbeResult: Sendable, Equatable {
     public let audioCodec: ProbedCodec<AudioCodec>
     /// False when the MP4 box walk proves the file is truncated / still downloading
     /// (a box's declared extent overruns `fileSize`, or EOF arrives before any
-    /// `moov` box). Non-MP4 containers always report true — VLC owns them as-is,
-    /// truncation there isn't this probe's signal to detect.
+    /// `moov` box). A malformed top-level header (declared size shorter than the
+    /// 8/16-byte header itself, or a short read at EOF) is treated the same way —
+    /// the conservative read is "not yet fully written" rather than "corrupt."
+    /// Non-MP4 containers always report true — VLC owns them as-is, truncation
+    /// there isn't this probe's signal to detect.
     public let isComplete: Bool
 
     public init(
@@ -49,12 +52,6 @@ public enum MediaProbe {
     /// single-digit MiB; past this cap codecs degrade to `.unknown` (→ VLC) instead
     /// of an unbounded LAN read.
     private static let moovByteCap = 64 * 1024 * 1024
-
-    /// Mirrors `PlaybackCapabilityMatrix.avKitAudioCodecs` (ParallaxPlayback).
-    /// Duplicated rather than imported: ParallaxCore has no dependency on
-    /// ParallaxPlayback (and must not gain one). Keep the two sets in sync —
-    /// these are the audio codecs AVPlayer's pipeline handles natively.
-    private static let avKitAudioCodecs: Set<AudioCodec> = [.aac, .ac3, .eac3, .mp3]
 
     public static func probe(_ reader: any RandomAccessReading) async throws -> MediaProbeResult {
         let size = try await reader.fileSize
@@ -205,10 +202,16 @@ public enum MediaProbe {
 
         var audioCodec: ProbedCodec<AudioCodec> = .none
         if sawAudioTrak {
-            let mappedInOrder = audioFourccsInOrder.compactMap(mapAudioFourcc)
-            if let worstCase = mappedInOrder.first(where: { !avKitAudioCodecs.contains($0) }) {
+            let mappedInOrder = audioFourccsInOrder.map(mapAudioFourcc)
+            if mappedInOrder.contains(where: { $0 == nil }) {
+                // Any unrecognized audio fourcc must surface as `.unknown` per
+                // `ProbedCodec`'s contract — silently dropping it and picking a
+                // worst-case among the recognized tracks would hide a track
+                // `EngineSelector` can't reason about.
+                audioCodec = .unknown
+            } else if let worstCase = mappedInOrder.compactMap({ $0 }).first(where: { !AudioCodec.avPlayerSupported.contains($0) }) {
                 audioCodec = .known(worstCase)
-            } else if let firstKnown = mappedInOrder.first {
+            } else if let firstKnown = mappedInOrder.compactMap({ $0 }).first {
                 audioCodec = .known(firstKnown)
             } else {
                 audioCodec = .unknown
@@ -302,8 +305,8 @@ public enum MediaProbe {
         }
 
         guard boxSize >= headerLen else { return nil }
-        let boxEnd = offset + boxSize
-        guard boxEnd <= limit, boxEnd <= data.count else { return nil }
+        let (boxEnd, overflowed) = offset.addingReportingOverflow(boxSize)
+        guard !overflowed, boxEnd <= limit, boxEnd <= data.count else { return nil }
         return BoxHeader(type: type, contentStart: offset + headerLen, boxEnd: boxEnd)
     }
 

@@ -31,7 +31,7 @@ public enum PlaybackCapabilityMatrix {
     public static let avKitVideoCodecs: Set<VideoCodec> = [.h264, .hevc]
 
     /// Audio codecs AVPlayer's audio pipeline handles.
-    public static let avKitAudioCodecs: Set<AudioCodec> = [.aac, .ac3, .eac3, .mp3]
+    public static let avKitAudioCodecs: Set<AudioCodec> = AudioCodec.avPlayerSupported
 
     /// Subtitle formats AVPlayer renders natively (WebVTT in HLS manifest,
     /// or SRT sidecar). ASS/PGS/VobSub require libass/libavcodec → VLC.

@@ -60,6 +60,13 @@ public enum AudioCodec: String, Sendable, Hashable, Codable, CaseIterable {
     }
 }
 
+public extension AudioCodec {
+    /// Codecs AVPlayer decodes natively. Single source for the playback capability
+    /// matrix (ParallaxPlayback) and MediaProbe's worst-case multi-track pick —
+    /// ParallaxCore is the only module both can see.
+    static let avPlayerSupported: Set<AudioCodec> = [.aac, .ac3, .eac3, .mp3]
+}
+
 public enum ColorSpace: String, Sendable, Hashable, Codable, CaseIterable {
     case sdr
     case hdr10
