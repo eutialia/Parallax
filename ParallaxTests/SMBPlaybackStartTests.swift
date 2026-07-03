@@ -79,6 +79,29 @@ struct SMBPlaybackStartTests {
         #expect(subs.contains { $0.id == .jellyfinStream(1) && $0.displayName == "ja" && $0.isExternal })
     }
 
+    @Test("start(smbItem:) hides ASS/SSA sidecars from the menu — no client renderer yet")
+    func startHidesUnrenderableSidecarFormats() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let vm = makeVM(reporting: reporting, engine: engine)
+
+        let srt = URL(string: "smb://nas.local/Media/Movies/x.srt")!
+        let ass = URL(string: "smb://nas.local/Media/Movies/y.ass")!
+        let vtt = URL(string: "smb://nas.local/Media/Movies/z.vtt")!
+        await vm.start(smbItem: smbItem(
+            subtitleURLs: [0: srt, 1: ass, 2: vtt],
+            subtitleLabels: [0: "srt-label", 1: "ass-label", 2: "vtt-label"]
+        ))
+
+        // The resolver's filename matcher still surfaces the ASS sidecar (matched, just
+        // unrenderable client-side) — the fix filters it out of the MENU, not the resolver.
+        let subs = vm.availableSubtitleTracks
+        #expect(subs.count == 2)
+        #expect(subs.contains { $0.id == .jellyfinStream(0) && $0.displayName == "srt-label" })
+        #expect(subs.contains { $0.id == .jellyfinStream(2) && $0.displayName == "vtt-label" })
+        #expect(!subs.contains { $0.id == .jellyfinStream(1) })
+    }
+
     @Test("selecting an SMB .srt sidecar fetches + parses via SRTParser into activeSubtitleCues")
     func selectingSRTSidecarParsesViaSRTParser() async throws {
         let reporting = StubPlaybackReporting()

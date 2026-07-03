@@ -144,7 +144,7 @@ struct SMBPlaybackResolver {
         do {
             let size = try await reader.fileSize
             let capped = Int(min(size, 4 * 1024 * 1024))
-            guard capped > 0 else { return Data() }
+            guard capped > 0 else { return nil }
             return try await reader.read(offset: 0, length: capped)
         } catch {
             logger.warning("SMB subtitle read failed for \(path, privacy: .public): \(error, privacy: .public)")

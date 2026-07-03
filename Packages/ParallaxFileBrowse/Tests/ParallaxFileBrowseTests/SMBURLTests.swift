@@ -36,4 +36,22 @@ struct SMBURLTests {
         let url = URL(string: "https://example.com/Media/Film.srt")!
         #expect(SMBURL.parse(url) == nil)
     }
+
+    @Test("parse is the inverse of make for a host with spaces")
+    func roundTripHostWithSpaces() throws {
+        let url = try #require(SMBURL.make(host: "Living Room NAS", share: "Media", path: "Movies/Film.mkv"))
+        let parsed = try #require(SMBURL.parse(url))
+        #expect(parsed.host == "Living Room NAS")
+        #expect(parsed.share == "Media")
+        #expect(parsed.path == "Movies/Film.mkv")
+    }
+
+    @Test("parse is the inverse of make for a unicode filename")
+    func roundTripUnicodeFilename() throws {
+        let url = try #require(SMBURL.make(host: "nas.local", share: "Media", path: "Movies/千と千尋.mkv"))
+        let parsed = try #require(SMBURL.parse(url))
+        #expect(parsed.host == "nas.local")
+        #expect(parsed.share == "Media")
+        #expect(parsed.path == "Movies/千と千尋.mkv")
+    }
 }

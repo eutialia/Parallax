@@ -1771,17 +1771,28 @@ final class PlayerViewModel {
             .map(Self.subtitleTrack(from:))
     }
 
+    /// Sidecar formats `SubtitleOverlayView`'s client-side pipeline can actually parse
+    /// (`SRTParser`/`WebVTTParser`). Case-insensitive extension check.
+    private static let renderableSidecarExtensions: Set<String> = ["srt", "vtt"]
+
     /// SMB analog of `externalSubtitleTracks(from resolved:)` — there's no `resolved`
     /// stream list on the SMB path, only the filename-matched `[index: URL]` map + the
     /// resolver's `[index: label]`. Builds the same `.jellyfinStream`-id, client-rendered
     /// external tracks (so `selectSubtitleTrack` → `activateSidecarSubtitle` → the overlay
     /// path works identically) with the resolver's labels and the file extension as detail.
     /// Ordered by index for a stable menu.
+    ///
+    /// Filtered to `renderableSidecarExtensions`: the resolver's filename matcher also
+    /// surfaces ASS/SSA sidecars (no client renderer yet — `SubtitleOverlayView` only
+    /// parses SRT/VTT, so a selected ASS/SSA track would draw zero cues), but `subtitleURLs`
+    /// itself stays unfiltered so a future VLC-native slaving task can still see those URLs.
     private static func externalSubtitleTracks(urls: [Int: URL], labels: [Int: String]) -> [SubtitleTrack] {
-        urls.keys.sorted().map { index in
-            let url = urls[index]
-            let format = url?.pathExtension.uppercased()
-            let detail = format.map { $0.isEmpty ? "External" : "\($0) · External" } ?? "External"
+        urls.keys.sorted().compactMap { index -> SubtitleTrack? in
+            guard let url = urls[index],
+                  renderableSidecarExtensions.contains(url.pathExtension.lowercased())
+            else { return nil }
+            let format = url.pathExtension.uppercased()
+            let detail = format.isEmpty ? "External" : "\(format) · External"
             return SubtitleTrack(
                 id: .jellyfinStream(index),
                 displayName: labels[index] ?? "Subtitle \(index + 1)",
