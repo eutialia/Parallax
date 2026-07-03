@@ -250,9 +250,12 @@ struct SMBPlaybackStartTests {
 
     @Test("stop() tears the SMB session down cleanly: subtitleURLs cleared, no reporting")
     func stopTearsDownCleanly() async throws {
+        let suite = "SMBPlaybackStartTests.stopTearsDownCleanly"
+        let (store, defaults) = try makeResumeStore(suite: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
-        let vm = makeVM(reporting: reporting, engine: engine)
+        let vm = makeVM(reporting: reporting, engine: engine, smbResumeStore: store)
 
         let subURL = URL(string: "file:///tmp/Example.en.srt")!
         await vm.start(smbItem: smbItem(subtitleURLs: [0: subURL]))
