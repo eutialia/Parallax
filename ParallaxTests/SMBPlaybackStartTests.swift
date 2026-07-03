@@ -25,7 +25,8 @@ struct SMBPlaybackStartTests {
         reporting: StubPlaybackReporting,
         engine: FakePlaybackEngine,
         audioSession: any AudioSessionControlling = NoopAudioSession(),
-        subtitleFetch: @escaping @Sendable (URL) async -> Data? = { _ in nil }
+        subtitleFetch: @escaping @Sendable (URL) async -> Data? = { _ in nil },
+        smbResumeStore: SMBResumeStore = .shared
     ) -> PlayerViewModel {
         let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
         let builder = DeviceProfileBuilder(probe: probe)
@@ -38,24 +39,36 @@ struct SMBPlaybackStartTests {
             },
             engineFactory: { _ in engine },
             audioSession: audioSession,
-            subtitleFetch: subtitleFetch
+            subtitleFetch: subtitleFetch,
+            smbResumeStore: smbResumeStore
         )
+    }
+
+    /// Isolated defaults per test — mirrors `SMBResumeStoreTests`' hygiene so these tests
+    /// never touch `UserDefaults.standard`.
+    private func makeResumeStore(suite: String) throws -> (store: SMBResumeStore, defaults: UserDefaults) {
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defaults.removePersistentDomain(forName: suite)
+        return (SMBResumeStore(defaults: defaults), defaults)
     }
 
     private func smbItem(
         url: String = "smb://nas.local/Media/Movies/Example.mkv",
         title: String = "Example",
+        itemID: ItemID = ItemID(rawValue: "smb-test-item"),
         vlcOptions: [String] = [":smb-user=alice", ":smb-pwd=secret", ":smb-domain=WORKGROUP"],
         subtitleURLs: [Int: URL] = [:],
-        subtitleLabels: [Int: String] = [:]
+        subtitleLabels: [Int: String] = [:],
+        hasTrustworthyDuration: Bool = true
     ) -> SMBPlaybackItem {
         SMBPlaybackItem(
-            itemID: ItemID(rawValue: "smb-test-item"),
+            itemID: itemID,
             url: URL(string: url)!,
             title: title,
             vlcOptions: vlcOptions,
             subtitleURLs: subtitleURLs,
-            subtitleLabels: subtitleLabels
+            subtitleLabels: subtitleLabels,
+            hasTrustworthyDuration: hasTrustworthyDuration
         )
     }
 
@@ -258,6 +271,63 @@ struct SMBPlaybackStartTests {
         // A session that never reported start must never report stop.
         #expect(await reporting.events.isEmpty)
         #expect(await reporting.stoppedEncodings.isEmpty)
+    }
+
+    // MARK: - Local resume vs an untrusted (estimated) duration
+
+    @Test("an untrusted duration never lets the 95%-complete rule clear a real resume position")
+    func untrustedDurationSurvivesNearEndSave() async throws {
+        let suite = "SMBPlaybackStartTests.untrustedDurationSurvivesNearEndSave"
+        let (store, defaults) = try makeResumeStore(suite: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let vm = makeVM(reporting: reporting, engine: engine, smbResumeStore: store)
+        let id = ItemID(rawValue: "smb-untrusted-duration")
+
+        // An incomplete/still-downloading file: VLCKitEngine synthesizes a numeric duration
+        // from its read-rate estimate, so `hasKnownDuration` reads true even though the
+        // length isn't real. Position sits at 98.3% of that estimate — the shape that would
+        // trip the store's 95%-complete clear if the duration were trusted.
+        await vm.start(smbItem: smbItem(itemID: id, hasTrustworthyDuration: false))
+        engine.push(.playing(
+            position: CMTime(seconds: 5_900, preferredTimescale: 1),
+            duration: CMTime(seconds: 6_000, preferredTimescale: 1),
+            buffered: nil
+        ))
+        try await Task.sleep(for: .milliseconds(50))
+
+        // stop()'s final save is unthrottled and inline-awaited — deterministic to assert
+        // straight after, no throttle-window race.
+        await vm.stop()
+
+        let resumed = try #require(await store.resumeTime(for: id))
+        #expect(abs(CMTimeGetSeconds(resumed) - 5_900) < 0.001)
+    }
+
+    @Test("a trusted duration DOES let the 95%-complete rule clear the resume position (counterpart)")
+    func trustedDurationClearsNearEndSave() async throws {
+        let suite = "SMBPlaybackStartTests.trustedDurationClearsNearEndSave"
+        let (store, defaults) = try makeResumeStore(suite: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let vm = makeVM(reporting: reporting, engine: engine, smbResumeStore: store)
+        let id = ItemID(rawValue: "smb-trusted-duration")
+
+        // Identical position/duration shape, but a proven-complete file this time — the
+        // 95%-complete rule is meant to fire here (a finished film restarts from the top).
+        await vm.start(smbItem: smbItem(itemID: id, hasTrustworthyDuration: true))
+        engine.push(.playing(
+            position: CMTime(seconds: 5_900, preferredTimescale: 1),
+            duration: CMTime(seconds: 6_000, preferredTimescale: 1),
+            buffered: nil
+        ))
+        try await Task.sleep(for: .milliseconds(50))
+
+        await vm.stop()
+
+        #expect(await store.resumeTime(for: id) == nil)
     }
 
     // MARK: - start(resolvingSMB:) — resolve under the veil

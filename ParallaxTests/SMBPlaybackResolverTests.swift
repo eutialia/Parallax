@@ -81,9 +81,20 @@ struct SMBPlaybackResolverTests {
 
     private func makeResolver(
         keychain: FakeKeychain = FakeKeychain(),
-        lister: StubSMBLister
+        lister: StubSMBLister,
+        resumeStore: SMBResumeStore = .shared
     ) -> SMBPlaybackResolver {
-        SMBPlaybackResolver(keychain: keychain) { _, _ in lister }
+        var resolver = SMBPlaybackResolver(keychain: keychain) { _, _ in lister }
+        resolver.resumeStore = resumeStore
+        return resolver
+    }
+
+    /// Isolated defaults per test — mirrors `SMBResumeStoreTests`' hygiene so these tests
+    /// never touch `UserDefaults.standard`.
+    private func makeResumeStore(suite: String) throws -> (store: SMBResumeStore, defaults: UserDefaults) {
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defaults.removePersistentDomain(forName: suite)
+        return (SMBResumeStore(defaults: defaults), defaults)
     }
 
     // MARK: - URL
@@ -222,11 +233,13 @@ struct SMBPlaybackResolverTests {
 
     @Test("startTime is nil when the local resume store has no entry")
     func startTimeNilWithoutStoredResume() async throws {
+        let suite = "SMBPlaybackResolverTests.startTimeNilWithoutStoredResume"
+        let (store, defaults) = try makeResumeStore(suite: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
         let lister = StubSMBLister(entries: [])
-        let resolver = makeResolver(lister: lister)
+        let resolver = makeResolver(lister: lister, resumeStore: store)
         let item = makeItem()
         let ref = makeRef()
-        await SMBResumeStore.shared.clear(item.id)
 
         let result = try await resolver.resolve(item, ref: ref)
 
@@ -235,18 +248,18 @@ struct SMBPlaybackResolverTests {
 
     @Test("startTime comes from the local resume store when it holds a position")
     func startTimeFromStoredResume() async throws {
+        let suite = "SMBPlaybackResolverTests.startTimeFromStoredResume"
+        let (store, defaults) = try makeResumeStore(suite: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
         let lister = StubSMBLister(entries: [])
-        let resolver = makeResolver(lister: lister)
-        // Distinct path → distinct ItemID: tests run in parallel, and sharing the
-        // no-entry test's key through the shared store would race.
+        let resolver = makeResolver(lister: lister, resumeStore: store)
         let item = makeItem(path: "Movies/Resumable.mkv")
         let ref = makeRef()
-        await SMBResumeStore.shared.save(
+        await store.save(
             position: CMTime(seconds: 300, preferredTimescale: 600),
             duration: CMTime(seconds: 7200, preferredTimescale: 600),
             for: item.id
         )
-        defer { Task { await SMBResumeStore.shared.clear(item.id) } }
 
         let result = try await resolver.resolve(item, ref: ref)
 

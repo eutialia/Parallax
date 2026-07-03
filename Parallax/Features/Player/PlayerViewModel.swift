@@ -342,6 +342,9 @@ final class PlayerViewModel {
     /// Fetches sidecar subtitle bytes. Injectable so tests feed canned WebVTT
     /// without a network round-trip; production reads the authed VTT URL.
     private let subtitleFetch: @Sendable (URL) async -> Data?
+    /// The local resume store SMB progress beats persist into. Injectable so tests read/write
+    /// an isolated suite-backed store instead of `UserDefaults.standard`.
+    private let smbResumeStore: SMBResumeStore
     /// Persists a track pick into the user's server-side language preferences
     /// (PlaybackInfoService.rememberTrackSelection in production). Defaulted to
     /// a no-op so tests and previews don't need the wiring.
@@ -438,6 +441,12 @@ final class PlayerViewModel {
     /// which clears the stored position and must keep `stop()`'s final save from
     /// resurrecting it).
     private var smbItemID: ItemID?
+    /// Whether the current SMB session's `currentDuration` is a real container length rather
+    /// than VLCKitEngine's read-rate estimate for an incomplete file (`SMBPlaybackItem.hasTrustworthyDuration`,
+    /// stashed on `start(smbItem:)`). Gates `SMBResumeStore`'s ≥95%-complete clear off when false — an
+    /// estimate must never be trusted to wipe real progress. Reset to `true` alongside every
+    /// `smbItemID` clear so a later Jellyfin/SMB session never inherits a stale false.
+    private var smbHasTrustworthyDuration = true
     /// Last time an SMB resume position was persisted — throttles the `.playing`/`.paused`
     /// beat writes to one per ~10s, mirroring the Jellyfin progress-report cadence.
     private var lastSMBResumeWrite: Date = .distantPast
@@ -470,7 +479,8 @@ final class PlayerViewModel {
         rememberTrackSelection: @escaping @Sendable (TrackSelectionUpdate) async -> Void = { _ in },
         fetchSegments: @escaping @Sendable (ItemID) async -> [MediaSegment] = { _ in [] },
         fetchAdjacent: @escaping @Sendable (ItemID, ItemID) async -> AdjacentEpisodes = { _, _ in .none },
-        keepaliveInterval: Duration = .seconds(30)
+        keepaliveInterval: Duration = .seconds(30),
+        smbResumeStore: SMBResumeStore = .shared
     ) {
         self.deviceProfileBuilder = deviceProfileBuilder
         self.playbackInfo = playbackInfo
@@ -483,6 +493,7 @@ final class PlayerViewModel {
         self.fetchSegments = fetchSegments
         self.fetchAdjacent = fetchAdjacent
         self.keepaliveInterval = keepaliveInterval
+        self.smbResumeStore = smbResumeStore
     }
 
     isolated deinit {
@@ -786,6 +797,9 @@ final class PlayerViewModel {
         // The local-resume key for this session: progress beats + stop()'s final write
         // persist positions under it, exactly where the resolver's startTime came from.
         smbItemID = smbItem.itemID
+        // Whether currentDuration will be real or an estimate — gates the resume store's
+        // 95%-complete clear (see the property doc).
+        smbHasTrustworthyDuration = smbItem.hasTrustworthyDuration
         do {
             do {
                 try await audioSession.activate()
@@ -853,18 +867,19 @@ final class PlayerViewModel {
 
     /// Persists the current SMB position at most every ~10s — the local mirror of the
     /// Jellyfin progress-report cadence, shared by the `.playing` and `.paused` beat arms.
-    /// The duration only rides along when it's real (`hasKnownDuration`): an incomplete
-    /// file plays with an `.indefinite`/estimated length, and the store's 95%-finished
-    /// rule must never clear progress against a guess. Fire-and-forget into the store
-    /// actor so a beat never blocks on UserDefaults.
+    /// The duration only rides along when it's both real (`hasKnownDuration`) AND TRUSTED
+    /// (`smbHasTrustworthyDuration`): an incomplete file can play with a NUMERIC but
+    /// ESTIMATED length (VLCKitEngine's fileSize×time/readBytes guess), and the store's
+    /// 95%-finished rule must never clear real progress against that guess. Fire-and-forget
+    /// into the store actor so a beat never blocks on UserDefaults.
     private func saveSMBResumeThrottled() {
         guard let smbItemID else { return }
         guard Date.now.timeIntervalSince(lastSMBResumeWrite) >= 10 else { return }
         lastSMBResumeWrite = .now
         let position = currentPosition
-        let duration = hasKnownDuration ? currentDuration : nil
+        let duration = (hasKnownDuration && smbHasTrustworthyDuration) ? currentDuration : nil
         Task {
-            await SMBResumeStore.shared.save(position: position, duration: duration, for: smbItemID)
+            await smbResumeStore.save(position: position, duration: duration, for: smbItemID)
         }
     }
 
@@ -1037,12 +1052,13 @@ final class PlayerViewModel {
         if let smbItemID {
             self.smbItemID = nil
             if CMTimeGetSeconds(currentPosition) > 0 {
-                await SMBResumeStore.shared.save(
+                await smbResumeStore.save(
                     position: currentPosition,
-                    duration: hasKnownDuration ? currentDuration : nil,
+                    duration: (hasKnownDuration && smbHasTrustworthyDuration) ? currentDuration : nil,
                     for: smbItemID
                 )
             }
+            smbHasTrustworthyDuration = true
         }
         lastSMBResumeWrite = .distantPast
         stateTask?.cancel()
@@ -1647,7 +1663,8 @@ final class PlayerViewModel {
             // expects PlaybackStart before any Progress. Mirrors the .playing branch's gate.
             // The `if let resolved` also skips the SMB path, which has no server session —
             // it persists the pause point locally instead (same throttle; a pause right
-            // before dismissal is covered by stop()'s unconditional final save).
+            // before dismissal is covered by stop()'s final save, gated only on a nonzero
+            // position — see stop()).
             if let resolved, didReportStart {
                 await playbackInfo.reportProgress(beat(position: position, isPaused: true, from: resolved))
             } else if resolved == nil, smbItemID != nil {
@@ -1706,7 +1723,8 @@ final class PlayerViewModel {
             // can't resurrect the position this just cleared.
             if let smbItemID {
                 self.smbItemID = nil
-                await SMBResumeStore.shared.clear(smbItemID)
+                smbHasTrustworthyDuration = true
+                await smbResumeStore.clear(smbItemID)
             }
             await reportStoppedIfNeeded()
             // Deferred onto a fresh task so the in-flight `.ended` beat unwinds the engine's

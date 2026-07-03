@@ -20,6 +20,8 @@ struct SMBPlaybackResolver {
     var makeLister: @Sendable (_ ref: SMBServerRef, _ password: String) -> any SMBLister = { ref, password in
         AMSMB2Lister(host: ref.data.host, username: ref.data.username, password: password, domain: ref.data.domain)
     }
+    /// Injectable so tests read/write an isolated suite-backed store instead of `UserDefaults.standard`.
+    var resumeStore: SMBResumeStore = .shared
 
     /// Resolves a browsed SMB `Item` into a ready-to-play `SMBPlaybackItem`.
     ///
@@ -68,7 +70,7 @@ struct SMBPlaybackResolver {
 
         // Local resume: SMB has no server-side progress store, so the offset comes from
         // the on-device store (nil = fresh start). Same key the VM saves beats under.
-        let startTime = await SMBResumeStore.shared.resumeTime(for: item.id)
+        let startTime = await resumeStore.resumeTime(for: item.id)
 
         if useBridge {
             // The reader is handed to the bridge and owned by it from here — the cleanup
@@ -95,6 +97,9 @@ struct SMBPlaybackResolver {
                 subtitleURLs: subtitleURLs,
                 subtitleLabels: subtitleLabels,
                 fileSizeBytes: item.sizeBytes,
+                // Bridge route requires a probe-proven complete file (route(probe:sizeBytes:)'s
+                // bridgeEligible gate) — AVKit reads the container's own duration atom, no estimate.
+                hasTrustworthyDuration: true,
                 hints: hints,
                 cleanup: { await bridge.stop(); await reader.disconnect() }
             )
@@ -123,6 +128,10 @@ struct SMBPlaybackResolver {
             subtitleURLs: subtitleURLs,
             subtitleLabels: subtitleLabels,
             fileSizeBytes: item.sizeBytes,
+            // VLC route: trustworthy only when the probe ran AND proved the file complete — an
+            // unproven/incomplete file may synthesize its duration from the read-rate estimate
+            // (VLCKitEngine.effectiveDurationMs), which SMBResumeStore's 95% clear must never trust.
+            hasTrustworthyDuration: probeResult?.isComplete == true,
             hints: hints,
             cleanup: nil
         )

@@ -40,6 +40,15 @@ struct SMBPlaybackItem: Sendable {
     /// for an incomplete/still-downloading file whose container length never resolves (no trailing
     /// moov atom). Nil when the size is unknown.
     let fileSizeBytes: Int64?
+    /// Whether the VM's `currentDuration` will reflect a REAL container length rather than
+    /// VLCKitEngine's fileSize×time/readBytes read-rate estimate (`VLCKitEngine.effectiveDurationMs`).
+    /// `hasKnownDuration` is true for both — it only tests "is the duration numeric?" — so this bit
+    /// is the only signal that distinguishes a synthesized guess from a proven length. `false` gates
+    /// `SMBResumeStore`'s ≥95%-complete clear off: an estimate is low-biased against readBytes lagging
+    /// the actual playhead, and clearing real progress against a guess would silently wipe a resume
+    /// point. True on the bridge route (AVKit reads the container's own duration atom) and when the
+    /// VLC route's probe proved the file complete; false on an unproven/incomplete VLC-route file.
+    let hasTrustworthyDuration: Bool
     /// The routing hints the resolver's probe produced: `scheme "http"` (+ container/codecs) for a
     /// bridged AVKit file, or `scheme "smb"` for the VLC route. Drives `EngineSelector` in the VM.
     let hints: PlaybackHints
@@ -57,6 +66,9 @@ struct SMBPlaybackItem: Sendable {
         subtitleURLs: [Int: URL] = [:],
         subtitleLabels: [Int: String] = [:],
         fileSizeBytes: Int64? = nil,
+        // Defaults true: every existing call site (both production and test) predates the estimate
+        // signal and means "a real duration" — only the resolver's VLC-route build passes false.
+        hasTrustworthyDuration: Bool = true,
         hints: PlaybackHints = PlaybackHints(
             scheme: "smb", container: nil, videoCodec: nil, audioCodec: nil, subtitleFormats: []
         ),
@@ -70,6 +82,7 @@ struct SMBPlaybackItem: Sendable {
         self.subtitleURLs = subtitleURLs
         self.subtitleLabels = subtitleLabels
         self.fileSizeBytes = fileSizeBytes
+        self.hasTrustworthyDuration = hasTrustworthyDuration
         self.hints = hints
         self.cleanup = cleanup
     }
