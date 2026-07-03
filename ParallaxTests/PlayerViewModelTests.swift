@@ -698,6 +698,86 @@ struct PlayerViewModelTests {
         #expect(engine.calls.last == "pause")                       // …then re-paused for the paused scrub
     }
 
+    @Test("scrub commit supersession: a second out-of-buffer re-anchor issued while the first is still resolving wins — newest target, no stale strand")
+    func commitScrubSeekReanchorSupersedesNewestWins() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let builder = DeviceProfileBuilder(probe: FakeCapabilityProbe(hdr: .none, audioOutput: .stereo))
+        let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
+        let reencode = TranscodeDelivery(
+            isVideoDirect: false, isAudioDirect: true,
+            videoCodec: "h264", audioCodec: "ac3", bitrate: nil,
+            transcodeReasons: ["VideoCodecNotSupported"]
+        )
+
+        // Gate the FIRST re-anchor's resolve (target A = 3000s) open until the SECOND
+        // commitScrubSeek (target B = 5000s) has run and superseded it. Deterministic —
+        // NO Task.sleep: `firstReanchorEntered` signals the drain is parked mid-reload, and
+        // `releaseFirstReanchor` unparks resolve #A only after B has enqueued behind it.
+        let firstReanchorEntered = AsyncStream<Void>.makeStream()
+        let releaseFirstReanchor = AsyncStream<Void>.makeStream()
+        nonisolated(unsafe) var resolveStarts: [CMTime?] = []
+        let vm = PlayerViewModel(
+            deviceProfileBuilder: builder,
+            playbackInfo: reporting,
+            resolve: { _, _, start, _, _ in
+                resolveStarts.append(start)
+                // Only the target-A re-anchor parks; the initial start (nil) and the
+                // target-B re-anchor pass straight through.
+                if let start, CMTimeGetSeconds(start) == 3000 {
+                    firstReanchorEntered.continuation.yield(())
+                    firstReanchorEntered.continuation.finish()
+                    for await _ in releaseFirstReanchor.stream { break }   // park until released
+                }
+                return resolved
+            },
+            engineFactory: { _ in engine },
+            audioSession: NoopAudioSession(),
+            fetchDelivery: { _ in reencode },
+            deliveryProbeDelay: .milliseconds(10)
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+        let loadsAfterStart = engine.loadedAssets.count
+        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
+                             duration: CMTime(seconds: 7200, preferredTimescale: 600), buffered: nil))
+        try await Task.sleep(for: .milliseconds(80))
+        #expect(vm.transcodeDelivery?.isVideoDirect == false)
+
+        // Both targets are outside the buffer → both take the re-anchor branch.
+        engine.bufferedRange = 0...120
+        let targetA = CMTime(seconds: 3000, preferredTimescale: 600)
+        let targetB = CMTime(seconds: 5000, preferredTimescale: 600)
+
+        // First commit runs on its own MainActor task; it parks inside resolve(A) with
+        // `isReanchoring == true`, holding the single-flight drain open.
+        let first = Task { @MainActor in await vm.commitScrubSeek(to: targetA, resume: true) }
+        for await _ in firstReanchorEntered.stream { break }   // wait until the drain is parked
+
+        // Second commit lands WHILE the first re-anchor is still resolving. seek(B) sees
+        // `isReanchoring` and hands B to the drain's pending slot instead of an engine.seek
+        // — it must supersede A, not strand it. This returns immediately (no reload here).
+        await vm.commitScrubSeek(to: targetB, resume: true)
+
+        // Unpark resolve(A); the drain finishes A's reload, then loops onto the newer B.
+        releaseFirstReanchor.continuation.yield(())
+        releaseFirstReanchor.continuation.finish()
+        await first.value
+
+        // (a) The drain SETTLED on the newest target: the last resolve/reload is at B, not A.
+        #expect(CMTimeGetSeconds((resolveStarts.last ?? nil) ?? .zero) == 5000)
+        #expect(resolveStarts.compactMap { $0.map(CMTimeGetSeconds) } == [3000, 5000])   // A first, then B
+        // (b) Engine outcome is consistent with B and never stranded on A: two clean
+        // reloads (A then B) and NO in-stream drift seek to either stale target — the
+        // landing target lives in the resolve `start` arg asserted above (the fake resolve
+        // returns a fixed asset, so loadedAssets can't re-prove it).
+        #expect(engine.loadedAssets.count == loadsAfterStart + 2)
+        #expect(!engine.calls.contains("seek(3000.0)"))
+        #expect(!engine.calls.contains("seek(5000.0)"))
+        // (c) resume:true on BOTH commits → the final reload force-resumes and nothing
+        // re-pauses it: playback ends playing, not stranded paused.
+        #expect(engine.calls.last == "play")
+    }
+
     @Test("delivery re-fetches after a track switch — burn-in can flip a video-copy remux to a re-encode")
     func deliveryRefetchesOnTrackSwitch() async throws {
         let reporting = StubPlaybackReporting()
