@@ -160,7 +160,7 @@ public actor SMBHTTPBridge {
         var buffer = Data()
         let terminator = Data([0x0D, 0x0A, 0x0D, 0x0A]) // CRLFCRLF
         while buffer.count < Self.maxHeadBytes {
-            let (chunk, isComplete) = try await receive(connection, maximumLength: Self.maxHeadBytes)
+            let (chunk, isComplete) = try await receive(connection, maximumLength: Self.maxHeadBytes - buffer.count)
             if let chunk, !chunk.isEmpty {
                 buffer.append(chunk)
                 if let found = buffer.range(of: terminator) {
