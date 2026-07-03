@@ -7,6 +7,28 @@ import ParallaxCore
 import ParallaxJellyfin
 import ParallaxPlayback
 
+/// The active SMB/local session's resume-tracking state — see `PlayerViewModel.smbSession`.
+/// Existence ⟺ there's a live SMB session with an id (non-optional `itemID`); Jellyfin
+/// sessions leave it nil. Cleared as ONE value via `clearSMBSession()`.
+private struct SMBSessionState {
+    /// The playing item's identity — the `SMBResumeStore` key progress beats persist under.
+    /// Set from `SMBPlaybackItem.itemID` in `start(smbItem:)`.
+    var itemID: ItemID
+    /// Whether `currentDuration` is a real container length rather than VLCKitEngine's
+    /// read-rate estimate for an incomplete file. Gates the store's ≥95%-complete clear OFF
+    /// when false — an estimate must never wipe real progress. Reset with the whole session,
+    /// so a later Jellyfin/SMB session can't inherit a stale false. (`hasTrustworthyDuration`.)
+    var hasTrustworthyDuration: Bool
+    /// Last time a resume position was persisted — throttles the `.playing`/`.paused` beat
+    /// writes to one per ~10s, mirroring the Jellyfin progress-report cadence.
+    var lastResumeWrite: Date = .distantPast
+    /// The in-flight throttled save spawned by `saveSMBResumeThrottled`, cancelled and
+    /// replaced on each new save. A stale save must not outrun a terminal write: `stop()` and
+    /// `.ended` await it (via `clearSMBSession()`) before their own save/clear, so a delayed
+    /// beat can never land on the store actor AFTER the terminal write and resurrect a resume.
+    var resumeSaveTask: Task<Void, Never>?
+}
+
 @Observable
 @MainActor
 final class PlayerViewModel {
@@ -494,26 +516,17 @@ final class PlayerViewModel {
     /// connection and a LAN-reachable file URL, so it must die with the session — invoked +
     /// nil'd in `stop()`, `tearDownEngine()`, and every `start(smbItem:)` failure catch.
     private var smbCleanup: (@Sendable () async -> Void)?
-    /// The playing SMB item's identity — the `SMBResumeStore` key progress beats persist
-    /// under. Nil for Jellyfin sessions (the server owns their resume). Set in
-    /// `start(smbItem:)`, nil'd where session state clears (`stop()`, and `.ended`,
-    /// which clears the stored position and must keep `stop()`'s final save from
-    /// resurrecting it).
-    private var smbItemID: ItemID?
-    /// Whether the current SMB session's `currentDuration` is a real container length rather
-    /// than VLCKitEngine's read-rate estimate for an incomplete file (`SMBPlaybackItem.hasTrustworthyDuration`,
-    /// stashed on `start(smbItem:)`). Gates `SMBResumeStore`'s ≥95%-complete clear off when false — an
-    /// estimate must never be trusted to wipe real progress. Reset to `true` alongside every
-    /// `smbItemID` clear so a later Jellyfin/SMB session never inherits a stale false.
-    private var smbHasTrustworthyDuration = true
-    /// Last time an SMB resume position was persisted — throttles the `.playing`/`.paused`
-    /// beat writes to one per ~10s, mirroring the Jellyfin progress-report cadence.
-    private var lastSMBResumeWrite: Date = .distantPast
-    /// The in-flight throttled save spawned by `saveSMBResumeThrottled`, if any — cancelled
-    /// and replaced on every new save. A stale save must not outrun a terminal write: `stop()`
-    /// and `.ended` both await it before their own save/clear so a delayed beat can never land
-    /// on the store actor AFTER the terminal write and resurrect a resume point on a finished file.
-    private var smbResumeSaveTask: Task<Void, Never>?
+    /// The active SMB/local session's resume-tracking state, folded into one value so the
+    /// "reset the trust bit wherever the item id clears" invariant is STRUCTURAL: clearing
+    /// the session (`clearSMBSession()`) drops the id, the trust bit, and the throttle clock
+    /// together, and awaits the in-flight save — they can't drift apart. Nil for Jellyfin
+    /// sessions (the server owns their resume) and until `start(smbItem:)` sets it.
+    ///
+    /// The SMB HTTP-bridge cleanup (`smbCleanup`) is deliberately NOT folded in: it's armed
+    /// earlier (during resolve, before the id exists) and torn down later (in `stop()`, AFTER
+    /// `engine.teardown()`, so the engine finishes reading the bridge), so a single-clear path
+    /// couldn't reproduce its ordering — it keeps its own lifecycle above.
+    private var smbSession: SMBSessionState?
     private var currentAudioStreamIndex: Int?
     private var currentSubtitleStreamIndex: Int?
 
@@ -880,12 +893,11 @@ final class PlayerViewModel {
         // itself — must be able to tear it down. `stop()` is the backstop (onDisappear always
         // calls it); the `.failed` catches below clean up explicitly for the no-exit failures.
         smbCleanup = smbItem.cleanup
-        // The local-resume key for this session: progress beats + stop()'s final write
-        // persist positions under it, exactly where the resolver's startTime came from.
-        smbItemID = smbItem.itemID
-        // Whether currentDuration will be real or an estimate — gates the resume store's
-        // 95%-complete clear (see the property doc).
-        smbHasTrustworthyDuration = smbItem.hasTrustworthyDuration
+        // The local-resume session: progress beats + stop()'s final write persist positions
+        // under `itemID` (exactly where the resolver's startTime came from);
+        // `hasTrustworthyDuration` gates the store's 95%-complete clear (see the type doc).
+        smbSession = SMBSessionState(itemID: smbItem.itemID,
+                                     hasTrustworthyDuration: smbItem.hasTrustworthyDuration)
         do {
             do {
                 try await audioSession.activate()
@@ -954,20 +966,34 @@ final class PlayerViewModel {
     /// Persists the current SMB position at most every ~10s — the local mirror of the
     /// Jellyfin progress-report cadence, shared by the `.playing` and `.paused` beat arms.
     /// The duration only rides along when it's both real (`hasKnownDuration`) AND TRUSTED
-    /// (`smbHasTrustworthyDuration`): an incomplete file can play with a NUMERIC but
+    /// (`session.hasTrustworthyDuration`): an incomplete file can play with a NUMERIC but
     /// ESTIMATED length (VLCKitEngine's fileSize×time/readBytes guess), and the store's
     /// 95%-finished rule must never clear real progress against that guess. Fire-and-forget
     /// into the store actor so a beat never blocks on UserDefaults.
     private func saveSMBResumeThrottled() {
-        guard let smbItemID else { return }
-        guard Date.now.timeIntervalSince(lastSMBResumeWrite) >= 10 else { return }
-        lastSMBResumeWrite = .now
+        guard let session = smbSession else { return }
+        guard Date.now.timeIntervalSince(session.lastResumeWrite) >= 10 else { return }
+        smbSession?.lastResumeWrite = .now
         let position = currentPosition
-        let duration = (hasKnownDuration && smbHasTrustworthyDuration) ? currentDuration : nil
-        smbResumeSaveTask?.cancel()
-        smbResumeSaveTask = Task {
-            await smbResumeStore.save(position: position, duration: duration, for: smbItemID)
+        let duration = (hasKnownDuration && session.hasTrustworthyDuration) ? currentDuration : nil
+        let itemID = session.itemID
+        session.resumeSaveTask?.cancel()
+        smbSession?.resumeSaveTask = Task {
+            await smbResumeStore.save(position: position, duration: duration, for: itemID)
         }
+    }
+
+    /// The single teardown path for the SMB resume session: nils the whole value — dropping
+    /// the id, the trust bit, and the throttle clock together — BEFORE awaiting the in-flight
+    /// save, so a concurrent throttled beat can't spawn a new save during the await and the
+    /// terminal write that follows at the call site (`stop()` saves, `.ended` clears) can't be
+    /// outrun by a stale one. Idempotent: a nil session is a no-op. The caller captures the id
+    /// it needs FIRST, since this clears it. (The SMB bridge cleanup is separate — see
+    /// `tearDownSMBBridge`; it's torn down after engine teardown, not with the session.)
+    private func clearSMBSession() async {
+        guard let session = smbSession else { return }
+        smbSession = nil
+        await session.resumeSaveTask?.value
     }
 
     /// Resolve + load + play. Shared by first play (`start`) and a transcode
@@ -1142,21 +1168,21 @@ final class PlayerViewModel {
         // produced a beat (failed load, exit during resolve) must not wipe the stored
         // resume it was about to honor — the Jellyfin analog of reportStoppedIfNeeded's
         // didReportStart gate. Nil after: the session is over.
-        if let smbItemID {
-            self.smbItemID = nil
-            // A stale throttled save must not outrun this terminal write.
-            await smbResumeSaveTask?.value
-            smbResumeSaveTask = nil
+        if let session = smbSession {
+            // Capture before clearing — the terminal write below needs the id + trust bit.
+            let itemID = session.itemID
+            let trusted = session.hasTrustworthyDuration
+            // Clears the session (id + trust + throttle clock) and awaits a stale throttled
+            // save so it can't outrun this terminal write.
+            await clearSMBSession()
             if CMTimeGetSeconds(currentPosition) > 0 {
                 await smbResumeStore.save(
                     position: currentPosition,
-                    duration: (hasKnownDuration && smbHasTrustworthyDuration) ? currentDuration : nil,
-                    for: smbItemID
+                    duration: (hasKnownDuration && trusted) ? currentDuration : nil,
+                    for: itemID
                 )
             }
-            smbHasTrustworthyDuration = true
         }
-        lastSMBResumeWrite = .distantPast
         stateTask?.cancel()
         stateTask = nil
         keepaliveTask?.cancel()
@@ -1932,7 +1958,7 @@ final class PlayerViewModel {
                 } else {
                     await playbackInfo.reportProgress(beat(position: position, isPaused: false, from: resolved))
                 }
-            } else if smbItemID != nil {
+            } else if smbSession != nil {
                 saveSMBResumeThrottled()
             }
         case .paused(let position, let duration, let buffered):
@@ -1955,7 +1981,7 @@ final class PlayerViewModel {
             // position — see stop()).
             if let resolved, didReportStart {
                 await playbackInfo.reportProgress(beat(position: position, isPaused: true, from: resolved))
-            } else if resolved == nil, smbItemID != nil {
+            } else if resolved == nil, smbSession != nil {
                 saveSMBResumeThrottled()
             }
         case .buffering(let position, let duration, let buffered):
@@ -2006,16 +2032,14 @@ final class PlayerViewModel {
                 // in the gap before the dismiss lands.
                 playbackDidComplete = true
             }
-            // SMB mirror of the stop report: a finished file restarts fresh. Nil the id
-            // BEFORE clearing so stop()'s final save (the dismiss lands right after)
-            // can't resurrect the position this just cleared.
-            if let smbItemID {
-                self.smbItemID = nil
-                smbHasTrustworthyDuration = true
-                // A stale throttled save must not outrun this terminal write.
-                await smbResumeSaveTask?.value
-                smbResumeSaveTask = nil
-                await smbResumeStore.clear(smbItemID)
+            // SMB mirror of the stop report: a finished file restarts fresh. Clear the
+            // session (nil'ing the id) BEFORE the store clear so stop()'s final save (the
+            // dismiss lands right after) can't resurrect the position this just cleared;
+            // `clearSMBSession` also awaits a stale throttled save so it can't outrun it.
+            if let session = smbSession {
+                let itemID = session.itemID
+                await clearSMBSession()
+                await smbResumeStore.clear(itemID)
             }
             await reportStoppedIfNeeded()
             // Deferred onto a fresh task so the in-flight `.ended` beat unwinds the engine's
