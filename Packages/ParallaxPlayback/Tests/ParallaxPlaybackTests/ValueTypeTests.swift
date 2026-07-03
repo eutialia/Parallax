@@ -149,12 +149,10 @@ struct ValueTypeTests {
         let caps = PlaybackEngineCapabilities(
             supportsPiP: true,
             supportsVideoAirPlay: true,
-            supportsAudioAirPlay: true,
             supportsNowPlayingIntegration: true
         )
         #expect(caps.supportsPiP)
         #expect(caps.supportsVideoAirPlay)
-        #expect(caps.supportsAudioAirPlay)
         #expect(caps.supportsNowPlayingIntegration)
         #expect(caps == caps)
     }

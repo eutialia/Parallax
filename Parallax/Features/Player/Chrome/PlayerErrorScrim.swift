@@ -105,7 +105,7 @@ struct PlayerErrorScrim<Buttons: View>: View {
         PlayerErrorScrim(
             title: "Playback stopped",
             message: "Couldn't decode that file.",
-            details: "playback: decodeFailed\nffmpeg: hevc — concealing errors in frame 18342",
+            details: "playback: assetNotPlayable\nffmpeg: hevc — concealing errors in frame 18342",
             metrics: PlayerMetrics(width: 1280)
         ) {
             Button("Try again", systemImage: "arrow.clockwise") {}

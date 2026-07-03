@@ -27,7 +27,6 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     public nonisolated let capabilities = PlaybackEngineCapabilities(
         supportsPiP: true,
         supportsVideoAirPlay: false,
-        supportsAudioAirPlay: true,
         supportsNowPlayingIntegration: true
     )
 
@@ -124,7 +123,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
 
     /// Bounds a mid-playback stall the poll detects (see `stallDetector`). `player.isPlaying` reflects
     /// intent, not frames (VLCKit#578), so a network death leaves the poll emitting `.playing` over a
-    /// frozen clock forever — the honest-stall path arms this, and its expiry yields
+    /// frozen clock forever — armed when the stall detector trips, and its expiry yields
     /// `.failed(.networkStalled)`. `lazy` so the `onExpiry` closure can capture `self`. See `StallWatchdog`.
     private lazy var stallWatchdog = StallWatchdog { [weak self] in self?.handleStallTimeout() }
 
@@ -170,10 +169,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
 
     public override init() {
         _ = Self._eventsConfigured   // guarantee main-queue delegate delivery before the player exists
-        // Bounded buffer — see the AVKitEngine init for the rationale. `.bufferingNewest`
-        // keeps the freshest position plus any terminal beat; 32 ≈ 16s of 0.5s ticks, well
-        // beyond what the MainActor consumer ever queues, so nothing real is ever dropped.
-        let (stream, cont) = AsyncStream<PlaybackState>.makeStream(bufferingPolicy: .bufferingNewest(32))
+        let (stream, cont) = PlaybackStateStream.makeStream()
         self.state = stream
         self.continuation = cont
         self.player = VLCMediaPlayer()
@@ -190,7 +186,6 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         // consume the notification, so a finer cadence is just a fresher read (no flood).
         player.minimalTimePeriod = 100_000      // µs (0.1s) — below the interval so it can't gate it
         player.timeChangeUpdateInterval = 0.25  // s — 4×/s, finer than the 500ms poll
-        continuation.yield(.idle)
     }
 
     // MARK: - PlaybackEngine

@@ -12,7 +12,6 @@ struct AVKitEngineTests {
         #expect(engine.id == .avKit)
         #expect(engine.capabilities.supportsPiP)
         #expect(engine.capabilities.supportsVideoAirPlay)
-        #expect(engine.capabilities.supportsAudioAirPlay)
         #expect(engine.capabilities.supportsNowPlayingIntegration)
     }
 

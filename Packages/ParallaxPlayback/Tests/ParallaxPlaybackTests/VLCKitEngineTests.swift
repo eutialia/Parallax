@@ -41,12 +41,11 @@ struct VLCKitEngineTests {
         #expect(VLCKitEngine.shouldReassertRate(current: 1.4999, desired: 1.5) == false)  // float tolerance
     }
 
-    @Test("capabilities: supportsPiP true, supportsVideoAirPlay false, supportsAudioAirPlay true, supportsNowPlayingIntegration true")
+    @Test("capabilities: supportsPiP true, supportsVideoAirPlay false, supportsNowPlayingIntegration true")
     func capabilities() {
         let engine = VLCKitEngine()
         #expect(engine.capabilities.supportsPiP == true)
         #expect(engine.capabilities.supportsVideoAirPlay == false)
-        #expect(engine.capabilities.supportsAudioAirPlay == true)
         #expect(engine.capabilities.supportsNowPlayingIntegration == true)
     }
 

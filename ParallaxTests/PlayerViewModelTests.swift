@@ -2120,7 +2120,7 @@ struct PlayerViewModelTests {
         try await Task.sleep(for: .milliseconds(50))
         #expect(vm.isPlaying == true)
 
-        engine.push(.failed(.decodeFailed))
+        engine.push(.failed(.assetNotPlayable))
         try await Task.sleep(for: .milliseconds(50))
         #expect(vm.isPlaying == false)
         #expect(vm.phase == .failed(.playback(.decodeFailed)))

@@ -7,20 +7,16 @@ public struct PlaybackEngineCapabilities: Sendable, Hashable {
     public let supportsPiP: Bool
     /// Video (not just audio) can be sent to an AirPlay receiver.
     public let supportsVideoAirPlay: Bool
-    /// Audio can be routed to an AirPlay receiver.
-    public let supportsAudioAirPlay: Bool
     /// The engine drives the system Now Playing info and remote command center.
     public let supportsNowPlayingIntegration: Bool
 
     public init(
         supportsPiP: Bool,
         supportsVideoAirPlay: Bool,
-        supportsAudioAirPlay: Bool,
         supportsNowPlayingIntegration: Bool
     ) {
         self.supportsPiP = supportsPiP
         self.supportsVideoAirPlay = supportsVideoAirPlay
-        self.supportsAudioAirPlay = supportsAudioAirPlay
         self.supportsNowPlayingIntegration = supportsNowPlayingIntegration
     }
 }

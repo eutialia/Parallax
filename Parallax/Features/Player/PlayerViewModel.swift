@@ -2234,7 +2234,7 @@ final class PlayerViewModel {
 
     private static func map(_ error: PlaybackError) -> AppError {
         switch error {
-        case .assetNotPlayable, .decodeFailed:
+        case .assetNotPlayable:
             return .playback(.decodeFailed)
         case .networkStalled:
             return .playback(.resourceUnavailable)

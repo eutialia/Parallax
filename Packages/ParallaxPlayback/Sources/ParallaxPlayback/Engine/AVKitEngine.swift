@@ -9,7 +9,6 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     public nonisolated let capabilities = PlaybackEngineCapabilities(
         supportsPiP: true,
         supportsVideoAirPlay: true,
-        supportsAudioAirPlay: true,
         supportsNowPlayingIntegration: true
     )
 
@@ -48,8 +47,9 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     /// Bounds a mid-playback stall: a network death after the first frame parks the player in
     /// `.waitingToPlayAtSpecifiedRate` (→ `.buffering`) retrying a dead socket with no AVFoundation
     /// timeout — the SMB bridge makes this eternal (it silently resets TCP on NAS loss and AVPlayer
-    /// retries the live listener forever). Armed by each `.buffering` emit, disarmed by any transport
-    /// beat / terminal state / detach; expiry yields `.failed(.networkStalled)`. `lazy` so the
+    /// retries the live listener forever). Armed on entering `.waitingToPlayAtSpecifiedRate`,
+    /// disarmed by any transport beat / terminal state / detach; expiry yields
+    /// `.failed(.networkStalled)`. `lazy` so the
     /// `onExpiry` closure can capture `self`. See `StallWatchdog`.
     private lazy var stallWatchdog = StallWatchdog { [weak self] in self?.handleStallTimeout() }
     /// Loads the media-selection inventory off the actor. Held so `teardown()`
@@ -65,17 +65,10 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
 
     public init(tuning: StartupTuning = .systemDefault) {
         self.tuning = tuning
-        // Bounded so a wedged consumer can't grow the buffer without limit.
-        // `.bufferingNewest` keeps the freshest beats — the latest position plus any
-        // terminal .ready/.ended/.failed (nothing follows those, so they're never the
-        // dropped-oldest) — and 32 ≈ 16s of 0.5s position beats, far beyond what the
-        // MainActor consumer ever queues. It only sheds stale intermediate positions
-        // under a real stall, which the next beat supersedes anyway.
-        let (stream, continuation) = AsyncStream<PlaybackState>.makeStream(bufferingPolicy: .bufferingNewest(32))
+        let (stream, continuation) = PlaybackStateStream.makeStream()
         self.state = stream
         self.continuation = continuation
         super.init()
-        continuation.yield(.idle)
         // Unlike the item-status KVO (delivered on the main run loop), AVPlayer
         // flips timeControlStatus from its own internal queue — hop to main
         // instead of assuming isolation.
