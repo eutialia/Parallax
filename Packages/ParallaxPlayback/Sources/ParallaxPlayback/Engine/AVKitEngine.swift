@@ -39,6 +39,11 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     private var timeControlObservation: NSKeyValueObservation?
     private var timeObserverToken: Any?
     private var endObserver: NSObjectProtocol?
+    /// `AVPlayerItem.playbackStalledNotification` — per Apple's docs this posts ONLY when
+    /// `automaticallyWaitsToMinimizeStalling` is `false` (the `fastStartEager` tuning
+    /// profile). See `handleStalledNotification` for why the KVO-driven arm above misses
+    /// exactly this case (final-review I1).
+    private var stalledObserver: NSObjectProtocol?
     /// Surfaces a `.failed` if the item never becomes playable within the deadline — `load()` never
     /// throws here (every AVFoundation setter is non-throwing), so without this a dead URL / stuck
     /// segment fetch would strand the player on the loading scrim forever. Armed in `play()`,
@@ -177,6 +182,19 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         ) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.handleEnded()
+            }
+        }
+
+        // The false-waits stall signal (see `handleStalledNotification`) — Apple docs warn
+        // the system "may post this notification on a thread other than the one you use to
+        // register the observer", so hop to main exactly like the KVO callbacks above.
+        stalledObserver = NotificationCenter.default.addObserver(
+            forName: AVPlayerItem.playbackStalledNotification,
+            object: item,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.handleStalledNotification()
             }
         }
 
@@ -370,6 +388,10 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
             NotificationCenter.default.removeObserver(endObserver)
             self.endObserver = nil
         }
+        if let stalledObserver {
+            NotificationCenter.default.removeObserver(stalledObserver)
+            self.stalledObserver = nil
+        }
     }
 
     public func debugSnapshot() async -> PlaybackDebugInfo {
@@ -528,6 +550,39 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         loadWatchdog.disarm()
         stallWatchdog.disarm()
         continuation.yield(.ended)
+    }
+
+    /// The false-waits counterpart of the `.waitingToPlayAtSpecifiedRate` arm in
+    /// `handleTimeControlChange`. Per Apple's docs, under
+    /// `automaticallyWaitsToMinimizeStalling == false` (the `fastStartEager` tuning
+    /// profile — see `StartupTuning`) a mid-stream stall flips `timeControlStatus` to
+    /// `.paused` instead of `.waitingToPlayAtSpecifiedRate`, so that KVO arm never fires
+    /// and `StallWatchdog` silently disarms — the eager profile defeats stall detection
+    /// entirely (final-review I1). `playbackStalledNotification` posts ONLY in that
+    /// false-waits mode, so it's the one signal left to catch it.
+    ///
+    /// Deliberately does NOT try to suppress or relabel the `.paused` beat that follows
+    /// (from `pause()` or the periodic/KVO observers) — that beat can be a genuine user
+    /// pause, and this handler has no way to tell the two apart. Instead it emits
+    /// `.buffering` immediately; the VM renders that as the stall scrim, and it wins the
+    /// UI race against the later `.paused` beat because `StallWatchdog`'s deadline (and
+    /// the VM's own debounce) key off the most recent beat, not the first.
+    private func handleStalledNotification() {
+        guard let item = currentItem, item.status == .readyToPlay else { return }
+        emitStallBuffering(for: item)
+    }
+
+    /// The emission body of `handleStalledNotification`, split out as its testable seam
+    /// (mirrors `applyTuning`'s seam in `StartupTuningTests`): a real
+    /// `playbackStalledNotification` only fires on a genuine network stall, which a unit
+    /// test can't produce, so the test drives this directly against a bare
+    /// `AVPlayerItem` and asserts the `.buffering` beat.
+    func emitStallBuffering(for item: AVPlayerItem) {
+        loadWatchdog.disarm()   // the notification firing at all means the transport is alive
+        let position = player.currentTime()
+        let buffered = Self.bufferedEnd(of: item, at: position)
+        stallWatchdog.arm()   // false-waits stall — bound it exactly like the KVO arm does
+        continuation.yield(.buffering(position: position, duration: item.duration, buffered: buffered))
     }
 
     private func emitTimeUpdate(at time: CMTime) {

@@ -18,7 +18,16 @@ struct DebugInfoOverlay: View {
     let vm: PlayerViewModel
     let onClose: () -> Void
 
+    /// Single instance (final-review M3) — a picker write and a label read must hit the
+    /// same `UserDefaults`-backed seam, and three inline `StartupTuningStore()` values
+    /// were harmless (all wrap `.standard`) but pointless.
+    private let startupTuningStore = StartupTuningStore()
+
     @State private var snapshot: PlaybackDebugInfo = .empty
+    /// Mirrors `snapshot`'s polling pattern (final-review M1): the label below read the
+    /// store inline, which only reflected a pick once *something else* re-rendered the
+    /// view — polled here instead so the profile row is honest on its own.
+    @State private var startupProfile: StartupProfile = .system
 
     /// Readable at couch distance on the tvOS canvas; dense on touch screens.
     private var fontSize: CGFloat {
@@ -48,9 +57,12 @@ struct DebugInfoOverlay: View {
         .preferredColorScheme(.dark)
         .environment(\.colorScheme, .dark)
         .task {
-            // Poll the engine's live snapshot; cancelled when the HUD disappears.
+            // Poll the engine's live snapshot; cancelled when the HUD disappears. The
+            // profile rides the same loop (final-review M1) so a pick from the menu below
+            // shows up within one tick instead of waiting on an unrelated re-render.
             while !Task.isCancelled {
                 snapshot = await vm.currentDebugSnapshot()
+                startupProfile = startupTuningStore.selected
                 try? await Task.sleep(for: .milliseconds(750))
             }
         }
@@ -93,12 +105,14 @@ struct DebugInfoOverlay: View {
 
     private var startupMetricLabel: String {
         let ms = vm.startupMillis.map { "\($0) ms" } ?? "—"
-        return "\(ms) (\(StartupTuningStore().selected.displayName))"
+        return "\(ms) (\(startupProfile.displayName))"
     }
 
     /// Writing the store has no live effect on the running session — `AppDependencies`'
     /// engine factory reads it only at engine-construction time, so a pick here takes
-    /// effect on the NEXT playback session, not this one (caption says so).
+    /// effect on the NEXT playback session, not this one (caption says so). The label
+    /// updates immediately (not waiting on the next poll tick) since the pick happens
+    /// right here.
     private var startupProfilePicker: some View {
         HStack(spacing: 8) {
             Text("profile")
@@ -107,11 +121,12 @@ struct DebugInfoOverlay: View {
             Menu {
                 ForEach(StartupProfile.allCases, id: \.self) { profile in
                     Button(profile.displayName) {
-                        StartupTuningStore().selected = profile
+                        startupTuningStore.selected = profile
+                        startupProfile = profile
                     }
                 }
             } label: {
-                Text(StartupTuningStore().selected.displayName)
+                Text(startupProfile.displayName)
             }
             .tint(.white)
             Text("· applies next session")

@@ -19,6 +19,14 @@ public struct StartupTuning: Sendable, Equatable {
     /// the system default). Note: `AVKitEngine.play()` resumes via
     /// `playImmediately(atRate:)`, which already bypasses this gate for the initial
     /// play — this knob only affects post-seek/mid-stream rebuffering behavior.
+    ///
+    /// Setting this `false` (the `fastStartEager` profile) changes how a mid-stream
+    /// stall reports itself: per Apple's docs, `timeControlStatus` flips to `.paused`
+    /// instead of `.waitingToPlayAtSpecifiedRate`, which would silently defeat
+    /// `AVKitEngine`'s KVO-driven `StallWatchdog` arm. `AVKitEngine` covers that case by
+    /// also observing `AVPlayerItem.playbackStalledNotification` — Apple's docs confirm
+    /// it posts ONLY when this property is `false` — so the eager profile stays covered
+    /// (see `AVKitEngine.handleStalledNotification`, final-review I1).
     public let automaticallyWaitsToMinimizeStalling: Bool?
 
     public static let systemDefault = StartupTuning(

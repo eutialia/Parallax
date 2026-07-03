@@ -1794,6 +1794,11 @@ final class PlayerViewModel {
         deliveryProbeTask?.cancel()
         deliveryProbeTask = nil
         transcodeDelivery = nil
+        // A stale "exhausted" from the outgoing session must not carry over: the debug row
+        // gates on this flag when `transcodeDelivery` is nil, and without the reset it would
+        // show "no delivery info" for the whole reload window instead of "probing…" until
+        // `startDeliveryProbe` re-arms on the new session's first `.playing` beat.
+        deliveryProbeExhausted = false
 
         do {
             try await beginPlayback(
