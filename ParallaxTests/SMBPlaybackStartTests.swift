@@ -333,6 +333,32 @@ struct SMBPlaybackStartTests {
         #expect(await store.resumeTime(for: id) == nil)
     }
 
+    @Test("a stale throttled save can't outrun .ended's terminal clear")
+    func throttledSaveNeverOutrunsEndedClear() async throws {
+        let suite = "SMBPlaybackStartTests.throttledSaveNeverOutrunsEndedClear"
+        let (store, defaults) = try makeResumeStore(suite: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let vm = makeVM(reporting: reporting, engine: engine, smbResumeStore: store)
+        let id = ItemID(rawValue: "smb-save-vs-clear")
+
+        await vm.start(smbItem: smbItem(itemID: id))
+
+        // The throttle window is wide open (first beat), so `.playing` spawns the untracked
+        // save `.ended` must now await. Before the fix, the save Task's actor hop could lose
+        // a race against `.ended`'s clear() — landing after it and resurrecting this position.
+        engine.push(.playing(
+            position: CMTime(seconds: 100, preferredTimescale: 1),
+            duration: CMTime(seconds: 6_000, preferredTimescale: 1),
+            buffered: nil
+        ))
+        engine.push(.ended)
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(await store.resumeTime(for: id) == nil)
+    }
+
     // MARK: - start(resolvingSMB:) — resolve under the veil
 
     @Test("resolving start: the closure's item is loaded + played, no Jellyfin reporting")

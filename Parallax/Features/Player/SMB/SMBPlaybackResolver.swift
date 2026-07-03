@@ -96,7 +96,6 @@ struct SMBPlaybackResolver {
                 startTime: startTime,
                 subtitleURLs: subtitleURLs,
                 subtitleLabels: subtitleLabels,
-                fileSizeBytes: item.sizeBytes,
                 // Bridge route requires a probe-proven complete file (route(probe:sizeBytes:)'s
                 // bridgeEligible gate) — AVKit reads the container's own duration atom, no estimate.
                 hasTrustworthyDuration: true,
@@ -127,7 +126,6 @@ struct SMBPlaybackResolver {
             startTime: startTime,
             subtitleURLs: subtitleURLs,
             subtitleLabels: subtitleLabels,
-            fileSizeBytes: item.sizeBytes,
             // VLC route: trustworthy only when the probe ran AND proved the file complete — an
             // unproven/incomplete file may synthesize its duration from the read-rate estimate
             // (VLCKitEngine.effectiveDurationMs), which SMBResumeStore's 95% clear must never trust.

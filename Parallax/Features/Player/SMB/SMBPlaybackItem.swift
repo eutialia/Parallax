@@ -36,10 +36,6 @@ struct SMBPlaybackItem: Sendable {
     /// synthetic external track instead of showing a bare index. Keyed the same as
     /// `subtitleURLs`; a missing key falls back to a generated name.
     let subtitleLabels: [Int: String]
-    /// Total file size in bytes from the SMB directory listing. Lets the engine estimate a runtime
-    /// for an incomplete/still-downloading file whose container length never resolves (no trailing
-    /// moov atom). Nil when the size is unknown.
-    let fileSizeBytes: Int64?
     /// Whether the VM's `currentDuration` will reflect a REAL container length rather than
     /// VLCKitEngine's fileSize×time/readBytes read-rate estimate (`VLCKitEngine.effectiveDurationMs`).
     /// `hasKnownDuration` is true for both — it only tests "is the duration numeric?" — so this bit
@@ -65,7 +61,6 @@ struct SMBPlaybackItem: Sendable {
         startTime: CMTime? = nil,
         subtitleURLs: [Int: URL] = [:],
         subtitleLabels: [Int: String] = [:],
-        fileSizeBytes: Int64? = nil,
         // Defaults true: every existing call site (both production and test) predates the estimate
         // signal and means "a real duration" — only the resolver's VLC-route build passes false.
         hasTrustworthyDuration: Bool = true,
@@ -81,7 +76,6 @@ struct SMBPlaybackItem: Sendable {
         self.startTime = startTime
         self.subtitleURLs = subtitleURLs
         self.subtitleLabels = subtitleLabels
-        self.fileSizeBytes = fileSizeBytes
         self.hasTrustworthyDuration = hasTrustworthyDuration
         self.hints = hints
         self.cleanup = cleanup

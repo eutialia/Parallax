@@ -450,6 +450,11 @@ final class PlayerViewModel {
     /// Last time an SMB resume position was persisted — throttles the `.playing`/`.paused`
     /// beat writes to one per ~10s, mirroring the Jellyfin progress-report cadence.
     private var lastSMBResumeWrite: Date = .distantPast
+    /// The in-flight throttled save spawned by `saveSMBResumeThrottled`, if any — cancelled
+    /// and replaced on every new save. A stale save must not outrun a terminal write: `stop()`
+    /// and `.ended` both await it before their own save/clear so a delayed beat can never land
+    /// on the store actor AFTER the terminal write and resurrect a resume point on a finished file.
+    private var smbResumeSaveTask: Task<Void, Never>?
     private var currentAudioStreamIndex: Int?
     private var currentSubtitleStreamIndex: Int?
 
@@ -878,7 +883,8 @@ final class PlayerViewModel {
         lastSMBResumeWrite = .now
         let position = currentPosition
         let duration = (hasKnownDuration && smbHasTrustworthyDuration) ? currentDuration : nil
-        Task {
+        smbResumeSaveTask?.cancel()
+        smbResumeSaveTask = Task {
             await smbResumeStore.save(position: position, duration: duration, for: smbItemID)
         }
     }
@@ -1051,6 +1057,9 @@ final class PlayerViewModel {
         // didReportStart gate. Nil after: the session is over.
         if let smbItemID {
             self.smbItemID = nil
+            // A stale throttled save must not outrun this terminal write.
+            await smbResumeSaveTask?.value
+            smbResumeSaveTask = nil
             if CMTimeGetSeconds(currentPosition) > 0 {
                 await smbResumeStore.save(
                     position: currentPosition,
@@ -1724,6 +1733,9 @@ final class PlayerViewModel {
             if let smbItemID {
                 self.smbItemID = nil
                 smbHasTrustworthyDuration = true
+                // A stale throttled save must not outrun this terminal write.
+                await smbResumeSaveTask?.value
+                smbResumeSaveTask = nil
                 await smbResumeStore.clear(smbItemID)
             }
             await reportStoppedIfNeeded()
