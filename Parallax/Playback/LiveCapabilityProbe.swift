@@ -1,4 +1,6 @@
 import AVFoundation
+import CoreMedia
+import VideoToolbox
 import UIKit
 import ParallaxCore
 import ParallaxPlayback
@@ -18,9 +20,30 @@ struct LiveCapabilityProbe: CapabilityProbe {
         // 4K tone-map re-encode it couldn't sustain in realtime — endless
         // buffering with -12889 segment timeouts (device-diagnosed 2026-06-10).
         // Per TN3145, AVPlayer tone-maps HDR optimally on any Apple device, so
-        // delivering HDR10 whenever the device is eligible is safe. Dolby Vision
-        // is still deliberately NOT claimed.
-        AVPlayer.eligibleForHDRPlayback ? .hdr10 : .none
+        // delivering HDR10 whenever the device is eligible is safe.
+        guard AVPlayer.eligibleForHDRPlayback else { return .none }
+        var support: HDRSupport = .hdr10
+
+        // Dolby Vision (bare profile 5, no fallback layer — see
+        // DeviceProfileTranslator.codecProfiles). The obvious API,
+        // `AVPlayer.availableHDRModes` (`AVPlayerHDRMode.dolbyVision`), is
+        // deprecated as of iOS/tvOS 26 in favor of `eligibleForHDRPlayback` —
+        // confirmed via the installed iOS 26 SDK header (AVPlayer.h): "Use
+        // eligibleForHDRPlayback instead". That replacement collapses to a
+        // single generic "some HDR is presentable" bit and can't distinguish
+        // Dolby Vision from HDR10/HLG, so it can't stand in for the old
+        // DV-specific check. `VTIsHardwareDecodeSupported` for the Dolby
+        // Vision HEVC codec type is NOT deprecated and IS cross-platform (iOS
+        // 11+ / tvOS 11+ per the VideoToolbox header) — it answers "can this
+        // silicon decode a DV bitstream at all," which combined with the
+        // HDR-eligible-display gate above is the closest available proxy for
+        // "safe to declare bare DOVI to the server." It can't tell a
+        // DV-capable panel from a generic-HDR one, but there is no narrower
+        // public signal post-deprecation, on either iOS or tvOS.
+        if VTIsHardwareDecodeSupported(kCMVideoCodecType_DolbyVisionHEVC) {
+            support.insert(.dolbyVision)
+        }
+        return support
     }
 
     nonisolated func audioOutput() -> AudioOutputCapability {
