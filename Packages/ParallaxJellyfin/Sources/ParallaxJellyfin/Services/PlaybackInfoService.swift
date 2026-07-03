@@ -156,8 +156,11 @@ public actor PlaybackInfoService {
     }
 
     /// Builds an authed sidecar WebVTT URL per TEXT subtitle stream. Image subs
-    /// (PGS/VobSub) are skipped — the server can't deliver them as VTT. These are
-    /// fetched + rendered client-side to dodge the in-manifest WebVTT drift.
+    /// (PGS/VobSub) are skipped — they're not sidecars, the server burns them into
+    /// the video instead (`DeviceProfileTranslator` declares `.encode` for them).
+    /// Text subs are fetched + rendered client-side to dodge the in-manifest WebVTT
+    /// drift; image subs still appear in `mediaStreams` below (unfiltered) so the
+    /// transcode menu can offer them as an opt-in burn-in pick.
     private static func subtitleStreamURLs(
         streams: [MediaStreamInfo],
         itemID: String,

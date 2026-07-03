@@ -145,17 +145,45 @@ final class PlayerViewModel {
         isStalled = false
     }
 
-    /// A transcode audio switch that failed AFTER playback safely resumed on the
+    /// Which menu a track switch/failure concerns — audio and (since PGS burn-in)
+    /// subtitle switches share the same re-resolve + failure-scrim machinery, so
+    /// this is the one seam between the two instead of two near-identical copies.
+    enum TrackPick: Equatable {
+        case audio(AudioTrack)
+        case subtitle(SubtitleTrack)
+
+        var id: TrackID {
+            switch self {
+            case .audio(let track): track.id
+            case .subtitle(let track): track.id
+            }
+        }
+        var displayName: String {
+            switch self {
+            case .audio(let track): track.displayName
+            case .subtitle(let track): track.displayName
+            }
+        }
+        /// The scrim title's noun ("Couldn't switch audio" / "…subtitles").
+        var kindLabel: String {
+            switch self {
+            case .audio: "audio"
+            case .subtitle: "subtitles"
+            }
+        }
+    }
+
+    /// A transcode track switch that failed AFTER playback safely resumed on the
     /// previous track (the design's silent fallback). Drives the "Couldn't switch
-    /// audio" scrim: `retryFailedTrackSwitch()` re-attempts the same track,
-    /// `dismissTrackSwitchFailure()` keeps the current one. Nil when no failed
+    /// audio"/"…subtitles" scrim: `retryFailedTrackSwitch()` re-attempts the same
+    /// pick, `dismissTrackSwitchFailure()` keeps the current one. Nil when no failed
     /// switch is pending. Fatal failures (engine lost mid-reload) never set this —
     /// they go through `phase = .failed` and the general error scrim.
     struct TrackSwitchFailure {
         /// The track the user asked for — the retry target.
-        let requested: AudioTrack
+        let requested: TrackPick
         /// The track playback stayed on. Nil when the previous selection is unknown.
-        let fallback: AudioTrack?
+        let fallback: TrackPick?
         let error: AppError
     }
     private(set) var trackSwitchFailure: TrackSwitchFailure?
@@ -164,7 +192,10 @@ final class PlayerViewModel {
     func retryFailedTrackSwitch() async {
         guard let failure = trackSwitchFailure else { return }
         trackSwitchFailure = nil
-        await selectAudioTrack(failure.requested)
+        switch failure.requested {
+        case .audio(let track): await selectAudioTrack(track)
+        case .subtitle(let track): await selectSubtitleTrack(track)
+        }
     }
 
     /// Keep the current (fallback) track and drop the failure scrim.
@@ -1298,7 +1329,11 @@ final class PlayerViewModel {
                 // Playback resumed on the previous track: restore the checkmark and
                 // surface the failure scrim (retry / keep current track).
                 selectedAudioTrack = previous
-                trackSwitchFailure = TrackSwitchFailure(requested: track, fallback: previous, error: error)
+                trackSwitchFailure = TrackSwitchFailure(
+                    requested: .audio(track),
+                    fallback: previous.map(TrackPick.audio),
+                    error: error
+                )
             case .failed:
                 break   // phase == .failed — the general error scrim owns the surface
             }
@@ -1315,6 +1350,43 @@ final class PlayerViewModel {
         // still points at the outgoing session, so a sidecar fetch would read the
         // old session's subtitle URLs.
         guard !isStartingPlayback, !isSwitchingTracks else { return }
+        // A burned-in (image) subtitle has no sidecar to fetch — the server can only
+        // deliver it baked into the video, which costs a full re-encode. Route through
+        // the same re-resolve `selectAudioTrack` uses instead of the sidecar-fetch
+        // path below; the picked index lands as `subtitleStreamIndex` on the next
+        // PlaybackInfo POST and the server burns it in from there.
+        if let track, track.isBurnedIn {
+            // Re-picking the already-burned-in track is a no-op — it would cost a
+            // pointless re-resolve/reload for a stream already playing. (A failed
+            // switch restores `selectedSubtitleTrack` to the fallback first, so the
+            // scrim's retry still passes this guard.)
+            guard track != selectedSubtitleTrack else { return }
+            guard let index = track.id.jellyfinStreamIndex else { return }
+            let previous = selectedSubtitleTrack
+            selectedSubtitleTrack = track
+            trackSwitchFailure = nil
+            // No overlay renders a burn-in pick — drop whatever text sidecar was
+            // showing before the new (burned-in) stream arrives.
+            clearSidecarSubtitle()
+            switch await switchTranscodeTrack(audioStreamIndex: currentAudioStreamIndex, subtitleStreamIndex: index) {
+            case .completed:
+                persistTrackSelection(.subtitles(languageCode: track.languageCode))
+            case .abandoned:
+                selectedSubtitleTrack = previous
+                restoreSidecarSubtitle(previous)
+            case .fellBack(let error):
+                selectedSubtitleTrack = previous
+                restoreSidecarSubtitle(previous)
+                trackSwitchFailure = TrackSwitchFailure(
+                    requested: .subtitle(track),
+                    fallback: previous.map(TrackPick.subtitle),
+                    error: error
+                )
+            case .failed:
+                break   // phase == .failed — the general error scrim owns the surface
+            }
+            return
+        }
         // A `.jellyfinStream` id is an external/sidecar text sub we render ourselves
         // (transcode: every text sub; direct-play: the external ones) — fetch + draw it
         // via SubtitleOverlayView with the engine's own subtitle held off. An embedded
@@ -1353,6 +1425,16 @@ final class PlayerViewModel {
         loadSidecarSubtitle(streamIndex: index)
     }
 
+    /// Re-arms the client overlay for the track a failed/abandoned burn-in switch
+    /// fell back to. `selectSubtitleTrack`'s burn-in branch clears the sidecar
+    /// optimistically before the re-resolve; when that re-resolve doesn't land, the
+    /// still-mounted previous session needs its text overlay back (a bare Off/burn-in
+    /// track needs nothing — there's no sidecar to fetch either way).
+    private func restoreSidecarSubtitle(_ track: SubtitleTrack?) {
+        guard let track, let index = track.id.jellyfinStreamIndex, !track.isBurnedIn else { return }
+        loadSidecarSubtitle(streamIndex: index)
+    }
+
     /// Fire-and-forget preference write-back: the service gates on the user's
     /// Remember-Selections flags and swallows failures, so this can ride every
     /// successful pick without touching playback.
@@ -1367,12 +1449,14 @@ final class PlayerViewModel {
     /// subtitle mode, PlayDefaultAudioTrack) into PlaybackInfo's default stream
     /// indices — the server is the single implementation of that logic. On the
     /// transcode path the audio default is baked into the stream; the subtitle
-    /// default is surfaced here as the initial sidecar selection. Text subs
-    /// only: image subs never enter `availableSubtitleTracks`, so a PGS default
-    /// quietly stays off (burn-in is a later phase).
+    /// default is surfaced here as the initial sidecar selection. Text subs only:
+    /// burn-in is opt-in, so a PGS/VobSub default (however the server picked it)
+    /// is never auto-applied — that would silently force a re-encode (and
+    /// possibly HDR→SDR) on first play with no user action. The user can still
+    /// pick it explicitly from the menu.
     private func applyTranscodeDefaultSubtitle(from resolved: ResolvedPlayback) async {
         guard let index = resolved.defaultSubtitleStreamIndex,
-              let track = availableSubtitleTracks.first(where: { $0.id == .jellyfinStream(index) })
+              let track = availableSubtitleTracks.first(where: { $0.id == .jellyfinStream(index) && !$0.isBurnedIn })
         else { return }
         await activateSidecarSubtitle(track, index: index)
     }
@@ -1887,9 +1971,12 @@ final class PlayerViewModel {
     /// source stream index — `selectAudioTrack`/`selectSubtitleTrack` feed it
     /// straight back to the server as `AudioStreamIndex`/`SubtitleStreamIndex`.
     ///
-    /// Image subtitles (PGS/VobSub) are dropped: the server can only deliver them
-    /// by burning into the video, which this phase deliberately doesn't do. Only
-    /// text subs (carried in the HLS manifest) are offered until burn-in lands.
+    /// Image subtitles (PGS/VobSub) are INCLUDED here, marked `isBurnedIn` —
+    /// `DeviceProfileTranslator` declares them `.encode`, so the only way the
+    /// server can deliver one is burned into the video. Picking one in
+    /// `selectSubtitleTrack` re-resolves (like an audio switch), never happens by
+    /// default (`applyTranscodeDefaultSubtitle` skips burned-in defaults — opt-in
+    /// only), and forces a full re-encode (possibly HDR→SDR; jellyfin-tizen#202).
     private func populateTranscodeMenus(from resolved: ResolvedPlayback) {
         availableAudioTracks = resolved.mediaStreams
             .filter { $0.kind == .audio }
@@ -1909,7 +1996,7 @@ final class PlayerViewModel {
                 )
             }
         availableSubtitleTracks = resolved.mediaStreams
-            .filter { $0.kind == .subtitle && !$0.isImageSubtitle }
+            .filter { $0.kind == .subtitle }
             .map(Self.subtitleTrack(from:))
 
         selectedAudioTrack = availableAudioTracks.first { $0.id == currentAudioStreamIndex.map(TrackID.jellyfinStream) }
@@ -2012,17 +2099,28 @@ final class PlayerViewModel {
 
     /// Maps a server subtitle stream to a menu `SubtitleTrack` with a `.jellyfinStream` id
     /// (fed straight back to the server as `SubtitleStreamIndex` / to the sidecar loader).
-    /// Shared by the transcode menu (all text subs) and the direct-play external-subs
-    /// append (external only) so the two never drift in how a track is labeled.
+    /// Shared by the transcode menu (all text subs, plus opt-in image subs) and the
+    /// direct-play external-subs append (external TEXT only — `externalSubtitleTracks`
+    /// filters image subs out before this ever sees one) so the two never drift in how
+    /// a track is labeled.
     private static func subtitleTrack(from stream: MediaStreamInfo) -> SubtitleTrack {
-        SubtitleTrack(
+        // Image subs only ever reach here via the transcode menu, where picking one
+        // burns it into the video server-side instead of playing as "Embedded"/
+        // "External" — the format alone is the detail line (what it's made of);
+        // the "Burn-in" badge (below, `isBurnedIn`) carries the consequence, same
+        // split as the audio menu's codec detail + "→ AAC" transcode badge.
+        let detail = stream.isImageSubtitle
+            ? TrackDisplay.subtitleFormatName(stream.codec)
+            : stream.trackDetailLabel
+        return SubtitleTrack(
             id: .jellyfinStream(stream.index),
             displayName: stream.menuLabel,
             languageCode: stream.language,
             isForced: stream.isForced,
-            detailLabel: stream.trackDetailLabel,
+            detailLabel: detail,
             isExternal: stream.isExternal,
-            isSDH: stream.isHearingImpaired
+            isSDH: stream.isHearingImpaired,
+            isBurnedIn: stream.isImageSubtitle
         )
     }
 

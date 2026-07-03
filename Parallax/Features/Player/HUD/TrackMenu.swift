@@ -225,6 +225,7 @@ struct SubtitleTrackMenu: View {
     let onSelect: (SubtitleTrack?) -> Void
 
     private var anyExternal: Bool { tracks.contains(where: \.isExternal) }
+    private var anyBurnedIn: Bool { tracks.contains(where: \.isBurnedIn) }
 
     /// The Off row's focus key — it has no `TrackID`.
     static let offFocusKey: AnyHashable = "subtitles-off"
@@ -256,12 +257,19 @@ struct SubtitleTrackMenu: View {
                     HStack(spacing: 6) {
                         if track.isForced { MenuMiniBadge(text: "Forced", prominent: true) }
                         if track.isSDH { MenuMiniBadge(text: "SDH", prominent: true) }
+                        // Quiet by default — the badge marks the exceptional pick,
+                        // the one that costs a full re-encode (mirrors the audio
+                        // menu's "→ AAC" transcode badge).
+                        if track.isBurnedIn { MenuMiniBadge(text: "Burn-in", prominent: true) }
                     }
                 }
             }
         }
         if anyExternal {
             MenuFootnote(text: "External subtitles are matched by filename or fetched automatically.")
+        }
+        if anyBurnedIn {
+            MenuFootnote(text: "Image subtitles are burned into the video, which re-encodes the stream.")
         }
     }
 }
@@ -396,6 +404,16 @@ struct SpeedMenu: View {
                     detailLabel: "ASS · Embedded",
                     isExternal: false,
                     isSDH: false
+                ),
+                SubtitleTrack(
+                    id: .jellyfinStream(6),
+                    displayName: "German",
+                    languageCode: "deu",
+                    isForced: false,
+                    detailLabel: "PGS",
+                    isExternal: false,
+                    isSDH: false,
+                    isBurnedIn: true
                 ),
             ],
             selectedID: .jellyfinStream(4),

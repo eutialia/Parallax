@@ -377,7 +377,7 @@ struct PlayerViewModelTests {
 
         // Menus reflect the server's FULL track list, not the one-rendition manifest.
         #expect(vm.availableAudioTracks.count == 3)
-        #expect(vm.availableSubtitleTracks.count == 1)                  // PGS (image) sub filtered out — no burn-in this phase
+        #expect(vm.availableSubtitleTracks.count == 2)                  // text sub + opt-in PGS burn-in entry
         #expect(vm.selectedAudioTrack?.id == .jellyfinStream(3))        // server default audio
         // The server's preference-derived default subtitle IS applied on first
         // transcode play (sidecar render, no re-resolve) — the server only sets
@@ -411,6 +411,84 @@ struct PlayerViewModelTests {
         #expect(CMTimeGetSeconds(resolveCalls.last?.start ?? .zero) == 100)
         #expect(vm.selectedAudioTrack?.id == .jellyfinStream(4))
         #expect(engine.loadedAssets.count == 2)                         // engine reloaded
+    }
+
+    @Test("transcode: the PGS image sub is offered as an opt-in burn-in entry, labeled, and never auto-defaulted; the sidecar URL map still excludes it")
+    func transcodeMenuIncludesBurnInImageSubtitle() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
+        let builder = DeviceProfileBuilder(probe: probe)
+        // Point the server's own default AT the image sub — opt-in means this must
+        // NOT auto-apply (a surprise re-encode on first play with no user action).
+        let resolved = PlayerFixtures.resolvedMultiTrackTranscode(defaultSubtitleStreamIndex: 7)
+
+        let vm = PlayerViewModel(
+            deviceProfileBuilder: builder,
+            playbackInfo: reporting,
+            resolve: { _, _, _, _, _ in resolved },
+            engineFactory: { _ in engine },
+            audioSession: NoopAudioSession()
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+
+        let pgs = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(7) })
+        #expect(pgs.isBurnedIn)
+        // The format alone is the detail line; the menu's "Burn-in" badge (driven
+        // by `isBurnedIn`) carries the consequence — same split as the audio
+        // menu's codec detail + "→ AAC" transcode badge.
+        #expect(pgs.detailLabel == "PGS")
+
+        // Opt-in: the server-default pointed at the burn-in track, but nothing
+        // auto-selects it.
+        #expect(vm.selectedSubtitleTrack == nil)
+
+        // Not a sidecar: PlaybackInfoService never built a VTT URL for it.
+        #expect(resolved.subtitleStreamURLs[7] == nil)
+    }
+
+    @Test("transcode: picking the PGS burn-in entry re-resolves with that subtitleStreamIndex — no sidecar fetch")
+    func selectingBurnInSubtitleReResolves() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
+        let builder = DeviceProfileBuilder(probe: probe)
+        // No server default sub — isolates the explicit pick.
+        let resolved = PlayerFixtures.resolvedMultiTrackTranscode(defaultSubtitleStreamIndex: nil)
+
+        nonisolated(unsafe) var resolveCalls: [(audio: Int?, sub: Int?)] = []
+        nonisolated(unsafe) var fetchedURLs: [URL] = []
+        let vm = PlayerViewModel(
+            deviceProfileBuilder: builder,
+            playbackInfo: reporting,
+            resolve: { _, _, _, audioIdx, subIdx in
+                resolveCalls.append((audioIdx, subIdx))
+                return resolved
+            },
+            engineFactory: { _ in engine },
+            audioSession: NoopAudioSession(),
+            subtitleFetch: { url in fetchedURLs.append(url); return Data() }
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(
+            position: CMTime(seconds: 100, preferredTimescale: 600),
+            duration: CMTime(seconds: 7200, preferredTimescale: 600),
+            buffered: nil
+        ))
+        try await Task.sleep(for: .milliseconds(50))
+
+        let pgs = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(7) })
+        await vm.selectSubtitleTrack(pgs)
+
+        // The pick landed as `subtitleStreamIndex` on the re-resolve; audio rides
+        // along unchanged (the server default, index 3).
+        #expect(resolveCalls.count == 2)
+        #expect(resolveCalls.last?.audio == 3)
+        #expect(resolveCalls.last?.sub == 7)
+        #expect(vm.selectedSubtitleTrack?.id == .jellyfinStream(7))
+        #expect(engine.loadedAssets.count == 2)             // engine reloaded, like an audio switch
+        #expect(fetchedURLs.isEmpty)                        // burn-in: no client-side sidecar fetch
+        #expect(vm.activeSubtitleCues.isEmpty)               // no overlay — the server draws it into the video
     }
 
     @Test("transcode seek: in-buffer stays in-stream; out-of-buffer re-resolves a fresh aligned transcode at the target (jellyfin#15845 subtitle drift)")

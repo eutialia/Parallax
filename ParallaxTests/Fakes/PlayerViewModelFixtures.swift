@@ -224,7 +224,7 @@ enum PlayerFixtures {
                 audio(4, "Surround 5.1 - Japanese"),
                 audio(5, "Stereo - Japanese"),
                 sub(1, "Chinese", "zho"),                       // text (SubRip)
-                sub(7, "English - PGSSUB", "eng", "pgssub"),    // image — filtered out (burn-in only)
+                sub(7, "English - PGSSUB", "eng", "pgssub"),    // image — opt-in burn-in menu entry, no sidecar URL below
             ],
             defaultAudioStreamIndex: 3,
             defaultSubtitleStreamIndex: defaultSubtitleStreamIndex,

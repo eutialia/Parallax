@@ -532,17 +532,18 @@ struct PlayerView: View {
         #endif
     }
 
-    /// Non-fatal failure: an audio-track switch died but playback already fell back
-    /// to the previous track (the design's silent fallback) — this scrim is the loud
-    /// part, offering a retry. Mounted ABOVE the chrome so its buttons are tappable,
-    /// but its dim passes touches through, so the scrubber and menus stay live.
+    /// Non-fatal failure: an audio- or (PGS burn-in) subtitle-track switch died but
+    /// playback already fell back to the previous track (the design's silent
+    /// fallback) — this scrim is the loud part, offering a retry. Mounted ABOVE the
+    /// chrome so its buttons are tappable, but its dim passes touches through, so
+    /// the scrubber and menus stay live.
     @ViewBuilder
     private func trackSwitchFailureOverlay(
         _ failure: PlayerViewModel.TrackSwitchFailure, vm: PlayerViewModel
     ) -> some View {
         GeometryReader { geo in
             PlayerErrorScrim(
-                title: "Couldn't switch audio",
+                title: "Couldn't switch \(failure.requested.kindLabel)",
                 message: switchFailureMessage(failure),
                 metrics: .forSurface(geo.size)
             ) {

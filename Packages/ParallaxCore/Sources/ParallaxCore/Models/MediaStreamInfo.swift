@@ -153,9 +153,11 @@ public extension MediaStreamInfo {
     }
 
     /// An image-based subtitle (PGS / VobSub / DVD / DVB) — the server can only
-    /// deliver these by burning them into the video. Text formats (SubRip, ASS,
-    /// WebVTT…) ride along in the HLS manifest and need no burn-in, so only they
-    /// are offered on the transcode path until burn-in lands in a later phase.
+    /// deliver these by burning them into the video (never a client-side sidecar).
+    /// Text formats (SubRip, ASS, WebVTT…) ride along in the HLS manifest and need
+    /// no burn-in. On the transcode path an image sub is still offered — as an
+    /// explicit opt-in "Burn-in" pick (see `PlayerViewModel.populateTranscodeMenus`
+    /// and `selectSubtitleTrack`) — since picking one costs a full re-encode.
     var isImageSubtitle: Bool {
         guard kind == .subtitle, let codec = codec?.lowercased() else { return false }
         let imageMarkers = ["pgs", "vobsub", "dvdsub", "dvd_subtitle", "dvbsub", "dvb_subtitle", "xsub"]

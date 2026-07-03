@@ -267,11 +267,18 @@ struct DeviceProfileTranslatorTests {
         #expect(subs.contains { $0.format == "ass" && $0.method == .external })
     }
 
-    @Test("SubtitleProfiles include PGS external for VLC image-sub rendering")
-    func pgsExternalSubtitleProfile() {
+    @Test("SubtitleProfiles declare PGS as server-side burn-in (Encode) — .external can never match an image format")
+    func pgsEncodeSubtitleProfile() {
         let profile = DeviceProfileTranslator.deviceProfile(from: tieredCaps())
         let subs = profile.subtitleProfiles ?? []
-        #expect(subs.contains { $0.format == "pgs" && $0.method == .external })
+        #expect(subs.contains { $0.format == "pgs" && $0.method == .encode })
+    }
+
+    @Test("SubtitleProfiles declare VobSub as server-side burn-in (Encode) — .external can never match an image format")
+    func vobsubEncodeSubtitleProfile() {
+        let profile = DeviceProfileTranslator.deviceProfile(from: tieredCaps())
+        let subs = profile.subtitleProfiles ?? []
+        #expect(subs.contains { $0.format == "vobsub" && $0.method == .encode })
     }
 
     // MARK: — CodecProfiles (unchanged)

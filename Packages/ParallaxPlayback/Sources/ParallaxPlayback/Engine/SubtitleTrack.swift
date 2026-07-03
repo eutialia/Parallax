@@ -13,6 +13,12 @@ public struct SubtitleTrack: Sendable, Hashable {
     /// Hearing-impaired (SDH) track. Server wiring is deferred; defaults false so
     /// the menu can render the badge once `isHearingImpaired` is plumbed through.
     public let isSDH: Bool
+    /// An image subtitle (PGS/VobSub) offered on the transcode path: picking it
+    /// re-resolves the session with the server burning it into the video (no
+    /// client-side overlay — there's no sidecar for an image sub). Costs a full
+    /// re-encode and can flip an HDR source to SDR server-side, so the menu marks
+    /// it distinctly and the player never auto-selects one as a default.
+    public let isBurnedIn: Bool
 
     public init(
         id: TrackID,
@@ -21,7 +27,8 @@ public struct SubtitleTrack: Sendable, Hashable {
         isForced: Bool,
         detailLabel: String? = nil,
         isExternal: Bool = false,
-        isSDH: Bool = false
+        isSDH: Bool = false,
+        isBurnedIn: Bool = false
     ) {
         self.id = id
         self.displayName = displayName
@@ -30,5 +37,6 @@ public struct SubtitleTrack: Sendable, Hashable {
         self.detailLabel = detailLabel
         self.isExternal = isExternal
         self.isSDH = isSDH
+        self.isBurnedIn = isBurnedIn
     }
 }
