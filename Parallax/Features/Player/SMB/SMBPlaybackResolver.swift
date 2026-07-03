@@ -32,6 +32,7 @@ struct SMBPlaybackResolver {
 
         // Resolve sidecar subtitles (best-effort — failures don't abort playback).
         let subtitleURLs: [Int: URL]
+        let subtitleLabels: [Int: String]
         do {
             let (directory, filename) = splitPath(ctx.path)
             let lister = makeLister(ref, ctx.password)
@@ -45,9 +46,13 @@ struct SMBPlaybackResolver {
                 ($0.label, $0.url.lastPathComponent) < ($1.label, $1.url.lastPathComponent)
             }
             subtitleURLs = Dictionary(uniqueKeysWithValues: sorted.enumerated().map { ($0.offset, $0.element.url) })
+            // Same index keying as the URL map — the label survives so the subtitle menu
+            // can name each synthetic external track ("English" etc.) instead of "Track N".
+            subtitleLabels = Dictionary(uniqueKeysWithValues: sorted.enumerated().map { ($0.offset, $0.element.label) })
         } catch {
             logger.warning("SMB subtitle resolution failed for \(ctx.path, privacy: .public): \(error, privacy: .public)")
             subtitleURLs = [:]
+            subtitleLabels = [:]
         }
 
         // Probe the container so AVKit-decodable files can ride the HTTP bridge
@@ -83,6 +88,7 @@ struct SMBPlaybackResolver {
                 vlcOptions: [],                        // AVKit path: no VLC credentials in play
                 startTime: nil,
                 subtitleURLs: subtitleURLs,
+                subtitleLabels: subtitleLabels,
                 fileSizeBytes: item.sizeBytes,
                 hints: hints,
                 cleanup: { await bridge.stop(); await reader.disconnect() }
@@ -109,10 +115,41 @@ struct SMBPlaybackResolver {
             vlcOptions: ctx.vlcOptions,
             startTime: nil,
             subtitleURLs: subtitleURLs,
+            subtitleLabels: subtitleLabels,
             fileSizeBytes: item.sizeBytes,
             hints: hints,
             cleanup: nil
         )
+    }
+
+    /// Fetches the bytes of an `smb://` sidecar subtitle for the client-side overlay.
+    ///
+    /// The default `URLSession` `subtitleFetch` can't open `smb://`, so `PlayerView` routes the
+    /// SMB scheme here. Decodes the URL back to share + path (`SMBURL.parse`), reads the password
+    /// from the same Keychain slot `resolve` uses, opens a short-lived `SMBRandomAccessReader`,
+    /// and returns up to 4 MiB (a subtitle file larger than that isn't a subtitle file). Best-effort:
+    /// nil on any failure, logged at warning WITHOUT credentials (the path may be logged, matching
+    /// the reader's own precedent).
+    func subtitleData(for url: URL, ref: SMBServerRef) async -> Data? {
+        guard let (_, share, path) = SMBURL.parse(url) else {
+            logger.warning("SMB subtitle URL not decodable")
+            return nil
+        }
+        let passwordKey = KeychainKey<String>(account: ServerStore.tokenAccount(for: ref.id))
+        let password = (try? await keychain.read(passwordKey)) ?? ""
+        let reader = SMBRandomAccessReader(host: ref.data.host, username: ref.data.username,
+                                           password: password, domain: ref.data.domain,
+                                           share: share, path: path)
+        defer { Task { await reader.disconnect() } }
+        do {
+            let size = try await reader.fileSize
+            let capped = Int(min(size, 4 * 1024 * 1024))
+            guard capped > 0 else { return Data() }
+            return try await reader.read(offset: 0, length: capped)
+        } catch {
+            logger.warning("SMB subtitle read failed for \(path, privacy: .public): \(error, privacy: .public)")
+            return nil
+        }
     }
 
     /// Pure routing decision shared by `resolve` and its unit tests. Given the probe

@@ -26,4 +26,21 @@ public enum SMBURL {
         let tail = encPath.isEmpty ? encShare : "\(encShare)/\(encPath)"
         return URL(string: "smb://\(encHost)/\(tail)")
     }
+
+    /// Inverse of `make`: decodes an `smb://host/share/path` URL back into its parts.
+    ///
+    /// `URL.pathComponents` percent-decodes each component, so the literal share/path a
+    /// caller needs to re-open the file (`SMBRandomAccessReader`) come back verbatim — the
+    /// `Episode#1.mkv` / `Show?.mkv` names `make` encoded are restored, not re-truncated.
+    /// The first path segment is the share; the rest (joined with `/`) is the share-relative
+    /// path. Returns nil for a non-`smb` URL or one missing a share segment.
+    /// - Returns: `(host, share, path)` where `path` is empty for a share-root URL.
+    public static func parse(_ url: URL) -> (host: String, share: String, path: String)? {
+        guard url.scheme == "smb", let host = url.host(percentEncoded: false) else { return nil }
+        // pathComponents drops the leading "/" as its own "/" element: ["/", share, a, b].
+        let segments = url.pathComponents.filter { $0 != "/" }
+        guard let share = segments.first else { return nil }
+        let path = segments.dropFirst().joined(separator: "/")
+        return (host, share, path)
+    }
 }

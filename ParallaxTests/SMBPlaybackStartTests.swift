@@ -24,7 +24,8 @@ struct SMBPlaybackStartTests {
     private func makeVM(
         reporting: StubPlaybackReporting,
         engine: FakePlaybackEngine,
-        audioSession: any AudioSessionControlling = NoopAudioSession()
+        audioSession: any AudioSessionControlling = NoopAudioSession(),
+        subtitleFetch: @escaping @Sendable (URL) async -> Data? = { _ in nil }
     ) -> PlayerViewModel {
         let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
         let builder = DeviceProfileBuilder(probe: probe)
@@ -36,7 +37,8 @@ struct SMBPlaybackStartTests {
                 throw AppError.playback(.unsupportedFormat)
             },
             engineFactory: { _ in engine },
-            audioSession: audioSession
+            audioSession: audioSession,
+            subtitleFetch: subtitleFetch
         )
     }
 
@@ -44,14 +46,60 @@ struct SMBPlaybackStartTests {
         url: String = "smb://nas.local/Media/Movies/Example.mkv",
         title: String = "Example",
         vlcOptions: [String] = [":smb-user=alice", ":smb-pwd=secret", ":smb-domain=WORKGROUP"],
-        subtitleURLs: [Int: URL] = [:]
+        subtitleURLs: [Int: URL] = [:],
+        subtitleLabels: [Int: String] = [:]
     ) -> SMBPlaybackItem {
         SMBPlaybackItem(
             url: URL(string: url)!,
             title: title,
             vlcOptions: vlcOptions,
-            subtitleURLs: subtitleURLs
+            subtitleURLs: subtitleURLs,
+            subtitleLabels: subtitleLabels
         )
+    }
+
+    @Test("start(smbItem:) surfaces both labeled sidecars in the subtitle menu with the resolver's labels")
+    func startSurfacesLabeledSidecarsInMenu() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let vm = makeVM(reporting: reporting, engine: engine)
+
+        let en = URL(string: "smb://nas.local/Media/Movies/Example.en.srt")!
+        let ja = URL(string: "smb://nas.local/Media/Movies/Example.ja.srt")!
+        await vm.start(smbItem: smbItem(
+            subtitleURLs: [0: en, 1: ja],
+            subtitleLabels: [0: "en", 1: "ja"]
+        ))
+
+        // Both sidecars are selectable menu entries even before any engine .ready beat,
+        // carrying the resolver's labels and client-render `.jellyfinStream` ids.
+        let subs = vm.availableSubtitleTracks
+        #expect(subs.count == 2)
+        #expect(subs.contains { $0.id == .jellyfinStream(0) && $0.displayName == "en" && $0.isExternal })
+        #expect(subs.contains { $0.id == .jellyfinStream(1) && $0.displayName == "ja" && $0.isExternal })
+    }
+
+    @Test("selecting an SMB .srt sidecar fetches + parses via SRTParser into activeSubtitleCues")
+    func selectingSRTSidecarParsesViaSRTParser() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+
+        // A minimal single-cue SRT blob — comma timing WebVTTParser can't read, so a green
+        // count proves the extension routed to SRTParser rather than WebVTTParser (→ 0 cues).
+        let srt = "1\n00:00:01,000 --> 00:00:04,000\nHello world\n"
+        let subURL = URL(string: "smb://nas.local/Media/Movies/Example.en.srt")!
+        let vm = makeVM(reporting: reporting, engine: engine, subtitleFetch: { url in
+            url == subURL ? Data(srt.utf8) : nil
+        })
+
+        await vm.start(smbItem: smbItem(subtitleURLs: [0: subURL], subtitleLabels: [0: "en"]))
+
+        let track = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(0) })
+        await vm.selectSubtitleTrack(track)
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(vm.activeSubtitleCues.count == 1)
+        #expect(vm.activeSubtitleCues.first?.text == "Hello world")
     }
 
     /// Counts resolve-closure invocations so a test can prove `retry()` replays it.

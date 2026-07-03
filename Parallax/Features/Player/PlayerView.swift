@@ -216,6 +216,17 @@ struct PlayerView: View {
         // (`NoOpPlaybackReporting`) that resolves the file under the veil. The Jellyfin
         // factories below need a `Session`, so they only run on the Jellyfin paths.
         if case .smb(let item, let ref) = source {
+            // Sidecar subtitle URLs are `smb://` on BOTH SMB routes (the bridge serves only the
+            // video file), which the default URLSession fetch can't open — route the SMB scheme
+            // through the resolver (Keychain stays out of the view) and everything else through
+            // URLSession, mirroring the default closure's http body.
+            let smbResolver = deps.smbPlaybackResolver
+            let subtitleFetch: @Sendable (URL) async -> Data? = { url in
+                if url.scheme == "smb" {
+                    return await smbResolver.subtitleData(for: url, ref: ref)
+                }
+                return try? await URLSession.shared.data(from: url).0
+            }
             let vm = PlayerViewModel(
                 deviceProfileBuilder: deps.deviceProfileBuilder,
                 playbackInfo: NoOpPlaybackReporting(),
@@ -225,7 +236,8 @@ struct PlayerView: View {
                     throw AppError.playback(.unsupportedFormat)
                 },
                 engineFactory: deps.playbackEngineFactory,
-                audioSession: deps.audioSession
+                audioSession: deps.audioSession,
+                subtitleFetch: subtitleFetch
             )
             viewModel = vm
             // The resolver — and its Keychain — is reached through the environment

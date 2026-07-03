@@ -378,6 +378,12 @@ final class PlayerViewModel {
     /// resolver before loading the engine. Both paths produce WebVTT or SRT URLs
     /// that `loadSidecarSubtitle` fetches and parses.
     private var subtitleURLs: [Int: URL] = [:]
+    /// Synthetic external subtitle tracks for the SMB path (`resolved` is nil there, so
+    /// the Jellyfin `externalSubtitleTracks(from: resolved)` machinery can't build them).
+    /// Populated in `start(smbItem:)` and re-appended to the engine's inventory on every
+    /// `.ready` beat — the engine reports only EMBEDDED tracks, so without this the sidecar
+    /// subs would be dropped the moment the engine's inventory lands.
+    private var smbExternalSubtitleTracks: [SubtitleTrack] = []
     private var didReportStart = false
     private var didReportStopped = false
     /// Whether this session's server-side encoding was already killed. NOT
@@ -780,6 +786,15 @@ final class PlayerViewModel {
             // `loadSidecarSubtitle` finds the URL by index, exactly like the Jellyfin
             // path's `subtitleURLs = resolved.subtitleStreamURLs`.
             subtitleURLs = smbItem.subtitleURLs
+            // Surface those sidecars as selectable menu entries NOW (before the engine's
+            // embedded inventory lands on .ready), with the resolver's labels. The `.ready`
+            // merge re-appends these to the engine's embedded subs so they survive it —
+            // the Jellyfin `externalSubtitleTracks(from: resolved)` path is nil-`resolved`
+            // on SMB, so this SMB-shaped overload stands in for it.
+            smbExternalSubtitleTracks = Self.externalSubtitleTracks(
+                urls: smbItem.subtitleURLs, labels: smbItem.subtitleLabels
+            )
+            availableSubtitleTracks = smbExternalSubtitleTracks
             // Materialized off-main (the first touch writes font files) so embedded
             // ASS/SSA subs still render under VLC — same source as the Jellyfin asset.
             let fonts = await SubtitleFontLocator.resolved()
@@ -797,10 +812,6 @@ final class PlayerViewModel {
                 subtitleFontsDirectoryURL: fonts?.directory,
                 vlcOptions: smbItem.vlcOptions
             )
-            // Follow-up (Task 11): surface `subtitleURLs` as selectable tracks. The
-            // engine only reports EMBEDDED tracks, so a synthetic-index → URL menu entry
-            // (the Jellyfin path's `externalSubtitleTracks` machinery) is needed to make
-            // the sidecar user-pickable. Populating `subtitleURLs` is enough for this task.
             try await loadAndPlay(asset, reusingEngine: false)
         } catch is CancellationError {
             // Exit fence: the player is dismissing, so `stop()` (onDisappear backstop) owns the
@@ -1026,6 +1037,7 @@ final class PlayerViewModel {
         subtitleFetchTask = nil
         activeSubtitleCues = []
         subtitleURLs = [:]
+        smbExternalSubtitleTracks = []
         clientSubtitleDelayMs = 0
         currentPosition = .zero
         currentDuration = .zero
@@ -1285,9 +1297,14 @@ final class PlayerViewModel {
             return
         }
         let fetch = subtitleFetch
+        // Parser by extension: Jellyfin's sidecar endpoint serves WebVTT, but an SMB sibling
+        // is whatever the release shipped — `.srt` is the common one and WebVTTParser can't
+        // read its `HH:MM:SS,mmm` comma timing. `.ass`/`.ssa` have no client renderer yet, so
+        // they fall through to WebVTT (yields []) rather than mis-parsing.
+        let isSRT = url.pathExtension.lowercased() == "srt"
         subtitleFetchTask = Task { [weak self] in
             guard let data = await fetch(url) else { return }
-            let cues = WebVTTParser.parse(data: data)
+            let cues = isSRT ? SRTParser.parse(data: data) : WebVTTParser.parse(data: data)
             if Task.isCancelled { return }
             self?.activeSubtitleCues = cues
         }
@@ -1518,10 +1535,12 @@ final class PlayerViewModel {
             // .loading, or the spinner would reappear over a playing video.
             if resolved?.method != .transcode {
                 availableAudioTracks = tracks.audio
-                // Embedded subs come from the engine; external sidecar subs are appended
-                // from the server list and rendered client-side (the engine can't shape
-                // sidecar VTT on iOS). Both share the chip menu. (No server subs on SMB.)
-                let externalSubs = resolved.map(Self.externalSubtitleTracks) ?? []
+                // Embedded subs come from the engine; external sidecar subs are appended and
+                // rendered client-side (the engine can't shape sidecar VTT on iOS). Both share
+                // the chip menu. Jellyfin sources the externals from `resolved`; SMB (resolved
+                // nil) uses the pre-built `smbExternalSubtitleTracks` — either way the engine's
+                // embedded inventory can't clobber the sidecar picks.
+                let externalSubs = resolved.map(Self.externalSubtitleTracks) ?? smbExternalSubtitleTracks
                 availableSubtitleTracks = tracks.subtitles + externalSubs
                 // Reflect the engine's default selection so the menus show a
                 // checkmark on the track that's actually playing. Don't clobber
@@ -1750,6 +1769,29 @@ final class PlayerViewModel {
         resolved.mediaStreams
             .filter { $0.kind == .subtitle && $0.isExternal && !$0.isImageSubtitle }
             .map(Self.subtitleTrack(from:))
+    }
+
+    /// SMB analog of `externalSubtitleTracks(from resolved:)` — there's no `resolved`
+    /// stream list on the SMB path, only the filename-matched `[index: URL]` map + the
+    /// resolver's `[index: label]`. Builds the same `.jellyfinStream`-id, client-rendered
+    /// external tracks (so `selectSubtitleTrack` → `activateSidecarSubtitle` → the overlay
+    /// path works identically) with the resolver's labels and the file extension as detail.
+    /// Ordered by index for a stable menu.
+    private static func externalSubtitleTracks(urls: [Int: URL], labels: [Int: String]) -> [SubtitleTrack] {
+        urls.keys.sorted().map { index in
+            let url = urls[index]
+            let format = url?.pathExtension.uppercased()
+            let detail = format.map { $0.isEmpty ? "External" : "\($0) · External" } ?? "External"
+            return SubtitleTrack(
+                id: .jellyfinStream(index),
+                displayName: labels[index] ?? "Subtitle \(index + 1)",
+                languageCode: nil,
+                isForced: false,
+                detailLabel: detail,
+                isExternal: true,
+                isSDH: false
+            )
+        }
     }
 
     /// Maps a server subtitle stream to a menu `SubtitleTrack` with a `.jellyfinStream` id

@@ -27,6 +27,11 @@ struct SMBPlaybackItem: Sendable {
     /// keyed by a synthetic stream index. Mirrors the Jellyfin path's
     /// `subtitleStreamURLs` so `loadSidecarSubtitle` can find them.
     let subtitleURLs: [Int: URL]
+    /// Human-readable label per sidecar index (the resolver's `SMBSubtitleMatch.label`,
+    /// e.g. `"en"`, `"en.forced"`, `"Default"`), so the subtitle menu can name each
+    /// synthetic external track instead of showing a bare index. Keyed the same as
+    /// `subtitleURLs`; a missing key falls back to a generated name.
+    let subtitleLabels: [Int: String]
     /// Total file size in bytes from the SMB directory listing. Lets the engine estimate a runtime
     /// for an incomplete/still-downloading file whose container length never resolves (no trailing
     /// moov atom). Nil when the size is unknown.
@@ -45,6 +50,7 @@ struct SMBPlaybackItem: Sendable {
         vlcOptions: [String],
         startTime: CMTime? = nil,
         subtitleURLs: [Int: URL] = [:],
+        subtitleLabels: [Int: String] = [:],
         fileSizeBytes: Int64? = nil,
         hints: PlaybackHints = PlaybackHints(
             scheme: "smb", container: nil, videoCodec: nil, audioCodec: nil, subtitleFormats: []
@@ -56,6 +62,7 @@ struct SMBPlaybackItem: Sendable {
         self.vlcOptions = vlcOptions
         self.startTime = startTime
         self.subtitleURLs = subtitleURLs
+        self.subtitleLabels = subtitleLabels
         self.fileSizeBytes = fileSizeBytes
         self.hints = hints
         self.cleanup = cleanup
