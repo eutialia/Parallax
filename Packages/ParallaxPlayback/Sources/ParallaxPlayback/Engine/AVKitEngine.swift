@@ -19,6 +19,11 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     private let player = AVPlayer()
     public nonisolated var avPlayer: AVPlayer { player }
 
+    /// Injected buffering profile — see `StartupTuning`. `.systemDefault` (every field
+    /// `nil`) applies nothing in `load()`, so the shipping default is byte-identical to
+    /// today's behavior.
+    private let tuning: StartupTuning
+
     /// Live playback clock for the client-side subtitle overlay.
     public nonisolated var currentTime: CMTime { player.currentTime() }
 
@@ -51,7 +56,8 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     private var defaultAudioStreamIndex: Int?
     private var defaultSubtitleStreamIndex: Int?
 
-    public override init() {
+    public init(tuning: StartupTuning = .systemDefault) {
+        self.tuning = tuning
         // Bounded so a wedged consumer can't grow the buffer without limit.
         // `.bufferingNewest` keeps the freshest beats — the latest position plus any
         // terminal .ready/.ended/.failed (nothing follows those, so they're never the
@@ -135,6 +141,13 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         let urlAsset = AVURLAsset(url: asset.url)
         let item = AVPlayerItem(asset: urlAsset)
         item.textStyleRules = Self.subtitleStyleRules
+        // Startup tuning (see `StartupTuning`) applied HERE — before `replaceCurrentItem`
+        // and before the pre-ready resume-seek block below is queued — and deliberately
+        // not moved past either: the resume seek is a device-diagnosed livelock fix
+        // (see the comment on `pendingStartTime` below) and must not be reordered or
+        // interleaved with these knob applications. `.systemDefault` (every field nil)
+        // applies nothing, leaving both AVPlayer properties untouched.
+        Self.applyTuning(tuning, to: item, player: player)
         currentItem = item
 
         statusObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
@@ -516,6 +529,19 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
             continuation.yield(.playing(position: time, duration: item.duration, buffered: buffered))
         @unknown default:
             continuation.yield(.playing(position: time, duration: item.duration, buffered: buffered))
+        }
+    }
+
+    /// Applies `tuning`'s non-nil fields to a freshly-built item/player pair — the seam
+    /// `load()` calls and tests exercise directly against a bare `AVPlayerItem`/`AVPlayer`
+    /// (no network, no `.readyToPlay` needed). A `nil` field is a no-op: it leaves the
+    /// corresponding property untouched rather than resetting it to a default value.
+    static func applyTuning(_ tuning: StartupTuning, to item: AVPlayerItem, player: AVPlayer) {
+        if let seconds = tuning.preferredForwardBufferSeconds {
+            item.preferredForwardBufferDuration = seconds
+        }
+        if let waits = tuning.automaticallyWaitsToMinimizeStalling {
+            player.automaticallyWaitsToMinimizeStalling = waits
         }
     }
 
