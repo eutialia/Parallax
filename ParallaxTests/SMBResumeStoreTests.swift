@@ -7,18 +7,10 @@ import ParallaxCore
 @Suite("SMBResumeStore")
 struct SMBResumeStoreTests {
 
-    /// Isolated defaults per test: `UserDefaults(suiteName:)` keeps writes out of the
-    /// real standard domain, and the domain is removed before (stale runs) and after.
-    private func makeStore(suite: String) throws -> (store: SMBResumeStore, defaults: UserDefaults) {
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defaults.removePersistentDomain(forName: suite)
-        return (SMBResumeStore(defaults: defaults), defaults)
-    }
-
     @Test("A save under the 5s floor clears the entry instead of writing")
     func belowFloorClears() async throws {
         let suite = "SMBResumeStoreTests.belowFloorClears"
-        let (store, defaults) = try makeStore(suite: suite)
+        let (store, defaults) = try SMBTestFixtures.makeResumeStore(suite: suite)
         defer { defaults.removePersistentDomain(forName: suite) }
         let id = ItemID(rawValue: "smb-item-floor")
 
@@ -35,7 +27,7 @@ struct SMBResumeStoreTests {
     @Test("A mid-film save round-trips through resumeTime")
     func midFilmRoundTrips() async throws {
         let suite = "SMBResumeStoreTests.midFilmRoundTrips"
-        let (store, defaults) = try makeStore(suite: suite)
+        let (store, defaults) = try SMBTestFixtures.makeResumeStore(suite: suite)
         defer { defaults.removePersistentDomain(forName: suite) }
         let id = ItemID(rawValue: "smb-item-mid")
 
@@ -49,7 +41,7 @@ struct SMBResumeStoreTests {
     @Test("A save at ≥95% of a known duration clears the entry (finished film restarts)")
     func nearEndClears() async throws {
         let suite = "SMBResumeStoreTests.nearEndClears"
-        let (store, defaults) = try makeStore(suite: suite)
+        let (store, defaults) = try SMBTestFixtures.makeResumeStore(suite: suite)
         defer { defaults.removePersistentDomain(forName: suite) }
         let id = ItemID(rawValue: "smb-item-end")
 
@@ -65,7 +57,7 @@ struct SMBResumeStoreTests {
     @Test("The 500-entry LRU cap evicts the oldest save")
     func lruCapEvictsOldest() async throws {
         let suite = "SMBResumeStoreTests.lruCapEvictsOldest"
-        let (store, defaults) = try makeStore(suite: suite)
+        let (store, defaults) = try SMBTestFixtures.makeResumeStore(suite: suite)
         defer { defaults.removePersistentDomain(forName: suite) }
 
         // 501 saves with unknown duration (nil = no 95% rule in play).

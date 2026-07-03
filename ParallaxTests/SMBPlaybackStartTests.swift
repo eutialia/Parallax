@@ -44,14 +44,6 @@ struct SMBPlaybackStartTests {
         )
     }
 
-    /// Isolated defaults per test — mirrors `SMBResumeStoreTests`' hygiene so these tests
-    /// never touch `UserDefaults.standard`.
-    private func makeResumeStore(suite: String) throws -> (store: SMBResumeStore, defaults: UserDefaults) {
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defaults.removePersistentDomain(forName: suite)
-        return (SMBResumeStore(defaults: defaults), defaults)
-    }
-
     private func smbItem(
         url: String = "smb://nas.local/Media/Movies/Example.mkv",
         title: String = "Example",
@@ -251,7 +243,7 @@ struct SMBPlaybackStartTests {
     @Test("stop() tears the SMB session down cleanly: subtitleURLs cleared, no reporting")
     func stopTearsDownCleanly() async throws {
         let suite = "SMBPlaybackStartTests.stopTearsDownCleanly"
-        let (store, defaults) = try makeResumeStore(suite: suite)
+        let (store, defaults) = try SMBTestFixtures.makeResumeStore(suite: suite)
         defer { defaults.removePersistentDomain(forName: suite) }
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
@@ -281,7 +273,7 @@ struct SMBPlaybackStartTests {
     @Test("an untrusted duration never lets the 95%-complete rule clear a real resume position")
     func untrustedDurationSurvivesNearEndSave() async throws {
         let suite = "SMBPlaybackStartTests.untrustedDurationSurvivesNearEndSave"
-        let (store, defaults) = try makeResumeStore(suite: suite)
+        let (store, defaults) = try SMBTestFixtures.makeResumeStore(suite: suite)
         defer { defaults.removePersistentDomain(forName: suite) }
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
@@ -311,7 +303,7 @@ struct SMBPlaybackStartTests {
     @Test("a trusted duration DOES let the 95%-complete rule clear the resume position (counterpart)")
     func trustedDurationClearsNearEndSave() async throws {
         let suite = "SMBPlaybackStartTests.trustedDurationClearsNearEndSave"
-        let (store, defaults) = try makeResumeStore(suite: suite)
+        let (store, defaults) = try SMBTestFixtures.makeResumeStore(suite: suite)
         defer { defaults.removePersistentDomain(forName: suite) }
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
@@ -336,7 +328,7 @@ struct SMBPlaybackStartTests {
     @Test("a stale throttled save can't outrun .ended's terminal clear")
     func throttledSaveNeverOutrunsEndedClear() async throws {
         let suite = "SMBPlaybackStartTests.throttledSaveNeverOutrunsEndedClear"
-        let (store, defaults) = try makeResumeStore(suite: suite)
+        let (store, defaults) = try SMBTestFixtures.makeResumeStore(suite: suite)
         defer { defaults.removePersistentDomain(forName: suite) }
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
