@@ -563,6 +563,13 @@ struct PlayerView: View {
     }
 
     private func switchFailureMessage(_ failure: PlayerViewModel.TrackSwitchFailure) -> String {
+        // Off has no "source" of its own to blame — "The Off source didn't
+        // respond" reads as a bug in the copy, not the player. Phrase this one
+        // as the user's intent (turning subtitles off) instead.
+        if case .subtitle(nil) = failure.requested {
+            let kept = failure.fallback.map(\.displayName) ?? "the previous track"
+            return "Couldn't turn subtitles off. Playback kept \(kept) — nothing was lost."
+        }
         let stayed = failure.fallback.map { "Playback stayed on \($0.displayName)" }
             ?? "Playback continues on the previous track"
         return "The \(failure.requested.displayName) source didn't respond. \(stayed) — nothing was lost."
