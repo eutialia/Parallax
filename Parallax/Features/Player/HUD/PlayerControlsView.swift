@@ -75,10 +75,12 @@ struct PlayerControlsView: View {
     let onExitHUD: () -> Void
     #endif
     let onDismiss: () -> Void
+    #if DEBUG
     /// Preview-only: forces the big (iPad-scale) layout at this width regardless of the
     /// running device, so a `#Preview` can render BOTH HUD variants on one iPhone-sim
     /// destination. `nil` at every production call site (the layout derives from `isPad`).
     var previewBigWidth: CGFloat? = nil
+    #endif
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -395,37 +397,16 @@ struct PlayerControlsView: View {
                 // visible — the top bars pin full-bleed and pad by the latched value, so
                 // the safe-area collapse when the status bar hides can't reflow them
                 // mid-fade (see `TopInsetLatch`).
+                #if DEBUG
                 if let previewBigWidth {
                     // Preview seam: render the big layout on the iPhone sim (no latch/probe).
                     bigControls(PlayerMetrics(width: previewBigWidth))
-                } else if isPad {
-                    GeometryReader { geo in
-                        // Metrics derive from the PHYSICAL max dimension (the probe in
-                        // the background below): one control size across orientations
-                        // AND across status-bar toggles — see `hudPhysicalMax`. The
-                        // safe-bounded fallback only covers the first frame.
-                        bigControls(PlayerMetrics(width: hudPhysicalMax > 0
-                                        ? hudPhysicalMax
-                                        : max(geo.size.width, geo.size.height)),
-                                    topInset: hudTopInset,
-                                    dragging: pullDragging)
-                            .modifier(TopInsetLatch(inset: geo.safeAreaInsets.top,
-                                                    statusBarVisible: statusBarExpectedVisible,
-                                                    isLandscape: hudPhysicalIsLandscape,
-                                                    adoptsLandscapeInset: false,
-                                                    latched: $hudTopInset))
-                    }
                 } else {
-                    GeometryReader { geo in
-                        phoneControls(topInset: hudTopInset,
-                                      dragging: pullDragging)
-                            .modifier(TopInsetLatch(inset: geo.safeAreaInsets.top,
-                                                    statusBarVisible: statusBarExpectedVisible,
-                                                    isLandscape: hudPhysicalIsLandscape,
-                                                    adoptsLandscapeInset: true,
-                                                    latched: $hudTopInset))
-                    }
+                    sizeAdaptiveControls
                 }
+                #else
+                sizeAdaptiveControls
+                #endif
                 #endif
             }
             // The open panel owns the surface: on tvOS, disabling the chrome is the
@@ -476,6 +457,44 @@ struct PlayerControlsView: View {
         .defaultFocus($scrubberFocused, true)
         #endif
     }
+
+    #if !os(tvOS)
+    /// Big (iPad-scale) vs. phone layout, chosen by device idiom — the production path
+    /// `controls` falls into once the (DEBUG-only) `previewBigWidth` preview seam is out
+    /// of the picture. Factored out so the seam's `#if DEBUG` branch in `controls` doesn't
+    /// have to duplicate this pair of `GeometryReader`s.
+    @ViewBuilder
+    private var sizeAdaptiveControls: some View {
+        if isPad {
+            GeometryReader { geo in
+                // Metrics derive from the PHYSICAL max dimension (the probe in
+                // the background below): one control size across orientations
+                // AND across status-bar toggles — see `hudPhysicalMax`. The
+                // safe-bounded fallback only covers the first frame.
+                bigControls(PlayerMetrics(width: hudPhysicalMax > 0
+                                ? hudPhysicalMax
+                                : max(geo.size.width, geo.size.height)),
+                            topInset: hudTopInset,
+                            dragging: pullDragging)
+                    .modifier(TopInsetLatch(inset: geo.safeAreaInsets.top,
+                                            statusBarVisible: statusBarExpectedVisible,
+                                            isLandscape: hudPhysicalIsLandscape,
+                                            adoptsLandscapeInset: false,
+                                            latched: $hudTopInset))
+            }
+        } else {
+            GeometryReader { geo in
+                phoneControls(topInset: hudTopInset,
+                              dragging: pullDragging)
+                    .modifier(TopInsetLatch(inset: geo.safeAreaInsets.top,
+                                            statusBarVisible: statusBarExpectedVisible,
+                                            isLandscape: hudPhysicalIsLandscape,
+                                            adoptsLandscapeInset: true,
+                                            latched: $hudTopInset))
+            }
+        }
+    }
+    #endif
 
     /// The TV-app corner-aligned track panel (every platform): the panel's
     /// bottom-left corner sits exactly on the (vacated) chip's bottom-left corner —

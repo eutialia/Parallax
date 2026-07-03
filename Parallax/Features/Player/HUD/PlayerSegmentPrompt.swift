@@ -122,7 +122,7 @@ struct PlayerSegmentPrompt: View {
     // MARK: Placement — pinned just above the scrubber's remaining-time label.
 
     private func trailingInset(_ m: PlayerMetrics) -> CGFloat {
-        m.deviceClass == .phone ? PlayerMetrics.phonePadX : m.padX
+        m.padX
     }
     private func bottomInset(_ m: PlayerMetrics) -> CGFloat {
         switch m.deviceClass {
