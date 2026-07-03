@@ -1,5 +1,6 @@
 import Foundation
 import CoreMedia
+import ParallaxPlayback
 
 /// Everything `PlayerViewModel.start(smbItem:)` needs to play a local SMB file —
 /// built entirely by the caller (Task 11) from the file source + Keychain, with no
@@ -30,6 +31,13 @@ struct SMBPlaybackItem: Sendable {
     /// for an incomplete/still-downloading file whose container length never resolves (no trailing
     /// moov atom). Nil when the size is unknown.
     let fileSizeBytes: Int64?
+    /// The routing hints the resolver's probe produced: `scheme "http"` (+ container/codecs) for a
+    /// bridged AVKit file, or `scheme "smb"` for the VLC route. Drives `EngineSelector` in the VM.
+    let hints: PlaybackHints
+    /// Tears down the HTTP bridge + its SMB reader when the playback session ends. Non-nil ONLY on
+    /// the bridge route; nil on the VLC route (libVLC owns its own smb:// connection). Opaque on
+    /// purpose — it carries the `ParallaxFileBrowse` bridge/reader the VM must never import.
+    let cleanup: (@Sendable () async -> Void)?
 
     init(
         url: URL,
@@ -37,7 +45,11 @@ struct SMBPlaybackItem: Sendable {
         vlcOptions: [String],
         startTime: CMTime? = nil,
         subtitleURLs: [Int: URL] = [:],
-        fileSizeBytes: Int64? = nil
+        fileSizeBytes: Int64? = nil,
+        hints: PlaybackHints = PlaybackHints(
+            scheme: "smb", container: nil, videoCodec: nil, audioCodec: nil, subtitleFormats: []
+        ),
+        cleanup: (@Sendable () async -> Void)? = nil
     ) {
         self.url = url
         self.title = title
@@ -45,5 +57,7 @@ struct SMBPlaybackItem: Sendable {
         self.startTime = startTime
         self.subtitleURLs = subtitleURLs
         self.fileSizeBytes = fileSizeBytes
+        self.hints = hints
+        self.cleanup = cleanup
     }
 }

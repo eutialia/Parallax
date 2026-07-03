@@ -763,14 +763,9 @@ final class PlayerViewModel {
             let asset = PlayableAsset(
                 url: smbItem.url,
                 headers: nil,
-                hints: PlaybackHints(
-                    scheme: "smb",
-                    container: nil,
-                    videoCodec: nil,
-                    audioCodec: nil,
-                    subtitleFormats: [],
-                    fileSizeBytes: smbItem.fileSizeBytes
-                ),
+                // Probe-derived: scheme "http" (+ container/codecs) routes a bridged file to
+                // AVKit, scheme "smb" keeps it on VLC. The resolver owns this decision.
+                hints: smbItem.hints,
                 startTime: smbItem.startTime,
                 mediaStreams: [],
                 defaultAudioStreamIndex: nil,
