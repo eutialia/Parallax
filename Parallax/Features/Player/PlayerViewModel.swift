@@ -421,6 +421,11 @@ final class PlayerViewModel {
     /// The SMB resolve closure for the current local session (nil for Jellyfin), kept so
     /// `retry()` can replay the SMB path — which sets neither `playingItem` nor `pendingItemID`.
     private var smbResolve: (() async throws -> SMBPlaybackItem)?
+    /// Tears down the SMB HTTP bridge + its reader when the current session ends (bridge route
+    /// only; nil on the VLC route and every Jellyfin session). An orphaned bridge holds an SMB
+    /// connection and a LAN-reachable file URL, so it must die with the session — invoked +
+    /// nil'd in `stop()`, `tearDownEngine()`, and every `start(smbItem:)` failure catch.
+    private var smbCleanup: (@Sendable () async -> Void)?
     private var currentAudioStreamIndex: Int?
     private var currentSubtitleStreamIndex: Int?
 
@@ -745,6 +750,12 @@ final class PlayerViewModel {
         episodeNumber = nil
         // No Jellyfin item: skip resolve, DeviceProfile, keepalive, segments, and
         // neighbor lookups (all server features). `resolved` stays nil.
+        //
+        // Stashed up front (before the first throw point): the resolver already started the
+        // bridge, so ANY failure below — audio-session, an exit-during-load fence, or the load
+        // itself — must be able to tear it down. `stop()` is the backstop (onDisappear always
+        // calls it); the `.failed` catches below clean up explicitly for the no-exit failures.
+        smbCleanup = smbItem.cleanup
         do {
             do {
                 try await audioSession.activate()
@@ -780,14 +791,28 @@ final class PlayerViewModel {
             // the sidecar user-pickable. Populating `subtitleURLs` is enough for this task.
             try await loadAndPlay(asset, reusingEngine: false)
         } catch is CancellationError {
+            // Exit fence: the player is dismissing, so `stop()` (onDisappear backstop) owns the
+            // bridge teardown — don't race it here.
             await audioSession.deactivate()
         } catch let error as AppError {
             phase = .failed(error)
+            await tearDownSMBBridge()
             await audioSession.deactivate()
         } catch {
             Log.playback.error("SMB playback start failed (unmapped): \(error.networkDiagnostic)")
             phase = .failed(.unexpected("playback start failed", underlying: AnySendableError(error)))
+            await tearDownSMBBridge()
             await audioSession.deactivate()
+        }
+    }
+
+    /// Invokes + clears the SMB bridge cleanup exactly once. Nil'ing before the await makes it
+    /// idempotent against the racing `stop()`/`tearDownEngine()` sites; a no-op on Jellyfin and
+    /// VLC-route sessions (`smbCleanup` is nil).
+    private func tearDownSMBBridge() async {
+        if let cleanup = smbCleanup {
+            smbCleanup = nil
+            await cleanup()
         }
     }
 
@@ -926,6 +951,9 @@ final class PlayerViewModel {
             await engine.teardown()
             self.engine = nil
         }
+        // A load failure tears the bridge down with the engine: nothing consumes the stream, so
+        // the orphaned listener + its SMB connection must not outlive the failed load.
+        await tearDownSMBBridge()
         await stopEncodingIfNeeded()
     }
 
@@ -957,6 +985,9 @@ final class PlayerViewModel {
         if let engine {
             await engine.teardown()
         }
+        // Kill the SMB bridge with the session: an orphaned listener holds an SMB connection and
+        // a LAN-reachable file URL. No-op on Jellyfin/VLC-route sessions (smbCleanup is nil).
+        await tearDownSMBBridge()
         nowPlaying.clear()
         // Exit kills the encoding explicitly (not just via the stop report):
         // a session that wedged before its first .playing beat never reports
