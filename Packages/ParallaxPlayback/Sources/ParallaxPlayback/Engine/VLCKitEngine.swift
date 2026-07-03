@@ -1,5 +1,6 @@
 import Foundation
 import CoreMedia
+import ParallaxCore
 import VLCKitSPM
 
 /// VLC-backed `PlaybackEngine`. Handles the long tail of formats AVKit cannot
@@ -417,13 +418,22 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
 
     // MARK: - Private helpers
 
+    /// Demux/network buffer depth (ms). 3000 is AV1-software-decode runway: shrinking it
+    /// to 1000 to ease rate changes backfired — at 2× a far seek empties the buffer and
+    /// AV1 decode can't refill 1000ms (= 500ms wall-clock at 2×) before the vout starves
+    /// → macroblocked playback until it catches up (device-proven; see git history). That
+    /// constraint is DECODE-bound, not network-bound, so it stays for software codecs and
+    /// unknown codecs; a live rate change applies promptly via `flushForImmediateRate`
+    /// instead. A hardware-decoded codec (h264/hevc → VideoToolbox) on a LAN SMB share
+    /// refills faster than realtime — a shallower buffer there just makes seeks land sooner.
+    nonisolated static func cacheDepthMs(for hints: PlaybackHints) -> Int {
+        let hardwareDecoded: Set<VideoCodec> = [.h264, .hevc]
+        return (hints.scheme == "smb" && hints.videoCodec.map(hardwareDecoded.contains) == true)
+            ? 1500 : 3000
+    }
+
     private func applyOptions(to media: VLCMedia, asset: PlayableAsset) {
-        // Demux/network buffer depth (ms). Shrinking this to 1000 to ease rate changes in faster
-        // backfired: at 2× a far seek empties the buffer and AV1 software decode can't refill
-        // 1000ms (= 500ms wall-clock at 2×) before the vout needs frames → macroblocked playback
-        // until it catches up. 3000ms gives the decoder enough runway to seek cleanly at speed; a
-        // live rate change applies promptly via `flushForImmediateRate` instead, so this stays high.
-        media.addOption(":network-caching=3000")
+        media.addOption(":network-caching=\(Self.cacheDepthMs(for: asset.hints))")
         // iOS gives VLC's text renderers no font provider, so without explicit fonts
         // they render nothing ("can't find selected font provider"). libass (ASS/SSA)
         // and the simple SRT renderer are separate subsystems with separate options:
