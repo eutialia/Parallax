@@ -51,6 +51,33 @@ public final class DefaultJellyfinPlaybackClient: JellyfinPlaybackClient, Sendab
         params.allowVideoStreamCopy = true
         params.allowAudioStreamCopy = true
 
+        let body = Self.playbackInfoBody(
+            profile: profile,
+            startTimeTicks: startTimeTicks,
+            userID: userID,
+            audioStreamIndex: audioStreamIndex,
+            subtitleStreamIndex: subtitleStreamIndex
+        )
+
+        let request = Paths.getPostedPlaybackInfo(itemID: itemID, parameters: params, body)
+        return try await client().send(request).value
+    }
+
+    /// Builds the `PlaybackInfoDto` POST body for `GetPostedPlaybackInfo`. Pulled out
+    /// as a pure function (the test seam) so the body's fields — notably the
+    /// stream-copy flags — are assertable without a live network round-trip.
+    ///
+    /// The POST body is authoritative for this endpoint — the query-param copy in
+    /// `playbackInfo()` predates it and the server largely ignores query flags here.
+    /// Without `allowVideoStreamCopy`/`allowAudioStreamCopy` set on the body, the
+    /// server can decline eligible stream-copy and fully re-encode instead.
+    static func playbackInfoBody(
+        profile: DeviceProfile,
+        startTimeTicks: Int?,
+        userID: String,
+        audioStreamIndex: Int?,
+        subtitleStreamIndex: Int?
+    ) -> PlaybackInfoDto {
         var body = PlaybackInfoDto(
             deviceProfile: profile,
             enableDirectPlay: true,
@@ -61,9 +88,9 @@ public final class DefaultJellyfinPlaybackClient: JellyfinPlaybackClient, Sendab
         )
         body.audioStreamIndex = audioStreamIndex
         body.subtitleStreamIndex = subtitleStreamIndex
-
-        let request = Paths.getPostedPlaybackInfo(itemID: itemID, parameters: params, body)
-        return try await client().send(request).value
+        body.allowVideoStreamCopy = true
+        body.allowAudioStreamCopy = true
+        return body
     }
 
     // MARK: - Stream URLs

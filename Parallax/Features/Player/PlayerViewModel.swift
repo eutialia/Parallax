@@ -1916,8 +1916,8 @@ final class PlayerViewModel {
     /// delivers an HLS stream whose codecs target the AVKit whitelist (per the
     /// device profile), so gating on the source container/codecs (e.g. MKV / AV1
     /// / DTS) would wrongly route an AVKit-playable transcode to VLC and surface
-    /// "unsupported format". Direct-play/-stream serve the source bytes verbatim,
-    /// so their feasibility correctly gates on the source.
+    /// "unsupported format". Direct-play serves the source bytes verbatim, so its
+    /// feasibility correctly gates on the source.
     private static func deliveredHints(for resolved: ResolvedPlayback) -> PlaybackHints {
         switch resolved.method {
         case .transcode:
@@ -1928,7 +1928,7 @@ final class PlayerViewModel {
                 audioCodec: nil,
                 subtitleFormats: []
             )
-        case .directPlay, .directStream:
+        case .directPlay:
             return PlaybackHints(
                 scheme: resolved.url.scheme,
                 container: resolved.container,

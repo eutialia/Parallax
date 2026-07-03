@@ -378,7 +378,6 @@ public actor PlaybackInfoService {
     private static func playMethod(from method: PlaybackMethod) -> PlayMethod {
         switch method {
         case .directPlay: return .directPlay
-        case .directStream: return .directStream
         case .transcode: return .transcode
         }
     }

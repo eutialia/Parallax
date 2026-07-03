@@ -6,10 +6,10 @@ import ParallaxCore
 
 @Suite("Playback domain types")
 struct PlaybackTypesTests {
-    @Test("PlaybackMethod has the three Jellyfin play methods")
+    @Test("PlaybackMethod has exactly the two methods resolve() can produce")
     func methods() {
-        let all: Set<PlaybackMethod> = [.directPlay, .directStream, .transcode]
-        #expect(all.count == 3)
+        let all: Set<PlaybackMethod> = [.directPlay, .transcode]
+        #expect(all.count == 2)
     }
 
     @Test("ResolvedPlayback stores url, method, codecs, ids, and times")
