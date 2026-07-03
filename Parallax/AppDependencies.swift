@@ -126,10 +126,13 @@ final class AppDependencies {
         }
 
         // VLC events are configured lazily by VLCKitEngine.init() (idempotent static-once).
+        // The DEBUG-picked startup profile only applies to .avKit — VLCKitEngine has its
+        // own buffering knobs and this store never touches it.
+        let startupTuningStore = StartupTuningStore()
         let engineFactory: @MainActor @Sendable (PlaybackEngineID) -> any PlaybackEngine = { id in
             switch id {
             case .avKit:
-                return AVKitEngine()
+                return AVKitEngine(tuning: startupTuningStore.selected.tuning)
             case .vlcKit:
                 return VLCKitEngine()
             }

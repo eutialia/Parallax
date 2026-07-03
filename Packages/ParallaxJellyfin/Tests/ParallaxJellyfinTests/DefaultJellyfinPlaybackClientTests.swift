@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import JellyfinAPI
+import ParallaxCore
 @testable import ParallaxJellyfin
 
 @Suite("DefaultJellyfinPlaybackClient — URL construction")
@@ -44,5 +45,40 @@ struct DefaultJellyfinPlaybackClientTests {
         #expect(url?.absoluteString.hasPrefix("https://j.example.com") == true)
         #expect(url?.absoluteString.contains("master.m3u8") == true)
         #expect(url?.query?.contains("api_key=tok-1") == true)
+    }
+
+    // MARK: - PlaybackInfo POST body
+
+    private func sampleCapabilities() -> DeviceCapabilities {
+        DeviceCapabilities(
+            supportedVideoCodecs: [.h264, .hevc],
+            supportedAudioCodecs: [.aac, .ac3, .eac3, .mp3],
+            supportedContainers: [.mp4, .mov],
+            hdr: .none,
+            maxResolution: .uhd4K,
+            maxBitrate: .megabits(120),
+            audioOutput: .stereo,
+            preferredSubtitleFormats: [.vtt, .srt],
+            softwareVideoCodecs: [],
+            softwareAudioCodecs: [],
+            softwareContainers: []
+        )
+    }
+
+    @Test("The PlaybackInfo POST body requests stream copy for both video and audio")
+    func bodyRequestsStreamCopy() {
+        let profile = DeviceProfileTranslator.deviceProfile(from: sampleCapabilities())
+        let body = DefaultJellyfinPlaybackClient.playbackInfoBody(
+            profile: profile,
+            startTimeTicks: nil,
+            userID: "u1",
+            audioStreamIndex: nil,
+            subtitleStreamIndex: nil
+        )
+        // The body is authoritative for GetPostedPlaybackInfo — the server largely
+        // ignores the query-param copy. Without these, eligible sources can be
+        // fully re-encoded instead of stream-copied.
+        #expect(body.allowVideoStreamCopy == true)
+        #expect(body.allowAudioStreamCopy == true)
     }
 }

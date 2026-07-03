@@ -41,6 +41,24 @@ struct DeviceProfileTranslatorTests {
         )
     }
 
+    /// tieredCaps() with Dolby Vision reported (hardware decode confirmed) and
+    /// a non-default resolution ceiling, for the DOVI / resolution tests.
+    private func dolbyVisionCaps(maxResolution: Resolution = .uhd4K) -> DeviceCapabilities {
+        DeviceCapabilities(
+            supportedVideoCodecs: [.h264, .hevc],
+            supportedAudioCodecs: [.aac, .ac3, .eac3, .mp3],
+            supportedContainers: [.mp4, .mov],
+            hdr: [.hdr10, .dolbyVision],
+            maxResolution: maxResolution,
+            maxBitrate: .megabits(120),
+            audioOutput: .stereo,
+            preferredSubtitleFormats: [.vtt, .srt],
+            softwareVideoCodecs: [.vc1, .mpeg2video, .vp9, .av1],
+            softwareAudioCodecs: [.dts, .trueHD, .flac, .opus],
+            softwareContainers: [.mkv, .webm, .avi, .ts, .mp3, .flac]
+        )
+    }
+
     /// Mirrors DeviceProfileBuilder.build(): supportedContainers INCLUDES .hls.
     private func realBuildCaps() -> DeviceCapabilities {
         DeviceCapabilities(
@@ -249,11 +267,18 @@ struct DeviceProfileTranslatorTests {
         #expect(subs.contains { $0.format == "ass" && $0.method == .external })
     }
 
-    @Test("SubtitleProfiles include PGS external for VLC image-sub rendering")
-    func pgsExternalSubtitleProfile() {
+    @Test("SubtitleProfiles declare PGS as server-side burn-in (Encode) — .external can never match an image format")
+    func pgsEncodeSubtitleProfile() {
         let profile = DeviceProfileTranslator.deviceProfile(from: tieredCaps())
         let subs = profile.subtitleProfiles ?? []
-        #expect(subs.contains { $0.format == "pgs" && $0.method == .external })
+        #expect(subs.contains { $0.format == "pgs" && $0.method == .encode })
+    }
+
+    @Test("SubtitleProfiles declare VobSub as server-side burn-in (Encode) — .external can never match an image format")
+    func vobsubEncodeSubtitleProfile() {
+        let profile = DeviceProfileTranslator.deviceProfile(from: tieredCaps())
+        let subs = profile.subtitleProfiles ?? []
+        #expect(subs.contains { $0.format == "vobsub" && $0.method == .encode })
     }
 
     // MARK: — CodecProfiles (unchanged)
@@ -299,6 +324,53 @@ struct DeviceProfileTranslatorTests {
         let h264 = (profile.codecProfiles ?? []).first { $0.codec == "h264" && $0.type == .video }
         let h264Range = h264?.conditions?.first { $0.property == .videoRangeType }
         #expect(h264Range?.value == "SDR|DOVIWithSDR")
+    }
+
+    @Test("HEVC CodecProfile gates on VideoProfile main/main10 — VideoToolbox can't decode RExt/SCC")
+    func hevcVideoProfileGuard() {
+        let profile = DeviceProfileTranslator.deviceProfile(from: tieredCaps())
+        let hevc = (profile.codecProfiles ?? []).first { $0.codec == "hevc" && $0.type == .video }
+        let condition = hevc?.conditions?.first { $0.property == .videoProfile }
+        #expect(condition?.condition == .equalsAny)
+        #expect(condition?.isRequired == false)
+        #expect(condition?.value == "main|main10")
+    }
+
+    @Test("Both video CodecProfiles cap Width/Height at capabilities.maxResolution")
+    func resolutionCeilingConditions() {
+        let custom = Resolution(width: 1920, height: 1080)
+        let profile = DeviceProfileTranslator.deviceProfile(from: dolbyVisionCaps(maxResolution: custom))
+        let codecs = profile.codecProfiles ?? []
+        for codec in ["h264", "hevc"] {
+            let entry = codecs.first { $0.codec == codec && $0.type == .video }
+            let width = entry?.conditions?.first { $0.property == .width }
+            let height = entry?.conditions?.first { $0.property == .height }
+            #expect(width?.condition == .lessThanEqual, "\(codec) missing Width condition")
+            #expect(width?.value == "1920", "\(codec) Width should reflect maxResolution")
+            #expect(height?.condition == .lessThanEqual, "\(codec) missing Height condition")
+            #expect(height?.value == "1080", "\(codec) Height should reflect maxResolution")
+        }
+    }
+
+    @Test("HEVC videoRangeType includes DOVI when capabilities.hdr contains .dolbyVision")
+    func hevcRangeIncludesDOVIWhenDolbyVisionSupported() {
+        let profile = DeviceProfileTranslator.deviceProfile(from: dolbyVisionCaps())
+        let hevc = (profile.codecProfiles ?? []).first { $0.codec == "hevc" && $0.type == .video }
+        let condition = hevc?.conditions?.first { $0.property == .videoRangeType }
+        let entries = Set((condition?.value ?? "").split(separator: "|").map(String.init))
+        #expect(entries.contains("DOVI"), "bare DOVI must be declared once hardware DV decode is confirmed")
+        // The base-layer variants stay too — DOVI is additive, not a replacement.
+        #expect(entries.contains("DOVIWithHDR10"))
+    }
+
+    @Test("HEVC videoRangeType excludes DOVI when capabilities.hdr lacks .dolbyVision")
+    func hevcRangeExcludesDOVIWhenDolbyVisionUnsupported() {
+        // tieredCaps() declares hdr: .none.
+        let profile = DeviceProfileTranslator.deviceProfile(from: tieredCaps())
+        let hevc = (profile.codecProfiles ?? []).first { $0.codec == "hevc" && $0.type == .video }
+        let condition = hevc?.conditions?.first { $0.property == .videoRangeType }
+        let entries = Set((condition?.value ?? "").split(separator: "|").map(String.init))
+        #expect(!entries.contains("DOVI"), "bare DOVI must not be declared without a confirmed DV decode signal")
     }
 
     // MARK: — Bitrate caps

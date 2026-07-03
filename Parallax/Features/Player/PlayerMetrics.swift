@@ -58,21 +58,32 @@ struct PlayerMetrics: Equatable {
         #endif
     }
 
-    // Layout (big screens)
+    // Layout (big screens; phone resolves to the fixed `phone*` statics so ONE
+    // metric-parameterized HUD builder serves both layouts — see `PlayerControlsView`).
     /// 80 at u=1.0 — the documented tvOS side safe-area inset; the full-width track
-    /// and the control row both end on it.
-    var padX: CGFloat { 80 * u }
+    /// and the control row both end on it. iPhone uses the compact `phonePadX`.
+    var padX: CGFloat { deviceClass == .phone ? Self.phonePadX : 80 * u }
     /// Directional HUD reveal distance: the top bar parks this far above its resting
     /// spot while hidden, the bottom rows this far below (the center transport stays
     /// put), so show/hide converges on the video instead of one flat fade.
     var hudSlide: CGFloat { 12 * u }
-    /// Equal to `controlRowBottom` by design — top and bottom chrome carry the same
-    /// edge margin (the top bar adds the latched status-bar inset on top of this).
-    var topBarTop: CGFloat { 54 * u }
-    var controlRowBottom: CGFloat { 54 * u }
+    /// Big screens keep this equal to `controlRowBottom` (top and bottom chrome carry
+    /// the same edge margin; the top bar adds the latched status-bar inset on top).
+    /// iPhone diverges — its top bar (`phoneTopBarTop`) and chip row (`phoneChipRowBottom`)
+    /// are authored independently.
+    var topBarTop: CGFloat { deviceClass == .phone ? Self.phoneTopBarTop : 54 * u }
+    var controlRowBottom: CGFloat { deviceClass == .phone ? Self.phoneChipRowBottom : 54 * u }
     /// 24 at u=1.0 — the HIG's spacing floor for bezel-less controls, so a focused
     /// chip's 1.06 lift + shadow clears its neighbour instead of crowding it.
     var chipsGap: CGFloat { 24 * u }
+    /// Top-bar HStack spacing: the big layout uses `chipsGap`; iPhone its own compact gap.
+    var topBarGap: CGFloat { deviceClass == .phone ? Self.phoneTopBarGap : chipsGap }
+    /// Chip-row HStack spacing: the big layout uses `chipsGap`; iPhone its own compact gap.
+    var chipRowGap: CGFloat { deviceClass == .phone ? Self.phoneChipRowGap : chipsGap }
+    /// Trailing gap before the top bar's leading title clears the AirPlay pill. iPhone
+    /// keeps a small floor (`Space.s8`) so a long title can't kiss the pill; big screens
+    /// have room to let the `Spacer` fully collapse.
+    var topBarSpacerMin: CGFloat { deviceClass == .phone ? Space.s8 : 0 }
     /// One bottom inset and one track/label scale for BOTH the full-HUD scrubber and
     /// the minimal scrub bar, so the floor↔HUD switch reads as the same bar persisting
     /// (only the handle, bubble, and ticks change) instead of a jump-cut.
@@ -100,10 +111,11 @@ struct PlayerMetrics: Equatable {
     var scrubBubbleSize: CGFloat { 44 * u }
     var scrubChapterSize: CGFloat { 22 * u }
 
-    // Centre transport (iPad)
-    var transportSkip: CGFloat { 96 * u }
-    var transportPlay: CGFloat { 140 * u }
-    var transportGap: CGFloat { 76 * u }
+    // Centre transport (big screens; iPhone uses its fixed `phoneTransport*` statics
+    // so the shared transport builder reads `m.transport*` for both layouts).
+    var transportSkip: CGFloat { deviceClass == .phone ? Self.phoneTransportSkip : 96 * u }
+    var transportPlay: CGFloat { deviceClass == .phone ? Self.phoneTransportPlay : 140 * u }
+    var transportGap: CGFloat { deviceClass == .phone ? Self.phoneTransportGap : 76 * u }
     /// tvOS paused-status glyph (PlayerPausedOverlay) — keep equal to the iPad
     /// play disc's glyph (`transportPlay × 0.46`) so the two platforms' center
     /// pause marks are the same drawing at the same scale.
@@ -112,7 +124,7 @@ struct PlayerMetrics: Equatable {
     // Buttons / chips — 72 at u=1.0: one step above the HIG's 66pt tvOS default,
     // sized to the TV app's player chrome; iPad (u ≈ 0.61) lands exactly on the
     // 44pt iOS control default. (56 is the tvOS minimum the old 54/58 sat under.)
-    var closeSize: CGFloat { 72 * u }
+    var closeSize: CGFloat { deviceClass == .phone ? Self.phoneCloseSize : 72 * u }
     // iPhone chips are authored at fixed, compact sizes (the `phoneChip*` statics) rather
     // than `72 * u`: the u-scaled chip was ~50pt tall and the four-to-five-chip row crowded
     // the bottom edge against the home indicator in landscape (the only orientation iPhone
@@ -163,9 +175,9 @@ struct PlayerMetrics: Equatable {
     // `showsCenterTransport`), so tvOS/iPad share the big-screen `transportPlay`
     // and iPhone rides its fixed `phoneTransportPlay`. Still ONE geometry across
     // flavors (buffering / audio switch / stall) — only the dim differs per mode.
-    var scrimRing: CGFloat {
-        deviceClass == .phone ? Self.phoneTransportPlay : transportPlay
-    }
+    // `transportPlay` is already phone-aware (→ `phoneTransportPlay`), so this tracks
+    // the centre disc for every class without a second fork.
+    var scrimRing: CGFloat { transportPlay }
     var scrimRingStroke: CGFloat { 5.5 * u }
     /// Whether the veil shows its caption (label + sublabel) under the ring. Big
     /// screens only: on a landscape iPhone (the only phone playback orientation)

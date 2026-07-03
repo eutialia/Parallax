@@ -66,6 +66,21 @@ public protocol JellyfinPlaybackClient: Sendable {
     /// already ended.
     func stopEncoding(playSessionID: String) async throws
 
+    /// One-shot probe of the live session's `TranscodingInfo` (`GET /Sessions`
+    /// filtered to this device) — the only reliable copy-vs-reencode signal;
+    /// `PlaybackInfo` reports Transcode for stream-copy jobs too. Returns nil
+    /// when no matching session exists or ffmpeg hasn't started yet (also the
+    /// steady state for direct play); throws only on transport errors. The
+    /// caller decides when (and whether) to re-ask — no polling here.
+    ///
+    /// `playSessionID` is the caller's key for the job it started. The server's
+    /// session DTO exposes no play-session identifier to compare it against
+    /// (verified in the SDK: `SessionInfoDto`/`PlayerStateInfo` carry
+    /// deviceID/mediaSourceID/liveStreamID only), so implementations match by
+    /// device ID + transcodingInfo presence instead — a safe approximation
+    /// while this app runs one playback per device.
+    func transcodingDelivery(playSessionID: String) async throws -> TranscodeDelivery?
+
     /// Resets the server's 60s idle kill timer for a play session's transcode
     /// job (`POST /Sessions/Playing/Ping`). The server kills an idle job AND
     /// deletes its segments after 60s without a segment request or ping — and

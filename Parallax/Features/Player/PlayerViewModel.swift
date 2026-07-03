@@ -7,6 +7,28 @@ import ParallaxCore
 import ParallaxJellyfin
 import ParallaxPlayback
 
+/// The active SMB/local session's resume-tracking state — see `PlayerViewModel.smbSession`.
+/// Existence ⟺ there's a live SMB session with an id (non-optional `itemID`); Jellyfin
+/// sessions leave it nil. Cleared as ONE value via `clearSMBSession()`.
+private struct SMBSessionState {
+    /// The playing item's identity — the `SMBResumeStore` key progress beats persist under.
+    /// Set from `SMBPlaybackItem.itemID` in `start(smbItem:)`.
+    var itemID: ItemID
+    /// Whether `currentDuration` is a real container length rather than VLCKitEngine's
+    /// read-rate estimate for an incomplete file. Gates the store's ≥95%-complete clear OFF
+    /// when false — an estimate must never wipe real progress. Reset with the whole session,
+    /// so a later Jellyfin/SMB session can't inherit a stale false. (`hasTrustworthyDuration`.)
+    var hasTrustworthyDuration: Bool
+    /// Last time a resume position was persisted — throttles the `.playing`/`.paused` beat
+    /// writes to one per ~10s, mirroring the Jellyfin progress-report cadence.
+    var lastResumeWrite: Date = .distantPast
+    /// The in-flight throttled save spawned by `saveSMBResumeThrottled`, cancelled and
+    /// replaced on each new save. A stale save must not outrun a terminal write: `stop()` and
+    /// `.ended` await it (via `clearSMBSession()`) before their own save/clear, so a delayed
+    /// beat can never land on the store actor AFTER the terminal write and resurrect a resume.
+    var resumeSaveTask: Task<Void, Never>?
+}
+
 @Observable
 @MainActor
 final class PlayerViewModel {
@@ -145,17 +167,49 @@ final class PlayerViewModel {
         isStalled = false
     }
 
-    /// A transcode audio switch that failed AFTER playback safely resumed on the
+    /// Which menu a track switch/failure concerns — audio and (since PGS burn-in)
+    /// subtitle switches share the same re-resolve + failure-scrim machinery, so
+    /// this is the one seam between the two instead of two near-identical copies.
+    enum TrackPick: Equatable {
+        case audio(AudioTrack)
+        /// `nil` is Off — leaving an active burn-in for Off now re-resolves like any
+        /// other subtitle pick (see `reloadSubtitleTranscode`), so its failure needs a
+        /// representable "requested" pick too. Off has no `TrackID` (the menu's Off row
+        /// carries none either — `SubtitleTrackMenu.offFocusKey`), hence `id` below.
+        case subtitle(SubtitleTrack?)
+
+        var id: TrackID? {
+            switch self {
+            case .audio(let track): track.id
+            case .subtitle(let track): track?.id
+            }
+        }
+        var displayName: String {
+            switch self {
+            case .audio(let track): track.displayName
+            case .subtitle(let track): track?.displayName ?? "Off"
+            }
+        }
+        /// The scrim title's noun ("Couldn't switch audio" / "…subtitles").
+        var kindLabel: String {
+            switch self {
+            case .audio: "audio"
+            case .subtitle: "subtitles"
+            }
+        }
+    }
+
+    /// A transcode track switch that failed AFTER playback safely resumed on the
     /// previous track (the design's silent fallback). Drives the "Couldn't switch
-    /// audio" scrim: `retryFailedTrackSwitch()` re-attempts the same track,
-    /// `dismissTrackSwitchFailure()` keeps the current one. Nil when no failed
+    /// audio"/"…subtitles" scrim: `retryFailedTrackSwitch()` re-attempts the same
+    /// pick, `dismissTrackSwitchFailure()` keeps the current one. Nil when no failed
     /// switch is pending. Fatal failures (engine lost mid-reload) never set this —
     /// they go through `phase = .failed` and the general error scrim.
     struct TrackSwitchFailure {
         /// The track the user asked for — the retry target.
-        let requested: AudioTrack
+        let requested: TrackPick
         /// The track playback stayed on. Nil when the previous selection is unknown.
-        let fallback: AudioTrack?
+        let fallback: TrackPick?
         let error: AppError
     }
     private(set) var trackSwitchFailure: TrackSwitchFailure?
@@ -164,7 +218,10 @@ final class PlayerViewModel {
     func retryFailedTrackSwitch() async {
         guard let failure = trackSwitchFailure else { return }
         trackSwitchFailure = nil
-        await selectAudioTrack(failure.requested)
+        switch failure.requested {
+        case .audio(let track): await selectAudioTrack(track)
+        case .subtitle(let track): await selectSubtitleTrack(track)
+        }
     }
 
     /// Keep the current (fallback) track and drop the failure scrim.
@@ -180,6 +237,13 @@ final class PlayerViewModel {
     /// periodic time observer, and the derivation scans `resolved.mediaStreams`.
     /// Recomputed only when the stream resolves (`recomputeMediaSummary`).
     private(set) var mediaSummary: String?
+
+    /// Wall-clock milliseconds from `engine.play()` dispatch to this session's FIRST
+    /// `.playing` beat — the debug overlay's `Startup:` row (Plan C, AVKit startup
+    /// tuning A/B). `nil` before the first beat lands and reset per session/reload
+    /// (see `startupClockStart`). Engine-agnostic: set for VLCKit sessions too, though
+    /// only AVKit is presently tunable.
+    private(set) var startupMillis: Int?
 
     private func recomputeMediaSummary() {
         guard let resolved else { mediaSummary = nil; return }
@@ -342,6 +406,9 @@ final class PlayerViewModel {
     /// Fetches sidecar subtitle bytes. Injectable so tests feed canned WebVTT
     /// without a network round-trip; production reads the authed VTT URL.
     private let subtitleFetch: @Sendable (URL) async -> Data?
+    /// The local resume store SMB progress beats persist into. Injectable so tests read/write
+    /// an isolated suite-backed store instead of `UserDefaults.standard`.
+    private let smbResumeStore: SMBResumeStore
     /// Persists a track pick into the user's server-side language preferences
     /// (PlaybackInfoService.rememberTrackSelection in production). Defaulted to
     /// a no-op so tests and previews don't need the wiring.
@@ -356,6 +423,18 @@ final class PlayerViewModel {
     /// Ping cadence for `keepaliveTask` — half the server's 60s idle kill
     /// timeout in production; injectable so tests don't wait 30s for a beat.
     private let keepaliveInterval: Duration
+    /// Probes the live transcode's copy-vs-reencode delivery (`TranscodeDelivery`)
+    /// by play-session id. Defaulted to a nil-returning no-op so SMB, previews, and
+    /// tests that don't care need no wiring; the Jellyfin path injects
+    /// `PlaybackInfoService.transcodingDelivery`. Nil = ffmpeg hasn't started / no
+    /// matching session yet — the probe treats it as "ask again".
+    private let fetchDelivery: @Sendable (String) async -> TranscodeDelivery?
+    /// Wait-then-fetch schedule for the delivery probe: one sleep+fetch per entry, in
+    /// order, until a non-nil result lands or the schedule runs out. Production waits
+    /// ~2s after the first `.playing` beat (ffmpeg starts lazily, `TranscodingInfo`
+    /// isn't populated instantly), then retries once at +5s before giving up silently;
+    /// injectable so tests don't wait seconds.
+    private let deliveryProbeSchedule: [Duration]
 
     private var stateTask: Task<Void, Never>?
     private var subtitleFetchTask: Task<Void, Never>?
@@ -378,8 +457,19 @@ final class PlayerViewModel {
     /// resolver before loading the engine. Both paths produce WebVTT or SRT URLs
     /// that `loadSidecarSubtitle` fetches and parses.
     private var subtitleURLs: [Int: URL] = [:]
+    /// Synthetic external subtitle tracks for the SMB path (`resolved` is nil there, so
+    /// the Jellyfin `externalSubtitleTracks(from: resolved)` machinery can't build them).
+    /// Populated in `start(smbItem:)` and re-appended to the engine's inventory on every
+    /// `.ready` beat — the engine reports only EMBEDDED tracks, so without this the sidecar
+    /// subs would be dropped the moment the engine's inventory lands.
+    private var smbExternalSubtitleTracks: [SubtitleTrack] = []
     private var didReportStart = false
     private var didReportStopped = false
+    /// Set at `engine.play()` dispatch in `loadAndPlay`, consumed (cleared) by the
+    /// first `.playing` beat this session — see `startupMillis`. `nil` after
+    /// consumption so a later `.playing` beat (pause/resume, mid-stream rebuffer)
+    /// never overwrites the metric.
+    private var startupClockStart: ContinuousClock.Instant?
     /// Whether this session's server-side encoding was already killed. NOT
     /// gated on `didReportStart` like the stop report — the transcode job
     /// exists from resolve time, so a session that wedged before its first
@@ -421,6 +511,22 @@ final class PlayerViewModel {
     /// The SMB resolve closure for the current local session (nil for Jellyfin), kept so
     /// `retry()` can replay the SMB path — which sets neither `playingItem` nor `pendingItemID`.
     private var smbResolve: (() async throws -> SMBPlaybackItem)?
+    /// Tears down the SMB HTTP bridge + its reader when the current session ends (bridge route
+    /// only; nil on the VLC route and every Jellyfin session). An orphaned bridge holds an SMB
+    /// connection and a LAN-reachable file URL, so it must die with the session — invoked +
+    /// nil'd in `stop()`, `tearDownEngine()`, and every `start(smbItem:)` failure catch.
+    private var smbCleanup: (@Sendable () async -> Void)?
+    /// The active SMB/local session's resume-tracking state, folded into one value so the
+    /// "reset the trust bit wherever the item id clears" invariant is STRUCTURAL: clearing
+    /// the session (`clearSMBSession()`) drops the id, the trust bit, and the throttle clock
+    /// together, and awaits the in-flight save — they can't drift apart. Nil for Jellyfin
+    /// sessions (the server owns their resume) and until `start(smbItem:)` sets it.
+    ///
+    /// The SMB HTTP-bridge cleanup (`smbCleanup`) is deliberately NOT folded in: it's armed
+    /// earlier (during resolve, before the id exists) and torn down later (in `stop()`, AFTER
+    /// `engine.teardown()`, so the engine finishes reading the bridge), so a single-clear path
+    /// couldn't reproduce its ordering — it keeps its own lifecycle above.
+    private var smbSession: SMBSessionState?
     private var currentAudioStreamIndex: Int?
     private var currentSubtitleStreamIndex: Int?
 
@@ -429,6 +535,23 @@ final class PlayerViewModel {
     // a scrub past the buffer can't stack reloads or strand on a stale position.
     private var pendingReanchorTarget: CMTime?
     private var isReanchoring = false
+
+    /// What the live transcode job is ACTUALLY doing to the video (copy/remux vs
+    /// re-encode) — the copy-vs-reencode signal `PlaybackInfo` can't give (the server
+    /// reports `Transcode` for stream-copy jobs too; only the running session's
+    /// `TranscodingInfo` distinguishes them, once ffmpeg has started). Nil until the
+    /// probe lands (and on direct-play / SMB, which never probe). Drives the seek
+    /// strategy — a proven video-copy seeks in-stream — and the debug delivery row.
+    /// Cleared with the session; re-fetched after a track-switch rebuild, since a
+    /// burn-in subtitle flips `isVideoDirect` false.
+    private(set) var transcodeDelivery: TranscodeDelivery?
+    /// True once the delivery probe's schedule ran out with no result — the debug row
+    /// can say so instead of reading "probing…" forever. Reset on each new probe.
+    private(set) var deliveryProbeExhausted = false
+    /// The one-shot delivery probe for the current session — stored so session
+    /// teardown cancels it (like `keepaliveTask`). Re-armed on each session's first
+    /// `.playing` beat, which includes a track-switch rebuild.
+    private var deliveryProbeTask: Task<Void, Never>?
 
     /// The resolve surface, narrowed so the integration test can inject a stub
     /// without standing up a full PlaybackInfoService. Mirrors
@@ -450,7 +573,10 @@ final class PlayerViewModel {
         rememberTrackSelection: @escaping @Sendable (TrackSelectionUpdate) async -> Void = { _ in },
         fetchSegments: @escaping @Sendable (ItemID) async -> [MediaSegment] = { _ in [] },
         fetchAdjacent: @escaping @Sendable (ItemID, ItemID) async -> AdjacentEpisodes = { _, _ in .none },
-        keepaliveInterval: Duration = .seconds(30)
+        keepaliveInterval: Duration = .seconds(30),
+        fetchDelivery: @escaping @Sendable (String) async -> TranscodeDelivery? = { _ in nil },
+        deliveryProbeSchedule: [Duration] = [.seconds(2), .seconds(5)],
+        smbResumeStore: SMBResumeStore = .shared
     ) {
         self.deviceProfileBuilder = deviceProfileBuilder
         self.playbackInfo = playbackInfo
@@ -463,6 +589,9 @@ final class PlayerViewModel {
         self.fetchSegments = fetchSegments
         self.fetchAdjacent = fetchAdjacent
         self.keepaliveInterval = keepaliveInterval
+        self.fetchDelivery = fetchDelivery
+        self.deliveryProbeSchedule = deliveryProbeSchedule
+        self.smbResumeStore = smbResumeStore
     }
 
     isolated deinit {
@@ -475,6 +604,7 @@ final class PlayerViewModel {
         subtitleFetchTask?.cancel()
         stallDebounceTask?.cancel()
         keepaliveTask?.cancel()
+        deliveryProbeTask?.cancel()
         segmentsTask?.cancel()
     }
 
@@ -711,13 +841,25 @@ final class PlayerViewModel {
         smbResolve = resolve
         do {
             let item = try await resolve()
+            // Stash the bridge cleanup BEFORE the exit fence below: `resolve()` already
+            // started the bridge (bridge route), and `checkStillActive()` throws when a
+            // dismissal landed in the resolve window (the common exit case). Stashing here
+            // means the live bridge is reachable — the `stop()` backstop (onDisappear always
+            // runs it) reads this property — instead of being dropped un-reaped. `start(smbItem:)`
+            // re-stashes the same value; idempotent.
+            smbCleanup = item.cleanup
             // The resolve is the off-tap window an exit usually lands in — bail before
             // delegating so a dismissed player can't start audio. `start(smbItem:)`
             // re-checks after activating the session.
             try checkStillActive()
             await start(smbItem: item)
         } catch is CancellationError {
-            // Exit raced the resolve — the view is gone; nothing to surface.
+            // Exit raced the resolve — the view is gone. Reap the bridge we just stashed:
+            // if `stop()` already ran (onDisappear backstop firing during the resolve), it
+            // reaped nothing — `smbCleanup` was still nil then — and won't run again (its
+            // `didStop` guard), so the bridge would strand. `tearDownSMBBridge()` is idempotent
+            // (nil-before-await), so it's safe even if a concurrent `stop()` also reaps it.
+            await tearDownSMBBridge()
         } catch let error as AppError {
             phase = .failed(error)
         } catch {
@@ -745,6 +887,17 @@ final class PlayerViewModel {
         episodeNumber = nil
         // No Jellyfin item: skip resolve, DeviceProfile, keepalive, segments, and
         // neighbor lookups (all server features). `resolved` stays nil.
+        //
+        // Stashed up front (before the first throw point): the resolver already started the
+        // bridge, so ANY failure below — audio-session, an exit-during-load fence, or the load
+        // itself — must be able to tear it down. `stop()` is the backstop (onDisappear always
+        // calls it); the `.failed` catches below clean up explicitly for the no-exit failures.
+        smbCleanup = smbItem.cleanup
+        // The local-resume session: progress beats + stop()'s final write persist positions
+        // under `itemID` (exactly where the resolver's startTime came from);
+        // `hasTrustworthyDuration` gates the store's 95%-complete clear (see the type doc).
+        smbSession = SMBSessionState(itemID: smbItem.itemID,
+                                     hasTrustworthyDuration: smbItem.hasTrustworthyDuration)
         do {
             do {
                 try await audioSession.activate()
@@ -757,20 +910,24 @@ final class PlayerViewModel {
             // `loadSidecarSubtitle` finds the URL by index, exactly like the Jellyfin
             // path's `subtitleURLs = resolved.subtitleStreamURLs`.
             subtitleURLs = smbItem.subtitleURLs
+            // Surface those sidecars as selectable menu entries NOW (before the engine's
+            // embedded inventory lands on .ready), with the resolver's labels. The `.ready`
+            // merge re-appends these to the engine's embedded subs so they survive it —
+            // the Jellyfin `externalSubtitleTracks(from: resolved)` path is nil-`resolved`
+            // on SMB, so this SMB-shaped overload stands in for it.
+            smbExternalSubtitleTracks = Self.externalSubtitleTracks(
+                urls: smbItem.subtitleURLs, labels: smbItem.subtitleLabels
+            )
+            availableSubtitleTracks = smbExternalSubtitleTracks
             // Materialized off-main (the first touch writes font files) so embedded
             // ASS/SSA subs still render under VLC — same source as the Jellyfin asset.
             let fonts = await SubtitleFontLocator.resolved()
             let asset = PlayableAsset(
                 url: smbItem.url,
                 headers: nil,
-                hints: PlaybackHints(
-                    scheme: "smb",
-                    container: nil,
-                    videoCodec: nil,
-                    audioCodec: nil,
-                    subtitleFormats: [],
-                    fileSizeBytes: smbItem.fileSizeBytes
-                ),
+                // Probe-derived: scheme "http" (+ container/codecs) routes a bridged file to
+                // AVKit, scheme "smb" keeps it on VLC. The resolver owns this decision.
+                hints: smbItem.hints,
                 startTime: smbItem.startTime,
                 mediaStreams: [],
                 defaultAudioStreamIndex: nil,
@@ -779,21 +936,64 @@ final class PlayerViewModel {
                 subtitleFontsDirectoryURL: fonts?.directory,
                 vlcOptions: smbItem.vlcOptions
             )
-            // Follow-up (Task 11): surface `subtitleURLs` as selectable tracks. The
-            // engine only reports EMBEDDED tracks, so a synthetic-index → URL menu entry
-            // (the Jellyfin path's `externalSubtitleTracks` machinery) is needed to make
-            // the sidecar user-pickable. Populating `subtitleURLs` is enough for this task.
             try await loadAndPlay(asset, reusingEngine: false)
         } catch is CancellationError {
+            // Exit fence: the player is dismissing, so `stop()` (onDisappear backstop) owns the
+            // bridge teardown — don't race it here.
             await audioSession.deactivate()
         } catch let error as AppError {
             phase = .failed(error)
+            await tearDownSMBBridge()
             await audioSession.deactivate()
         } catch {
             Log.playback.error("SMB playback start failed (unmapped): \(error.networkDiagnostic)")
             phase = .failed(.unexpected("playback start failed", underlying: AnySendableError(error)))
+            await tearDownSMBBridge()
             await audioSession.deactivate()
         }
+    }
+
+    /// Invokes + clears the SMB bridge cleanup exactly once. Nil'ing before the await makes it
+    /// idempotent against the racing `stop()`/`tearDownEngine()` sites; a no-op on Jellyfin and
+    /// VLC-route sessions (`smbCleanup` is nil).
+    private func tearDownSMBBridge() async {
+        if let cleanup = smbCleanup {
+            smbCleanup = nil
+            await cleanup()
+        }
+    }
+
+    /// Persists the current SMB position at most every ~10s — the local mirror of the
+    /// Jellyfin progress-report cadence, shared by the `.playing` and `.paused` beat arms.
+    /// The duration only rides along when it's both real (`hasKnownDuration`) AND TRUSTED
+    /// (`session.hasTrustworthyDuration`): an incomplete file can play with a NUMERIC but
+    /// ESTIMATED length (VLCKitEngine's fileSize×time/readBytes guess), and the store's
+    /// 95%-finished rule must never clear real progress against that guess. Fire-and-forget
+    /// into the store actor so a beat never blocks on UserDefaults.
+    private func saveSMBResumeThrottled() {
+        guard let session = smbSession else { return }
+        guard Date.now.timeIntervalSince(session.lastResumeWrite) >= 10 else { return }
+        smbSession?.lastResumeWrite = .now
+        let position = currentPosition
+        let duration = (hasKnownDuration && session.hasTrustworthyDuration) ? currentDuration : nil
+        let itemID = session.itemID
+        session.resumeSaveTask?.cancel()
+        smbSession?.resumeSaveTask = Task {
+            await smbResumeStore.save(position: position, duration: duration, for: itemID)
+        }
+    }
+
+    /// The single teardown path for the SMB resume session: nils the whole value — dropping
+    /// the id, the trust bit, and the throttle clock together — BEFORE awaiting the in-flight
+    /// save, so a concurrent throttled beat can't spawn a new save during the await and the
+    /// terminal write that follows at the call site (`stop()` saves, `.ended` clears) can't be
+    /// outrun by a stale one. Idempotent: a nil session is a no-op. The caller captures the id
+    /// it needs FIRST, since this clears it. (The SMB bridge cleanup is separate — see
+    /// `tearDownSMBBridge`; it's torn down after engine teardown, not with the session.)
+    private func clearSMBSession() async {
+        guard let session = smbSession else { return }
+        smbSession = nil
+        await session.resumeSaveTask?.value
     }
 
     /// Resolve + load + play. Shared by first play (`start`) and a transcode
@@ -907,6 +1107,9 @@ final class PlayerViewModel {
             await tearDownEngine()
             throw error
         }
+        // Startup-metric anchor: recorded at dispatch, consumed by this session's
+        // first `.playing` beat in `handle(_:)` — see `startupMillis`.
+        startupClockStart = ContinuousClock.now
         await engine.play()
         // A freshly-built engine starts at 1.0×; re-apply the chosen speed so it
         // survives an engine rebuild (track switch / first play after a speed change).
@@ -927,10 +1130,16 @@ final class PlayerViewModel {
         stateTask = nil
         keepaliveTask?.cancel()
         keepaliveTask = nil
+        deliveryProbeTask?.cancel()
+        deliveryProbeTask = nil
+        transcodeDelivery = nil
         if let engine {
             await engine.teardown()
             self.engine = nil
         }
+        // A load failure tears the bridge down with the engine: nothing consumes the stream, so
+        // the orphaned listener + its SMB connection must not outlive the failed load.
+        await tearDownSMBBridge()
         await stopEncodingIfNeeded()
     }
 
@@ -953,6 +1162,27 @@ final class PlayerViewModel {
         isExiting = true
         guard !didStop else { return }
         didStop = true
+        // Final local-resume write for SMB sessions — no throttle, and BEFORE teardown
+        // zeroes currentPosition. The store's own rules turn a <5s or ≥95%-of-known-
+        // duration position into a clear. Skipped at exactly zero: a session that never
+        // produced a beat (failed load, exit during resolve) must not wipe the stored
+        // resume it was about to honor — the Jellyfin analog of reportStoppedIfNeeded's
+        // didReportStart gate. Nil after: the session is over.
+        if let session = smbSession {
+            // Capture before clearing — the terminal write below needs the id + trust bit.
+            let itemID = session.itemID
+            let trusted = session.hasTrustworthyDuration
+            // Clears the session (id + trust + throttle clock) and awaits a stale throttled
+            // save so it can't outrun this terminal write.
+            await clearSMBSession()
+            if CMTimeGetSeconds(currentPosition) > 0 {
+                await smbResumeStore.save(
+                    position: currentPosition,
+                    duration: (hasKnownDuration && trusted) ? currentDuration : nil,
+                    for: itemID
+                )
+            }
+        }
         stateTask?.cancel()
         stateTask = nil
         keepaliveTask?.cancel()
@@ -962,6 +1192,9 @@ final class PlayerViewModel {
         if let engine {
             await engine.teardown()
         }
+        // Kill the SMB bridge with the session: an orphaned listener holds an SMB connection and
+        // a LAN-reachable file URL. No-op on Jellyfin/VLC-route sessions (smbCleanup is nil).
+        await tearDownSMBBridge()
         nowPlaying.clear()
         // Exit kills the encoding explicitly (not just via the stop report):
         // a session that wedged before its first .playing beat never reports
@@ -979,6 +1212,9 @@ final class PlayerViewModel {
         // state too so a retry()/replay can't inherit a stale target or a stuck flag.
         pendingReanchorTarget = nil
         isReanchoring = false
+        deliveryProbeTask?.cancel()
+        deliveryProbeTask = nil
+        transcodeDelivery = nil
         availableAudioTracks = []
         availableSubtitleTracks = []
         selectedAudioTrack = nil
@@ -988,6 +1224,7 @@ final class PlayerViewModel {
         subtitleFetchTask = nil
         activeSubtitleCues = []
         subtitleURLs = [:]
+        smbExternalSubtitleTracks = []
         clientSubtitleDelayMs = 0
         currentPosition = .zero
         currentDuration = .zero
@@ -1042,6 +1279,38 @@ final class PlayerViewModel {
         }
     }
 
+    /// Arms the one-shot copy-vs-reencode delivery probe for the just-started
+    /// transcode session. ffmpeg spins up lazily and only populates the session's
+    /// `TranscodingInfo` once it's encoding, so the probe walks `deliveryProbeSchedule`
+    /// (≈2s then +5s in production) waiting then fetching at each step; a nil result
+    /// (session/`TranscodingInfo` not up yet) moves to the next entry, and running out
+    /// of the schedule gives up silently — the seek gate stays conservative on a nil
+    /// delivery anyway. Direct play has no job to probe. Clears any stale delivery up
+    /// front so the window (and a re-probe after a track switch, where burn-in can flip
+    /// the answer) reads "probing…" until the fresh result lands.
+    private func startDeliveryProbe(for resolved: ResolvedPlayback) {
+        deliveryProbeTask?.cancel()
+        deliveryProbeTask = nil
+        transcodeDelivery = nil
+        deliveryProbeExhausted = false
+        guard resolved.method == .transcode else { return }
+        let sessionID = resolved.playSessionID
+        let fetch = fetchDelivery
+        let schedule = deliveryProbeSchedule
+        deliveryProbeTask = Task { [weak self] in
+            for delay in schedule {
+                do { try await Task.sleep(for: delay) } catch { return }
+                if Task.isCancelled { return }
+                if let delivery = await fetch(sessionID) {
+                    if Task.isCancelled { return }
+                    self?.transcodeDelivery = delivery
+                    return
+                }
+            }
+            if !Task.isCancelled { self?.deliveryProbeExhausted = true }
+        }
+    }
+
     /// Kills the outgoing session's server-side transcode job, exactly once.
     /// MUST run before resolving a replacement stream: with throttling off, an
     /// abandoned 4K job keeps transcoding flat-out and starves the new job's
@@ -1080,6 +1349,8 @@ final class PlayerViewModel {
         didReportStopped = false
         didStopEncoding = false
         lastPosition = .zero
+        startupClockStart = nil
+        startupMillis = nil
     }
 
     func selectAudioTrack(_ track: AudioTrack) async {
@@ -1113,7 +1384,11 @@ final class PlayerViewModel {
                 // Playback resumed on the previous track: restore the checkmark and
                 // surface the failure scrim (retry / keep current track).
                 selectedAudioTrack = previous
-                trackSwitchFailure = TrackSwitchFailure(requested: track, fallback: previous, error: error)
+                trackSwitchFailure = TrackSwitchFailure(
+                    requested: .audio(track),
+                    fallback: previous.map(TrackPick.audio),
+                    error: error
+                )
             case .failed:
                 break   // phase == .failed — the general error scrim owns the surface
             }
@@ -1130,16 +1405,52 @@ final class PlayerViewModel {
         // still points at the outgoing session, so a sidecar fetch would read the
         // old session's subtitle URLs.
         guard !isStartingPlayback, !isSwitchingTracks else { return }
+        // A burned-in (image) subtitle has no sidecar to fetch — the server can only
+        // deliver it baked into the video, which costs a full re-encode. Route through
+        // the same re-resolve `selectAudioTrack` uses instead of the sidecar-fetch
+        // path below; the picked index lands as `subtitleStreamIndex` on the next
+        // PlaybackInfo POST and the server burns it in from there.
+        if let track, track.isBurnedIn {
+            // Re-picking the already-burned-in track is a no-op — it would cost a
+            // pointless re-resolve/reload for a stream already playing. (A failed
+            // switch restores `selectedSubtitleTrack` to the fallback first, so the
+            // scrim's retry still passes this guard.)
+            guard track != selectedSubtitleTrack else { return }
+            guard let index = track.id.jellyfinStreamIndex else { return }
+            await reloadSubtitleTranscode(to: track, subtitleStreamIndex: index)
+            return
+        }
+        // Leaving an ACTIVE burn-in for anything else — Off or a text sub — needs the
+        // same re-resolve a pick INTO a burn-in gets above: the server is still
+        // re-encoding the old image into the video until a fresh transcode says
+        // otherwise. Without this, "Off" doesn't turn it off, and a text pick just
+        // draws its overlay on top of the still-burned-in image (double-stacked).
+        // Picking one burn-in into another already reloads unconditionally above, so
+        // this only matters for the two branches below.
+        let leavingBurnIn = resolved?.method == .transcode && selectedSubtitleTrack?.isBurnedIn == true
         // A `.jellyfinStream` id is an external/sidecar text sub we render ourselves
         // (transcode: every text sub; direct-play: the external ones) — fetch + draw it
         // via SubtitleOverlayView with the engine's own subtitle held off. An embedded
         // direct-play track carries a `.vlc`/`.avKitOption` id the engine renders; `nil`
         // is Off.
         if let track, let index = track.id.jellyfinStreamIndex {
+            if leavingBurnIn {
+                // Sidecar activation must wait for the reload to land — fetching now would
+                // read the still-burning-in outgoing session's (stale) subtitleURLs.
+                await reloadSubtitleTranscode(to: track, subtitleStreamIndex: index) {
+                    await self.activateSidecarSubtitle(track, index: index)
+                }
+                return
+            }
             await activateSidecarSubtitle(track, index: index)
         } else if resolved?.method == .transcode {
-            // Transcode Off: no engine subtitle exists (subs never ride the manifest),
-            // so just drop the overlay and record Jellyfin's "no subtitle" sentinel.
+            if leavingBurnIn {
+                await reloadSubtitleTranscode(to: nil, subtitleStreamIndex: -1)
+                return
+            }
+            // Transcode Off, no active burn-in: no engine subtitle exists (subs never
+            // ride the manifest) and the server isn't burning anything in, so just drop
+            // the overlay and record Jellyfin's "no subtitle" sentinel — no reload earned.
             selectedSubtitleTrack = nil
             currentSubtitleStreamIndex = -1
             clearSidecarSubtitle()
@@ -1154,6 +1465,44 @@ final class PlayerViewModel {
         persistTrackSelection(.subtitles(languageCode: track?.languageCode))
     }
 
+    /// Re-resolves the transcode around a new subtitle target and reports the outcome
+    /// through the same optimistic-set/restore/scrim machinery `selectSubtitleTrack`'s
+    /// burn-in branch always used — now shared with the two "leaving an active burn-in"
+    /// branches (Off, a text sub) that used to skip the reload entirely. `onCompleted`
+    /// runs once the reload lands, for target-specific follow-up that must not race the
+    /// still-burning-in outgoing session (a text sub's sidecar fetch).
+    private func reloadSubtitleTranscode(
+        to target: SubtitleTrack?,
+        subtitleStreamIndex: Int,
+        onCompleted: () async -> Void = {}
+    ) async {
+        let previous = selectedSubtitleTrack
+        selectedSubtitleTrack = target
+        trackSwitchFailure = nil
+        // No overlay renders while the reload is in flight — drop whatever sidecar was
+        // showing (a burn-in target shows nothing either way; the failure/abandon arms
+        // below re-arm it via restoreSidecarSubtitle if the previous track had one).
+        clearSidecarSubtitle()
+        switch await switchTranscodeTrack(audioStreamIndex: currentAudioStreamIndex, subtitleStreamIndex: subtitleStreamIndex) {
+        case .completed:
+            await onCompleted()
+            persistTrackSelection(.subtitles(languageCode: target?.languageCode))
+        case .abandoned:
+            selectedSubtitleTrack = previous
+            restoreSidecarSubtitle(previous)
+        case .fellBack(let error):
+            selectedSubtitleTrack = previous
+            restoreSidecarSubtitle(previous)
+            trackSwitchFailure = TrackSwitchFailure(
+                requested: .subtitle(target),
+                fallback: previous.map(TrackPick.subtitle),
+                error: error
+            )
+        case .failed:
+            break   // phase == .failed — the general error scrim owns the surface
+        }
+    }
+
     /// Activate a client-rendered sidecar subtitle: the app draws it via
     /// `SubtitleOverlayView`, so the ENGINE must not also render one. Deselecting the
     /// engine subtitle is mandatory on EVERY external pick — VLC auto-selects an embedded
@@ -1165,6 +1514,17 @@ final class PlayerViewModel {
         await engine?.setSubtitleTrack(nil)
         currentSubtitleStreamIndex = index
         selectedSubtitleTrack = track
+        loadSidecarSubtitle(streamIndex: index)
+    }
+
+    /// Re-arms the client overlay for the track a failed/abandoned subtitle switch fell
+    /// back to — every `reloadSubtitleTranscode` failure/abandon arm (a pick INTO a
+    /// burn-in, or leaving one for Off/a text sub) clears the sidecar optimistically
+    /// before the re-resolve; when that re-resolve doesn't land, the still-mounted
+    /// previous session needs its text overlay back (a bare Off/burn-in track needs
+    /// nothing — there's no sidecar to fetch either way).
+    private func restoreSidecarSubtitle(_ track: SubtitleTrack?) {
+        guard let track, let index = track.id.jellyfinStreamIndex, !track.isBurnedIn else { return }
         loadSidecarSubtitle(streamIndex: index)
     }
 
@@ -1182,12 +1542,14 @@ final class PlayerViewModel {
     /// subtitle mode, PlayDefaultAudioTrack) into PlaybackInfo's default stream
     /// indices — the server is the single implementation of that logic. On the
     /// transcode path the audio default is baked into the stream; the subtitle
-    /// default is surfaced here as the initial sidecar selection. Text subs
-    /// only: image subs never enter `availableSubtitleTracks`, so a PGS default
-    /// quietly stays off (burn-in is a later phase).
+    /// default is surfaced here as the initial sidecar selection. Text subs only:
+    /// burn-in is opt-in, so a PGS/VobSub default (however the server picked it)
+    /// is never auto-applied — that would silently force a re-encode (and
+    /// possibly HDR→SDR) on first play with no user action. The user can still
+    /// pick it explicitly from the menu.
     private func applyTranscodeDefaultSubtitle(from resolved: ResolvedPlayback) async {
         guard let index = resolved.defaultSubtitleStreamIndex,
-              let track = availableSubtitleTracks.first(where: { $0.id == .jellyfinStream(index) })
+              let track = availableSubtitleTracks.first(where: { $0.id == .jellyfinStream(index) && !$0.isBurnedIn })
         else { return }
         await activateSidecarSubtitle(track, index: index)
     }
@@ -1247,9 +1609,14 @@ final class PlayerViewModel {
             return
         }
         let fetch = subtitleFetch
+        // Parser by extension: Jellyfin's sidecar endpoint serves WebVTT, but an SMB sibling
+        // is whatever the release shipped — `.srt` is the common one and WebVTTParser can't
+        // read its `HH:MM:SS,mmm` comma timing. `.ass`/`.ssa` have no client renderer yet, so
+        // they fall through to WebVTT (yields []) rather than mis-parsing.
+        let isSRT = url.pathExtension.lowercased() == "srt"
         subtitleFetchTask = Task { [weak self] in
             guard let data = await fetch(url) else { return }
-            let cues = WebVTTParser.parse(data: data)
+            let cues = isSRT ? SRTParser.parse(data: data) : WebVTTParser.parse(data: data)
             if Task.isCancelled { return }
             self?.activeSubtitleCues = cues
         }
@@ -1278,34 +1645,74 @@ final class PlayerViewModel {
     }
 
     /// The one seek entry point for every source: scrub, chapter jump, segment skip,
-    /// and the Now Playing remote. An OUT-OF-BUFFER seek on a TRANSCODE re-resolves a
-    /// fresh transcode at the target instead of seeking in-stream — Jellyfin transcodes
-    /// fMP4 with `-noaccurate_seek`, so an in-playlist seek restarts ffmpeg mid-session
-    /// and the new segments' video clock drifts from the player clock, desyncing the
-    /// client subtitle overlay (jellyfin#15845). A fresh session's resume-seek lands
-    /// frame-accurate (that's why "dismiss + restart fixes it"). In-buffer transcode
-    /// seeks, and every direct-play / VLC / SMB seek, stay in-stream — instant, and on a
-    /// fresh-anchored session never drifting. Cost: the re-anchor re-buffers, but an
-    /// out-of-buffer transcode seek already re-buffers today (the engine fetches the
-    /// segment), so this swaps a drifting in-place restart for an aligned fresh one.
-    func seek(to target: CMTime) async {
-        guard let engine else { return }
-        // Only the transcode path drifts; everything else seeks in-stream as before.
-        guard resolved?.method == .transcode else {
+    /// and the Now Playing remote. An OUT-OF-BUFFER seek on a RE-ENCODE transcode
+    /// re-resolves a fresh transcode at the target instead of seeking in-stream —
+    /// Jellyfin RE-ENCODES fMP4 with `-noaccurate_seek`, so an in-playlist seek restarts
+    /// ffmpeg mid-session and the new segments' video clock drifts from the player clock,
+    /// desyncing the client subtitle overlay (jellyfin#15845). A fresh session's
+    /// resume-seek lands frame-accurate (that's why "dismiss + restart fixes it").
+    ///
+    /// A REMUX transcode (video stream-copy, `transcodeDelivery.isVideoDirect == true`)
+    /// is exempt: the server seeks those on the `isHlsRemuxing` keyframe branch
+    /// (EncodingHelper.cs), which is frame-accurate — `-noaccurate_seek` is a
+    /// RE-ENCODE-only failure mode — so a remux seeks in-stream like direct play, with
+    /// no re-buffer. In-buffer transcode seeks, and every direct-play / VLC / SMB seek,
+    /// stay in-stream too. A nil/unknown delivery (still probing) stays conservative and
+    /// re-anchors. Cost: the re-anchor re-buffers, but an out-of-buffer re-encode seek
+    /// already re-buffers today (the engine fetches the segment), so this swaps a
+    /// drifting in-place restart for an aligned fresh one.
+    /// Returns `true` when the seek RE-ANCHORED (rebuilt the transcode via
+    /// `reloadTranscode`, which force-resumes playback), `false` for an in-stream
+    /// `engine.seek`. `commitScrubSeek` branches on it to restore a paused scrub's
+    /// pause after a force-resuming reload.
+    @discardableResult
+    func seek(to target: CMTime) async -> Bool {
+        guard let engine else { return false }
+        // Only an out-of-buffer RE-ENCODE transcode drifts. A remux (proven video copy)
+        // seeks on the server's accurate keyframe branch, and everything else (direct
+        // play / VLC / SMB) seeks in-stream — as does a nil delivery once we know it's
+        // not a re-encode. Conservative while the probe is still nil: re-anchor.
+        guard resolved?.method == .transcode, transcodeDelivery?.isVideoDirect != true else {
             await engine.seek(to: target)
-            return
+            return false
         }
         // A re-anchor already in flight makes the engine's buffer state meaningless
         // (it's mid-reload) — hand the newest target to the drain and let it win.
         if isReanchoring {
             pendingReanchorTarget = target
-            return
+            return true
         }
         if await engine.isBuffered(at: target) {
             await engine.seek(to: target)
+            return false
         } else {
             pendingReanchorTarget = target
             await drainReanchorSeeks()
+            return true
+        }
+    }
+
+    /// A scrub-commit seek: the gated `seek(to:)` followed by the pre-scrub transport
+    /// replay. Every touch/VoiceOver/tvOS scrub commit routes its seek through `seek(to:)`
+    /// so an out-of-buffer RE-ENCODE transcode re-anchors (jellyfin#15845) instead of
+    /// drifting the subtitle overlay; the touch drag additionally pauses the engine to
+    /// hold the still frame, so it must replay the user's pre-scrub play state here.
+    ///
+    /// The wrinkle a bare `seek` can't cover: a re-anchor runs `reloadTranscode`, whose
+    /// `loadAndPlay` UNCONDITIONALLY resumes — so a scrub that began while PAUSED comes
+    /// back playing unless we re-pause it. An in-stream seek leaves the drag's pause in
+    /// place, so it only needs the resume. `resume` is the chain-start play state
+    /// (`scrubWasPlaying`); the caller owns the scrub latch (`beginScrubLatch` /
+    /// `endScrubLatch`) and the generation-guarded `isScrubbing` release around this call.
+    func commitScrubSeek(to target: CMTime, resume: Bool) async {
+        let didReanchor = await seek(to: target)
+        guard let engine else { return }
+        if resume {
+            // The reload already resumed; only the in-stream seek left the drag-pause on.
+            if !didReanchor { await engine.play() }
+        } else if didReanchor {
+            // The reload force-resumed against the user's pause — restore it.
+            await engine.pause()
         }
     }
 
@@ -1374,6 +1781,24 @@ final class PlayerViewModel {
         didReportStart = false
         didReportStopped = false
         didStopEncoding = false
+        // The reload dispatches a fresh engine.play() below (via beginPlayback →
+        // loadAndPlay), which re-arms startupClockStart — this session's old metric
+        // must not linger on screen until that beat lands.
+        startupClockStart = nil
+        startupMillis = nil
+        // The delivery verdict belonged to the outgoing session. A burn-in subtitle
+        // switch can flip the video to a re-encode (isVideoDirect false), and a
+        // re-anchor opens a fresh session, so drop the stale verdict now — the seek
+        // gate goes conservative (re-anchor) until the new session's first `.playing`
+        // beat re-probes.
+        deliveryProbeTask?.cancel()
+        deliveryProbeTask = nil
+        transcodeDelivery = nil
+        // A stale "exhausted" from the outgoing session must not carry over: the debug row
+        // gates on this flag when `transcodeDelivery` is nil, and without the reset it would
+        // show "no delivery info" for the whole reload window instead of "probing…" until
+        // `startDeliveryProbe` re-arms on the new session's first `.playing` beat.
+        deliveryProbeExhausted = false
 
         do {
             try await beginPlayback(
@@ -1480,10 +1905,12 @@ final class PlayerViewModel {
             // .loading, or the spinner would reappear over a playing video.
             if resolved?.method != .transcode {
                 availableAudioTracks = tracks.audio
-                // Embedded subs come from the engine; external sidecar subs are appended
-                // from the server list and rendered client-side (the engine can't shape
-                // sidecar VTT on iOS). Both share the chip menu. (No server subs on SMB.)
-                let externalSubs = resolved.map(Self.externalSubtitleTracks) ?? []
+                // Embedded subs come from the engine; external sidecar subs are appended and
+                // rendered client-side (the engine can't shape sidecar VTT on iOS). Both share
+                // the chip menu. Jellyfin sources the externals from `resolved`; SMB (resolved
+                // nil) uses the pre-built `smbExternalSubtitleTracks` — either way the engine's
+                // embedded inventory can't clobber the sidecar picks.
+                let externalSubs = resolved.map(Self.externalSubtitleTracks) ?? smbExternalSubtitleTracks
                 availableSubtitleTracks = tracks.subtitles + externalSubs
                 // Reflect the engine's default selection so the menus show a
                 // checkmark on the track that's actually playing. Don't clobber
@@ -1506,6 +1933,14 @@ final class PlayerViewModel {
             }
         case .playing(let position, let duration, let buffered):
             phase = .playing
+            // First `.playing` beat of this session: land the startup metric and consume
+            // the anchor so a later `.playing` (resume-from-pause, post-stall) never
+            // overwrites it. `nil` when this beat isn't the first (already consumed).
+            if let clockStart = startupClockStart {
+                startupClockStart = nil
+                let elapsed = clockStart.duration(to: .now).components
+                startupMillis = Int(elapsed.seconds * 1000 + elapsed.attoseconds / 1_000_000_000_000_000)
+            }
             // A scrub commit pins isPlaying to the user's intent across the engine's transient
             // pause/seek/resume beats (see scrubResumeIntent); the commit clears the latch when it
             // settles. nil = honor the beat directly.
@@ -1516,14 +1951,20 @@ final class PlayerViewModel {
             applyDuration(duration)
             bufferedTo = buffered
             nowPlaying.update(position: position, duration: duration, isPlaying: true, title: itemTitle)
-            // Jellyfin-only: no server session to report against on the SMB path.
+            // Jellyfin: report to the server session. SMB: persist the position locally —
+            // same beat, same ~10s throttle discipline as the progress report.
             if let resolved {
                 if !didReportStart {
                     didReportStart = true
                     await playbackInfo.reportStart(beat(position: position, isPaused: false, from: resolved))
+                    // First playing beat of this (fresh or track-switched) session: ffmpeg
+                    // is now running, so probe what it's actually doing to the video.
+                    startDeliveryProbe(for: resolved)
                 } else {
                     await playbackInfo.reportProgress(beat(position: position, isPaused: false, from: resolved))
                 }
+            } else if smbSession != nil {
+                saveSMBResumeThrottled()
             }
         case .paused(let position, let duration, let buffered):
             // While a scrub latch holds an intent, ignore the transient .paused beats the
@@ -1539,9 +1980,14 @@ final class PlayerViewModel {
             // Never report progress for a session that never reported start (a remote/PiP
             // pause can land during buffering, before the first .playing beat) — Jellyfin
             // expects PlaybackStart before any Progress. Mirrors the .playing branch's gate.
-            // The `if let resolved` also skips the SMB path, which has no server session.
+            // The `if let resolved` also skips the SMB path, which has no server session —
+            // it persists the pause point locally instead (same throttle; a pause right
+            // before dismissal is covered by stop()'s final save, gated only on a nonzero
+            // position — see stop()).
             if let resolved, didReportStart {
                 await playbackInfo.reportProgress(beat(position: position, isPaused: true, from: resolved))
+            } else if resolved == nil, smbSession != nil {
+                saveSMBResumeThrottled()
             }
         case .buffering(let position, let duration, let buffered):
             // Phase and isPlaying are untouched: the surface stays up and the
@@ -1591,6 +2037,15 @@ final class PlayerViewModel {
                 // in the gap before the dismiss lands.
                 playbackDidComplete = true
             }
+            // SMB mirror of the stop report: a finished file restarts fresh. Clear the
+            // session (nil'ing the id) BEFORE the store clear so stop()'s final save (the
+            // dismiss lands right after) can't resurrect the position this just cleared;
+            // `clearSMBSession` also awaits a stale throttled save so it can't outrun it.
+            if let session = smbSession {
+                let itemID = session.itemID
+                await clearSMBSession()
+                await smbResumeStore.clear(itemID)
+            }
             await reportStoppedIfNeeded()
             // Deferred onto a fresh task so the in-flight `.ended` beat unwinds the engine's
             // state loop before the swap tears it down.
@@ -1625,9 +2080,12 @@ final class PlayerViewModel {
     /// source stream index — `selectAudioTrack`/`selectSubtitleTrack` feed it
     /// straight back to the server as `AudioStreamIndex`/`SubtitleStreamIndex`.
     ///
-    /// Image subtitles (PGS/VobSub) are dropped: the server can only deliver them
-    /// by burning into the video, which this phase deliberately doesn't do. Only
-    /// text subs (carried in the HLS manifest) are offered until burn-in lands.
+    /// Image subtitles (PGS/VobSub) are INCLUDED here, marked `isBurnedIn` —
+    /// `DeviceProfileTranslator` declares them `.encode`, so the only way the
+    /// server can deliver one is burned into the video. Picking one in
+    /// `selectSubtitleTrack` re-resolves (like an audio switch), never happens by
+    /// default (`applyTranscodeDefaultSubtitle` skips burned-in defaults — opt-in
+    /// only), and forces a full re-encode (possibly HDR→SDR; jellyfin-tizen#202).
     private func populateTranscodeMenus(from resolved: ResolvedPlayback) {
         availableAudioTracks = resolved.mediaStreams
             .filter { $0.kind == .audio }
@@ -1647,7 +2105,7 @@ final class PlayerViewModel {
                 )
             }
         availableSubtitleTracks = resolved.mediaStreams
-            .filter { $0.kind == .subtitle && !$0.isImageSubtitle }
+            .filter { $0.kind == .subtitle }
             .map(Self.subtitleTrack(from:))
 
         selectedAudioTrack = availableAudioTracks.first { $0.id == currentAudioStreamIndex.map(TrackID.jellyfinStream) }
@@ -1714,19 +2172,64 @@ final class PlayerViewModel {
             .map(Self.subtitleTrack(from:))
     }
 
+    /// Sidecar formats `SubtitleOverlayView`'s client-side pipeline can actually parse
+    /// (`SRTParser`/`WebVTTParser`). Case-insensitive extension check.
+    private static let renderableSidecarExtensions: Set<String> = ["srt", "vtt"]
+
+    /// SMB analog of `externalSubtitleTracks(from resolved:)` — there's no `resolved`
+    /// stream list on the SMB path, only the filename-matched `[index: URL]` map + the
+    /// resolver's `[index: label]`. Builds the same `.jellyfinStream`-id, client-rendered
+    /// external tracks (so `selectSubtitleTrack` → `activateSidecarSubtitle` → the overlay
+    /// path works identically) with the resolver's labels and the file extension as detail.
+    /// Ordered by index for a stable menu.
+    ///
+    /// Filtered to `renderableSidecarExtensions`: the resolver's filename matcher also
+    /// surfaces ASS/SSA sidecars (no client renderer yet — `SubtitleOverlayView` only
+    /// parses SRT/VTT, so a selected ASS/SSA track would draw zero cues), but `subtitleURLs`
+    /// itself stays unfiltered so a future VLC-native slaving task can still see those URLs.
+    private static func externalSubtitleTracks(urls: [Int: URL], labels: [Int: String]) -> [SubtitleTrack] {
+        urls.keys.sorted().compactMap { index -> SubtitleTrack? in
+            guard let url = urls[index],
+                  renderableSidecarExtensions.contains(url.pathExtension.lowercased())
+            else { return nil }
+            let format = url.pathExtension.uppercased()
+            let detail = format.isEmpty ? "External" : "\(format) · External"
+            return SubtitleTrack(
+                id: .jellyfinStream(index),
+                displayName: labels[index] ?? "Subtitle \(index + 1)",
+                languageCode: nil,
+                isForced: false,
+                detailLabel: detail,
+                isExternal: true,
+                isSDH: false
+            )
+        }
+    }
+
     /// Maps a server subtitle stream to a menu `SubtitleTrack` with a `.jellyfinStream` id
     /// (fed straight back to the server as `SubtitleStreamIndex` / to the sidecar loader).
-    /// Shared by the transcode menu (all text subs) and the direct-play external-subs
-    /// append (external only) so the two never drift in how a track is labeled.
+    /// Shared by the transcode menu (all text subs, plus opt-in image subs) and the
+    /// direct-play external-subs append (external TEXT only — `externalSubtitleTracks`
+    /// filters image subs out before this ever sees one) so the two never drift in how
+    /// a track is labeled.
     private static func subtitleTrack(from stream: MediaStreamInfo) -> SubtitleTrack {
-        SubtitleTrack(
+        // Image subs only ever reach here via the transcode menu, where picking one
+        // burns it into the video server-side instead of playing as "Embedded"/
+        // "External" — the format alone is the detail line (what it's made of);
+        // the "Burn-in" badge (below, `isBurnedIn`) carries the consequence, same
+        // split as the audio menu's codec detail + "→ AAC" transcode badge.
+        let detail = stream.isImageSubtitle
+            ? TrackDisplay.subtitleFormatName(stream.codec)
+            : stream.trackDetailLabel
+        return SubtitleTrack(
             id: .jellyfinStream(stream.index),
             displayName: stream.menuLabel,
             languageCode: stream.language,
             isForced: stream.isForced,
-            detailLabel: stream.trackDetailLabel,
+            detailLabel: detail,
             isExternal: stream.isExternal,
-            isSDH: stream.isHearingImpaired
+            isSDH: stream.isHearingImpaired,
+            isBurnedIn: stream.isImageSubtitle
         )
     }
 
@@ -1735,8 +2238,8 @@ final class PlayerViewModel {
     /// delivers an HLS stream whose codecs target the AVKit whitelist (per the
     /// device profile), so gating on the source container/codecs (e.g. MKV / AV1
     /// / DTS) would wrongly route an AVKit-playable transcode to VLC and surface
-    /// "unsupported format". Direct-play/-stream serve the source bytes verbatim,
-    /// so their feasibility correctly gates on the source.
+    /// "unsupported format". Direct-play serves the source bytes verbatim, so its
+    /// feasibility correctly gates on the source.
     private static func deliveredHints(for resolved: ResolvedPlayback) -> PlaybackHints {
         switch resolved.method {
         case .transcode:
@@ -1747,7 +2250,7 @@ final class PlayerViewModel {
                 audioCodec: nil,
                 subtitleFormats: []
             )
-        case .directPlay, .directStream:
+        case .directPlay:
             return PlaybackHints(
                 scheme: resolved.url.scheme,
                 container: resolved.container,
@@ -1760,7 +2263,7 @@ final class PlayerViewModel {
 
     private static func map(_ error: PlaybackError) -> AppError {
         switch error {
-        case .assetNotPlayable, .decodeFailed:
+        case .assetNotPlayable:
             return .playback(.decodeFailed)
         case .networkStalled:
             return .playback(.resourceUnavailable)
@@ -1808,5 +2311,45 @@ extension PlayerViewModel {
             await engine?.setSubtitleDelay(milliseconds: ms)
         }
     }
+}
+
+// MARK: - Preview support
+
+/// A view model frozen in a live `.playing` state with representative tracks, for the
+/// HUD `#Preview`s (`PlayerControlsView`). No engine, no network: the display fields are
+/// set directly. The injected deps are inert stubs never exercised (playback never
+/// starts), so this render exercises the chrome layout alone.
+extension PlayerViewModel {
+    @MainActor
+    static func previewPlaying() -> PlayerViewModel {
+        let vm = PlayerViewModel(
+            deviceProfileBuilder: DeviceProfileBuilder(probe: LiveCapabilityProbe()),
+            playbackInfo: NoOpPlaybackReporting(),
+            resolve: { _, _, _, _, _ in throw AppError.playback(.unsupportedFormat) },
+            engineFactory: { _ in fatalError("preview VM never starts playback") },
+            audioSession: PreviewAudioSession()
+        )
+        vm.itemTitle = "The Grand Budapest Hotel"
+        vm.phase = .playing
+        vm.isPlaying = true
+        vm.currentDuration = CMTime(seconds: 5_460, preferredTimescale: 600)   // 1:31:00
+        vm.currentPosition = CMTime(seconds: 1_920, preferredTimescale: 600)   // 0:32:00
+        let audio = AudioTrack(id: .jellyfinStream(1), displayName: "English",
+                               languageCode: "eng", detailLabel: "TrueHD · 7.1")
+        vm.availableAudioTracks = [audio]
+        vm.selectedAudioTrack = audio
+        let subtitle = SubtitleTrack(id: .jellyfinStream(2), displayName: "English",
+                                     languageCode: "eng", isForced: false,
+                                     detailLabel: "SRT · External", isExternal: true)
+        vm.availableSubtitleTracks = [subtitle]
+        vm.selectedSubtitleTrack = subtitle
+        return vm
+    }
+}
+
+private struct PreviewAudioSession: AudioSessionControlling {
+    func activate() async throws {}
+    func deactivate() async {}
+    let routeChanges = AsyncStream<Void> { _ in }
 }
 #endif

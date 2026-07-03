@@ -5,7 +5,7 @@ import JellyfinAPI
 
 @Suite("PlaybackInfoService — progress reporting")
 struct PlaybackInfoServiceReportTests {
-    private func beat(position: Int, paused: Bool = false, method: PlaybackMethod = .directStream) -> ProgressBeat {
+    private func beat(position: Int, paused: Bool = false, method: PlaybackMethod = .directPlay) -> ProgressBeat {
         ProgressBeat(
             positionTicks: position,
             isPaused: paused,

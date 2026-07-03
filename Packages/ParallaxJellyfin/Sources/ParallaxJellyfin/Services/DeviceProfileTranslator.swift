@@ -137,6 +137,10 @@ enum DeviceProfileTranslator {
             // source's long-GOP keyframes — the playlist (gated on MinSegments
             // segments existing) takes several GOPs to appear on a 4K movie.
             // AVPlayer handles segments that open mid-GOP.
+            // The server marks BreakOnNonKeyFrames [Obsolete] and effectively
+            // always-false internally as of 10.9+ (it derives the behavior
+            // itself now); kept here for pre-10.9 servers still honoring the
+            // client hint — Swiftfin's native-AVPlayer profile does the same.
             isBreakOnNonKeyFrames: true,
             // Request up to 7.1 (8ch) on every transcode. Audio channel layout
             // is output-side: iOS/tvOS hand AVPlayer the full multichannel bed
@@ -171,17 +175,26 @@ enum DeviceProfileTranslator {
             SubtitleProfile(format: "srt", method: .external),
         ]
 
-        // Advertise the remaining text/image formats as external too, so the server
-        // exposes each as a sidecar stream URL. Every engine renders them client-side
-        // (fetched + drawn over the video), so the delivery method is uniform here.
+        // ASS stays external — a text format, fetched + drawn client-side like VTT/SRT.
         profiles.append(SubtitleProfile(format: "ass", method: .external))
-        profiles.append(SubtitleProfile(format: "pgs", method: .external))
-        profiles.append(SubtitleProfile(format: "vobsub", method: .external))
+
+        // PGS/VobSub are IMAGE formats — there is no text to hand back as a sidecar
+        // VTT, so `.external` could never actually match server-side (it silently
+        // fell through to the server's own terminal fallback, which already IS
+        // burn-in). Declaring `.encode` makes that explicit: the server renders the
+        // subtitle into the video and the client just gets a plain HLS stream with no
+        // sub track to select. It's the only way an image sub is ever selectable on
+        // the transcode path (PlaybackInfoService/PlayerViewModel gate this behind an
+        // explicit user pick — burn-in forces a full re-encode, and can even turn an
+        // HDR source SDR server-side; jellyfin-tizen#202 — so it's opt-in, never a
+        // default). Direct-play is unaffected: VLC renders PGS/VobSub natively there.
+        profiles.append(SubtitleProfile(format: "pgs", method: .encode))
+        profiles.append(SubtitleProfile(format: "vobsub", method: .encode))
 
         return profiles
     }
 
-    // MARK: — Private: CodecProfiles (unchanged from Phase 4)
+    // MARK: — Private: CodecProfiles
 
     private static func codecProfiles(for capabilities: DeviceCapabilities) -> [CodecProfile] {
         // Keep the server from direct-playing a stream the hardware can't decode.
@@ -195,30 +208,71 @@ enum DeviceProfileTranslator {
         // class, not just bit depth.
         //
         // HEVC: 10-bit (Main 10) IS hardware-decodable, so cap on bit depth —
-        // 12-bit masters transcode. HDR is left to the server/AVPlayer
-        // tone-mapping path; conservative in Phase 4.
+        // 12-bit masters transcode. Gate the profile too: VideoToolbox decodes
+        // Main/Main10 only, not the Range Extensions (RExt) or Screen Content
+        // Coding (SCC) profiles some encoders emit for 4:4:4/4:2:2 or
+        // lossless-leaning masters. Without the profile gate, a RExt/SCC stream
+        // still passes the bit-depth check (it's often 8- or 10-bit), the
+        // server stream-copies it, and AVPlayer black-screens on the
+        // undecodable bitstream — Swiftfin gates the same way. HDR itself is
+        // left to the server/AVPlayer tone-mapping path.
         //
         // isRequired:false matches the ecosystem; for a probed stream the
         // condition gates regardless, and false only avoids a needless transcode
         // when the server couldn't read the profile/bit depth.
         //
+        // Width/Height cap both video codecs at capabilities.maxResolution —
+        // e.g. a source above the device's declared ceiling (4K today) gets
+        // downscaled server-side instead of direct-played oversized.
+        //
         // VideoRangeType gates which HDR flavours may be DELIVERED AS-IS
         // (direct play / the AVKit remux tier stream-copies the source video).
         // Dolby Vision without a decodable base layer is the killer: a DV remux
         // passes the bit-depth gate as plain HEVC, AVPlayer accepts the manifest,
-        // then the video decoder rejects every sample. Profile 5 (`DOVI`, no
-        // fallback) and profile 7 (`DOVIWithEL`) are never decodable here; the
-        // With-HDR10/SDR/HLG variants carry a base layer AVPlayer plays.
-        // Anything outside the list (incl. `DOVIInvalid`) transcodes.
+        // then the video decoder rejects every sample. Profile 7 (`DOVIWithEL`)
+        // is never decodable here; the With-HDR10/SDR/HLG variants carry a base
+        // layer AVPlayer plays. Anything outside the list (incl. `DOVIInvalid`)
+        // transcodes. Profile 5 (`DOVI`, bare — no fallback layer at all) is
+        // ALSO never decodable by a base-layer path, but unlike the others it's
+        // fine on hardware that can decode Dolby Vision natively — see the
+        // conditional append below.
         //
-        // The whitelist is deliberately STATIC — not conditional on probed HDR
-        // support: per TN3145 AVPlayer tone-maps HDR optimally on ANY Apple
-        // device, so HDR10/HLG are safe to deliver even to an SDR display.
-        // Gating them on the probe condemned an Apple TV running its UI in SDR
-        // to a server-side 4K tone-map re-encode that couldn't sustain realtime
-        // — endless buffering with -12889 segment timeouts (device-diagnosed
-        // 2026-06-10, `reason: VideoCodecNotSupported` on plain HDR10 content).
-        let hevcRanges = "SDR|HDR10|HDR10Plus|HLG|DOVIWithSDR|DOVIWithHDR10|DOVIWithHDR10Plus|DOVIWithHLG"
+        // The whitelist is otherwise deliberately STATIC — not conditional on
+        // probed HDR support: per TN3145 AVPlayer tone-maps HDR optimally on
+        // ANY Apple device, so HDR10/HLG are safe to deliver even to an SDR
+        // display. Gating them on the probe condemned an Apple TV running its
+        // UI in SDR to a server-side 4K tone-map re-encode that couldn't
+        // sustain realtime — endless buffering with -12889 segment timeouts
+        // (device-diagnosed 2026-06-10, `reason: VideoCodecNotSupported` on
+        // plain HDR10 content).
+        var hevcRanges = "SDR|HDR10|HDR10Plus|HLG|DOVIWithSDR|DOVIWithHDR10|DOVIWithHDR10Plus|DOVIWithHLG"
+        // Bare P5 is the one HDR flavour that DOES need the probe: it has no
+        // fallback base layer, so declaring it unconditionally would make the
+        // server hand it to hardware that can't decode Dolby Vision at all.
+        // `LiveCapabilityProbe.hdrSupport()` only reports `.dolbyVision` when
+        // VideoToolbox confirms hardware DV decode — see that file for why the
+        // once-standard `AVPlayer.availableHDRModes` check no longer applies
+        // (deprecated iOS/tvOS 26). Apple hardware decodes P5 straight out of
+        // fMP4, so once declared, the server stream-copies it instead of
+        // force-re-encoding the way it does for clients that don't declare DOVI.
+        if capabilities.hdr.contains(.dolbyVision) {
+            hevcRanges += "|DOVI"
+        }
+
+        let resolutionConditions = [
+            ProfileCondition(
+                condition: .lessThanEqual,
+                isRequired: false,
+                property: .width,
+                value: String(capabilities.maxResolution.width)
+            ),
+            ProfileCondition(
+                condition: .lessThanEqual,
+                isRequired: false,
+                property: .height,
+                value: String(capabilities.maxResolution.height)
+            ),
+        ]
 
         return [
             CodecProfile(
@@ -238,7 +292,7 @@ enum DeviceProfileTranslator {
                         property: .videoRangeType,
                         value: "SDR|DOVIWithSDR"
                     ),
-                ],
+                ] + resolutionConditions,
                 type: .video
             ),
             CodecProfile(
@@ -253,10 +307,16 @@ enum DeviceProfileTranslator {
                     ProfileCondition(
                         condition: .equalsAny,
                         isRequired: false,
+                        property: .videoProfile,
+                        value: "main|main10"
+                    ),
+                    ProfileCondition(
+                        condition: .equalsAny,
+                        isRequired: false,
                         property: .videoRangeType,
                         value: hevcRanges
                     ),
-                ],
+                ] + resolutionConditions,
                 type: .video
             ),
         ]

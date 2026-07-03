@@ -81,9 +81,12 @@ struct SMBPlaybackResolverTests {
 
     private func makeResolver(
         keychain: FakeKeychain = FakeKeychain(),
-        lister: StubSMBLister
+        lister: StubSMBLister,
+        resumeStore: SMBResumeStore = .shared
     ) -> SMBPlaybackResolver {
-        SMBPlaybackResolver(keychain: keychain) { _, _ in lister }
+        var resolver = SMBPlaybackResolver(keychain: keychain) { _, _ in lister }
+        resolver.resumeStore = resumeStore
+        return resolver
     }
 
     // MARK: - URL
@@ -220,16 +223,40 @@ struct SMBPlaybackResolverTests {
 
     // MARK: - startTime
 
-    @Test("startTime is always nil (no local resume store yet)")
-    func startTimeIsNil() async throws {
+    @Test("startTime is nil when the local resume store has no entry")
+    func startTimeNilWithoutStoredResume() async throws {
+        let suite = "SMBPlaybackResolverTests.startTimeNilWithoutStoredResume"
+        let (store, defaults) = try SMBTestFixtures.makeResumeStore(suite: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
         let lister = StubSMBLister(entries: [])
-        let resolver = makeResolver(lister: lister)
+        let resolver = makeResolver(lister: lister, resumeStore: store)
         let item = makeItem()
         let ref = makeRef()
 
         let result = try await resolver.resolve(item, ref: ref)
 
         #expect(result.startTime == nil)
+    }
+
+    @Test("startTime comes from the local resume store when it holds a position")
+    func startTimeFromStoredResume() async throws {
+        let suite = "SMBPlaybackResolverTests.startTimeFromStoredResume"
+        let (store, defaults) = try SMBTestFixtures.makeResumeStore(suite: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let lister = StubSMBLister(entries: [])
+        let resolver = makeResolver(lister: lister, resumeStore: store)
+        let item = makeItem(path: "Movies/Resumable.mkv")
+        let ref = makeRef()
+        await store.save(
+            position: CMTime(seconds: 300, preferredTimescale: 600),
+            duration: CMTime(seconds: 7200, preferredTimescale: 600),
+            for: item.id
+        )
+
+        let result = try await resolver.resolve(item, ref: ref)
+
+        let startTime = try #require(result.startTime)
+        #expect(abs(CMTimeGetSeconds(startTime) - 300) < 0.001)
     }
 
     // MARK: - Root-level path (no directory)

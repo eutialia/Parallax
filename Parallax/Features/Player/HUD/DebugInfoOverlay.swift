@@ -18,7 +18,16 @@ struct DebugInfoOverlay: View {
     let vm: PlayerViewModel
     let onClose: () -> Void
 
+    /// Single instance (final-review M3) — a picker write and a label read must hit the
+    /// same `UserDefaults`-backed seam, and three inline `StartupTuningStore()` values
+    /// were harmless (all wrap `.standard`) but pointless.
+    private let startupTuningStore = StartupTuningStore()
+
     @State private var snapshot: PlaybackDebugInfo = .empty
+    /// Mirrors `snapshot`'s polling pattern (final-review M1): the label below read the
+    /// store inline, which only reflected a pick once *something else* re-rendered the
+    /// view — polled here instead so the profile row is honest on its own.
+    @State private var startupProfile: StartupProfile = .system
 
     /// Readable at couch distance on the tvOS canvas; dense on touch screens.
     private var fontSize: CGFloat {
@@ -33,6 +42,7 @@ struct DebugInfoOverlay: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 2) {
                 focusStop { header }
+                focusStop { startupSection }
                 focusStop { deliverySection }
                 focusStop { videoSection }
                 focusStop { audioSection }
@@ -47,9 +57,12 @@ struct DebugInfoOverlay: View {
         .preferredColorScheme(.dark)
         .environment(\.colorScheme, .dark)
         .task {
-            // Poll the engine's live snapshot; cancelled when the HUD disappears.
+            // Poll the engine's live snapshot; cancelled when the HUD disappears. The
+            // profile rides the same loop (final-review M1) so a pick from the menu below
+            // shows up within one tick instead of waiting on an unrelated re-render.
             while !Task.isCancelled {
                 snapshot = await vm.currentDebugSnapshot()
+                startupProfile = startupTuningStore.selected
                 try? await Task.sleep(for: .milliseconds(750))
             }
         }
@@ -80,11 +93,54 @@ struct DebugInfoOverlay: View {
         .padding(.bottom, 4)
     }
 
+    /// Plan C (AVKit startup tuning): the play()→first-`.playing` wall-clock metric next
+    /// to a picker for the DEBUG-selected buffering profile driving it. AVKit-only —
+    /// `engineLabel` still reports the true engine in the header.
+    @ViewBuilder
+    private var startupSection: some View {
+        sectionHeader("STARTUP")
+        row("time", startupMetricLabel)
+        startupProfilePicker
+    }
+
+    private var startupMetricLabel: String {
+        let ms = vm.startupMillis.map { "\($0) ms" } ?? "—"
+        return "\(ms) (\(startupProfile.displayName))"
+    }
+
+    /// Writing the store has no live effect on the running session — `AppDependencies`'
+    /// engine factory reads it only at engine-construction time, so a pick here takes
+    /// effect on the NEXT playback session, not this one (caption says so). The label
+    /// updates immediately (not waiting on the next poll tick) since the pick happens
+    /// right here.
+    private var startupProfilePicker: some View {
+        HStack(spacing: 8) {
+            Text("profile")
+                .foregroundStyle(.white.opacity(0.6))
+                .frame(width: 78, alignment: .leading)
+            Menu {
+                ForEach(StartupProfile.allCases, id: \.self) { profile in
+                    Button(profile.displayName) {
+                        startupTuningStore.selected = profile
+                        startupProfile = profile
+                    }
+                }
+            } label: {
+                Text(startupProfile.displayName)
+            }
+            .tint(.white)
+            Text("· applies next session")
+                .foregroundStyle(.white.opacity(0.4))
+        }
+        .padding(.bottom, 2)
+    }
+
     @ViewBuilder
     private var deliverySection: some View {
         sectionHeader("DELIVERY")
         if let r = vm.debugResolved {
             row("method", String(describing: r.method))
+            row("delivery", deliveryLine)
             row("container", r.container.map { String(describing: $0) } ?? "—")
             if !r.transcodeReasons.isEmpty {
                 row("reason", r.transcodeReasons.joined(separator: ", "))
@@ -241,6 +297,28 @@ struct DebugInfoOverlay: View {
         case .avKit: "AVKit"
         case .vlcKit: "VLCKit"
         case nil: "—"
+        }
+    }
+
+    /// The live copy-vs-reencode verdict from the running session's `TranscodingInfo`
+    /// (`vm.transcodeDelivery`), folded with the routing method. Direct play needs no
+    /// probe; a transcode reads "probing…" until the ~2s-delayed fetch lands, then
+    /// "Remux (video copy, …)" for a stream-copy or "Transcode (<reasons>)" for a
+    /// re-encode — the signal the seek strategy gates on.
+    private var deliveryLine: String {
+        guard let method = vm.debugResolved?.method else { return "—" }
+        switch method {
+        case .directPlay:
+            return "Direct Play"
+        case .transcode:
+            guard let d = vm.transcodeDelivery else {
+                return vm.deliveryProbeExhausted ? "Transcode (no delivery info)" : "Transcode (probing…)"
+            }
+            if d.isVideoDirect {
+                return "Remux (video copy, \(d.audioCodec ?? "audio copy"))"
+            }
+            let reasons = d.transcodeReasons.isEmpty ? "re-encode" : d.transcodeReasons.joined(separator: ", ")
+            return "Transcode (→\(d.videoCodec ?? "?"): \(reasons))"
         }
     }
 

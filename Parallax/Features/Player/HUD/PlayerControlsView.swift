@@ -75,6 +75,12 @@ struct PlayerControlsView: View {
     let onExitHUD: () -> Void
     #endif
     let onDismiss: () -> Void
+    #if DEBUG
+    /// Preview-only: forces the big (iPad-scale) layout at this width regardless of the
+    /// running device, so a `#Preview` can render BOTH HUD variants on one iPhone-sim
+    /// destination. `nil` at every production call site (the layout derives from `isPad`).
+    var previewBigWidth: CGFloat? = nil
+    #endif
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -130,11 +136,10 @@ struct PlayerControlsView: View {
     #if !os(tvOS)
     /// The live double-tap seek flash (dome + chevrons + "N seconds"); nil when idle.
     @State private var seekFlash: SeekFlash?
-    /// Accumulated absolute seek target for the running double-tap burst. Committed
-    /// as ONE engine seek after the taps settle — per-tap seeks thrash a transcode
-    /// and wedge the player (the tvOS click-seek lesson).
-    @State private var pendingSeekTarget: Double?
-    @State private var seekCommitTask: Task<Void, Never>?
+    /// Folds a double-tap burst into ONE engine seek after the taps settle — per-tap
+    /// seeks thrash a transcode and wedge the player (the tvOS click-seek lesson). Shared
+    /// with the tvOS click-seek (`PlayerView`) via `SeekCommitCoalescer`.
+    @State private var seekCoalescer = SeekCommitCoalescer()
     @State private var seekFlashDismissTask: Task<Void, Never>?
     /// The drag-scrub (and a11y-adjust) commit in flight. Stored — not an anonymous
     /// `Task` — so `onDisappear` can cancel it: a player dismissed mid-commit would
@@ -330,7 +335,7 @@ struct PlayerControlsView: View {
         // into a mid-teardown engine, the others write to dead @State. Cancel them.
         .onDisappear {
             hideTask?.cancel()
-            seekCommitTask?.cancel()
+            seekCoalescer.cancel()
             seekFlashDismissTask?.cancel()
             scrubCommitTask?.cancel()
         }
@@ -392,34 +397,16 @@ struct PlayerControlsView: View {
                 // visible — the top bars pin full-bleed and pad by the latched value, so
                 // the safe-area collapse when the status bar hides can't reflow them
                 // mid-fade (see `TopInsetLatch`).
-                if isPad {
-                    GeometryReader { geo in
-                        // Metrics derive from the PHYSICAL max dimension (the probe in
-                        // the background below): one control size across orientations
-                        // AND across status-bar toggles — see `hudPhysicalMax`. The
-                        // safe-bounded fallback only covers the first frame.
-                        bigControls(PlayerMetrics(width: hudPhysicalMax > 0
-                                        ? hudPhysicalMax
-                                        : max(geo.size.width, geo.size.height)),
-                                    topInset: hudTopInset,
-                                    dragging: pullDragging)
-                            .modifier(TopInsetLatch(inset: geo.safeAreaInsets.top,
-                                                    statusBarVisible: statusBarExpectedVisible,
-                                                    isLandscape: hudPhysicalIsLandscape,
-                                                    adoptsLandscapeInset: false,
-                                                    latched: $hudTopInset))
-                    }
+                #if DEBUG
+                if let previewBigWidth {
+                    // Preview seam: render the big layout on the iPhone sim (no latch/probe).
+                    bigControls(PlayerMetrics(width: previewBigWidth))
                 } else {
-                    GeometryReader { geo in
-                        phoneControls(topInset: hudTopInset,
-                                      dragging: pullDragging)
-                            .modifier(TopInsetLatch(inset: geo.safeAreaInsets.top,
-                                                    statusBarVisible: statusBarExpectedVisible,
-                                                    isLandscape: hudPhysicalIsLandscape,
-                                                    adoptsLandscapeInset: true,
-                                                    latched: $hudTopInset))
-                    }
+                    sizeAdaptiveControls
                 }
+                #else
+                sizeAdaptiveControls
+                #endif
                 #endif
             }
             // The open panel owns the surface: on tvOS, disabling the chrome is the
@@ -470,6 +457,44 @@ struct PlayerControlsView: View {
         .defaultFocus($scrubberFocused, true)
         #endif
     }
+
+    #if !os(tvOS)
+    /// Big (iPad-scale) vs. phone layout, chosen by device idiom — the production path
+    /// `controls` falls into once the (DEBUG-only) `previewBigWidth` preview seam is out
+    /// of the picture. Factored out so the seam's `#if DEBUG` branch in `controls` doesn't
+    /// have to duplicate this pair of `GeometryReader`s.
+    @ViewBuilder
+    private var sizeAdaptiveControls: some View {
+        if isPad {
+            GeometryReader { geo in
+                // Metrics derive from the PHYSICAL max dimension (the probe in
+                // the background below): one control size across orientations
+                // AND across status-bar toggles — see `hudPhysicalMax`. The
+                // safe-bounded fallback only covers the first frame.
+                bigControls(PlayerMetrics(width: hudPhysicalMax > 0
+                                ? hudPhysicalMax
+                                : max(geo.size.width, geo.size.height)),
+                            topInset: hudTopInset,
+                            dragging: pullDragging)
+                    .modifier(TopInsetLatch(inset: geo.safeAreaInsets.top,
+                                            statusBarVisible: statusBarExpectedVisible,
+                                            isLandscape: hudPhysicalIsLandscape,
+                                            adoptsLandscapeInset: false,
+                                            latched: $hudTopInset))
+            }
+        } else {
+            GeometryReader { geo in
+                phoneControls(topInset: hudTopInset,
+                              dragging: pullDragging)
+                    .modifier(TopInsetLatch(inset: geo.safeAreaInsets.top,
+                                            statusBarVisible: statusBarExpectedVisible,
+                                            isLandscape: hudPhysicalIsLandscape,
+                                            adoptsLandscapeInset: true,
+                                            latched: $hudTopInset))
+            }
+        }
+    }
+    #endif
 
     /// The TV-app corner-aligned track panel (every platform): the panel's
     /// bottom-left corner sits exactly on the (vacated) chip's bottom-left corner —
@@ -586,7 +611,15 @@ struct PlayerControlsView: View {
         .allowsHitTesting(false)
     }
 
-    // MARK: - Big layout (tvOS + iPad)
+    // MARK: - HUD layout (one metric-parameterized set for phone + big)
+    //
+    // The transport cluster, top bar, and chip row are ONE builder each, parameterized
+    // by `PlayerMetrics` — the phone (`.phone`) and big (`PlayerMetrics(width:)`/`​.tv`)
+    // layouts differ only in the metric values those `m.*` accessors resolve (iPhone
+    // reads its fixed `phone*` statics; big screens the `u`-scaled formulas) and in
+    // `#if os(tvOS)` slices (Close placement, `.focusSection()`, chip default-focus).
+    // The one genuine phone/iPad divergence — how the centre transport is mounted — is
+    // kept at the two thin assembly callers (`bigControls`/`phoneControls`) below.
 
     @ViewBuilder
     private func bigControls(_ m: PlayerMetrics, topInset: CGFloat = 0, dragging: Bool = false) -> some View {
@@ -594,128 +627,33 @@ struct PlayerControlsView: View {
         // the lone bar over the dim — the same collapse as tvOS swipe-scrub.
         if !dragScrubbing {
             Group {
-                // Top bar — Close · title · AirPlay/PiP pill (tvOS: title only; Close
-                // stays in its bottom control row and the pill doesn't exist there).
-                HStack(spacing: m.chipsGap) {
-                    #if !os(tvOS)
-                    PlayerRoundButton(systemImage: "chevron.down", size: m.closeSize, iconScale: 0.46,
-                                      accessibilityLabel: "Close") { onDismiss() }
-                    #endif
-                    Text(vm.title)
-                        .font(.system(size: m.titleSize, weight: .bold))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                    Spacer(minLength: 0)
-                    #if !os(tvOS)
-                    if vm.isVideoAirPlayAvailable || vm.isPiPAvailable {
-                        PlayerSplitPill(metrics: m, airPlayAvailable: vm.isVideoAirPlayAvailable,
-                                        pipAvailable: vm.isPiPAvailable) { resetHideTimer(); vm.startPiP() }
-                    }
-                    #endif
-                }
-                .padding(.horizontal, m.padX)
-                // The top bar must ride the pull-to-dismiss card RIGIDLY yet not twitch when
-                // the status bar toggles on auto-hide — which pull opposite ways.
-                // `ignoresSafeArea(.top)` + latched inset is twitch-free (window-fixed, ignores
-                // the live inset) but SHEARS under the card offset (it re-pins to the window);
-                // safe-area-bounded rides the offset but twitches (its live inset collapses a
-                // frame off from the toggle). So SWITCH on `dragging`: the status bar is FROZEN
-                // visible during a drag (see `pullDragging`), so the live inset == the latched
-                // inset and the two modes share the exact resting spot — the switch is seamless.
-                //   • not dragging → `ignoresSafeArea(.top)` + `topBarTop + latched`  (original)
-                //   • dragging     → safe-area-bounded (`edges: []`) + `topBarTop`    (rigid)
-                // Same modifier, only its edge set flips — no structural churn. tvOS keeps the
-                // plain safe-area path (no status bar): `dragging` defaults false, `topInset` 0.
-                .padding(.top, m.topBarTop + (dragging ? 0 : topInset))
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                .offset(y: revealOffset(-m.hudSlide))
-                #if !os(tvOS)
-                .ignoresSafeArea(edges: dragging ? [] : .top)
-                #endif
+                topBar(m, topInset: topInset, dragging: dragging)
 
-                // Centre transport — previous episode · play/pause · next episode (the
-                // ±10s skip is gesture-only now: iOS double-tap thirds · tvOS scrubber
-                // move/pan). Movies (`!supportsEpisodeNavigation`) show play/pause ALONE;
-                // episodic content keeps prev/next, disabled at the series boundaries so
-                // the focus engine skips the dead side. See `showsCenterTransport`.
-                //
-                // The prev/next pair is gated by `supportsEpisodeNavigation`, which is
-                // STABLE per session (movie vs episode never flips during an
-                // episode→episode swap) — so when present the buttons stay ALWAYS mounted
-                // (visibility is opacity/disable, never an `if` on their existence).
-                // REMOVING a just-pressed, focused button mid-flight corrupts the tvOS
-                // focus engine — the next directional press asserts in
-                // `_UIFocusMovementDirectionalPressGestureRecognizer` ("untracked
-                // presses"). Disabling a still-mounted button is safe: the press already
-                // completed, and the engine just relocates focus.
-                GlassEffectContainer(spacing: Space.s8) {
-                    HStack(spacing: m.transportGap) {
-                        if vm.supportsEpisodeNavigation {
-                            PlayerRoundButton(systemImage: "backward.end.fill", size: m.transportSkip, iconScale: 0.42,
-                                              isEnabled: vm.previousEpisode != nil,
-                                              accessibilityLabel: "Previous episode") { playPrevious() }
-                        }
-                        PlayerRoundButton(systemImage: vm.isPlaying ? "pause.fill" : "play.fill", size: m.transportPlay,
-                                          iconScale: 0.46,
-                                          accessibilityLabel: vm.isPlaying ? "Pause" : "Play") { togglePlayPause() }
-                        if vm.supportsEpisodeNavigation {
-                            PlayerRoundButton(systemImage: "forward.end.fill", size: m.transportSkip, iconScale: 0.42,
-                                              isEnabled: vm.nextEpisode != nil,
-                                              accessibilityLabel: "Next episode") { playNext() }
-                        }
-                    }
-                }
-                #if os(tvOS)
-                // Sized to the cluster ITSELF, before the full-bleed centering frame:
-                // the focus engine picks the nearest focusable along a straight line, so
-                // a screen-spanning section would distort up/down travel between the
-                // scrubber, chips, and this cluster (and could even capture focus meant
-                // for them). One stable unit also stops the engine dropping focus to the
-                // scrubber when the play/pause glyph re-renders.
-                .focusSection()
-                #endif
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-                // Full-bleed center like the loading veil's ring (which this
-                // cluster swaps with): a safe-area-bounded center shifts when the
-                // status bar hides with the chrome — the buttons crept upward
-                // mid-fade. Same fix as the veil's round-2 device finding.
-                .ignoresSafeArea()
-                .opacity(showsCenterTransport ? 1 : 0)
-                .disabled(!showsCenterTransport)
-                .allowsHitTesting(showsCenterTransport)
-                .animation(.easeInOut(duration: 0.2), value: showsCenterTransport)
-
-                // Control row — chips on the track's left end (tvOS keeps Close leading,
-                // see the header note). NO `GlassEffectContainer` here: the container
-                // renders member glass in its own layer and reads markedly glassier
-                // than the standalone top-bar buttons (and on tvOS a focused chip's
-                // lift left the container-drawn capsule behind as a ghost). Standalone
-                // chips share the exact material recipe with Close and the pill.
-                HStack(spacing: m.chipsGap) {
+                // Centre transport — always mounted, visibility via opacity/disable (never
+                // an `if` on existence). The prev/next pair is gated by the STABLE
+                // `supportsEpisodeNavigation`, so removing a just-pressed, focused button
+                // mid-flight can't corrupt the tvOS focus engine (the untracked-press
+                // assert); disabling a still-mounted button is safe.
+                transportCluster(m)
                     #if os(tvOS)
-                    PlayerRoundButton(systemImage: "chevron.down", size: m.closeSize, iconScale: 0.46,
-                                      accessibilityLabel: "Close") { onDismiss() }
+                    // Sized to the cluster ITSELF, before the full-bleed centering frame:
+                    // the focus engine picks the nearest focusable along a straight line, so
+                    // a screen-spanning section would distort up/down travel between the
+                    // scrubber, chips, and this cluster. One stable unit also stops the
+                    // engine dropping focus to the scrubber when the glyph re-renders.
+                    .focusSection()
                     #endif
-                    chips(m)
-                    Spacer(minLength: 0)
-                }
-                .padding(.horizontal, m.padX)
-                .padding(.bottom, m.controlRowBottom)
-                #if os(tvOS)
-                // Focus moving DOWN from the full-width scrubber lands on the chip
-                // nearest the playhead dot — where the user is already looking — not
-                // the engine's geometric pick (the screen-center speed chip). The
-                // section makes the row one focus target; the `userInitiated`
-                // priority makes the preference win user-driven entry too.
-                .focusSection()
-                .defaultFocus($chipFocus, playheadChip, priority: .userInitiated)
-                // A chip gaining/losing focus is HUD navigation — re-arm the auto-hide
-                // (these moves never reach `send`, and directional clicks don't reliably
-                // hit the window press sentinel that feeds the timer otherwise).
-                .onChange(of: chipFocus) { _, _ in onActivity() }
-                #endif
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                .offset(y: revealOffset(m.hudSlide))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                    // Full-bleed center like the loading veil's ring (which this cluster
+                    // swaps with): a safe-area-bounded center shifts when the status bar
+                    // hides with the chrome — the buttons crept upward mid-fade.
+                    .ignoresSafeArea()
+                    .opacity(showsCenterTransport ? 1 : 0)
+                    .disabled(!showsCenterTransport)
+                    .allowsHitTesting(showsCenterTransport)
+                    .animation(.easeInOut(duration: 0.2), value: showsCenterTransport)
+
+                chipRow(m)
             }
             .transition(.opacity)
         }
@@ -730,76 +668,27 @@ struct PlayerControlsView: View {
             .offset(y: revealOffset(m.hudSlide))
     }
 
-    // MARK: - Phone layout (iPhone landscape)
-
     @ViewBuilder
     private func phoneControls(topInset: CGFloat, dragging: Bool) -> some View {
         let m = PlayerMetrics.phone
         // Same drag-scrub collapse as the big layout: only the progress row survives.
         if !dragScrubbing {
             Group {
-                // Top bar — Close · title · AirPlay/PiP pill (the TV-app corner cluster).
-                HStack(spacing: PlayerMetrics.phoneTopBarGap) {
-                    PlayerRoundButton(systemImage: "chevron.down", size: PlayerMetrics.phoneCloseSize,
-                                      iconScale: 0.46, accessibilityLabel: "Close") { onDismiss() }
-                    Text(vm.title).scaledFont(17, relativeTo: .headline, weight: .bold).foregroundStyle(.white).lineLimit(1)
-                    Spacer(minLength: Space.s8)
-                    if vm.isVideoAirPlayAvailable || vm.isPiPAvailable {
-                        PlayerSplitPill(metrics: m, airPlayAvailable: vm.isVideoAirPlayAvailable,
-                                        pipAvailable: vm.isPiPAvailable) { resetHideTimer(); vm.startPiP() }
-                    }
-                }
-                .padding(.horizontal, PlayerMetrics.phonePadX)
-                // Switch the inset mode on `dragging` — see the iPad top bar. (Landscape has no
-                // status bar, so this only bites in portrait.)
-                .padding(.top, PlayerMetrics.phoneTopBarTop + (dragging ? 0 : topInset))
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                .offset(y: revealOffset(-m.hudSlide))
-                .ignoresSafeArea(edges: dragging ? [] : .top)
+                topBar(m, topInset: topInset, dragging: dragging)
 
-                // Centre transport — previous episode · play/pause · next episode
-                // (±10s is gesture-only now; see the iPad transport above). See
-                // `showsCenterTransport` for the visibility contract.
+                // Centre transport — iPhone mounts it conditionally (no focus engine to
+                // strand), so it pops in/out with `showsCenterTransport` rather than the
+                // big layout's opacity fade.
                 if showsCenterTransport {
-                    GlassEffectContainer(spacing: Space.s8) {
-                        HStack(spacing: PlayerMetrics.phoneTransportGap) {
-                            if vm.supportsEpisodeNavigation {
-                                PlayerRoundButton(systemImage: "backward.end.fill", size: PlayerMetrics.phoneTransportSkip,
-                                                  iconScale: 0.42,
-                                                  isEnabled: vm.previousEpisode != nil,
-                                                  accessibilityLabel: "Previous episode") { playPrevious() }
-                            }
-                            PlayerRoundButton(systemImage: vm.isPlaying ? "pause.fill" : "play.fill",
-                                              size: PlayerMetrics.phoneTransportPlay,
-                                              iconScale: 0.46,
-                                              accessibilityLabel: vm.isPlaying ? "Pause" : "Play") { togglePlayPause() }
-                            if vm.supportsEpisodeNavigation {
-                                PlayerRoundButton(systemImage: "forward.end.fill", size: PlayerMetrics.phoneTransportSkip,
-                                                  iconScale: 0.42,
-                                                  isEnabled: vm.nextEpisode != nil,
-                                                  accessibilityLabel: "Next episode") { playNext() }
-                            }
-                        }
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-                    // Full-bleed center to match the loading veil's ring (see the
-                    // iPad transport above) — keeps the cluster pinned while the
-                    // chrome's status-bar/home-indicator toggles reflow safe areas.
-                    .ignoresSafeArea()
+                    transportCluster(m)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                        // Full-bleed center to match the loading veil's ring — keeps the
+                        // cluster pinned while the chrome's status-bar/home-indicator
+                        // toggles reflow safe areas.
+                        .ignoresSafeArea()
                 }
 
-                // Chip row — chips alone on the track's left end; the AirPlay/PiP pill
-                // moved to the top bar (the TV-app corner cluster). No glass container
-                // (see the big layout's control-row note — chrome parity with the top
-                // buttons).
-                HStack(spacing: PlayerMetrics.phoneChipRowGap) {
-                    chips(m)
-                    Spacer(minLength: 0)
-                }
-                .padding(.horizontal, PlayerMetrics.phonePadX)
-                .padding(.bottom, PlayerMetrics.phoneChipRowBottom)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                .offset(y: revealOffset(m.hudSlide))
+                chipRow(m)
             }
             .transition(.opacity)
         }
@@ -812,6 +701,115 @@ struct PlayerControlsView: View {
             .padding(.bottom, m.scrubberBottom)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
             .offset(y: revealOffset(m.hudSlide))
+    }
+
+    // MARK: - Shared HUD builders
+
+    /// Top bar — Close · title · AirPlay/PiP pill (tvOS: title only; Close stays in the
+    /// bottom chip row and the pill doesn't exist there).
+    @ViewBuilder
+    private func topBar(_ m: PlayerMetrics, topInset: CGFloat, dragging: Bool) -> some View {
+        HStack(spacing: m.topBarGap) {
+            #if !os(tvOS)
+            PlayerRoundButton(systemImage: "chevron.down", size: m.closeSize, iconScale: 0.46,
+                              accessibilityLabel: "Close") { onDismiss() }
+            #endif
+            titleText(m)
+            Spacer(minLength: m.topBarSpacerMin)
+            #if !os(tvOS)
+            if vm.isVideoAirPlayAvailable || vm.isPiPAvailable {
+                PlayerSplitPill(metrics: m, airPlayAvailable: vm.isVideoAirPlayAvailable,
+                                pipAvailable: vm.isPiPAvailable) { resetHideTimer(); vm.startPiP() }
+            }
+            #endif
+        }
+        .padding(.horizontal, m.padX)
+        // The top bar must ride the pull-to-dismiss card RIGIDLY yet not twitch when the
+        // status bar toggles on auto-hide — which pull opposite ways. `ignoresSafeArea(.top)`
+        // + latched inset is twitch-free (window-fixed) but SHEARS under the card offset;
+        // safe-area-bounded rides the offset but twitches. So SWITCH on `dragging`: the
+        // status bar is FROZEN visible during a drag, so the live inset == the latched inset
+        // and the two modes share the exact resting spot — the switch is seamless.
+        //   • not dragging → `ignoresSafeArea(.top)` + `topBarTop + latched`  (original)
+        //   • dragging     → safe-area-bounded (`edges: []`) + `topBarTop`    (rigid)
+        // tvOS keeps the plain safe-area path (no status bar): `dragging` false, `topInset` 0.
+        .padding(.top, m.topBarTop + (dragging ? 0 : topInset))
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .offset(y: revealOffset(-m.hudSlide))
+        #if !os(tvOS)
+        .ignoresSafeArea(edges: dragging ? [] : .top)
+        #endif
+    }
+
+    /// Player title. iPhone rides Dynamic Type off a 17pt headline; big screens scale a
+    /// fixed size from `u` (a `scaledFont` at 10 feet would swing wildly with the accessibility
+    /// setting on a canvas that's already distance-anchored).
+    @ViewBuilder
+    private func titleText(_ m: PlayerMetrics) -> some View {
+        if m.deviceClass == .phone {
+            Text(vm.title).scaledFont(17, relativeTo: .headline, weight: .bold)
+                .foregroundStyle(.white).lineLimit(1)
+        } else {
+            Text(vm.title).font(.system(size: m.titleSize, weight: .bold))
+                .foregroundStyle(.white).lineLimit(1)
+        }
+    }
+
+    /// Centre transport cluster — previous episode · play/pause · next episode (the ±10s
+    /// skip is gesture-only: iOS double-tap thirds · tvOS scrubber move/pan). Movies
+    /// (`!supportsEpisodeNavigation`) show play/pause ALONE; episodic content keeps
+    /// prev/next, disabled at the series boundaries so the focus engine skips the dead side.
+    @ViewBuilder
+    private func transportCluster(_ m: PlayerMetrics) -> some View {
+        GlassEffectContainer(spacing: Space.s8) {
+            HStack(spacing: m.transportGap) {
+                if vm.supportsEpisodeNavigation {
+                    PlayerRoundButton(systemImage: "backward.end.fill", size: m.transportSkip, iconScale: 0.42,
+                                      isEnabled: vm.previousEpisode != nil,
+                                      accessibilityLabel: "Previous episode") { playPrevious() }
+                }
+                PlayerRoundButton(systemImage: vm.isPlaying ? "pause.fill" : "play.fill", size: m.transportPlay,
+                                  iconScale: 0.46,
+                                  accessibilityLabel: vm.isPlaying ? "Pause" : "Play") { togglePlayPause() }
+                if vm.supportsEpisodeNavigation {
+                    PlayerRoundButton(systemImage: "forward.end.fill", size: m.transportSkip, iconScale: 0.42,
+                                      isEnabled: vm.nextEpisode != nil,
+                                      accessibilityLabel: "Next episode") { playNext() }
+                }
+            }
+        }
+    }
+
+    /// Control row — chips on the track's left end (tvOS keeps Close leading, see the
+    /// header note). NO `GlassEffectContainer`: the container renders member glass in its
+    /// own layer and reads markedly glassier than the standalone top-bar buttons (and on
+    /// tvOS a focused chip's lift left the container-drawn capsule behind as a ghost).
+    @ViewBuilder
+    private func chipRow(_ m: PlayerMetrics) -> some View {
+        HStack(spacing: m.chipRowGap) {
+            #if os(tvOS)
+            PlayerRoundButton(systemImage: "chevron.down", size: m.closeSize, iconScale: 0.46,
+                              accessibilityLabel: "Close") { onDismiss() }
+            #endif
+            chips(m)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, m.padX)
+        .padding(.bottom, m.controlRowBottom)
+        #if os(tvOS)
+        // Focus moving DOWN from the full-width scrubber lands on the chip nearest the
+        // playhead dot — where the user is already looking — not the engine's geometric
+        // pick (the screen-center speed chip). The section makes the row one focus target;
+        // `userInitiated` priority makes the preference win user-driven entry too.
+        .focusSection()
+        .defaultFocus($chipFocus, playheadChip, priority: .userInitiated)
+        // A chip gaining/losing focus is HUD navigation — re-arm the auto-hide (these moves
+        // never reach `send`, and directional clicks don't reliably hit the window press
+        // sentinel that feeds the timer otherwise).
+        .onChange(of: chipFocus) { _, _ in onActivity() }
+        #endif
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        .offset(y: revealOffset(m.hudSlide))
     }
 
     // MARK: - Chips (shared)
@@ -954,11 +952,16 @@ struct PlayerControlsView: View {
     /// isSwitchingTracks), so without it a Select here would fire a real seek at the
     /// mid-reload engine — the transcode seek-wedge class. Same reason on every seek path.
     private func commitScrub(durSeconds: Double) {
-        guard playbackReady, let engine = vm.engine, durSeconds > 0, isScrubbing else { return }
+        guard playbackReady, vm.engine != nil, durSeconds > 0, isScrubbing else { return }
         let gen = scrubGeneration
         let target = CMTime(seconds: scrubProgress * durSeconds, preferredTimescale: 600)
+        // tvOS ±10s scrub never pauses the engine (unlike the touch drag), so `vm.isPlaying`
+        // read right now IS the pre-seek intent — nothing transient has touched it. Routed
+        // through `commitScrubSeek` (not a bare `seek`) so an out-of-buffer re-encode
+        // transcode's force-resuming re-anchor (#15845) can't silently un-pause a paused user.
+        let resume = vm.isPlaying
         Task {
-            await engine.seek(to: target)
+            await vm.commitScrubSeek(to: target, resume: resume)
             if scrubGeneration == gen { isScrubbing = false }
         }
     }
@@ -1106,23 +1109,22 @@ struct PlayerControlsView: View {
                 onScrubActiveChange(false)
                 resetHideTimer()
                 scrubProgress = frac
-                guard playbackReady, let engine = vm.engine, durSeconds > 0 else { isScrubbing = false; vm.endScrubLatch(); return }
+                guard playbackReady, vm.engine != nil, durSeconds > 0 else { isScrubbing = false; vm.endScrubLatch(); return }
                 let gen = scrubGeneration
                 let resume = scrubWasPlaying
                 let target = CMTime(seconds: frac * durSeconds, preferredTimescale: 600)
                 scrubCommitTask?.cancel()
                 scrubCommitTask = Task {
-                    await engine.seek(to: target)
-                    // A newer drag owns the bar now — leave the resume to its commit.
+                    // Route through the gated commit seek so an out-of-buffer re-encode
+                    // transcode RE-ANCHORS (jellyfin#15845) instead of drifting subtitles;
+                    // it also replays `resume` — the scrub latch (armed at drag start) holds
+                    // the glyph on "pause" across the commit, and the engine's resume beat
+                    // both confirms it and is pinned by the latch until released below.
+                    await vm.commitScrubSeek(to: target, resume: resume)
+                    // A newer drag owns the bar now — leave the release to its commit.
                     // Cancellation = the player was dismissed mid-seek (onDisappear):
-                    // don't resume a torn-down engine on the way out.
+                    // don't touch a torn-down engine on the way out.
                     guard !Task.isCancelled, scrubGeneration == gen else { return }
-                    if resume {
-                        // The scrub latch (armed at drag start) holds the glyph on "pause" across
-                        // the commit; the engine's resume `.playing` beat both confirms it and
-                        // releases the latch. (The seek already restored the position.)
-                        await engine.play()
-                    }
                     // Keep the bar pinned at the committed target until the engine's live
                     // position catches up, so it never flashes the stale pre-seek frame.
                     await releaseScrubLatch(at: frac, durSeconds: durSeconds, generation: gen)
@@ -1149,11 +1151,16 @@ struct PlayerControlsView: View {
             // sticks true and the bar freezes at `scrubProgress`, never tracking playback.
             if !isScrubbing { isScrubbing = true; scrubGeneration += 1 }
             let gen = scrubGeneration
-            guard let engine = vm.engine else { isScrubbing = false; return }
+            guard vm.engine != nil else { isScrubbing = false; return }
             let seekTarget = CMTime(seconds: target * durSeconds, preferredTimescale: 600)
+            // VoiceOver adjust never pauses the engine, so `vm.isPlaying` read right now IS
+            // the pre-seek intent. Routed through `commitScrubSeek` (not a bare `seek`) so an
+            // out-of-buffer re-encode transcode's force-resuming re-anchor (#15845) can't
+            // silently un-pause a paused user.
+            let resume = vm.isPlaying
             scrubCommitTask?.cancel()
             scrubCommitTask = Task {
-                await engine.seek(to: seekTarget)
+                await vm.commitScrubSeek(to: seekTarget, resume: resume)
                 guard !Task.isCancelled, scrubGeneration == gen else { return }
                 // Same settle-then-release as the drag path, so a VoiceOver/Switch-Control
                 // adjust never flashes the stale frame either.
@@ -1251,9 +1258,8 @@ struct PlayerControlsView: View {
         // only catches up on the next engine beat, so a double-tap right after a
         // drag would accumulate from the pre-scrub position.
         let livePosition = isScrubbing ? scrubProgress * durSeconds : CMTimeGetSeconds(vm.currentPosition)
-        let base = pendingSeekTarget ?? livePosition
+        let base = seekCoalescer.pending ?? livePosition
         let target = min(max(base + delta, 0), durSeconds)
-        pendingSeekTarget = target
 
         // Same direction = the same burst extends (label accumulates, dome's clock holds);
         // a reversal is a fresh burst (label resets, dome remounts via `.id`, so its
@@ -1265,7 +1271,7 @@ struct PlayerControlsView: View {
                               tapPoint: location, trigger: (seekFlash?.trigger ?? 0) + 1,
                               targetFraction: durSeconds > 0 ? target / durSeconds : 0,
                               burstStart: burstStart, lastTap: now)
-        scheduleSeekCommit()
+        scheduleSeekCommit(to: target)
         scheduleSeekFlashDismissal()
     }
 
@@ -1290,16 +1296,16 @@ struct PlayerControlsView: View {
         .allowsHitTesting(false)
     }
 
-    /// ~0.45s of quiet after the last double-tap before the accumulated seek fires —
-    /// the same fold-a-burst-into-one-seek debounce as the tvOS click-seek.
-    private func scheduleSeekCommit() {
-        seekCommitTask?.cancel()
-        seekCommitTask = Task {
-            try? await Task.sleep(for: .milliseconds(450))
-            guard !Task.isCancelled, let target = pendingSeekTarget else { return }
-            pendingSeekTarget = nil
-            guard let engine = vm.engine else { return }
-            await engine.seek(to: CMTime(seconds: target, preferredTimescale: 600))
+    /// Accumulate the burst's target into the shared `SeekCommitCoalescer`; it fires ONE
+    /// seek after the taps settle (the same fold-a-burst-into-one-seek debounce as the
+    /// tvOS click-seek).
+    private func scheduleSeekCommit(to target: Double) {
+        seekCoalescer.schedule(target) { target in
+            // The double-tap burst never pauses the engine, so `vm.isPlaying` read now (post
+            // debounce, freshest available) IS the pre-seek intent. Routed through
+            // `commitScrubSeek` (not a bare `seek`) so an out-of-buffer re-encode transcode's
+            // force-resuming re-anchor (#15845) can't silently un-pause a paused user.
+            await vm.commitScrubSeek(to: CMTime(seconds: target, preferredTimescale: 600), resume: vm.isPlaying)
         }
     }
 
@@ -1312,11 +1318,10 @@ struct PlayerControlsView: View {
     }
 
     /// Every OTHER seek-shaped action (drag-scrub, skip button, chapter pick) and a
-    /// track reload must flush a queued double-tap burst — its debounced commit
-    /// would fire up to 450ms later and drag playback back to the stale target.
+    /// track reload must drop a queued double-tap burst — its debounced commit
+    /// would fire up to 400ms later and drag playback back to the stale target.
     private func cancelPendingSeek() {
-        seekCommitTask?.cancel()
-        pendingSeekTarget = nil
+        seekCoalescer.cancel()
         seekFlashDismissTask?.cancel()
         seekFlash = nil
     }
@@ -1591,3 +1596,37 @@ private extension View {
         modifier(TrackPresentation(isPresented: isPresented, detents: detents, menu: menu))
     }
 }
+
+#if DEBUG && !os(tvOS)
+// Full player chrome over a black frame, in a live `.playing` state — the diagnostic
+// asset the HUD-builder dedup is render-verified against (phone statics vs `u`-scaled big
+// metrics). The `bigWidth` seam forces the iPad layout on the iPhone sim so both variants
+// render on one destination. Non-tvOS only (the tvOS chrome has a different init surface
+// and is verified headless).
+private struct PlayerControlsPreviewHost: View {
+    let bigWidth: CGFloat?
+    @State private var vm = PlayerViewModel.previewPlaying()
+    @State private var visible = true
+    @State private var debugHUD = false
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            PlayerControlsView(
+                vm: vm,
+                controlsVisible: $visible,
+                debugHUD: $debugHUD,
+                onScrubActiveChange: { _ in },
+                pullDragging: false,
+                onMenuOpenChange: { _ in },
+                onDismiss: {},
+                previewBigWidth: bigWidth
+            )
+        }
+        .environment(\.colorScheme, .dark)
+    }
+}
+
+#Preview("HUD — phone") { PlayerControlsPreviewHost(bigWidth: nil) }
+#Preview("HUD — big (iPad)") { PlayerControlsPreviewHost(bigWidth: 1180) }
+#endif

@@ -12,7 +12,7 @@ struct FakePlaybackEngineTests {
     func idAndCapabilities() {
         let caps = PlaybackEngineCapabilities(
             supportsPiP: false, supportsVideoAirPlay: false,
-            supportsAudioAirPlay: false, supportsNowPlayingIntegration: false
+            supportsNowPlayingIntegration: false
         )
         let fake = FakePlaybackEngine(id: .avKit, capabilities: caps)
         #expect(fake.id == .avKit)

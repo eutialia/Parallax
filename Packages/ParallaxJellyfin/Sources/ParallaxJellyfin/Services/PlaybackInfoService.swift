@@ -156,8 +156,11 @@ public actor PlaybackInfoService {
     }
 
     /// Builds an authed sidecar WebVTT URL per TEXT subtitle stream. Image subs
-    /// (PGS/VobSub) are skipped — the server can't deliver them as VTT. These are
-    /// fetched + rendered client-side to dodge the in-manifest WebVTT drift.
+    /// (PGS/VobSub) are skipped — they're not sidecars, the server burns them into
+    /// the video instead (`DeviceProfileTranslator` declares `.encode` for them).
+    /// Text subs are fetched + rendered client-side to dodge the in-manifest WebVTT
+    /// drift; image subs still appear in `mediaStreams` below (unfiltered) so the
+    /// transcode menu can offer them as an opt-in burn-in pick.
     private static func subtitleStreamURLs(
         streams: [MediaStreamInfo],
         itemID: String,
@@ -309,6 +312,20 @@ public actor PlaybackInfoService {
         await send("pingSession") { try await self.client.pingSession(playSessionID: playSessionID) }
     }
 
+    // MARK: - Delivery probe (copy vs re-encode)
+
+    /// One-shot probe of the live session's copy-vs-reencode delivery — see
+    /// `JellyfinPlaybackClient.transcodingDelivery`. Unlike the reports this
+    /// THROWS (mapped to AppError): the caller distinguishes "no session yet"
+    /// (nil, ask again later) from a transport failure.
+    public func transcodingDelivery(playSessionID: String) async throws -> TranscodeDelivery? {
+        do {
+            return try await client.transcodingDelivery(playSessionID: playSessionID)
+        } catch {
+            throw ErrorMapping.appError(from: error)
+        }
+    }
+
     // MARK: - Track language preference write-back
 
     /// Persists a track pick into the user's server-side language preferences,
@@ -378,7 +395,6 @@ public actor PlaybackInfoService {
     private static func playMethod(from method: PlaybackMethod) -> PlayMethod {
         switch method {
         case .directPlay: return .directPlay
-        case .directStream: return .directStream
         case .transcode: return .transcode
         }
     }

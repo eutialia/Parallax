@@ -5,11 +5,13 @@ import ParallaxCore
 ///
 /// `EngineSelector` reads the `avKit*` sets for routing decisions.
 /// `DeviceProfileBuilder` derives `DeviceCapabilities` from the matrix.
-/// `DeviceProfileTranslator` (in ParallaxJellyfin) reads `DeviceCapabilities`,
-/// not this matrix directly, and maps its fields → Jellyfin wire strings; it
-/// will surface the software-tier fields once the VLC direct-play tier is wired
-/// (Task 5d). The deliberate `hls`/transcode divergences live in that
-/// translation layer, not in the matrix.
+/// Two live consumers sit downstream: `DeviceProfileTranslator` (in
+/// ParallaxJellyfin) maps `DeviceCapabilities` → Jellyfin wire strings for the
+/// server negotiation, including the VLC direct-play tier (`vlcDirectPlay`);
+/// and `SMBPlaybackResolver` routes probed SMB files through
+/// `EngineSelector.select` to decide bridge-to-AVKit vs native VLC. The
+/// deliberate `hls`/transcode divergences live in the translator, not in the
+/// matrix.
 ///
 /// The `software*` sets are the VLC-additional tier: `vlc* minus avKit*`.
 /// They are used by `DeviceCapabilities` (added in Task 5a.4) to tell
@@ -31,7 +33,7 @@ public enum PlaybackCapabilityMatrix {
     public static let avKitVideoCodecs: Set<VideoCodec> = [.h264, .hevc]
 
     /// Audio codecs AVPlayer's audio pipeline handles.
-    public static let avKitAudioCodecs: Set<AudioCodec> = [.aac, .ac3, .eac3, .mp3]
+    public static let avKitAudioCodecs: Set<AudioCodec> = AudioCodec.avPlayerSupported
 
     /// Subtitle formats AVPlayer renders natively (WebVTT in HLS manifest,
     /// or SRT sidecar). ASS/PGS/VobSub require libass/libavcodec → VLC.

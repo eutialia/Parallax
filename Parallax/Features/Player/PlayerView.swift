@@ -80,9 +80,9 @@ struct PlayerView: View {
     /// Debounces the click-seek: rapid ±10s clicks accumulate a target and fire ONE
     /// engine seek after they settle. Per-click seeks thrash a transcode and wedge the
     /// player in `.waitingToPlayAtSpecifiedRate` (which the engine reports as playing,
-    /// so play/pause then sticks). `pendingClickSeek` is the un-committed target.
-    @State private var commitSeekTask: Task<Void, Never>? = nil
-    @State private var pendingClickSeek: Double? = nil
+    /// so play/pause then sticks). Shared with the iOS double-tap (`PlayerControlsView`)
+    /// via `SeekCommitCoalescer` — `.pending` is the un-committed target.
+    @State private var clickSeekCoalescer = SeekCommitCoalescer()
     /// Last activity-driven idle re-arm — coalesces the ~60Hz pan stream (re-arming
     /// a multi-second timer per delta churns a cancel+Task each frame for nothing).
     @State private var lastActivityRearm: ContinuousClock.Instant? = nil
@@ -183,7 +183,7 @@ struct PlayerView: View {
             Task { await vm?.stop() }
             #if os(tvOS)
             idleTask?.cancel()
-            commitSeekTask?.cancel()
+            clickSeekCoalescer.cancel()
             DisplayCriteriaMatcher.clear()
             #else
             OrientationController.shared.releasePlayerLock()
@@ -216,6 +216,17 @@ struct PlayerView: View {
         // (`NoOpPlaybackReporting`) that resolves the file under the veil. The Jellyfin
         // factories below need a `Session`, so they only run on the Jellyfin paths.
         if case .smb(let item, let ref) = source {
+            // Sidecar subtitle URLs are `smb://` on BOTH SMB routes (the bridge serves only the
+            // video file), which the default URLSession fetch can't open — route the SMB scheme
+            // through the resolver (Keychain stays out of the view) and everything else through
+            // URLSession, mirroring the default closure's http body.
+            let smbResolver = deps.smbPlaybackResolver
+            let subtitleFetch: @Sendable (URL) async -> Data? = { url in
+                if url.scheme == "smb" {
+                    return await smbResolver.subtitleData(for: url, ref: ref)
+                }
+                return try? await URLSession.shared.data(from: url).0
+            }
             let vm = PlayerViewModel(
                 deviceProfileBuilder: deps.deviceProfileBuilder,
                 playbackInfo: NoOpPlaybackReporting(),
@@ -225,7 +236,8 @@ struct PlayerView: View {
                     throw AppError.playback(.unsupportedFormat)
                 },
                 engineFactory: deps.playbackEngineFactory,
-                audioSession: deps.audioSession
+                audioSession: deps.audioSession,
+                subtitleFetch: subtitleFetch
             )
             viewModel = vm
             // The resolver — and its Keychain — is reached through the environment
@@ -254,7 +266,11 @@ struct PlayerView: View {
             fetchDetail: { try await repo.detail(for: $0) },
             rememberTrackSelection: { await info.rememberTrackSelection($0) },
             fetchSegments: { (try? await repo.mediaSegments(for: $0)) ?? [] },
-            fetchAdjacent: { (try? await repo.adjacentEpisodes(seriesID: $0, episodeID: $1)) ?? .none }
+            fetchAdjacent: { (try? await repo.adjacentEpisodes(seriesID: $0, episodeID: $1)) ?? .none },
+            // Copy-vs-reencode probe: a thrown transport error and "no session yet"
+            // both collapse to nil (the VM's probe retries, then gives up) — the seek
+            // strategy stays conservative on nil regardless.
+            fetchDelivery: { (try? await info.transcodingDelivery(playSessionID: $0)) ?? nil }
         )
         viewModel = vm
         switch source {
@@ -516,17 +532,18 @@ struct PlayerView: View {
         #endif
     }
 
-    /// Non-fatal failure: an audio-track switch died but playback already fell back
-    /// to the previous track (the design's silent fallback) — this scrim is the loud
-    /// part, offering a retry. Mounted ABOVE the chrome so its buttons are tappable,
-    /// but its dim passes touches through, so the scrubber and menus stay live.
+    /// Non-fatal failure: an audio- or (PGS burn-in) subtitle-track switch died but
+    /// playback already fell back to the previous track (the design's silent
+    /// fallback) — this scrim is the loud part, offering a retry. Mounted ABOVE the
+    /// chrome so its buttons are tappable, but its dim passes touches through, so
+    /// the scrubber and menus stay live.
     @ViewBuilder
     private func trackSwitchFailureOverlay(
         _ failure: PlayerViewModel.TrackSwitchFailure, vm: PlayerViewModel
     ) -> some View {
         GeometryReader { geo in
             PlayerErrorScrim(
-                title: "Couldn't switch audio",
+                title: "Couldn't switch \(failure.requested.kindLabel)",
                 message: switchFailureMessage(failure),
                 metrics: .forSurface(geo.size)
             ) {
@@ -546,6 +563,13 @@ struct PlayerView: View {
     }
 
     private func switchFailureMessage(_ failure: PlayerViewModel.TrackSwitchFailure) -> String {
+        // Off has no "source" of its own to blame — "The Off source didn't
+        // respond" reads as a bug in the copy, not the player. Phrase this one
+        // as the user's intent (turning subtitles off) instead.
+        if case .subtitle(nil) = failure.requested {
+            let kept = failure.fallback.map(\.displayName) ?? "the previous track"
+            return "Couldn't turn subtitles off. Playback kept \(kept) — nothing was lost."
+        }
         let stayed = failure.fallback.map { "Playback stayed on \($0.displayName)" }
             ?? "Playback continues on the previous track"
         return "The \(failure.requested.displayName) source didn't respond. \(stayed) — nothing was lost."
@@ -827,19 +851,8 @@ struct PlayerView: View {
         restartIdleTimer()
     }
 
-    /// The quiet-time before a scrub auto-commits, SHARED by ±10s click-seek (this
-    /// debounce) and analog swipe-scrub (the `.swipeScrub` idle in `restartIdleTimer`),
-    /// so both resume the same delay after you stop. Long enough to fold a click burst
-    /// into one transcode seek, short enough to feel responsive. Tunable on device.
-    private static let scrubCommitDelay: Duration = .milliseconds(400)
-
     private func scheduleClickSeek(to target: Double, _ vm: PlayerViewModel) {
-        pendingClickSeek = target
-        commitSeekTask?.cancel()
-        commitSeekTask = Task {
-            try? await Task.sleep(for: Self.scrubCommitDelay)
-            guard !Task.isCancelled, let dest = pendingClickSeek else { return }
-            pendingClickSeek = nil
+        clickSeekCoalescer.schedule(target) { dest in
             // Commit the ONE coalesced seek, then drop the bar the moment it lands —
             // the click-seek bar used to ride the 4s `.clickSeek` idle timeout even after
             // playback had already resumed at the new spot (user-reported lingering). The
@@ -851,20 +864,18 @@ struct PlayerView: View {
     }
 
     /// Fire the single accumulated seek NOW and clear the pending target. Used by the
-    /// `send` leave-early path (the user navigates out of `.clickSeek` before the 400ms
-    /// debounce); the natural debounce path commits AND drops the bar in
-    /// `scheduleClickSeek` instead. A later flush with nothing pending is a no-op.
+    /// `send` leave-early path (the user navigates out of `.clickSeek` before the debounce);
+    /// the natural debounce path commits AND drops the bar in `scheduleClickSeek` instead.
+    /// A later flush with nothing pending is a no-op.
     private func flushClickSeek(_ vm: PlayerViewModel) {
-        commitSeekTask?.cancel()
-        guard let target = pendingClickSeek else { return }
-        pendingClickSeek = nil
-        runEffects([.seek(progress: target)], vm)
+        clickSeekCoalescer.flush { target in
+            runEffects([.seek(progress: target)], vm)
+        }
     }
 
     /// Drop the pending click-seek without committing (analog scrub will seek instead).
     private func cancelClickSeek() {
-        commitSeekTask?.cancel()
-        pendingClickSeek = nil
+        clickSeekCoalescer.cancel()
     }
 
     private func tvProgress(of vm: PlayerViewModel) -> Double {
@@ -937,7 +948,9 @@ struct PlayerView: View {
         case .floor:
             return
         case .swipeScrub:
-            timeout = Self.scrubCommitDelay   // same 0.4s as the click-seek debounce
+            // Same quiet-time as the click-seek debounce so analog scrub resumes on the
+            // identical delay after you stop — ONE source (`SeekCommitCoalescer.interval`).
+            timeout = SeekCommitCoalescer.interval
 
         case .clickSeek:
             timeout = .seconds(4)

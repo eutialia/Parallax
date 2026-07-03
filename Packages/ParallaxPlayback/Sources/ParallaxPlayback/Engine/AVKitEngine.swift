@@ -9,7 +9,6 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     public nonisolated let capabilities = PlaybackEngineCapabilities(
         supportsPiP: true,
         supportsVideoAirPlay: true,
-        supportsAudioAirPlay: true,
         supportsNowPlayingIntegration: true
     )
 
@@ -18,6 +17,11 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
 
     private let player = AVPlayer()
     public nonisolated var avPlayer: AVPlayer { player }
+
+    /// Injected buffering profile — see `StartupTuning`. `.systemDefault` (every field
+    /// `nil`) applies nothing in `load()`, so the shipping default is byte-identical to
+    /// today's behavior.
+    private let tuning: StartupTuning
 
     /// Live playback clock for the client-side subtitle overlay.
     public nonisolated var currentTime: CMTime { player.currentTime() }
@@ -35,11 +39,24 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     private var timeControlObservation: NSKeyValueObservation?
     private var timeObserverToken: Any?
     private var endObserver: NSObjectProtocol?
+    /// `AVPlayerItem.playbackStalledNotification` — per Apple's docs this posts ONLY when
+    /// `automaticallyWaitsToMinimizeStalling` is `false` (the `fastStartEager` tuning
+    /// profile). See `handleStalledNotification` for why the KVO-driven arm above misses
+    /// exactly this case (final-review I1).
+    private var stalledObserver: NSObjectProtocol?
     /// Surfaces a `.failed` if the item never becomes playable within the deadline — `load()` never
     /// throws here (every AVFoundation setter is non-throwing), so without this a dead URL / stuck
     /// segment fetch would strand the player on the loading scrim forever. Armed in `play()`,
     /// disarmed by the first beat / `.ready` / terminal state / detach. See `LoadWatchdog`.
     private let loadWatchdog = LoadWatchdog()
+    /// Bounds a mid-playback stall: a network death after the first frame parks the player in
+    /// `.waitingToPlayAtSpecifiedRate` (→ `.buffering`) retrying a dead socket with no AVFoundation
+    /// timeout — the SMB bridge makes this eternal (it silently resets TCP on NAS loss and AVPlayer
+    /// retries the live listener forever). Armed on entering `.waitingToPlayAtSpecifiedRate`,
+    /// disarmed by any transport beat / terminal state / detach; expiry yields
+    /// `.failed(.networkStalled)`. `lazy` so the
+    /// `onExpiry` closure can capture `self`. See `StallWatchdog`.
+    private lazy var stallWatchdog = StallWatchdog { [weak self] in self?.handleStallTimeout() }
     /// Loads the media-selection inventory off the actor. Held so `teardown()`
     /// can cancel it — otherwise a slow `loadMediaSelectionGroup` keeps the
     /// AVPlayerItem (and its open network connection) alive after dismissal.
@@ -51,18 +68,12 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     private var defaultAudioStreamIndex: Int?
     private var defaultSubtitleStreamIndex: Int?
 
-    public override init() {
-        // Bounded so a wedged consumer can't grow the buffer without limit.
-        // `.bufferingNewest` keeps the freshest beats — the latest position plus any
-        // terminal .ready/.ended/.failed (nothing follows those, so they're never the
-        // dropped-oldest) — and 32 ≈ 16s of 0.5s position beats, far beyond what the
-        // MainActor consumer ever queues. It only sheds stale intermediate positions
-        // under a real stall, which the next beat supersedes anyway.
-        let (stream, continuation) = AsyncStream<PlaybackState>.makeStream(bufferingPolicy: .bufferingNewest(32))
+    public init(tuning: StartupTuning = .systemDefault) {
+        self.tuning = tuning
+        let (stream, continuation) = PlaybackStateStream.makeStream()
         self.state = stream
         self.continuation = continuation
         super.init()
-        continuation.yield(.idle)
         // Unlike the item-status KVO (delivered on the main run loop), AVPlayer
         // flips timeControlStatus from its own internal queue — hop to main
         // instead of assuming isolation.
@@ -85,10 +96,13 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         let buffered = Self.bufferedEnd(of: item, at: position)
         switch player.timeControlStatus {
         case .waitingToPlayAtSpecifiedRate:
+            stallWatchdog.arm()   // a mid-stream stall — bound it so a dead socket can't buffer forever
             continuation.yield(.buffering(position: position, duration: item.duration, buffered: buffered))
         case .playing:
+            stallWatchdog.disarm()   // frames are flowing again — the stall cleared
             continuation.yield(.playing(position: position, duration: item.duration, buffered: buffered))
         case .paused:
+            stallWatchdog.disarm()   // user/transport paused — not a stall
             break
         @unknown default:
             break
@@ -135,6 +149,13 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         let urlAsset = AVURLAsset(url: asset.url)
         let item = AVPlayerItem(asset: urlAsset)
         item.textStyleRules = Self.subtitleStyleRules
+        // Startup tuning (see `StartupTuning`) applied HERE — before `replaceCurrentItem`
+        // and before the pre-ready resume-seek block below is queued — and deliberately
+        // not moved past either: the resume seek is a device-diagnosed livelock fix
+        // (see the comment on `pendingStartTime` below) and must not be reordered or
+        // interleaved with these knob applications. `.systemDefault` (every field nil)
+        // applies nothing, leaving both AVPlayer properties untouched.
+        Self.applyTuning(tuning, to: item, player: player)
         currentItem = item
 
         statusObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
@@ -161,6 +182,19 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         ) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.handleEnded()
+            }
+        }
+
+        // The false-waits stall signal (see `handleStalledNotification`) — Apple docs warn
+        // the system "may post this notification on a thread other than the one you use to
+        // register the observer", so hop to main exactly like the KVO callbacks above.
+        stalledObserver = NotificationCenter.default.addObserver(
+            forName: AVPlayerItem.playbackStalledNotification,
+            object: item,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.handleStalledNotification()
             }
         }
 
@@ -201,8 +235,18 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         continuation.yield(.failed(.assetNotPlayable))
     }
 
+    /// A mid-playback stall (`.buffering`) never recovered within the watchdog deadline — surface
+    /// `.failed(.networkStalled)` so the "stream stalled and didn't recover" scrim + manual retry
+    /// take over instead of an eternal spinner. Guarded by `currentItem` so a beat that already
+    /// disarmed makes this a no-op (mirrors `handleLoadTimeout`).
+    private func handleStallTimeout() {
+        guard currentItem != nil else { return }
+        continuation.yield(.failed(.networkStalled))
+    }
+
     public func pause() async {
         player.pause()
+        stallWatchdog.disarm()   // an explicit pause is never a stall
         if let item = currentItem, item.status == .readyToPlay {
             let position = player.currentTime()
             continuation.yield(.paused(
@@ -331,6 +375,7 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     /// drop the AVPlayer, so a reload keeps the surface — and the layer — alive.
     private func detachCurrentItem() {
         loadWatchdog.disarm()   // teardown or reload — cancel the deadline (play() re-arms on reload)
+        stallWatchdog.disarm()  // and any pending mid-stream stall — a reload/teardown supersedes it
         inventoryTask?.cancel()
         inventoryTask = nil
         statusObservation?.invalidate()
@@ -342,6 +387,10 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         if let endObserver {
             NotificationCenter.default.removeObserver(endObserver)
             self.endObserver = nil
+        }
+        if let stalledObserver {
+            NotificationCenter.default.removeObserver(stalledObserver)
+            self.stalledObserver = nil
         }
     }
 
@@ -488,6 +537,7 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
                 """
             )
             loadWatchdog.disarm()   // the item surfaced its own failure; don't also time out
+            stallWatchdog.disarm()
             continuation.yield(.failed(.assetNotPlayable))
         case .unknown:
             break
@@ -498,7 +548,41 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
 
     private func handleEnded() {
         loadWatchdog.disarm()
+        stallWatchdog.disarm()
         continuation.yield(.ended)
+    }
+
+    /// The false-waits counterpart of the `.waitingToPlayAtSpecifiedRate` arm in
+    /// `handleTimeControlChange`. Per Apple's docs, under
+    /// `automaticallyWaitsToMinimizeStalling == false` (the `fastStartEager` tuning
+    /// profile — see `StartupTuning`) a mid-stream stall flips `timeControlStatus` to
+    /// `.paused` instead of `.waitingToPlayAtSpecifiedRate`, so that KVO arm never fires
+    /// and `StallWatchdog` silently disarms — the eager profile defeats stall detection
+    /// entirely (final-review I1). `playbackStalledNotification` posts ONLY in that
+    /// false-waits mode, so it's the one signal left to catch it.
+    ///
+    /// Deliberately does NOT try to suppress or relabel the `.paused` beat that follows
+    /// (from `pause()` or the periodic/KVO observers) — that beat can be a genuine user
+    /// pause, and this handler has no way to tell the two apart. Instead it emits
+    /// `.buffering` immediately; the VM renders that as the stall scrim, and it wins the
+    /// UI race against the later `.paused` beat because `StallWatchdog`'s deadline (and
+    /// the VM's own debounce) key off the most recent beat, not the first.
+    private func handleStalledNotification() {
+        guard let item = currentItem, item.status == .readyToPlay else { return }
+        emitStallBuffering(for: item)
+    }
+
+    /// The emission body of `handleStalledNotification`, split out as its testable seam
+    /// (mirrors `applyTuning`'s seam in `StartupTuningTests`): a real
+    /// `playbackStalledNotification` only fires on a genuine network stall, which a unit
+    /// test can't produce, so the test drives this directly against a bare
+    /// `AVPlayerItem` and asserts the `.buffering` beat.
+    func emitStallBuffering(for item: AVPlayerItem) {
+        loadWatchdog.disarm()   // the notification firing at all means the transport is alive
+        let position = player.currentTime()
+        let buffered = Self.bufferedEnd(of: item, at: position)
+        stallWatchdog.arm()   // false-waits stall — bound it exactly like the KVO arm does
+        continuation.yield(.buffering(position: position, duration: item.duration, buffered: buffered))
     }
 
     private func emitTimeUpdate(at time: CMTime) {
@@ -509,13 +593,30 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         let buffered = Self.bufferedEnd(of: item, at: time)
         switch player.timeControlStatus {
         case .paused:
+            stallWatchdog.disarm()
             continuation.yield(.paused(position: time, duration: item.duration, buffered: buffered))
         case .waitingToPlayAtSpecifiedRate:
+            stallWatchdog.arm()   // periodic tick caught a stall the KVO edge didn't (re-arm resets the clock)
             continuation.yield(.buffering(position: time, duration: item.duration, buffered: buffered))
         case .playing:
+            stallWatchdog.disarm()
             continuation.yield(.playing(position: time, duration: item.duration, buffered: buffered))
         @unknown default:
+            stallWatchdog.disarm()
             continuation.yield(.playing(position: time, duration: item.duration, buffered: buffered))
+        }
+    }
+
+    /// Applies `tuning`'s non-nil fields to a freshly-built item/player pair — the seam
+    /// `load()` calls and tests exercise directly against a bare `AVPlayerItem`/`AVPlayer`
+    /// (no network, no `.readyToPlay` needed). A `nil` field is a no-op: it leaves the
+    /// corresponding property untouched rather than resetting it to a default value.
+    static func applyTuning(_ tuning: StartupTuning, to item: AVPlayerItem, player: AVPlayer) {
+        if let seconds = tuning.preferredForwardBufferSeconds {
+            item.preferredForwardBufferDuration = seconds
+        }
+        if let waits = tuning.automaticallyWaitsToMinimizeStalling {
+            player.automaticallyWaitsToMinimizeStalling = waits
         }
     }
 

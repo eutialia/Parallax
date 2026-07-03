@@ -2,6 +2,7 @@ import Testing
 import Foundation
 import CoreMedia
 import VLCKitSPM
+import ParallaxCore
 @testable import ParallaxPlayback
 
 @Suite("VLCKitEngine — skeleton")
@@ -40,12 +41,11 @@ struct VLCKitEngineTests {
         #expect(VLCKitEngine.shouldReassertRate(current: 1.4999, desired: 1.5) == false)  // float tolerance
     }
 
-    @Test("capabilities: supportsPiP true, supportsVideoAirPlay false, supportsAudioAirPlay true, supportsNowPlayingIntegration true")
+    @Test("capabilities: supportsPiP true, supportsVideoAirPlay false, supportsNowPlayingIntegration true")
     func capabilities() {
         let engine = VLCKitEngine()
         #expect(engine.capabilities.supportsPiP == true)
         #expect(engine.capabilities.supportsVideoAirPlay == false)
-        #expect(engine.capabilities.supportsAudioAirPlay == true)
         #expect(engine.capabilities.supportsNowPlayingIntegration == true)
     }
 
@@ -255,6 +255,41 @@ struct VLCKitEngineTrackMappingTests {
         #expect(track.displayName == "French ASS")
         #expect(track.languageCode == "fr")
         #expect(track.isForced == false)
+    }
+}
+
+@Suite("VLCKitEngine — cache depth")
+struct VLCKitEngineCacheDepthTests {
+
+    private func hints(scheme: String?, videoCodec: VideoCodec?) -> PlaybackHints {
+        PlaybackHints(
+            scheme: scheme,
+            container: .mkv,
+            videoCodec: videoCodec,
+            audioCodec: nil,
+            subtitleFormats: []
+        )
+    }
+
+    @Test("SMB + hardware-decoded codec gets the shallow 1500ms buffer")
+    func smbHardwareDecodedIsShallow() {
+        #expect(VLCKitEngine.cacheDepthMs(for: hints(scheme: "smb", videoCodec: .h264)) == 1500)
+        #expect(VLCKitEngine.cacheDepthMs(for: hints(scheme: "smb", videoCodec: .hevc)) == 1500)
+    }
+
+    @Test("SMB + software-decoded codec keeps the 3000ms AV1 runway")
+    func smbSoftwareDecodedKeepsRunway() {
+        #expect(VLCKitEngine.cacheDepthMs(for: hints(scheme: "smb", videoCodec: .av1)) == 3000)
+    }
+
+    @Test("SMB with unknown codec keeps the 3000ms runway (no probe → assume the worst)")
+    func smbUnknownCodecKeepsRunway() {
+        #expect(VLCKitEngine.cacheDepthMs(for: hints(scheme: "smb", videoCodec: nil)) == 3000)
+    }
+
+    @Test("non-SMB schemes keep 3000ms regardless of codec")
+    func nonSMBKeepsRunway() {
+        #expect(VLCKitEngine.cacheDepthMs(for: hints(scheme: "http", videoCodec: .h264)) == 3000)
     }
 }
 

@@ -51,6 +51,33 @@ public final class DefaultJellyfinPlaybackClient: JellyfinPlaybackClient, Sendab
         params.allowVideoStreamCopy = true
         params.allowAudioStreamCopy = true
 
+        let body = Self.playbackInfoBody(
+            profile: profile,
+            startTimeTicks: startTimeTicks,
+            userID: userID,
+            audioStreamIndex: audioStreamIndex,
+            subtitleStreamIndex: subtitleStreamIndex
+        )
+
+        let request = Paths.getPostedPlaybackInfo(itemID: itemID, parameters: params, body)
+        return try await client().send(request).value
+    }
+
+    /// Builds the `PlaybackInfoDto` POST body for `GetPostedPlaybackInfo`. Pulled out
+    /// as a pure function (the test seam) so the body's fields — notably the
+    /// stream-copy flags — are assertable without a live network round-trip.
+    ///
+    /// The POST body is authoritative for this endpoint — the query-param copy in
+    /// `playbackInfo()` predates it and the server largely ignores query flags here.
+    /// Without `allowVideoStreamCopy`/`allowAudioStreamCopy` set on the body, the
+    /// server can decline eligible stream-copy and fully re-encode instead.
+    static func playbackInfoBody(
+        profile: DeviceProfile,
+        startTimeTicks: Int?,
+        userID: String,
+        audioStreamIndex: Int?,
+        subtitleStreamIndex: Int?
+    ) -> PlaybackInfoDto {
         var body = PlaybackInfoDto(
             deviceProfile: profile,
             enableDirectPlay: true,
@@ -61,9 +88,9 @@ public final class DefaultJellyfinPlaybackClient: JellyfinPlaybackClient, Sendab
         )
         body.audioStreamIndex = audioStreamIndex
         body.subtitleStreamIndex = subtitleStreamIndex
-
-        let request = Paths.getPostedPlaybackInfo(itemID: itemID, parameters: params, body)
-        return try await client().send(request).value
+        body.allowVideoStreamCopy = true
+        body.allowAudioStreamCopy = true
+        return body
     }
 
     // MARK: - Stream URLs
@@ -134,6 +161,41 @@ public final class DefaultJellyfinPlaybackClient: JellyfinPlaybackClient, Sendab
 
     public func pingSession(playSessionID: String) async throws {
         try await client().send(Paths.pingPlaybackSession(playSessionID: playSessionID))
+    }
+
+    // MARK: - Delivery probe (copy vs re-encode)
+
+    public func transcodingDelivery(playSessionID: String) async throws -> TranscodeDelivery? {
+        // `playSessionID` cannot be matched against the response — see the
+        // protocol doc and delivery(fromSessions:deviceID:). The deviceID
+        // query filter narrows the list server-side; the mapper re-checks it.
+        var params = Paths.GetSessionsParameters()
+        params.deviceID = identity.deviceID
+        let sessions = try await client().send(Paths.getSessions(parameters: params)).value
+        return Self.delivery(fromSessions: sessions, deviceID: identity.deviceID)
+    }
+
+    /// Maps a `GET /Sessions` response to the delivery facts. Pulled out as a
+    /// pure function (the test seam, like `playbackInfoBody`).
+    ///
+    /// Matching: our device ID + a non-nil `transcodingInfo`. `SessionInfoDto`
+    /// exposes no play-session identifier, so the caller's playSessionID can't
+    /// be compared — an approximation that holds because this app runs one
+    /// playback per device and `stopEncoding` kills the old job on track
+    /// switches. Nil direct flags map to false: never claim a bitstream copy
+    /// the server didn't assert.
+    static func delivery(fromSessions sessions: [SessionInfoDto], deviceID: String) -> TranscodeDelivery? {
+        guard let info = sessions
+            .first(where: { $0.deviceID == deviceID && $0.transcodingInfo != nil })?
+            .transcodingInfo
+        else { return nil }
+        return TranscodeDelivery(
+            isVideoDirect: info.isVideoDirect ?? false,
+            isAudioDirect: info.isAudioDirect ?? false,
+            videoCodec: info.videoCodec,
+            audioCodec: info.audioCodec,
+            transcodeReasons: (info.transcodeReasons ?? []).map(\.rawValue)
+        )
     }
 
     // MARK: - User configuration

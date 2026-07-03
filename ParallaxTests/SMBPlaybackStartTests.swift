@@ -24,7 +24,9 @@ struct SMBPlaybackStartTests {
     private func makeVM(
         reporting: StubPlaybackReporting,
         engine: FakePlaybackEngine,
-        audioSession: any AudioSessionControlling = NoopAudioSession()
+        audioSession: any AudioSessionControlling = NoopAudioSession(),
+        subtitleFetch: @escaping @Sendable (URL) async -> Data? = { _ in nil },
+        smbResumeStore: SMBResumeStore = .shared
     ) -> PlayerViewModel {
         let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
         let builder = DeviceProfileBuilder(probe: probe)
@@ -36,22 +38,97 @@ struct SMBPlaybackStartTests {
                 throw AppError.playback(.unsupportedFormat)
             },
             engineFactory: { _ in engine },
-            audioSession: audioSession
+            audioSession: audioSession,
+            subtitleFetch: subtitleFetch,
+            smbResumeStore: smbResumeStore
         )
     }
 
     private func smbItem(
         url: String = "smb://nas.local/Media/Movies/Example.mkv",
         title: String = "Example",
+        itemID: ItemID = ItemID(rawValue: "smb-test-item"),
         vlcOptions: [String] = [":smb-user=alice", ":smb-pwd=secret", ":smb-domain=WORKGROUP"],
-        subtitleURLs: [Int: URL] = [:]
+        subtitleURLs: [Int: URL] = [:],
+        subtitleLabels: [Int: String] = [:],
+        hasTrustworthyDuration: Bool = true
     ) -> SMBPlaybackItem {
         SMBPlaybackItem(
+            itemID: itemID,
             url: URL(string: url)!,
             title: title,
             vlcOptions: vlcOptions,
-            subtitleURLs: subtitleURLs
+            subtitleURLs: subtitleURLs,
+            subtitleLabels: subtitleLabels,
+            hasTrustworthyDuration: hasTrustworthyDuration
         )
+    }
+
+    @Test("start(smbItem:) surfaces both labeled sidecars in the subtitle menu with the resolver's labels")
+    func startSurfacesLabeledSidecarsInMenu() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let vm = makeVM(reporting: reporting, engine: engine)
+
+        let en = URL(string: "smb://nas.local/Media/Movies/Example.en.srt")!
+        let ja = URL(string: "smb://nas.local/Media/Movies/Example.ja.srt")!
+        await vm.start(smbItem: smbItem(
+            subtitleURLs: [0: en, 1: ja],
+            subtitleLabels: [0: "en", 1: "ja"]
+        ))
+
+        // Both sidecars are selectable menu entries even before any engine .ready beat,
+        // carrying the resolver's labels and client-render `.jellyfinStream` ids.
+        let subs = vm.availableSubtitleTracks
+        #expect(subs.count == 2)
+        #expect(subs.contains { $0.id == .jellyfinStream(0) && $0.displayName == "en" && $0.isExternal })
+        #expect(subs.contains { $0.id == .jellyfinStream(1) && $0.displayName == "ja" && $0.isExternal })
+    }
+
+    @Test("start(smbItem:) hides ASS/SSA sidecars from the menu — no client renderer yet")
+    func startHidesUnrenderableSidecarFormats() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let vm = makeVM(reporting: reporting, engine: engine)
+
+        let srt = URL(string: "smb://nas.local/Media/Movies/x.srt")!
+        let ass = URL(string: "smb://nas.local/Media/Movies/y.ass")!
+        let vtt = URL(string: "smb://nas.local/Media/Movies/z.vtt")!
+        await vm.start(smbItem: smbItem(
+            subtitleURLs: [0: srt, 1: ass, 2: vtt],
+            subtitleLabels: [0: "srt-label", 1: "ass-label", 2: "vtt-label"]
+        ))
+
+        // The resolver's filename matcher still surfaces the ASS sidecar (matched, just
+        // unrenderable client-side) — the fix filters it out of the MENU, not the resolver.
+        let subs = vm.availableSubtitleTracks
+        #expect(subs.count == 2)
+        #expect(subs.contains { $0.id == .jellyfinStream(0) && $0.displayName == "srt-label" })
+        #expect(subs.contains { $0.id == .jellyfinStream(2) && $0.displayName == "vtt-label" })
+        #expect(!subs.contains { $0.id == .jellyfinStream(1) })
+    }
+
+    @Test("selecting an SMB .srt sidecar fetches + parses via SRTParser into activeSubtitleCues")
+    func selectingSRTSidecarParsesViaSRTParser() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+
+        // A minimal single-cue SRT blob — comma timing WebVTTParser can't read, so a green
+        // count proves the extension routed to SRTParser rather than WebVTTParser (→ 0 cues).
+        let srt = "1\n00:00:01,000 --> 00:00:04,000\nHello world\n"
+        let subURL = URL(string: "smb://nas.local/Media/Movies/Example.en.srt")!
+        let vm = makeVM(reporting: reporting, engine: engine, subtitleFetch: { url in
+            url == subURL ? Data(srt.utf8) : nil
+        })
+
+        await vm.start(smbItem: smbItem(subtitleURLs: [0: subURL], subtitleLabels: [0: "en"]))
+
+        let track = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(0) })
+        await vm.selectSubtitleTrack(track)
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(vm.activeSubtitleCues.count == 1)
+        #expect(vm.activeSubtitleCues.first?.text == "Hello world")
     }
 
     /// Counts resolve-closure invocations so a test can prove `retry()` replays it.
@@ -165,9 +242,12 @@ struct SMBPlaybackStartTests {
 
     @Test("stop() tears the SMB session down cleanly: subtitleURLs cleared, no reporting")
     func stopTearsDownCleanly() async throws {
+        let suite = "SMBPlaybackStartTests.stopTearsDownCleanly"
+        let (store, defaults) = try SMBTestFixtures.makeResumeStore(suite: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
-        let vm = makeVM(reporting: reporting, engine: engine)
+        let vm = makeVM(reporting: reporting, engine: engine, smbResumeStore: store)
 
         let subURL = URL(string: "file:///tmp/Example.en.srt")!
         await vm.start(smbItem: smbItem(subtitleURLs: [0: subURL]))
@@ -186,6 +266,89 @@ struct SMBPlaybackStartTests {
         // A session that never reported start must never report stop.
         #expect(await reporting.events.isEmpty)
         #expect(await reporting.stoppedEncodings.isEmpty)
+    }
+
+    // MARK: - Local resume vs an untrusted (estimated) duration
+
+    @Test("an untrusted duration never lets the 95%-complete rule clear a real resume position")
+    func untrustedDurationSurvivesNearEndSave() async throws {
+        let suite = "SMBPlaybackStartTests.untrustedDurationSurvivesNearEndSave"
+        let (store, defaults) = try SMBTestFixtures.makeResumeStore(suite: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let vm = makeVM(reporting: reporting, engine: engine, smbResumeStore: store)
+        let id = ItemID(rawValue: "smb-untrusted-duration")
+
+        // An incomplete/still-downloading file: VLCKitEngine synthesizes a numeric duration
+        // from its read-rate estimate, so `hasKnownDuration` reads true even though the
+        // length isn't real. Position sits at 98.3% of that estimate — the shape that would
+        // trip the store's 95%-complete clear if the duration were trusted.
+        await vm.start(smbItem: smbItem(itemID: id, hasTrustworthyDuration: false))
+        engine.push(.playing(
+            position: CMTime(seconds: 5_900, preferredTimescale: 1),
+            duration: CMTime(seconds: 6_000, preferredTimescale: 1),
+            buffered: nil
+        ))
+        try await Task.sleep(for: .milliseconds(50))
+
+        // stop()'s final save is unthrottled and inline-awaited — deterministic to assert
+        // straight after, no throttle-window race.
+        await vm.stop()
+
+        let resumed = try #require(await store.resumeTime(for: id))
+        #expect(abs(CMTimeGetSeconds(resumed) - 5_900) < 0.001)
+    }
+
+    @Test("a trusted duration DOES let the 95%-complete rule clear the resume position (counterpart)")
+    func trustedDurationClearsNearEndSave() async throws {
+        let suite = "SMBPlaybackStartTests.trustedDurationClearsNearEndSave"
+        let (store, defaults) = try SMBTestFixtures.makeResumeStore(suite: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let vm = makeVM(reporting: reporting, engine: engine, smbResumeStore: store)
+        let id = ItemID(rawValue: "smb-trusted-duration")
+
+        // Identical position/duration shape, but a proven-complete file this time — the
+        // 95%-complete rule is meant to fire here (a finished film restarts from the top).
+        await vm.start(smbItem: smbItem(itemID: id, hasTrustworthyDuration: true))
+        engine.push(.playing(
+            position: CMTime(seconds: 5_900, preferredTimescale: 1),
+            duration: CMTime(seconds: 6_000, preferredTimescale: 1),
+            buffered: nil
+        ))
+        try await Task.sleep(for: .milliseconds(50))
+
+        await vm.stop()
+
+        #expect(await store.resumeTime(for: id) == nil)
+    }
+
+    @Test("a stale throttled save can't outrun .ended's terminal clear")
+    func throttledSaveNeverOutrunsEndedClear() async throws {
+        let suite = "SMBPlaybackStartTests.throttledSaveNeverOutrunsEndedClear"
+        let (store, defaults) = try SMBTestFixtures.makeResumeStore(suite: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let vm = makeVM(reporting: reporting, engine: engine, smbResumeStore: store)
+        let id = ItemID(rawValue: "smb-save-vs-clear")
+
+        await vm.start(smbItem: smbItem(itemID: id))
+
+        // The throttle window is wide open (first beat), so `.playing` spawns the untracked
+        // save `.ended` must now await. Before the fix, the save Task's actor hop could lose
+        // a race against `.ended`'s clear() — landing after it and resurrecting this position.
+        engine.push(.playing(
+            position: CMTime(seconds: 100, preferredTimescale: 1),
+            duration: CMTime(seconds: 6_000, preferredTimescale: 1),
+            buffered: nil
+        ))
+        engine.push(.ended)
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(await store.resumeTime(for: id) == nil)
     }
 
     // MARK: - start(resolvingSMB:) — resolve under the veil
@@ -267,6 +430,44 @@ struct SMBPlaybackStartTests {
         await vm.retry()
         #expect(await attempts.count == 2)
         #expect(engine.calls.contains("load"))
+    }
+
+    /// Records how many times the bridge cleanup was invoked.
+    private actor CleanupSpy {
+        private(set) var count = 0
+        func invoke() { count += 1 }
+    }
+
+    @Test("resolving start: an exit racing the resolve reaps the bridge cleanup (no orphan)")
+    func resolvingStartExitRaceReapsBridge() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let vm = makeVM(reporting: reporting, engine: engine)
+
+        let spy = CleanupSpy()
+        let base = smbItem()
+        // A bridge-route item: cleanup holds a LIVE bridge the session must reap on exit.
+        let resolvedItem = SMBPlaybackItem(
+            itemID: base.itemID,
+            url: base.url,
+            title: base.title,
+            vlcOptions: base.vlcOptions,
+            cleanup: { await spy.invoke() }
+        )
+
+        // The resolve runs stop() to completion mid-flight (the onDisappear backstop landing
+        // in the resolve window), THEN returns the item. Before the fix the cleanup was
+        // stashed only inside start(smbItem:) — never reached past the exit fence — so the
+        // bridge orphaned: stop() ran with smbCleanup still nil and never runs again.
+        await vm.start(resolvingSMB: {
+            await vm.stop()
+            return resolvedItem
+        })
+
+        // The exit fence bailed before start(smbItem:), so the engine never loaded — but the
+        // stashed cleanup was reaped exactly once by the CancellationError branch.
+        #expect(!engine.calls.contains("load"))
+        #expect(await spy.count == 1)
     }
 
     @Test("NoOpPlaybackReporting swallows every call without recording")

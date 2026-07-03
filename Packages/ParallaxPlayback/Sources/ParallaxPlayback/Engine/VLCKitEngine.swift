@@ -1,5 +1,6 @@
 import Foundation
 import CoreMedia
+import ParallaxCore
 import VLCKitSPM
 
 /// VLC-backed `PlaybackEngine`. Handles the long tail of formats AVKit cannot
@@ -26,7 +27,6 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     public nonisolated let capabilities = PlaybackEngineCapabilities(
         supportsPiP: true,
         supportsVideoAirPlay: false,
-        supportsAudioAirPlay: true,
         supportsNowPlayingIntegration: true
     )
 
@@ -121,6 +121,20 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// disarmed by the first beat / teardown / terminal state. See `LoadWatchdog`.
     private let loadWatchdog = LoadWatchdog()
 
+    /// Bounds a mid-playback stall the poll detects (see `stallDetector`). `player.isPlaying` reflects
+    /// intent, not frames (VLCKit#578), so a network death leaves the poll emitting `.playing` over a
+    /// frozen clock forever — armed when the stall detector trips, and its expiry yields
+    /// `.failed(.networkStalled)`. `lazy` so the `onExpiry` closure can capture `self`. See `StallWatchdog`.
+    private lazy var stallWatchdog = StallWatchdog { [weak self] in self?.handleStallTimeout() }
+
+    /// Frozen-clock + frozen-demux stall counter, fed once per poll AFTER the guard chain (so a
+    /// seek/rate-flush/resume window never counts). Reset on load/pause/seek. See `StallDetector`.
+    private var stallDetector = StallDetector()
+
+    /// Whether the poll is currently publishing the honest `.buffering` stall scrim (detector tripped,
+    /// watchdog armed). Gates a single arm on entry and a single `.playing`/disarm on recovery.
+    private var isStalled = false
+
     /// The resume seek runs concurrently with playback (not awaited in `play()`), so it's
     /// stored here for `teardown()` to cancel — otherwise a dismiss during the readiness
     /// window would leave it polling and then write `player.time` on a stopped player.
@@ -155,10 +169,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
 
     public override init() {
         _ = Self._eventsConfigured   // guarantee main-queue delegate delivery before the player exists
-        // Bounded buffer — see the AVKitEngine init for the rationale. `.bufferingNewest`
-        // keeps the freshest position plus any terminal beat; 32 ≈ 16s of 0.5s ticks, well
-        // beyond what the MainActor consumer ever queues, so nothing real is ever dropped.
-        let (stream, cont) = AsyncStream<PlaybackState>.makeStream(bufferingPolicy: .bufferingNewest(32))
+        let (stream, cont) = PlaybackStateStream.makeStream()
         self.state = stream
         self.continuation = cont
         self.player = VLCMediaPlayer()
@@ -175,7 +186,6 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         // consume the notification, so a finer cadence is just a fresher read (no flood).
         player.minimalTimePeriod = 100_000      // µs (0.1s) — below the interval so it can't gate it
         player.timeChangeUpdateInterval = 0.25  // s — 4×/s, finer than the 500ms poll
-        continuation.yield(.idle)
     }
 
     // MARK: - PlaybackEngine
@@ -187,6 +197,8 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         pendingStartMs = Self.startMs(from: asset.startTime)
         pendingSeekMs = nil
         rateFlushAnchorMs = nil   // a reused engine (track switch) must not bridge a stale flush
+        stallDetector.reset()     // new media → fresh stall window (a reused engine must not carry a run)
+        isStalled = false
         lastEstimateMs = 0        // new media → re-estimate from scratch (a reused engine must not
                                   // carry the previous item's read-rate runtime estimate)
         fileSizeBytes = asset.hints.fileSizeBytes
@@ -233,6 +245,19 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         continuation.yield(.failed(.assetNotPlayable))
     }
 
+    /// A mid-playback stall the poll surfaced (frozen clock + frozen demux, see `startProgressPolling`)
+    /// never recovered within the watchdog deadline — surface `.failed(.networkStalled)` so the
+    /// "stream stalled and didn't recover" scrim + manual retry take over. Stop the poll too (mirrors
+    /// `handleLoadTimeout`): the app's `.failed` handler only sets `phase = .failed` — it does NOT tear
+    /// the engine down — so a late `.playing` beat from a briefly-recovering demux would otherwise flip
+    /// `phase` back over the error scrim. Guarded by `currentMedia` so an already-torn-down engine no-ops.
+    private func handleStallTimeout() {
+        guard currentMedia != nil else { return }
+        progressTask?.cancel()
+        progressTask = nil
+        continuation.yield(.failed(.networkStalled))
+    }
+
     /// Resume by SEEKING to the saved offset once the demux reports seekable. This
     /// readiness window falls during buffering — before the first frame and while the
     /// loader cover is still up — so there's no 0:00 flash, and unlike the `:start-time`
@@ -259,6 +284,12 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
 
     public func pause() async {
         player.pause()
+        // An explicit pause is never a stall: drop any frozen run and cancel a pending stall failure
+        // (the poll is `isPlaying`-gated so it won't observe while paused, but a stall in flight must
+        // not fire the 45s failure on a deliberately-paused player).
+        stallDetector.reset()
+        isStalled = false
+        stallWatchdog.disarm()
         // Emit the paused beat immediately rather than waiting for the next poll (which
         // stays silent while paused) so the transport button flips at once. `player.isPlaying`
         // can lag a frame after pause(), so force isPlaying: false.
@@ -325,6 +356,12 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         // `pendingSeekMs` gate (below) now drives the settle; the rate stays re-asserted by the
         // poll's live-input pass once the seek lands.
         rateFlushAnchorMs = nil
+        // A user seek is a fresh intent and re-reads the demux out of order: clear any stall run so
+        // the post-seek byte jump can't be misread, and cancel a pending stall failure (seeking out
+        // of a frozen frame is recovery).
+        stallDetector.reset()
+        isStalled = false
+        stallWatchdog.disarm()
         let ms = Self.clampSeekMs(seconds: seconds)
         player.time = VLCTime(int: ms)
         // Gate the poll until VLC's clock settles on this target so its transient
@@ -402,6 +439,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// the getter on `hasVideoOut`.)
     public func teardown() async {
         loadWatchdog.disarm()
+        stallWatchdog.disarm()
         progressTask?.cancel()
         progressTask = nil
         resumeTask?.cancel()
@@ -417,13 +455,22 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
 
     // MARK: - Private helpers
 
+    /// Demux/network buffer depth (ms). 3000 is AV1-software-decode runway: shrinking it
+    /// to 1000 to ease rate changes backfired — at 2× a far seek empties the buffer and
+    /// AV1 decode can't refill 1000ms (= 500ms wall-clock at 2×) before the vout starves
+    /// → macroblocked playback until it catches up (device-proven; see git history). That
+    /// constraint is DECODE-bound, not network-bound, so it stays for software codecs and
+    /// unknown codecs; a live rate change applies promptly via `flushForImmediateRate`
+    /// instead. A hardware-decoded codec (h264/hevc → VideoToolbox) on a LAN SMB share
+    /// refills faster than realtime — a shallower buffer there just makes seeks land sooner.
+    nonisolated static func cacheDepthMs(for hints: PlaybackHints) -> Int {
+        let hardwareDecoded: Set<VideoCodec> = [.h264, .hevc]
+        return (hints.scheme == "smb" && hints.videoCodec.map(hardwareDecoded.contains) == true)
+            ? 1500 : 3000
+    }
+
     private func applyOptions(to media: VLCMedia, asset: PlayableAsset) {
-        // Demux/network buffer depth (ms). Shrinking this to 1000 to ease rate changes in faster
-        // backfired: at 2× a far seek empties the buffer and AV1 software decode can't refill
-        // 1000ms (= 500ms wall-clock at 2×) before the vout needs frames → macroblocked playback
-        // until it catches up. 3000ms gives the decoder enough runway to seek cleanly at speed; a
-        // live rate change applies promptly via `flushForImmediateRate` instead, so this stays high.
-        media.addOption(":network-caching=3000")
+        media.addOption(":network-caching=\(Self.cacheDepthMs(for: asset.hints))")
         // iOS gives VLC's text renderers no font provider, so without explicit fonts
         // they render nothing ("can't find selected font provider"). libass (ASS/SSA)
         // and the simple SRT renderer are separate subsystems with separate options:
@@ -520,7 +567,30 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
                         continue
                     }
                 }
-                self.emitPosition(isPlaying: true, positionMs: self.player.time.intValue)
+                // Honest-stall detection — runs AFTER the full guard chain (subtitle latch → rate-flush
+                // → rate reassert → resume hold → seek settle), so by here the player CLAIMS to be
+                // playing (isPlaying) with NO seek/flush/resume settling, and every guarded window is
+                // already excluded. If BOTH the playback clock and the demux byte counter are frozen
+                // across polls it's a genuine network stall — `isPlaying` reflects intent, not frames
+                // (VLCKit#578), so without this the poll emits `.playing` over a dead stream forever.
+                // Bytes advancing = network alive (buffer refilling) and time advancing = playing, both
+                // → not stalled; only BOTH frozen for 6 polls (3s) trips. See `StallDetector`.
+                let nowMs = self.player.time.intValue
+                let readBytes = Int(UInt32(bitPattern: self.currentMedia?.statistics.demuxReadBytes ?? 0))
+                if self.stallDetector.observe(timeMs: nowMs, readBytes: readBytes) {
+                    if !self.isStalled {
+                        self.isStalled = true
+                        self.stallWatchdog.arm()   // bound the stall — expiry → .failed(.networkStalled)
+                    }
+                    self.emitBuffering(positionMs: nowMs)   // honest scrim; keep polling for recovery
+                    continue
+                }
+                if self.isStalled {
+                    // The clock (or demux) advanced again — the stall cleared; drop back to live beats.
+                    self.isStalled = false
+                    self.stallWatchdog.disarm()
+                }
+                self.emitPosition(isPlaying: true, positionMs: nowMs)
                 // Re-emit the inventory once VLC settles the default selection, so the
                 // menus check the playing track and the chip shows its name.
                 if !self.didEmitSettledInventory,

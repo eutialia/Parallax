@@ -34,10 +34,12 @@ import CoreGraphics
 
     @Test func derivesScaledValuesAtPhoneScale() {
         // Confirms the transform is a plain linear `base * u`, not `u²` or similar.
-        // `closeSize` (72u) stands in for the scaling check — `chipHeight` opted out of
-        // u-scaling on phone (it's the fixed `phoneChipHeight` compact value).
+        // `handleDiameter` (22u) and `trackHeight` (8u) stand in for the scaling check —
+        // the scrubber/progress metrics stay u-scaled on phone. The chrome round-button
+        // and transport sizes (`closeSize`, `transport*`) opt OUT on phone (fixed `phone*`
+        // statics, like `chipHeight`), so they're no longer linear-scaling witnesses.
         let m = PlayerMetrics.phone   // u = 0.7
-        #expect(abs(m.closeSize - 72 * 0.7) < 0.0001)
+        #expect(abs(m.handleDiameter - 22 * 0.7) < 0.0001)
         #expect(abs(m.trackHeight - 8 * 0.7) < 0.0001)
     }
 

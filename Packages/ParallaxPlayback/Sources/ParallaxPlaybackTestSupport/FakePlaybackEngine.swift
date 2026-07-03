@@ -9,15 +9,13 @@ extension PlaybackEngineCapabilities {
     public static let avKit = PlaybackEngineCapabilities(
         supportsPiP: true,
         supportsVideoAirPlay: true,
-        supportsAudioAirPlay: true,
         supportsNowPlayingIntegration: true
     )
 
-    /// VLC preset: PiP + audio AirPlay + Now Playing; no video AirPlay.
+    /// VLC preset: PiP + Now Playing; no video AirPlay.
     public static let vlcKit = PlaybackEngineCapabilities(
         supportsPiP: true,
         supportsVideoAirPlay: false,
-        supportsAudioAirPlay: true,
         supportsNowPlayingIntegration: true
     )
 }
