@@ -954,11 +954,13 @@ struct PlayerControlsView: View {
     /// isSwitchingTracks), so without it a Select here would fire a real seek at the
     /// mid-reload engine — the transcode seek-wedge class. Same reason on every seek path.
     private func commitScrub(durSeconds: Double) {
-        guard playbackReady, let engine = vm.engine, durSeconds > 0, isScrubbing else { return }
+        guard playbackReady, vm.engine != nil, durSeconds > 0, isScrubbing else { return }
         let gen = scrubGeneration
         let target = CMTime(seconds: scrubProgress * durSeconds, preferredTimescale: 600)
         Task {
-            await engine.seek(to: target)
+            // Gated seek — an out-of-buffer re-encode transcode re-anchors (#15845).
+            // tvOS ±10s scrub doesn't pause the engine, so there's no resume to replay.
+            await vm.seek(to: target)
             if scrubGeneration == gen { isScrubbing = false }
         }
     }
@@ -1106,23 +1108,22 @@ struct PlayerControlsView: View {
                 onScrubActiveChange(false)
                 resetHideTimer()
                 scrubProgress = frac
-                guard playbackReady, let engine = vm.engine, durSeconds > 0 else { isScrubbing = false; vm.endScrubLatch(); return }
+                guard playbackReady, vm.engine != nil, durSeconds > 0 else { isScrubbing = false; vm.endScrubLatch(); return }
                 let gen = scrubGeneration
                 let resume = scrubWasPlaying
                 let target = CMTime(seconds: frac * durSeconds, preferredTimescale: 600)
                 scrubCommitTask?.cancel()
                 scrubCommitTask = Task {
-                    await engine.seek(to: target)
-                    // A newer drag owns the bar now — leave the resume to its commit.
+                    // Route through the gated commit seek so an out-of-buffer re-encode
+                    // transcode RE-ANCHORS (jellyfin#15845) instead of drifting subtitles;
+                    // it also replays `resume` — the scrub latch (armed at drag start) holds
+                    // the glyph on "pause" across the commit, and the engine's resume beat
+                    // both confirms it and is pinned by the latch until released below.
+                    await vm.commitScrubSeek(to: target, resume: resume)
+                    // A newer drag owns the bar now — leave the release to its commit.
                     // Cancellation = the player was dismissed mid-seek (onDisappear):
-                    // don't resume a torn-down engine on the way out.
+                    // don't touch a torn-down engine on the way out.
                     guard !Task.isCancelled, scrubGeneration == gen else { return }
-                    if resume {
-                        // The scrub latch (armed at drag start) holds the glyph on "pause" across
-                        // the commit; the engine's resume `.playing` beat both confirms it and
-                        // releases the latch. (The seek already restored the position.)
-                        await engine.play()
-                    }
                     // Keep the bar pinned at the committed target until the engine's live
                     // position catches up, so it never flashes the stale pre-seek frame.
                     await releaseScrubLatch(at: frac, durSeconds: durSeconds, generation: gen)
@@ -1149,11 +1150,13 @@ struct PlayerControlsView: View {
             // sticks true and the bar freezes at `scrubProgress`, never tracking playback.
             if !isScrubbing { isScrubbing = true; scrubGeneration += 1 }
             let gen = scrubGeneration
-            guard let engine = vm.engine else { isScrubbing = false; return }
+            guard vm.engine != nil else { isScrubbing = false; return }
             let seekTarget = CMTime(seconds: target * durSeconds, preferredTimescale: 600)
             scrubCommitTask?.cancel()
             scrubCommitTask = Task {
-                await engine.seek(to: seekTarget)
+                // Gated seek — an out-of-buffer re-encode transcode re-anchors (#15845).
+                // VoiceOver adjust doesn't pause the engine, so there's no resume to replay.
+                await vm.seek(to: seekTarget)
                 guard !Task.isCancelled, scrubGeneration == gen else { return }
                 // Same settle-then-release as the drag path, so a VoiceOver/Switch-Control
                 // adjust never flashes the stale frame either.
@@ -1298,8 +1301,9 @@ struct PlayerControlsView: View {
             try? await Task.sleep(for: .milliseconds(450))
             guard !Task.isCancelled, let target = pendingSeekTarget else { return }
             pendingSeekTarget = nil
-            guard let engine = vm.engine else { return }
-            await engine.seek(to: CMTime(seconds: target, preferredTimescale: 600))
+            // Gated seek — an out-of-buffer re-encode transcode re-anchors (#15845)
+            // instead of drifting subtitles.
+            await vm.seek(to: CMTime(seconds: target, preferredTimescale: 600))
         }
     }
 

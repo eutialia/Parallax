@@ -545,6 +545,159 @@ struct PlayerViewModelTests {
         #expect(!engine.calls.contains("seek(3000.0)"))
     }
 
+    // MARK: - commitScrubSeek — the scrub-commit path every UI scrub now routes through
+
+    @Test("scrub commit on direct play: in-stream engine.seek + resume — no re-anchor, byte-identical to the old path")
+    func commitScrubSeekDirectPlayInStream() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let builder = DeviceProfileBuilder(probe: FakeCapabilityProbe(hdr: .none, audioOutput: .stereo))
+        nonisolated(unsafe) var resolveCalls = 0
+        let vm = PlayerViewModel(
+            deviceProfileBuilder: builder,
+            playbackInfo: reporting,
+            resolve: { _, _, _, _, _ in resolveCalls += 1; return PlayerFixtures.resolved() },
+            engineFactory: { _ in engine },
+            audioSession: NoopAudioSession()
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+        let loadsAfterStart = engine.loadedAssets.count
+        engine.bufferedRange = 0...120   // ignored for non-transcode: the gate exits before isBuffered
+
+        // Resuming scrub → in-stream seek then play (the drag paused the engine to hold the frame).
+        await vm.commitScrubSeek(to: CMTime(seconds: 3000, preferredTimescale: 600), resume: true)
+        #expect(engine.calls.contains("seek(3000.0)"))
+        #expect(engine.calls.last == "play")
+        #expect(resolveCalls == 1)                              // no fresh transcode
+        #expect(engine.loadedAssets.count == loadsAfterStart)   // engine not reloaded
+    }
+
+    @Test("scrub commit on direct play while paused: seek only, no resume — a paused scrub stays paused")
+    func commitScrubSeekDirectPlayPausedStaysPaused() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let builder = DeviceProfileBuilder(probe: FakeCapabilityProbe(hdr: .none, audioOutput: .stereo))
+        let vm = PlayerViewModel(
+            deviceProfileBuilder: builder,
+            playbackInfo: reporting,
+            resolve: { _, _, _, _, _ in PlayerFixtures.resolved() },
+            engineFactory: { _ in engine },
+            audioSession: NoopAudioSession()
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+
+        await vm.commitScrubSeek(to: CMTime(seconds: 3000, preferredTimescale: 600), resume: false)
+        // load + play from start(), then the bare in-stream seek — no trailing play, no pause.
+        #expect(engine.calls == ["load", "play", "seek(3000.0)"])
+    }
+
+    @Test("scrub commit on a remux transcode (proven video copy): in-stream seek, no re-anchor")
+    func commitScrubSeekRemuxInStream() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let builder = DeviceProfileBuilder(probe: FakeCapabilityProbe(hdr: .none, audioOutput: .stereo))
+        let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
+        let remux = TranscodeDelivery(
+            isVideoDirect: true, isAudioDirect: false,
+            videoCodec: "hevc", audioCodec: "aac", bitrate: nil,
+            transcodeReasons: ["AudioCodecNotSupported"]
+        )
+        nonisolated(unsafe) var resolveCalls = 0
+        let vm = PlayerViewModel(
+            deviceProfileBuilder: builder,
+            playbackInfo: reporting,
+            resolve: { _, _, _, _, _ in resolveCalls += 1; return resolved },
+            engineFactory: { _ in engine },
+            audioSession: NoopAudioSession(),
+            fetchDelivery: { _ in remux },
+            deliveryProbeDelay: .milliseconds(10)
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+        let loadsAfterStart = engine.loadedAssets.count
+        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
+                             duration: CMTime(seconds: 7200, preferredTimescale: 600), buffered: nil))
+        try await Task.sleep(for: .milliseconds(80))
+        #expect(vm.transcodeDelivery?.isVideoDirect == true)
+
+        engine.bufferedRange = 0...120
+        await vm.commitScrubSeek(to: CMTime(seconds: 3000, preferredTimescale: 600), resume: true)
+        #expect(engine.calls.contains("seek(3000.0)"))          // in-stream fast path
+        #expect(resolveCalls == 1)                              // no fresh transcode
+        #expect(engine.loadedAssets.count == loadsAfterStart)   // engine not reloaded
+    }
+
+    @Test("scrub commit on a re-encode transcode out of buffer: re-anchors (the #15845 drift fix) instead of an in-stream seek")
+    func commitScrubSeekReEncodeReanchors() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let builder = DeviceProfileBuilder(probe: FakeCapabilityProbe(hdr: .none, audioOutput: .stereo))
+        let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
+        let reencode = TranscodeDelivery(
+            isVideoDirect: false, isAudioDirect: true,
+            videoCodec: "h264", audioCodec: "ac3", bitrate: nil,
+            transcodeReasons: ["VideoCodecNotSupported"]
+        )
+        nonisolated(unsafe) var resolveCalls: [CMTime?] = []
+        let vm = PlayerViewModel(
+            deviceProfileBuilder: builder,
+            playbackInfo: reporting,
+            resolve: { _, _, start, _, _ in resolveCalls.append(start); return resolved },
+            engineFactory: { _ in engine },
+            audioSession: NoopAudioSession(),
+            fetchDelivery: { _ in reencode },
+            deliveryProbeDelay: .milliseconds(10)
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+        let loadsAfterStart = engine.loadedAssets.count
+        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
+                             duration: CMTime(seconds: 7200, preferredTimescale: 600), buffered: nil))
+        try await Task.sleep(for: .milliseconds(80))
+        #expect(vm.transcodeDelivery?.isVideoDirect == false)
+
+        // Out-of-buffer scrub commit → fresh transcode AT the target, not an in-stream seek.
+        engine.bufferedRange = 0...120
+        await vm.commitScrubSeek(to: CMTime(seconds: 3000, preferredTimescale: 600), resume: true)
+        #expect(resolveCalls.count == 2)
+        #expect(CMTimeGetSeconds((resolveCalls.last ?? nil) ?? .zero) == 3000)
+        #expect(engine.loadedAssets.count == loadsAfterStart + 1)   // engine reloaded
+        #expect(!engine.calls.contains("seek(3000.0)"))            // no in-stream drift seek
+    }
+
+    @Test("scrub commit while paused on a re-encode transcode out of buffer: the force-resuming reload is re-paused")
+    func commitScrubSeekReEncodePausedRepauses() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let builder = DeviceProfileBuilder(probe: FakeCapabilityProbe(hdr: .none, audioOutput: .stereo))
+        let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
+        let reencode = TranscodeDelivery(
+            isVideoDirect: false, isAudioDirect: true,
+            videoCodec: "h264", audioCodec: "ac3", bitrate: nil,
+            transcodeReasons: ["VideoCodecNotSupported"]
+        )
+        let vm = PlayerViewModel(
+            deviceProfileBuilder: builder,
+            playbackInfo: reporting,
+            resolve: { _, _, _, _, _ in resolved },
+            engineFactory: { _ in engine },
+            audioSession: NoopAudioSession(),
+            fetchDelivery: { _ in reencode },
+            deliveryProbeDelay: .milliseconds(10)
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+        let loadsAfterStart = engine.loadedAssets.count
+        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
+                             duration: CMTime(seconds: 7200, preferredTimescale: 600), buffered: nil))
+        try await Task.sleep(for: .milliseconds(80))
+
+        // The reload's loadAndPlay force-resumes; a scrub that began PAUSED (resume:false)
+        // must be re-paused, so the last command the engine sees is a pause.
+        engine.bufferedRange = 0...120
+        await vm.commitScrubSeek(to: CMTime(seconds: 3000, preferredTimescale: 600), resume: false)
+        #expect(engine.loadedAssets.count == loadsAfterStart + 1)   // re-anchored (engine reloaded)
+        #expect(engine.calls.contains("play"))                      // reload force-resumed
+        #expect(engine.calls.last == "pause")                       // …then re-paused for the paused scrub
+    }
+
     @Test("delivery re-fetches after a track switch — burn-in can flip a video-copy remux to a re-encode")
     func deliveryRefetchesOnTrackSwitch() async throws {
         let reporting = StubPlaybackReporting()

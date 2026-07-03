@@ -1484,27 +1484,58 @@ final class PlayerViewModel {
     /// re-anchors. Cost: the re-anchor re-buffers, but an out-of-buffer re-encode seek
     /// already re-buffers today (the engine fetches the segment), so this swaps a
     /// drifting in-place restart for an aligned fresh one.
-    func seek(to target: CMTime) async {
-        guard let engine else { return }
+    /// Returns `true` when the seek RE-ANCHORED (rebuilt the transcode via
+    /// `reloadTranscode`, which force-resumes playback), `false` for an in-stream
+    /// `engine.seek`. `commitScrubSeek` branches on it to restore a paused scrub's
+    /// pause after a force-resuming reload.
+    @discardableResult
+    func seek(to target: CMTime) async -> Bool {
+        guard let engine else { return false }
         // Only an out-of-buffer RE-ENCODE transcode drifts. A remux (proven video copy)
         // seeks on the server's accurate keyframe branch, and everything else (direct
         // play / VLC / SMB) seeks in-stream — as does a nil delivery once we know it's
         // not a re-encode. Conservative while the probe is still nil: re-anchor.
         guard resolved?.method == .transcode, transcodeDelivery?.isVideoDirect != true else {
             await engine.seek(to: target)
-            return
+            return false
         }
         // A re-anchor already in flight makes the engine's buffer state meaningless
         // (it's mid-reload) — hand the newest target to the drain and let it win.
         if isReanchoring {
             pendingReanchorTarget = target
-            return
+            return true
         }
         if await engine.isBuffered(at: target) {
             await engine.seek(to: target)
+            return false
         } else {
             pendingReanchorTarget = target
             await drainReanchorSeeks()
+            return true
+        }
+    }
+
+    /// A scrub-commit seek: the gated `seek(to:)` followed by the pre-scrub transport
+    /// replay. Every touch/VoiceOver/tvOS scrub commit routes its seek through `seek(to:)`
+    /// so an out-of-buffer RE-ENCODE transcode re-anchors (jellyfin#15845) instead of
+    /// drifting the subtitle overlay; the touch drag additionally pauses the engine to
+    /// hold the still frame, so it must replay the user's pre-scrub play state here.
+    ///
+    /// The wrinkle a bare `seek` can't cover: a re-anchor runs `reloadTranscode`, whose
+    /// `loadAndPlay` UNCONDITIONALLY resumes — so a scrub that began while PAUSED comes
+    /// back playing unless we re-pause it. An in-stream seek leaves the drag's pause in
+    /// place, so it only needs the resume. `resume` is the chain-start play state
+    /// (`scrubWasPlaying`); the caller owns the scrub latch (`beginScrubLatch` /
+    /// `endScrubLatch`) and the generation-guarded `isScrubbing` release around this call.
+    func commitScrubSeek(to target: CMTime, resume: Bool) async {
+        let didReanchor = await seek(to: target)
+        guard let engine else { return }
+        if resume {
+            // The reload already resumed; only the in-stream seek left the drag-pause on.
+            if !didReanchor { await engine.play() }
+        } else if didReanchor {
+            // The reload force-resumed against the user's pause — restore it.
+            await engine.pause()
         }
     }
 
