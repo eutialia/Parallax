@@ -163,6 +163,42 @@ public final class DefaultJellyfinPlaybackClient: JellyfinPlaybackClient, Sendab
         try await client().send(Paths.pingPlaybackSession(playSessionID: playSessionID))
     }
 
+    // MARK: - Delivery probe (copy vs re-encode)
+
+    public func transcodingDelivery(playSessionID: String) async throws -> TranscodeDelivery? {
+        // `playSessionID` cannot be matched against the response — see the
+        // protocol doc and delivery(fromSessions:deviceID:). The deviceID
+        // query filter narrows the list server-side; the mapper re-checks it.
+        var params = Paths.GetSessionsParameters()
+        params.deviceID = identity.deviceID
+        let sessions = try await client().send(Paths.getSessions(parameters: params)).value
+        return Self.delivery(fromSessions: sessions, deviceID: identity.deviceID)
+    }
+
+    /// Maps a `GET /Sessions` response to the delivery facts. Pulled out as a
+    /// pure function (the test seam, like `playbackInfoBody`).
+    ///
+    /// Matching: our device ID + a non-nil `transcodingInfo`. `SessionInfoDto`
+    /// exposes no play-session identifier, so the caller's playSessionID can't
+    /// be compared — an approximation that holds because this app runs one
+    /// playback per device and `stopEncoding` kills the old job on track
+    /// switches. Nil direct flags map to false: never claim a bitstream copy
+    /// the server didn't assert.
+    static func delivery(fromSessions sessions: [SessionInfoDto], deviceID: String) -> TranscodeDelivery? {
+        guard let info = sessions
+            .first(where: { $0.deviceID == deviceID && $0.transcodingInfo != nil })?
+            .transcodingInfo
+        else { return nil }
+        return TranscodeDelivery(
+            isVideoDirect: info.isVideoDirect ?? false,
+            isAudioDirect: info.isAudioDirect ?? false,
+            videoCodec: info.videoCodec,
+            audioCodec: info.audioCodec,
+            bitrate: info.bitrate,
+            transcodeReasons: (info.transcodeReasons ?? []).map(\.rawValue)
+        )
+    }
+
     // MARK: - User configuration
 
     public func currentUserConfiguration() async throws -> UserConfiguration {

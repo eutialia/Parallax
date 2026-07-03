@@ -309,6 +309,20 @@ public actor PlaybackInfoService {
         await send("pingSession") { try await self.client.pingSession(playSessionID: playSessionID) }
     }
 
+    // MARK: - Delivery probe (copy vs re-encode)
+
+    /// One-shot probe of the live session's copy-vs-reencode delivery — see
+    /// `JellyfinPlaybackClient.transcodingDelivery`. Unlike the reports this
+    /// THROWS (mapped to AppError): the caller distinguishes "no session yet"
+    /// (nil, ask again later) from a transport failure.
+    public func transcodingDelivery(playSessionID: String) async throws -> TranscodeDelivery? {
+        do {
+            return try await client.transcodingDelivery(playSessionID: playSessionID)
+        } catch {
+            throw ErrorMapping.appError(from: error)
+        }
+    }
+
     // MARK: - Track language preference write-back
 
     /// Persists a track pick into the user's server-side language preferences,

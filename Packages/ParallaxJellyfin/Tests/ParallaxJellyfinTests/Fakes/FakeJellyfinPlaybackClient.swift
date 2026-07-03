@@ -79,6 +79,15 @@ final class FakeJellyfinPlaybackClient: JellyfinPlaybackClient, @unchecked Senda
         if let pingError { throw pingError }
     }
 
+    // Delivery probe.
+    var transcodingDeliveryResult: Result<TranscodeDelivery?, Error> = .success(nil)
+    private(set) var transcodingDeliveryCalls: [String] = []
+
+    func transcodingDelivery(playSessionID: String) async throws -> TranscodeDelivery? {
+        transcodingDeliveryCalls.append(playSessionID)
+        return try transcodingDeliveryResult.get()
+    }
+
     // User configuration round-trip.
     var userConfigurationResult: Result<UserConfiguration, Error> = .success(UserConfiguration())
     var updateUserConfigurationError: Error?
