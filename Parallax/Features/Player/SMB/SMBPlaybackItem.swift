@@ -1,5 +1,6 @@
 import Foundation
 import CoreMedia
+import ParallaxCore
 import ParallaxPlayback
 
 /// Everything `PlayerViewModel.start(smbItem:)` needs to play a local SMB file —
@@ -10,6 +11,10 @@ import ParallaxPlayback
 /// Sendable so it can cross the `start(smbItem:)` async boundary; it holds only
 /// value types.
 struct SMBPlaybackItem: Sendable {
+    /// The browsed item's identity (`SMBFileSource.itemID(share:path:)`-minted) — the
+    /// key `SMBResumeStore` saves and reads local resume positions under. The VM
+    /// stashes it for the session so progress beats can persist against it.
+    let itemID: ItemID
     /// The `smb://host/share/path` URL libVLC opens directly (the validated primary
     /// path — credentials live in `vlcOptions`, NEVER in the URL string).
     let url: URL
@@ -19,9 +24,8 @@ struct SMBPlaybackItem: Sendable {
     /// (`:smb-user=…`, `:smb-pwd=…`, `:smb-domain=…`), built by the caller from the
     /// Keychain. Passed straight to `PlayableAsset.vlcOptions`; never logged.
     let vlcOptions: [String]
-    /// Resume offset, or nil. SMB/local has no server-side resume store yet, so the
-    /// caller leaves this nil; the field exists so a local resume store can populate
-    /// it later without changing the entry point.
+    /// Resume offset, or nil for a fresh start. The resolver populates it from
+    /// `SMBResumeStore` (the local resume store — no server holds SMB progress).
     let startTime: CMTime?
     /// Pre-resolved sibling subtitle URLs (Task 7's filename-match resolver),
     /// keyed by a synthetic stream index. Mirrors the Jellyfin path's
@@ -45,6 +49,7 @@ struct SMBPlaybackItem: Sendable {
     let cleanup: (@Sendable () async -> Void)?
 
     init(
+        itemID: ItemID,
         url: URL,
         title: String,
         vlcOptions: [String],
@@ -57,6 +62,7 @@ struct SMBPlaybackItem: Sendable {
         ),
         cleanup: (@Sendable () async -> Void)? = nil
     ) {
+        self.itemID = itemID
         self.url = url
         self.title = title
         self.vlcOptions = vlcOptions

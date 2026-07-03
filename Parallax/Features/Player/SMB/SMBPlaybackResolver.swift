@@ -66,6 +66,10 @@ struct SMBPlaybackResolver {
 
         let (hints, useBridge) = Self.route(probe: probeResult, sizeBytes: item.sizeBytes)
 
+        // Local resume: SMB has no server-side progress store, so the offset comes from
+        // the on-device store (nil = fresh start). Same key the VM saves beats under.
+        let startTime = await SMBResumeStore.shared.resumeTime(for: item.id)
+
         if useBridge {
             // The reader is handed to the bridge and owned by it from here — the cleanup
             // closure (Task 5) is the only site that disconnects it.
@@ -83,10 +87,11 @@ struct SMBPlaybackResolver {
                 throw error
             }
             return SMBPlaybackItem(
+                itemID: item.id,
                 url: url,
                 title: item.displayTitle,
                 vlcOptions: [],                        // AVKit path: no VLC credentials in play
-                startTime: nil,
+                startTime: startTime,
                 subtitleURLs: subtitleURLs,
                 subtitleLabels: subtitleLabels,
                 fileSizeBytes: item.sizeBytes,
@@ -110,10 +115,11 @@ struct SMBPlaybackResolver {
             await reader.disconnect()
         }
         return SMBPlaybackItem(
+            itemID: item.id,
             url: ctx.url,
             title: item.displayTitle,
             vlcOptions: ctx.vlcOptions,
-            startTime: nil,
+            startTime: startTime,
             subtitleURLs: subtitleURLs,
             subtitleLabels: subtitleLabels,
             fileSizeBytes: item.sizeBytes,

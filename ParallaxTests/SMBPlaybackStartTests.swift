@@ -50,6 +50,7 @@ struct SMBPlaybackStartTests {
         subtitleLabels: [Int: String] = [:]
     ) -> SMBPlaybackItem {
         SMBPlaybackItem(
+            itemID: ItemID(rawValue: "smb-test-item"),
             url: URL(string: url)!,
             title: title,
             vlcOptions: vlcOptions,
@@ -356,6 +357,7 @@ struct SMBPlaybackStartTests {
         let base = smbItem()
         // A bridge-route item: cleanup holds a LIVE bridge the session must reap on exit.
         let resolvedItem = SMBPlaybackItem(
+            itemID: base.itemID,
             url: base.url,
             title: base.title,
             vlcOptions: base.vlcOptions,

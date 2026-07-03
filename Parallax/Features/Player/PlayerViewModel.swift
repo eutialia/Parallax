@@ -432,6 +432,15 @@ final class PlayerViewModel {
     /// connection and a LAN-reachable file URL, so it must die with the session — invoked +
     /// nil'd in `stop()`, `tearDownEngine()`, and every `start(smbItem:)` failure catch.
     private var smbCleanup: (@Sendable () async -> Void)?
+    /// The playing SMB item's identity — the `SMBResumeStore` key progress beats persist
+    /// under. Nil for Jellyfin sessions (the server owns their resume). Set in
+    /// `start(smbItem:)`, nil'd where session state clears (`stop()`, and `.ended`,
+    /// which clears the stored position and must keep `stop()`'s final save from
+    /// resurrecting it).
+    private var smbItemID: ItemID?
+    /// Last time an SMB resume position was persisted — throttles the `.playing`/`.paused`
+    /// beat writes to one per ~10s, mirroring the Jellyfin progress-report cadence.
+    private var lastSMBResumeWrite: Date = .distantPast
     private var currentAudioStreamIndex: Int?
     private var currentSubtitleStreamIndex: Int?
 
@@ -774,6 +783,9 @@ final class PlayerViewModel {
         // itself — must be able to tear it down. `stop()` is the backstop (onDisappear always
         // calls it); the `.failed` catches below clean up explicitly for the no-exit failures.
         smbCleanup = smbItem.cleanup
+        // The local-resume key for this session: progress beats + stop()'s final write
+        // persist positions under it, exactly where the resolver's startTime came from.
+        smbItemID = smbItem.itemID
         do {
             do {
                 try await audioSession.activate()
@@ -836,6 +848,23 @@ final class PlayerViewModel {
         if let cleanup = smbCleanup {
             smbCleanup = nil
             await cleanup()
+        }
+    }
+
+    /// Persists the current SMB position at most every ~10s — the local mirror of the
+    /// Jellyfin progress-report cadence, shared by the `.playing` and `.paused` beat arms.
+    /// The duration only rides along when it's real (`hasKnownDuration`): an incomplete
+    /// file plays with an `.indefinite`/estimated length, and the store's 95%-finished
+    /// rule must never clear progress against a guess. Fire-and-forget into the store
+    /// actor so a beat never blocks on UserDefaults.
+    private func saveSMBResumeThrottled() {
+        guard let smbItemID else { return }
+        guard Date.now.timeIntervalSince(lastSMBResumeWrite) >= 10 else { return }
+        lastSMBResumeWrite = .now
+        let position = currentPosition
+        let duration = hasKnownDuration ? currentDuration : nil
+        Task {
+            await SMBResumeStore.shared.save(position: position, duration: duration, for: smbItemID)
         }
     }
 
@@ -999,6 +1028,23 @@ final class PlayerViewModel {
         isExiting = true
         guard !didStop else { return }
         didStop = true
+        // Final local-resume write for SMB sessions — no throttle, and BEFORE teardown
+        // zeroes currentPosition. The store's own rules turn a <5s or ≥95%-of-known-
+        // duration position into a clear. Skipped at exactly zero: a session that never
+        // produced a beat (failed load, exit during resolve) must not wipe the stored
+        // resume it was about to honor — the Jellyfin analog of reportStoppedIfNeeded's
+        // didReportStart gate. Nil after: the session is over.
+        if let smbItemID {
+            self.smbItemID = nil
+            if CMTimeGetSeconds(currentPosition) > 0 {
+                await SMBResumeStore.shared.save(
+                    position: currentPosition,
+                    duration: hasKnownDuration ? currentDuration : nil,
+                    for: smbItemID
+                )
+            }
+        }
+        lastSMBResumeWrite = .distantPast
         stateTask?.cancel()
         stateTask = nil
         keepaliveTask?.cancel()
@@ -1573,7 +1619,8 @@ final class PlayerViewModel {
             applyDuration(duration)
             bufferedTo = buffered
             nowPlaying.update(position: position, duration: duration, isPlaying: true, title: itemTitle)
-            // Jellyfin-only: no server session to report against on the SMB path.
+            // Jellyfin: report to the server session. SMB: persist the position locally —
+            // same beat, same ~10s throttle discipline as the progress report.
             if let resolved {
                 if !didReportStart {
                     didReportStart = true
@@ -1581,6 +1628,8 @@ final class PlayerViewModel {
                 } else {
                     await playbackInfo.reportProgress(beat(position: position, isPaused: false, from: resolved))
                 }
+            } else if smbItemID != nil {
+                saveSMBResumeThrottled()
             }
         case .paused(let position, let duration, let buffered):
             // While a scrub latch holds an intent, ignore the transient .paused beats the
@@ -1596,9 +1645,13 @@ final class PlayerViewModel {
             // Never report progress for a session that never reported start (a remote/PiP
             // pause can land during buffering, before the first .playing beat) — Jellyfin
             // expects PlaybackStart before any Progress. Mirrors the .playing branch's gate.
-            // The `if let resolved` also skips the SMB path, which has no server session.
+            // The `if let resolved` also skips the SMB path, which has no server session —
+            // it persists the pause point locally instead (same throttle; a pause right
+            // before dismissal is covered by stop()'s unconditional final save).
             if let resolved, didReportStart {
                 await playbackInfo.reportProgress(beat(position: position, isPaused: true, from: resolved))
+            } else if resolved == nil, smbItemID != nil {
+                saveSMBResumeThrottled()
             }
         case .buffering(let position, let duration, let buffered):
             // Phase and isPlaying are untouched: the surface stays up and the
@@ -1647,6 +1700,13 @@ final class PlayerViewModel {
                 // await so the paused overlay (gated on !playbackDidComplete) never paints
                 // in the gap before the dismiss lands.
                 playbackDidComplete = true
+            }
+            // SMB mirror of the stop report: a finished file restarts fresh. Nil the id
+            // BEFORE clearing so stop()'s final save (the dismiss lands right after)
+            // can't resurrect the position this just cleared.
+            if let smbItemID {
+                self.smbItemID = nil
+                await SMBResumeStore.shared.clear(smbItemID)
             }
             await reportStoppedIfNeeded()
             // Deferred onto a fresh task so the in-flight `.ended` beat unwinds the engine's

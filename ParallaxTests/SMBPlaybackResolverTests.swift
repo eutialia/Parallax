@@ -220,16 +220,38 @@ struct SMBPlaybackResolverTests {
 
     // MARK: - startTime
 
-    @Test("startTime is always nil (no local resume store yet)")
-    func startTimeIsNil() async throws {
+    @Test("startTime is nil when the local resume store has no entry")
+    func startTimeNilWithoutStoredResume() async throws {
         let lister = StubSMBLister(entries: [])
         let resolver = makeResolver(lister: lister)
         let item = makeItem()
         let ref = makeRef()
+        await SMBResumeStore.shared.clear(item.id)
 
         let result = try await resolver.resolve(item, ref: ref)
 
         #expect(result.startTime == nil)
+    }
+
+    @Test("startTime comes from the local resume store when it holds a position")
+    func startTimeFromStoredResume() async throws {
+        let lister = StubSMBLister(entries: [])
+        let resolver = makeResolver(lister: lister)
+        // Distinct path → distinct ItemID: tests run in parallel, and sharing the
+        // no-entry test's key through the shared store would race.
+        let item = makeItem(path: "Movies/Resumable.mkv")
+        let ref = makeRef()
+        await SMBResumeStore.shared.save(
+            position: CMTime(seconds: 300, preferredTimescale: 600),
+            duration: CMTime(seconds: 7200, preferredTimescale: 600),
+            for: item.id
+        )
+        defer { Task { await SMBResumeStore.shared.clear(item.id) } }
+
+        let result = try await resolver.resolve(item, ref: ref)
+
+        let startTime = try #require(result.startTime)
+        #expect(abs(CMTimeGetSeconds(startTime) - 300) < 0.001)
     }
 
     // MARK: - Root-level path (no directory)
