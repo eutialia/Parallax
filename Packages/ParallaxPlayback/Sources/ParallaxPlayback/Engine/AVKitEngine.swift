@@ -45,6 +45,13 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     /// segment fetch would strand the player on the loading scrim forever. Armed in `play()`,
     /// disarmed by the first beat / `.ready` / terminal state / detach. See `LoadWatchdog`.
     private let loadWatchdog = LoadWatchdog()
+    /// Bounds a mid-playback stall: a network death after the first frame parks the player in
+    /// `.waitingToPlayAtSpecifiedRate` (→ `.buffering`) retrying a dead socket with no AVFoundation
+    /// timeout — the SMB bridge makes this eternal (it silently resets TCP on NAS loss and AVPlayer
+    /// retries the live listener forever). Armed by each `.buffering` emit, disarmed by any transport
+    /// beat / terminal state / detach; expiry yields `.failed(.networkStalled)`. `lazy` so the
+    /// `onExpiry` closure can capture `self`. See `StallWatchdog`.
+    private lazy var stallWatchdog = StallWatchdog { [weak self] in self?.handleStallTimeout() }
     /// Loads the media-selection inventory off the actor. Held so `teardown()`
     /// can cancel it — otherwise a slow `loadMediaSelectionGroup` keeps the
     /// AVPlayerItem (and its open network connection) alive after dismissal.
@@ -91,10 +98,13 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         let buffered = Self.bufferedEnd(of: item, at: position)
         switch player.timeControlStatus {
         case .waitingToPlayAtSpecifiedRate:
+            stallWatchdog.arm()   // a mid-stream stall — bound it so a dead socket can't buffer forever
             continuation.yield(.buffering(position: position, duration: item.duration, buffered: buffered))
         case .playing:
+            stallWatchdog.disarm()   // frames are flowing again — the stall cleared
             continuation.yield(.playing(position: position, duration: item.duration, buffered: buffered))
         case .paused:
+            stallWatchdog.disarm()   // user/transport paused — not a stall
             break
         @unknown default:
             break
@@ -214,8 +224,18 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         continuation.yield(.failed(.assetNotPlayable))
     }
 
+    /// A mid-playback stall (`.buffering`) never recovered within the watchdog deadline — surface
+    /// `.failed(.networkStalled)` so the "stream stalled and didn't recover" scrim + manual retry
+    /// take over instead of an eternal spinner. Guarded by `currentItem` so a beat that already
+    /// disarmed makes this a no-op (mirrors `handleLoadTimeout`).
+    private func handleStallTimeout() {
+        guard currentItem != nil else { return }
+        continuation.yield(.failed(.networkStalled))
+    }
+
     public func pause() async {
         player.pause()
+        stallWatchdog.disarm()   // an explicit pause is never a stall
         if let item = currentItem, item.status == .readyToPlay {
             let position = player.currentTime()
             continuation.yield(.paused(
@@ -344,6 +364,7 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     /// drop the AVPlayer, so a reload keeps the surface — and the layer — alive.
     private func detachCurrentItem() {
         loadWatchdog.disarm()   // teardown or reload — cancel the deadline (play() re-arms on reload)
+        stallWatchdog.disarm()  // and any pending mid-stream stall — a reload/teardown supersedes it
         inventoryTask?.cancel()
         inventoryTask = nil
         statusObservation?.invalidate()
@@ -501,6 +522,7 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
                 """
             )
             loadWatchdog.disarm()   // the item surfaced its own failure; don't also time out
+            stallWatchdog.disarm()
             continuation.yield(.failed(.assetNotPlayable))
         case .unknown:
             break
@@ -511,6 +533,7 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
 
     private func handleEnded() {
         loadWatchdog.disarm()
+        stallWatchdog.disarm()
         continuation.yield(.ended)
     }
 
@@ -522,12 +545,16 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         let buffered = Self.bufferedEnd(of: item, at: time)
         switch player.timeControlStatus {
         case .paused:
+            stallWatchdog.disarm()
             continuation.yield(.paused(position: time, duration: item.duration, buffered: buffered))
         case .waitingToPlayAtSpecifiedRate:
+            stallWatchdog.arm()   // periodic tick caught a stall the KVO edge didn't (re-arm resets the clock)
             continuation.yield(.buffering(position: time, duration: item.duration, buffered: buffered))
         case .playing:
+            stallWatchdog.disarm()
             continuation.yield(.playing(position: time, duration: item.duration, buffered: buffered))
         @unknown default:
+            stallWatchdog.disarm()
             continuation.yield(.playing(position: time, duration: item.duration, buffered: buffered))
         }
     }
