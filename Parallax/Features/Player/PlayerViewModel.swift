@@ -150,18 +150,22 @@ final class PlayerViewModel {
     /// this is the one seam between the two instead of two near-identical copies.
     enum TrackPick: Equatable {
         case audio(AudioTrack)
-        case subtitle(SubtitleTrack)
+        /// `nil` is Off — leaving an active burn-in for Off now re-resolves like any
+        /// other subtitle pick (see `reloadSubtitleTranscode`), so its failure needs a
+        /// representable "requested" pick too. Off has no `TrackID` (the menu's Off row
+        /// carries none either — `SubtitleTrackMenu.offFocusKey`), hence `id` below.
+        case subtitle(SubtitleTrack?)
 
-        var id: TrackID {
+        var id: TrackID? {
             switch self {
             case .audio(let track): track.id
-            case .subtitle(let track): track.id
+            case .subtitle(let track): track?.id
             }
         }
         var displayName: String {
             switch self {
             case .audio(let track): track.displayName
-            case .subtitle(let track): track.displayName
+            case .subtitle(let track): track?.displayName ?? "Off"
             }
         }
         /// The scrim title's noun ("Couldn't switch audio" / "…subtitles").
@@ -1362,41 +1366,40 @@ final class PlayerViewModel {
             // scrim's retry still passes this guard.)
             guard track != selectedSubtitleTrack else { return }
             guard let index = track.id.jellyfinStreamIndex else { return }
-            let previous = selectedSubtitleTrack
-            selectedSubtitleTrack = track
-            trackSwitchFailure = nil
-            // No overlay renders a burn-in pick — drop whatever text sidecar was
-            // showing before the new (burned-in) stream arrives.
-            clearSidecarSubtitle()
-            switch await switchTranscodeTrack(audioStreamIndex: currentAudioStreamIndex, subtitleStreamIndex: index) {
-            case .completed:
-                persistTrackSelection(.subtitles(languageCode: track.languageCode))
-            case .abandoned:
-                selectedSubtitleTrack = previous
-                restoreSidecarSubtitle(previous)
-            case .fellBack(let error):
-                selectedSubtitleTrack = previous
-                restoreSidecarSubtitle(previous)
-                trackSwitchFailure = TrackSwitchFailure(
-                    requested: .subtitle(track),
-                    fallback: previous.map(TrackPick.subtitle),
-                    error: error
-                )
-            case .failed:
-                break   // phase == .failed — the general error scrim owns the surface
-            }
+            await reloadSubtitleTranscode(to: track, subtitleStreamIndex: index)
             return
         }
+        // Leaving an ACTIVE burn-in for anything else — Off or a text sub — needs the
+        // same re-resolve a pick INTO a burn-in gets above: the server is still
+        // re-encoding the old image into the video until a fresh transcode says
+        // otherwise. Without this, "Off" doesn't turn it off, and a text pick just
+        // draws its overlay on top of the still-burned-in image (double-stacked).
+        // Picking one burn-in into another already reloads unconditionally above, so
+        // this only matters for the two branches below.
+        let leavingBurnIn = resolved?.method == .transcode && selectedSubtitleTrack?.isBurnedIn == true
         // A `.jellyfinStream` id is an external/sidecar text sub we render ourselves
         // (transcode: every text sub; direct-play: the external ones) — fetch + draw it
         // via SubtitleOverlayView with the engine's own subtitle held off. An embedded
         // direct-play track carries a `.vlc`/`.avKitOption` id the engine renders; `nil`
         // is Off.
         if let track, let index = track.id.jellyfinStreamIndex {
+            if leavingBurnIn {
+                // Sidecar activation must wait for the reload to land — fetching now would
+                // read the still-burning-in outgoing session's (stale) subtitleURLs.
+                await reloadSubtitleTranscode(to: track, subtitleStreamIndex: index) {
+                    await self.activateSidecarSubtitle(track, index: index)
+                }
+                return
+            }
             await activateSidecarSubtitle(track, index: index)
         } else if resolved?.method == .transcode {
-            // Transcode Off: no engine subtitle exists (subs never ride the manifest),
-            // so just drop the overlay and record Jellyfin's "no subtitle" sentinel.
+            if leavingBurnIn {
+                await reloadSubtitleTranscode(to: nil, subtitleStreamIndex: -1)
+                return
+            }
+            // Transcode Off, no active burn-in: no engine subtitle exists (subs never
+            // ride the manifest) and the server isn't burning anything in, so just drop
+            // the overlay and record Jellyfin's "no subtitle" sentinel — no reload earned.
             selectedSubtitleTrack = nil
             currentSubtitleStreamIndex = -1
             clearSidecarSubtitle()
@@ -1409,6 +1412,44 @@ final class PlayerViewModel {
             selectedSubtitleTrack = track
         }
         persistTrackSelection(.subtitles(languageCode: track?.languageCode))
+    }
+
+    /// Re-resolves the transcode around a new subtitle target and reports the outcome
+    /// through the same optimistic-set/restore/scrim machinery `selectSubtitleTrack`'s
+    /// burn-in branch always used — now shared with the two "leaving an active burn-in"
+    /// branches (Off, a text sub) that used to skip the reload entirely. `onCompleted`
+    /// runs once the reload lands, for target-specific follow-up that must not race the
+    /// still-burning-in outgoing session (a text sub's sidecar fetch).
+    private func reloadSubtitleTranscode(
+        to target: SubtitleTrack?,
+        subtitleStreamIndex: Int,
+        onCompleted: () async -> Void = {}
+    ) async {
+        let previous = selectedSubtitleTrack
+        selectedSubtitleTrack = target
+        trackSwitchFailure = nil
+        // No overlay renders while the reload is in flight — drop whatever sidecar was
+        // showing (a burn-in target shows nothing either way; the failure/abandon arms
+        // below re-arm it via restoreSidecarSubtitle if the previous track had one).
+        clearSidecarSubtitle()
+        switch await switchTranscodeTrack(audioStreamIndex: currentAudioStreamIndex, subtitleStreamIndex: subtitleStreamIndex) {
+        case .completed:
+            await onCompleted()
+            persistTrackSelection(.subtitles(languageCode: target?.languageCode))
+        case .abandoned:
+            selectedSubtitleTrack = previous
+            restoreSidecarSubtitle(previous)
+        case .fellBack(let error):
+            selectedSubtitleTrack = previous
+            restoreSidecarSubtitle(previous)
+            trackSwitchFailure = TrackSwitchFailure(
+                requested: .subtitle(target),
+                fallback: previous.map(TrackPick.subtitle),
+                error: error
+            )
+        case .failed:
+            break   // phase == .failed — the general error scrim owns the surface
+        }
     }
 
     /// Activate a client-rendered sidecar subtitle: the app draws it via
@@ -1425,11 +1466,12 @@ final class PlayerViewModel {
         loadSidecarSubtitle(streamIndex: index)
     }
 
-    /// Re-arms the client overlay for the track a failed/abandoned burn-in switch
-    /// fell back to. `selectSubtitleTrack`'s burn-in branch clears the sidecar
-    /// optimistically before the re-resolve; when that re-resolve doesn't land, the
-    /// still-mounted previous session needs its text overlay back (a bare Off/burn-in
-    /// track needs nothing — there's no sidecar to fetch either way).
+    /// Re-arms the client overlay for the track a failed/abandoned subtitle switch fell
+    /// back to — every `reloadSubtitleTranscode` failure/abandon arm (a pick INTO a
+    /// burn-in, or leaving one for Off/a text sub) clears the sidecar optimistically
+    /// before the re-resolve; when that re-resolve doesn't land, the still-mounted
+    /// previous session needs its text overlay back (a bare Off/burn-in track needs
+    /// nothing — there's no sidecar to fetch either way).
     private func restoreSidecarSubtitle(_ track: SubtitleTrack?) {
         guard let track, let index = track.id.jellyfinStreamIndex, !track.isBurnedIn else { return }
         loadSidecarSubtitle(streamIndex: index)

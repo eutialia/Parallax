@@ -491,6 +491,193 @@ struct PlayerViewModelTests {
         #expect(vm.activeSubtitleCues.isEmpty)               // no overlay — the server draws it into the video
     }
 
+    @Test("transcode: leaving an active burn-in for Off re-resolves with the 'no subtitle' sentinel — the server must stop re-encoding the image in")
+    func leavingBurnInForOffReResolves() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
+        let builder = DeviceProfileBuilder(probe: probe)
+        let resolved = PlayerFixtures.resolvedMultiTrackTranscode(defaultSubtitleStreamIndex: nil)
+
+        nonisolated(unsafe) var resolveCalls: [(audio: Int?, sub: Int?)] = []
+        let vm = PlayerViewModel(
+            deviceProfileBuilder: builder,
+            playbackInfo: reporting,
+            resolve: { _, _, _, audioIdx, subIdx in
+                resolveCalls.append((audioIdx, subIdx))
+                return resolved
+            },
+            engineFactory: { _ in engine },
+            audioSession: NoopAudioSession()
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(
+            position: CMTime(seconds: 100, preferredTimescale: 600),
+            duration: CMTime(seconds: 7200, preferredTimescale: 600),
+            buffered: nil
+        ))
+        try await Task.sleep(for: .milliseconds(50))
+
+        // Activate the burn-in first.
+        let pgs = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(7) })
+        await vm.selectSubtitleTrack(pgs)
+        #expect(resolveCalls.count == 2)
+        #expect(engine.loadedAssets.count == 2)
+
+        // Now turn subtitles Off — this must NOT be the cheap no-reload path: the
+        // server is still burning the PGS image into the video until a fresh
+        // transcode says otherwise.
+        await vm.selectSubtitleTrack(nil)
+
+        #expect(resolveCalls.count == 3)
+        #expect(resolveCalls.last?.sub == -1)     // the "no subtitle" sentinel — NOT nil (which would ask for the server default again)
+        #expect(resolveCalls.last?.audio == 3)    // audio rides along unchanged
+        #expect(engine.loadedAssets.count == 3)   // engine reloaded
+        #expect(vm.selectedSubtitleTrack == nil)
+        #expect(vm.activeSubtitleCues.isEmpty)
+    }
+
+    @Test("transcode: leaving an active burn-in for a text sub re-resolves, then activates the sidecar once the reload lands")
+    func leavingBurnInForTextSubReResolvesThenActivatesSidecar() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
+        let builder = DeviceProfileBuilder(probe: probe)
+        let resolved = PlayerFixtures.resolvedMultiTrackTranscode(defaultSubtitleStreamIndex: nil)
+
+        nonisolated(unsafe) var resolveCalls: [(audio: Int?, sub: Int?)] = []
+        nonisolated(unsafe) var fetchedURLs: [URL] = []
+        let vm = PlayerViewModel(
+            deviceProfileBuilder: builder,
+            playbackInfo: reporting,
+            resolve: { _, _, _, audioIdx, subIdx in
+                resolveCalls.append((audioIdx, subIdx))
+                return resolved
+            },
+            engineFactory: { _ in engine },
+            audioSession: NoopAudioSession(),
+            subtitleFetch: { url in fetchedURLs.append(url); return Data() }
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(
+            position: CMTime(seconds: 100, preferredTimescale: 600),
+            duration: CMTime(seconds: 7200, preferredTimescale: 600),
+            buffered: nil
+        ))
+        try await Task.sleep(for: .milliseconds(50))
+
+        // Activate the burn-in first.
+        let pgs = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(7) })
+        await vm.selectSubtitleTrack(pgs)
+        #expect(resolveCalls.count == 2)
+        #expect(fetchedURLs.isEmpty)
+
+        // Pick the text sub — must re-resolve (stops the burn-in), THEN activate the
+        // sidecar (fetch must not race the still-burning-in outgoing session).
+        let text = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(1) })
+        await vm.selectSubtitleTrack(text)
+        try await Task.sleep(for: .milliseconds(50))   // let the sidecar fetch Task land
+
+        #expect(resolveCalls.count == 3)
+        #expect(resolveCalls.last?.sub == 1)
+        #expect(resolveCalls.last?.audio == 3)
+        #expect(engine.loadedAssets.count == 3)          // engine reloaded
+        #expect(vm.selectedSubtitleTrack?.id == .jellyfinStream(1))
+        #expect(fetchedURLs == [try #require(resolved.subtitleStreamURLs[1])])   // fetched exactly once, AFTER the reload
+    }
+
+    @Test("transcode: Off from an active TEXT sub stays the cheap no-reload path (regression guard against always-reloading)")
+    func offFromTextSubStaysNoReload() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
+        let builder = DeviceProfileBuilder(probe: probe)
+        let resolved = PlayerFixtures.resolvedMultiTrackTranscode(defaultSubtitleStreamIndex: nil)
+
+        nonisolated(unsafe) var resolveCalls = 0
+        let vm = PlayerViewModel(
+            deviceProfileBuilder: builder,
+            playbackInfo: reporting,
+            resolve: { _, _, _, _, _ in resolveCalls += 1; return resolved },
+            engineFactory: { _ in engine },
+            audioSession: NoopAudioSession(),
+            subtitleFetch: { _ in Data() }
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(
+            position: CMTime(seconds: 100, preferredTimescale: 600),
+            duration: CMTime(seconds: 7200, preferredTimescale: 600),
+            buffered: nil
+        ))
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(resolveCalls == 1)
+
+        // Activate a TEXT sidecar — the cheap path, no reload.
+        let text = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(1) })
+        await vm.selectSubtitleTrack(text)
+        #expect(resolveCalls == 1)
+        let loadsAfterTextPick = engine.loadedAssets.count
+
+        // Turn Off from a text sub (never a burn-in) — must NOT regress into always
+        // reloading; only leaving an ACTIVE burn-in earns the re-resolve.
+        await vm.selectSubtitleTrack(nil)
+
+        #expect(resolveCalls == 1)                              // still just the initial resolve
+        #expect(engine.loadedAssets.count == loadsAfterTextPick) // no reload
+        #expect(vm.selectedSubtitleTrack == nil)
+    }
+
+    @Test("a burn-in switch that falls back restores the previously-active sidecar: selection AND cues re-arm")
+    func burnInSwitchFailureRestoresSidecarSubtitle() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
+        let builder = DeviceProfileBuilder(probe: probe)
+        let resolved = PlayerFixtures.resolvedMultiTrackTranscode(defaultSubtitleStreamIndex: nil)
+
+        nonisolated(unsafe) var resolveCalls = 0
+        nonisolated(unsafe) var fetchedURLs: [URL] = []
+        let vm = PlayerViewModel(
+            deviceProfileBuilder: builder,
+            playbackInfo: reporting,
+            resolve: { _, _, _, _, _ in
+                resolveCalls += 1
+                if resolveCalls == 2 { throw AppError.playback(.resourceUnavailable) }  // the burn-in switch fails
+                return resolved
+            },
+            engineFactory: { _ in engine },
+            audioSession: NoopAudioSession(),
+            subtitleFetch: { url in fetchedURLs.append(url); return Data() }
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(
+            position: CMTime(seconds: 100, preferredTimescale: 600),
+            duration: CMTime(seconds: 7200, preferredTimescale: 600),
+            buffered: nil
+        ))
+        try await Task.sleep(for: .milliseconds(50))
+
+        // Activate the text sidecar first — the cheap path, no reload.
+        let text = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(1) })
+        await vm.selectSubtitleTrack(text)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(resolveCalls == 1)
+        #expect(fetchedURLs.count == 1)
+
+        // Pick the burn-in entry — its re-resolve throws, so playback falls back to
+        // the still-mounted previous stream (the text sidecar) instead of tearing down.
+        let pgs = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(7) })
+        await vm.selectSubtitleTrack(pgs)
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(resolveCalls == 2)
+        #expect(vm.selectedSubtitleTrack?.id == .jellyfinStream(1))   // restored to the previous sidecar
+        #expect(fetchedURLs.count == 2)                                // cues re-fetched on restore
+        #expect(fetchedURLs.allSatisfy { $0 == resolved.subtitleStreamURLs[1] })
+        #expect(vm.trackSwitchFailure?.requested.id == .jellyfinStream(7))
+        #expect(vm.trackSwitchFailure?.fallback?.id == .jellyfinStream(1))
+    }
+
     @Test("transcode seek: in-buffer stays in-stream; out-of-buffer re-resolves a fresh aligned transcode at the target (jellyfin#15845 subtitle drift)")
     func transcodeOutOfBufferSeekReanchors() async throws {
         let reporting = StubPlaybackReporting()
