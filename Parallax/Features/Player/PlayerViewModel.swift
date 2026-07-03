@@ -400,10 +400,12 @@ final class PlayerViewModel {
     /// `PlaybackInfoService.transcodingDelivery`. Nil = ffmpeg hasn't started / no
     /// matching session yet — the probe treats it as "ask again".
     private let fetchDelivery: @Sendable (String) async -> TranscodeDelivery?
-    /// How long the delivery probe waits after the first `.playing` beat before its
-    /// first fetch — ~2s in production (ffmpeg starts lazily, `TranscodingInfo`
-    /// isn't populated instantly); injectable so tests don't wait seconds.
-    private let deliveryProbeDelay: Duration
+    /// Wait-then-fetch schedule for the delivery probe: one sleep+fetch per entry, in
+    /// order, until a non-nil result lands or the schedule runs out. Production waits
+    /// ~2s after the first `.playing` beat (ffmpeg starts lazily, `TranscodingInfo`
+    /// isn't populated instantly), then retries once at +5s before giving up silently;
+    /// injectable so tests don't wait seconds.
+    private let deliveryProbeSchedule: [Duration]
 
     private var stateTask: Task<Void, Never>?
     private var subtitleFetchTask: Task<Void, Never>?
@@ -518,6 +520,9 @@ final class PlayerViewModel {
     /// Cleared with the session; re-fetched after a track-switch rebuild, since a
     /// burn-in subtitle flips `isVideoDirect` false.
     private(set) var transcodeDelivery: TranscodeDelivery?
+    /// True once the delivery probe's schedule ran out with no result — the debug row
+    /// can say so instead of reading "probing…" forever. Reset on each new probe.
+    private(set) var deliveryProbeExhausted = false
     /// The one-shot delivery probe for the current session — stored so session
     /// teardown cancels it (like `keepaliveTask`). Re-armed on each session's first
     /// `.playing` beat, which includes a track-switch rebuild.
@@ -545,7 +550,7 @@ final class PlayerViewModel {
         fetchAdjacent: @escaping @Sendable (ItemID, ItemID) async -> AdjacentEpisodes = { _, _ in .none },
         keepaliveInterval: Duration = .seconds(30),
         fetchDelivery: @escaping @Sendable (String) async -> TranscodeDelivery? = { _ in nil },
-        deliveryProbeDelay: Duration = .seconds(2),
+        deliveryProbeSchedule: [Duration] = [.seconds(2), .seconds(5)],
         smbResumeStore: SMBResumeStore = .shared
     ) {
         self.deviceProfileBuilder = deviceProfileBuilder
@@ -560,7 +565,7 @@ final class PlayerViewModel {
         self.fetchAdjacent = fetchAdjacent
         self.keepaliveInterval = keepaliveInterval
         self.fetchDelivery = fetchDelivery
-        self.deliveryProbeDelay = deliveryProbeDelay
+        self.deliveryProbeSchedule = deliveryProbeSchedule
         self.smbResumeStore = smbResumeStore
     }
 
@@ -1235,22 +1240,24 @@ final class PlayerViewModel {
 
     /// Arms the one-shot copy-vs-reencode delivery probe for the just-started
     /// transcode session. ffmpeg spins up lazily and only populates the session's
-    /// `TranscodingInfo` once it's encoding, so the first look waits ~`deliveryProbeDelay`
-    /// (≈2s); a nil (session/`TranscodingInfo` not up yet) retries once at +5s, then
-    /// gives up silently — the seek gate stays conservative on a nil delivery anyway.
-    /// Direct play has no job to probe. Clears any stale delivery up front so the
-    /// window (and a re-probe after a track switch, where burn-in can flip the answer)
-    /// reads "probing…" until the fresh result lands.
+    /// `TranscodingInfo` once it's encoding, so the probe walks `deliveryProbeSchedule`
+    /// (≈2s then +5s in production) waiting then fetching at each step; a nil result
+    /// (session/`TranscodingInfo` not up yet) moves to the next entry, and running out
+    /// of the schedule gives up silently — the seek gate stays conservative on a nil
+    /// delivery anyway. Direct play has no job to probe. Clears any stale delivery up
+    /// front so the window (and a re-probe after a track switch, where burn-in can flip
+    /// the answer) reads "probing…" until the fresh result lands.
     private func startDeliveryProbe(for resolved: ResolvedPlayback) {
         deliveryProbeTask?.cancel()
         deliveryProbeTask = nil
         transcodeDelivery = nil
+        deliveryProbeExhausted = false
         guard resolved.method == .transcode else { return }
         let sessionID = resolved.playSessionID
         let fetch = fetchDelivery
-        let firstDelay = deliveryProbeDelay
+        let schedule = deliveryProbeSchedule
         deliveryProbeTask = Task { [weak self] in
-            for delay in [firstDelay, .seconds(5)] {
+            for delay in schedule {
                 do { try await Task.sleep(for: delay) } catch { return }
                 if Task.isCancelled { return }
                 if let delivery = await fetch(sessionID) {
@@ -1259,6 +1266,7 @@ final class PlayerViewModel {
                     return
                 }
             }
+            if !Task.isCancelled { self?.deliveryProbeExhausted = true }
         }
     }
 

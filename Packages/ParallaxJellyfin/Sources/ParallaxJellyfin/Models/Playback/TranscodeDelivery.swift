@@ -15,7 +15,6 @@ public struct TranscodeDelivery: Sendable, Equatable {
     public let isAudioDirect: Bool
     public let videoCodec: String?
     public let audioCodec: String?
-    public let bitrate: Int?
     /// Raw reason strings (e.g. "AudioCodecNotSupported") for diagnostics.
     public let transcodeReasons: [String]
 
@@ -24,14 +23,12 @@ public struct TranscodeDelivery: Sendable, Equatable {
         isAudioDirect: Bool,
         videoCodec: String?,
         audioCodec: String?,
-        bitrate: Int?,
         transcodeReasons: [String]
     ) {
         self.isVideoDirect = isVideoDirect
         self.isAudioDirect = isAudioDirect
         self.videoCodec = videoCodec
         self.audioCodec = audioCodec
-        self.bitrate = bitrate
         self.transcodeReasons = transcodeReasons
     }
 }

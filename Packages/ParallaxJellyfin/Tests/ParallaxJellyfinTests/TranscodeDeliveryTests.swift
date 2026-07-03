@@ -30,7 +30,7 @@ struct TranscodeDeliveryMappingTests {
         return session
     }
 
-    @Test("A video-copy session maps to isVideoDirect == true with codecs, bitrate and reasons")
+    @Test("A video-copy session maps to isVideoDirect == true with codecs and reasons")
     func videoCopySessionMaps() {
         let sessions = [
             session(
@@ -48,7 +48,6 @@ struct TranscodeDeliveryMappingTests {
             isAudioDirect: false,
             videoCodec: "hevc",
             audioCodec: "aac",
-            bitrate: 8_000_000,
             transcodeReasons: ["AudioCodecNotSupported", "ContainerNotSupported"]
         ))
     }
@@ -127,7 +126,6 @@ struct PlaybackInfoServiceTranscodingDeliveryTests {
             isAudioDirect: false,
             videoCodec: "h264",
             audioCodec: "aac",
-            bitrate: 4_000_000,
             transcodeReasons: ["AudioCodecNotSupported"]
         )
         client.transcodingDeliveryResult = .success(expected)

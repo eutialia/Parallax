@@ -957,10 +957,13 @@ struct PlayerControlsView: View {
         guard playbackReady, vm.engine != nil, durSeconds > 0, isScrubbing else { return }
         let gen = scrubGeneration
         let target = CMTime(seconds: scrubProgress * durSeconds, preferredTimescale: 600)
+        // tvOS ±10s scrub never pauses the engine (unlike the touch drag), so `vm.isPlaying`
+        // read right now IS the pre-seek intent — nothing transient has touched it. Routed
+        // through `commitScrubSeek` (not a bare `seek`) so an out-of-buffer re-encode
+        // transcode's force-resuming re-anchor (#15845) can't silently un-pause a paused user.
+        let resume = vm.isPlaying
         Task {
-            // Gated seek — an out-of-buffer re-encode transcode re-anchors (#15845).
-            // tvOS ±10s scrub doesn't pause the engine, so there's no resume to replay.
-            await vm.seek(to: target)
+            await vm.commitScrubSeek(to: target, resume: resume)
             if scrubGeneration == gen { isScrubbing = false }
         }
     }
@@ -1152,11 +1155,14 @@ struct PlayerControlsView: View {
             let gen = scrubGeneration
             guard vm.engine != nil else { isScrubbing = false; return }
             let seekTarget = CMTime(seconds: target * durSeconds, preferredTimescale: 600)
+            // VoiceOver adjust never pauses the engine, so `vm.isPlaying` read right now IS
+            // the pre-seek intent. Routed through `commitScrubSeek` (not a bare `seek`) so an
+            // out-of-buffer re-encode transcode's force-resuming re-anchor (#15845) can't
+            // silently un-pause a paused user.
+            let resume = vm.isPlaying
             scrubCommitTask?.cancel()
             scrubCommitTask = Task {
-                // Gated seek — an out-of-buffer re-encode transcode re-anchors (#15845).
-                // VoiceOver adjust doesn't pause the engine, so there's no resume to replay.
-                await vm.seek(to: seekTarget)
+                await vm.commitScrubSeek(to: seekTarget, resume: resume)
                 guard !Task.isCancelled, scrubGeneration == gen else { return }
                 // Same settle-then-release as the drag path, so a VoiceOver/Switch-Control
                 // adjust never flashes the stale frame either.
@@ -1301,9 +1307,11 @@ struct PlayerControlsView: View {
             try? await Task.sleep(for: .milliseconds(450))
             guard !Task.isCancelled, let target = pendingSeekTarget else { return }
             pendingSeekTarget = nil
-            // Gated seek — an out-of-buffer re-encode transcode re-anchors (#15845)
-            // instead of drifting subtitles.
-            await vm.seek(to: CMTime(seconds: target, preferredTimescale: 600))
+            // The double-tap burst never pauses the engine, so `vm.isPlaying` read now (post
+            // debounce, freshest available) IS the pre-seek intent. Routed through
+            // `commitScrubSeek` (not a bare `seek`) so an out-of-buffer re-encode transcode's
+            // force-resuming re-anchor (#15845) can't silently un-pause a paused user.
+            await vm.commitScrubSeek(to: CMTime(seconds: target, preferredTimescale: 600), resume: vm.isPlaying)
         }
     }
 

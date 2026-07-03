@@ -256,12 +256,14 @@ struct DebugInfoOverlay: View {
         case .directPlay:
             return "Direct Play"
         case .transcode:
-            guard let d = vm.transcodeDelivery else { return "Transcode (probing…)" }
+            guard let d = vm.transcodeDelivery else {
+                return vm.deliveryProbeExhausted ? "Transcode (no delivery info)" : "Transcode (probing…)"
+            }
             if d.isVideoDirect {
                 return "Remux (video copy, \(d.audioCodec ?? "audio copy"))"
             }
             let reasons = d.transcodeReasons.isEmpty ? "re-encode" : d.transcodeReasons.joined(separator: ", ")
-            return "Transcode (\(reasons))"
+            return "Transcode (→\(d.videoCodec ?? "?"): \(reasons))"
         }
     }
 

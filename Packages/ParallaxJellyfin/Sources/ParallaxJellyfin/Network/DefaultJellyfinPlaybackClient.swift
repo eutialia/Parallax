@@ -194,7 +194,6 @@ public final class DefaultJellyfinPlaybackClient: JellyfinPlaybackClient, Sendab
             isAudioDirect: info.isAudioDirect ?? false,
             videoCodec: info.videoCodec,
             audioCodec: info.audioCodec,
-            bitrate: info.bitrate,
             transcodeReasons: (info.transcodeReasons ?? []).map(\.rawValue)
         )
     }

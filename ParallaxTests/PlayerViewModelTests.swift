@@ -734,7 +734,7 @@ struct PlayerViewModelTests {
         // The live job stream-COPIES the video (remux) — audio is the only re-encode.
         let remux = TranscodeDelivery(
             isVideoDirect: true, isAudioDirect: false,
-            videoCodec: "hevc", audioCodec: "aac", bitrate: nil,
+            videoCodec: "hevc", audioCodec: "aac",
             transcodeReasons: ["AudioCodecNotSupported"]
         )
 
@@ -746,7 +746,7 @@ struct PlayerViewModelTests {
             engineFactory: { _ in engine },
             audioSession: NoopAudioSession(),
             fetchDelivery: { _ in remux },
-            deliveryProbeDelay: .milliseconds(10)
+            deliveryProbeSchedule: [.milliseconds(10)]
         )
         await vm.start(item: PlayerFixtures.movieDetail())
         #expect(resolveCalls == 1)
@@ -777,7 +777,7 @@ struct PlayerViewModelTests {
         // The live job RE-ENCODES the video — the seek-drift failure mode applies.
         let reencode = TranscodeDelivery(
             isVideoDirect: false, isAudioDirect: true,
-            videoCodec: "h264", audioCodec: "ac3", bitrate: nil,
+            videoCodec: "h264", audioCodec: "ac3",
             transcodeReasons: ["VideoCodecNotSupported"]
         )
 
@@ -789,7 +789,7 @@ struct PlayerViewModelTests {
             engineFactory: { _ in engine },
             audioSession: NoopAudioSession(),
             fetchDelivery: { _ in reencode },
-            deliveryProbeDelay: .milliseconds(10)
+            deliveryProbeSchedule: [.milliseconds(10)]
         )
         await vm.start(item: PlayerFixtures.movieDetail())
         #expect(resolveCalls.count == 1)
@@ -808,6 +808,34 @@ struct PlayerViewModelTests {
         #expect(CMTimeGetSeconds((resolveCalls.last ?? nil) ?? .zero) == 3000)
         #expect(engine.loadedAssets.count == loadsAfterStart + 1)
         #expect(!engine.calls.contains("seek(3000.0)"))
+    }
+
+    @Test("delivery probe schedule exhausted with no result: transcodeDelivery stays nil and the exhausted flag flips")
+    func deliveryProbeScheduleExhaustedStaysNil() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let builder = DeviceProfileBuilder(probe: FakeCapabilityProbe(hdr: .none, audioOutput: .stereo))
+        let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
+        let vm = PlayerViewModel(
+            deviceProfileBuilder: builder,
+            playbackInfo: reporting,
+            resolve: { _, _, _, _, _ in resolved },
+            engineFactory: { _ in engine },
+            audioSession: NoopAudioSession(),
+            fetchDelivery: { _ in nil },
+            deliveryProbeSchedule: [.milliseconds(5), .milliseconds(5)]
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+        #expect(vm.deliveryProbeExhausted == false)   // not armed until the first .playing beat
+
+        // Both schedule entries fetch nil — the probe gives up silently, leaving the
+        // seek gate conservative (nil delivery) rather than stuck reading "probing…".
+        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
+                             duration: CMTime(seconds: 7200, preferredTimescale: 600), buffered: nil))
+        try await Task.sleep(for: .milliseconds(80))
+
+        #expect(vm.transcodeDelivery == nil)
+        #expect(vm.deliveryProbeExhausted == true)
     }
 
     // MARK: - commitScrubSeek — the scrub-commit path every UI scrub now routes through
@@ -864,7 +892,7 @@ struct PlayerViewModelTests {
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
         let remux = TranscodeDelivery(
             isVideoDirect: true, isAudioDirect: false,
-            videoCodec: "hevc", audioCodec: "aac", bitrate: nil,
+            videoCodec: "hevc", audioCodec: "aac",
             transcodeReasons: ["AudioCodecNotSupported"]
         )
         nonisolated(unsafe) var resolveCalls = 0
@@ -875,7 +903,7 @@ struct PlayerViewModelTests {
             engineFactory: { _ in engine },
             audioSession: NoopAudioSession(),
             fetchDelivery: { _ in remux },
-            deliveryProbeDelay: .milliseconds(10)
+            deliveryProbeSchedule: [.milliseconds(10)]
         )
         await vm.start(item: PlayerFixtures.movieDetail())
         let loadsAfterStart = engine.loadedAssets.count
@@ -899,7 +927,7 @@ struct PlayerViewModelTests {
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
         let reencode = TranscodeDelivery(
             isVideoDirect: false, isAudioDirect: true,
-            videoCodec: "h264", audioCodec: "ac3", bitrate: nil,
+            videoCodec: "h264", audioCodec: "ac3",
             transcodeReasons: ["VideoCodecNotSupported"]
         )
         nonisolated(unsafe) var resolveCalls: [CMTime?] = []
@@ -910,7 +938,7 @@ struct PlayerViewModelTests {
             engineFactory: { _ in engine },
             audioSession: NoopAudioSession(),
             fetchDelivery: { _ in reencode },
-            deliveryProbeDelay: .milliseconds(10)
+            deliveryProbeSchedule: [.milliseconds(10)]
         )
         await vm.start(item: PlayerFixtures.movieDetail())
         let loadsAfterStart = engine.loadedAssets.count
@@ -936,7 +964,7 @@ struct PlayerViewModelTests {
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
         let reencode = TranscodeDelivery(
             isVideoDirect: false, isAudioDirect: true,
-            videoCodec: "h264", audioCodec: "ac3", bitrate: nil,
+            videoCodec: "h264", audioCodec: "ac3",
             transcodeReasons: ["VideoCodecNotSupported"]
         )
         let vm = PlayerViewModel(
@@ -946,7 +974,7 @@ struct PlayerViewModelTests {
             engineFactory: { _ in engine },
             audioSession: NoopAudioSession(),
             fetchDelivery: { _ in reencode },
-            deliveryProbeDelay: .milliseconds(10)
+            deliveryProbeSchedule: [.milliseconds(10)]
         )
         await vm.start(item: PlayerFixtures.movieDetail())
         let loadsAfterStart = engine.loadedAssets.count
@@ -971,7 +999,7 @@ struct PlayerViewModelTests {
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
         let reencode = TranscodeDelivery(
             isVideoDirect: false, isAudioDirect: true,
-            videoCodec: "h264", audioCodec: "ac3", bitrate: nil,
+            videoCodec: "h264", audioCodec: "ac3",
             transcodeReasons: ["VideoCodecNotSupported"]
         )
 
@@ -999,7 +1027,7 @@ struct PlayerViewModelTests {
             engineFactory: { _ in engine },
             audioSession: NoopAudioSession(),
             fetchDelivery: { _ in reencode },
-            deliveryProbeDelay: .milliseconds(10)
+            deliveryProbeSchedule: [.milliseconds(10)]
         )
         await vm.start(item: PlayerFixtures.movieDetail())
         let loadsAfterStart = engine.loadedAssets.count
@@ -1052,9 +1080,9 @@ struct PlayerViewModelTests {
         // First session remuxes (video copy); the post-switch session re-encodes it.
         let deliveries = [
             TranscodeDelivery(isVideoDirect: true, isAudioDirect: false,
-                              videoCodec: "hevc", audioCodec: "aac", bitrate: nil, transcodeReasons: []),
+                              videoCodec: "hevc", audioCodec: "aac", transcodeReasons: []),
             TranscodeDelivery(isVideoDirect: false, isAudioDirect: false,
-                              videoCodec: "hevc", audioCodec: "aac", bitrate: nil,
+                              videoCodec: "hevc", audioCodec: "aac",
                               transcodeReasons: ["SubtitleCodecNotSupported"]),
         ]
         nonisolated(unsafe) var deliveryCalls = 0
@@ -1068,7 +1096,7 @@ struct PlayerViewModelTests {
                 defer { deliveryCalls += 1 }
                 return deliveries[min(deliveryCalls, deliveries.count - 1)]
             },
-            deliveryProbeDelay: .milliseconds(10)
+            deliveryProbeSchedule: [.milliseconds(10)]
         )
         await vm.start(item: PlayerFixtures.movieDetail())
 
