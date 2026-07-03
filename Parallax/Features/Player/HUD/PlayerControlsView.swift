@@ -134,11 +134,10 @@ struct PlayerControlsView: View {
     #if !os(tvOS)
     /// The live double-tap seek flash (dome + chevrons + "N seconds"); nil when idle.
     @State private var seekFlash: SeekFlash?
-    /// Accumulated absolute seek target for the running double-tap burst. Committed
-    /// as ONE engine seek after the taps settle — per-tap seeks thrash a transcode
-    /// and wedge the player (the tvOS click-seek lesson).
-    @State private var pendingSeekTarget: Double?
-    @State private var seekCommitTask: Task<Void, Never>?
+    /// Folds a double-tap burst into ONE engine seek after the taps settle — per-tap
+    /// seeks thrash a transcode and wedge the player (the tvOS click-seek lesson). Shared
+    /// with the tvOS click-seek (`PlayerView`) via `SeekCommitCoalescer`.
+    @State private var seekCoalescer = SeekCommitCoalescer()
     @State private var seekFlashDismissTask: Task<Void, Never>?
     /// The drag-scrub (and a11y-adjust) commit in flight. Stored — not an anonymous
     /// `Task` — so `onDisappear` can cancel it: a player dismissed mid-commit would
@@ -334,7 +333,7 @@ struct PlayerControlsView: View {
         // into a mid-teardown engine, the others write to dead @State. Cancel them.
         .onDisappear {
             hideTask?.cancel()
-            seekCommitTask?.cancel()
+            seekCoalescer.cancel()
             seekFlashDismissTask?.cancel()
             scrubCommitTask?.cancel()
         }
@@ -1240,9 +1239,8 @@ struct PlayerControlsView: View {
         // only catches up on the next engine beat, so a double-tap right after a
         // drag would accumulate from the pre-scrub position.
         let livePosition = isScrubbing ? scrubProgress * durSeconds : CMTimeGetSeconds(vm.currentPosition)
-        let base = pendingSeekTarget ?? livePosition
+        let base = seekCoalescer.pending ?? livePosition
         let target = min(max(base + delta, 0), durSeconds)
-        pendingSeekTarget = target
 
         // Same direction = the same burst extends (label accumulates, dome's clock holds);
         // a reversal is a fresh burst (label resets, dome remounts via `.id`, so its
@@ -1254,7 +1252,7 @@ struct PlayerControlsView: View {
                               tapPoint: location, trigger: (seekFlash?.trigger ?? 0) + 1,
                               targetFraction: durSeconds > 0 ? target / durSeconds : 0,
                               burstStart: burstStart, lastTap: now)
-        scheduleSeekCommit()
+        scheduleSeekCommit(to: target)
         scheduleSeekFlashDismissal()
     }
 
@@ -1279,14 +1277,11 @@ struct PlayerControlsView: View {
         .allowsHitTesting(false)
     }
 
-    /// ~0.45s of quiet after the last double-tap before the accumulated seek fires —
-    /// the same fold-a-burst-into-one-seek debounce as the tvOS click-seek.
-    private func scheduleSeekCommit() {
-        seekCommitTask?.cancel()
-        seekCommitTask = Task {
-            try? await Task.sleep(for: .milliseconds(450))
-            guard !Task.isCancelled, let target = pendingSeekTarget else { return }
-            pendingSeekTarget = nil
+    /// Accumulate the burst's target into the shared `SeekCommitCoalescer`; it fires ONE
+    /// seek after the taps settle (the same fold-a-burst-into-one-seek debounce as the
+    /// tvOS click-seek).
+    private func scheduleSeekCommit(to target: Double) {
+        seekCoalescer.schedule(target) { target in
             // The double-tap burst never pauses the engine, so `vm.isPlaying` read now (post
             // debounce, freshest available) IS the pre-seek intent. Routed through
             // `commitScrubSeek` (not a bare `seek`) so an out-of-buffer re-encode transcode's
@@ -1304,11 +1299,10 @@ struct PlayerControlsView: View {
     }
 
     /// Every OTHER seek-shaped action (drag-scrub, skip button, chapter pick) and a
-    /// track reload must flush a queued double-tap burst — its debounced commit
-    /// would fire up to 450ms later and drag playback back to the stale target.
+    /// track reload must drop a queued double-tap burst — its debounced commit
+    /// would fire up to 400ms later and drag playback back to the stale target.
     private func cancelPendingSeek() {
-        seekCommitTask?.cancel()
-        pendingSeekTarget = nil
+        seekCoalescer.cancel()
         seekFlashDismissTask?.cancel()
         seekFlash = nil
     }

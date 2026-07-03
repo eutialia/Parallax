@@ -80,9 +80,9 @@ struct PlayerView: View {
     /// Debounces the click-seek: rapid ±10s clicks accumulate a target and fire ONE
     /// engine seek after they settle. Per-click seeks thrash a transcode and wedge the
     /// player in `.waitingToPlayAtSpecifiedRate` (which the engine reports as playing,
-    /// so play/pause then sticks). `pendingClickSeek` is the un-committed target.
-    @State private var commitSeekTask: Task<Void, Never>? = nil
-    @State private var pendingClickSeek: Double? = nil
+    /// so play/pause then sticks). Shared with the iOS double-tap (`PlayerControlsView`)
+    /// via `SeekCommitCoalescer` — `.pending` is the un-committed target.
+    @State private var clickSeekCoalescer = SeekCommitCoalescer()
     /// Last activity-driven idle re-arm — coalesces the ~60Hz pan stream (re-arming
     /// a multi-second timer per delta churns a cancel+Task each frame for nothing).
     @State private var lastActivityRearm: ContinuousClock.Instant? = nil
@@ -183,7 +183,7 @@ struct PlayerView: View {
             Task { await vm?.stop() }
             #if os(tvOS)
             idleTask?.cancel()
-            commitSeekTask?.cancel()
+            clickSeekCoalescer.cancel()
             DisplayCriteriaMatcher.clear()
             #else
             OrientationController.shared.releasePlayerLock()
@@ -851,19 +851,8 @@ struct PlayerView: View {
         restartIdleTimer()
     }
 
-    /// The quiet-time before a scrub auto-commits, SHARED by ±10s click-seek (this
-    /// debounce) and analog swipe-scrub (the `.swipeScrub` idle in `restartIdleTimer`),
-    /// so both resume the same delay after you stop. Long enough to fold a click burst
-    /// into one transcode seek, short enough to feel responsive. Tunable on device.
-    private static let scrubCommitDelay: Duration = .milliseconds(400)
-
     private func scheduleClickSeek(to target: Double, _ vm: PlayerViewModel) {
-        pendingClickSeek = target
-        commitSeekTask?.cancel()
-        commitSeekTask = Task {
-            try? await Task.sleep(for: Self.scrubCommitDelay)
-            guard !Task.isCancelled, let dest = pendingClickSeek else { return }
-            pendingClickSeek = nil
+        clickSeekCoalescer.schedule(target) { dest in
             // Commit the ONE coalesced seek, then drop the bar the moment it lands —
             // the click-seek bar used to ride the 4s `.clickSeek` idle timeout even after
             // playback had already resumed at the new spot (user-reported lingering). The
@@ -875,20 +864,18 @@ struct PlayerView: View {
     }
 
     /// Fire the single accumulated seek NOW and clear the pending target. Used by the
-    /// `send` leave-early path (the user navigates out of `.clickSeek` before the 400ms
-    /// debounce); the natural debounce path commits AND drops the bar in
-    /// `scheduleClickSeek` instead. A later flush with nothing pending is a no-op.
+    /// `send` leave-early path (the user navigates out of `.clickSeek` before the debounce);
+    /// the natural debounce path commits AND drops the bar in `scheduleClickSeek` instead.
+    /// A later flush with nothing pending is a no-op.
     private func flushClickSeek(_ vm: PlayerViewModel) {
-        commitSeekTask?.cancel()
-        guard let target = pendingClickSeek else { return }
-        pendingClickSeek = nil
-        runEffects([.seek(progress: target)], vm)
+        clickSeekCoalescer.flush { target in
+            runEffects([.seek(progress: target)], vm)
+        }
     }
 
     /// Drop the pending click-seek without committing (analog scrub will seek instead).
     private func cancelClickSeek() {
-        commitSeekTask?.cancel()
-        pendingClickSeek = nil
+        clickSeekCoalescer.cancel()
     }
 
     private func tvProgress(of vm: PlayerViewModel) -> Double {
@@ -961,7 +948,9 @@ struct PlayerView: View {
         case .floor:
             return
         case .swipeScrub:
-            timeout = Self.scrubCommitDelay   // same 0.4s as the click-seek debounce
+            // Same quiet-time as the click-seek debounce so analog scrub resumes on the
+            // identical delay after you stop — ONE source (`SeekCommitCoalescer.interval`).
+            timeout = SeekCommitCoalescer.interval
 
         case .clickSeek:
             timeout = .seconds(4)
