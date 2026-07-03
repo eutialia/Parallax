@@ -216,6 +216,13 @@ final class PlayerViewModel {
     /// Recomputed only when the stream resolves (`recomputeMediaSummary`).
     private(set) var mediaSummary: String?
 
+    /// Wall-clock milliseconds from `engine.play()` dispatch to this session's FIRST
+    /// `.playing` beat — the debug overlay's `Startup:` row (Plan C, AVKit startup
+    /// tuning A/B). `nil` before the first beat lands and reset per session/reload
+    /// (see `startupClockStart`). Engine-agnostic: set for VLCKit sessions too, though
+    /// only AVKit is presently tunable.
+    private(set) var startupMillis: Int?
+
     private func recomputeMediaSummary() {
         guard let resolved else { mediaSummary = nil; return }
         var parts: [String] = []
@@ -436,6 +443,11 @@ final class PlayerViewModel {
     private var smbExternalSubtitleTracks: [SubtitleTrack] = []
     private var didReportStart = false
     private var didReportStopped = false
+    /// Set at `engine.play()` dispatch in `loadAndPlay`, consumed (cleared) by the
+    /// first `.playing` beat this session — see `startupMillis`. `nil` after
+    /// consumption so a later `.playing` beat (pause/resume, mid-stream rebuffer)
+    /// never overwrites the metric.
+    private var startupClockStart: ContinuousClock.Instant?
     /// Whether this session's server-side encoding was already killed. NOT
     /// gated on `didReportStart` like the stop report — the transcode job
     /// exists from resolve time, so a session that wedged before its first
@@ -1069,6 +1081,9 @@ final class PlayerViewModel {
             await tearDownEngine()
             throw error
         }
+        // Startup-metric anchor: recorded at dispatch, consumed by this session's
+        // first `.playing` beat in `handle(_:)` — see `startupMillis`.
+        startupClockStart = ContinuousClock.now
         await engine.play()
         // A freshly-built engine starts at 1.0×; re-apply the chosen speed so it
         // survives an engine rebuild (track switch / first play after a speed change).
@@ -1308,6 +1323,8 @@ final class PlayerViewModel {
         didReportStopped = false
         didStopEncoding = false
         lastPosition = .zero
+        startupClockStart = nil
+        startupMillis = nil
     }
 
     func selectAudioTrack(_ track: AudioTrack) async {
@@ -1738,6 +1755,11 @@ final class PlayerViewModel {
         didReportStart = false
         didReportStopped = false
         didStopEncoding = false
+        // The reload dispatches a fresh engine.play() below (via beginPlayback →
+        // loadAndPlay), which re-arms startupClockStart — this session's old metric
+        // must not linger on screen until that beat lands.
+        startupClockStart = nil
+        startupMillis = nil
         // The delivery verdict belonged to the outgoing session. A burn-in subtitle
         // switch can flip the video to a re-encode (isVideoDirect false), and a
         // re-anchor opens a fresh session, so drop the stale verdict now — the seek
@@ -1880,6 +1902,14 @@ final class PlayerViewModel {
             }
         case .playing(let position, let duration, let buffered):
             phase = .playing
+            // First `.playing` beat of this session: land the startup metric and consume
+            // the anchor so a later `.playing` (resume-from-pause, post-stall) never
+            // overwrites it. `nil` when this beat isn't the first (already consumed).
+            if let clockStart = startupClockStart {
+                startupClockStart = nil
+                let elapsed = clockStart.duration(to: .now).components
+                startupMillis = Int(elapsed.seconds * 1000 + elapsed.attoseconds / 1_000_000_000_000_000)
+            }
             // A scrub commit pins isPlaying to the user's intent across the engine's transient
             // pause/seek/resume beats (see scrubResumeIntent); the commit clears the latch when it
             // settles. nil = honor the beat directly.

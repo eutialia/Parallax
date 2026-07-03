@@ -82,6 +82,79 @@ struct PlayerViewModelTests {
         ])
     }
 
+    @Test("startupMillis is set after the first .playing beat, and stays put across a later .playing beat")
+    func startupMillisSetOnFirstPlayingBeat() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let resolved = PlayerFixtures.resolved()
+        let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
+
+        #expect(vm.startupMillis == nil)
+
+        await vm.start(item: PlayerFixtures.movieDetail())
+        #expect(vm.startupMillis == nil)   // not yet — no .playing beat landed
+
+        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+        try await Task.sleep(for: .milliseconds(50))
+
+        let first = try #require(vm.startupMillis)
+        #expect(first >= 0)
+
+        // A later .playing beat (e.g. resume-from-pause) must NOT overwrite the metric —
+        // it belongs to the session's FIRST beat only.
+        engine.push(.paused(position: CMTime(seconds: 15, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+        engine.push(.playing(position: CMTime(seconds: 16, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(vm.startupMillis == first)
+    }
+
+    @Test("startupMillis resets across a transcode track-switch reload and is recaptured by the new session's first .playing beat")
+    func startupMillisResetsOnReload() async throws {
+        let reporting = StubPlaybackReporting()
+        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
+        let builder = DeviceProfileBuilder(probe: probe)
+        let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
+
+        nonisolated(unsafe) var createdEngines: [FakePlaybackEngine] = []
+        let vm = PlayerViewModel(
+            deviceProfileBuilder: builder,
+            playbackInfo: reporting,
+            resolve: { _, _, _, _, _ in resolved },
+            engineFactory: { _ in
+                let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+                createdEngines.append(engine)
+                return engine
+            },
+            audioSession: NoopAudioSession()
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+        let engine = try #require(vm.engine as? FakePlaybackEngine)
+
+        engine.push(.playing(
+            position: CMTime(seconds: 100, preferredTimescale: 600),
+            duration: CMTime(seconds: 7200, preferredTimescale: 600),
+            buffered: nil
+        ))
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(vm.startupMillis != nil)
+
+        // Switch audio → the engine is RELOADED in place (same instance, same stream —
+        // see transcodeSwitchReusesEngine). The reload's lifecycle reset must clear the
+        // old session's metric before its own engine.play() re-arms the anchor.
+        let audio4 = try #require(vm.availableAudioTracks.first { $0.id == .jellyfinStream(4) })
+        await vm.selectAudioTrack(audio4)
+        #expect(vm.startupMillis == nil)
+
+        engine.push(.playing(
+            position: CMTime(seconds: 0, preferredTimescale: 600),
+            duration: CMTime(seconds: 7200, preferredTimescale: 600),
+            buffered: nil
+        ))
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(vm.startupMillis != nil)
+    }
+
     @Test("incomplete media: a live beat with an unknown duration is controllable but not seekable")
     func unknownDurationIsControllableNotSeekable() async throws {
         let reporting = StubPlaybackReporting()

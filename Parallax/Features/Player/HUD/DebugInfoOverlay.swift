@@ -33,6 +33,7 @@ struct DebugInfoOverlay: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 2) {
                 focusStop { header }
+                focusStop { startupSection }
                 focusStop { deliverySection }
                 focusStop { videoSection }
                 focusStop { audioSection }
@@ -78,6 +79,45 @@ struct DebugInfoOverlay: View {
                 .foregroundStyle(.white)
         }
         .padding(.bottom, 4)
+    }
+
+    /// Plan C (AVKit startup tuning): the play()→first-`.playing` wall-clock metric next
+    /// to a picker for the DEBUG-selected buffering profile driving it. AVKit-only —
+    /// `engineLabel` still reports the true engine in the header.
+    @ViewBuilder
+    private var startupSection: some View {
+        sectionHeader("STARTUP")
+        row("time", startupMetricLabel)
+        startupProfilePicker
+    }
+
+    private var startupMetricLabel: String {
+        let ms = vm.startupMillis.map { "\($0) ms" } ?? "—"
+        return "\(ms) (\(StartupTuningStore().selected.displayName))"
+    }
+
+    /// Writing the store has no live effect on the running session — `AppDependencies`'
+    /// engine factory reads it only at engine-construction time, so a pick here takes
+    /// effect on the NEXT playback session, not this one (caption says so).
+    private var startupProfilePicker: some View {
+        HStack(spacing: 8) {
+            Text("profile")
+                .foregroundStyle(.white.opacity(0.6))
+                .frame(width: 78, alignment: .leading)
+            Menu {
+                ForEach(StartupProfile.allCases, id: \.self) { profile in
+                    Button(profile.displayName) {
+                        StartupTuningStore().selected = profile
+                    }
+                }
+            } label: {
+                Text(StartupTuningStore().selected.displayName)
+            }
+            .tint(.white)
+            Text("· applies next session")
+                .foregroundStyle(.white.opacity(0.4))
+        }
+        .padding(.bottom, 2)
     }
 
     @ViewBuilder
