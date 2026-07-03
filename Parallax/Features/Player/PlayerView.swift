@@ -266,7 +266,11 @@ struct PlayerView: View {
             fetchDetail: { try await repo.detail(for: $0) },
             rememberTrackSelection: { await info.rememberTrackSelection($0) },
             fetchSegments: { (try? await repo.mediaSegments(for: $0)) ?? [] },
-            fetchAdjacent: { (try? await repo.adjacentEpisodes(seriesID: $0, episodeID: $1)) ?? .none }
+            fetchAdjacent: { (try? await repo.adjacentEpisodes(seriesID: $0, episodeID: $1)) ?? .none },
+            // Copy-vs-reencode probe: a thrown transport error and "no session yet"
+            // both collapse to nil (the VM's probe retries, then gives up) — the seek
+            // strategy stays conservative on nil regardless.
+            fetchDelivery: { (try? await info.transcodingDelivery(playSessionID: $0)) ?? nil }
         )
         viewModel = vm
         switch source {

@@ -85,6 +85,7 @@ struct DebugInfoOverlay: View {
         sectionHeader("DELIVERY")
         if let r = vm.debugResolved {
             row("method", String(describing: r.method))
+            row("delivery", deliveryLine)
             row("container", r.container.map { String(describing: $0) } ?? "—")
             if !r.transcodeReasons.isEmpty {
                 row("reason", r.transcodeReasons.joined(separator: ", "))
@@ -241,6 +242,26 @@ struct DebugInfoOverlay: View {
         case .avKit: "AVKit"
         case .vlcKit: "VLCKit"
         case nil: "—"
+        }
+    }
+
+    /// The live copy-vs-reencode verdict from the running session's `TranscodingInfo`
+    /// (`vm.transcodeDelivery`), folded with the routing method. Direct play needs no
+    /// probe; a transcode reads "probing…" until the ~2s-delayed fetch lands, then
+    /// "Remux (video copy, …)" for a stream-copy or "Transcode (<reasons>)" for a
+    /// re-encode — the signal the seek strategy gates on.
+    private var deliveryLine: String {
+        guard let method = vm.debugResolved?.method else { return "—" }
+        switch method {
+        case .directPlay:
+            return "Direct Play"
+        case .transcode:
+            guard let d = vm.transcodeDelivery else { return "Transcode (probing…)" }
+            if d.isVideoDirect {
+                return "Remux (video copy, \(d.audioCodec ?? "audio copy"))"
+            }
+            let reasons = d.transcodeReasons.isEmpty ? "re-encode" : d.transcodeReasons.joined(separator: ", ")
+            return "Transcode (\(reasons))"
         }
     }
 

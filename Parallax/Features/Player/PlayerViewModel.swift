@@ -359,6 +359,16 @@ final class PlayerViewModel {
     /// Ping cadence for `keepaliveTask` — half the server's 60s idle kill
     /// timeout in production; injectable so tests don't wait 30s for a beat.
     private let keepaliveInterval: Duration
+    /// Probes the live transcode's copy-vs-reencode delivery (`TranscodeDelivery`)
+    /// by play-session id. Defaulted to a nil-returning no-op so SMB, previews, and
+    /// tests that don't care need no wiring; the Jellyfin path injects
+    /// `PlaybackInfoService.transcodingDelivery`. Nil = ffmpeg hasn't started / no
+    /// matching session yet — the probe treats it as "ask again".
+    private let fetchDelivery: @Sendable (String) async -> TranscodeDelivery?
+    /// How long the delivery probe waits after the first `.playing` beat before its
+    /// first fetch — ~2s in production (ffmpeg starts lazily, `TranscodingInfo`
+    /// isn't populated instantly); injectable so tests don't wait seconds.
+    private let deliveryProbeDelay: Duration
 
     private var stateTask: Task<Void, Never>?
     private var subtitleFetchTask: Task<Void, Never>?
@@ -464,6 +474,20 @@ final class PlayerViewModel {
     private var pendingReanchorTarget: CMTime?
     private var isReanchoring = false
 
+    /// What the live transcode job is ACTUALLY doing to the video (copy/remux vs
+    /// re-encode) — the copy-vs-reencode signal `PlaybackInfo` can't give (the server
+    /// reports `Transcode` for stream-copy jobs too; only the running session's
+    /// `TranscodingInfo` distinguishes them, once ffmpeg has started). Nil until the
+    /// probe lands (and on direct-play / SMB, which never probe). Drives the seek
+    /// strategy — a proven video-copy seeks in-stream — and the debug delivery row.
+    /// Cleared with the session; re-fetched after a track-switch rebuild, since a
+    /// burn-in subtitle flips `isVideoDirect` false.
+    private(set) var transcodeDelivery: TranscodeDelivery?
+    /// The one-shot delivery probe for the current session — stored so session
+    /// teardown cancels it (like `keepaliveTask`). Re-armed on each session's first
+    /// `.playing` beat, which includes a track-switch rebuild.
+    private var deliveryProbeTask: Task<Void, Never>?
+
     /// The resolve surface, narrowed so the integration test can inject a stub
     /// without standing up a full PlaybackInfoService. Mirrors
     /// PlaybackInfoService.resolve(item:capabilities:startTime:audioStreamIndex:subtitleStreamIndex:).
@@ -485,6 +509,8 @@ final class PlayerViewModel {
         fetchSegments: @escaping @Sendable (ItemID) async -> [MediaSegment] = { _ in [] },
         fetchAdjacent: @escaping @Sendable (ItemID, ItemID) async -> AdjacentEpisodes = { _, _ in .none },
         keepaliveInterval: Duration = .seconds(30),
+        fetchDelivery: @escaping @Sendable (String) async -> TranscodeDelivery? = { _ in nil },
+        deliveryProbeDelay: Duration = .seconds(2),
         smbResumeStore: SMBResumeStore = .shared
     ) {
         self.deviceProfileBuilder = deviceProfileBuilder
@@ -498,6 +524,8 @@ final class PlayerViewModel {
         self.fetchSegments = fetchSegments
         self.fetchAdjacent = fetchAdjacent
         self.keepaliveInterval = keepaliveInterval
+        self.fetchDelivery = fetchDelivery
+        self.deliveryProbeDelay = deliveryProbeDelay
         self.smbResumeStore = smbResumeStore
     }
 
@@ -511,6 +539,7 @@ final class PlayerViewModel {
         subtitleFetchTask?.cancel()
         stallDebounceTask?.cancel()
         keepaliveTask?.cancel()
+        deliveryProbeTask?.cancel()
         segmentsTask?.cancel()
     }
 
@@ -1020,6 +1049,9 @@ final class PlayerViewModel {
         stateTask = nil
         keepaliveTask?.cancel()
         keepaliveTask = nil
+        deliveryProbeTask?.cancel()
+        deliveryProbeTask = nil
+        transcodeDelivery = nil
         if let engine {
             await engine.teardown()
             self.engine = nil
@@ -1099,6 +1131,9 @@ final class PlayerViewModel {
         // state too so a retry()/replay can't inherit a stale target or a stuck flag.
         pendingReanchorTarget = nil
         isReanchoring = false
+        deliveryProbeTask?.cancel()
+        deliveryProbeTask = nil
+        transcodeDelivery = nil
         availableAudioTracks = []
         availableSubtitleTracks = []
         selectedAudioTrack = nil
@@ -1159,6 +1194,35 @@ final class PlayerViewModel {
             while !Task.isCancelled {
                 do { try await Task.sleep(for: interval) } catch { return }
                 await playbackInfo.pingSession(playSessionID: sessionID)
+            }
+        }
+    }
+
+    /// Arms the one-shot copy-vs-reencode delivery probe for the just-started
+    /// transcode session. ffmpeg spins up lazily and only populates the session's
+    /// `TranscodingInfo` once it's encoding, so the first look waits ~`deliveryProbeDelay`
+    /// (≈2s); a nil (session/`TranscodingInfo` not up yet) retries once at +5s, then
+    /// gives up silently — the seek gate stays conservative on a nil delivery anyway.
+    /// Direct play has no job to probe. Clears any stale delivery up front so the
+    /// window (and a re-probe after a track switch, where burn-in can flip the answer)
+    /// reads "probing…" until the fresh result lands.
+    private func startDeliveryProbe(for resolved: ResolvedPlayback) {
+        deliveryProbeTask?.cancel()
+        deliveryProbeTask = nil
+        transcodeDelivery = nil
+        guard resolved.method == .transcode else { return }
+        let sessionID = resolved.playSessionID
+        let fetch = fetchDelivery
+        let firstDelay = deliveryProbeDelay
+        deliveryProbeTask = Task { [weak self] in
+            for delay in [firstDelay, .seconds(5)] {
+                do { try await Task.sleep(for: delay) } catch { return }
+                if Task.isCancelled { return }
+                if let delivery = await fetch(sessionID) {
+                    if Task.isCancelled { return }
+                    self?.transcodeDelivery = delivery
+                    return
+                }
             }
         }
     }
@@ -1404,20 +1468,29 @@ final class PlayerViewModel {
     }
 
     /// The one seek entry point for every source: scrub, chapter jump, segment skip,
-    /// and the Now Playing remote. An OUT-OF-BUFFER seek on a TRANSCODE re-resolves a
-    /// fresh transcode at the target instead of seeking in-stream — Jellyfin transcodes
-    /// fMP4 with `-noaccurate_seek`, so an in-playlist seek restarts ffmpeg mid-session
-    /// and the new segments' video clock drifts from the player clock, desyncing the
-    /// client subtitle overlay (jellyfin#15845). A fresh session's resume-seek lands
-    /// frame-accurate (that's why "dismiss + restart fixes it"). In-buffer transcode
-    /// seeks, and every direct-play / VLC / SMB seek, stay in-stream — instant, and on a
-    /// fresh-anchored session never drifting. Cost: the re-anchor re-buffers, but an
-    /// out-of-buffer transcode seek already re-buffers today (the engine fetches the
-    /// segment), so this swaps a drifting in-place restart for an aligned fresh one.
+    /// and the Now Playing remote. An OUT-OF-BUFFER seek on a RE-ENCODE transcode
+    /// re-resolves a fresh transcode at the target instead of seeking in-stream —
+    /// Jellyfin RE-ENCODES fMP4 with `-noaccurate_seek`, so an in-playlist seek restarts
+    /// ffmpeg mid-session and the new segments' video clock drifts from the player clock,
+    /// desyncing the client subtitle overlay (jellyfin#15845). A fresh session's
+    /// resume-seek lands frame-accurate (that's why "dismiss + restart fixes it").
+    ///
+    /// A REMUX transcode (video stream-copy, `transcodeDelivery.isVideoDirect == true`)
+    /// is exempt: the server seeks those on the `isHlsRemuxing` keyframe branch
+    /// (EncodingHelper.cs), which is frame-accurate — `-noaccurate_seek` is a
+    /// RE-ENCODE-only failure mode — so a remux seeks in-stream like direct play, with
+    /// no re-buffer. In-buffer transcode seeks, and every direct-play / VLC / SMB seek,
+    /// stay in-stream too. A nil/unknown delivery (still probing) stays conservative and
+    /// re-anchors. Cost: the re-anchor re-buffers, but an out-of-buffer re-encode seek
+    /// already re-buffers today (the engine fetches the segment), so this swaps a
+    /// drifting in-place restart for an aligned fresh one.
     func seek(to target: CMTime) async {
         guard let engine else { return }
-        // Only the transcode path drifts; everything else seeks in-stream as before.
-        guard resolved?.method == .transcode else {
+        // Only an out-of-buffer RE-ENCODE transcode drifts. A remux (proven video copy)
+        // seeks on the server's accurate keyframe branch, and everything else (direct
+        // play / VLC / SMB) seeks in-stream — as does a nil delivery once we know it's
+        // not a re-encode. Conservative while the probe is still nil: re-anchor.
+        guard resolved?.method == .transcode, transcodeDelivery?.isVideoDirect != true else {
             await engine.seek(to: target)
             return
         }
@@ -1500,6 +1573,14 @@ final class PlayerViewModel {
         didReportStart = false
         didReportStopped = false
         didStopEncoding = false
+        // The delivery verdict belonged to the outgoing session. A burn-in subtitle
+        // switch can flip the video to a re-encode (isVideoDirect false), and a
+        // re-anchor opens a fresh session, so drop the stale verdict now — the seek
+        // gate goes conservative (re-anchor) until the new session's first `.playing`
+        // beat re-probes.
+        deliveryProbeTask?.cancel()
+        deliveryProbeTask = nil
+        transcodeDelivery = nil
 
         do {
             try await beginPlayback(
@@ -1650,6 +1731,9 @@ final class PlayerViewModel {
                 if !didReportStart {
                     didReportStart = true
                     await playbackInfo.reportStart(beat(position: position, isPaused: false, from: resolved))
+                    // First playing beat of this (fresh or track-switched) session: ffmpeg
+                    // is now running, so probe what it's actually doing to the video.
+                    startDeliveryProbe(for: resolved)
                 } else {
                     await playbackInfo.reportProgress(beat(position: position, isPaused: false, from: resolved))
                 }

@@ -460,6 +460,139 @@ struct PlayerViewModelTests {
         #expect(!engine.calls.contains("seek(3000.0)"))
     }
 
+    @Test("remux transcode (proven video copy): an out-of-buffer seek stays in-stream — the server's keyframe branch is accurate, so no #15845 re-anchor")
+    func remuxOutOfBufferSeekStaysInStream() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let builder = DeviceProfileBuilder(probe: FakeCapabilityProbe(hdr: .none, audioOutput: .stereo))
+        let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
+        // The live job stream-COPIES the video (remux) — audio is the only re-encode.
+        let remux = TranscodeDelivery(
+            isVideoDirect: true, isAudioDirect: false,
+            videoCodec: "hevc", audioCodec: "aac", bitrate: nil,
+            transcodeReasons: ["AudioCodecNotSupported"]
+        )
+
+        nonisolated(unsafe) var resolveCalls = 0
+        let vm = PlayerViewModel(
+            deviceProfileBuilder: builder,
+            playbackInfo: reporting,
+            resolve: { _, _, _, _, _ in resolveCalls += 1; return resolved },
+            engineFactory: { _ in engine },
+            audioSession: NoopAudioSession(),
+            fetchDelivery: { _ in remux },
+            deliveryProbeDelay: .milliseconds(10)
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+        #expect(resolveCalls == 1)
+        let loadsAfterStart = engine.loadedAssets.count
+
+        // The first .playing beat arms the delivery probe; wait for it to land.
+        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
+                             duration: CMTime(seconds: 7200, preferredTimescale: 600), buffered: nil))
+        try await Task.sleep(for: .milliseconds(80))
+        #expect(vm.transcodeDelivery?.isVideoDirect == true)
+
+        // Out-of-buffer seek on a proven video-copy session seeks IN-STREAM: the server's
+        // isHlsRemuxing keyframe branch is frame-accurate, so there's no #15845 drift to
+        // dodge and no re-anchor. (A re-encode would re-resolve here — see the test below.)
+        engine.bufferedRange = 0...120
+        await vm.seek(to: CMTime(seconds: 3000, preferredTimescale: 600))
+        #expect(engine.calls.contains("seek(3000.0)"))
+        #expect(resolveCalls == 1)                              // no fresh transcode
+        #expect(engine.loadedAssets.count == loadsAfterStart)   // engine not reloaded
+    }
+
+    @Test("re-encode transcode (video re-encoded): an out-of-buffer seek still re-anchors — dodging #15845 accurate-seek drift")
+    func reEncodeOutOfBufferSeekReanchors() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let builder = DeviceProfileBuilder(probe: FakeCapabilityProbe(hdr: .none, audioOutput: .stereo))
+        let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
+        // The live job RE-ENCODES the video — the seek-drift failure mode applies.
+        let reencode = TranscodeDelivery(
+            isVideoDirect: false, isAudioDirect: true,
+            videoCodec: "h264", audioCodec: "ac3", bitrate: nil,
+            transcodeReasons: ["VideoCodecNotSupported"]
+        )
+
+        nonisolated(unsafe) var resolveCalls: [CMTime?] = []
+        let vm = PlayerViewModel(
+            deviceProfileBuilder: builder,
+            playbackInfo: reporting,
+            resolve: { _, _, start, _, _ in resolveCalls.append(start); return resolved },
+            engineFactory: { _ in engine },
+            audioSession: NoopAudioSession(),
+            fetchDelivery: { _ in reencode },
+            deliveryProbeDelay: .milliseconds(10)
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+        #expect(resolveCalls.count == 1)
+        let loadsAfterStart = engine.loadedAssets.count
+
+        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
+                             duration: CMTime(seconds: 7200, preferredTimescale: 600), buffered: nil))
+        try await Task.sleep(for: .milliseconds(80))
+        #expect(vm.transcodeDelivery?.isVideoDirect == false)
+
+        // Out-of-buffer seek on a re-encode → re-resolve a fresh transcode AT the target,
+        // exactly as the unknown-delivery path does. An in-stream seek would drift #15845.
+        engine.bufferedRange = 0...120
+        await vm.seek(to: CMTime(seconds: 3000, preferredTimescale: 600))
+        #expect(resolveCalls.count == 2)
+        #expect(CMTimeGetSeconds((resolveCalls.last ?? nil) ?? .zero) == 3000)
+        #expect(engine.loadedAssets.count == loadsAfterStart + 1)
+        #expect(!engine.calls.contains("seek(3000.0)"))
+    }
+
+    @Test("delivery re-fetches after a track switch — burn-in can flip a video-copy remux to a re-encode")
+    func deliveryRefetchesOnTrackSwitch() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let builder = DeviceProfileBuilder(probe: FakeCapabilityProbe(hdr: .none, audioOutput: .stereo))
+        let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
+        // First session remuxes (video copy); the post-switch session re-encodes it.
+        let deliveries = [
+            TranscodeDelivery(isVideoDirect: true, isAudioDirect: false,
+                              videoCodec: "hevc", audioCodec: "aac", bitrate: nil, transcodeReasons: []),
+            TranscodeDelivery(isVideoDirect: false, isAudioDirect: false,
+                              videoCodec: "hevc", audioCodec: "aac", bitrate: nil,
+                              transcodeReasons: ["SubtitleCodecNotSupported"]),
+        ]
+        nonisolated(unsafe) var deliveryCalls = 0
+        let vm = PlayerViewModel(
+            deviceProfileBuilder: builder,
+            playbackInfo: reporting,
+            resolve: { _, _, _, _, _ in resolved },
+            engineFactory: { _ in engine },
+            audioSession: NoopAudioSession(),
+            fetchDelivery: { _ in
+                defer { deliveryCalls += 1 }
+                return deliveries[min(deliveryCalls, deliveries.count - 1)]
+            },
+            deliveryProbeDelay: .milliseconds(10)
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+
+        // First session's probe lands the remux verdict.
+        engine.push(.playing(position: CMTime(seconds: 100, preferredTimescale: 600),
+                             duration: CMTime(seconds: 7200, preferredTimescale: 600), buffered: nil))
+        try await Task.sleep(for: .milliseconds(80))
+        #expect(vm.transcodeDelivery?.isVideoDirect == true)
+
+        // Switch audio → the reused engine reloads a fresh session (didReportStart resets).
+        let audio4 = try #require(vm.availableAudioTracks.first { $0.id == .jellyfinStream(4) })
+        await vm.selectAudioTrack(audio4)
+        // Stale delivery is cleared the moment the new session's probe arms.
+        #expect(vm.transcodeDelivery == nil)
+
+        // The new session's first .playing beat re-arms the probe → the fresh verdict.
+        engine.push(.playing(position: CMTime(seconds: 101, preferredTimescale: 600),
+                             duration: CMTime(seconds: 7200, preferredTimescale: 600), buffered: nil))
+        try await Task.sleep(for: .milliseconds(80))
+        #expect(vm.transcodeDelivery?.isVideoDirect == false)
+    }
+
     @Test("transcode resumes by client seek: the asset carries the offset and a switch resumes at the live position (no origin double-count)")
     func transcodeResumeSeeksClientSide() async throws {
         let reporting = StubPlaybackReporting()
