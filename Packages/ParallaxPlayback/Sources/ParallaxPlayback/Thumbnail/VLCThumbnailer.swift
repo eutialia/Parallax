@@ -23,6 +23,16 @@ import VLCKitSPM
 /// NEVER logged — neither are they, nor the URL, written anywhere. The thumbnailer is
 /// option-agnostic; it does not know some options carry credentials (`:smb-user=…`).
 ///
+/// **Pre-parse (crash guard):** the media is parsed HERE, under this API's own deadline,
+/// and `fetchThumbnail()` is only ever called with `parsedStatus == .done`. VLCKit
+/// 4.0.0-alpha.19's `VLCMediaThumbnailer` schedules a 10s `_parsingTimeoutTimer` when handed
+/// an unparsed media, and its `mediaParsingTimedOut` path — the one a slow remote share
+/// (e.g. SMB over VPN) always hits — never nils the timer ivar, so the thumbnailer's
+/// `dealloc` later dies on `NSAssert(!_parsingTimeoutTimer, @"Timer not released")`
+/// (`NSInternalInconsistencyException` on a background thread). Upstream rewrote the
+/// thumbnailer in alpha.20 (no timers), but vlckit-spm ships nothing newer than alpha.19.
+/// A `.done` media skips that entire branch, making the assert unreachable.
+///
 /// **Aspect behavior (observed on vlckit-spm 4.0.0-alpha.19):** `width: 0, height: 320`
 /// makes libvlc derive the width from the source aspect ratio rather than stretching to
 /// a fixed box — a 160×90 (16:9) source yields a 569×320 thumbnail (1.778, exactly 16:9),
@@ -90,6 +100,18 @@ public final class VLCThumbnailer {
             media.addOption(option)
         }
 
+        // Pre-parse under our own deadline — see the type doc's "Pre-parse (crash guard)".
+        // The parse SHARES `timeout` with the fetch: one ceiling for the whole call, as the
+        // call sites (and their negative caches) assume. A non-`.done` outcome (libvlc
+        // timeout/failure, our safety net, or task cancellation) fails the fetch here,
+        // before the thumbnailer exists.
+        let clock = ContinuousClock()
+        let parseStart = clock.now
+        let parsed = await MediaParseAwaiter().run(media, timeout: timeout)
+        guard parsed == .done else { throw VLCThumbnailError.timedOut }
+        let remaining = timeout - parseStart.duration(to: clock.now)
+        guard remaining > .zero else { throw VLCThumbnailError.timedOut }
+
         let id = UUID()
         let cgImage: CGImage = try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
@@ -113,7 +135,7 @@ public final class VLCThumbnailer {
                 // Hard timeout: races the delegate. Whichever resolves first wins;
                 // `resolve` is resume-once (it removes the fetch), so the loser is a no-op.
                 delegate.timeoutTask = Task { [weak self] in
-                    try? await Task.sleep(for: timeout)
+                    try? await Task.sleep(for: remaining)
                     guard !Task.isCancelled else { return }
                     self?.resolve(id, with: .failure(.timedOut))
                 }
@@ -179,9 +201,101 @@ public enum VLCThumbnailError: Error, Sendable {
     case mediaRejected   // VLCMedia(url:) returned nil
     /// VLC's delegate timed out, our hard timeout fired, or the enclosing task was
     /// cancelled. A media that opens but can't decode a frame also surfaces here —
-    /// `VLCMediaThumbnailerDelegate` exposes no decode-error callback to distinguish it.
+    /// `VLCMediaThumbnailerDelegate` exposes no decode-error callback to distinguish it —
+    /// as does a pre-parse that resolves anything but `.done` (timeout AND failure: the
+    /// callers treat both the same, poison-unless-cancelled).
     case timedOut
     case encodingFailed  // CGImage → PNG data failed
+}
+
+// MARK: - Pre-parse
+
+/// Awaits one media's libvlc parse (its `parsedStatus` resolution) on the main actor.
+/// One-shot: create a fresh instance per parse. Three resolvers race — the
+/// `VLCMediaDelegate` callback (delivered on the main queue by the legacy events
+/// configuration `configureVLCEvents()` installs), a safety sleeper for the failure
+/// shapes where libvlc's documented triggers never fire, and task cancellation. The
+/// first to resolve wins; the rest are no-ops (`finish` is resume-once).
+///
+/// The awaiter is kept alive for the whole parse by the `run(_:timeout:)` activation
+/// itself; `media.delegate` is weak, and `safetyTask` captures `self` weakly, so
+/// nothing cycles.
+@MainActor
+private final class MediaParseAwaiter: NSObject, VLCMediaDelegate {
+
+    private var continuation: CheckedContinuation<VLCMediaParsedStatus, Never>?
+    private var safetyTask: Task<Void, Never>?
+    /// Retained for the parse so `parseStop()` on abort has a target.
+    private var media: VLCMedia?
+
+    /// Resolves once libvlc reports a terminal parse status, or with `.timeout` when
+    /// `timeout` elapses or the enclosing task is cancelled (both abort the in-flight
+    /// parse via `parseStop()`).
+    func run(_ media: VLCMedia, timeout: Duration) async -> VLCMediaParsedStatus {
+        // Already terminal (defensive — a fresh VLCMedia is `.init`): nothing to await.
+        let status = media.parsedStatus
+        if status == .done || status == .failed { return status }
+
+        self.media = media
+        media.delegate = self
+
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                self.continuation = continuation
+                // libvlc enforces the deadline itself (milliseconds; 0 means INFINITE,
+                // hence the ≥1 clamp) and reports `.timeout` through the delegate.
+                guard media.parse(options: [.parseLocal, .parseNetwork], timeout: Self.milliseconds(timeout)) == 0 else {
+                    // Per the header doc, no callback ever comes after a -1 return.
+                    finish(.failed)
+                    return
+                }
+                // Safety net so a missing callback can't hang the fetch; libvlc's own
+                // deadline should always beat this.
+                safetyTask = Task { [weak self] in
+                    try? await Task.sleep(for: timeout + .seconds(2))
+                    guard !Task.isCancelled else { return }
+                    self?.abort()
+                }
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                self?.abort()
+            }
+        }
+    }
+
+    /// Stops an in-flight parse and resolves `.timeout`; a no-op if already resolved.
+    private func abort() {
+        media?.parseStop()
+        finish(.timeout)
+    }
+
+    /// Resume-once: tears down the safety sleeper and the delegate hookup, then resumes.
+    private func finish(_ status: VLCMediaParsedStatus) {
+        guard let continuation else { return }
+        self.continuation = nil
+        safetyTask?.cancel()
+        safetyTask = nil
+        media?.delegate = nil
+        media = nil
+        continuation.resume(returning: status)
+    }
+
+    nonisolated func mediaDidFinishParsing(_ aMedia: VLCMedia) {
+        // Delegate callbacks ride the legacy events config's main-queue delivery; assert it.
+        let status = aMedia.parsedStatus
+        MainActor.assumeIsolated {
+            finish(status)
+        }
+    }
+
+    /// `Duration` → whole milliseconds for `parse(options:timeout:)`, clamped to ≥ 1
+    /// (0 would mean "no deadline") and to `Int32.max`.
+    private static func milliseconds(_ duration: Duration) -> Int32 {
+        let components = duration.components
+        let ms = components.seconds * 1_000 + components.attoseconds / 1_000_000_000_000_000
+        return Int32(clamping: max(1, ms))
+    }
 }
 
 // MARK: - Delegate
