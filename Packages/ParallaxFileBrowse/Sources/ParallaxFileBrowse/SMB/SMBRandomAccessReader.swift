@@ -36,6 +36,11 @@ public actor SMBRandomAccessReader: RandomAccessReading {
     /// The live manager, lazily connected to `share`. Reset by `disconnect()`.
     private var manager: SMB2Manager?
 
+    /// Set by `disconnect()`, permanently. Guards `connectedManager()` so a straggler
+    /// read (an HTTP-bridge serve loop that was already past its own stop check) can't
+    /// lazily REconnect a fresh SMB session that nothing would ever tear down.
+    private var isClosed = false
+
     /// File size, cached after the first successful `attributesOfItem`. The bridge and probe
     /// treat the first read as authoritative — a mid-walk grow must not shift the size out
     /// from under an in-flight `Content-Range`.
@@ -99,13 +104,24 @@ public actor SMBRandomAccessReader: RandomAccessReading {
         }
     }
 
-    /// Disconnects the active share (if any) and drops the manager. Idempotent.
+    /// Disconnects the active share (if any) and drops the manager. Idempotent; the reader
+    /// is permanently closed afterwards (`read`/`fileSize` throw instead of reconnecting).
+    ///
+    /// `gracefully: true` is LOAD-BEARING, not politeness: `SMB2Manager`'s queue is
+    /// concurrent, and the default disgraceful disconnect destroys the libsmb2 client
+    /// context while an in-flight `contents` read on another thread is still using it —
+    /// a use-after-free that crashed in libsmb2 (debugger break in its C source) when a
+    /// thumbnail timeout tore the bridge+reader down under a zombie player's live reads.
+    /// Graceful waits for `operationCount` to drain first; `isClosed` guarantees the count
+    /// can't be refilled, and pending reads are bounded by `connectTimeout`, so the wait
+    /// is short and finite.
     public func disconnect() async {
+        isClosed = true
         let client = manager
         manager = nil
         guard let client else { return }
         // AMSMB2's disconnect can throw; a teardown failure is not actionable here.
-        try? await client.disconnectShare()
+        try? await client.disconnectShare(gracefully: true)
     }
 
     // MARK: - Connection
@@ -117,6 +133,9 @@ public actor SMBRandomAccessReader: RandomAccessReading {
     /// probes/starts via one `fileSize`/`read` before serving, and AMSMB2 itself serialises;
     /// if concurrent cold-start ever becomes real, memoize an in-flight connect `Task` here.
     private func connectedManager() async throws -> SMB2Manager {
+        // A read that lost the race with `disconnect()` fails like a cancellation — the
+        // serve loop it belongs to is being torn down anyway.
+        guard !isClosed else { throw CancellationError() }
         if let manager { return manager }
         guard let client = SMB2Manager(url: serverURL, domain: domain, credential: credential) else {
             throw SMBListerError.managerInitFailed
@@ -125,6 +144,13 @@ public actor SMBRandomAccessReader: RandomAccessReading {
         // AMSMB2's 60s default.
         client.timeout = connectTimeout
         try await client.connectShare(name: share)
+        // Re-check after the suspension: a `disconnect()` that ran while this cold connect
+        // was in flight saw `manager == nil` and had nothing to tear down — publishing the
+        // fresh session now would leak a live SMB connection forever. Tear it down instead.
+        if isClosed {
+            try? await client.disconnectShare(gracefully: true)
+            throw CancellationError()
+        }
         manager = client
         return client
     }
