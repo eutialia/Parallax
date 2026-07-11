@@ -1,5 +1,6 @@
 import Foundation
 import CoreMedia
+import OSLog
 import ParallaxCore
 import VLCKitSPM
 
@@ -147,6 +148,9 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// track. Set by `setSubtitleTrack`; reset on each fresh `load`.
     private var subtitlesDisabled = false
 
+    /// Engine diagnostics (never URLs or media options — those can carry SMB credentials).
+    private static let log = Logger(subsystem: "com.lhdev.parallax", category: "playback")
+
     /// User-selected playback speed (1.0 = normal). libvlc applies `rate` to the *active
     /// input*, so a rate set before the demux is up is dropped — exactly when
     /// `PlayerViewModel.beginPlayback` re-applies the persisted speed (right after `play()`).
@@ -155,6 +159,16 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// until the old-rate buffer drains (≈ network-caching) — `flushForImmediateRate` re-decodes in
     /// place to apply it promptly.
     private var desiredRate: Float = 1
+
+    /// Whether the user wants playback running — set by `play()`/`pause()`, cleared on
+    /// teardown and terminal states. libvlc applies play/pause on the input thread, and a
+    /// resume issued while that thread is blocked mid-read can be DROPPED — the drag-scrub
+    /// commit's `play()` right after a paused seek over a high-RTT share ("stream filter
+    /// error: reading while paused"): the input stays paused, the poll stays silent
+    /// (`isPlaying`-gated), and the frozen frame ships under a playing glyph. Same
+    /// command-drop family as `desiredRate`: persist the intent and let the poll re-push
+    /// it until the input obeys (see `shouldReassertPlay`).
+    private var desiredPlaying = false
 
     /// Position (ms) captured when a rate-change flush re-decode began, or nil. While set, the
     /// progress poll publishes buffering beats at this hold point until VLC's clock advances past
@@ -218,6 +232,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     }
 
     public func play() async {
+        desiredPlaying = true
         player.play()
         // Start beats immediately so reportStart / cover-hide / the setRate re-apply aren't
         // gated on the resume readiness window. The resume seek runs concurrently (stored so
@@ -283,6 +298,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     }
 
     public func pause() async {
+        desiredPlaying = false
         player.pause()
         // An explicit pause is never a stall: drop any frozen run and cancel a pending stall failure
         // (the poll is `isPlaying`-gated so it won't observe while paused, but a stall in flight must
@@ -438,6 +454,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// off-thread. (Host-side: `VLCVideoHost.Coordinator.mediaLength()` additionally gates
     /// the getter on `hasVideoOut`.)
     public func teardown() async {
+        desiredPlaying = false
         loadWatchdog.disarm()
         stallWatchdog.disarm()
         progressTask?.cancel()
@@ -548,6 +565,37 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
                         continue
                     }
                 }
+                // Play-intent reassert: a resume can be dropped while the input thread is
+                // blocked mid-read (the scrub commit's play() right after a paused seek on a
+                // high-RTT share) — the input then stays paused forever behind a playing UI,
+                // because this poll is `isPlaying`-gated and emits nothing. Re-push the intent
+                // until the input obeys; play() on an already-playing input is a libvlc no-op,
+                // and the state gate keeps a finished/error/opening input untouched.
+                if Self.shouldReassertPlay(desiredPlaying: self.desiredPlaying,
+                                           isPlaying: self.player.isPlaying,
+                                           state: self.player.state) {
+                    // Treat the reassert run as a stall: log ONCE per run (this branch also
+                    // matches ordinary initial buffering, where per-tick .info would spam a
+                    // wedge claim over a normal cold start) and arm the stall watchdog so a
+                    // PERMANENTLY dropped resume escalates to .failed(.networkStalled) instead
+                    // of an eternal spinner — everything below the isPlaying guard (including
+                    // the honest-stall arming) is unreachable while the input stays paused.
+                    // Recovery disarms via the existing isStalled clear once beats resume;
+                    // initial loads stay bounded by the (shorter) loadWatchdog either way.
+                    if !self.isStalled {
+                        self.isStalled = true
+                        self.stallWatchdog.arm()
+                        Self.log.info("play-intent reassert: input paused against play intent, re-issuing play()")
+                    }
+                    self.player.play()
+                    // A wedged post-seek resume IS a stall at the target: surface it as
+                    // (VM-debounced) buffering there instead of a frozen frame under a
+                    // playing glyph. Only when a user seek is in flight — a wedge with no
+                    // seek pending has no meaningful hold point to pin the bar to.
+                    if let target = self.pendingSeekMs {
+                        self.emitBuffering(positionMs: target)
+                    }
+                }
                 guard self.player.isPlaying else { continue }
                 // Re-assert the playback rate now the input is live. libvlc applies `rate` to
                 // the active input, so the speed chosen before the demux was up (the
@@ -564,6 +612,14 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
                     if Self.seekHasSettled(now: self.player.time.intValue, target: target, polls: self.pendingSeekPolls) {
                         self.pendingSeekMs = nil
                     } else {
+                        // A seek still filling after ~1s (2 polls) is a real network wait —
+                        // surface it as buffering AT THE TARGET (where the bar is pinned), so a
+                        // slow-share seek shows an honest spinner instead of silence. The 2-poll
+                        // floor + the VM's ~400ms debounce keep a healthy in-buffer seek silent;
+                        // without the floor, every LAN seek would flash the spinner for a tick.
+                        if self.pendingSeekPolls >= 2 {
+                            self.emitBuffering(positionMs: target)
+                        }
                         continue
                     }
                 }
@@ -809,6 +865,23 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         abs(current - desired) > 0.001
     }
 
+    /// Whether the poll should re-push a dropped play command: the user wants playback
+    /// (`desiredPlaying`), the input reports paused (`!isPlaying`), and the input is in a
+    /// live state where a resume is meaningful. `.opening` is excluded (initial play() is
+    /// still taking effect — reasserting there would just race the open), and the
+    /// stopped/stopping/error terminals are excluded so a finished or failed input can
+    /// never be restarted into a ghost session. Pure so the gate is testable without a
+    /// live decode; mirrors `shouldReassertRate`.
+    nonisolated static func shouldReassertPlay(desiredPlaying: Bool, isPlaying: Bool, state: VLCMediaPlayerState) -> Bool {
+        guard desiredPlaying, !isPlaying else { return false }
+        switch state {
+        case .buffering, .playing, .paused:
+            return true
+        default:
+            return false
+        }
+    }
+
     /// Whether the rate-change flush bridge should stop holding and resume live position tracking:
     /// VLC's clock has advanced past the flush anchor (the re-decode produced output at the new
     /// rate), or the poll budget elapsed (resume even if it never cleanly advances, so the counter
@@ -904,11 +977,13 @@ extension VLCKitEngine: VLCMediaPlayerDelegate {
             // Natural end-of-stream. During teardown the delegate is nilled BEFORE
             // player.stop(), so this branch is never reached from teardown — no
             // spurious .ended beat.
+            desiredPlaying = false   // finished input: the play-intent reassert must never restart it
             loadWatchdog.disarm()
             if currentMedia != nil {
                 continuation.yield(.ended)
             }
         case .error:
+            desiredPlaying = false
             loadWatchdog.disarm()   // libvlc surfaced the failure itself; don't also time out
             continuation.yield(.failed(.assetNotPlayable))
         case .buffering, .playing, .paused:

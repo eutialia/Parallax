@@ -41,6 +41,28 @@ struct VLCKitEngineTests {
         #expect(VLCKitEngine.shouldReassertRate(current: 1.4999, desired: 1.5) == false)  // float tolerance
     }
 
+    @Test("shouldReassertPlay: re-pushes a dropped resume on a live-but-paused input")
+    func reassertPlayOnDroppedResume() {
+        // The scrub-commit wedge: user wants playback, input reports paused, input alive.
+        #expect(VLCKitEngine.shouldReassertPlay(desiredPlaying: true, isPlaying: false, state: .paused))
+        #expect(VLCKitEngine.shouldReassertPlay(desiredPlaying: true, isPlaying: false, state: .buffering))
+        // isPlaying lagging a beat behind a raced state read is tolerated the same way.
+        #expect(VLCKitEngine.shouldReassertPlay(desiredPlaying: true, isPlaying: false, state: .playing))
+    }
+
+    @Test("shouldReassertPlay: never fires while playing, paused by intent, or on a dead input")
+    func noReassertPlayOutsideTheWedge() {
+        // Playing already / user chose pause → no command to repair.
+        #expect(VLCKitEngine.shouldReassertPlay(desiredPlaying: true, isPlaying: true, state: .playing) == false)
+        #expect(VLCKitEngine.shouldReassertPlay(desiredPlaying: false, isPlaying: false, state: .paused) == false)
+        // A finished/failed input must never be restarted into a ghost session,
+        // and the initial open is still applying its own play().
+        #expect(VLCKitEngine.shouldReassertPlay(desiredPlaying: true, isPlaying: false, state: .stopped) == false)
+        #expect(VLCKitEngine.shouldReassertPlay(desiredPlaying: true, isPlaying: false, state: .stopping) == false)
+        #expect(VLCKitEngine.shouldReassertPlay(desiredPlaying: true, isPlaying: false, state: .error) == false)
+        #expect(VLCKitEngine.shouldReassertPlay(desiredPlaying: true, isPlaying: false, state: .opening) == false)
+    }
+
     @Test("capabilities: supportsPiP true, supportsVideoAirPlay false, supportsNowPlayingIntegration true")
     func capabilities() {
         let engine = VLCKitEngine()
