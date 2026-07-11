@@ -4,6 +4,9 @@ struct RootView: View {
     @Environment(AppRouter.self) private var router
     @Environment(PlaybackPresenter.self) private var playback
     @Environment(LaunchGate.self) private var launchGate
+    @Environment(AppDependencies.self) private var deps
+    /// Monotonic token per `isPlayerPresent` edge — see the `.onChange` below.
+    @State private var playbackPresenceSeq = 0
 
     var body: some View {
         @Bindable var router = router
@@ -112,6 +115,19 @@ struct RootView: View {
         // content belongs to the previous server's session.
         .onChange(of: router.activeServerID) { _, _ in
             playback.dismiss()
+        }
+        // SMB thumbnail generation yields the uplink to the player: the full-screen player
+        // covers the grid WITHOUT cancelling its cells' `.task`s, so without this hold the
+        // frame-grab pipeline keeps streaming over the same link the stream is using.
+        // `isPlayerPresent` (not `request`) so the hold spans the teardown grace too.
+        // The seq token is minted HERE (MainActor = ordered edges) because the unstructured
+        // Tasks below can reach the provider actor out of order — a reordered false-then-true
+        // would otherwise latch the hold with no player on screen.
+        .onChange(of: playback.isPlayerPresent) { _, present in
+            playbackPresenceSeq += 1
+            let seq = playbackPresenceSeq
+            let provider = deps.mediaArtworkProvider
+            Task { await provider.setPlaybackActive(present, seq: seq) }
         }
     }
 }

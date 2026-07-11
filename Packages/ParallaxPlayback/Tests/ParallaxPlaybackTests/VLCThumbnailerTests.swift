@@ -17,7 +17,7 @@ struct VLCThumbnailerFailureTests {
 
     /// A non-routable smb:// URL must NOT hang: the hard timeout (or a libvlc
     /// timeout) resolves within the passed ceiling. Pins resume-once + hard-timeout.
-    @Test("a non-routable URL throws .timedOut within the ceiling, never hangs")
+    @Test("a non-routable URL throws .parseTimedOut within the ceiling, never hangs")
     func nonRoutableTimesOut() async {
         let url = URL(string: "smb://203.0.113.0/none/none.mkv")!
         let thumbnailer = VLCThumbnailer()
@@ -25,9 +25,10 @@ struct VLCThumbnailerFailureTests {
             _ = try await thumbnailer.thumbnailData(for: url, timeout: .seconds(3))
             Issue.record("expected a throw, got data")
         } catch let error as VLCThumbnailError {
-            // .timedOut is the expected outcome; .mediaRejected is acceptable if
+            // The pre-parse never resolves .done for an unreachable host, so
+            // .parseTimedOut is the expected outcome; .mediaRejected is acceptable if
             // libvlc rejects the URL at construction. Anything else is a regression.
-            #expect(error == .timedOut || error == .mediaRejected)
+            #expect(error == .parseTimedOut || error == .mediaRejected)
         } catch {
             Issue.record("unexpected error type: \(error)")
         }
@@ -60,9 +61,12 @@ struct VLCThumbnailerFailureTests {
             _ = try await thumbnailer.thumbnailData(for: url, timeout: .seconds(3))
             Issue.record("expected a throw, got data")
         } catch let error as VLCThumbnailError {
-            // Empty path → media construction fails. (.timedOut tolerated if a build
-            // accepts the URL but then can't decode it within the ceiling.)
-            #expect(error == .mediaRejected || error == .timedOut)
+            // Empty path → media construction fails. Timeout cases tolerated: a build may
+            // accept the URL and fail in either phase — libvlc has been observed resolving
+            // the parse of a nonexistent path as .done under load, pushing the failure into
+            // the fetch (.timedOut). The invariant under test is "throws within the ceiling,
+            // never hangs, never returns data".
+            #expect(error == .mediaRejected || error == .parseTimedOut || error == .timedOut)
         } catch {
             Issue.record("unexpected error type: \(error)")
         }

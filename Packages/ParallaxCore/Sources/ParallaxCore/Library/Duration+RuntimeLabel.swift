@@ -1,6 +1,13 @@
 import Foundation
 
 public extension Duration {
+    /// The duration as fractional seconds (`1.5s` → `1.5`). The canonical
+    /// seconds-plus-attoseconds conversion — call this instead of hand-rolling
+    /// `Double(components.seconds) + Double(components.attoseconds) / 1e18` at use sites.
+    var fractionalSeconds: Double {
+        Double(components.seconds) + Double(components.attoseconds) / 1e18
+    }
+
     /// Compact runtime label for media tiles — `"1h 23m"`, `"23m"`, or `"<1m"` for a sub-minute
     /// clip. Empty string when the duration is zero or negative (nothing to show).
     ///

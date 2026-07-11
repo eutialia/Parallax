@@ -185,4 +185,20 @@ struct SMBHTTPBridgeTests {
         #expect(secondHTTP.statusCode == 206)
         #expect(secondBody == data.subdata(in: 1000..<2000))
     }
+
+    @Test("stats count bytes pulled from the reader and accepted connections")
+    func statsCountReaderBytesAndConnections() async throws {
+        let (bridge, _) = makeBridge()
+        let url = try await bridge.start()
+        defer { Task { await bridge.stop() } }
+
+        var req = URLRequest(url: url)
+        req.setValue("bytes=0-4095", forHTTPHeaderField: "Range")
+        let (body, _) = try await URLSession.shared.data(for: req)
+        #expect(body.count == 4096)
+
+        let stats = await bridge.stats
+        #expect(stats.bytesRead == 4096)
+        #expect(stats.connections == 1)
+    }
 }

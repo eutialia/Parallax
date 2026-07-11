@@ -36,8 +36,33 @@ public actor SMBHTTPBridge {
     private var connections: [ObjectIdentifier: NWConnection] = [:]
     private var isStopped = false
 
-    /// Body chunk size: read + send the file in 2 MiB slices so the whole file is never buffered.
+    /// Session diagnostics: what this bridge actually cost the share. `bytesRead` counts
+    /// every byte pulled from `reader` on behalf of a client — charged at READ time, so a
+    /// chunk the client reset before the send still counts (that's exactly the waste the
+    /// number exists to expose). `connections` counts accepted client connections (libvlc's
+    /// probe pattern opens many per session).
+    public struct Stats: Sendable {
+        public let bytesRead: UInt64
+        public let connections: Int
+    }
+    private var statsBytesRead: UInt64 = 0
+    private var statsConnections = 0
+
+    /// Running totals for the session; readable at any point (typically right before `stop()`).
+    public var stats: Stats {
+        Stats(bytesRead: statsBytesRead, connections: statsConnections)
+    }
+
+    /// Body chunk ceiling: read + send the file in slices so the whole file is never buffered.
     private static let chunkSize = 2 * 1024 * 1024
+    /// First-chunk size per response. Chunks DOUBLE per consumed chunk up to `chunkSize`
+    /// (see `streamBody`): a seeky prober (libvlc's http input walking a Matroska header →
+    /// cues → target cluster opens, reads a little, and RESETS the connection per hop)
+    /// wastes at most this much already-read SMB data per abort, instead of a full 2 MiB
+    /// chunk per hop — over a VPN that waste dwarfed the useful reads. A well-behaved long
+    /// stream (AVPlayer playback) reaches the 2 MiB ceiling within four sends, so steady
+    /// throughput is unaffected.
+    private static let initialChunkSize = 256 * 1024
     /// Request-head cap: reject a head that doesn't terminate within 16 KiB (malformed / abusive).
     private static let maxHeadBytes = 16 * 1024
 
@@ -53,13 +78,27 @@ public actor SMBHTTPBridge {
 
     // MARK: - Lifecycle
 
-    /// Binds an `NWListener` on an ephemeral TCP port and returns the URL AVPlayer should open.
+    /// Which address the returned URL advertises. The listener itself binds every interface
+    /// either way — the scope only decides what the CLIENT connects to.
+    public enum AddressScope: Sendable {
+        /// The primary LAN IPv4 (fallback loopback). Required when an AirPlay receiver must
+        /// fetch the URL itself — a loopback URL black-screens the receiver.
+        case lan
+        /// `127.0.0.1`. For strictly on-device clients (the thumbnailer): a VPN's policy
+        /// layer (NECP) can RESET self-connections to LAN/link-local addresses ("connection
+        /// reset by peer" on every transfer, observed on-device), but loopback is exempt
+        /// from tunnel enforcement. Never AirPlay-able.
+        case loopback
+    }
+
+    /// Binds an `NWListener` on an ephemeral TCP port and returns the URL the client should open.
     ///
-    /// The host is the primary LAN IPv4, falling back to `127.0.0.1`. **The LAN address is
-    /// deliberate:** when AVPlayer hands off to AirPlay external playback, the receiver (Apple
-    /// TV) fetches this URL *itself* — a loopback-only URL black-screens the receiver. On-device
-    /// local playback works over the LAN address too, so one URL serves both.
-    public func start() async throws -> URL {
+    /// The default `.lan` host is the primary LAN IPv4, falling back to `127.0.0.1`. **The LAN
+    /// address is deliberate for playback:** when AVPlayer hands off to AirPlay external
+    /// playback, the receiver (Apple TV) fetches this URL *itself* — a loopback-only URL
+    /// black-screens the receiver. On-device local playback works over the LAN address too, so
+    /// one URL serves both. Pass `.loopback` for on-device-only clients (see `AddressScope`).
+    public func start(scope: AddressScope = .lan) async throws -> URL {
         guard !isStopped else { throw BridgeError.stopped }
         guard listener == nil else { throw BridgeError.alreadyStarted }
 
@@ -92,7 +131,10 @@ public actor SMBHTTPBridge {
         }
 
         guard let port = listener.port else { throw BridgeError.noPort }
-        let host = LocalNetworkAddress.primaryIPv4() ?? "127.0.0.1"
+        let host: String = switch scope {
+        case .lan: LocalNetworkAddress.primaryIPv4() ?? "127.0.0.1"
+        case .loopback: "127.0.0.1"
+        }
         guard let url = URL(string: "http://\(host):\(port.rawValue)\(expectedPath)") else {
             throw BridgeError.noPort
         }
@@ -115,6 +157,7 @@ public actor SMBHTTPBridge {
     private func accept(_ connection: NWConnection) {
         // A connection that raced in during/after `stop()` gets refused — never served.
         guard !isStopped, listener != nil else { connection.cancel(); return }
+        statsConnections += 1
         connections[ObjectIdentifier(connection)] = connection
         connection.stateUpdateHandler = { [weak self] state in
             switch state {
@@ -313,20 +356,26 @@ public actor SMBHTTPBridge {
         return .satisfiable(start, end)
     }
 
-    /// Streams `[start, start+length)` in 2 MiB chunks. The next `reader.read` is issued only
-    /// after the previous `connection.send` completes (`send` awaits its continuation), so the
-    /// bridge never buffers more than one chunk — TCP/receiver backpressure gates the reader.
+    /// Streams `[start, start+length)` in chunks that grow from `initialChunkSize` to
+    /// `chunkSize` (doubling per consumed chunk — see `initialChunkSize` for why). The next
+    /// `reader.read` is issued only after the previous `connection.send` completes (`send`
+    /// awaits its continuation), so the bridge never buffers more than one chunk —
+    /// TCP/receiver backpressure gates the reader, and an aborted connection surfaces as a
+    /// failed send BEFORE the next (bigger) read is charged to the share.
     private func streamBody(_ connection: NWConnection, start: UInt64, length: UInt64) async throws {
         var offset = start
         var remaining = length
+        var chunk = Self.initialChunkSize
         while remaining > 0 {
-            let want = Int(min(UInt64(Self.chunkSize), remaining))
+            let want = Int(min(UInt64(chunk), remaining))
             let data = try await reader.read(offset: offset, length: want)
+            statsBytesRead += UInt64(data.count)
             if data.isEmpty { break } // pread EOF — stop rather than spin
             try await send(connection, data)
             offset += UInt64(data.count)
             remaining -= UInt64(data.count)
             if data.count < want { break } // short read = EOF
+            chunk = min(chunk * 2, Self.chunkSize)
         }
     }
 

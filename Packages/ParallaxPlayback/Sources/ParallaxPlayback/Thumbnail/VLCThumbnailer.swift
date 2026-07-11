@@ -1,6 +1,7 @@
 import Foundation
 import CoreGraphics
 import ImageIO
+import ParallaxCore
 import UniformTypeIdentifiers
 import VLCKitSPM
 
@@ -75,7 +76,9 @@ public final class VLCThumbnailer {
     ///     `smb://`, like `":smb-user=alice"`). Applied verbatim; never logged.
     ///   - width: target width; `0` lets libvlc derive it from the source aspect (default).
     ///   - height: target height (default 320).
-    ///   - position: 0–1 fraction of the video duration to snapshot (default 0.3).
+    ///   - position: 0–1 fraction of the video duration to snapshot (default 0.3). Fractions
+    ///     below the 0.3 default are applied as a `:start-time=` media option when the
+    ///     pre-parse resolved a duration, so the decode opens at the target offset directly.
     ///   - timeout: hard ceiling; if VLC neither finishes nor times out by then, throws `.timedOut`.
     /// - Returns: the PNG frame plus the source duration (nil if libvlc couldn't read the length).
     public func thumbnailData(
@@ -93,9 +96,13 @@ public final class VLCThumbnailer {
         guard let media = VLCMedia(url: url) else {
             throw VLCThumbnailError.mediaRejected
         }
-        // Buffer headroom for smb:// (match the engine's value); caller options follow,
+        // Deliberately NOT the engine's 3000ms: that value sizes a smooth-playback
+        // read-ahead, and the input pre-fills it before decode starts, so a frame grab
+        // would pay ~3s of stream bytes up front — the dominant per-fetch cost on a
+        // high-RTT link (SMB over VPN). A grab needs only a few frames; 500ms cuts
+        // time-to-first-frame without starving the decoder. Caller options follow,
         // applied verbatim. Order is irrelevant — libvlc merges per-media options.
-        media.addOption(":network-caching=3000")
+        media.addOption(":network-caching=500")
         for option in options {
             media.addOption(option)
         }
@@ -108,9 +115,36 @@ public final class VLCThumbnailer {
         let clock = ContinuousClock()
         let parseStart = clock.now
         let parsed = await MediaParseAwaiter().run(media, timeout: timeout)
-        guard parsed == .done else { throw VLCThumbnailError.timedOut }
+        guard parsed == .done else { throw VLCThumbnailError.parseTimedOut }
         let remaining = timeout - parseStart.duration(to: clock.now)
-        guard remaining > .zero else { throw VLCThumbnailError.timedOut }
+        guard remaining > .zero else { throw VLCThumbnailError.parseTimedOut }
+
+        // Early-frame asks (< the 0.3 default) land the internal player AT the snapshot
+        // offset instead of opening at 0:00 and seeking: the pre-parse just resolved the
+        // duration, so the fraction converts to `:start-time=` and the open's first reads
+        // are already the target bytes — one less mid-file seek over the share. The nudge
+        // past 0.05 dodges a19's `position <= 0.05 → re-seek to 30%` broken-file heuristic
+        // (`didFetchThumbnail`), which would otherwise turn a shallow ask into exactly the
+        // deep Matroska seek it exists to avoid. The 0.3 default is excluded because a19
+        // sets its own start-time for it (duplicate options); unknown duration falls back
+        // to the prior open-at-zero behavior.
+        //
+        // snapshotPosition MUST get the same nudged fraction: a19 keys BOTH of its seeks on
+        // it — an early frame reporting position≈0 (network open, before start-time settles)
+        // is re-seeked to `snapshotPosition`, and a frame landing exactly at 0.05 then
+        // satisfies `position <= 0.05` → the deep 30% re-seek. A raw 0.05 snapshot target
+        // sits precisely on that boundary and re-arms the heuristic the start-time nudge
+        // exists to dodge (observed on-device as webms hunting Matroska clusters backward
+        // then timing out).
+        var snapshotFraction = Double(position)
+        if position < 0.3, let duration = Self.duration(of: media) {
+            let fraction = position <= 0.05 ? Double(position) + 0.01 : Double(position)
+            let startSeconds = duration.fractionalSeconds * fraction
+            if startSeconds >= 1 {
+                media.addOption(String(format: ":start-time=%.1f", startSeconds))
+                snapshotFraction = fraction
+            }
+        }
 
         let id = UUID()
         let cgImage: CGImage = try await withTaskCancellationHandler {
@@ -127,7 +161,7 @@ public final class VLCThumbnailer {
                 let thumbnailer = VLCMediaThumbnailer(media: media, andDelegate: delegate)
                 thumbnailer.thumbnailWidth = width
                 thumbnailer.thumbnailHeight = height
-                thumbnailer.snapshotPosition = position
+                thumbnailer.snapshotPosition = Float(snapshotFraction)
 
                 // Retain BOTH for the whole fetch (delegate is weak on the thumbnailer).
                 inFlight[id] = Fetch(thumbnailer: thumbnailer, delegate: delegate)
@@ -199,11 +233,16 @@ public final class VLCThumbnailer {
 
 public enum VLCThumbnailError: Error, Sendable {
     case mediaRejected   // VLCMedia(url:) returned nil
-    /// VLC's delegate timed out, our hard timeout fired, or the enclosing task was
-    /// cancelled. A media that opens but can't decode a frame also surfaces here —
-    /// `VLCMediaThumbnailerDelegate` exposes no decode-error callback to distinguish it —
-    /// as does a pre-parse that resolves anything but `.done` (timeout AND failure: the
-    /// callers treat both the same, poison-unless-cancelled).
+    /// The pre-parse resolved anything but `.done` (libvlc parse timeout/failure, our safety
+    /// net, or task cancellation), or consumed the whole call budget by itself. Distinct from
+    /// `.timedOut` so a caller's failure log attributes the loss to the demux/probe phase
+    /// (e.g. an AVI index rebuild scanning the whole file) rather than the frame decode.
+    case parseTimedOut
+    /// VLC's delegate timed out, our hard timeout fired after a successful parse, or the
+    /// enclosing task was cancelled mid-fetch. A media that opens but can't decode a frame
+    /// also surfaces here — `VLCMediaThumbnailerDelegate` exposes no decode-error callback
+    /// to distinguish it. Callers treat this and `.parseTimedOut` the same
+    /// (poison-unless-cancelled); the split is diagnostic only.
     case timedOut
     case encodingFailed  // CGImage → PNG data failed
 }

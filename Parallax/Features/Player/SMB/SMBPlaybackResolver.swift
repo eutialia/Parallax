@@ -73,21 +73,13 @@ struct SMBPlaybackResolver {
         let startTime = await resumeStore.resumeTime(for: item.id)
 
         if useBridge {
-            // The reader is handed to the bridge and owned by it from here — the cleanup
-            // closure (Task 5) is the only site that disconnects it.
+            // The reader is handed to the session and owned by it from here — the cleanup
+            // closure is the only site that tears it down. `session.start()` self-tears-down
+            // on a start failure (no SMBPlaybackItem, no cleanup closure would ever run).
             let fileName = (ctx.path as NSString).lastPathComponent
             let contentType = hints.container == .mov ? "video/quicktime" : "video/mp4"
-            let bridge = SMBHTTPBridge(reader: reader, fileName: fileName, contentType: contentType)
-            let url: URL
-            do {
-                url = try await bridge.start()
-            } catch {
-                // The bridge never came up, so nothing else will ever tear it down (no
-                // SMBPlaybackItem, no cleanup closure) — release its reader here.
-                await bridge.stop()
-                await reader.disconnect()
-                throw error
-            }
+            let session = SMBBridgeSession(reader: reader, fileName: fileName, contentType: contentType)
+            let url = try await session.start()
             return SMBPlaybackItem(
                 itemID: item.id,
                 url: url,
@@ -100,7 +92,7 @@ struct SMBPlaybackResolver {
                 // bridgeEligible gate) — AVKit reads the container's own duration atom, no estimate.
                 hasTrustworthyDuration: true,
                 hints: hints,
-                cleanup: { await bridge.stop(); await reader.disconnect() }
+                cleanup: { await session.stop() }
             )
         }
 

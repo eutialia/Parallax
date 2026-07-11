@@ -30,7 +30,12 @@ public enum LocalNetworkAddress {
             var sinAddr = storage.sin_addr
             var buffer = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
             guard inet_ntop(AF_INET, &sinAddr, &buffer, socklen_t(INET_ADDRSTRLEN)) != nil else { continue }
-            return String(cString: buffer)
+            let address = String(cString: buffer)
+            // A self-assigned link-local address means the interface has no DHCP lease —
+            // an AirPlay receiver can't route to it, and on-device a VPN's policy layer
+            // (NECP) resets connections to it. Worse than the loopback fallback; skip it.
+            guard !address.hasPrefix("169.254.") else { continue }
+            return address
         }
         return nil
     }
