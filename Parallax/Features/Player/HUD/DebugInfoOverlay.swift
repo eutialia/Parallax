@@ -27,7 +27,9 @@ struct DebugInfoOverlay: View {
     /// Mirrors `snapshot`'s polling pattern (final-review M1): the label below read the
     /// store inline, which only reflected a pick once *something else* re-rendered the
     /// view — polled here instead so the profile row is honest on its own.
-    @State private var startupProfile: StartupProfile = .system
+    // Seeded from the store so frame 0 shows the real profile (the shipping default is
+    // .fastStart now, so a hardcoded literal would render stale until the first poll).
+    @State private var startupProfile: StartupProfile = StartupTuningStore().selected
 
     /// Readable at couch distance on the tvOS canvas; dense on touch screens.
     private var fontSize: CGFloat {

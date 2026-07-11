@@ -62,33 +62,4 @@ struct AVKitEngineTests {
         #expect(inv.subtitles.count == 1)
         #expect(inv.subtitles[0].id == .avKitOption(1))
     }
-
-    // MARK: - Stall notification (final-review I1)
-
-    /// A real `AVPlayerItem.playbackStalledNotification` only fires on a genuine network
-    /// stall — not reproducible against a bare, never-loaded item in a unit test — so this
-    /// drives `emitStallBuffering(for:)` directly, the seam `handleStalledNotification`
-    /// delegates to after its `currentItem`/`.readyToPlay` guard. Verifies the false-waits
-    /// counterpart of the `.waitingToPlayAtSpecifiedRate` KVO arm actually emits the same
-    /// `.buffering` beat the UI renders as the stall scrim.
-    @Test("emitStallBuffering(for:) yields .buffering")
-    func stalledNotificationEmitsBuffering() async {
-        let engine = AVKitEngine()
-        let item = AVPlayerItem(asset: AVURLAsset(url: URL(string: "https://example.invalid/video.mp4")!))
-
-        var iterator = engine.state.makeAsyncIterator()
-        let first = await iterator.next()
-        guard case .idle = first else {
-            Issue.record("expected .idle, got \(String(describing: first))")
-            return
-        }
-
-        engine.emitStallBuffering(for: item)
-
-        let second = await iterator.next()
-        guard case .buffering = second else {
-            Issue.record("expected .buffering, got \(String(describing: second))")
-            return
-        }
-    }
 }

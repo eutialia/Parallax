@@ -15,27 +15,19 @@ public struct StartupTuning: Sendable, Equatable {
     /// heuristic).
     public let preferredForwardBufferSeconds: Double?
 
-    /// `nil` = leave `AVPlayer.automaticallyWaitsToMinimizeStalling` untouched (`true`,
-    /// the system default). Note: `AVKitEngine.play()` resumes via
-    /// `playImmediately(atRate:)`, which already bypasses this gate for the initial
-    /// play — this knob only affects post-seek/mid-stream rebuffering behavior.
-    ///
-    /// Setting this `false` (the `fastStartEager` profile) changes how a mid-stream
-    /// stall reports itself: per Apple's docs, `timeControlStatus` flips to `.paused`
-    /// instead of `.waitingToPlayAtSpecifiedRate`, which would silently defeat
-    /// `AVKitEngine`'s KVO-driven `StallWatchdog` arm. `AVKitEngine` covers that case by
-    /// also observing `AVPlayerItem.playbackStalledNotification` — Apple's docs confirm
-    /// it posts ONLY when this property is `false` — so the eager profile stays covered
-    /// (see `AVKitEngine.handleStalledNotification`, final-review I1).
-    public let automaticallyWaitsToMinimizeStalling: Bool?
+    // NOTE: an `automaticallyWaitsToMinimizeStalling` knob (the "Fast Start (Eager)"
+    // profile) was DELETED after on-device A/B (2026-07-08): under `waits == false` the
+    // first `.playing` beat never landed (loading scrim wedged forever over a rendered
+    // first frame) and it measured no faster than plain Fast Start. Don't resurrect it
+    // without fixing first-beat emission; the `playbackStalledNotification` stall
+    // fallback it required (final-review I1) was deleted with it — that notification
+    // only posts when `waits == false`.
 
     public static let systemDefault = StartupTuning(
-        preferredForwardBufferSeconds: nil,
-        automaticallyWaitsToMinimizeStalling: nil
+        preferredForwardBufferSeconds: nil
     )
 
-    public init(preferredForwardBufferSeconds: Double?, automaticallyWaitsToMinimizeStalling: Bool?) {
+    public init(preferredForwardBufferSeconds: Double?) {
         self.preferredForwardBufferSeconds = preferredForwardBufferSeconds
-        self.automaticallyWaitsToMinimizeStalling = automaticallyWaitsToMinimizeStalling
     }
 }

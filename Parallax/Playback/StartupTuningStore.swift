@@ -2,22 +2,23 @@ import Foundation
 import ParallaxPlayback
 
 /// Named AVKit buffering profiles for on-device startup-time A/B testing (Plan C).
-/// `.system` is the shipping default — `StartupTuning.systemDefault`, which applies
-/// nothing. The other two are the candidates under test; picking a winner on device
-/// promotes it to the shipped default in a follow-up, not here.
+/// `.fastStart` is the SHIPPING default, promoted from the 2026-07-08 device A/B
+/// (Jellyfin over VPN: System 3152ms → Fast Start 1991ms; VLC control rows confirmed
+/// the gap exceeds network jitter). `.system` stays pickable as the control.
+/// A third candidate, "Fast Start (Eager)" (`automaticallyWaitsToMinimizeStalling =
+/// false`), was DELETED in the same pass: it wedged the loading scrim forever (first
+/// frame rendered, first `.playing` beat never landed) and measured no faster —
+/// see the note in `StartupTuning`.
 enum StartupProfile: String, CaseIterable, Sendable {
     case system
     case fastStart
-    case fastStartEager
 
     var tuning: StartupTuning {
         switch self {
         case .system:
             .systemDefault
         case .fastStart:
-            StartupTuning(preferredForwardBufferSeconds: 3, automaticallyWaitsToMinimizeStalling: nil)
-        case .fastStartEager:
-            StartupTuning(preferredForwardBufferSeconds: 3, automaticallyWaitsToMinimizeStalling: false)
+            StartupTuning(preferredForwardBufferSeconds: 3)
         }
     }
 
@@ -25,7 +26,6 @@ enum StartupProfile: String, CaseIterable, Sendable {
         switch self {
         case .system: "System"
         case .fastStart: "Fast Start"
-        case .fastStartEager: "Fast Start (Eager)"
         }
     }
 }
@@ -49,11 +49,12 @@ struct StartupTuningStore: Sendable {
         self.defaults = defaults
     }
 
-    /// The persisted profile, or `.system` when nothing was ever picked (fresh
-    /// install) or the stored value no longer maps to a known case.
+    /// The persisted profile, or `.fastStart` — the promoted shipping default — when
+    /// nothing was ever picked (fresh install / release users) or the stored value no
+    /// longer maps to a known case (e.g. a device that had the deleted Eager selected).
     var selected: StartupProfile {
         get {
-            defaults.string(forKey: Self.key).flatMap(StartupProfile.init(rawValue:)) ?? .system
+            defaults.string(forKey: Self.key).flatMap(StartupProfile.init(rawValue:)) ?? .fastStart
         }
         nonmutating set {
             defaults.set(newValue.rawValue, forKey: Self.key)

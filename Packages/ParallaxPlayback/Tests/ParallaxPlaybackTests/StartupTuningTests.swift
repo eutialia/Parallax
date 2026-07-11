@@ -11,42 +11,26 @@ struct StartupTuningTests {
         AVPlayerItem(asset: AVURLAsset(url: URL(string: "https://example.invalid/video.mp4")!))
     }
 
-    @Test(".systemDefault leaves both AVPlayerItem/AVPlayer properties untouched")
+    @Test(".systemDefault leaves the AVPlayerItem untouched")
     func systemDefaultAppliesNothing() {
         let item = makeItem()
         let player = AVPlayer()
         let bufferBefore = item.preferredForwardBufferDuration
-        let waitsBefore = player.automaticallyWaitsToMinimizeStalling
 
         AVKitEngine.applyTuning(.systemDefault, to: item, player: player)
 
         #expect(item.preferredForwardBufferDuration == bufferBefore)
-        #expect(player.automaticallyWaitsToMinimizeStalling == waitsBefore)
     }
 
-    @Test("An explicit tuning applies both properties")
-    func explicitTuningAppliesBoth() {
+    @Test("An explicit tuning applies the forward-buffer target")
+    func explicitTuningApplies() {
         let item = makeItem()
         let player = AVPlayer()
-        let tuning = StartupTuning(preferredForwardBufferSeconds: 3, automaticallyWaitsToMinimizeStalling: false)
+        let tuning = StartupTuning(preferredForwardBufferSeconds: 3)
 
         AVKitEngine.applyTuning(tuning, to: item, player: player)
 
         #expect(item.preferredForwardBufferDuration == 3)
-        #expect(player.automaticallyWaitsToMinimizeStalling == false)
-    }
-
-    @Test("A partial tuning (one nil field) leaves only the nil field untouched")
-    func partialTuningLeavesNilFieldUntouched() {
-        let item = makeItem()
-        let player = AVPlayer()
-        let waitsBefore = player.automaticallyWaitsToMinimizeStalling
-        let tuning = StartupTuning(preferredForwardBufferSeconds: 3, automaticallyWaitsToMinimizeStalling: nil)
-
-        AVKitEngine.applyTuning(tuning, to: item, player: player)
-
-        #expect(item.preferredForwardBufferDuration == 3)
-        #expect(player.automaticallyWaitsToMinimizeStalling == waitsBefore)
     }
 
     @Test("AVKitEngine.init defaults to .systemDefault and existing zero-arg call sites still compile")
