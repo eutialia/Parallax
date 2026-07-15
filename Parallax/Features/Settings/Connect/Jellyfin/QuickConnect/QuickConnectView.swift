@@ -66,6 +66,9 @@ struct QuickConnectView: View {
                         .tracking(8)
                         .lineLimit(1)
                         .minimumScaleFactor(0.5)
+                        // `.tracking` adds a trailing 8pt AFTER the last digit, nudging the code ~4pt
+                        // right of the chip's optical center. Cancel just the trailing gap; keep the tracking.
+                        .padding(.trailing, -8)
                         .padding(.horizontal, Space.s22)
                         .padding(.vertical, Space.s16)
                         .background(Color.surface, in: .rect(cornerRadius: Radius.card))

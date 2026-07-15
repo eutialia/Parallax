@@ -26,7 +26,7 @@ extension View {
         focused: Bool, rest: Color, hairline: Color? = nil, in shape: S
     ) -> some View {
         background(shape.fill(rest).opacity(focused ? 0 : 1))
-            .background(shape.fill(Color.white.opacity(0.97)).opacity(focused ? 1 : 0))
+            .background(shape.fill(Color.white).opacity(focused ? 1 : 0))
             .overlay {
                 if let hairline {
                     shape.strokeBorder(hairline.opacity(focused ? 0 : 1), lineWidth: 1)

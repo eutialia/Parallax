@@ -114,8 +114,8 @@ private struct MenuMiniBadge: View {
             .foregroundStyle(prominent ? Color.label : Color.secondaryLabel)
             .padding(.horizontal, MenuMetrics.badgePadX)
             .padding(.vertical, MenuMetrics.badgePadY)
-            .background(Color.fill, in: RoundedRectangle(cornerRadius: MenuMetrics.badgeRadius,
-                                                         style: .continuous))
+            .background(Color.playerTrackBadgeFill, in: RoundedRectangle(cornerRadius: MenuMetrics.badgeRadius,
+                                                                         style: .continuous))
     }
 }
 
@@ -164,12 +164,12 @@ private struct MenuRow<Trailing: View>: View {
                     // nearer than the selection fill so the crossfade runs over it.
                     .background(
                         RoundedRectangle(cornerRadius: MenuMetrics.platterRadius, style: .continuous)
-                            .fill(.white.opacity(0.97))
+                            .fill(.white)
                             .opacity(focused ? 1 : 0)
                     )
                     .background(
                         RoundedRectangle(cornerRadius: MenuMetrics.platterRadius, style: .continuous)
-                            .fill(isSelected ? Color.selectionFill : .clear)
+                            .fill(isSelected ? Color.playerTrackSelectionFill : .clear)
                     )
                     .environment(\.colorScheme, focused ? .light : .dark)
                     .contentShape(.rect)

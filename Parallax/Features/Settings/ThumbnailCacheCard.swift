@@ -53,11 +53,19 @@ struct ThumbnailCacheCard: View {
                 .font(.rowValue)
                 .monospacedDigit()
                 .foregroundStyle(Color.secondaryLabel)
-            Button("Clear") { isConfirming = true }
-                .font(.rowValue.weight(.semibold))
-                .foregroundStyle(Color.destructive)
-                .buttonStyle(.plain)
-                .padding(.leading, Space.s8)
+            // Grow the ~20pt-tall text button to the 44pt HIG tap minimum without shifting the row:
+            // pad out, hit-test the padded rect, reclaim the height with negative padding (the row's
+            // 48pt min height absorbs the overflow). Visuals unchanged.
+            Button { isConfirming = true } label: {
+                Text("Clear")
+                    .font(.rowValue.weight(.semibold))
+                    .foregroundStyle(Color.destructive)
+                    .padding(.vertical, Space.s12)
+                    .contentShape(.rect)
+                    .padding(.vertical, -Space.s12)
+            }
+            .buttonStyle(.plain)
+            .padding(.leading, Space.s8)
         }
         .padding(.horizontal, SettingsMetrics.rowHInset)
         .padding(.vertical, Space.s12)

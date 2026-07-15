@@ -11,7 +11,7 @@ enum FormActionStyle {
 
 extension View {
     /// Lay a label out as a full-width form CTA: `.rowTitle` type (`.headline` on iOS, a tamer 26pt
-    /// on tvOS), full width, at the shared 50pt control height (66 on tvOS) so it matches the text
+    /// on tvOS), full width, at the shared 50pt control height (62 on tvOS) so it matches the text
     /// fields stacked above it. The label COLOR + fill come from `formActionButton(_:)`'s style, which
     /// owns the focus inversion. Pass `isWorking: true` to swap the label for a spinner WITHOUT
     /// resizing (the title stays hidden in the layout to drive the height; the spinner overlays).
@@ -50,7 +50,9 @@ private struct FormActionLabelModifier: ViewModifier {
 
     private var ctaHeight: CGFloat {
         #if os(tvOS)
-        66
+        // Ride the shared hero/detail control-height family (62 on tvOS) instead of a bespoke 66, so
+        // the form CTA matches the Play pill / circle actions rather than diverging.
+        ActionRow.controlHeight(.tv)
         #else
         height
         #endif
@@ -92,7 +94,11 @@ private struct FlatFormButtonStyle: ButtonStyle {
 
     private func labelColor(focused: Bool) -> Color {
         if focused { return Color.playerInk }            // ink on the tvOS white focus platter
-        if !isEnabled { return Color.secondaryLabel }    // legible gray on the dimmed pill
+        // Disabled: re-resolve the label against the pill's OWN fill, not the page ink (page ink over
+        // `buttonFill` lands ~1.1:1). The solid pill keeps cream `buttonLabel` dimmed to 72% (legible
+        // on the espresso/white fill); the glass pill's ground is the page-tinted `fill`, where
+        // `secondaryLabel` stays legible.
+        if !isEnabled { return role == .solid ? Color.buttonLabel.opacity(0.72) : Color.secondaryLabel }
         return role == .solid ? Color.buttonLabel : Color.label
     }
 

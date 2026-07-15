@@ -41,7 +41,10 @@ struct DetailInfoSection: View {
                 .lineLimit(idiom == .compact ? 3 : 4)
                 .truncationMode(.tail)
                 .multilineTextAlignment(.leading)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                // Cap the TEXT measure at a comfortable ~72ch (≈600pt at `.callout`) so wide layouts
+                // don't run 140-char lines; the card still fills its width (below), the text hugs
+                // leading. No-op on compact, whose column is far narrower than 600pt.
+                .frame(maxWidth: 600, alignment: .leading)
                 .mask(teaserFade)
             // A flat `surfacePanel` background (not `.buttonStyle(.glass)`): a styled button
             // hugs its content, but the section must be full-width — `maxWidth: .infinity`

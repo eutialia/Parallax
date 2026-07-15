@@ -123,7 +123,13 @@ enum HeroMetrics {
     /// insets — the title-safe line plus a full overscan of clearance — parks the controls in the lower
     /// third where Apple's own TV hero sits. iPhone/iPad have no overscan, so they keep the tight inset.
     static func foregroundBottomInset(idiom: AppIdiom) -> CGFloat {
-        idiom == .tv ? AppLayout.tvOverscanInset * 2 : Space.s30
+        switch idiom {
+        // Compact lifts the column a notch more so the page dots stop crowding the third overview
+        // line; regular keeps the tighter inset. tvOS parks the controls well above the overscan.
+        case .compact: Space.s40
+        case .regular: Space.s30
+        case .tv: AppLayout.tvOverscanInset * 2
+        }
     }
     /// Bottom inset for the carousel's page dots, measured from the band's bottom edge. compact/regular
     /// tuck them just below the action row (the old iPhone `Space.s3` jammed them against the poster's

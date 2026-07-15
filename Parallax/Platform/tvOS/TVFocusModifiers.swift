@@ -240,7 +240,7 @@ private struct TVFocusListRowModifier: ViewModifier {
                     // crescent at the first/last row's corners (the visible "seam between two borders").
                     // A few points of margin makes it read as a deliberate floating selection instead.
                     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .fill(.white.opacity(0.97))
+                        .fill(.white)
                         .padding(.horizontal, Space.s8)
                         .padding(.vertical, Space.s3)
                         .opacity(focused ? 1 : 0)

@@ -78,15 +78,23 @@ extension Color {
     /// value of `buttonLabel`; kept as its own named token so the
     /// player never depends on an adaptive token resolving dark.
     static let playerInk          = Color(red: 10 / 255, green: 10 / 255, blue: 12 / 255)
+    /// Player track-menu SELECTED-row fill — theme-FIXED (white 0.15), pinned like `playerInk` so a
+    /// paper ancestor can never tint the selection over video. Equals `selectionFill`'s dark face.
+    static let playerTrackSelectionFill = Color.white.opacity(0.15)
+    /// Player track-menu attribute-BADGE fill — theme-FIXED graphite (equals `fill`'s dark face), so
+    /// the badge chip reads the same over video regardless of the app's light/dark theme.
+    static let playerTrackBadgeFill = Color(red: 120 / 255, green: 120 / 255, blue: 135 / 255).opacity(0.24)
 
     // Bright pill in dark mode (white fill / ink label), dark pill in light mode
     // (espresso fill / cream label) — used everywhere including over hero photography.
     static let buttonFill         = Color(light: 0x2A241D, dark: 0xFFFFFF)
     static let buttonLabel        = Color(light: 0xF7F2EA, dark: 0x0A0A0C)
     /// The hero/detail Play pill LABEL — pure white over the espresso pill by day, ink over the
-    /// white pill by night (approved against the "Action row parity" prototype). It differs from
-    /// `buttonLabel` only in light (white, not cream), so it earns its own token; the FILL is just
-    /// `buttonFill` (espresso/white), which is why the pill no longer branches on colorScheme.
+    /// white pill by night (approved against the "Action row parity" prototype; owner-confirmed
+    /// intentional 2026-07-14 — the always-white Play label is a design choice, NOT a drift from
+    /// `buttonLabel`). It differs from `buttonLabel` only in light (white, not cream), so it earns
+    /// its own token; the FILL is just `buttonFill` (espresso/white), which is why the pill no
+    /// longer branches on colorScheme.
     static let playPillLabel      = Color(light: 0xFFFFFF, dark: 0x0A0A0C)
     /// Selected-chip glass tint (the library header chips' `.tint` when a genre is
     /// applied). Translucent on purpose: at the old 0.92 the tint was effectively opaque,

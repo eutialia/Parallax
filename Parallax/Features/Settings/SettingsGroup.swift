@@ -15,9 +15,10 @@ enum SettingsMetrics {
         16
         #endif
     }
-    /// Leading glyph column width (icon + gap to the title). The plain-row glyph is ~22pt; the gap is
-    /// `Space.s12`. Server rows use a wider glyph but keep this separator inset for one aligned rule.
-    static let glyphColumn: CGFloat = 22
+    /// Leading glyph column width (icon + gap to the title) — the SINGLE source `SettingsListRow`
+    /// renders its glyph column at too, so the hairline (derived below) starts exactly at the title
+    /// edge instead of 4px shy of it. The gap to the title is `Space.s12`.
+    static let glyphColumn: CGFloat = 26
     /// Inset of the inter-row hairline so it begins under the title, clearing the glyph column — the
     /// iOS grouped-list look (`.row + .row::before{left:49px}`). = rowHInset + glyph + gap.
     static let rowSeparatorInset: CGFloat = rowHInset + glyphColumn + Space.s12

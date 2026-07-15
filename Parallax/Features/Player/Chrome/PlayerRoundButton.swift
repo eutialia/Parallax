@@ -41,7 +41,7 @@ struct PlayerRoundButton: View {
                 // under the platter.
                 icon(color: focused ? .playerInk : .white)
                     .frame(width: size, height: size)
-                    .background(Circle().fill(.white.opacity(0.97)).opacity(focused ? 1 : 0))
+                    .background(Circle().fill(.white).opacity(focused ? 1 : 0))
                     .playerGlassSurface(in: Circle(), off: focused)
                     .animation(.tvFocusChrome, value: focused)
                     .contentShape(Circle())

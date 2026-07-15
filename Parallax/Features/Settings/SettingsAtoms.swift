@@ -135,7 +135,7 @@ struct ServerIdentityHero: View {
                     .foregroundStyle(Color.label)
             }
             #endif
-            VStack(spacing: 4) {
+            VStack(spacing: Space.s3) {
                 Text(name)
                     .font(.cardHeaderTitle)
                     .foregroundStyle(Color.label)
@@ -177,13 +177,25 @@ struct FormIntroHeader: View {
 
     @Environment(\.colorScheme) private var colorScheme
 
+    /// The intro title's base size. iOS keeps the handoff's 24pt; tvOS floors at 38 — `scaledFont`
+    /// preserves its base magnitude (it only rides the text style's Dynamic-Type ramp, not a platform
+    /// step-up), so without an explicit tvOS size this full-screen hero title rendered ~24pt at 10 feet,
+    /// dwarfed by the 34pt `cardHeaderTitle` used on sibling identity headers.
+    private var introTitleSize: CGFloat {
+        #if os(tvOS)
+        38
+        #else
+        24
+        #endif
+    }
+
     var body: some View {
         VStack(spacing: Space.s14) {
             BrandTile(glyph: glyph, size: 64, colorScheme: colorScheme)
                 .equatable()
-            VStack(spacing: 4) {
+            VStack(spacing: Space.s3) {
                 Text(title)
-                    .scaledFont(24, relativeTo: .title2, weight: .bold)
+                    .scaledFont(introTitleSize, relativeTo: .title2, weight: .bold)
                     .foregroundStyle(Color.label)
                 if let subtitle {
                     Text(subtitle)

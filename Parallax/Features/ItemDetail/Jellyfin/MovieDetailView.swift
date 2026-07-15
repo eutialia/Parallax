@@ -56,7 +56,10 @@ struct MovieDetailView: View {
                                         Task { await vm.toggleFavorite() }
                                     }
                                     CircleGlassButton(
-                                        systemImage: vm.isPlayed ? "checkmark.circle.fill" : "checkmark.circle",
+                                        // Rest = a BARE `checkmark` (symmetric with the bare heart); the
+                                        // active state fills to `checkmark.circle.fill`. The old resting
+                                        // `checkmark.circle` drew a ring inside the disc (double ring).
+                                        systemImage: vm.isPlayed ? "checkmark.circle.fill" : "checkmark",
                                         accessibilityLabel: vm.isPlayed ? "Watched" : "Mark Watched"
                                     ) { Task { await vm.togglePlayed() } }
                                 }

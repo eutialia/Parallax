@@ -40,7 +40,13 @@ struct PlayerGlassChip: View {
         chrome(
             Button(action: action) {
                 chipLabel(platter: isActive)
-                    .contentShape(Capsule())
+                    // Lift the ~36pt chip to the 44pt HIG tap minimum WITHOUT growing the glass
+                    // capsule: pad out, hit-test the padded rect, then reclaim the layout height with
+                    // negative padding (the SearchBar clear-button overflow pattern — the non-clipping
+                    // chip row still hit-tests the overflow band).
+                    .padding(.vertical, iOSHitSlop)
+                    .contentShape(.rect)
+                    .padding(.vertical, -iOSHitSlop)
             }
             .tvChipButton(),
             platter: isActive
@@ -50,6 +56,12 @@ struct PlayerGlassChip: View {
         .accessibilityLabel(accessibilityLabel)
         #endif
     }
+
+    #if !os(tvOS)
+    /// Vertical transparent padding that lifts the chip's tap target to the 44pt HIG minimum without
+    /// resizing the glass capsule (see the iOS branch of `body`). 0 once the chip is already ≥44pt.
+    private var iOSHitSlop: CGFloat { max(0, (44 - metrics.chipHeight) / 2) }
+    #endif
 
     /// tvOS shows the active chip on a frosted tinted-glass base (the platter is focus's);
     /// iOS has no focus engine, so active IS the platter and the tint base never applies.

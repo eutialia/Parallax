@@ -32,10 +32,11 @@ struct SettingsRowLabel: View {
     /// no-accent rule), just heavier weight in `Color.label`.
     var isAccent: Bool = false
 
-    private var isDisabled: Bool { accessory == .soon }
-
     private var titleColor: Color {
         if isDestructive { return Color.destructive }
+        // "Soon" rows read as unavailable via a dimmer TITLE, not a whole-row `.opacity` (which
+        // double-dimmed the already-quiet SoonBadge/glyph). Destructive still wins if ever combined.
+        if accessory == .soon { return Color.secondaryLabel }
         return Color.label
     }
 
@@ -65,7 +66,6 @@ struct SettingsRowLabel: View {
             }
             accessoryView
         }
-        .opacity(isDisabled ? 0.5 : 1)
         .padding(.horizontal, SettingsMetrics.rowHInset)
         .padding(.vertical, Space.s12)
         .frame(minHeight: SettingsListRow.rowMinHeight, alignment: .leading)
@@ -114,8 +114,10 @@ struct SettingsRowLabel: View {
 /// label + `.tvListRowButton()`.
 struct SettingsListRow: View {
     /// Leading glyph column width — the title's left edge sits one of these past the row inset, on every
-    /// row, so titles align down a card regardless of glyph.
-    static let glyphColumnWidth: CGFloat = 26
+    /// row, so titles align down a card regardless of glyph. Shares ONE constant with
+    /// `SettingsMetrics.glyphColumn` (which the hairline inset is derived from) so the glyph column and
+    /// the separator start can't drift.
+    static let glyphColumnWidth: CGFloat = SettingsMetrics.glyphColumn
     /// Row floor. iOS clamps a single-line row UP to the natural height of a two-line (title+subtitle)
     /// row so every row in a card reads one height; tvOS is taller for the 10-foot type.
     static var rowMinHeight: CGFloat {

@@ -16,10 +16,10 @@ struct MetadataRow<Item: Identifiable & Hashable, Content: View>: View {
         // to clear the lift on tvOS. iPhone/iPad have no focus lift, so they keep the tight gap.
         VStack(alignment: .leading, spacing: idiom == .tv ? Space.s22 : Space.s8) {
             Text(title)
-                // tvOS renders type a step larger than iOS at the same style; `.title2`
-                // dominated the shelf there, so drop the TV header to `.title3` (still a
-                // clear 10-foot heading) while iPhone/iPad keep `.title2`.
-                .font(idiom == .tv ? .title3.weight(.bold) : .title2.weight(.bold))
+                // The TV shelf header rides `cardHeaderTitle` (34pt bold) — a proper 10-foot heading
+                // that leads the shelf on the 5×-wider canvas; iPhone/iPad keep `.title2`. (The earlier
+                // `.title3` read ~20pt on tv, smaller than iPhone's header.)
+                .font(idiom == .tv ? .cardHeaderTitle : .title2.weight(.bold))
                 .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
                 .accessibilityAddTraits(.isHeader)
             ScrollView(.horizontal, showsIndicators: false) {
