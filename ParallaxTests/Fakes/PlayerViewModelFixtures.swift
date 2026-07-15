@@ -45,7 +45,7 @@ enum PlayerFixtures {
                 isFavorite: false
             )
         )
-        return .movie(MovieDetail(movie: movie, tagline: nil, studios: [], people: []))
+        return .movie(MovieDetail(movie: movie, tagline: nil, studios: [], directors: [], people: []))
     }
 
     static func movieDetailNamed(_ title: String, positionTicks: Int64 = 0) -> ItemDetail {
@@ -69,7 +69,7 @@ enum PlayerFixtures {
                 isFavorite: false
             )
         )
-        return .movie(MovieDetail(movie: movie, tagline: nil, studios: [], people: []))
+        return .movie(MovieDetail(movie: movie, tagline: nil, studios: [], directors: [], people: []))
     }
 
     /// A movie detail carrying chapter markers — for the `chapterFractions` memoization.
@@ -98,7 +98,7 @@ enum PlayerFixtures {
         let chapters = startsSeconds.enumerated().map { index, seconds in
             Chapter(index: index, name: "Chapter \(index + 1)", start: .seconds(seconds))
         }
-        return .movie(MovieDetail(movie: movie, tagline: nil, studios: [], people: [], chapters: chapters))
+        return .movie(MovieDetail(movie: movie, tagline: nil, studios: [], directors: [], people: [], chapters: chapters))
     }
 
     /// An episode `ItemDetail` (carries `seriesID`, so adjacency wiring applies).

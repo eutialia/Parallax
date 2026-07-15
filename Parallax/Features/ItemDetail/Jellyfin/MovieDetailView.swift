@@ -66,13 +66,13 @@ struct MovieDetailView: View {
                             }
                             .heroBandFrame(regularWidth: idiom.usesLandscapeHeroBand)
 
-                            // Overview + all metadata fold into one tappable info section that
-                            // opens the full card — and gives tvOS a focusable target below the
-                            // action row so the page scrolls (see `DetailInfoSection`). Stays
-                            // inside the tvOS title-safe region while the hero bleeds full-width.
+                            // The page has exactly two sections: the hero (above) and the open
+                            // ledger — overview + labeled metadata straight on the floor. The
+                            // overview block is the tvOS focus/scroll target below the action row.
+                            // Stays inside the tvOS title-safe region while the hero bleeds full-width.
                             let info = DetailInfo(movie: md)
                             if info.hasContent {
-                                DetailInfoSection(info: info)
+                                DetailMetadataSection(info: info)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .tvContentInset()
                             }

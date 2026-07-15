@@ -73,14 +73,14 @@ struct SeriesDetailView: View {
                             }
                             .heroBandFrame(regularWidth: idiom.usesLandscapeHeroBand)
 
-                            // Overview + genres fold into one tappable info section (full card on
-                            // tap); the season shelves stay below it. The section is focusable, so
+                            // Overview + genres render as the open ledger straight on the floor;
+                            // the season shelves stay below it. The overview block is focusable, so
                             // even a series with NO season shelf has a tvOS scroll target. Body +
                             // shelves stay inside the tvOS title-safe region while the hero bleeds.
                             let info = DetailInfo(series: sd)
                             VStack(alignment: .leading, spacing: Space.s22) {
                                 if info.hasContent {
-                                    DetailInfoSection(info: info)
+                                    DetailMetadataSection(info: info)
                                 }
                                 seasonEpisodeShelves(seasons: seasons, vm: vm)
                             }

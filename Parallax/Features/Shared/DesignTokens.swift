@@ -179,3 +179,10 @@ enum Space {
     static let s40: CGFloat = 40
     static let s60: CGFloat = 60
 }
+
+extension Animation {
+    /// The house "organic settle" spring for user-initiated reveals and snaps (hero carousel
+    /// page settle, detail overview expand). One token so the settle feel can't drift between
+    /// surfaces; call sites keep their own Reduce-Motion gating.
+    static let organicSettle = Animation.spring(response: 0.4, dampingFraction: 0.86)
+}

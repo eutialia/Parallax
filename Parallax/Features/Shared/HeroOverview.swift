@@ -89,26 +89,3 @@ extension AdaptiveHeroOverview {
         self.regularWidth = regularWidth
     }
 }
-
-// MARK: - Detail
-
-/// Full overview in detail scroll bodies — paragraph gaps on each Jellyfin `\n`, no line cap.
-struct DetailOverview: View {
-    let text: String
-
-    private var paragraphs: [String] { OverviewFormatting.paragraphs(from: text) }
-
-    var body: some View {
-        Group {
-            if paragraphs.count <= 1 {
-                Text(paragraphs.first ?? text)
-            } else {
-                VStack(alignment: .leading, spacing: Space.s12) {
-                    ForEach(Array(paragraphs.enumerated()), id: \.offset) { _, paragraph in
-                        Text(paragraph)
-                    }
-                }
-            }
-        }
-    }
-}

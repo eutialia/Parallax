@@ -60,61 +60,31 @@ struct DetailHeroMetadataRow: View {
 }
 
 /// Flat filled badge for a quality or accessibility label (4K, HDR, CC, …) — radius-7
-/// rounded rect + hairline, caption-bold, per the handoff. Two surfaces: `.artwork` keeps
-/// the dark fill + white ink the hero needs to stay legible over photography; `.flat` uses
-/// the neutral `fill` + adaptive ink for the info card's solid background.
+/// rounded rect + hairline, caption-bold, per the handoff. Dark `heroGlass` fill + white ink,
+/// so it stays legible over the hero's photography (its only home now the ledger is plain text).
 struct DetailMetadataBadge: View {
-    enum Surface { case artwork, flat }
-
     let label: String
     let accessibilityLabel: String
-    var surface: Surface = .artwork
 
-    init(label: String, accessibilityLabel: String? = nil, surface: Surface = .artwork) {
+    init(label: String, accessibilityLabel: String? = nil) {
         self.label = label
         self.accessibilityLabel = accessibilityLabel ?? label
-        self.surface = surface
     }
 
     var body: some View {
-        let onArtwork = surface == .artwork
         let shape = RoundedRectangle(cornerRadius: Radius.badge, style: .continuous)
         Text(label)
             .font(.caption2.weight(.bold))
-            .foregroundStyle(onArtwork ? Color.white : Color.label)
+            .foregroundStyle(Color.white)
             .padding(.horizontal, 7)
             .padding(.vertical, 4)
-            .background(onArtwork ? Color.heroGlass : Color.fill, in: shape)
-            .overlay(shape.strokeBorder(onArtwork ? Color.heroGlassBorder : Color.separator, lineWidth: 1))
+            .background(Color.heroGlass, in: shape)
+            .overlay(shape.strokeBorder(Color.heroGlassBorder, lineWidth: 1))
             .accessibilityLabel(accessibilityLabel)
     }
 }
 
-/// The fact line (year · runtime · ★rating · age-rating) plus quality / CC badges, for the
-/// expanded info card. The hero's `DetailHeroMetadataRow` paints white-on-photo; this variant
-/// uses the adaptive label tokens so it reads on the card's flat `Color.background`.
-struct DetailInfoFactsRow: View {
-    let facts: DetailMetadata
-
-    var body: some View {
-        if !facts.isEmpty {
-            HStack(spacing: Space.s8) {
-                if !facts.textParts.isEmpty {
-                    Text(facts.textParts.joined(separator: " · "))
-                        .font(.subheadline)
-                        .foregroundStyle(Color.secondaryLabel)
-                }
-                // Index-keyed, not `id: \.self` — quality labels can repeat and would collide.
-                ForEach(Array(facts.qualityLabels.enumerated()), id: \.offset) { DetailMetadataBadge(label: $0.element, surface: .flat) }
-                if facts.hasSubtitles {
-                    DetailMetadataBadge(label: "CC", accessibilityLabel: "Subtitles available", surface: .flat)
-                }
-            }
-        }
-    }
-}
-
-/// One labeled metadata block in the expanded info card. Genres render as a wrapping chip flow
+/// One labeled metadata block in the open-ledger metadata section. Genres render as a wrapping chip flow
 /// (short tokens read better as chips across the wide card); other lists are comma-joined text.
 struct DetailInfoFieldView: View {
     let field: DetailInfoField
@@ -131,7 +101,7 @@ struct DetailInfoFieldView: View {
                 }
             case .text:
                 Text(field.values.joined(separator: ", "))
-                    .font(.callout)
+                    .font(.detailProse)
                     .foregroundStyle(Color.label)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -139,9 +109,8 @@ struct DetailInfoFieldView: View {
     }
 }
 
-/// The small uppercase caption that heads a section/field in the detail info card (Overview,
-/// Genres, Studios, …). One source so the modal's overview header and the metadata-field labels
-/// can't drift.
+/// The small uppercase caption that heads a field in the open-ledger metadata section (Genres,
+/// Director, Studios, …). One source so every ledger label can't drift; sizes live in TypeScale.
 struct DetailSectionLabel: View {
     let text: String
 
@@ -149,53 +118,51 @@ struct DetailSectionLabel: View {
 
     var body: some View {
         Text(text)
-            .font(.footnote.weight(.semibold))
+            .font(.detailLedgerLabel)
             .textCase(.uppercase)
             .foregroundStyle(Color.secondaryLabel)
     }
 }
 
 #if DEBUG
-/// Badge parity: `.artwork` must stay legible over bright hero photography; `.flat` sits on
-/// the solid info-card floor. Render in both schemes to check the flat-fill contrast.
-#Preview("Metadata badges · artwork vs flat", traits: .sizeThatFitsLayout) {
-    VStack(spacing: 0) {
-        ZStack {
-            LinearGradient(
-                colors: [Color(red: 0.96, green: 0.93, blue: 0.86),
-                         Color(red: 0.82, green: 0.86, blue: 0.92)],
-                startPoint: .topLeading, endPoint: .bottomTrailing
-            )
-            HStack(spacing: 6) {
-                DetailMetadataBadge(label: "4K")
-                DetailMetadataBadge(label: "HDR")
-                DetailMetadataBadge(label: "CC", accessibilityLabel: "Subtitles available")
-            }
-        }
-        .frame(height: 110)
+/// Badge legibility: the dark `heroGlass` fill + white ink must stay readable over bright hero
+/// photography (its only surface now the ledger renders metadata as plain text).
+#Preview("Metadata badges · over artwork", traits: .sizeThatFitsLayout) {
+    ZStack {
+        LinearGradient(
+            colors: [Color(red: 0.96, green: 0.93, blue: 0.86),
+                     Color(red: 0.82, green: 0.86, blue: 0.92)],
+            startPoint: .topLeading, endPoint: .bottomTrailing
+        )
         HStack(spacing: 6) {
-            DetailMetadataBadge(label: "4K", surface: .flat)
-            DetailMetadataBadge(label: "HDR", surface: .flat)
-            DetailMetadataBadge(label: "CC", accessibilityLabel: "Subtitles available", surface: .flat)
+            DetailMetadataBadge(label: "4K")
+            DetailMetadataBadge(label: "HDR")
+            DetailMetadataBadge(label: "CC", accessibilityLabel: "Subtitles available")
         }
-        .frame(maxWidth: .infinity)
-        .frame(height: 110)
-        .background(Color.background)
     }
-    .frame(width: 360)
+    .frame(width: 360, height: 110)
 }
 #endif
 
-/// A filled capsule token for a short metadata value (a genre) in the info card.
+/// A filled capsule token for a short metadata value (a genre) in the ledger. tvOS pads wider so
+/// the chip breathes at 10 feet; the text sizes live in TypeScale (`detailChip`).
 private struct MetadataChip: View {
     let text: String
 
     var body: some View {
         Text(text)
-            .font(.subheadline)
+            .font(.detailChip)
             .foregroundStyle(Color.label)
-            .padding(.horizontal, Space.s12)
-            .padding(.vertical, Space.s8)
+            .padding(.horizontal, chipHPadding)
+            .padding(.vertical, chipVPadding)
             .background(Color.fill, in: Capsule())
     }
+
+    #if os(tvOS)
+    private var chipHPadding: CGFloat { Space.s18 }
+    private var chipVPadding: CGFloat { Space.s12 }
+    #else
+    private var chipHPadding: CGFloat { Space.s12 }
+    private var chipVPadding: CGFloat { Space.s8 }
+    #endif
 }

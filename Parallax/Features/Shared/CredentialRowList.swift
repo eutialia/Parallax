@@ -96,7 +96,7 @@ struct CredentialRowList: View {
 /// syncs back to the row's binding; the keyboard's Done commits and returns to the form.
 ///
 /// NOT unit-tested: keyboard presentation depends on the focus engine and the physical remote, which
-/// the simulator doesn't reproduce — verified on device, like `TVRemoteInputView` / `FocusableScrollText`.
+/// the simulator doesn't reproduce — verified on device, like `TVRemoteInputView`.
 private struct CredentialKeyboardHost: UIViewControllerRepresentable {
     let rows: [CredentialRow]
     @Binding var focusRequest: Int?

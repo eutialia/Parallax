@@ -129,6 +129,8 @@ struct DTOMappingTests {
         #expect(movieDetail.studios == ["Warner Bros.", "Village Roadshow"])
         #expect(movieDetail.people.contains("Lana Wachowski"))
         #expect(movieDetail.people.contains("Keanu Reeves"))
+        // Directors are extracted from the typed people list (`PersonKind.director`).
+        #expect(movieDetail.directors == ["Lana Wachowski"])
     }
 
     @Test("BaseItemDto with two chapters maps to MovieDetail with 2 Chapters (names + start offsets)")

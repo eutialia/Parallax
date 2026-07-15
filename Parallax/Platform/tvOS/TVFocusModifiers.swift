@@ -217,6 +217,33 @@ struct TVQuietButtonStyle: ButtonStyle {
     }
 }
 
+/// The quiet READING-surface focus platter (detail overview block and its no-prose fallback):
+/// `Color.fill` + an inset 1pt `Color.separator` hairline crossfading on the shared
+/// `.tvFocusChrome` curve — NO lift/scale and NO white inversion (contrast `TVFocusListRowModifier`),
+/// so a focused text region reads as gently lit, not a jumping control. Inner padding breathes the
+/// platter past the content; the matching negative outer padding keeps the text column on the page
+/// edge. Lives here with the other focus chrome so a timing/geometry revisit can't miss it.
+struct TVQuietReadingPlatter: ViewModifier {
+    let focused: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .padding(.vertical, Space.s16)
+            .padding(.horizontal, Space.s18)
+            .background {
+                let shape = RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
+                ZStack {
+                    shape.fill(Color.fill)
+                    shape.inset(by: 1).stroke(Color.separator, lineWidth: 1)
+                }
+                .opacity(focused ? 1 : 0)
+                .animation(.tvFocusChrome, value: focused)
+            }
+            .padding(.vertical, -Space.s16)
+            .padding(.horizontal, -Space.s18)
+    }
+}
+
 /// Paints a grouped-list row's focus platter (see `tvFocusListRow()`). Reads the enclosing Button's
 /// focus via `TVFocusReader`, fades in an opaque white rounded fill BEHIND the row content, and
 /// flips `colorScheme` to `.light` on focus so the content inverts to ink-on-white. The platter is

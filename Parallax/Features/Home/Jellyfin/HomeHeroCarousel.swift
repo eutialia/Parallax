@@ -234,7 +234,7 @@ struct HomeHeroCarousel: View {
     private func commit(to target: Int) {
         // Reduce Motion: jump the artwork and swap the foreground instantly — the full-bleed crossfade
         // is the largest motion on Home, so it must not animate (mirrors the parallax/pill gating above).
-        withAnimation(reduceMotion ? nil : .spring(response: 0.4, dampingFraction: 0.86)) { position = Double(target) }
+        withAnimation(reduceMotion ? nil : .organicSettle) { position = Double(target) }
         withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.22)) {
             isDragging = false
             displayedPage = target

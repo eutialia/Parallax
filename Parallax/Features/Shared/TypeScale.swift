@@ -97,6 +97,50 @@ extension Font {
         .subheadline
         #endif
     }
+
+    // MARK: Detail-page open ledger (DetailMetadataSection / ItemDetailComponents)
+
+    /// Detail prose: overview body, tagline, placeholder, AND the ledger's Director/Studios/Cast
+    /// values — one size so the reading column and its values can't drift apart. tvOS 26 (the
+    /// design's detail body, between Caption 1 and Body). iOS `.callout`.
+    static var detailProse: Font {
+        #if os(tvOS)
+        .system(size: 26, weight: .regular)
+        #else
+        .callout
+        #endif
+    }
+
+    /// Uppercase caption heading a ledger field (GENRES, DIRECTOR, …). tvOS 19 — the design pins
+    /// this caption tier BELOW the 23pt floor on purpose (de-emphasized beside 26pt values);
+    /// revisit against the floor doctrine above if it reads dim from the couch. iOS `.footnote`
+    /// semibold.
+    static var detailLedgerLabel: Font {
+        #if os(tvOS)
+        .system(size: 19, weight: .semibold)
+        #else
+        .footnote.weight(.semibold)
+        #endif
+    }
+
+    /// A genre chip's token text. tvOS `Caption 2` (the 23pt floor). iOS `.subheadline`.
+    static var detailChip: Font {
+        #if os(tvOS)
+        .system(size: 23, weight: .regular)
+        #else
+        .subheadline
+        #endif
+    }
+
+    /// The overview's More/Less affordance caption. tvOS `Caption 2` semibold. iOS `.footnote`
+    /// semibold (weight-not-color affordance).
+    static var detailAffordance: Font {
+        #if os(tvOS)
+        .system(size: 23, weight: .semibold)
+        #else
+        .footnote.weight(.semibold)
+        #endif
+    }
 }
 
 private struct ScaledFont: ViewModifier {
