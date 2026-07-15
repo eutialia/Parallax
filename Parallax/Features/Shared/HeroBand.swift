@@ -14,13 +14,21 @@ import ParallaxCore
 ///    composited WITH the artwork into the layer that carries the sidebar extension (below) — so
 ///    the `backgroundExtensionEffect` reflection mirrors artwork AND veil together and the mirrored
 ///    sidebar strip darkens in lockstep with the main side (no luminance seam at the boundary).
-///  • **Artwork-bound transforms** (clip, parallax offset, stretch scale) ride the `artwork` slot:
-///    parallax/stretch move the image while the legibility veil + title/actions stay put — that
+///  • **Artwork-bound transforms** (bottom clip, parallax offset) ride the `artwork` slot: the
+///    parallax moves the image while the legibility veil + title/actions stay put — that
 ///    differential IS the parallax. The caller bakes them into whatever it hands the slot (a plain
-///    `HeroBandImage` on detail; the transformed `CrossfadeArtwork` on Home).
+///    `HeroBandImage` on detail; the parallaxed `CrossfadeArtwork` on Home).
 ///  • **Sidebar extension** (`heroBandExtension`, iPad-only) is owned HERE, wrapping the
 ///    artwork+legibility composite so the mirror carries the veil. The foreground column stays
 ///    OUTSIDE it (Apple's Landmarks rule: extend the artwork under the sidebar, never the title).
+///  • **Pull-down stretch** (`scroll:`, Home-only) is owned HERE too, and MUST wrap the composite
+///    one layer OUTSIDE the sidebar extension: `backgroundExtensionEffect` clips its content to
+///    bounds (documented — "will clip the view to prevent copies from overlapping"), so a stretch
+///    applied inside the `artwork` slot gets its upward overpaint amputated on iPad and the
+///    rubber-band gap shows the app background above the band. That exact exposure shipped twice
+///    (pre-4be53be: no stretch at all; 56bae0b: extension moved outside the slot's stretch), which
+///    is why the ordering is now structural instead of a call-site convention. Regression check:
+///    the "pull-down stretch" previews below — magenta above the artwork means it's back.
 ///  • **Foreground-bound** (`.id` + `.transition`) ride the `foreground` slot — Home hides the
 ///    column while dragging while the artwork keeps crossfading underneath.
 ///  • **Band-wrapping** (pan gesture, `onMoveCommand`, page dots) wrap the whole band at the Home
@@ -42,6 +50,11 @@ import ParallaxCore
 /// veil used to cause (raw-bright mirror beside a darkened main side); compositing the veil into the
 /// extension-sampled layer (see body) fixes that one. Details: memory `ipad-sidebar-pane-rim`.
 struct HeroBand<Artwork: View, Foreground: View>: View {
+    /// Scroll channel driving the pull-down stretch zoom (Home passes its `HeroScrollState`;
+    /// the detail headers pass nothing — their band doesn't stretch). The same state also
+    /// drives the parallax, but that lives inside the `artwork` slot: the veil must NOT lag
+    /// with the artwork, while the stretch scales artwork AND veil together.
+    var scroll: HeroScrollState? = nil
     @ViewBuilder var artwork: () -> Artwork
     @ViewBuilder var foreground: () -> Foreground
 
@@ -59,20 +72,69 @@ struct HeroBand<Artwork: View, Foreground: View>: View {
             // differential is unchanged. The tall poster band gets a full-width bottom fade; the
             // wide landscape band gets a corner-focused glow so the darkening sits on the bottom-
             // leading text, not the empty right side.
-            ZStack(alignment: .bottomLeading) {
-                artwork()
-                if idiom == .compact {
-                    HeroBottomFade()
-                } else {
-                    HeroCornerFade()
+            HeroStretchLayer(
+                scroll: scroll,
+                content: ZStack(alignment: .bottomLeading) {
+                    artwork()
+                    if idiom == .compact {
+                        HeroBottomFade()
+                    } else {
+                        HeroCornerFade()
+                    }
                 }
-            }
-            .heroBandExtension(regularWidth: idiom.usesLandscapeHeroBand)
+                .heroBandExtension(regularWidth: idiom.usesLandscapeHeroBand)
+            )
             .allowsHitTesting(false)
             // Foreground (title/actions) stays OUTSIDE the extension — Apple's Landmarks rule:
             // extend the artwork under the sidebar, never the title/buttons.
             foreground()
                 .heroForegroundPlacement(idiom: idiom)
+        }
+    }
+}
+
+/// Reference-type carrier for the hero's per-frame scroll adjustment. An `@Observable` class
+/// (rather than a value passed down the view tree) so a scroll write invalidates only the views
+/// that READ `adjustment` — `HeroStretchLayer` and Home's `HeroScrollArtwork` — leaving the
+/// screen's body and the band's foreground (title, actions, page dots) untouched on a scroll frame.
+@Observable
+@MainActor
+final class HeroScrollState {
+    /// Signed scroll adjustment (pt): positive = pull-down rubber-band (stretch zoom),
+    /// negative = scrolled into the feed (parallax lag), 0 at rest. The two effects are
+    /// mutually exclusive by sign.
+    var adjustment: CGFloat
+
+    init(adjustment: CGFloat = 0) {
+        self.adjustment = adjustment
+    }
+}
+
+/// Applies the pull-down stretch zoom to the band's artwork+veil+extension composite. Two
+/// load-bearing placement rules, both regression-tested by the "pull-down stretch" previews:
+///
+///  1. OUTSIDE `heroBandExtension`: `backgroundExtensionEffect` clips its content to bounds, so
+///     any transform that must paint past the band — the stretch's upward overpaint that covers
+///     the rubber-band gap — has to sit outside it, or the gap exposes the app background
+///     (the twice-shipped bug; last via 56bae0b).
+///  2. Render-only (`visualEffect`, which also supplies the band height): the stretch must never
+///     feed scroll geometry back into layout — that loop opened the gap-that-snaps-shut of the
+///     June '26 offset-math hero (f4b64b3).
+///
+/// `adjustment` is read HERE, not in `HeroBand.body`, and `content` is a stored value — so a
+/// per-frame scroll write re-evaluates only this wrapper and re-renders the composite, without
+/// rebuilding the artwork/foreground view trees.
+private struct HeroStretchLayer<Content: View>: View {
+    let scroll: HeroScrollState?
+    let content: Content
+
+    var body: some View {
+        let adjustment = scroll?.adjustment ?? 0
+        content.visualEffect { effect, geometry in
+            effect.scaleEffect(
+                HeroMetrics.stretchScale(forScrollAdjustment: adjustment, bandHeight: geometry.size.height),
+                anchor: .bottom
+            )
         }
     }
 }
@@ -101,7 +163,8 @@ enum HeroMetrics {
     /// Stretch-zoom scale for a pull-down rubber-band: the artwork grows from its bottom
     /// edge to fill the gap. Only the positive side scales — the scrolled-down side
     /// belongs to `parallaxShift`; the two effects are mutually exclusive by sign.
-    static func stretchScale(forScrollAdjustment value: CGFloat, bandHeight: CGFloat) -> CGFloat {
+    /// `nonisolated`: pure math, called from `HeroStretchLayer`'s `@Sendable` render closure.
+    nonisolated static func stretchScale(forScrollAdjustment value: CGFloat, bandHeight: CGFloat) -> CGFloat {
         guard bandHeight > 0 else { return 1 }
         return 1 + max(0, value) / bandHeight
     }
@@ -318,6 +381,48 @@ extension View {
 }
 #endif
 
+
+/// Permanent regression diagnostic for the pull-down stretch — the twice-shipped "background
+/// exposed above the hero" bug. A frozen mid-pull frame: the band has travelled down 120pt with
+/// the rubber-band (`offset`) and `scroll.adjustment` carries the same 120, exactly the state
+/// mid-gesture. The magenta floor stands in for `Color.background`: ANY magenta above the
+/// artwork's top edge = the regression (something between the stretch and the screen is clipping
+/// the overpaint — in 56bae0b it was `backgroundExtensionEffect`, which clips to bounds).
+/// Regular is the case that regressed: the extension only engages on iPad.
+#Preview("HeroBand · pull-down stretch (regular)", traits: .fixedLayout(width: 900, height: 660)) {
+    ZStack(alignment: .top) {
+        Color(red: 1, green: 0, blue: 0.6).ignoresSafeArea()
+        HeroBand(scroll: HeroScrollState(adjustment: 120)) {
+            LinearGradient(
+                colors: [Color(red: 0.10, green: 0.16, blue: 0.36),
+                         Color(red: 0.02, green: 0.36, blue: 0.44)],
+                startPoint: .top, endPoint: .bottom
+            )
+        } foreground: {
+            PreviewHeroForeground(regularWidth: true)
+        }
+        .heroBandFrame(regularWidth: true)
+        .offset(y: 120)
+    }
+    .environment(\.appIdiom, .regular)
+}
+
+#Preview("HeroBand · pull-down stretch (compact)", traits: .fixedLayout(width: 393, height: 720)) {
+    ZStack(alignment: .top) {
+        Color(red: 1, green: 0, blue: 0.6).ignoresSafeArea()
+        HeroBand(scroll: HeroScrollState(adjustment: 120)) {
+            LinearGradient(
+                colors: [Color(red: 0.10, green: 0.16, blue: 0.36),
+                         Color(red: 0.02, green: 0.36, blue: 0.44)],
+                startPoint: .top, endPoint: .bottom
+            )
+        } foreground: {
+            PreviewHeroForeground(regularWidth: false)
+        }
+        .heroBandFrame(regularWidth: false)
+        .offset(y: 120)
+    }
+}
 
 /// Worst-case artwork for scrim verification: near-white sky with bright high-frequency
 /// detail in the bottom-leading corner — exactly where the foreground column sits. If the

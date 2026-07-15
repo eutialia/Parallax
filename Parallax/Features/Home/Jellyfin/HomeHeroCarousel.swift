@@ -18,10 +18,11 @@ struct HomeHeroCarousel: View {
     let session: Session
     let viewModel: HomeViewModel
     /// Scroll channel from the Home `ScrollView`'s geometry, held as a reference type so a per-frame
-    /// write invalidates ONLY `HeroScrollArtwork` (which reads `adjustment` to drive the
-    /// parallax/stretch transforms) and never this carousel's foreground. `adjustment` is signed:
-    /// positive = pull-down rubber-band (stretchy zoom), negative = scrolled into the feed
-    /// (half-speed parallax lag), 0 at rest — the two effects are mutually exclusive by sign.
+    /// write invalidates ONLY its two readers — `HeroScrollArtwork` (parallax offset, inside the
+    /// artwork slot) and `HeroBand`'s `HeroStretchLayer` (pull-down stretch, outside the sidebar
+    /// extension) — and never this carousel's foreground. `adjustment` is signed: positive =
+    /// pull-down rubber-band (stretchy zoom), negative = scrolled into the feed (half-speed
+    /// parallax lag), 0 at rest — the two effects are mutually exclusive by sign.
     let scroll: HeroScrollState
 
     @Environment(PlaybackPresenter.self) private var playback
@@ -66,15 +67,18 @@ struct HomeHeroCarousel: View {
     }
 
     private func content(size: CGSize) -> some View {
-        HeroBand {
+        // `scroll` feeds two layers of `HeroBand`: the parallax rides the artwork slot below
+        // (under the legibility veil, so the veil stays put), while the pull-down STRETCH is
+        // owned by `HeroBand` itself — it must apply outside the sidebar extension, which clips
+        // to bounds (see `HeroStretchLayer`; regressed twice as "background exposed on pull-down").
+        HeroBand(scroll: scroll) {
             // ARTWORK-BOUND transforms ride the slot, UNDER the legibility veil (see `HeroBand`'s
-            // doc): the parallax/stretch transforms live inside `HeroScrollArtwork` so the per-frame
+            // doc): the parallax offset lives inside `HeroScrollArtwork` so the per-frame
             // `scroll.adjustment` re-evaluates ONLY that wrapper — the foreground (title, actions,
             // dots) below is insulated and never rebuilds on a scroll frame. The sidebar extension
             // and the legibility veil are both owned by `HeroBand`, one layer out.
             HeroScrollArtwork(
                 scroll: scroll,
-                bandHeight: size.height,
                 position: position,
                 entries: entries,
                 session: session,
@@ -238,27 +242,21 @@ struct HomeHeroCarousel: View {
     }
 }
 
-/// Reference-type carrier for the Home hero's per-frame scroll adjustment. An `@Observable` class
-/// (rather than a value passed down the view tree) so a scroll write invalidates only the view that
-/// READS `adjustment` — `HeroScrollArtwork` — leaving `HomeView`'s body and the carousel's
-/// foreground (title, actions, page dots) untouched on a scroll frame. See `HeroScrollArtwork`.
-@Observable
-@MainActor
-final class HeroScrollState {
-    var adjustment: CGFloat = 0
-}
-
-/// The hero's artwork layer plus its scroll-driven transforms, split out so the per-frame
+/// The hero's artwork layer plus its scroll-driven PARALLAX, split out so the per-frame
 /// `HeroScrollState.adjustment` writes re-evaluate ONLY this wrapper — the carousel's foreground is
 /// insulated and never rebuilds on a scroll frame (the dead per-frame work this split removes; on
 /// iOS that included reloading the foreground's logo image every frame the parallax was live). The
-/// transforms are render-only (offset/scale), so they can't feed scroll geometry back into layout
-/// (the trap that killed the June '26 offset-math hero, f4b64b3). Reduce Motion and tvOS
-/// (focus-driven, full-viewport scroll) both zero the parallax; the stretch only acts on a pull-down.
+/// transform is render-only (offset), so it can't feed scroll geometry back into layout (the trap
+/// that killed the June '26 offset-math hero, f4b64b3). Reduce Motion and tvOS (focus-driven,
+/// full-viewport scroll) both zero the parallax.
+///
+/// The pull-down STRETCH deliberately does NOT live here: its overpaint must survive past the
+/// band's top edge, and `HeroBand` composites this slot inside `backgroundExtensionEffect`, which
+/// clips its content to bounds — a stretch applied in this slot gets amputated on iPad and the
+/// rubber-band gap shows the app background (the 56bae0b regression). `HeroBand` owns the stretch,
+/// one layer OUTSIDE the extension (`HeroStretchLayer`).
 private struct HeroScrollArtwork: View {
     let scroll: HeroScrollState
-    /// Band height only (the stretch-zoom divisor) — the wrapper doesn't need the full size.
-    let bandHeight: CGFloat
     let position: Double
     let entries: [HomeHeroFeedEntry]
     let session: Session
@@ -268,24 +266,15 @@ private struct HeroScrollArtwork: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        let adjustment = scroll.adjustment
         let parallax = (reduceMotion || idiom == .tv)
-            ? 0 : HeroMetrics.parallaxShift(forScrollAdjustment: adjustment)
+            ? 0 : HeroMetrics.parallaxShift(forScrollAdjustment: scroll.adjustment)
         return CrossfadeArtwork(position: position, entries: entries, session: session, regularWidth: regularWidth)
             .offset(y: parallax)
             // Bottom-only clip: the lagging artwork must not slide over the shelves below (the parent
-            // ScrollView is `.scrollClipDisabled`), but the top and sides stay open — the stretch zoom
-            // paints up past the band, and the leading edge stays un-amputated so HeroBand's
+            // ScrollView is `.scrollClipDisabled`), but the sides stay open so HeroBand's
             // `backgroundExtensionEffect` (applied to the artwork+veil composite, one layer out) can
-            // sample it under the sidebar; a plain `.clipped()` would cut both.
+            // sample the leading edge under the sidebar; a plain `.clipped()` would amputate it.
             .clipShape(BottomBoundedRect())
-            // Stretchy hero: a pull-down zooms the artwork up from its bottom edge. Only the artwork
-            // scales — the title/actions stay put. Applied AFTER the clip so the stretch still paints
-            // past the band (parallax is 0 whenever the stretch is non-zero).
-            .scaleEffect(
-                HeroMetrics.stretchScale(forScrollAdjustment: adjustment, bandHeight: bandHeight),
-                anchor: .bottom
-            )
     }
 }
 
@@ -342,9 +331,8 @@ private struct CrossfadeArtwork: View, Animatable {
 }
 
 /// The parallax clip: closed at the band's bottom edge, effectively unbounded on the
-/// top and sides. See the call-site comment — a symmetric `.clipped()` would cut the
-/// stretch zoom's upward overflow and amputate the leading edge that HeroBand's sidebar
-/// `backgroundExtensionEffect` samples.
+/// top and sides. See the call-site comment — a symmetric `.clipped()` would amputate the
+/// leading edge that HeroBand's sidebar `backgroundExtensionEffect` samples.
 private struct BottomBoundedRect: Shape {
     func path(in rect: CGRect) -> Path {
         Path(CGRect(x: rect.minX - 10_000, y: rect.minY - 10_000,
