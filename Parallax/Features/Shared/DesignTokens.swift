@@ -89,13 +89,9 @@ extension Color {
     // (espresso fill / cream label) — used everywhere including over hero photography.
     static let buttonFill         = Color(light: 0x2A241D, dark: 0xFFFFFF)
     static let buttonLabel        = Color(light: 0xF7F2EA, dark: 0x0A0A0C)
-    /// The hero/detail Play pill LABEL — pure white over the espresso pill by day, ink over the
-    /// white pill by night (approved against the "Action row parity" prototype; owner-confirmed
-    /// intentional 2026-07-14 — the always-white Play label is a design choice, NOT a drift from
-    /// `buttonLabel`). It differs from `buttonLabel` only in light (white, not cream), so it earns
-    /// its own token; the FILL is just `buttonFill` (espresso/white), which is why the pill no
-    /// longer branches on colorScheme.
-    static let playPillLabel      = Color(light: 0xFFFFFF, dark: 0x0A0A0C)
+    // The hero/detail Play pill has NO tokens here on purpose: it is theme-FIXED white + `playerInk`
+    // in both themes (owner directive 2026-07-14 — it rides artwork and must not flip with the app
+    // theme). See PrimaryPlayButton.swift.
     /// Selected-chip glass tint (the library header chips' `.tint` when a genre is
     /// applied). Translucent on purpose: at the old 0.92 the tint was effectively opaque,
     /// so the "glass" chip read as flat paint — and on tvOS a solid white chip is the

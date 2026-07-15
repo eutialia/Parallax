@@ -1,9 +1,11 @@
 import SwiftUI
 
 /// Primary action over hero/detail artwork — a FLAT solid pill (Liquid Glass is reserved for the
-/// player + system bars). The fill flips with the face: espresso pill + white label by day, white
-/// pill + ink label by night. On tvOS it inverts to the HIG white platter + ink on focus, with the
-/// `tvChipButton()` lift. Label patterns: "Play", "Resume · 1h 02m left", "Resume S3 E1".
+/// player + system bars). ALWAYS a white pill + ink label, in BOTH themes (owner directive
+/// 2026-07-14): the pill rides artwork — a dark-pinned region like `heroGlass` — so it must not
+/// flip with the app theme (the old espresso-by-day face read as a hole in the hero). On tvOS
+/// focus keeps the same white; the `tvChipButton()` lift + focus shadow carry the state, exactly
+/// as dark mode always behaved. Label patterns: "Play", "Resume · 1h 02m left", "Resume S3 E1".
 struct PrimaryPlayButton: View {
     let title: String
     var systemImage: String = "play.fill"
@@ -33,16 +35,15 @@ struct PrimaryPlayButton: View {
 
     @ViewBuilder
     private func content(focused: Bool) -> some View {
-        // No colorScheme branch: the fill is `buttonFill` (espresso by day / white by night) and the
-        // label is `playPillLabel` (white / ink) — both two-faced tokens, so the pill resolves per
-        // appearance without reading the environment.
+        // Theme-FIXED white/ink, like the player vocabulary — no two-faced tokens, no colorScheme
+        // read. Rest and tvOS-focused fills are both white; focus reads through lift + shadow.
         labelStack
             .font(.headline)
-            .foregroundStyle(focused ? Color.playerInk : Color.playPillLabel)
+            .foregroundStyle(Color.playerInk)
             .padding(.horizontal, Space.s22)
             .frame(height: ActionRow.controlHeight(idiom))
             .frame(maxWidth: fillWidth ? .infinity : nil)
-            .flatControlFill(focused: focused, rest: Color.buttonFill, in: Capsule())
+            .flatControlFill(focused: focused, rest: .white, in: Capsule())
     }
 
     /// The label, optionally reserving the widest copy's width behind the live title so the pill
