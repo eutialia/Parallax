@@ -27,7 +27,6 @@ struct SMBLoginView: View {
     @State private var showPassword = false
     #endif
 
-    @State private var isConnecting = false
     @State private var connectionError: String?
 
     /// The live lister handed to the share selector AFTER a successful enumeration.
@@ -42,6 +41,25 @@ struct SMBLoginView: View {
     /// CANCEL it — without a handle the connect was fire-and-forget and couldn't be stopped, so a
     /// slow/dead host wedged the spinner with no way out.
     @State private var connectTask: Task<Void, Never>?
+    /// UI-level failsafe over the whole connect attempt. The lister already hard-bounds every
+    /// AMSMB2 call, yet a device run still spun forever — so the attempt is ALSO bounded here,
+    /// above every layer this view awaits. Runs on the MainActor: if IT doesn't fire either, the
+    /// main actor itself is wedged (which the ticking elapsed counter makes visible).
+    @State private var watchdogTask: Task<Void, Never>?
+    /// When the in-flight attempt started — drives the elapsed counter AND is the single source
+    /// of the connecting state: `isConnecting` derives from it, so "connecting with no start
+    /// time" is unrepresentable and every exit path resets ONE value.
+    @State private var connectStartedAt: Date?
+    /// Diagnostic breadcrumb: the last stage the connect attempt reached, surfaced by the
+    /// watchdog's DEBUG error message. Reference-typed on purpose — stage transitions are
+    /// diagnostics, not display state, so writing them must not invalidate the form's view tree.
+    @State private var diagnostics = ConnectDiagnostics()
+    /// Incremented on Connect; `CredentialRowList` resigns any stale hidden-field first responder
+    /// when it moves (see the sweep rationale there).
+    @State private var fieldSweep = 0
+
+    /// The form is mid-attempt. Derived — see `connectStartedAt`.
+    private var isConnecting: Bool { connectStartedAt != nil }
 
     #if !os(tvOS)
     /// Return-key field walk: return advances to the next field, "go" on the last (password) connects.
@@ -85,6 +103,19 @@ struct SMBLoginView: View {
                 }
 
                 connectButton
+
+                // Live elapsed counter while connecting. Doubles as a diagnostic: it ticks on the
+                // MainActor, so a counter that FREEZES mid-attempt means the main actor is wedged
+                // (spinners keep animating in the render server and prove nothing).
+                if let startedAt = connectStartedAt {
+                    TimelineView(.periodic(from: startedAt, by: 1)) { context in
+                        let elapsed = max(0, Int(context.date.timeIntervalSince(startedAt)))
+                        Text("Connecting… \(elapsed)s")
+                            .font(.footnote)
+                            .foregroundStyle(Color.secondaryLabel)
+                            .monospacedDigit()
+                    }
+                }
             }
         }
         #if !os(tvOS)
@@ -95,9 +126,11 @@ struct SMBLoginView: View {
             deps.smbDiscovery.start()
         }
         #endif
-        // Cancel any in-flight connection test when leaving the form (Menu/Back) so a slow or dead
-        // host's attempt is torn down instead of completing into a dismissed view.
-        .onDisappear { connectTask?.cancel() }
+        // Tear down any in-flight connection test when leaving the form (Menu/Back, or a tab
+        // switch away) — a full reset, not just task cancellation: a cancelled task's early
+        // returns skip the epilogue, and a bare cancel left `connectStartedAt` set, so switching
+        // tabs mid-connect and back showed a stale Cancel+spinner with no live task behind it.
+        .onDisappear { cancelConnect() }
         .navigationDestination(isPresented: $showShareSelector) {
             if let lister = pendingLister {
                 SMBShareSelectionView(
@@ -143,7 +176,7 @@ struct SMBLoginView: View {
         #if os(tvOS)
         // No last-field auto-connect: tvOS's system keyboard Done returns to the form, and the
         // always-present Connect button submits (gated to a complete form).
-        CredentialRowList(rows: credentialRows)
+        CredentialRowList(rows: credentialRows, sweepToken: fieldSweep)
         #else
         connectionFieldsSection
         #endif
@@ -166,6 +199,8 @@ struct SMBLoginView: View {
                 CredentialFieldRow(icon: "externaldrive.badge.wifi") {
                     HStack(spacing: 0) {
                         Text("smb://").foregroundStyle(Color.tertiaryLabel)
+                        // Placeholder must read as an OBVIOUS example: a plausible real-looking
+                        // hostname here ("mynas.local") was mistaken for a LAN-discovered value.
                         TextField("mynas.local", text: $host)
                             .keyboardType(.URL)
                             .textInputAutocapitalization(.never)
@@ -212,14 +247,14 @@ struct SMBLoginView: View {
     /// land (the just-appeared Cancel doesn't receive it), so the D-pad goes dead and Menu can't pop —
     /// the reported freeze. Keeping a single button with a STABLE identity means focus never moves: it
     /// stays focusable while connecting and tapping it cancels, so there's always a live focus target
-    /// and a way out. The label shows the shared working spinner (the `formActionLabel` idiom) so the
-    /// in-flight state still reads.
+    /// and a way out. While working, `formActionLabel` keeps the "Cancel" title VISIBLE beside the
+    /// spinner — hidden, the in-flight button read as a frozen blank pill on Apple TV.
     private var connectButton: some View {
         Button {
             if isConnecting { cancelConnect() } else { connect() }
         } label: {
             Text(isConnecting ? "Cancel" : "Connect")
-                .formActionLabel(.solid, isWorking: isConnecting)
+                .formActionLabel(isWorking: isConnecting)
         }
         .formActionButton(.solid)
         // Disabled ONLY when idle with an incomplete form — never while connecting, or focus is
@@ -234,7 +269,11 @@ struct SMBLoginView: View {
         let trimUser = username.trimmingCharacters(in: .whitespaces)
 
         connectionError = nil
-        isConnecting = true
+        connectStartedAt = Date()
+        diagnostics.stage = "queued"
+        // Release any hidden credential field tvOS left as first responder — the prime suspect
+        // for Menu presses dying during a connect (see CredentialRowList's sweep rationale).
+        fieldSweep += 1
 
         // Capture to avoid closing over @State bindings inside the Task.
         let capturedPassword = password
@@ -245,6 +284,7 @@ struct SMBLoginView: View {
         // resurrects the spinner or pushes the share selector over a dismissed view.
         connectTask?.cancel()
         connectTask = Task {
+            diagnostics.stage = "task-started"
             let lister = AMSMB2Lister(
                 host: trimHost,
                 username: trimUser,
@@ -252,8 +292,21 @@ struct SMBLoginView: View {
                 domain: capturedDomain
             )
             do {
+                diagnostics.stage = "listing-shares"
                 let shares = try await lister.listShares()
+                diagnostics.stage = "listed(\(shares.count))"
                 guard !Task.isCancelled else { await lister.disconnect(); return }
+                // A server can enumerate ZERO visible shares (everything hidden/admin —
+                // `listShares` filters `$` shares). Pushing the picker then strands the tvOS
+                // focus engine on a screen whose only control is the disabled Add button — no
+                // focusable element, dead remote. Surface it as an inline error instead.
+                guard !shares.isEmpty else {
+                    await lister.disconnect()
+                    connectionError = "\(trimHost) has no shares to add. Check the server's shared folders."
+                    connectStartedAt = nil
+                    watchdogTask?.cancel()
+                    return
+                }
                 // Adopt the validated (trimmed) values so what we persist EXACTLY matches
                 // what connected. SMBShareSelectionView reads these straight into the saved
                 // SMBServerData, and the media-repo factory later reconnects with them — if
@@ -267,24 +320,53 @@ struct SMBLoginView: View {
                 discoveredShares = shares
                 showShareSelector = true
             } catch {
+                diagnostics.stage = "threw"
                 // Disconnect so the actor doesn't hold a dangling connection.
                 await lister.disconnect()
                 guard !Task.isCancelled else { return }
                 // Never expose the password in the error message.
                 connectionError = "Couldn't connect to \(trimHost). Check the host and credentials."
             }
-            isConnecting = false
+            connectStartedAt = nil
+            watchdogTask?.cancel()
+        }
+
+        // UI failsafe ABOVE every awaited layer: the lister hard-bounds each AMSMB2 call, yet a
+        // device run still spun forever — whatever wedges below, this frees the form. It runs on
+        // the MainActor, so if the error never appears AND the elapsed counter stops ticking, the
+        // main actor itself is blocked — that distinction is the diagnostic this exists for.
+        watchdogTask?.cancel()
+        watchdogTask = Task {
+            try? await Task.sleep(for: .seconds(30))
+            guard !Task.isCancelled, isConnecting else { return }
+            connectTask?.cancel()
+            connectTask = nil
+            connectStartedAt = nil
+            #if DEBUG
+            connectionError = "Timed out after 30 s (stage: \(diagnostics.stage))."
+            #else
+            connectionError = "Timed out. Check the host and try again."
+            #endif
         }
     }
 
     /// Abort an in-flight connection test and reset the form so the user isn't stranded on the
     /// spinner. The underlying AMSMB2 connect runs a C poll loop that can't observe Swift
-    /// cancellation, but `AMSMB2Lister`'s connect timeout bounds it and dropping the result here
+    /// cancellation, but the lister's hard timeout bounds it and dropping the result here
     /// frees the UI immediately.
     private func cancelConnect() {
         connectTask?.cancel()
         connectTask = nil
-        isConnecting = false
+        watchdogTask?.cancel()
+        watchdogTask = nil
+        connectStartedAt = nil
     }
 
+}
+
+/// Mutable, non-observed connect diagnostics (see `SMBLoginView.diagnostics`): a reference type so
+/// breadcrumb writes bypass SwiftUI invalidation entirely.
+@MainActor
+private final class ConnectDiagnostics {
+    var stage = "idle"
 }

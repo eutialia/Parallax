@@ -26,7 +26,7 @@ struct QuickConnectView: View {
                 withAnimation(reduceMotion ? nil : .smooth) { onSwitchToPassword() }
             } label: {
                 Label("Use password instead", systemImage: "person.fill")
-                    .formActionLabel(.glass)
+                    .formActionLabel()
             }
             .formActionButton(.glass)
         }
@@ -93,7 +93,7 @@ struct QuickConnectView: View {
                         retryToken &+= 1
                     } label: {
                         Label("Try again", systemImage: "arrow.clockwise")
-                            .formActionLabel(.glass)
+                            .formActionLabel()
                     }
                     .formActionButton(.glass)
                 }

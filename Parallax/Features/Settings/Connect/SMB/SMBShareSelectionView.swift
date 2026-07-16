@@ -70,7 +70,7 @@ struct SMBShareSelectionView: View {
                 }
 
                 Button(action: save) {
-                    Text(addButtonTitle).formActionLabel(.solid, isWorking: isSaving)
+                    Text(addButtonTitle).formActionLabel(isWorking: isSaving)
                 }
                 .formActionButton(.solid)
                 .disabled(selected.isEmpty || isSaving)
@@ -134,7 +134,7 @@ struct SMBShareSelectionView: View {
                     )
                 }
             }
-            Button {} label: { Text("Add 2 Shares").formActionLabel(.solid) }
+            Button {} label: { Text("Add 2 Shares").formActionLabel() }
                 .formActionButton(.solid)
         }
         .padding(Space.s18)

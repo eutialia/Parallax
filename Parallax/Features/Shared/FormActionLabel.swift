@@ -13,10 +13,12 @@ extension View {
     /// Lay a label out as a full-width form CTA: `.rowTitle` type (`.headline` on iOS, a tamer 26pt
     /// on tvOS), full width, at the shared 50pt control height (62 on tvOS) so it matches the text
     /// fields stacked above it. The label COLOR + fill come from `formActionButton(_:)`'s style, which
-    /// owns the focus inversion. Pass `isWorking: true` to swap the label for a spinner WITHOUT
-    /// resizing (the title stays hidden in the layout to drive the height; the spinner overlays).
-    func formActionLabel(_ style: FormActionStyle, isWorking: Bool = false) -> some View {
-        modifier(FormActionLabelModifier(style: style, isWorking: isWorking))
+    /// owns the focus inversion (and tints the spinner to match — see there). Pass `isWorking: true`
+    /// to lead the title with a spinner: the title STAYS VISIBLE, because on the connect flows it
+    /// morphs to "Cancel" and is the user's only way out of an in-flight attempt — hiding it read as
+    /// a frozen blank pill on Apple TV (the tvOS SMB "stuck on Connect" report).
+    func formActionLabel(isWorking: Bool = false) -> some View {
+        modifier(FormActionLabelModifier(isWorking: isWorking))
     }
 
     /// Apply to the Button/NavigationLink wrapping a `formActionLabel` label. Draws the FLAT fill:
@@ -28,10 +30,12 @@ extension View {
     }
 }
 
-/// Sizes the CTA label (full width, shared control height) and swaps in the spinner while working.
-/// Color is the button style's job (it knows focus/enabled), so this no longer sets a foreground.
+/// Sizes the CTA label (full width, shared control height) and leads it with a spinner while
+/// working. Color is the button style's job (it knows focus/enabled): it foregrounds the title and
+/// TINTS the spinner in one place, so both stay legible on every fill — `buttonFill` is pure white
+/// in dark mode, where an untinted spinner rendered white-on-white and the working button showed
+/// NOTHING (the tvOS SMB "stuck on Connect" report).
 private struct FormActionLabelModifier: ViewModifier {
-    let style: FormActionStyle
     var isWorking = false
     #if !os(tvOS)
     /// Matches the iOS text fields' `baseControlHeight` so the CTA reads as the same height; scales
@@ -40,12 +44,13 @@ private struct FormActionLabelModifier: ViewModifier {
     #endif
 
     func body(content: Content) -> some View {
-        content
-            .font(.rowTitle)
-            .frame(maxWidth: .infinity)
-            .frame(height: ctaHeight)
-            .opacity(isWorking ? 0 : 1)
-            .overlay { spinner }
+        HStack(spacing: Space.s12) {
+            if isWorking { ProgressView() }
+            content
+        }
+        .font(.rowTitle)
+        .frame(maxWidth: .infinity)
+        .frame(height: ctaHeight)
     }
 
     private var ctaHeight: CGFloat {
@@ -56,16 +61,6 @@ private struct FormActionLabelModifier: ViewModifier {
         #else
         height
         #endif
-    }
-
-    @ViewBuilder
-    private var spinner: some View {
-        if isWorking {
-            ProgressView()
-                #if !os(tvOS)
-                .tint(style == .solid ? Color.buttonLabel : Color.label)
-                #endif
-        }
     }
 }
 
@@ -83,6 +78,9 @@ private struct FlatFormButtonStyle: ButtonStyle {
         TVFocusReader { focused in
             configuration.label
                 .foregroundStyle(labelColor(focused: focused))
+                // The working spinner reads the tint, not the foreground — keep both on the same
+                // focus-aware color or the spinner vanishes on the white fill/platter in dark mode.
+                .tint(labelColor(focused: focused))
                 .flatControlFill(focused: focused, rest: restFill, hairline: hairline, in: Capsule())
                 .opacity(opacity(pressed: configuration.isPressed))
                 .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
@@ -121,11 +119,11 @@ private struct FlatFormButtonStyle: ButtonStyle {
                     .foregroundStyle(Color.secondaryLabel)
             )
         Button {} label: {
-            Text("Connect").formActionLabel(.solid)
+            Text("Connect").formActionLabel()
         }
         .formActionButton(.solid)
         Button {} label: {
-            Label("Use Quick Connect", systemImage: "bolt.fill").formActionLabel(.glass)
+            Label("Use Quick Connect", systemImage: "bolt.fill").formActionLabel()
         }
         .formActionButton(.glass)
     }
@@ -144,11 +142,11 @@ private struct FlatFormButtonStyle: ButtonStyle {
                     .foregroundStyle(Color.secondaryLabel)
             )
         Button {} label: {
-            Text("Connect").formActionLabel(.solid)
+            Text("Connect").formActionLabel()
         }
         .formActionButton(.solid)
         Button {} label: {
-            Label("Use Quick Connect", systemImage: "bolt.fill").formActionLabel(.glass)
+            Label("Use Quick Connect", systemImage: "bolt.fill").formActionLabel()
         }
         .formActionButton(.glass)
     }
@@ -178,7 +176,7 @@ private struct DisabledCTAProof: View {
     @ViewBuilder
     private func cta(_ style: FormActionStyle, disabled: Bool) -> some View {
         Button {} label: {
-            Text(disabled ? "Disabled" : "Enabled").formActionLabel(style)
+            Text(disabled ? "Disabled" : "Enabled").formActionLabel()
         }
         .formActionButton(style)
         .disabled(disabled)
