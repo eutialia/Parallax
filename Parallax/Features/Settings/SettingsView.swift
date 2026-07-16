@@ -19,7 +19,6 @@ struct SettingsView: View {
 
     @Environment(AppDependencies.self) private var deps
     @Environment(AppRouter.self) private var router
-    @Environment(\.dismiss) private var dismiss
     @State private var viewModel: SettingsViewModel?
     @State private var path: [Route] = []
     /// iPhone only: the Add-Server task presents as its OWN page sheet (option #1 / Modality HIG —
@@ -51,7 +50,13 @@ struct SettingsView: View {
                 .toolbar {
                     if isModal {
                         ToolbarItem(placement: .confirmationAction) {
-                            Button("Done") { dismiss() }
+                            // A LEAF view owns the `\.dismiss` read. Reading it HERE (in the view
+                            // that also owns the NavigationStack) created an infinite render loop:
+                            // `DismissAction`'s identity tracks the navigation state, so any push
+                            // inside the stack re-rendered SettingsView, which rebuilt the stack,
+                            // which changed dismiss again — the tvOS add-SMB "freeze" (27k
+                            // `_dismiss changed` re-renders/45s, found via `Self._printChanges()`).
+                            SettingsDoneButton()
                         }
                     }
                 }
@@ -63,7 +68,8 @@ struct SettingsView: View {
                     if let viewModel {
                         AddServerFlow(
                             onAddedJellyfin: { Task { await viewModel.didAddServer() } },
-                            onAddedSMB: { Task { await viewModel.reloadAfterSMBChange() } }
+                            onAddedSMB: { Task { await viewModel.reloadAfterSMBChange() } },
+                            onClose: { presentingAddServer = false }
                         )
                     }
                 }
@@ -192,8 +198,12 @@ struct SettingsView: View {
 private struct AddServerFlow: View {
     var onAddedJellyfin: () -> Void
     var onAddedSMB: () -> Void
+    /// Explicit close (the presenter flips its `isPresented` state) instead of `@Environment(\.dismiss)`:
+    /// reading `dismiss` in the view that owns a `NavigationStack` re-renders it on every push —
+    /// `DismissAction`'s identity tracks the navigation state — which rebuilt the stack and looped the
+    /// render graph forever (the add-SMB freeze; see `SettingsDoneButton` for the tvOS/iPad twin).
+    var onClose: () -> Void
 
-    @Environment(\.dismiss) private var dismiss
     @State private var path: [SettingsView.Route] = []
 
     var body: some View {
@@ -204,17 +214,17 @@ private struct AddServerFlow: View {
             )
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button("Cancel") { onClose() }
                 }
             }
             .navigationDestination(for: SettingsView.Route.self) { route in
                 switch route {
                 case .addJellyfin:
-                    LoginView(onSignedIn: { onAddedJellyfin(); dismiss() })
+                    LoginView(onSignedIn: { onAddedJellyfin(); onClose() })
                         .navigationTitle("Jellyfin")
                         .navigationBarTitleDisplayMode(.inline)
                 case .addSMB:
-                    SMBLoginView(onAdded: { onAddedSMB(); dismiss() })
+                    SMBLoginView(onAdded: { onAddedSMB(); onClose() })
                         .navigationTitle("Network Share")
                         .navigationBarTitleDisplayMode(.inline)
                 default:
@@ -226,6 +236,20 @@ private struct AddServerFlow: View {
     }
 }
 #endif
+
+/// The iPad modal's Done button as a LEAF view so IT owns the `\.dismiss` read. `DismissAction`'s
+/// identity changes with the navigation state, so a view that both reads `dismiss` and owns a
+/// `NavigationStack` re-renders (and rebuilds the stack) on every push — an infinite render loop
+/// that froze the tvOS add-SMB flow with the main thread pegged (diagnosed via `Self._printChanges()`:
+/// 27k consecutive `SettingsView: _dismiss changed` evaluations). Isolated here, only this button
+/// re-renders when the dismiss action changes.
+private struct SettingsDoneButton: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        Button("Done") { dismiss() }
+    }
+}
 
 /// A Jellyfin server row's display data (top-level, so it doesn't depend on `SettingsContentView`'s
 /// generic `Storage` parameter).
