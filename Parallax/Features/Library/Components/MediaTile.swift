@@ -105,7 +105,9 @@ struct MediaTile: View {
                     }
                     Spacer(minLength: 0)
                     if let trailing {
-                        Text(trailing).lineLimit(1)
+                        // The trailing slot holds short fixed facts (duration, "22 min left");
+                        // under compression the leading text truncates, this never does.
+                        Text(trailing).lineLimit(1).layoutPriority(1)
                     }
                 }
                 .font(.caption2)
@@ -122,15 +124,7 @@ struct MediaTile: View {
 /// what separates the disc there) and the progress ring at the tricky fractions: barely started
 /// (floored arc), the half mark, and almost-done next to the full check it morphs into.
 #Preview("Watched badge", traits: .sizeThatFitsLayout) {
-    let session = Session(
-        id: ServerID(rawValue: "preview"),
-        data: JellyfinServerData(
-            serverURL: URL(string: "https://preview.invalid")!,
-            serverName: "Preview",
-            user: UserSnapshot(id: "u1", name: "preview", serverLastUpdatedAt: nil)
-        ),
-        accessToken: "preview"
-    )
+    let session = Session.preview
     return HStack(spacing: 16) {
         MediaTile(title: "Just started", imageRef: nil, session: session, watched: .inProgress(0.02))
             .frame(width: 140)

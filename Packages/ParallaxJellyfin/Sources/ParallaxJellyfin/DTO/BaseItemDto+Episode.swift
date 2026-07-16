@@ -18,6 +18,7 @@ extension BaseItemDto {
             seriesID: ItemID(rawValue: seriesIdRaw),
             seasonID: ItemID(rawValue: seasonIdRaw),
             name: name,
+            seriesName: seriesName,
             indexNumber: indexNumber,
             parentIndexNumber: parentIndexNumber,
             overview: overview,

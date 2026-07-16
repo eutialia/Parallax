@@ -53,7 +53,13 @@ struct JellyfinSearchResultsView: View, Equatable {
                     gridSection("Episodes", count: results.episodes.count, cols: landscapeCols) {
                         ForEach(results.episodes) { e in
                             ItemNavigator(item: .episode(e), session: session) {
-                                MediaTile(title: e.name, imageRef: e.imageRef(.primary), session: session, watched: .init(.episode(e)), aspectRatio: MediaImage.landscape, maxImageWidth: 500)
+                                // Episodes need the detail row a poster doesn't: neither the still
+                                // nor the episode name says which show this is.
+                                MediaTile(
+                                    title: e.name, imageRef: e.stillFirstImageRef, session: session,
+                                    watched: .init(.episode(e)), aspectRatio: MediaImage.landscape, maxImageWidth: 500,
+                                    metadata: .init(leading: e.seriesContextCaption, trailing: e.timeCaption())
+                                )
                             }
                         }
                     }
@@ -81,3 +87,44 @@ struct JellyfinSearchResultsView: View, Equatable {
         }
     }
 }
+
+#if DEBUG
+private func previewEpisode(
+    _ id: String, name: String, series: String? = nil, season: Int?, index: Int?, runtimeMinutes: Int?,
+    played: Bool = false, positionMinutes: Int = 0
+) -> Episode {
+    Episode(
+        id: ItemID(rawValue: id), seriesID: ItemID(rawValue: "series"),
+        seasonID: ItemID(rawValue: "season"), name: name,
+        seriesName: series,
+        indexNumber: index, parentIndexNumber: season,
+        overview: nil, runtime: runtimeMinutes.map { .seconds($0 * 60) },
+        primaryTag: nil,
+        userData: UserItemData(
+            played: played,
+            playbackPositionTicks: Int64(positionMinutes) * 60 * 10_000_000,
+            playCount: played ? 1 : 0, isFavorite: false
+        )
+    )
+}
+
+/// The episode detail row across its data shapes: mid-watch ("22 min left" + progress ring),
+/// unwatched with runtime, watched (check badge), a long series name squeezing against the time
+/// caption, season unknown (degrades to "E7"), and indexes/runtime/series all missing (title-only
+/// row, no stray gap). The placeholder artwork stands in for stills — the row under the thumbnail
+/// is what's under test.
+#Preview("Episode metadata rows") {
+    let results = SearchResults(movies: [], series: [], episodes: [
+        previewEpisode("e1", name: "The Winds of Winter", series: "Game of Thrones", season: 6, index: 10, runtimeMinutes: 68, positionMinutes: 46),
+        previewEpisode("e2", name: "Ozymandias", series: "Breaking Bad", season: 5, index: 14, runtimeMinutes: 47),
+        previewEpisode("e3", name: "Pine Barrens", series: "The Sopranos", season: 3, index: 11, runtimeMinutes: 45, played: true),
+        previewEpisode("e4", name: "Special", series: "It's Always Sunny in Philadelphia", season: nil, index: 7, runtimeMinutes: 23),
+        previewEpisode("e5", name: "A Very Long Episode Title That Should Truncate Cleanly", season: nil, index: nil, runtimeMinutes: nil),
+    ])
+    NavigationStack {
+        JellyfinSearchResultsView(results: results, session: .preview, posterCols: 3, landscapeCols: 2, hMargin: Space.s16)
+    }
+    .environment(PlaybackPresenter())
+    .background(Color.background)
+}
+#endif

@@ -5,20 +5,25 @@ public struct Episode: Sendable, Hashable, Identifiable {
     public let seriesID: ItemID
     public let seasonID: ItemID
     public let name: String
+    /// Owning series title (e.g. "Breaking Bad") — episode names rarely identify the show on
+    /// their own, so cross-series surfaces (search) render this alongside the episode name.
+    public let seriesName: String?
     public let indexNumber: Int?
     public let parentIndexNumber: Int?   // season number
     public let overview: String?
     public let runtime: Duration?
     public let primaryTag: ImageTag?
     /// Season folder art from Jellyfin's parent-primary fields (e.g. `season.jpg`).
-    public let seasonImageRef: ImageRef?
+    /// `var` only for the `with*` copies below; immutable to callers.
+    public private(set) var seasonImageRef: ImageRef?
     /// Series poster when season art is missing (DTO hint or repository fetch).
-    public let seriesImageRef: ImageRef?
+    public private(set) var seriesImageRef: ImageRef?
     public let dateAdded: Date?
     public let userData: UserItemData
 
     public init(
         id: ItemID, seriesID: ItemID, seasonID: ItemID, name: String,
+        seriesName: String?,
         indexNumber: Int?, parentIndexNumber: Int?,
         overview: String?, runtime: Duration?,
         primaryTag: ImageTag?, seasonImageRef: ImageRef? = nil,
@@ -27,7 +32,7 @@ public struct Episode: Sendable, Hashable, Identifiable {
         userData: UserItemData
     ) {
         self.id = id; self.seriesID = seriesID; self.seasonID = seasonID
-        self.name = name; self.indexNumber = indexNumber
+        self.name = name; self.seriesName = seriesName; self.indexNumber = indexNumber
         self.parentIndexNumber = parentIndexNumber
         self.overview = overview; self.runtime = runtime
         self.primaryTag = primaryTag; self.seasonImageRef = seasonImageRef
@@ -37,25 +42,11 @@ public struct Episode: Sendable, Hashable, Identifiable {
     }
 
     public func withSeasonImageRef(_ ref: ImageRef?) -> Episode {
-        Episode(
-            id: id, seriesID: seriesID, seasonID: seasonID, name: name,
-            indexNumber: indexNumber, parentIndexNumber: parentIndexNumber,
-            overview: overview, runtime: runtime, primaryTag: primaryTag,
-            seasonImageRef: ref, seriesImageRef: seriesImageRef,
-            dateAdded: dateAdded,
-            userData: userData
-        )
+        var copy = self; copy.seasonImageRef = ref; return copy
     }
 
     public func withSeriesImageRef(_ ref: ImageRef?) -> Episode {
-        Episode(
-            id: id, seriesID: seriesID, seasonID: seasonID, name: name,
-            indexNumber: indexNumber, parentIndexNumber: parentIndexNumber,
-            overview: overview, runtime: runtime, primaryTag: primaryTag,
-            seasonImageRef: seasonImageRef, seriesImageRef: ref,
-            dateAdded: dateAdded,
-            userData: userData
-        )
+        var copy = self; copy.seriesImageRef = ref; return copy
     }
 
     public func imageRef(_ kind: ImageKind) -> ImageRef? {
@@ -85,22 +76,50 @@ public extension Episode {
         return minutes > 0 ? minutes : nil
     }
 
+    /// Episode index caption — `"S1, E2"`, degrading to `"E2"` when the season is unknown;
+    /// nil when the episode index is too.
+    var indexCaption: String? {
+        seasonEpisodeLabel ?? indexNumber.map { "E\($0)" }
+    }
+
+    /// Time caption — `"22 min left"` while mid-watch, `"45 min"` otherwise; nil when the
+    /// relevant duration is unknown or both facets are opted out. A played episode never
+    /// reports time left, even when the server left stale position ticks behind — that
+    /// would contradict the watched check the same surfaces draw.
+    func timeCaption(showTimeRemaining: Bool = true, showRuntimeLength: Bool = true) -> String? {
+        if showTimeRemaining, !userData.played, userData.playbackPositionTicks > 0 {
+            return userData.remainingMinutes(runtime: runtime).map { "\($0) min left" }
+        }
+        if showRuntimeLength, let minutes = runtimeLengthMinutes {
+            return "\(minutes) min"
+        }
+        return nil
+    }
+
+    /// Cross-series identity caption — `"S1, E2 · Breaking Bad"`. Index first so tail
+    /// truncation in a tight row eats the show name, never the episode index; empty or
+    /// missing parts drop out cleanly (an orphaned episode with a blank SeriesName must
+    /// not render a dangling separator). Nil when nothing identifies the episode.
+    var seriesContextCaption: String? {
+        let parts = [indexCaption, seriesName].compactMap(\.self).filter { !$0.isEmpty }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// Landscape-tile artwork for cross-series surfaces (search): the episode's own 16:9
+    /// still when scraped, else season art, else series art — a parent poster center-crops
+    /// in a landscape frame, which beats an empty placeholder. Home shelves use the
+    /// reverse, poster-first order (`Item.homeShelfImageRef` in the app target).
+    var stillFirstImageRef: ImageRef? {
+        imageRef(.primary) ?? seasonImageRef ?? seriesImageRef
+    }
+
     /// Shelf footer caption — episode index plus optional time metadata.
     /// In progress: `"S1, E2 · 22 min left"`. Unwatched / Next Up: `"S1, E2 · 45 min"`.
     func shelfFooterCaption(showTimeRemaining: Bool = true, showRuntimeLength: Bool = true) -> String? {
-        var parts: [String] = []
-        if let label = seasonEpisodeLabel {
-            parts.append(label)
-        } else if let index = indexNumber {
-            parts.append("E\(index)")
-        }
-        if showTimeRemaining, userData.playbackPositionTicks > 0 {
-            if let minutes = userData.remainingMinutes(runtime: runtime) {
-                parts.append("\(minutes) min left")
-            }
-        } else if showRuntimeLength, let minutes = runtimeLengthMinutes {
-            parts.append("\(minutes) min")
-        }
+        let parts = [
+            indexCaption,
+            timeCaption(showTimeRemaining: showTimeRemaining, showRuntimeLength: showRuntimeLength),
+        ].compactMap(\.self)
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 

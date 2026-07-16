@@ -3,6 +3,7 @@
     "SeriesId": "series-uuid-1",
     "SeasonId": "season-uuid-1",
     "Name": "Pilot",
+    "SeriesName": "Breaking Bad",
     "Type": "Episode",
     "IndexNumber": 1,
     "ParentIndexNumber": 1,

@@ -83,6 +83,7 @@ struct LibraryPrimitivesTests {
             seriesID: ItemID(rawValue: "s1"),
             seasonID: ItemID(rawValue: "se1"),
             name: "Pilot",
+            seriesName: "Preview Show",
             indexNumber: 2,
             parentIndexNumber: 1,
             overview: nil,
@@ -107,6 +108,7 @@ struct LibraryPrimitivesTests {
             seriesID: ItemID(rawValue: "s1"),
             seasonID: ItemID(rawValue: "se1"),
             name: "Pilot",
+            seriesName: "Preview Show",
             indexNumber: 2,
             parentIndexNumber: 1,
             overview: nil,
@@ -119,6 +121,54 @@ struct LibraryPrimitivesTests {
         #expect(episode.shelfPlaybackProgress == nil)
     }
 
+    @Test("Episode seriesContextCaption joins index and series, dropping blank parts")
+    func episodeSeriesContextCaption() {
+        func episode(seriesName: String?, index: Int?) -> Episode {
+            Episode(
+                id: ItemID(rawValue: "e1"),
+                seriesID: ItemID(rawValue: "s1"),
+                seasonID: ItemID(rawValue: "se1"),
+                name: "Pilot",
+                seriesName: seriesName,
+                indexNumber: index,
+                parentIndexNumber: index == nil ? nil : 1,
+                overview: nil,
+                runtime: nil,
+                primaryTag: nil,
+                userData: .absent
+            )
+        }
+        #expect(episode(seriesName: "Breaking Bad", index: 2).seriesContextCaption == "S1, E2 · Breaking Bad")
+        // A blank server-side SeriesName must not leave a dangling separator.
+        #expect(episode(seriesName: "", index: 2).seriesContextCaption == "S1, E2")
+        #expect(episode(seriesName: "Breaking Bad", index: nil).seriesContextCaption == "Breaking Bad")
+        #expect(episode(seriesName: nil, index: nil).seriesContextCaption == nil)
+    }
+
+    @Test("Episode timeCaption never shows time left once played, despite stale position ticks")
+    func episodeTimeCaptionPlayedGate() {
+        let episode = Episode(
+            id: ItemID(rawValue: "e1"),
+            seriesID: ItemID(rawValue: "s1"),
+            seasonID: ItemID(rawValue: "se1"),
+            name: "Pilot",
+            seriesName: nil,
+            indexNumber: 2,
+            parentIndexNumber: 1,
+            overview: nil,
+            runtime: .seconds(3600),
+            primaryTag: nil,
+            userData: UserItemData(
+                played: true,
+                playbackPositionTicks: 18_000_000_000,
+                playCount: 1,
+                isFavorite: false
+            )
+        )
+        #expect(episode.timeCaption() == "60 min")
+        #expect(episode.shelfFooterCaption() == "S1, E2 · 60 min")
+    }
+
     @Test("Episode shelf footer shows label only when playback is near end")
     func episodeShelfFooterNearEnd() {
         let episode = Episode(
@@ -126,6 +176,7 @@ struct LibraryPrimitivesTests {
             seriesID: ItemID(rawValue: "s1"),
             seasonID: ItemID(rawValue: "se1"),
             name: "Pilot",
+            seriesName: "Preview Show",
             indexNumber: 2,
             parentIndexNumber: 1,
             overview: nil,
@@ -219,6 +270,7 @@ struct LibraryPrimitivesTests {
         let ep = Episode(
             id: ItemID(rawValue: "e1"), seriesID: ItemID(rawValue: "ser1"),
             seasonID: ItemID(rawValue: "se1"), name: "Pilot",
+            seriesName: nil,
             indexNumber: 1, parentIndexNumber: 1,
             overview: nil, runtime: nil,
             primaryTag: ImageTag(rawValue: "p"),

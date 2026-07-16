@@ -71,6 +71,7 @@ struct HomeHeroFeedBuilderTests {
             seriesID: ItemID(rawValue: seriesID),
             seasonID: ItemID(rawValue: "sea-\(season)"),
             name: "Ep \(id)",
+            seriesName: "Series \(seriesID)",
             indexNumber: index,
             parentIndexNumber: season,
             overview: nil, runtime: nil, primaryTag: nil,

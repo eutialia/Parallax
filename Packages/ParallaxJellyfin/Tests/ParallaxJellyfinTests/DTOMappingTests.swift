@@ -100,6 +100,7 @@ struct DTOMappingTests {
         #expect(e?.id.rawValue == "episode-uuid-1")
         #expect(e?.seriesID.rawValue == "series-uuid-1")
         #expect(e?.seasonID.rawValue == "season-uuid-1")
+        #expect(e?.seriesName == "Breaking Bad")
         #expect(e?.indexNumber == 1)
         #expect(e?.parentIndexNumber == 1)
         // 34_020_000_000 ticks / 10 = 3_402_000_000 µs = 3_402 s

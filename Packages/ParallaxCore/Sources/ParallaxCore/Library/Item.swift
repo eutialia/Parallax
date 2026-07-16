@@ -83,6 +83,7 @@ public enum Item: Sendable, Hashable, Identifiable {
         case .episode(let e):
             return .episode(Episode(
                 id: e.id, seriesID: e.seriesID, seasonID: e.seasonID, name: e.name,
+                seriesName: e.seriesName,
                 indexNumber: e.indexNumber, parentIndexNumber: e.parentIndexNumber,
                 overview: e.overview, runtime: e.runtime, primaryTag: e.primaryTag,
                 seasonImageRef: e.seasonImageRef, seriesImageRef: e.seriesImageRef,

@@ -74,6 +74,7 @@ struct AdjacentEpisodesTests {
             seriesID: ItemID(rawValue: "series"),
             seasonID: ItemID(rawValue: "season\(s)"),
             name: "S\(s)E\(e)",
+            seriesName: nil,
             indexNumber: e,
             parentIndexNumber: s,
             overview: nil,
