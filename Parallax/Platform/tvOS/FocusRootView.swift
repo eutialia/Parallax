@@ -45,6 +45,14 @@ struct FocusRootView: View {
             selectedTab = .settings
             router.presentingSettings = false
         }
+        #if DEBUG
+        // Land on the Settings tab from a bare `simctl launch` — Home's hero carousel swallows
+        // directional input, so scripted UI verification can't reach the sidebar reliably.
+        .task {
+            guard ProcessInfo.processInfo.arguments.contains("-openSettingsTab") else { return }
+            selectedTab = .settings
+        }
+        #endif
         // Keyed on the reload token (server switch + SMB add/remove), matching RootTabView.
         // The `.id(activeServerID)` remount above stays session-only.
         .task(id: router.libraryReloadToken) {
