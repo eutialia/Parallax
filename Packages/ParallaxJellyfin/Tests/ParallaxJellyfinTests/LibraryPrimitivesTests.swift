@@ -96,8 +96,8 @@ struct LibraryPrimitivesTests {
                 isFavorite: false
             )
         )
-        #expect(episode.shelfFooterCaption() == "S1, E2 · 30 min left")
-        #expect(episode.shelfFooterCaption(showTimeRemaining: false) == "S1, E2 · 60 min")
+        #expect(episode.shelfFooterCaption() == "S1 · E2 · 30 min left")
+        #expect(episode.shelfFooterCaption(showTimeRemaining: false) == "S1 · E2 · 60 min")
         #expect(episode.shelfPlaybackProgress == 0.5)
     }
 
@@ -116,8 +116,8 @@ struct LibraryPrimitivesTests {
             primaryTag: nil,
             userData: .absent
         )
-        #expect(episode.shelfFooterCaption() == "S1, E2 · 60 min")
-        #expect(episode.shelfFooterCaption(showRuntimeLength: false) == "S1, E2")
+        #expect(episode.shelfFooterCaption() == "S1 · E2 · 60 min")
+        #expect(episode.shelfFooterCaption(showRuntimeLength: false) == "S1 · E2")
         #expect(episode.shelfPlaybackProgress == nil)
     }
 
@@ -138,9 +138,9 @@ struct LibraryPrimitivesTests {
                 userData: .absent
             )
         }
-        #expect(episode(seriesName: "Breaking Bad", index: 2).seriesContextCaption == "S1, E2 · Breaking Bad")
+        #expect(episode(seriesName: "Breaking Bad", index: 2).seriesContextCaption == "S1 · E2 · Breaking Bad")
         // A blank server-side SeriesName must not leave a dangling separator.
-        #expect(episode(seriesName: "", index: 2).seriesContextCaption == "S1, E2")
+        #expect(episode(seriesName: "", index: 2).seriesContextCaption == "S1 · E2")
         #expect(episode(seriesName: "Breaking Bad", index: nil).seriesContextCaption == "Breaking Bad")
         #expect(episode(seriesName: nil, index: nil).seriesContextCaption == nil)
     }
@@ -166,7 +166,7 @@ struct LibraryPrimitivesTests {
             )
         )
         #expect(episode.timeCaption() == "60 min")
-        #expect(episode.shelfFooterCaption() == "S1, E2 · 60 min")
+        #expect(episode.shelfFooterCaption() == "S1 · E2 · 60 min")
     }
 
     @Test("Episode shelf footer shows label only when playback is near end")
@@ -189,7 +189,7 @@ struct LibraryPrimitivesTests {
                 isFavorite: false
             )
         )
-        #expect(episode.shelfFooterCaption() == "S1, E2")
+        #expect(episode.shelfFooterCaption() == "S1 · E2")
         #expect(episode.shelfPlaybackProgress == 1.0)
     }
 

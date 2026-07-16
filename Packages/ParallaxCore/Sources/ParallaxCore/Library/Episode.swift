@@ -63,20 +63,20 @@ public struct Episode: Sendable, Hashable, Identifiable {
 }
 
 public extension Episode {
-    /// Season/episode label, e.g. "S1, E2" — nil when either index is unknown.
+    /// Season/episode label, e.g. "S1 · E2" — nil when either index is unknown.
     var seasonEpisodeLabel: String? {
         guard let season = parentIndexNumber, let index = indexNumber else { return nil }
-        return "S\(season), E\(index)"
+        return "S\(season) · E\(index)"
     }
 
-    /// Whole-minute runtime for shelf captions, e.g. Next Up's `"S1, E2 · 45 min"`.
+    /// Whole-minute runtime for shelf captions, e.g. Next Up's `"S1 · E2 · 45 min"`.
     var runtimeLengthMinutes: Int? {
         guard let runtime else { return nil }
         let minutes = Int(runtime.components.seconds / 60)
         return minutes > 0 ? minutes : nil
     }
 
-    /// Episode index caption — `"S1, E2"`, degrading to `"E2"` when the season is unknown;
+    /// Episode index caption — `"S1 · E2"`, degrading to `"E2"` when the season is unknown;
     /// nil when the episode index is too.
     var indexCaption: String? {
         seasonEpisodeLabel ?? indexNumber.map { "E\($0)" }
@@ -96,7 +96,7 @@ public extension Episode {
         return nil
     }
 
-    /// Cross-series identity caption — `"S1, E2 · Breaking Bad"`. Index first so tail
+    /// Cross-series identity caption — `"S1 · E2 · Breaking Bad"`. Index first so tail
     /// truncation in a tight row eats the show name, never the episode index; empty or
     /// missing parts drop out cleanly (an orphaned episode with a blank SeriesName must
     /// not render a dangling separator). Nil when nothing identifies the episode.
@@ -114,7 +114,7 @@ public extension Episode {
     }
 
     /// Shelf footer caption — episode index plus optional time metadata.
-    /// In progress: `"S1, E2 · 22 min left"`. Unwatched / Next Up: `"S1, E2 · 45 min"`.
+    /// In progress: `"S1 · E2 · 22 min left"`. Unwatched / Next Up: `"S1 · E2 · 45 min"`.
     func shelfFooterCaption(showTimeRemaining: Bool = true, showRuntimeLength: Bool = true) -> String? {
         let parts = [
             indexCaption,

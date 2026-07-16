@@ -122,7 +122,7 @@ private struct ShelfFooterPreviewTile: View {
 
 #Preview("Shelf footer · progressive blur") {
     HStack(spacing: 16) {
-        ShelfFooterPreviewTile(caption: "S1, E2 · 22 min left", progress: 0.4)
+        ShelfFooterPreviewTile(caption: "S1 · E2 · 22 min left", progress: 0.4)
         ShelfFooterPreviewTile(caption: "132 min left", progress: 0.7)
     }
     .padding()

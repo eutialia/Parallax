@@ -113,7 +113,7 @@ struct DTOMappingTests {
         #expect(e?.seasonImageRef?.tag.rawValue == "season-primary-1")
         #expect(e?.seriesImageRef?.itemID.rawValue == "series-uuid-1")
         #expect(e?.seriesImageRef?.tag.rawValue == "series-primary-1")
-        #expect(e?.seasonEpisodeLabel == "S1, E1")
+        #expect(e?.seasonEpisodeLabel == "S1 · E1")
         #expect(e?.imageRef(.thumb) == nil)
     }
 

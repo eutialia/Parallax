@@ -35,10 +35,8 @@ extension Item {
             if let r = m.runtime { parts.append("\(Int(r.components.seconds / 60)) min") }
             return parts.isEmpty ? nil : parts.joined(separator: " · ")
         case .series(let s): return s.year.map(String.init)
-        case .episode(let e):
-            if let season = e.parentIndexNumber, let idx = e.indexNumber {
-                return "S\(season) · E\(idx)"
-            }
+        case .episode:
+            // Episodes never headline a hero — they're only hidden Play targets.
             return nil
         }
     }
