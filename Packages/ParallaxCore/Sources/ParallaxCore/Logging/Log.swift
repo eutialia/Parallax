@@ -9,6 +9,14 @@ public enum Log {
     public static let auth = Logger(subsystem: subsystem, category: "auth")
     public static let ui = Logger(subsystem: subsystem, category: "ui")
     public static let persistence = Logger(subsystem: subsystem, category: "persistence")
+
+    /// A component-scoped Logger under the app's ONE subsystem, for per-type diagnostics the
+    /// fixed categories above don't cover (e.g. "AMSMB2Lister"). Always prefer this over a
+    /// hand-rolled `Logger(subsystem:category:)`: a divergent subsystem string makes the
+    /// component invisible to the canonical `subsystem == "com.lhdev.parallax"` log filter.
+    public static func custom(category: String) -> Logger {
+        Logger(subsystem: subsystem, category: category)
+    }
 }
 
 // Wrap any sensitive value (tokens, passwords, signed URLs, etc.) in `Redacted`

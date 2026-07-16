@@ -18,7 +18,7 @@ import ParallaxCore
 /// connections (AVPlayer probes with concurrent range requests) are independent.
 public actor SMBHTTPBridge {
 
-    private static let logger = Logger(subsystem: "Parallax", category: "SMBHTTPBridge")
+    private static let logger = Log.custom(category: "SMBHTTPBridge")
 
     private let reader: any RandomAccessReading
     private let contentType: String

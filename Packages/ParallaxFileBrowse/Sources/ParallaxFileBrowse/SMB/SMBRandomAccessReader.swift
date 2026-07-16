@@ -20,7 +20,7 @@ import ParallaxCore
 /// `SMBFileSource.mapListError` precedent).
 public actor SMBRandomAccessReader: RandomAccessReading {
 
-    private static let logger = Logger(subsystem: "Parallax", category: "SMBRandomAccessReader")
+    private static let logger = Log.custom(category: "SMBRandomAccessReader")
 
     private let serverURL: URL
     private let domain: String

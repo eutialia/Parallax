@@ -7,7 +7,7 @@ import ParallaxCore
 /// Credentials are never embedded in URLs — callers supply them via transport options.
 public struct SMBFileSource: Sendable {
 
-    private static let logger = Logger(subsystem: "Parallax", category: "SMBFileSource")
+    private static let logger = Log.custom(category: "SMBFileSource")
 
     // Extensions recognised as playable media — a libVLC-decodable ALLOWLIST (not a blocklist),
     // so non-media siblings and temp-suffix partials (.part/.crdownload/.!qB/.aria2) never reach
