@@ -29,6 +29,20 @@ enum AppLayout {
     /// strays outside, so cards must stay inside it. (Apple HIG "Designing for tvOS" / WWDC19.)
     static let tvOverscanInset: CGFloat = 90
 
+    /// Top clearance for the tvOS **system search screen** under a `.sidebarAdaptable` TabView.
+    /// The collapsed sidebar pill floats over content without reserving layout space, and the
+    /// `.searchable` screen pins its field + keyboard to the container's very top — the two system
+    /// components don't know about each other, so the pill lands on the search field (framework
+    /// gap, render-proven in `TVSearchLayoutPreview`). Plain `.padding(.top, …)` on the searchable
+    /// screen is the one lever the search chrome respects (`safeAreaPadding` is ignored).
+    /// Value: the collapsed pill's bottom edge measures ~130pt (device screenshot) and the search
+    /// screen carries ~75pt of its own internal headroom above the field, so 72 puts the field's
+    /// top at ~147pt — under the pill with a small gap, without double-counting the two margins
+    /// (the first cut, 114 from HIG tab-bar geometry, sat the whole screen visibly too low).
+    /// Measured on tvOS 26 (2026-07). Both inputs are OS-rendered chrome with no queryable
+    /// metric, so RE-MEASURE against `TVSearchLayoutPreview` after tvOS updates.
+    static let tvSearchTopClearance: CGFloat = 72
+
     /// Resting height for the tvOS **library-header chip** (the genre/sort pills + their matching
     /// loading skeleton in `LibraryGridView`) — the only consumer. The 10-foot `.headline` type
     /// (~38pt vs ~17pt on iOS) needs more vertical room than the iOS metrics. This governs ONLY that

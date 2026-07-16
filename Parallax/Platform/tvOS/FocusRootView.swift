@@ -128,9 +128,10 @@ struct FocusRootView: View {
                 }
             }
             // Search is Jellyfin-backed (SMB has no search index) — omitted in an SMB-only config
-            // rather than shown as a permanently-empty tab.
+            // rather than shown as a permanently-empty tab. `role: .search` = the system search
+            // tab; JellyfinSearchView's `.searchable` renders the HIG search screen inside it.
             if session != nil {
-                Tab("Search", systemImage: "magnifyingglass", value: AppTab.search) {
+                Tab(value: AppTab.search, role: .search) {
                     NavigationStack {
                         JellyfinSearchView()
                     }

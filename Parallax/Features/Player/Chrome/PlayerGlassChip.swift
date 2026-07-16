@@ -42,8 +42,7 @@ struct PlayerGlassChip: View {
                 chipLabel(platter: isActive)
                     // Lift the ~36pt chip to the 44pt HIG tap minimum WITHOUT growing the glass
                     // capsule: pad out, hit-test the padded rect, then reclaim the layout height with
-                    // negative padding (the SearchBar clear-button overflow pattern — the non-clipping
-                    // chip row still hit-tests the overflow band).
+                    // negative padding (the non-clipping chip row still hit-tests the overflow band).
                     .padding(.vertical, iOSHitSlop)
                     .contentShape(.rect)
                     .padding(.vertical, -iOSHitSlop)

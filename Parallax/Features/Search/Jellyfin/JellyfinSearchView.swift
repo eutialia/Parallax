@@ -12,33 +12,36 @@ struct JellyfinSearchView: View {
     // `viewModel?.query = $0` was a silent no-op while viewModel was nil).
     @State private var query = ""
     @State private var scope: SearchScope = .all
-    @FocusState private var searchFocused: Bool
     @Environment(\.appIdiom) private var idiom
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(spacing: 0) {
-            // The search UI lives in the content (not the nav bar) so iPadOS 26 can't
-            // hoist it into the sidebar chrome on focus. Scopes ride below the field and
-            // only appear once there's a query — clearing the field drops them.
-            VStack(spacing: Space.s12) {
-                SearchBar(text: $query, prompt: "Search your library", focus: $searchFocused)
-                if !query.isEmpty {
-                    Picker("Search scope", selection: $scope) {
-                        Text("All").tag(SearchScope.all)
-                        Text("Movies").tag(SearchScope.movies)
-                        Text("Shows").tag(SearchScope.series)
-                        Text("Episodes").tag(SearchScope.episodes)
-                    }
-                    .pickerStyle(.segmented)
-                    // Reduce Motion drops the slide for a plain fade (movement → cross-dissolve).
-                    .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
+            // iOS/iPadOS scope row: OURS, in content — deliberately NOT `.searchScopes`.
+            // The system scope capsule renders in the search presentation layer with its
+            // own Liquid Glass drop shadow and no styling API — an unblended floating
+            // slab on the flat floor (render-proven in SearchScopeBandPreview).
+            //
+            // Keyed on the VM's STATE, not `query.isEmpty`: the query flips on the
+            // keystroke but the content swaps 350ms later (debounce), so a query-keyed
+            // row moved in its own separate step — content pushed down first when typing,
+            // row hiding first when clearing. State-keyed, the row enters exactly when
+            // the placeholder gives way to the skeleton/results (and stays up through
+            // the failure state, where switching scope re-runs the search) and leaves
+            // exactly when the placeholder returns: one coordinated, symmetric motion.
+            #if !os(tvOS)
+            if scopesVisible {
+                Picker("Search scope", selection: $scope) {
+                    scopeOptions
                 }
+                .pickerStyle(.segmented)
+                .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
+                .padding(.top, Space.s8)
+                .padding(.bottom, Space.s12)
+                // Reduce Motion drops the slide for a plain fade (movement → cross-dissolve).
+                .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
             }
-            .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
-            .padding(.top, Space.s8)
-            .padding(.bottom, Space.s12)
-            .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: query.isEmpty)
+            #endif
 
             Group {
                 if let vm = viewModel, let session {
@@ -49,15 +52,72 @@ struct JellyfinSearchView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        // iOS only: coordinates the scope row's slide with the content swap it rides on.
+        // tvOS has no in-content row (scopes live in the system search chrome), so it
+        // keeps its un-animated swaps instead of inheriting a purposeless transaction.
+        #if !os(tvOS)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: scopesVisible)
+        #endif
+        // The SYSTEM search field on every platform — no custom in-content field. tvOS
+        // renders the HIG search screen (system keyboard on top, results beneath) with
+        // the native scope control. iPhone/iPad use the DRAWER placement: the wide bar
+        // stacked below the nav bar (SwiftUI's analog of UIKit's `.stacked` — the Apple
+        // TV app's search-tab layout), NOT the default iPadOS 26 trailing-corner field.
+        // Being chrome-hosted keeps the field out of the keyboard-avoidance path that
+        // shoved the old in-content bar off-screen.
+        #if os(tvOS)
+        .searchable(text: $query, prompt: Self.searchPrompt)
+        .searchScopes($scope) {
+            scopeOptions
+        }
+        #else
+        .searchable(
+            text: $query,
+            placement: .navigationBarDrawer(displayMode: .always),
+            prompt: Self.searchPrompt
+        )
+        // Keep the stacked drawer field IN PLACE while editing. Without this, activating
+        // search lets the toolbar "adapt to the search presentation" — on iPadOS 26 the
+        // wide drawer bar collapses into the top-trailing corner the moment it's tapped.
+        .searchPresentationToolbarBehavior(.avoidHidingContent)
+        #endif
+        // Media titles are proper nouns and non-dictionary words ("Nosferatu", "Ex
+        // Machina") — the old custom field disabled these deliberately; carry that
+        // through to the system field (both propagate via the environment).
+        .autocorrectionDisabled()
+        .textInputAutocapitalization(.never)
+        // Match the old custom-bar behavior: the first scroll motion drops the keyboard
+        // (the system default keeps it up for plain ScrollViews). No-op on tvOS.
+        .scrollDismissesKeyboard(.immediately)
+        #if os(tvOS)
+        // Drop the system search screen below the floating sidebar pill — see
+        // `AppLayout.tvSearchTopClearance`. Applied INSIDE the stack (on the searchable
+        // screen, not the NavigationStack) so pushed detail heroes stay full-bleed.
+        .padding(.top, AppLayout.tvSearchTopClearance)
+        #else
         // Keep a (title-less) nav bar so the .zoom push into item detail still has a
         // shared bar to hand its back button to — never `.toolbar(.hidden)` here.
-        #if !os(tvOS)
         .navigationBarTitleDisplayMode(.inline)
+        // Transparent bar, matching Home and the detail screens: the drawer + scope strip
+        // otherwise paint the system bar material — an off-tone band that doesn't blend
+        // with the Matinee floor. Background only; the bar itself stays (zoom rule above).
+        .toolbarBackground(.hidden, for: .navigationBar)
+        // Soft top edge: the HIG-recommended style on iPadOS ("hard" is primarily macOS).
+        // Over the flat floor it reads as no edge at all while still fading results that
+        // scroll up under the drawer field.
+        .scrollEdgeEffectStyle(.soft, for: .top)
         #endif
         .onChange(of: query) { _, newValue in
             viewModel?.query = newValue
         }
         .onChange(of: scope) { _, newValue in viewModel?.scope = newValue }
+        // A scope outlives its search session otherwise: search "Batman" scoped to
+        // Episodes, clear, search "Dune" — with the scope control hidden at idle, the
+        // stale Episodes scope would silently narrow the new search. Ending a session
+        // resets to All, so every fresh search starts unscoped, control visible or not.
+        .onChange(of: scopesVisible) { _, visible in
+            if !visible { scope = .all }
+        }
         .screenFloor()
         .itemDetailNavigation()
         .task(id: router.activeServerID) {
@@ -90,24 +150,15 @@ struct JellyfinSearchView: View {
                 systemImage: "magnifyingglass",
                 message: "Movies, shows, and episodes from your library."
             )
-                #if !os(tvOS)
-                .tapToDismissKeyboard($searchFocused)
-                #endif
         case .loading:
             searchLoadingPlaceholder
-                #if !os(tvOS)
-                .tapToDismissKeyboard($searchFocused)
-                #endif
         case .loaded(let results):
             if results.movies.isEmpty && results.series.isEmpty && results.episodes.isEmpty {
                 ContentUnavailableView.search
-                    #if !os(tvOS)
-                    .tapToDismissKeyboard($searchFocused)
-                    #endif
             } else {
                 // The grid is an `.equatable()` child so a per-keystroke `query` change
-                // can't re-render the tiles (see JellyfinSearchResultsView). The dismiss
-                // modifiers and the refine overlay stay out here, in the reactive parent.
+                // can't re-render the tiles (see JellyfinSearchResultsView). The refine
+                // overlay stays out here, in the reactive parent.
                 JellyfinSearchResultsView(
                     results: results,
                     session: session,
@@ -116,17 +167,6 @@ struct JellyfinSearchView: View {
                     hMargin: AppLayout.contentHMargin(idiom: idiom)
                 )
                 .equatable()
-                #if !os(tvOS)
-                // Drive dismissal ourselves so scrolling drops the keyboard with the SAME
-                // animation as the tap below (`.scrollDismissesKeyboard`'s built-in dismiss
-                // uses a different curve). `.never` disables the system's version; then any
-                // scroll (either direction) resigns focus the instant it starts.
-                .scrollDismissesKeyboard(.never)
-                .onScrollPhaseChange { _, newPhase in
-                    if newPhase == .interacting { searchFocused = false }
-                }
-                .simultaneousGesture(TapGesture().onEnded { searchFocused = false })
-                #endif
                 // Floating indicator while refining — an overlay (not an inline row)
                 // so the results don't shift down/up on every debounced keystroke.
                 .overlay(alignment: .top) {
@@ -137,11 +177,25 @@ struct JellyfinSearchView: View {
             }
         case .failed(let message):
             StatusStateView.failure("Couldn't search your library", message: message)
-            #if !os(tvOS)
-            .tapToDismissKeyboard($searchFocused)
-            #endif
         }
     }
+
+    /// The scope row rides the VM's session flag so its show/hide is one motion with the
+    /// content swap (see the comment at the row) — false while the VM is still building.
+    private var scopesVisible: Bool {
+        viewModel?.hasActiveSearch ?? false
+    }
+
+    /// Single source for the scope options — feeds BOTH the iOS in-content Picker and
+    /// the tvOS `.searchScopes` builder, so the two platforms' scope lists can't drift.
+    @ViewBuilder private var scopeOptions: some View {
+        Text("All").tag(SearchScope.all)
+        Text("Movies").tag(SearchScope.movies)
+        Text("Shows").tag(SearchScope.series)
+        Text("Episodes").tag(SearchScope.episodes)
+    }
+
+    private static let searchPrompt = "Search your library"
 
     private var searchLoadingPlaceholder: some View {
         ScrollView {
@@ -154,13 +208,3 @@ struct JellyfinSearchView: View {
     private var landscapeCols: Int { AppLayout.searchLandscapeColumns(idiom: idiom) }
 }
 
-private extension View {
-    /// Make a non-scrolling state fill its space and drop the keyboard when tapped.
-    /// Scrollable results dismiss on scroll (via `onScrollPhaseChange`) plus their own
-    /// tap gesture instead — a fill-frame tap target there would fight the poster tiles.
-    func tapToDismissKeyboard(_ focus: FocusState<Bool>.Binding) -> some View {
-        frame(maxWidth: .infinity, maxHeight: .infinity)
-            .contentShape(.rect)
-            .onTapGesture { focus.wrappedValue = false }
-    }
-}

@@ -131,14 +131,16 @@ struct RootTabView: View {
             // Search is Jellyfin-backed (SMB has no search index), so it's hidden in an
             // SMB-only config rather than shown as a permanently-empty tab.
             //
-            // Deliberately NOT `role: .search`, and JellyfinSearchView uses its own
-            // in-content SearchBar rather than `.searchable`. In iPadOS 26 the system
-            // search field (role-search tab or `.searchable`) gets hoisted into the
-            // top-trailing Liquid Glass slot on focus, reflows the layout, and lets the
-            // search presentation seize the sidebar toggle (it flips to "Hide Sidebar"
-            // while the keyboard is up). A plain tab + custom field sidesteps all of it.
+            // `role: .search` + `.searchable` inside JellyfinSearchView = the system
+            // search-tab pattern: the separated magnifier pill in the bar, the field
+            // hosted in the chrome via the DRAWER placement (the wide bar stacked below
+            // the nav bar, like the TV app — see JellyfinSearchView; the default
+            // placement rendered a top-trailing corner field instead). Living in the
+            // chrome keeps the field out of the keyboard-avoidance path entirely — the
+            // old in-content custom bar got translated off-screen by the keyboard under
+            // the TabView's hosting.
             if router.activeServerID != nil {
-                Tab("Search", systemImage: "magnifyingglass", value: AppTab.search) {
+                Tab(value: AppTab.search, role: .search) {
                     NavigationStack {
                         JellyfinSearchView()
                     }

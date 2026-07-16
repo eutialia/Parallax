@@ -35,6 +35,10 @@ final class JellyfinSearchViewModel {
     /// Showing the blocking full-screen failure — the state an offline→online recovery should
     /// re-run the last query for. Drives `.recoversFromOffline`.
     var isStalled: Bool { if case .failed = state { true } else { false } }
+    /// A search session is on screen (loading/loaded/failed) — false only at idle. Drives the
+    /// scope row's visibility so it enters/leaves in the same motion as the content swap
+    /// (both flip on the same debounced state transition, unlike the raw keystroke).
+    var hasActiveSearch: Bool { state != .idle }
     private let repo: LibraryRepository
     private let debouncer: AsyncDebouncer<String>
     private var consumerTask: Task<Void, Never>?
