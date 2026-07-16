@@ -14,19 +14,19 @@ import ParallaxCore
 struct JellyfinSearchResultsView: View, Equatable {
     let results: SearchResults
     let session: Session
-    let posterCols: Int
-    let landscapeCols: Int
-    /// `AppLayout.contentHMargin` from the parent — passed as a plain value
-    /// (not an `@Environment` idiom read) to keep the `==` skip honest.
-    let hMargin: CGFloat
+    /// Passed as a plain value from the parent (not an `@Environment` read)
+    /// to keep the `==` skip honest; every layout metric derives from it.
+    let idiom: AppIdiom
 
     static func == (lhs: JellyfinSearchResultsView, rhs: JellyfinSearchResultsView) -> Bool {
         lhs.results == rhs.results
             && lhs.session == rhs.session
-            && lhs.posterCols == rhs.posterCols
-            && lhs.landscapeCols == rhs.landscapeCols
-            && lhs.hMargin == rhs.hMargin
+            && lhs.idiom == rhs.idiom
     }
+
+    private var posterCols: Int { AppLayout.searchPosterColumns(idiom: idiom) }
+    private var landscapeCols: Int { AppLayout.searchLandscapeColumns(idiom: idiom) }
+    private var hMargin: CGFloat { AppLayout.contentHMargin(idiom: idiom) }
 
     var body: some View {
         ScrollView {
@@ -54,12 +54,14 @@ struct JellyfinSearchResultsView: View, Equatable {
                         ForEach(results.episodes) { e in
                             ItemNavigator(item: .episode(e), session: session) {
                                 // Episodes need the detail row a poster doesn't: neither the still
-                                // nor the episode name says which show this is.
+                                // nor the episode name says which show this is. `.lockup()` so the
+                                // tvOS focus lift nudges that row aside instead of landing on it.
                                 MediaTile(
                                     title: e.name, imageRef: e.stillFirstImageRef, session: session,
                                     watched: .init(.episode(e)), aspectRatio: MediaImage.landscape, maxImageWidth: 500,
                                     metadata: .init(leading: e.seriesContextCaption, trailing: e.timeCaption())
                                 )
+                                .lockup()
                             }
                         }
                     }
@@ -81,7 +83,15 @@ struct JellyfinSearchResultsView: View, Equatable {
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("\(title), \(count) result\(count == 1 ? "" : "s")")
             .accessibilityAddTraits(.isHeader)
-            LazyVGrid(columns: posterGridColumns(fixedColumns: cols, columnMinWidth: 0), spacing: Space.s18) {
+            // Shared idiom-aware gaps (40pt on tvOS) so a focused tile's lift
+            // clears its neighbours — the same fix `libraryListSpacing` records.
+            LazyVGrid(
+                columns: posterGridColumns(
+                    fixedColumns: cols, columnMinWidth: 0,
+                    columnSpacing: AppLayout.posterGridColumnSpacing(idiom: idiom)
+                ),
+                spacing: AppLayout.posterGridRowSpacing(idiom: idiom)
+            ) {
                 content()
             }
         }
@@ -108,23 +118,48 @@ private func previewEpisode(
     )
 }
 
-/// The episode detail row across its data shapes: mid-watch ("22 min left" + progress ring),
-/// unwatched with runtime, watched (check badge), a long series name squeezing against the time
-/// caption, season unknown (degrades to "E7"), and indexes/runtime/series all missing (title-only
-/// row, no stray gap). The placeholder artwork stands in for stills — the row under the thumbnail
-/// is what's under test.
+/// One fixture set for both previews below, so an edit can't silently desync them:
+/// mid-watch ("22 min left" + progress ring), unwatched with runtime, watched (check badge),
+/// a long series name squeezing against the time caption, season unknown (degrades to "E7"),
+/// and indexes/runtime/series all missing (title-only row, no stray gap).
+private let previewSearchEpisodes = [
+    previewEpisode("e1", name: "The Winds of Winter", series: "Game of Thrones", season: 6, index: 10, runtimeMinutes: 68, positionMinutes: 46),
+    previewEpisode("e2", name: "Ozymandias", series: "Breaking Bad", season: 5, index: 14, runtimeMinutes: 47),
+    previewEpisode("e3", name: "Pine Barrens", series: "The Sopranos", season: 3, index: 11, runtimeMinutes: 45, played: true),
+    previewEpisode("e4", name: "Special", series: "It's Always Sunny in Philadelphia", season: nil, index: 7, runtimeMinutes: 23),
+    previewEpisode("e5", name: "A Very Long Episode Title That Should Truncate Cleanly", season: nil, index: nil, runtimeMinutes: nil),
+]
+
+/// The episode detail row across its data shapes (see `previewSearchEpisodes`). The placeholder
+/// artwork stands in for stills — the row under the thumbnail is what's under test.
 #Preview("Episode metadata rows") {
-    let results = SearchResults(movies: [], series: [], episodes: [
-        previewEpisode("e1", name: "The Winds of Winter", series: "Game of Thrones", season: 6, index: 10, runtimeMinutes: 68, positionMinutes: 46),
-        previewEpisode("e2", name: "Ozymandias", series: "Breaking Bad", season: 5, index: 14, runtimeMinutes: 47),
-        previewEpisode("e3", name: "Pine Barrens", series: "The Sopranos", season: 3, index: 11, runtimeMinutes: 45, played: true),
-        previewEpisode("e4", name: "Special", series: "It's Always Sunny in Philadelphia", season: nil, index: 7, runtimeMinutes: 23),
-        previewEpisode("e5", name: "A Very Long Episode Title That Should Truncate Cleanly", season: nil, index: nil, runtimeMinutes: nil),
-    ])
+    let results = SearchResults(movies: [], series: [], episodes: previewSearchEpisodes)
     NavigationStack {
-        JellyfinSearchResultsView(results: results, session: .preview, posterCols: 3, landscapeCols: 2, hMargin: Space.s16)
+        JellyfinSearchResultsView(results: results, session: .preview, idiom: .compact)
     }
     .environment(PlaybackPresenter())
     .background(Color.background)
+}
+
+/// tv-idiom regression: the grids must carry the canonical 40pt focusable-tile gaps
+/// (`AppLayout.posterGridColumn/RowSpacing`) — at the old hardcoded 12/18pt the system
+/// focus lift (`hoverEffect(.highlight)`) on a result overlapped its neighbours. A static
+/// render can't show the lift itself; what's under test is the resting gap it needs.
+#Preview("TV grid gaps", traits: .fixedLayout(width: 1920, height: 1080)) {
+    let movies = (1...6).map { i in
+        Movie(
+            id: ItemID(rawValue: "m\(i)"), title: "Movie \(i)", overview: nil, year: 2019 + i,
+            runtime: .seconds(6000), communityRating: nil, officialRating: nil, genres: [],
+            primaryTag: nil, backdropTags: [], logoTag: nil, thumbTag: nil,
+            userData: UserItemData(played: false, playbackPositionTicks: 0, playCount: 0, isFavorite: false)
+        )
+    }
+    let results = SearchResults(movies: movies, series: [], episodes: Array(previewSearchEpisodes.prefix(3)))
+    NavigationStack {
+        JellyfinSearchResultsView(results: results, session: .preview, idiom: .tv)
+    }
+    .environment(PlaybackPresenter())
+    .background(Color.background)
+    .environment(\.colorScheme, .dark)
 }
 #endif

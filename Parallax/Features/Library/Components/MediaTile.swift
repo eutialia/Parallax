@@ -69,13 +69,41 @@ struct MediaTile: View {
     var body: some View {
         // The tvOS focus highlight + zoom transition live on the thumbnail (inside MediaThumbnail),
         // not this VStack — the poster lifts on focus while the metadata row stays as supporting
-        // text beneath it. SMB is iOS-first, where there's no focus lift, so the artwork-scoped
-        // highlight only matters if SMB grids ever reach tvOS.
+        // text beneath it. This contained form is always a SINGLE view, so callers may attach
+        // `.task`/`contentShape`/etc. freely; a tvOS `.borderless` button label that wants the
+        // native caption-avoidance nudge uses `lockup()` instead.
         VStack(alignment: .leading, spacing: Self.metadataGap) {
             thumbnail
             if let metadata {
                 metadataRow(metadata)
             }
+        }
+    }
+
+    /// The `.borderless` button-label form. On tvOS it emits the thumbnail and metadata row as
+    /// SIBLING label children — the lockup layout slides the text out of the lifted image's way
+    /// only when the text is its own label child; wrapped in the contained VStack it sat dead
+    /// still and the focused still landed on the title (LockupTextSpikeScreen rows B/C,
+    /// device-verified 2026-07). The style owns the thumbnail↔text gap and its focus motion;
+    /// `metadataGap` remains the iOS/skeleton metric. iOS resolves to the contained form.
+    ///
+    /// Use ONLY as a Button label: the tvOS multi-view body is Group-transparent, so a modifier
+    /// applied to a `Lockup` distributes onto EACH sibling (`.task` would run twice), and outside
+    /// a lockup-managing button nothing supplies the thumbnail↔text gap.
+    func lockup() -> Lockup { Lockup(tile: self) }
+
+    struct Lockup: View {
+        let tile: MediaTile
+
+        var body: some View {
+            #if os(tvOS)
+            tile.thumbnail
+            if let metadata = tile.metadata {
+                tile.metadataRow(metadata)
+            }
+            #else
+            tile
+            #endif
         }
     }
 

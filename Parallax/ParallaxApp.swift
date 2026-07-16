@@ -36,12 +36,17 @@ struct ParallaxApp: App {
     /// Boot into the poster-tile focus spike screen (PosterFocusSpike.swift) instead of
     /// the app — Debug-only diagnostic for on-device focus A/Bs.
     private let posterFocusSpike = false
+    /// Boot into the lockup text-nudge spike (same file) — does the `.borderless` style's
+    /// move-text-out-of-the-way work with our label shapes?
+    private let lockupTextSpike = false
 
     var body: some Scene {
         WindowGroup {
             #if DEBUG
             if posterFocusSpike {
                 PosterFocusSpikeScreen()
+            } else if lockupTextSpike {
+                LockupTextSpikeScreen()
             } else {
                 appRoot
             }

@@ -164,9 +164,15 @@ struct PosterGridLoadingSkeleton: View {
     @Environment(\.appIdiom) private var idiom
 
     var body: some View {
+        // Same idiom-aware gaps as the loaded search grid (JellyfinSearchResultsView) —
+        // hardcoded 12/18 here would visibly re-space the whole grid on the skeleton→results
+        // swap now that the loaded side uses the 40pt tvOS focus-clearance tokens.
         LazyVGrid(
-            columns: Array(repeating: GridItem(.flexible(), spacing: Space.s12), count: columns),
-            spacing: Space.s18
+            columns: posterGridColumns(
+                fixedColumns: columns, columnMinWidth: 0,
+                columnSpacing: AppLayout.posterGridColumnSpacing(idiom: idiom)
+            ),
+            spacing: AppLayout.posterGridRowSpacing(idiom: idiom)
         ) {
             ForEach(0..<(columns * rows), id: \.self) { _ in
                 MediaTileSkeleton()

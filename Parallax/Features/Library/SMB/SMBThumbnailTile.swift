@@ -23,6 +23,10 @@ struct SMBThumbnailTile: View {
     @State private var artwork: MediaArtwork = .none
 
     var body: some View {
+        // The contained MediaTile (not `.lockup()`): the modifiers below must stay single-target
+        // — the lockup form is Group-transparent on tvOS, so `.task` would fetch the frame-grab
+        // twice and `contentShape` would split the hit region. Costs SMB the tvOS focus-nudge on
+        // its metadata row; revisit at the SMB tvOS bring-up.
         MediaTile(
             title: item.displayTitle,
             artwork: artwork.source,

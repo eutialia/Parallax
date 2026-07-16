@@ -159,13 +159,7 @@ struct JellyfinSearchView: View {
                 // The grid is an `.equatable()` child so a per-keystroke `query` change
                 // can't re-render the tiles (see JellyfinSearchResultsView). The refine
                 // overlay stays out here, in the reactive parent.
-                JellyfinSearchResultsView(
-                    results: results,
-                    session: session,
-                    posterCols: posterCols,
-                    landscapeCols: landscapeCols,
-                    hMargin: AppLayout.contentHMargin(idiom: idiom)
-                )
+                JellyfinSearchResultsView(results: results, session: session, idiom: idiom)
                 .equatable()
                 // Floating indicator while refining — an overlay (not an inline row)
                 // so the results don't shift down/up on every debounced keystroke.
@@ -205,6 +199,5 @@ struct JellyfinSearchView: View {
     }
 
     private var posterCols: Int { AppLayout.searchPosterColumns(idiom: idiom) }
-    private var landscapeCols: Int { AppLayout.searchLandscapeColumns(idiom: idiom) }
 }
 
