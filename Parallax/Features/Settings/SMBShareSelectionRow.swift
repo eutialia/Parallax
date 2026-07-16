@@ -30,7 +30,9 @@ struct ShareSelectionRow: View {
 
                 HStack(spacing: Space.s12) {
                     Image(systemName: isUnavailable ? "externaldrive.badge.xmark" : "externaldrive")
-                        .font(.system(size: 18, weight: .medium))
+                        // 18 is the iOS size; `glyphSize` steps it up to the 10-foot scale on tvOS
+                        // so the drive glyph keeps pace with the platform-scaled row text.
+                        .font(.system(size: SettingsMetrics.glyphSize(18), weight: .medium))
                         .foregroundStyle(Color.secondaryLabel)
                         .frame(width: SettingsListRow.glyphColumnWidth, alignment: .center)
 

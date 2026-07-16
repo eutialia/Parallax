@@ -17,8 +17,29 @@ enum SettingsMetrics {
     }
     /// Leading glyph column width (icon + gap to the title) — the SINGLE source `SettingsListRow`
     /// renders its glyph column at too, so the hairline (derived below) starts exactly at the title
-    /// edge instead of 4px shy of it. The gap to the title is `Space.s12`.
-    static let glyphColumn: CGFloat = 26
+    /// edge instead of 4px shy of it. The gap to the title is `Space.s12`. tvOS widens with the
+    /// `glyphSize` step-up so the larger 10-foot glyphs (wide marks like `externaldrive.badge.wifi`
+    /// included) still center inside the column.
+    static var glyphColumn: CGFloat {
+        #if os(tvOS)
+        44
+        #else
+        26
+        #endif
+    }
+
+    /// tvOS step-up for a row's leading glyph. The row TEXT tokens jump ~1.6× from their iOS sizes
+    /// on the 10-foot canvas (`rowBody` 17 → 29, `rowTitle` 17 → 31) but glyph point sizes were
+    /// passed through raw — an 18–22pt icon beside 29pt text read miniature from the couch (the
+    /// Choose Shares report). Call sites keep declaring the iOS size; the platform ratio lives here
+    /// so glyphs and text can't drift apart again.
+    static func glyphSize(_ base: CGFloat) -> CGFloat {
+        #if os(tvOS)
+        (base * 1.6).rounded()
+        #else
+        base
+        #endif
+    }
     /// Inset of the inter-row hairline so it begins under the title, clearing the glyph column — the
     /// iOS grouped-list look (`.row + .row::before{left:49px}`). = rowHInset + glyph + gap.
     static let rowSeparatorInset: CGFloat = rowHInset + glyphColumn + Space.s12

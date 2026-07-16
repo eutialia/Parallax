@@ -24,8 +24,19 @@ struct SoonBadge: View {
 struct SelectionCircle: View {
     enum SelectionState: Equatable { case off, on, mixed }
 
+    /// Platform default diameter. iOS keeps the handoff's 25pt; tvOS steps up to 34 so the circle
+    /// reads as a control beside the 29–31pt 10-foot row text instead of a fleck (a fixed 25 was
+    /// one of the "everything is small" offenders on the Choose Shares screen).
+    static var defaultSize: CGFloat {
+        #if os(tvOS)
+        34
+        #else
+        25
+        #endif
+    }
+
     let state: SelectionState
-    var size: CGFloat = 25
+    var size: CGFloat = SelectionCircle.defaultSize
 
     private var lineWidth: CGFloat { size * 0.1 }
 

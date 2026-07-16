@@ -78,12 +78,14 @@ struct SettingsRowLabel: View {
 
     @ViewBuilder
     private var leadingGlyph: some View {
+        // `iconSize` is the iOS point size; `glyphSize` applies the tvOS 10-foot step-up so the
+        // glyph keeps pace with the platform-scaled row text (see SettingsMetrics.glyphSize).
         Group {
             if let image {
-                TemplateGlyph(name: image, size: iconSize)
+                TemplateGlyph(name: image, size: SettingsMetrics.glyphSize(iconSize))
             } else if let systemImage {
                 Image(systemName: systemImage)
-                    .font(.system(size: iconSize, weight: .medium))
+                    .font(.system(size: SettingsMetrics.glyphSize(iconSize), weight: .medium))
             }
         }
         .foregroundStyle(isDestructive ? Color.destructive : Color.secondaryLabel)
