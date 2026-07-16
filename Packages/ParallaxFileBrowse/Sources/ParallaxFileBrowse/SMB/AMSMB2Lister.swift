@@ -1,5 +1,7 @@
 import AMSMB2
 import Foundation
+import os
+import ParallaxCore
 
 /// Real `SMBLister` over AMSMB2 (libsmb2 SMB2/3). Directory enumeration only —
 /// streaming runs through libVLC's native `smb://` path, not this type.
@@ -15,6 +17,7 @@ import Foundation
 /// logged, never embedded in a URL string. The `host` URL we construct carries
 /// no userinfo.
 public actor AMSMB2Lister: SMBLister {
+    private static let logger = Log.custom(category: "AMSMB2Lister")
 
     private let serverURL: URL
     private let domain: String
@@ -60,12 +63,20 @@ public actor AMSMB2Lister: SMBLister {
     /// `enumerateHidden: false` excludes `$`-admin shares. Server-level: does not retain
     /// the manager as the per-share connection.
     public func listShares() async throws -> [SMBShare] {
+        Self.logger.debug("listShares: creating manager for \(self.serverURL.host() ?? "?", privacy: .public)")
         guard let client = SMB2Manager(url: serverURL, domain: domain, credential: credential) else {
             throw SMBListerError.managerInitFailed
         }
         client.timeout = connectTimeout
-        let raw = try await client.listShares(enumerateHidden: false)
-        return raw.map { SMBShare(name: $0.name, comment: $0.comment) }
+        Self.logger.debug("listShares: entering bounded enumeration")
+        do {
+            let raw = try await bounded { try await client.listShares(enumerateHidden: false) }
+            Self.logger.debug("listShares: enumerated \(raw.count) shares")
+            return raw.map { SMBShare(name: $0.name, comment: $0.comment) }
+        } catch {
+            Self.logger.debug("listShares: threw \(String(describing: error), privacy: .public)")
+            throw error
+        }
     }
 
     /// Lists one directory level of `share` at `path`. Connects (or reconnects to a
@@ -74,15 +85,19 @@ public actor AMSMB2Lister: SMBLister {
     public func list(share: String, path: String) async throws -> [SMBDirectoryEntry] {
         let client = try await connectedManager(for: share)
         let listPath = path.isEmpty ? "/" : path
-        let raw = try await client.contentsOfDirectory(atPath: listPath, recursive: false)
-        return raw.map { attrs in
-            SMBDirectoryEntry(
-                name: attrs.name ?? "",
-                isDirectory: attrs.isDirectory,
-                size: attrs.fileSize ?? 0,
-                modifiedAt: attrs.contentModificationDate,
-                createdAt: attrs.creationDate
-            )
+        // Mapped INSIDE the bound: AMSMB2's raw attribute dictionaries are `[URLResourceKey: Any]`
+        // (not Sendable), so only the neutral entries may cross the race boundary.
+        return try await bounded {
+            let raw = try await client.contentsOfDirectory(atPath: listPath, recursive: false)
+            return raw.map { attrs in
+                SMBDirectoryEntry(
+                    name: attrs.name ?? "",
+                    isDirectory: attrs.isDirectory,
+                    size: attrs.fileSize ?? 0,
+                    modifiedAt: attrs.contentModificationDate,
+                    createdAt: attrs.creationDate
+                )
+            }
         }
     }
 
@@ -120,10 +135,32 @@ public actor AMSMB2Lister: SMBLister {
         // Bound every operation so a dead/wrong host fails in `connectTimeout` seconds instead of
         // AMSMB2's 60s default (the SMB-login spin-forever bug).
         client.timeout = connectTimeout
-        try await client.connectShare(name: share)
+        try await bounded { try await client.connectShare(name: share) }
         self.manager = client
         self.connectedShare = share
         return client
+    }
+
+    /// Outer wall-clock ceiling on one AMSMB2 operation. AMSMB2's own `timeout` bounds SMB PDU
+    /// responses but NOT every connect phase — on device, name resolution can block far past it
+    /// (the tvOS add-server "spinner forever" hang) — so every await on the manager goes through
+    /// this bound too. The grace over `connectTimeout` lets AMSMB2's more specific error win
+    /// whenever its own timeout does fire; this ceiling only bites in the phases AMSMB2 never
+    /// bounds. See `withHardTimeout` for why the loser keeps running detached.
+    private func bounded<T: Sendable>(
+        _ operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        do {
+            return try await withHardTimeout(seconds: connectTimeout + 5, operation: operation)
+        } catch is HardTimeoutError {
+            // The abandoned C call is still running on this connection and its state is now
+            // unknown — never reuse it. Drop the manager so the next call builds a fresh
+            // connection instead of racing the orphan (no disconnect attempt: that would await
+            // the same wedged connection).
+            manager = nil
+            connectedShare = nil
+            throw SMBListerError.timedOut
+        }
     }
 }
 
@@ -131,4 +168,7 @@ public actor AMSMB2Lister: SMBLister {
 public enum SMBListerError: Error, Sendable {
     /// `SMB2Manager(url:domain:credential:)` returned nil (malformed host URL).
     case managerInitFailed
+    /// The operation outlived the hard wall-clock ceiling (`connectTimeout` + grace) — an
+    /// unreachable host hanging in a phase AMSMB2's own response timeout doesn't cover.
+    case timedOut
 }
