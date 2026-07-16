@@ -32,9 +32,11 @@ enum OverviewFormatting {
 // MARK: - Hero
 
 /// Jellyfin overview blurb in the hero foreground, between title and actions.
+/// `.subheadline` auto-ramps on tvOS; only the measure is idiom-managed (HeroMetrics).
 struct HeroOverview: View {
     let text: String
-    let regularWidth: Bool
+
+    @Environment(\.appIdiom) private var idiom
 
     var body: some View {
         Text(text)
@@ -44,7 +46,7 @@ struct HeroOverview: View {
             .truncationMode(.tail)
             .fixedSize(horizontal: false, vertical: true)
             .frame(
-                maxWidth: HeroMetrics.overviewMaxWidth(regularWidth: regularWidth),
+                maxWidth: HeroMetrics.overviewMaxWidth(idiom: idiom),
                 alignment: .leading
             )
     }
@@ -56,7 +58,8 @@ struct HeroOverview: View {
 /// the hero foreground's flexible subtitle slot (the fixed title/actions hold their size).
 struct AdaptiveHeroOverview: View {
     let text: String
-    let regularWidth: Bool
+
+    @Environment(\.appIdiom) private var idiom
 
     var body: some View {
         ViewThatFits(in: .vertical) {
@@ -66,7 +69,7 @@ struct AdaptiveHeroOverview: View {
             line(2)
             line(1)
         }
-        .frame(maxWidth: HeroMetrics.overviewMaxWidth(regularWidth: regularWidth), alignment: .leading)
+        .frame(maxWidth: HeroMetrics.overviewMaxWidth(idiom: idiom), alignment: .leading)
     }
 
     private func line(_ limit: Int) -> some View {
@@ -80,12 +83,11 @@ struct AdaptiveHeroOverview: View {
 }
 
 extension AdaptiveHeroOverview {
-    init?(item: Item, regularWidth: Bool) {
+    init?(item: Item) {
         guard let overview = item.overview?
             .trimmingCharacters(in: .whitespacesAndNewlines),
               !overview.isEmpty
         else { return nil }
         self.text = OverviewFormatting.heroBlurb(from: overview)
-        self.regularWidth = regularWidth
     }
 }

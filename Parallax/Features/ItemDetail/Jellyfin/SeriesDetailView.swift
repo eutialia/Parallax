@@ -34,7 +34,7 @@ struct SeriesDetailView: View {
                                     title: HeroTitle(
                                         item: .series(sd.series),
                                         session: session,
-                                        regularWidth: idiom.usesLandscapeHeroBand,
+                                        idiom: idiom,
                                         scale: .detail
                                     )
                                 ) {

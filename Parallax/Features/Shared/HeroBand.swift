@@ -143,11 +143,20 @@ private struct HeroStretchLayer<Content: View>: View {
 /// drift apart. A plain namespace (not a static on the generic `HeroBand`, which would
 /// force callers to spell out its two type parameters just to read a constant).
 enum HeroMetrics {
-    /// Readable column width for hero foreground content (title, meta, actions).
-    static let contentMaxWidth: CGFloat = 720
-    /// Overview blurb — tighter on iPad so three lines wrap sooner.
-    static func overviewMaxWidth(regularWidth: Bool) -> CGFloat {
-        regularWidth ? 480 : contentMaxWidth
+    /// Readable column width for hero foreground content (title, meta, actions). tv widens with
+    /// its type ramp — 720 on the 1920pt canvas was the iPad column verbatim (the audit's C1/C3
+    /// "tv sized like iPad" defect class, which missed the hero).
+    static func contentMaxWidth(idiom: AppIdiom) -> CGFloat {
+        idiom == .tv ? 1080 : 720
+    }
+    /// Overview blurb — tighter on iPad so three lines wrap sooner. tv holds iPad's ~32em measure
+    /// at the tvOS subheadline size (≈29pt vs 15pt): 480 × 29/15 ≈ 880.
+    static func overviewMaxWidth(idiom: AppIdiom) -> CGFloat {
+        switch idiom {
+        case .compact: contentMaxWidth(idiom: .compact)
+        case .regular: 480
+        case .tv: 880
+        }
     }
     /// Band aspect ratio (width ÷ height): 2:3 poster on iPhone, 16:9 landscape on iPad.
     static func bandAspectRatio(regularWidth: Bool) -> CGFloat {
@@ -306,8 +315,7 @@ extension View {
                                     .scaledFont(52, relativeTo: .largeTitle, weight: .heavy)
                                     .foregroundStyle(.white).lineLimit(2).minimumScaleFactor(0.7)
                                 HeroOverview(
-                                    text: "A crew on humanity's last orbital station races to prevent a cascade failure.",
-                                    regularWidth: true
+                                    text: "A crew on humanity's last orbital station races to prevent a cascade failure."
                                 )
                                 Label("Play", systemImage: "play.fill")
                                     .font(.headline).foregroundStyle(Color.buttonLabel)
@@ -474,8 +482,7 @@ private struct PreviewHeroForeground: View {
                 .foregroundStyle(.white)
                 .fixedSize(horizontal: false, vertical: true)
             AdaptiveHeroOverview(
-                text: "A crew on humanity's last orbital station races to prevent a cascade failure before re-entry, rationing oxygen while the ground crew fights to reach them in time.",
-                regularWidth: regularWidth
+                text: "A crew on humanity's last orbital station races to prevent a cascade failure before re-entry, rationing oxygen while the ground crew fights to reach them in time."
             )
             Label("Play", systemImage: "play.fill")
                 .font(.headline).foregroundStyle(Color.buttonLabel)

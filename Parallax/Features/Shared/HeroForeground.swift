@@ -63,13 +63,17 @@ struct HeroForeground<Subtitle: View, Actions: View>: View {
 struct HeroEyebrowLabel: View {
     let text: String
 
+    @Environment(\.appIdiom) private var idiom
+
     var body: some View {
         Text(text)
             .font(.caption.weight(.bold))
             .tracking(1.5)
             .foregroundStyle(.white)
-            .padding(.horizontal, Space.s12)
-            .padding(.vertical, Space.s3)
+            // `.caption` auto-ramps 12→25pt on tvOS; the capsule padding ramps with it or the
+            // stroke crowds the text.
+            .padding(.horizontal, idiom == .tv ? Space.s18 : Space.s12)
+            .padding(.vertical, idiom == .tv ? Space.s8 : Space.s3)
             .background(.black.opacity(0.5), in: Capsule())
             .overlay(Capsule().strokeBorder(.white.opacity(0.35), lineWidth: 1))
     }
@@ -82,7 +86,7 @@ extension View {
     /// source for the geometry the two used to re-roll (and where Home double-applied the width).
     func heroForegroundPlacement(idiom: AppIdiom) -> some View {
         self
-            .frame(maxWidth: HeroMetrics.contentMaxWidth, alignment: .leading)
+            .frame(maxWidth: HeroMetrics.contentMaxWidth(idiom: idiom), alignment: .leading)
             .safeAreaPadding(.horizontal, HeroMetrics.foregroundHorizontalInset(idiom: idiom))
             .padding(.bottom, HeroMetrics.foregroundBottomInset(idiom: idiom))
     }

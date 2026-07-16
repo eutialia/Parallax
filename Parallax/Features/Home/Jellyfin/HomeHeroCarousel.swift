@@ -153,9 +153,9 @@ struct HomeHeroCarousel: View {
         // `HeroBand`/`HeroForeground`; this just binds the slots for the settled page.
         return HeroForeground(
             eyebrow: entry.eyebrow.rawValue,
-            title: HeroTitle(item: item, session: session, regularWidth: regularWidth, scale: .home)
+            title: HeroTitle(item: item, session: session, idiom: idiom, scale: .home)
         ) {
-            if let overview = AdaptiveHeroOverview(item: item, regularWidth: regularWidth) {
+            if let overview = AdaptiveHeroOverview(item: item) {
                 overview
             } else if let meta = item.heroMetadataLine {
                 Text(meta)

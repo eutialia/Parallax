@@ -34,7 +34,7 @@ struct MovieDetailView: View {
                                     title: HeroTitle(
                                         item: .movie(md.movie),
                                         session: session,
-                                        regularWidth: idiom.usesLandscapeHeroBand,
+                                        idiom: idiom,
                                         scale: .detail
                                     )
                                 ) {
