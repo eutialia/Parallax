@@ -46,8 +46,12 @@ struct SMBBrowseView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .navigationTitle(levelTitle)
+        // tvOS deliberately carries NO in-content title, matching `LibraryGridView`: the collapsed
+        // sidebar's top-left pill already names the surface, and a tvOS navigation title renders as
+        // in-content text that clips against the grid when the wall scrolls. iOS keeps the inline
+        // bar title (the current folder name) for drill-down orientation.
         #if !os(tvOS)
+        .navigationTitle(levelTitle)
         .navigationBarTitleDisplayMode(.inline)
         #endif
         // Recurse: drilling into a folder pushes a child `SMBBrowsePath`, which lands back here a
@@ -204,7 +208,10 @@ struct SMBBrowseGrid: View {
                     LazyVGrid(columns: columns, spacing: AppLayout.posterGridRowSpacing(idiom: idiom)) {
                         ForEach(media) { item in
                             Button { onPlay(item) } label: {
+                                // `.lockup()`: sibling label children on tvOS so the filename
+                                // nudges clear of the focus lift (contained on iOS).
                                 SMBThumbnailTile(item: item, ref: ref, provider: artworkProvider, aspectRatio: MediaImage.landscape)
+                                    .lockup()
                             }
                             .tvPosterButton()
                         }
@@ -253,22 +260,19 @@ private struct FolderBrowseCard: View {
     let name: String
 
     var body: some View {
+        #if os(tvOS)
+        // SIBLING children, not a VStack: the `.borderless` lockup only slides the name clear of
+        // the lifted card when the text is its own label child — contained, the focused card
+        // landed on the name (the same suppression the search tiles and `SMBThumbnailTile.Lockup`
+        // fixed). The style owns the card↔name gap; tap-shape concerns don't exist on tvOS.
+        glyphCard
+            .accessibilityLabel(name)
+        nameLabel
+            .accessibilityHidden(true)
+        #else
         VStack(alignment: .leading, spacing: MediaTile.metadataGap) {
-            ZStack {
-                Color.fill
-                Image(systemName: "folder.fill")
-                    .font(.system(size: 40, weight: .regular))
-                    .foregroundStyle(Color.secondaryLabel)
-            }
-            .aspectRatio(MediaImage.landscape, contentMode: .fit)
-            .clipShape(.rect(cornerRadius: Radius.tile))
-            // tvOS system highlight masked to the tile's corners — pairs with `.borderless` (tvPosterButton).
-            .tvPosterHighlight(cornerRadius: Radius.tile)
-            Text(name)
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(Color.label)
-                .lineLimit(1)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            glyphCard
+            nameLabel
         }
         // Pin the whole VStack (glyph card + name + the gap between) as the tap target, matching
         // `SMBThumbnailTile` — without it only the opaque art + name glyphs are tappable, leaving the
@@ -276,6 +280,28 @@ private struct FolderBrowseCard: View {
         .contentShape(.rect(cornerRadius: Radius.tile))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(name)
+        #endif
+    }
+
+    private var glyphCard: some View {
+        ZStack {
+            Color.fill
+            Image(systemName: "folder.fill")
+                .font(.system(size: 40, weight: .regular))
+                .foregroundStyle(Color.secondaryLabel)
+        }
+        .aspectRatio(MediaImage.landscape, contentMode: .fit)
+        .clipShape(.rect(cornerRadius: Radius.tile))
+        // tvOS system highlight masked to the tile's corners — pairs with `.borderless` (tvPosterButton).
+        .tvPosterHighlight(cornerRadius: Radius.tile)
+    }
+
+    private var nameLabel: some View {
+        Text(name)
+            .font(.subheadline.weight(.medium))
+            .foregroundStyle(Color.label)
+            .lineLimit(1)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

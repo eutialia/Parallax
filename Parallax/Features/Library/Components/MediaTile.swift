@@ -92,19 +92,51 @@ struct MediaTile: View {
     /// a lockup-managing button nothing supplies the thumbnail↔text gap.
     func lockup() -> Lockup { Lockup(tile: self) }
 
+    /// Lockup whose artwork loads asynchronously (the SMB frame-grab tiles): the task rides ONLY
+    /// the thumbnail sibling — attached to the whole tuple-transparent Lockup it would distribute
+    /// onto every sibling and fetch twice (the reason `SMBThumbnailTile` was stuck with the
+    /// contained form, costing it the tvOS caption nudge).
+    func lockup(
+        thumbnailTaskID: ItemID,
+        thumbnailTask: @escaping @MainActor () async -> Void
+    ) -> Lockup {
+        Lockup(tile: self, thumbnailTaskID: thumbnailTaskID, thumbnailTask: thumbnailTask)
+    }
+
     struct Lockup: View {
         let tile: MediaTile
+        /// See `lockup(thumbnailTaskID:thumbnailTask:)` — a per-thumbnail async load, kept OFF the
+        /// tuple so it runs once.
+        var thumbnailTaskID: ItemID? = nil
+        var thumbnailTask: (@MainActor () async -> Void)? = nil
 
         var body: some View {
             #if os(tvOS)
-            tile.thumbnail
+            thumbnailSibling
             if let metadata = tile.metadata {
                 tile.metadataRow(metadata)
             }
             #else
-            tile
+            // iOS: the contained single-view form; the task (when present) may safely ride the
+            // whole tile.
+            if let thumbnailTaskID, let thumbnailTask {
+                tile.task(id: thumbnailTaskID) { await thumbnailTask() }
+            } else {
+                tile
+            }
             #endif
         }
+
+        #if os(tvOS)
+        @ViewBuilder
+        private var thumbnailSibling: some View {
+            if let thumbnailTaskID, let thumbnailTask {
+                tile.thumbnail.task(id: thumbnailTaskID) { await thumbnailTask() }
+            } else {
+                tile.thumbnail
+            }
+        }
+        #endif
     }
 
     /// The detail line folds into the thumbnail's single accessibility element ("Title, 1.4 GB,
