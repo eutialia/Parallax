@@ -69,8 +69,13 @@ struct PlayerViewModelTests {
         engine.push(.ended)
         engine.finish()
 
-        // Let the consumer Task drain the scripted states.
-        try await Task.sleep(for: .milliseconds(50))
+        // Drain: the consumer runs real awaits between beats (preferred-track
+        // apply on .ready, session teardown on .ended), so a fixed sleep races
+        // it. Poll for the full beat sequence with a bounded deadline instead.
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while await reporting.events.count < 3, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
 
         #expect(vm.phase == .playing)
 
