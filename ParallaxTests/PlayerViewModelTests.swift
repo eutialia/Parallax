@@ -803,8 +803,8 @@ struct PlayerViewModelTests {
         #expect(!engine.calls.contains("seek(3000.0)"))
     }
 
-    @Test("remux transcode (proven video copy): an out-of-buffer seek stays in-stream — the server's keyframe branch is accurate, so no #15845 re-anchor")
-    func remuxOutOfBufferSeekStaysInStream() async throws {
+    @Test("remux transcode (proven video copy): in-buffer stays in-stream, out-of-buffer re-anchors — a mid-session ffmpeg restart shifts AVPlayer's established timeline even when the copy lands on a true keyframe")
+    func remuxOutOfBufferSeekReanchors() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         let builder = DeviceProfileBuilder(probe: FakeCapabilityProbe(hdr: .none, audioOutput: .stereo))
@@ -816,18 +816,18 @@ struct PlayerViewModelTests {
             transcodeReasons: ["AudioCodecNotSupported"]
         )
 
-        nonisolated(unsafe) var resolveCalls = 0
+        nonisolated(unsafe) var resolveCalls: [CMTime?] = []
         let vm = PlayerViewModel(
             deviceProfileBuilder: builder,
             playbackInfo: reporting,
-            resolve: { _, _, _, _, _ in resolveCalls += 1; return resolved },
+            resolve: { _, _, start, _, _ in resolveCalls.append(start); return resolved },
             engineFactory: { _ in engine },
             audioSession: NoopAudioSession(),
             fetchDelivery: { _ in remux },
             deliveryProbeSchedule: [.milliseconds(10)]
         )
         await vm.start(item: PlayerFixtures.movieDetail())
-        #expect(resolveCalls == 1)
+        #expect(resolveCalls.count == 1)
         let loadsAfterStart = engine.loadedAssets.count
 
         // The first .playing beat arms the delivery probe; wait for it to land.
@@ -836,14 +836,25 @@ struct PlayerViewModelTests {
         try await Task.sleep(for: .milliseconds(80))
         #expect(vm.transcodeDelivery?.isVideoDirect == true)
 
-        // Out-of-buffer seek on a proven video-copy session seeks IN-STREAM: the server's
-        // isHlsRemuxing keyframe branch is frame-accurate, so there's no #15845 drift to
-        // dodge and no re-anchor. (A re-encode would re-resolve here — see the test below.)
+        // In-buffer seek stays in-stream: those segments were downloaded under the
+        // item's live timeline mapping, so they can't shift it.
         engine.bufferedRange = 0...120
+        await vm.seek(to: CMTime(seconds: 60, preferredTimescale: 600))
+        #expect(engine.calls.contains("seek(60.0)"))
+        #expect(resolveCalls.count == 1)
+
+        // Out-of-buffer seek re-anchors EVEN on a proven video copy. The keyframe-true
+        // playlist makes the server's restart land accurately, but the restarted
+        // segments join an AVPlayerItem whose timeline mapping was established by the
+        // ORIGINAL segments — any miss (pad overshoot, keyframe gap) shifts the clock
+        // under absolute sidecar cues, intermittently and by up to a keyframe interval
+        // (device-confirmed 2026-07-17). A fresh item re-derives the mapping, so only
+        // the re-anchor is safe; delivery no longer exempts anything.
         await vm.seek(to: CMTime(seconds: 3000, preferredTimescale: 600))
-        #expect(engine.calls.contains("seek(3000.0)"))
-        #expect(resolveCalls == 1)                              // no fresh transcode
-        #expect(engine.loadedAssets.count == loadsAfterStart)   // engine not reloaded
+        #expect(resolveCalls.count == 2)
+        #expect(CMTimeGetSeconds((resolveCalls.last ?? nil) ?? .zero) == 3000)
+        #expect(engine.loadedAssets.count == loadsAfterStart + 1)   // engine reloaded
+        #expect(!engine.calls.contains("seek(3000.0)"))             // no in-stream drift seek
     }
 
     @Test("re-encode transcode (video re-encoded): an out-of-buffer seek still re-anchors — dodging #15845 accurate-seek drift")
@@ -962,8 +973,8 @@ struct PlayerViewModelTests {
         #expect(engine.calls == ["load", "play", "seek(3000.0)"])
     }
 
-    @Test("scrub commit on a remux transcode (proven video copy): in-stream seek, no re-anchor")
-    func commitScrubSeekRemuxInStream() async throws {
+    @Test("scrub commit on a remux transcode (proven video copy) out of buffer: re-anchors like a re-encode — no delivery exemption")
+    func commitScrubSeekRemuxReanchors() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         let builder = DeviceProfileBuilder(probe: FakeCapabilityProbe(hdr: .none, audioOutput: .stereo))
@@ -992,9 +1003,9 @@ struct PlayerViewModelTests {
 
         engine.bufferedRange = 0...120
         await vm.commitScrubSeek(to: CMTime(seconds: 3000, preferredTimescale: 600), resume: true)
-        #expect(engine.calls.contains("seek(3000.0)"))          // in-stream fast path
-        #expect(resolveCalls == 1)                              // no fresh transcode
-        #expect(engine.loadedAssets.count == loadsAfterStart)   // engine not reloaded
+        #expect(!engine.calls.contains("seek(3000.0)"))             // no in-stream drift seek
+        #expect(resolveCalls == 2)                                  // fresh transcode at target
+        #expect(engine.loadedAssets.count == loadsAfterStart + 1)   // engine reloaded
     }
 
     @Test("scrub commit on a re-encode transcode out of buffer: re-anchors (the #15845 drift fix) instead of an in-stream seek")
@@ -1410,37 +1421,22 @@ struct PlayerViewModelTests {
         #expect(vm.activeSubtitleCues.first?.text == "Subtitle text")
     }
 
-    @Test("subtitle delay nudge retimes the client overlay (clientSubtitleDelayMs) and resets on a sidecar change")
-    func clientSubtitleDelayNudge() async throws {
+    @Test("setSubtitleDelay forwards to the engine (VLC's live retime; AVKit's is a protocol no-op)")
+    func subtitleDelayForwardsToEngine() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
-        let builder = DeviceProfileBuilder(probe: probe)
-        let resolved = PlayerFixtures.resolvedMultiTrackTranscode()   // seeds default sub 1
-        let vtt = Data("WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nNi hao".utf8)
+        let builder = DeviceProfileBuilder(probe: FakeCapabilityProbe(hdr: .none, audioOutput: .stereo))
         let vm = PlayerViewModel(
             deviceProfileBuilder: builder,
             playbackInfo: reporting,
-            resolve: { _, _, _, _, _ in resolved },
+            resolve: { _, _, _, _, _ in PlayerFixtures.resolved() },
             engineFactory: { _ in engine },
-            audioSession: NoopAudioSession(),
-            subtitleFetch: { _ in vtt }
+            audioSession: NoopAudioSession()
         )
         await vm.start(item: PlayerFixtures.movieDetail())
-        try await Task.sleep(for: .milliseconds(50))   // let the default sidecar fetch land
 
-        // A client-rendered sidecar is active and un-nudged.
-        #expect(!vm.activeSubtitleCues.isEmpty)
-        #expect(vm.clientSubtitleDelayMs == 0)
-
-        // The nudge retimes the OVERLAY (the transcode seek-desync escape hatch), not the
-        // engine — the cues are drawn against the engine clock, which AVKit can't retime.
-        await vm.setSubtitleDelay(ms: 1500)
-        #expect(vm.clientSubtitleDelayMs == 1500)
-
-        // Changing the active sidecar (here: Off) resets the nudge — it's per timeline.
-        await vm.selectSubtitleTrack(nil)
-        #expect(vm.clientSubtitleDelayMs == 0)
+        await vm.setSubtitleDelay(ms: 250)
+        #expect(engine.calls.contains("setSubtitleDelay(250)"))
     }
 
     @Test("isPlaying tracks engine play/pause so the button can resume from pause")

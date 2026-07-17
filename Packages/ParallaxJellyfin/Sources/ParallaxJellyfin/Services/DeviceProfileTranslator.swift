@@ -116,9 +116,10 @@ enum DeviceProfileTranslator {
             // a `ts` transcode black-screens every HEVC remux/transcode while audio +
             // subs keep playing (verified on device 2026-06-26; cf. Swiftfin#1805). The
             // cost of staying on fMP4 is Jellyfin's `-noaccurate_seek` (jellyfin#15845):
-            // a seek that restarts ffmpeg misaligns the transcoded video clock, so the
-            // client subtitle overlay (absolute cues vs the player clock) drifts by a
-            // fixed, seek-direction-dependent offset until a fresh transcode re-anchors.
+            // a seek that restarts ffmpeg mid-session can misalign the segment clock
+            // (re-encode: structurally; video-copy: intermittently, on keyframe-pad
+            // misses), so the client subtitle overlay (absolute cues vs the player
+            // clock) drifts until a fresh transcode re-anchors.
             // TS lands seeks frame-accurate (Jellyfin disables `-noaccurate_seek` there)
             // and DID fix the drift on device — but black video rules it out. The
             // subtitle drift is handled above the container, not by switching to TS.

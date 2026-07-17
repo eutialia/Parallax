@@ -69,11 +69,13 @@ struct SubtitleOverlayView: View {
         // `.invalid` is VLC's "clock not ready" signal (buffering/seek); skip so a transient
         // unknown time doesn't flash the 0:00 cue. AVKit always reports a valid time (0 at the
         // start), so a genuine 0:00 cue still shows.
-        guard !cues.isEmpty, let clock = vm.engine?.currentTime, clock.isValid else { return nil }
-        // Apply the manual nudge: shift the match clock BACK by the delay so a positive
-        // delay makes each cue fire that much later — the escape hatch for the transcode
-        // seek desync where the engine clock runs ahead of the frames.
-        let now = CMTimeSubtract(clock, CMTime(value: CMTimeValue(vm.clientSubtitleDelayMs), timescale: 1000))
+        // PROTECTED INVARIANT: matching absolute cue times against the engine clock
+        // is only valid because out-of-buffer transcode seeks re-anchor a fresh
+        // session instead of restarting ffmpeg in-stream (PlayerViewModel.seek(to:)).
+        // A mid-session restart shifts the item's established timeline mapping under
+        // these cues — the 2026-07-17 post-scrub desync. Don't add seek paths that
+        // bypass that gate.
+        guard !cues.isEmpty, let now = vm.engine?.currentTime, now.isValid else { return nil }
         let active = cues.filter {
             CMTimeCompare(now, $0.start) >= 0 && CMTimeCompare(now, $0.end) < 0
         }

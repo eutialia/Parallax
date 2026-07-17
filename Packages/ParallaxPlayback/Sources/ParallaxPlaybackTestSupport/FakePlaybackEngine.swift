@@ -105,6 +105,10 @@ public final class FakePlaybackEngine: PlaybackEngine {
         calls.append(track.map { "setSubtitleTrack(\($0.id))" } ?? "setSubtitleTrack(nil)")
     }
 
+    public func setSubtitleDelay(milliseconds: Int) async {
+        calls.append("setSubtitleDelay(\(milliseconds))")
+    }
+
     public func teardown() async {
         calls.append("teardown")
         continuation.finish()

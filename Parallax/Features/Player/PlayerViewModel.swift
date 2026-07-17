@@ -72,13 +72,6 @@ final class PlayerViewModel {
     /// active — including direct-play EMBEDDED subs, which the engine renders itself. This
     /// is how we sidestep the in-manifest WebVTT drift (jellyfin/jellyfin#16647).
     private(set) var activeSubtitleCues: [SubtitleCue] = []
-    /// Manual timing nudge for client-rendered cues (`SubtitleOverlayView`), in
-    /// milliseconds; positive shows them later. The engine's own retiming
-    /// (`setSubtitleDelay`) doesn't reach these — they're drawn against the engine
-    /// clock — so this is the escape hatch for the Jellyfin HLS transcode seek desync,
-    /// where `currentTime` drifts ahead of the frames (the client has no independent
-    /// clock to auto-correct it). Reset whenever the active sidecar changes.
-    private(set) var clientSubtitleDelayMs: Int = 0
     private(set) var currentPosition: CMTime = .zero
     private(set) var currentDuration: CMTime = .zero
 
@@ -326,7 +319,9 @@ final class PlayerViewModel {
     func seekToChapter(_ chapter: Chapter) async {
         let c = chapter.start.components
         let seconds = Double(c.seconds) + Double(c.attoseconds) / 1e18
-        await seek(to: CMTime(seconds: seconds, preferredTimescale: 600))
+        // Transport-preserving: a paused chapter jump must stay paused across an
+        // out-of-buffer re-anchor (whose reload force-resumes).
+        await seekPreservingTransport(to: CMTime(seconds: seconds, preferredTimescale: 600))
     }
 
     /// Optimistic transport toggle from the play/pause button. Flips to the
@@ -540,8 +535,11 @@ final class PlayerViewModel {
     /// re-encode) — the copy-vs-reencode signal `PlaybackInfo` can't give (the server
     /// reports `Transcode` for stream-copy jobs too; only the running session's
     /// `TranscodingInfo` distinguishes them, once ffmpeg has started). Nil until the
-    /// probe lands (and on direct-play / SMB, which never probe). Drives the seek
-    /// strategy — a proven video-copy seeks in-stream — and the debug delivery row.
+    /// probe lands (and on direct-play / SMB, which never probe; and in Release,
+    /// where the probe never arms). DEBUG-display only — it feeds the delivery debug
+    /// row. The seek gate deliberately IGNORES it: every out-of-buffer transcode
+    /// seek re-anchors regardless of delivery (see `seek(to:)`); re-adding an
+    /// `isVideoDirect` exemption reintroduces the 2026-07-17 video-copy desync.
     /// Cleared with the session; re-fetched after a track-switch rebuild, since a
     /// burn-in subtitle flips `isVideoDirect` false.
     private(set) var transcodeDelivery: TranscodeDelivery?
@@ -1070,7 +1068,9 @@ final class PlayerViewModel {
             self.engine = engine
             subscribe(to: engine)
             nowPlaying.configure(
-                onSeek: { [weak self] time in Task { await self?.seek(to: time) } },
+                // Transport-preserving: a paused lock-screen scrub must not come back
+                // playing when an out-of-buffer target re-anchors (reload force-resumes).
+                onSeek: { [weak self] time in Task { await self?.seekPreservingTransport(to: time) } },
                 // Route through setPlaying (not engine.play/pause directly) so a remote command
                 // clears any pending scrub latch — otherwise it's swallowed and the glyph sticks.
                 onPlay: { [weak self] in self?.setPlaying(true) },
@@ -1225,7 +1225,6 @@ final class PlayerViewModel {
         activeSubtitleCues = []
         subtitleURLs = [:]
         smbExternalSubtitleTracks = []
-        clientSubtitleDelayMs = 0
         currentPosition = .zero
         currentDuration = .zero
         chapterFractions = []
@@ -1284,11 +1283,14 @@ final class PlayerViewModel {
     /// `TranscodingInfo` once it's encoding, so the probe walks `deliveryProbeSchedule`
     /// (≈2s then +5s in production) waiting then fetching at each step; a nil result
     /// (session/`TranscodingInfo` not up yet) moves to the next entry, and running out
-    /// of the schedule gives up silently — the seek gate stays conservative on a nil
-    /// delivery anyway. Direct play has no job to probe. Clears any stale delivery up
-    /// front so the window (and a re-probe after a track switch, where burn-in can flip
-    /// the answer) reads "probing…" until the fresh result lands.
+    /// of the schedule gives up silently — the row just reads "no delivery info".
+    /// Direct play has no job to probe. Clears any stale delivery up front so the
+    /// window (and a re-probe after a track switch, where burn-in can flip the answer)
+    /// reads "probing…" until the fresh result lands. DEBUG-only: since the seek gate
+    /// stopped reading delivery, the `#if DEBUG` `DebugInfoOverlay` row is the sole
+    /// consumer — a Release build must not spend per-session network fetches on it.
     private func startDeliveryProbe(for resolved: ResolvedPlayback) {
+        #if DEBUG
         deliveryProbeTask?.cancel()
         deliveryProbeTask = nil
         transcodeDelivery = nil
@@ -1309,6 +1311,7 @@ final class PlayerViewModel {
             }
             if !Task.isCancelled { self?.deliveryProbeExhausted = true }
         }
+        #endif
     }
 
     /// Kills the outgoing session's server-side transcode job, exactly once.
@@ -1603,7 +1606,6 @@ final class PlayerViewModel {
     /// parse can't land on screen after a newer pick.
     private func loadSidecarSubtitle(streamIndex: Int) {
         subtitleFetchTask?.cancel()
-        clientSubtitleDelayMs = 0   // a fresh sidecar starts un-nudged
         guard let url = subtitleURLs[streamIndex] else {
             activeSubtitleCues = []
             return
@@ -1626,7 +1628,6 @@ final class PlayerViewModel {
         subtitleFetchTask?.cancel()
         subtitleFetchTask = nil
         activeSubtitleCues = []
-        clientSubtitleDelayMs = 0
     }
 
     /// How a transcode track switch ended — drives `selectAudioTrack`'s selection
@@ -1645,22 +1646,36 @@ final class PlayerViewModel {
     }
 
     /// The one seek entry point for every source: scrub, chapter jump, segment skip,
-    /// and the Now Playing remote. An OUT-OF-BUFFER seek on a RE-ENCODE transcode
-    /// re-resolves a fresh transcode at the target instead of seeking in-stream —
-    /// Jellyfin RE-ENCODES fMP4 with `-noaccurate_seek`, so an in-playlist seek restarts
-    /// ffmpeg mid-session and the new segments' video clock drifts from the player clock,
-    /// desyncing the client subtitle overlay (jellyfin#15845). A fresh session's
-    /// resume-seek lands frame-accurate (that's why "dismiss + restart fixes it").
+    /// and the Now Playing remote. An OUT-OF-BUFFER seek on ANY transcode re-resolves
+    /// a fresh session at the target instead of seeking in-stream. An in-playlist seek
+    /// makes Jellyfin kill + restart ffmpeg at the requested segment, and the restarted
+    /// segments join an AVPlayerItem whose timeline mapping was established by the
+    /// ORIGINAL run — any mismatch between their internal timestamps and the declared
+    /// boundary shifts the playlist clock away from the frames, desyncing the
+    /// absolute-timestamped sidecar cue overlay. On a RE-ENCODE the miss is structural
+    /// (`-noaccurate_seek`, jellyfin#15845: fixed offset, every restarted seek). On a
+    /// VIDEO-COPY remux the keyframe-aligned playlist (MKV cue extraction) makes most
+    /// restarts land true, but the server's +0.5s seek pad and long-GOP keyframe gaps
+    /// still miss intermittently — variable offset up to a keyframe interval, mostly on
+    /// forward jumps (backward lands on already-produced segments). Device-confirmed
+    /// 2026-07-17: the former `isVideoDirect` exemption shipped exactly that desync.
+    /// A fresh AVPlayerItem re-derives its mapping from the new segments, so the
+    /// re-anchor is always clean — "dismiss + restart fixes it", automated.
     ///
-    /// A REMUX transcode (video stream-copy, `transcodeDelivery.isVideoDirect == true`)
-    /// is exempt: the server seeks those on the `isHlsRemuxing` keyframe branch
-    /// (EncodingHelper.cs), which is frame-accurate — `-noaccurate_seek` is a
-    /// RE-ENCODE-only failure mode — so a remux seeks in-stream like direct play, with
-    /// no re-buffer. In-buffer transcode seeks, and every direct-play / VLC / SMB seek,
-    /// stay in-stream too. A nil/unknown delivery (still probing) stays conservative and
-    /// re-anchors. Cost: the re-anchor re-buffers, but an out-of-buffer re-encode seek
-    /// already re-buffers today (the engine fetches the segment), so this swaps a
-    /// drifting in-place restart for an aligned fresh one.
+    /// In-buffer transcode seeks (segments already downloaded under the live mapping)
+    /// and every direct-play / VLC / SMB seek stay in-stream. Cost: the re-anchor
+    /// re-buffers (loading scrim on every out-of-buffer transcode scrub), but an
+    /// out-of-buffer seek already re-buffers today (the engine fetches the segment),
+    /// so this swaps a drifting in-place restart for a clean fresh one.
+    ///
+    /// REVISIT when the server runs Jellyfin ≥ 12.0: it ships #15926 (drops
+    /// `-noaccurate_seek` for full re-encodes) and #16580 (trims copied audio to the
+    /// seek target), making RE-ENCODE mid-session restarts frame-accurate — those
+    /// could then seek in-stream again, dropping the scrim. Neither PR touches the
+    /// VIDEO-COPY miss (+0.5s remux seek pad / long-GOP keyframe gaps vs the item's
+    /// established mapping), so remuxes likely still need the re-anchor. Re-verify
+    /// with the 2026-07-17 witness protocol (Claude memory:
+    /// subtitle-scrub-desync-history) before relaxing anything.
     /// Returns `true` when the seek RE-ANCHORED (rebuilt the transcode via
     /// `reloadTranscode`, which force-resumes playback), `false` for an in-stream
     /// `engine.seek`. `commitScrubSeek` branches on it to restore a paused scrub's
@@ -1668,11 +1683,10 @@ final class PlayerViewModel {
     @discardableResult
     func seek(to target: CMTime) async -> Bool {
         guard let engine else { return false }
-        // Only an out-of-buffer RE-ENCODE transcode drifts. A remux (proven video copy)
-        // seeks on the server's accurate keyframe branch, and everything else (direct
-        // play / VLC / SMB) seeks in-stream — as does a nil delivery once we know it's
-        // not a re-encode. Conservative while the probe is still nil: re-anchor.
-        guard resolved?.method == .transcode, transcodeDelivery?.isVideoDirect != true else {
+        // Only a transcode can restart ffmpeg under the item's timeline mapping;
+        // direct play / VLC / SMB seek in-stream. Delivery (copy vs re-encode) does
+        // NOT exempt — see the doc above.
+        guard resolved?.method == .transcode else {
             await engine.seek(to: target)
             return false
         }
@@ -1694,8 +1708,8 @@ final class PlayerViewModel {
 
     /// A scrub-commit seek: the gated `seek(to:)` followed by the pre-scrub transport
     /// replay. Every touch/VoiceOver/tvOS scrub commit routes its seek through `seek(to:)`
-    /// so an out-of-buffer RE-ENCODE transcode re-anchors (jellyfin#15845) instead of
-    /// drifting the subtitle overlay; the touch drag additionally pauses the engine to
+    /// so an out-of-buffer transcode seek re-anchors instead of drifting the subtitle
+    /// overlay; the touch drag additionally pauses the engine to
     /// hold the still frame, so it must replay the user's pre-scrub play state here.
     ///
     /// The wrinkle a bare `seek` can't cover: a re-anchor runs `reloadTranscode`, whose
@@ -1704,6 +1718,15 @@ final class PlayerViewModel {
     /// place, so it only needs the resume. `resume` is the chain-start play state
     /// (`scrubWasPlaying`); the caller owns the scrub latch (`beginScrubLatch` /
     /// `endScrubLatch`) and the generation-guarded `isScrubbing` release around this call.
+    /// `commitScrubSeek` with the CURRENT play intent — the transport-preserving seek
+    /// for every non-scrub surface (chapter list, Now Playing remote, tvOS effects),
+    /// where no latch pins a pre-gesture state and `isPlaying` IS the user's intent.
+    /// Without it, a paused out-of-buffer seek comes back playing (the re-anchor's
+    /// reload force-resumes) — the same bug `commitScrubSeek` fixes for drags.
+    func seekPreservingTransport(to target: CMTime) async {
+        await commitScrubSeek(to: target, resume: isPlaying)
+    }
+
     func commitScrubSeek(to target: CMTime, resume: Bool) async {
         let didReanchor = await seek(to: target)
         guard let engine else { return }
@@ -1786,11 +1809,10 @@ final class PlayerViewModel {
         // must not linger on screen until that beat lands.
         startupClockStart = nil
         startupMillis = nil
-        // The delivery verdict belonged to the outgoing session. A burn-in subtitle
-        // switch can flip the video to a re-encode (isVideoDirect false), and a
-        // re-anchor opens a fresh session, so drop the stale verdict now — the seek
-        // gate goes conservative (re-anchor) until the new session's first `.playing`
-        // beat re-probes.
+        // The delivery verdict belonged to the outgoing session (a burn-in subtitle
+        // switch can flip the video to a re-encode, and a re-anchor opens a fresh
+        // session) — drop the stale verdict so the delivery debug row shows
+        // "probing…" until the new session's first `.playing` beat re-probes.
         deliveryProbeTask?.cancel()
         deliveryProbeTask = nil
         transcodeDelivery = nil
@@ -2293,23 +2315,11 @@ extension PlayerViewModel {
         await engine?.debugSnapshot() ?? .empty
     }
 
-    /// Whether the active subtitle is one WE draw (`SubtitleOverlayView` renders the
-    /// sidecar cues) rather than the engine — true exactly when the selection carries a
-    /// `.jellyfinStream` id (transcode text subs + direct-play externals). Keying on the
-    /// SELECTION (intent) rather than on `activeSubtitleCues` (the fetched effect) means a
-    /// nudge during the sidecar's fetch window still routes to the client offset.
-    var usesClientSubtitleRendering: Bool { selectedSubtitleTrack?.id.jellyfinStreamIndex != nil }
-
-    /// Live subtitle-delay nudge (`ms` absolute, positive = later). Routes to whichever
-    /// renderer owns the active subtitle: client-drawn sidecar cues retime in
-    /// `SubtitleOverlayView` via `clientSubtitleDelayMs`; an engine-rendered (embedded)
-    /// track retimes in the engine itself (VLC; AVKit ignores).
+    /// Live subtitle-delay nudge (`ms` absolute, positive = later) for an
+    /// ENGINE-rendered track (VLC retimes; AVKit no-ops). Client-drawn sidecar cues
+    /// are matched against the engine clock directly and have no retime path.
     func setSubtitleDelay(ms: Int) async {
-        if usesClientSubtitleRendering {
-            clientSubtitleDelayMs = ms
-        } else {
-            await engine?.setSubtitleDelay(milliseconds: ms)
-        }
+        await engine?.setSubtitleDelay(milliseconds: ms)
     }
 }
 

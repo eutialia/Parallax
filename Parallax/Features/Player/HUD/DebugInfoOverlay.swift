@@ -237,21 +237,18 @@ struct DebugInfoOverlay: View {
                 .foregroundStyle(.yellow)
                 .padding(.top, 2)
         }
-        // Retime control: client-drawn sidecar cues nudge in the overlay
-        // (`clientSubtitleDelayMs` — the transcode seek-desync escape hatch); an
-        // engine-rendered embedded track nudges in the engine (VLC). Gate on the SAME
-        // intent predicate `setSubtitleDelay` routes by, so the control can't show one
-        // renderer's value while the nudge lands on the other's.
-        if vm.usesClientSubtitleRendering {
-            subtitleDelayControl(current: vm.clientSubtitleDelayMs)
-        } else if let delay = snapshot.subtitleDelayMs {
+        // Retime control for an ENGINE-rendered track (VLC reports a delay; AVKit
+        // doesn't). Gate on the SELECTION (intent), not `activeSubtitleCues` (the
+        // fetched effect): during a sidecar's fetch window the cues are momentarily
+        // empty, and an effect-keyed gate would flash the engine control for a track
+        // the engine isn't rendering.
+        if vm.selectedSubtitleTrack?.id.jellyfinStreamIndex == nil,
+           let delay = snapshot.subtitleDelayMs {
             subtitleDelayControl(current: delay)
         }
     }
 
-    /// Live subtitle retiming nudge. Coarse (±1s) for the multi-second Jellyfin
-    /// transcode seek desync on the client overlay; fine (±100ms) for ordinary sync
-    /// points. A working nudge also proves the offset is a clean constant.
+    /// Live subtitle retiming nudge: coarse ±1s and fine ±100ms steps.
     private func subtitleDelayControl(current: Int) -> some View {
         HStack(spacing: 8) {
             Text("delay")

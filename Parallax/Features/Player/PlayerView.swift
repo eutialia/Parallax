@@ -910,7 +910,12 @@ struct PlayerView: View {
             let dur = CMTimeGetSeconds(vm.currentDuration)
             guard dur > 0 else { return }
             let target = CMTime(seconds: p * dur, preferredTimescale: 600)
-            await vm.seek(to: target)
+            // Transport-preserving: the reducer paused the engine when the scrub
+            // began, so `isPlaying` is false here and a re-anchor's force-resume
+            // gets re-paused; the reducer's explicit `.play` effect (wasPlaying)
+            // then owns the resume. A bare `seek` would leave a paused swipe-scrub
+            // playing after an out-of-buffer re-anchor.
+            await vm.seekPreservingTransport(to: target)
         case .togglePlayPause:
             // Optimistic flip inside the vm — the paused overlay reacts on the
             // press, not a beat later, and remote-press spam coalesces to the

@@ -105,7 +105,4 @@ public struct PlaybackDebugInfo: Sendable, Equatable {
     }
 
     public static let empty = PlaybackDebugInfo()
-
-    /// Whether this engine offers live subtitle-delay correction (VLC yes, AVKit no).
-    public var supportsSubtitleDelay: Bool { subtitleDelayMs != nil }
 }
