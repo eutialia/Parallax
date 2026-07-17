@@ -77,6 +77,7 @@ struct LibrarySortMenuButton: View {
     }
 }
 
+#if DEBUG
 /// Bar-symmetry ruler for the library screen, in real pushed-state chrome: a
 /// system BACK button leading, the bridged sort button trailing, red rules at
 /// the grid's content margin on BOTH edges, and a poster stand-in flush to
@@ -123,4 +124,5 @@ struct LibrarySortMenuButton: View {
             }
     }
 }
+#endif
 #endif
