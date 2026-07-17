@@ -6,7 +6,8 @@ import ParallaxCore
 /// The concrete implementation (`LiveCapabilityProbe`) lives in the app target
 /// and reads `AVPlayer.eligibleForHDRPlayback`, `UIScreen.main.traitCollection`,
 /// and `AVAudioSession.sharedInstance().currentRoute`. This protocol keeps
-/// `ParallaxPlayback` free of those APIs so it compiles on the macOS test host.
+/// `ParallaxPlayback` free of UIKit and device-bound AV APIs, so profile
+/// building stays deterministic under test via injected fakes.
 ///
 /// `hdrSupport()` is `@MainActor` because `UIScreen.main` is main-actor-bound
 /// in `LiveCapabilityProbe`. The protocol reflects that constraint so

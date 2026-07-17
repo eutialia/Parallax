@@ -6,7 +6,6 @@ let package = Package(
     platforms: [
         .iOS(.v26),
         .tvOS(.v26),
-        .macOS(.v15), // swift-test baseline only; not a shipping target.
     ],
     products: [
         .library(name: "ParallaxJellyfin", targets: ["ParallaxJellyfin"]),
@@ -31,7 +30,11 @@ let package = Package(
         ),
         .testTarget(
             name: "ParallaxJellyfinTests",
-            dependencies: ["ParallaxJellyfin", "ParallaxCore"],
+            dependencies: [
+                "ParallaxJellyfin",
+                "ParallaxCore",
+                .product(name: "ParallaxCoreTestSupport", package: "ParallaxCore"),
+            ],
             resources: [
                 .copy("Fixtures"),
             ],

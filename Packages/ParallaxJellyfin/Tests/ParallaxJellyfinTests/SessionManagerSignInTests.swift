@@ -2,6 +2,7 @@ import Foundation
 import Testing
 import JellyfinAPI
 import ParallaxCore
+import ParallaxCoreTestSupport
 @testable import ParallaxJellyfin
 
 @Suite("SessionManager sign-in")
@@ -11,7 +12,7 @@ struct SessionManagerSignInTests {
         let defaults = UserDefaults(suiteName: suite)!
         defaults.removePersistentDomain(forName: suite)
         let settings = SettingsStore(defaults: defaults)
-        let keychain = Keychain(service: "com.lhdev.parallax.tests.\(suite)")
+        let keychain = FakeKeychain()
         let store = ServerStore(settings: settings, keychain: keychain)
         let factory = FakeJellyfinClientFactory()
         let manager = SessionManager(serverStore: store, factory: factory)

@@ -1,8 +1,15 @@
 import Testing
 import Foundation
+import ParallaxCoreTestSupport
 @testable import ParallaxCore
 
-@Suite("Keychain")
+@Suite(
+    "Keychain",
+    .enabled(
+        if: KeychainEntitlementProbe.hasKeychainAccess,
+        "test host lacks the keychain entitlement (errSecMissingEntitlement -34018)"
+    )
+)
 struct KeychainTests {
     private static let service = "com.lhdev.parallax.tests"
 

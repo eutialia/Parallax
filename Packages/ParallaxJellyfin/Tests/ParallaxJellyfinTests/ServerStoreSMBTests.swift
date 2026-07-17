@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import ParallaxCore
+import ParallaxCoreTestSupport
 @testable import ParallaxJellyfin
 
 @Suite("ServerStore SMB write path")

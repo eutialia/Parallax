@@ -6,13 +6,10 @@ let package = Package(
     platforms: [
         .iOS(.v26),
         .tvOS(.v26),
-        // macOS baseline exists only so `swift test` works on the dev host
-        // and on macos-15 CI runners. macOS is NOT a shipping target —
-        // Pinned high (.v15) to minimize the iOS/macOS API-availability gap.
-        .macOS(.v15),
     ],
     products: [
         .library(name: "ParallaxCore", targets: ["ParallaxCore"]),
+        .library(name: "ParallaxCoreTestSupport", targets: ["ParallaxCoreTestSupport"]),
     ],
     targets: [
         .target(
@@ -21,9 +18,16 @@ let package = Package(
                 .swiftLanguageMode(.v6),
             ]
         ),
+        .target(
+            name: "ParallaxCoreTestSupport",
+            dependencies: ["ParallaxCore"],
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+            ]
+        ),
         .testTarget(
             name: "ParallaxCoreTests",
-            dependencies: ["ParallaxCore"],
+            dependencies: ["ParallaxCore", "ParallaxCoreTestSupport"],
             swiftSettings: [
                 .swiftLanguageMode(.v6),
             ]

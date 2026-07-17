@@ -2,12 +2,12 @@ import Foundation
 import ParallaxCore
 
 /// In-memory `KeychainStoring` fake with programmable per-account behavior, so
-/// `ServerStore` tests are deterministic on every runtime (no entitlement, so
-/// no `errSecMissingEntitlement -34018`). Behavior is keyed by the account
-/// string of `KeychainKey<Value>`. Values round-trip through the same JSON
-/// path the real `Keychain` uses, keeping the fake type-faithful across the
-/// generic `Value` while staying a single store.
-final class FakeKeychain: KeychainStoring, @unchecked Sendable {
+/// store-layer tests are deterministic on every runtime (no entitlement, so no
+/// `errSecMissingEntitlement -34018`). Behavior is keyed by the account string
+/// of `KeychainKey<Value>`. Values round-trip through the same JSON path the
+/// real `Keychain` uses, keeping the fake type-faithful across the generic
+/// `Value` while staying a single store.
+public final class FakeKeychain: KeychainStoring, @unchecked Sendable {
     /// What a `read` for a given account should do.
     enum ReadBehavior {
         /// Return a decoded value (encoded from `Value` at configure time).
@@ -19,52 +19,51 @@ final class FakeKeychain: KeychainStoring, @unchecked Sendable {
         case error(Error)
     }
 
-    enum FakeError: Error { case notConfigured }
-
     private let lock = NSLock()
     private var behaviors: [String: ReadBehavior] = [:]
-    private let encoder = JSONEncoder()
-    private let decoder = JSONDecoder()
+    private var _storeCalls: [String] = []
+    private var _deleteCalls: [String] = []
 
-    // Call records for assertions.
-    private(set) var storeCalls: [String] = []
-    private(set) var deleteCalls: [String] = []
+    // Call records for assertions. Lock-guarded so an assertion can race an
+    // in-flight call without undefined behavior.
+    public var storeCalls: [String] { lock.withLock { _storeCalls } }
+    public var deleteCalls: [String] { lock.withLock { _deleteCalls } }
 
-    init() {}
+    public init() {}
 
     // MARK: - Programming the fake
 
     /// Make reads for `key`'s account return `value`.
-    func setValue<Value: Codable & Sendable>(_ value: Value, for key: KeychainKey<Value>) throws {
-        let data = try encoder.encode(value)
+    public func setValue<Value: Codable & Sendable>(_ value: Value, for key: KeychainKey<Value>) throws {
+        let data = try JSONEncoder().encode(value)
         lock.withLock { behaviors[key.account] = .value(data) }
     }
 
     /// Make reads for `account` return nil (confirmed-absent).
-    func setAbsent(account: String) {
+    public func setAbsent(account: String) {
         lock.withLock { behaviors[account] = .absent }
     }
 
     /// Make reads for `account` throw `error` (a read FAULT, not a confirmed nil).
-    func setReadError(account: String, error: Error) {
+    public func setReadError(account: String, error: Error) {
         lock.withLock { behaviors[account] = .error(error) }
     }
 
     // MARK: - KeychainStoring
 
-    func store<Value: Codable & Sendable>(_ value: Value, for key: KeychainKey<Value>) async throws {
-        let data = try encoder.encode(value)
+    public func store<Value: Codable & Sendable>(_ value: Value, for key: KeychainKey<Value>) async throws {
+        let data = try JSONEncoder().encode(value)
         lock.withLock {
-            storeCalls.append(key.account)
+            _storeCalls.append(key.account)
             behaviors[key.account] = .value(data)
         }
     }
 
-    func read<Value: Codable & Sendable>(_ key: KeychainKey<Value>) async throws -> Value? {
+    public func read<Value: Codable & Sendable>(_ key: KeychainKey<Value>) async throws -> Value? {
         let behavior = lock.withLock { behaviors[key.account] }
         switch behavior {
         case .value(let data):
-            return try decoder.decode(Value.self, from: data)
+            return try JSONDecoder().decode(Value.self, from: data)
         case .absent:
             return nil
         case .error(let error):
@@ -76,9 +75,9 @@ final class FakeKeychain: KeychainStoring, @unchecked Sendable {
         }
     }
 
-    func delete<Value: Codable & Sendable>(_ key: KeychainKey<Value>) async throws {
+    public func delete<Value: Codable & Sendable>(_ key: KeychainKey<Value>) async throws {
         lock.withLock {
-            deleteCalls.append(key.account)
+            _deleteCalls.append(key.account)
             behaviors.removeValue(forKey: key.account)
         }
     }

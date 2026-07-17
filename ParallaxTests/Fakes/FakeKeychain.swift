@@ -3,6 +3,12 @@ import ParallaxCore
 
 /// In-memory `KeychainStoring` fake for app-target tests. Values round-trip through
 /// the same JSON encoding path as the real `Keychain`.
+///
+/// Deliberately a local copy of `ParallaxCoreTestSupport.FakeKeychain`: linking that
+/// product into this app-hosted test bundle statically duplicates ParallaxCore next
+/// to the host app's copy, and cross-boundary casts then fail at runtime
+/// (`catch let e as AppError` stops matching errors thrown by app code). Package
+/// test targets have no host app, so they use the shared fake.
 final class FakeKeychain: KeychainStoring, @unchecked Sendable {
     private let lock = NSLock()
     private var store: [String: Data] = [:]

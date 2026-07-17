@@ -5,9 +5,10 @@ import UIKit
 import ParallaxCore
 import ParallaxPlayback
 
-/// iOS-only `CapabilityProbe`. Lives in the app target because `UIScreen` and
-/// `AVAudioSession` aren't on the macOS swift-test host, and the no-drift rule
-/// forbids `#if os` in `Packages/`. Injected into `DeviceProfileBuilder`.
+/// Live `CapabilityProbe`. Lives in the app target: `ParallaxPlayback` stays
+/// free of UIKit and device-bound AV APIs so profile building is deterministic
+/// under test, and the no-drift rule forbids `#if os` in `Packages/`.
+/// Injected into `DeviceProfileBuilder`.
 struct LiveCapabilityProbe: CapabilityProbe {
     @MainActor
     func hdrSupport() -> HDRSupport {

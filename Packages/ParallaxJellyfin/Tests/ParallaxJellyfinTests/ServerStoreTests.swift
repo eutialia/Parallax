@@ -1,18 +1,19 @@
 import Foundation
 import Testing
 import ParallaxCore
+import ParallaxCoreTestSupport
 @testable import ParallaxJellyfin
 
 @Suite("ServerStore")
 struct ServerStoreTests {
-    private func freshStore() -> (ServerStore, SettingsStore, Keychain) {
+    private func freshStore() -> (ServerStore, FakeKeychain) {
         let suiteName = "ServerStoreTests-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
         let settings = SettingsStore(defaults: defaults)
-        let keychain = Keychain(service: "com.lhdev.parallax.tests.\(UUID().uuidString)")
+        let keychain = FakeKeychain()
         let store = ServerStore(settings: settings, keychain: keychain)
-        return (store, settings, keychain)
+        return (store, keychain)
     }
 
     private func sampleSession(id: String = "server-1", token: String = "tok-1") -> Session {
@@ -26,7 +27,7 @@ struct ServerStoreTests {
 
     @Test("Add session persists token and metadata, exposes it as the active session")
     func addStores() async throws {
-        let (store, _, keychain) = freshStore()
+        let (store, keychain) = freshStore()
         let session = sampleSession()
 
         try await store.add(session)
@@ -49,7 +50,7 @@ struct ServerStoreTests {
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
         let settings = SettingsStore(defaults: defaults)
-        let keychain = Keychain(service: "com.lhdev.parallax.tests.load-\(UUID().uuidString)")
+        let keychain = FakeKeychain()
 
         let firstStore = ServerStore(settings: settings, keychain: keychain)
         try await firstStore.add(sampleSession(id: "s1", token: "t1"))
@@ -69,7 +70,7 @@ struct ServerStoreTests {
 
     @Test("Remove deletes both Keychain token and UserDefaults metadata")
     func remove() async throws {
-        let (store, _, keychain) = freshStore()
+        let (store, keychain) = freshStore()
         let session = sampleSession()
         try await store.add(session)
 
@@ -101,8 +102,7 @@ struct ServerStoreTests {
         do {
             let defaults = UserDefaults(suiteName: suiteName)!
             let settings = SettingsStore(defaults: defaults)
-            let keychain = Keychain(service: "com.lhdev.parallax.tests.\(UUID().uuidString)")
-            store = ServerStore(settings: settings, keychain: keychain)
+            store = ServerStore(settings: settings, keychain: FakeKeychain())
         }
 
         await #expect(throws: ServerStore.ServerStoreError.self) {
@@ -119,7 +119,7 @@ struct ServerStoreTests {
 
     @Test("Load drops persisted sessions whose token has vanished from Keychain")
     func loadHandlesMissingToken() async throws {
-        let (store, _, keychain) = freshStore()
+        let (store, keychain) = freshStore()
         try await store.add(sampleSession(id: "ghost", token: "tok"))
 
         // Simulate Keychain reset / sign-out happening underneath us.
