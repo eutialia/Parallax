@@ -22,7 +22,10 @@ struct SeriesDetailView: View {
                     DetailLoadingSkeleton()
                 case .loaded(let sd, let seasons):
                     ScrollView {
-                        VStack(alignment: .leading, spacing: Space.s22) {
+                        // Band→ledger gap is the shared clearance token: the floor bleed washes
+                        // artwork color down here, so the first text line needs more air than a
+                        // plain section gap (see `HeroMetrics.floorTextClearance`).
+                        VStack(alignment: .leading, spacing: HeroMetrics.floorTextClearance(idiom: idiom)) {
                             let heroImage = HeroBandImage(
                                 landscapeRef: sd.series.imageRef(.backdrop(index: 0)),
                                 posterRef: sd.series.imageRef(.primary),

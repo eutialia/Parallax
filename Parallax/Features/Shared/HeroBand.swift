@@ -315,6 +315,18 @@ enum HeroMetrics {
     static func edgeShadowHeight(idiom: AppIdiom) -> CGFloat {
         idiom == .tv ? 34 : 22
     }
+    /// Clearance between the band's bottom edge and the detail page's first text line (the open
+    /// ledger). Deliberately wider than a plain section gap: the floor bleed carries the artwork's
+    /// color down onto the page here, so text sitting a section-gap away read as pinned to the
+    /// artwork — the extra air lets the spill breathe before type starts. One token for BOTH
+    /// detail screens (movie shipped 18pt, series 22pt — they had already drifted).
+    static func floorTextClearance(idiom: AppIdiom) -> CGFloat {
+        switch idiom {
+        case .compact: 30
+        case .regular: 34
+        case .tv: 48
+        }
+    }
     /// How far the floor bleed (`HeroFloorBleed`) spills below the band's bottom edge. Absolute pt,
     /// not band-derived: the spill belongs to the PAGE under the band (roughly one shelf-header's
     /// worth of ambience), so it shouldn't grow with a taller poster band.
@@ -595,6 +607,58 @@ private struct FloorBleedProof: View {
 
 #Preview("HeroBand · floor bleed (regular)", traits: .fixedLayout(width: 1024, height: 800)) {
     FloorBleedProof(regularWidth: true)
+}
+
+/// Detail-page variant of the floor-bleed proof: the open ledger's first text line sitting
+/// `HeroMetrics.floorTextClearance` below the band's edge, over the spill's strongest zone.
+/// Judge the AIR between the artwork edge and the first line — the text must read as ON the
+/// page under the artwork's light, not pinned to the artwork (the pre-token 18pt gap did).
+private struct FloorClearanceProof: View {
+    let regularWidth: Bool
+
+    /// Same vivid multi-hue sample as `FloorBleedProof` — strongest spill under the text.
+    private let hash = "LGF5]+Yk^6#M@-5c,1J5@[or[Q6."
+
+    var body: some View {
+        let idiom: AppIdiom = regularWidth ? .regular : .compact
+        ScrollView {
+            VStack(alignment: .leading, spacing: HeroMetrics.floorTextClearance(idiom: idiom)) {
+                HeroBand(floorBleedHash: hash) {
+                    BlurHashPlaceholder(
+                        hash: hash,
+                        aspectRatio: HeroMetrics.bandAspectRatio(regularWidth: regularWidth)
+                    )
+                } foreground: {
+                    PreviewHeroForeground(regularWidth: regularWidth)
+                }
+                .heroBandFrame(regularWidth: regularWidth)
+                // Ledger stand-in: an overview paragraph + a caption line, the detail page's
+                // first text under the band (mirrors DetailMetadataSection's type tiers).
+                VStack(alignment: .leading, spacing: Space.s12) {
+                    Text("A crew on humanity's last orbital station races to prevent a cascade failure before re-entry, rationing oxygen while the ground crew fights to reach them in time.")
+                        .font(.subheadline)
+                        .foregroundStyle(Color.label)
+                        .frame(maxWidth: HeroMetrics.overviewMaxWidth(idiom: idiom), alignment: .leading)
+                    Text("Science Fiction · Thriller")
+                        .font(.caption)
+                        .foregroundStyle(Color.secondaryLabel)
+                }
+                .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
+            }
+        }
+        .scrollClipDisabled(true)
+        .screenFloor()
+        .ignoresSafeArea(edges: .top)
+        .environment(\.appIdiom, idiom)
+    }
+}
+
+#Preview("HeroBand · floor clearance (compact)", traits: .fixedLayout(width: 393, height: 852)) {
+    FloorClearanceProof(regularWidth: false)
+}
+
+#Preview("HeroBand · floor clearance (regular)", traits: .fixedLayout(width: 1024, height: 800)) {
+    FloorClearanceProof(regularWidth: true)
 }
 
 /// Worst-case artwork for scrim verification: near-white sky with bright high-frequency
