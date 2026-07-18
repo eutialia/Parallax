@@ -11,6 +11,8 @@ struct SeriesDetailView: View {
     @Environment(\.appIdiom) private var idiom
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var viewModel: SeriesDetailViewModel?
+    // The hero band's stretch + parallax channel — same wiring as Home (see `heroScrollChannel`).
+    @State private var heroScroll = HeroScrollState()
 
     var body: some View {
         Group {
@@ -21,13 +23,14 @@ struct SeriesDetailView: View {
                 case .loaded(let sd, let seasons):
                     ScrollView {
                         VStack(alignment: .leading, spacing: Space.s22) {
-                            HeroBand {
-                                HeroBandImage(
-                                    landscapeRef: sd.series.imageRef(.backdrop(index: 0)),
-                                    posterRef: sd.series.imageRef(.primary),
-                                    session: session,
-                                    regularWidth: idiom.usesLandscapeHeroBand
-                                )
+                            let heroImage = HeroBandImage(
+                                landscapeRef: sd.series.imageRef(.backdrop(index: 0)),
+                                posterRef: sd.series.imageRef(.primary),
+                                session: session,
+                                regularWidth: idiom.usesLandscapeHeroBand
+                            )
+                            HeroBand(scroll: heroScroll, floorBleedHash: heroImage.displayedRef?.blurHash) {
+                                heroImage
                             } foreground: {
                                 HeroForeground(
                                     eyebrow: nil,
@@ -96,6 +99,7 @@ struct SeriesDetailView: View {
                         .staleWhileRevalidate(isRefreshing: vm.isRefreshing, reduceMotion: reduceMotion)
                     }
                     .scrollClipDisabled(true)
+                    .heroScrollChannel(heroScroll)
                     #if !os(tvOS)
                     .scrollEdgeEffectHidden(true, for: .top)
                     #endif

@@ -14,7 +14,7 @@ struct HomeView: View {
     @State private var viewModel: HomeViewModel?
     @State private var session: Session?
     // Reference-type scroll channel: the per-frame scroll value lives on an @Observable so a
-    // scroll write invalidates ONLY the artwork-transform view that reads it (`HeroScrollArtwork`),
+    // scroll write invalidates ONLY `HeroBand`'s artwork-transform wrappers that read it,
     // not HomeView's body or the whole carousel (title, actions, dots). When this was a plain
     // `@State CGFloat` passed into the carousel, every scroll frame re-evaluated the entire hero —
     // reloading the foreground's logo image on iOS (where parallax is live) and doing the same
@@ -29,17 +29,9 @@ struct HomeView: View {
         ScrollView {
             content
         }
-        // Feed the hero the SIGNED scroll adjustment: positive = pull-down rubber-band
-        // (stretchy zoom), negative = scrolled into the feed (artwork parallax).
-        // `contentOffset + contentInsets.top` is 0 at rest regardless of safe-area/
-        // nav-bar insets, so this self-calibrates. The negative side is floored at one
-        // viewport: past that the hero is off-screen, and pinning the value there stops
-        // per-frame state writes (and Home body re-evaluations) for the rest of the feed.
-        .onScrollGeometryChange(for: CGFloat.self) { geo in
-            max(-(geo.contentOffset.y + geo.contentInsets.top), -geo.containerSize.height)
-        } action: { _, newValue in
-            heroScroll.adjustment = newValue
-        }
+        // Feed the hero band its stretch + parallax scroll channel (shared with the detail
+        // headers — see `heroScrollChannel` for the geometry math).
+        .heroScrollChannel(heroScroll)
         .scrollClipDisabled(true)
         // Start at the very top so the full-bleed tvOS hero opens at full height, not mid-scroll
         // (the focus engine otherwise leaves the launch position low until a focus change re-runs

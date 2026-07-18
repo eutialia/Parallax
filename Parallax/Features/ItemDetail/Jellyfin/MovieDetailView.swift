@@ -11,6 +11,8 @@ struct MovieDetailView: View {
     @Environment(\.appIdiom) private var idiom
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var viewModel: MovieDetailViewModel?
+    // The hero band's stretch + parallax channel — same wiring as Home (see `heroScrollChannel`).
+    @State private var heroScroll = HeroScrollState()
 
     var body: some View {
         Group {
@@ -21,13 +23,14 @@ struct MovieDetailView: View {
                 case .loaded(let md):
                     ScrollView {
                         VStack(alignment: .leading, spacing: Space.s18) {
-                            HeroBand {
-                                HeroBandImage(
-                                    landscapeRef: md.movie.imageRef(.backdrop(index: 0)),
-                                    posterRef: md.movie.imageRef(.primary),
-                                    session: session,
-                                    regularWidth: idiom.usesLandscapeHeroBand
-                                )
+                            let heroImage = HeroBandImage(
+                                landscapeRef: md.movie.imageRef(.backdrop(index: 0)),
+                                posterRef: md.movie.imageRef(.primary),
+                                session: session,
+                                regularWidth: idiom.usesLandscapeHeroBand
+                            )
+                            HeroBand(scroll: heroScroll, floorBleedHash: heroImage.displayedRef?.blurHash) {
+                                heroImage
                             } foreground: {
                                 HeroForeground(
                                     eyebrow: nil,
@@ -85,6 +88,7 @@ struct MovieDetailView: View {
                         .staleWhileRevalidate(isRefreshing: vm.isRefreshing, reduceMotion: reduceMotion)
                     }
                     .scrollClipDisabled(true)
+                    .heroScrollChannel(heroScroll)
                     #if !os(tvOS)
                     .scrollEdgeEffectHidden(true, for: .top)
                     #endif

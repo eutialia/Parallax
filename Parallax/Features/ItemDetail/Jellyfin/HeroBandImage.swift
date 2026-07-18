@@ -13,9 +13,13 @@ struct HeroBandImage: View {
     let session: Session
     let regularWidth: Bool
 
+    /// The ref the band is actually showing (idiom pick). Exposed so detail call sites feed the SAME
+    /// image's blurHash to `HeroBand(floorBleedHash:)` without restating the pick.
+    var displayedRef: ImageRef? { regularWidth ? landscapeRef : posterRef }
+
     var body: some View {
         MediaImage(
-            jellyfin: regularWidth ? landscapeRef : posterRef,
+            jellyfin: displayedRef,
             session: session,
             maxWidth: 1600,
             aspectRatio: HeroMetrics.bandAspectRatio(regularWidth: regularWidth),

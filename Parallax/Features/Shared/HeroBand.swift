@@ -14,14 +14,15 @@ import ParallaxCore
 ///    composited WITH the artwork into the layer that carries the sidebar extension (below) — so
 ///    the `backgroundExtensionEffect` reflection mirrors artwork AND veil together and the mirrored
 ///    sidebar strip darkens in lockstep with the main side (no luminance seam at the boundary).
-///  • **Artwork-bound transforms** (bottom clip, parallax offset) ride the `artwork` slot: the
-///    parallax moves the image while the legibility veil + title/actions stay put — that
-///    differential IS the parallax. The caller bakes them into whatever it hands the slot (a plain
-///    `HeroBandImage` on detail; the parallaxed `CrossfadeArtwork` on Home).
+///  • **Parallax** (offset + bottom clip, `HeroParallaxArtwork`) is owned HERE and wraps whatever
+///    the `artwork` slot hands over (a plain `HeroBandImage` on detail; `CrossfadeArtwork` on
+///    Home) whenever `scroll` is present: the artwork lags while the legibility veil +
+///    title/actions stay put — that differential IS the parallax. Callers used to apply the
+///    wrapper themselves, which let a call site wire `scroll:` yet silently lose the parallax.
 ///  • **Sidebar extension** (`heroBandExtension`, iPad-only) is owned HERE, wrapping the
 ///    artwork+legibility composite so the mirror carries the veil. The foreground column stays
 ///    OUTSIDE it (Apple's Landmarks rule: extend the artwork under the sidebar, never the title).
-///  • **Pull-down stretch** (`scroll:`, Home-only) is owned HERE too, and MUST wrap the composite
+///  • **Pull-down stretch** (`scroll:`) is owned HERE too, and MUST wrap the composite
 ///    one layer OUTSIDE the sidebar extension: `backgroundExtensionEffect` clips its content to
 ///    bounds (documented — "will clip the view to prevent copies from overlapping"), so a stretch
 ///    applied inside the `artwork` slot gets its upward overpaint amputated on iPad and the
@@ -50,11 +51,16 @@ import ParallaxCore
 /// veil used to cause (raw-bright mirror beside a darkened main side); compositing the veil into the
 /// extension-sampled layer (see body) fixes that one. Details: memory `ipad-sidebar-pane-rim`.
 struct HeroBand<Artwork: View, Foreground: View>: View {
-    /// Scroll channel driving the pull-down stretch zoom (Home passes its `HeroScrollState`;
-    /// the detail headers pass nothing — their band doesn't stretch). The same state also
-    /// drives the parallax, but that lives inside the `artwork` slot: the veil must NOT lag
-    /// with the artwork, while the stretch scales artwork AND veil together.
+    /// Scroll channel driving BOTH scroll effects, at their two different layers: the pull-down
+    /// stretch (outside the sidebar extension — it scales artwork AND veil together) and the
+    /// artwork parallax (inside the `artwork` slot — the veil must NOT lag with the artwork).
+    /// nil = a static band (previews, any future scroll-less host).
     var scroll: HeroScrollState? = nil
+    /// BlurHash of the artwork the band is currently showing. Drives the floor bleed — the item's
+    /// decoded blur spilling below the band's bottom edge into the page (`HeroFloorBleed`). The
+    /// caller owns WHICH image is displayed (idiom pick, carousel page), so it supplies the hash;
+    /// nil = no bleed, the artwork just ends at its hard edge.
+    var floorBleedHash: String? = nil
     @ViewBuilder var artwork: () -> Artwork
     @ViewBuilder var foreground: () -> Foreground
 
@@ -67,20 +73,35 @@ struct HeroBand<Artwork: View, Foreground: View>: View {
             // sidebar — the mirrored strip darkens in lockstep with the main side, instead of
             // reflecting raw-bright artwork while the veil darkens only the main side (the old hard
             // left/right luminance seam at the sidebar boundary). The veil still stays put relative
-            // to the parallaxing artwork: the artwork transforms inside its own slot (Home's
-            // `HeroScrollArtwork`) and the veil layers over that result here, so the parallax
-            // differential is unchanged. The tall poster band gets a full-width bottom fade; the
-            // wide landscape band gets a corner-focused glow so the darkening sits on the bottom-
-            // leading text, not the empty right side.
+            // to the parallaxing artwork: the artwork transforms inside its own slot
+            // (`HeroParallaxArtwork`, applied just below) and the veil layers over that result
+            // here, so the parallax differential is unchanged. The tall poster band gets a
+            // full-width bottom fade; the wide landscape band gets a corner-focused glow so the
+            // darkening sits on the bottom-leading text, not the empty right side.
             HeroStretchLayer(
                 scroll: scroll,
                 content: ZStack(alignment: .bottomLeading) {
-                    artwork()
+                    if let scroll {
+                        HeroParallaxArtwork(scroll: scroll, content: artwork())
+                    } else {
+                        artwork()
+                    }
                     if idiom == .compact {
                         HeroBottomFade()
                     } else {
-                        HeroCornerFade()
+                        // The wash yields to the contact shadow near the edge (uniform occlusion);
+                        // the material frost runs to the edge so there's no lift-off gap.
+                        HeroCornerFade(
+                            washFeatherHeight: HeroMetrics.edgeShadowHeight(idiom: idiom)
+                        )
                     }
+                    // The page's contact shadow on the artwork — the boundary's depth story (the
+                    // page surface below stands in FRONT and casts up onto the recessed artwork).
+                    HeroEdgeShadow()
+                        // Two frames on purpose: no single `.frame` overload mixes a flexible
+                        // `maxWidth` with a fixed `height`.
+                        .frame(maxWidth: .infinity)
+                        .frame(height: HeroMetrics.edgeShadowHeight(idiom: idiom))
                 }
                 .heroBandExtension(regularWidth: idiom.usesLandscapeHeroBand)
             )
@@ -90,12 +111,25 @@ struct HeroBand<Artwork: View, Foreground: View>: View {
             foreground()
                 .heroForegroundPlacement(idiom: idiom)
         }
+        // Floor bleed: the artwork's light washing down onto the page surface (the page itself
+        // stays a seamless whole — the depth cue is `HeroEdgeShadow`, on the ARTWORK side inside
+        // the composite; a page-side "lip" line shipped briefly and was killed). An overlay hung
+        // OUTSIDE the band's bounds via offset: later siblings in the parent scroll column (shelf
+        // titles, the detail ledger) draw over it, so it reads as ambience behind the page.
+        // Outside the stretch layer on purpose — it hangs off the band's bottom edge, which is the
+        // stretch's anchor, so it stays put during the rubber-band.
+        .overlay(alignment: .bottom) {
+            let bleed = HeroMetrics.floorBleedHeight(idiom: idiom)
+            HeroFloorBleed(hash: floorBleedHash)
+                .frame(height: bleed)
+                .offset(y: bleed)
+        }
     }
 }
 
 /// Reference-type carrier for the hero's per-frame scroll adjustment. An `@Observable` class
 /// (rather than a value passed down the view tree) so a scroll write invalidates only the views
-/// that READ `adjustment` — `HeroStretchLayer` and Home's `HeroScrollArtwork` — leaving the
+/// that READ `adjustment` — `HeroStretchLayer` and `HeroParallaxArtwork` — leaving the
 /// screen's body and the band's foreground (title, actions, page dots) untouched on a scroll frame.
 @Observable
 @MainActor
@@ -135,6 +169,66 @@ private struct HeroStretchLayer<Content: View>: View {
                 HeroMetrics.stretchScale(forScrollAdjustment: adjustment, bandHeight: geometry.size.height),
                 anchor: .bottom
             )
+        }
+    }
+}
+
+/// The artwork slot's scroll-driven half-speed PARALLAX — applied by `HeroBand` itself around
+/// whatever the `artwork` slot hands over, so every scroll-wired band parallaxes identically (the
+/// recessed artwork lagging the page in front of it — the motion half of the edge-depth story
+/// `HeroEdgeShadow` draws). `content` is a stored value on purpose: the per-frame
+/// `HeroScrollState.adjustment` writes re-evaluate ONLY this wrapper's body, which re-offsets the
+/// stored subtree without rebuilding it (the insulation that once required Home's dedicated
+/// artwork-wrapper split — on iOS the un-split version reloaded the foreground's logo image every
+/// scrolled frame). The transform is render-only (offset), so it can't feed scroll geometry back
+/// into layout (the trap that killed the June '26 offset-math hero, f4b64b3).
+/// Reduce Motion and tvOS (focus-driven, full-viewport scroll) both zero the parallax.
+///
+/// The pull-down STRETCH deliberately does NOT live here: its overpaint must survive past the
+/// band's top edge, and `HeroBand` composites this slot inside `backgroundExtensionEffect`, which
+/// clips its content to bounds — a stretch applied in this slot gets amputated on iPad and the
+/// rubber-band gap shows the app background (the 56bae0b regression). `HeroBand` owns the stretch,
+/// one layer OUTSIDE the extension (`HeroStretchLayer`).
+private struct HeroParallaxArtwork<Content: View>: View {
+    let scroll: HeroScrollState
+    let content: Content
+
+    @Environment(\.appIdiom) private var idiom
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        let parallax = (reduceMotion || idiom == .tv)
+            ? 0 : HeroMetrics.parallaxShift(forScrollAdjustment: scroll.adjustment)
+        content
+            .offset(y: parallax)
+            // Bottom-only clip: the lagging artwork must not slide over the content below (the
+            // parent ScrollView is `.scrollClipDisabled`), but the sides stay open so HeroBand's
+            // `backgroundExtensionEffect` (applied to the artwork+veil composite, one layer out)
+            // can sample the leading edge under the sidebar; a plain `.clipped()` would amputate it.
+            .clipShape(BottomBoundedRect())
+    }
+}
+
+/// A rect open on every side but the bottom — `HeroParallaxArtwork`'s clip.
+private struct BottomBoundedRect: Shape {
+    func path(in rect: CGRect) -> Path {
+        Path(CGRect(x: rect.minX - 10_000, y: rect.minY - 10_000,
+                    width: rect.width + 20_000, height: rect.height + 10_000))
+    }
+}
+
+extension View {
+    /// Attach to the hero-hosting `ScrollView`: feeds the SIGNED scroll adjustment into `state` —
+    /// positive = pull-down rubber-band (the band's stretchy zoom), negative = scrolled into the
+    /// content (the artwork parallax). `contentOffset + contentInsets.top` is 0 at rest regardless
+    /// of safe-area/nav-bar insets, so it self-calibrates. The negative side is floored at one
+    /// viewport: past that the hero is off-screen, and pinning the value there stops per-frame
+    /// state writes (and reader re-evaluations) for the rest of the feed.
+    func heroScrollChannel(_ state: HeroScrollState) -> some View {
+        onScrollGeometryChange(for: CGFloat.self) { geo in
+            max(-(geo.contentOffset.y + geo.contentInsets.top), -geo.containerSize.height)
+        } action: { _, newValue in
+            state.adjustment = newValue
         }
     }
 }
@@ -213,6 +307,22 @@ enum HeroMetrics {
         switch idiom {
         case .compact, .regular: Space.s22
         case .tv: AppLayout.tvOverscanInset
+        }
+    }
+    /// Height of the page's contact shadow on the artwork (`HeroEdgeShadow`). Short on purpose —
+    /// occlusion shadows hug their edge; anything taller reads as a scrim, which is the legibility
+    /// veils' job. tv scales with the rest of the chrome.
+    static func edgeShadowHeight(idiom: AppIdiom) -> CGFloat {
+        idiom == .tv ? 34 : 22
+    }
+    /// How far the floor bleed (`HeroFloorBleed`) spills below the band's bottom edge. Absolute pt,
+    /// not band-derived: the spill belongs to the PAGE under the band (roughly one shelf-header's
+    /// worth of ambience), so it shouldn't grow with a taller poster band.
+    static func floorBleedHeight(idiom: AppIdiom) -> CGFloat {
+        switch idiom {
+        case .compact: 170
+        case .regular: 210
+        case .tv: 240
         }
     }
     static func foregroundHorizontalInset(idiom: AppIdiom) -> CGFloat {
@@ -430,6 +540,61 @@ extension View {
         .heroBandFrame(regularWidth: false)
         .offset(y: 120)
     }
+}
+
+/// Floor-bleed seam diagnostic: the band's hard bottom edge with the item's blur spilling below it
+/// onto the field, and real shelf stand-ins drawing OVER the spill — the artwork↔page transition
+/// `HeroFloorBleed` exists for. The artwork slot renders the SAME BlurHash the bleed decodes, so
+/// color continuity across the edge is directly judgeable: the spill must read as the artwork's
+/// light continuing onto the page (no hue jump at the edge, no traceable bottom line of the bleed),
+/// the band edge itself must stay crisp, and the shelf title must stay legible over the spill's
+/// strongest zone. Render both schemes.
+private struct FloorBleedProof: View {
+    let regularWidth: Bool
+
+    /// Vivid multi-hue sample (reference set) — worst case for a hue jump at the edge.
+    private let hash = "LGF5]+Yk^6#M@-5c,1J5@[or[Q6."
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: Space.s30) {
+                HeroBand(floorBleedHash: hash) {
+                    BlurHashPlaceholder(
+                        hash: hash,
+                        aspectRatio: HeroMetrics.bandAspectRatio(regularWidth: regularWidth)
+                    )
+                } foreground: {
+                    PreviewHeroForeground(regularWidth: regularWidth)
+                }
+                .heroBandFrame(regularWidth: regularWidth)
+                VStack(alignment: .leading, spacing: Space.s12) {
+                    Text("Continue Watching")
+                        .font(.headline)
+                        .foregroundStyle(Color.label)
+                    HStack(spacing: Space.s12) {
+                        ForEach(0..<3, id: \.self) { _ in
+                            RoundedRectangle(cornerRadius: Radius.tile, style: .continuous)
+                                .fill(Color.artworkPlaceholder)
+                                .aspectRatio(MediaImage.poster, contentMode: .fit)
+                        }
+                    }
+                }
+                .padding(.horizontal, Space.s22)
+            }
+        }
+        .scrollClipDisabled(true)
+        .screenFloor()
+        .ignoresSafeArea(edges: .top)
+        .environment(\.appIdiom, regularWidth ? .regular : .compact)
+    }
+}
+
+#Preview("HeroBand · floor bleed (compact)", traits: .fixedLayout(width: 393, height: 852)) {
+    FloorBleedProof(regularWidth: false)
+}
+
+#Preview("HeroBand · floor bleed (regular)", traits: .fixedLayout(width: 1024, height: 800)) {
+    FloorBleedProof(regularWidth: true)
 }
 
 /// Worst-case artwork for scrim verification: near-white sky with bright high-frequency
