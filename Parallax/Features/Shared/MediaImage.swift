@@ -99,7 +99,22 @@ struct MediaImage: View {
         }
     }
 
-    private var placeholder: Color { Color.artworkPlaceholder }
+    /// The fill drawn BEHIND the loaded artwork — it pins the cell's box while the real image
+    /// streams in, then the loaded image crossfades/pops on top. For Jellyfin content that carries a
+    /// BlurHash we decode it into a blurred impression of the incoming poster (a soft colour field
+    /// that matches the artwork) instead of a flat gray box; everything else — SMB/local artwork, or a
+    /// Jellyfin ref with no hash — keeps the flat `Color.artworkPlaceholder`. Only reached by `.fill`
+    /// and `.boxed`; `.logo` deliberately draws no placeholder (transparent PNGs sit over artwork).
+    @ViewBuilder
+    private var placeholder: some View {
+        if case .jellyfin(let ref, _) = content, let hash = ref?.blurHash {
+            // `aspectRatio` picks the decode raster's shape only — BlurHashPlaceholder is
+            // layout-neutral by construction (see its doc), so this cannot feed back into sizing.
+            BlurHashPlaceholder(hash: hash, aspectRatio: aspectRatio)
+        } else {
+            Color.artworkPlaceholder
+        }
+    }
 
     /// The exact (maxWidth, maxHeight) to request, from the SAME `ArtworkRequest.boxedSize` the
     /// prefetcher uses — one source for the box, so a tile and a warm-up prefetch always resolve the
