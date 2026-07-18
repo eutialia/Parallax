@@ -177,6 +177,18 @@ enum ActionRow {
         #endif
     }
     static let gap: CGFloat = Space.s16
+    /// Glyph font inside the circle buttons (Favorite, Watched, pager chevron). iOS keeps the
+    /// Play pill's `.headline` (17pt in the 50/52pt disc) so the row's optical weight matches.
+    /// tvOS pins an explicit size instead: its `.headline` resolves to 38pt (HIG tv ramp), which
+    /// overfills the 62pt disc — glyph/disc 0.61 vs iOS's 0.34. 26pt (~0.42) keeps a 10-ft
+    /// legibility boost over strict proportionality (would be 21pt) without the crowded look.
+    static var glyphFont: Font {
+        #if os(tvOS)
+        .system(size: 26, weight: .semibold)
+        #else
+        .headline.weight(.semibold)
+        #endif
+    }
 }
 
 /// Continue Watching / Next Up horizontal shelves (2:3 poster tiles).

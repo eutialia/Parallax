@@ -26,10 +26,10 @@ struct CircleGlassButton: View {
         } label: {
             TVFocusReader { focused in
                 let d = ActionRow.controlHeight(idiom)
-                // `.headline` — the SAME font as the Play pill's label, so the row's optical
-                // weight matches; the disc/pill heights are matched explicitly via `ActionRow`.
+                // Glyph size is a token (`ActionRow.glyphFont`): iOS matches the Play pill's
+                // `.headline`; tvOS pins a smaller explicit size — see the token's doc.
                 Image(systemName: systemImage)
-                    .font(.headline.weight(.semibold))
+                    .font(ActionRow.glyphFont)
                     .foregroundStyle(focused ? Color.playerInk : .white)
                     .frame(width: d, height: d)
                     .flatControlFill(
