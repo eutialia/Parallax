@@ -115,6 +115,14 @@ struct MediaThumbnail: View {
             }
         }
         .clipShape(.rect(cornerRadius: Radius.tile))
+        // Seating hairline: an inner `separator` stroke so the artwork keeps a defined edge when
+        // its own tone melts into the floor (dark poster on graphite, white-heavy poster on paper).
+        // Inside the clip (`strokeBorder`) so it hugs the same corner geometry, and adaptive via the
+        // token — ink-on-paper by day, white-on-graphite by night — the Apple TV app treatment.
+        .overlay {
+            RoundedRectangle(cornerRadius: Radius.tile, style: .continuous)
+                .strokeBorder(Color.separator, lineWidth: 1)
+        }
         // After the clip: the disc rides over the rounded corner instead of being shaved by it.
         .overlay(alignment: .topTrailing) {
             statusBadge
@@ -264,29 +272,34 @@ extension MediaThumbnail.WatchedStatus {
 /// without a `Session`.
 #Preview("Thumbnail footer + badge", traits: .sizeThatFitsLayout) {
     HStack(spacing: 16) {
+        // Explicit height boxes, like the real shelves: the footer's bottom-pinning frame is
+        // vertically greedy, so a width-only frame lets the tile stretch to whatever the canvas
+        // proposes (the field floor's ignoresSafeArea proposes the whole screen here).
         MediaThumbnail(
             artwork: .none,
             footer: .make(caption: "S1 E2 · 22 min left", progress: 0.4),
             aspectRatio: MediaImage.poster,
             accessibilityLabel: "Continue watching"
         )
-        .frame(width: 150)
+        .frame(width: 150, height: 225)
         MediaThumbnail(
             artwork: .none,
             footer: .make(caption: "S1 E3 · 45 min", progress: nil),
             aspectRatio: MediaImage.poster,
             accessibilityLabel: "Next up"
         )
-        .frame(width: 150)
+        .frame(width: 150, height: 225)
         MediaThumbnail(
             artwork: .none,
             watched: .watched,
             aspectRatio: MediaImage.landscape,
             accessibilityLabel: "Watched episode"
         )
-        .frame(width: 240)
+        .frame(width: 240, height: 135)
     }
     .padding()
-    .background(Color.background)
+    // The field floor, not flat background: the gray placeholder on the paper/graphite field is
+    // the tone-on-tone worst case the seating hairline exists for — this preview proves it holds.
+    .screenFloor()
 }
 #endif
