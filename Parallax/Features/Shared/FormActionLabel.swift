@@ -3,7 +3,7 @@ import SwiftUI
 /// Visual treatment for a full-width form CTA (auth + settings). FLAT — Liquid Glass is reserved
 /// for the player + system bars.
 enum FormActionStyle {
-    /// Bright `buttonFill` pill — the screen's #1 action (Connect). Espresso by day, white by night.
+    /// Bright `buttonFill` pill — the screen's #1 action (Connect). Deep ink by day, white by night.
     case solid
     /// Secondary flat pill — `fill` + hairline (Quick Connect, Add Server, …).
     case glass
@@ -93,8 +93,8 @@ private struct FlatFormButtonStyle: ButtonStyle {
     private func labelColor(focused: Bool) -> Color {
         if focused { return Color.playerInk }            // ink on the tvOS white focus platter
         // Disabled: re-resolve the label against the pill's OWN fill, not the page ink (page ink over
-        // `buttonFill` lands ~1.1:1). The solid pill keeps cream `buttonLabel` dimmed to 72% (legible
-        // on the espresso/white fill); the glass pill's ground is the page-tinted `fill`, where
+        // `buttonFill` lands ~1.1:1). The solid pill keeps off-white `buttonLabel` dimmed to 72% (legible
+        // on the ink/white fill); the glass pill's ground is the page-tinted `fill`, where
         // `secondaryLabel` stays legible.
         if !isEnabled { return role == .solid ? Color.buttonLabel.opacity(0.72) : Color.secondaryLabel }
         return role == .solid ? Color.buttonLabel : Color.label

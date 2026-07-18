@@ -58,7 +58,7 @@ private struct AddServerChoosePreview: View {
             AddServerChooseView(onChooseJellyfin: {}, onChooseSMB: {})
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.background)
+        .screenFloor()
     }
 }
 

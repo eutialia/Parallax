@@ -20,7 +20,7 @@ struct SoonBadge: View {
 /// The leading selection circle on a library/folder picker row (handoff `.selc`). Three states:
 /// `off` (empty ring), `on` (filled disc + check — this path becomes a library), and `mixed` (filled
 /// disc + dash — a parent some of whose children are chosen). Filled with `Color.buttonFill` so it
-/// reads as the same espresso/white "selected" token the primary button uses.
+/// reads as the same ink/white "selected" token the primary button uses.
 struct SelectionCircle: View {
     enum SelectionState: Equatable { case off, on, mixed }
 
@@ -274,7 +274,7 @@ extension Font {
     )
     .padding(40)
     .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .background(Color.background)
+    .screenFloor()
     .preferredColorScheme(.dark)
 }
 #endif

@@ -83,7 +83,7 @@ struct SettingsView: View {
         #if !os(tvOS)
         .presentationSizing(.form)
         #endif
-        .presentationBackground(Color.background)
+        .presentationBackground(BackgroundField.style)
         .task {
             if viewModel == nil {
                 viewModel = SettingsViewModel(
@@ -232,7 +232,7 @@ private struct AddServerFlow: View {
                 }
             }
         }
-        .presentationBackground(Color.background)
+        .presentationBackground(BackgroundField.style)
     }
 }
 #endif
@@ -408,7 +408,7 @@ private struct SettingsRootPreview: View {
             }
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.background)
+        .screenFloor()
     }
 }
 

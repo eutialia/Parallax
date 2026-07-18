@@ -67,7 +67,7 @@ struct SubtitleStageLights: View {
 /// Lights over a mock menu, so the dim + spotlight + cue read against real content.
 #Preview("Subtitle stage lights — over menu", traits: .fixedLayout(width: 393, height: 852)) {
     ZStack {
-        Color.background
+        BackgroundField.style
         SubtitleControlsList(style: .standard, onChange: { _ in })
             .frame(maxWidth: 540)
             .frame(maxHeight: .infinity, alignment: .top)

@@ -63,7 +63,7 @@ struct PasswordRevealToggle: View {
     }
     .padding(Space.s18)
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-    .background(Color.background)
+    .screenFloor()
 }
 
 #Preview("SMB form · fields", traits: .fixedLayout(width: 540, height: 460)) {
@@ -94,7 +94,7 @@ struct PasswordRevealToggle: View {
     }
     .padding(Space.s18)
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-    .background(Color.background)
+    .screenFloor()
 }
 #endif
 #endif

@@ -81,7 +81,7 @@ struct SettingsScaffold<Content: View>: View {
         // this the transparent scroll fell through to the system's pure-black `systemBackground`.
         // (tvOS is the exception: there `TVSettingsRail` wraps both the rail and this column, so it owns
         // the surface and the tvOS branch above paints none.)
-        .background(Color.background.ignoresSafeArea())
+        .background(BackgroundField.style.ignoresSafeArea())
         #endif
     }
 

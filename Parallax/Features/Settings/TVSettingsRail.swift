@@ -39,7 +39,7 @@ struct TVSettingsRail<Content: View>: View {
     var body: some View {
         content
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .background(Color.background)
+            .background(BackgroundField.style)
             .overlay(alignment: .topTrailing) { buildTagView }
             .onPreferenceChange(SettingsBuildTagKey.self) { buildTag = $0 }
     }

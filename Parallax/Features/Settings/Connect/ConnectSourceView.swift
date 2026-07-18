@@ -83,7 +83,7 @@ struct LoggedOutRootView: View {
         }
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .background(Color.background)
+    .screenFloor()
     .preferredColorScheme(.dark)
 }
 #endif

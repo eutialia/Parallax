@@ -51,12 +51,16 @@ struct LaunchPalette {
         flashGradient: nil
     )
 
-    /// Paper icon: warm paper radial (sampled center → corner), `#372C23` ink.
+    /// Daylight face. The FIELD follows `Color.background`'s family (its documented job —
+    /// daylight graphite since 2026-07-18, slightly wider spread than the in-app
+    /// `BackgroundField` for launch drama); the PENCIL and chroma pair stay icon-derived —
+    /// the animation draws the shipped Paper icon, which remains warm-stone. If the icon is
+    /// ever redesigned to the daylight family, resample `pencil` from it.
     static let light = LaunchPalette(
         fieldGradient: Gradient(stops: [
-            .init(color: launchColor(0xDFD7C8), location: 0),
-            .init(color: launchColor(0xD4CCBB), location: 0.6),
-            .init(color: launchColor(0xC9BFAB), location: 1),
+            .init(color: launchColor(0xF4F4F8), location: 0),
+            .init(color: launchColor(0xEBEBF0), location: 0.6),
+            .init(color: launchColor(0xDEDEE6), location: 1),
         ]),
         fieldCenterY: 0.36,
         pencil: 0x372C23,

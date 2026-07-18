@@ -2,16 +2,20 @@
 name: Parallax
 description: Native Jellyfin client for Apple platforms — theater-dark, monochrome glass, the library is the interface.
 colors:
-  paper: "#D0C8BA"
-  paper-surface: "#FAF7F0"
-  paper-white: "#F7F2EA"
-  espresso: "#221E17"
-  espresso-deep: "#2A241D"
+  paper: "#EBEBF0"
+  paper-field-inner: "#F1F1F5"
+  paper-field-outer: "#E1E1E8"
+  paper-surface: "#F8F8FB"
+  paper-white: "#F5F5F8"
+  ink: "#1C1C24"
+  ink-deep: "#22222A"
   graphite: "#16161C"
+  graphite-field-inner: "#17171E"
+  graphite-field-outer: "#111116"
   graphite-surface: "#1A1A22"
   screen-white: "#FFFFFF"
   player-ink: "#0A0A0C"
-  glass-paper: "#F8F4ED85"
+  glass-paper: "#F6F6FA85"
   glass-graphite: "#1C1C2285"
 typography:
   display:
@@ -54,11 +58,11 @@ spacing:
   s60: "60pt"
 components:
   button-play-pill:
-    backgroundColor: "{colors.espresso-deep}"
-    textColor: "{colors.screen-white}"
+    backgroundColor: "{colors.screen-white}"
+    textColor: "{colors.player-ink}"
     typography: "{typography.headline}"
   button-form-solid:
-    backgroundColor: "{colors.espresso-deep}"
+    backgroundColor: "{colors.ink-deep}"
     textColor: "{colors.paper-white}"
     rounded: "{rounded.field}"
   chip-player-active:
@@ -76,7 +80,7 @@ components:
 
 Parallax is built to be the player you stop looking after — the definitive native client for a personally curated library. That positioning dictates the aesthetic: nothing here is allowed to feel provisional, ported, or generic. The system is theater-dark and content-forward; artwork and video are the interface, and the chrome is monochrome Liquid Glass that recedes. There is no brand accent anywhere — the global tint is the label color itself — because the only color that matters on screen is the user's own library.
 
-The palette has two committed faces, named for the app-icon assets that define them: **Paper** by day (warm stone background, espresso ink) and **Graphite** by night (near-black blue-leaning dark, screen-white ink).
+The palette has two committed faces sharing one hue family (OKLCH H≈285): **Paper** by day — daylight graphite, the night hue lifted into light, cool ink — and **Graphite** by night (near-black blue-leaning dark, screen-white ink). One room, two light switches: switching appearance reads as the same theater with the house lights up or down, not as two apps. Both floors are painted as **ambient light-fields** — screen-pinned, luminance-only elliptical falloffs of the floor's own hue (`BackgroundField` in `DesignTokens.swift`) — lighting, not decoration. (Adopted 2026-07-18, replacing the warm-stone/espresso day face; the Paper app-icon asset still carries the old warm palette and awaits a resample — the launch stage's pencil colors stay icon-derived until then.)
 
 **The material rule (glass is earned, not default).** Liquid Glass is reserved for two places: the **player** (clear, refractive glass over video — `.glassEffect(.clear)`, so footage shows through) and the **system bars** the platform owns (the `.sidebarAdaptable` sidebar / tab bar, the navigation bar — left native). **Everything the app itself draws is flat:** buttons are solid or `fill` fills (the Play pill, circle actions, form CTAs), cards are `surface` panels (the detail description card, settings rows), fields and badges are `fill`. This mirrors Apple's own split — playback is glossy glass, the menus are opaque — and it keeps glass meaningful: when chrome refracts, it's because content (video) is behind it. The player remains the one custom island (monochrome white-on-ink, geometric metrics) because system platters fight video.
 
@@ -84,7 +88,7 @@ This system explicitly rejects (from PRODUCT.md): **Plex's busy chrome**, the **
 
 **Key Characteristics:**
 - Monochrome, accentless: tint = label color; the library provides all color
-- Two-faced adaptive palette: Paper (light) / Graphite (dark), flat by design
+- Two-faced adaptive palette: Paper (light) / Graphite (dark), one hue family, floors lit by subtle ambient fields
 - Flat app-drawn chrome; Liquid Glass reserved for the player (over video) + system bars
 - The player is a sanctioned custom island (white-on-ink, geometric `u` scaling)
 - One design language, two grammars: iOS touch and tvOS focus diverge in expression only
@@ -92,29 +96,31 @@ This system explicitly rejects (from PRODUCT.md): **Plex's busy chrome**, the **
 
 ## 2. Colors: Paper & Graphite
 
-A two-faced monochrome system: warm paper and espresso in light mode, graphite and screen white in dark — resolved per-appearance through one `Color(light:dark:)` helper, never branched at call sites.
+A two-faced monochrome system in one hue family (OKLCH H≈285): daylight graphite and cool ink in light mode, graphite and screen white in dark — resolved per-appearance through one `Color(light:dark:)` helper, never branched at call sites.
 
 ### Primary
-- **Espresso** (#221E17): The light-mode ink and the app's entire "accent" — it is the global tint, every label, every glyph. A near-black warm brown, not gray; the warmth of the brand without a single decorative color.
+- **Ink** (#1C1C24): The light-mode ink and the app's entire "accent" — it is the global tint, every label, every glyph. Near-black in the floor's own blue-leaning family; brand warmth lives in copy and artwork, not the ink.
 - **Screen White** (#FFFFFF): The dark-mode ink and tint. Pure white, because in a dark room over artwork anything less reads as dimmed.
 
 ### Neutral
-- **Paper** (#D0C8BA): Light-mode background. Warm stone, deliberately flat — it ignores the system's dark-elevation lift so scaled iPad windows don't shift.
-- **Paper Surface** (#FAF7F0, drawn at 92%): Light-mode raised surface for cards and panels.
-- **Graphite** (#16161C): Dark-mode background. Near-black with a blue lean; the theater at house-lights-down.
+- **Paper** (#EBEBF0): Light-mode floor base. Daylight graphite — the night hue lifted to daylight; it ignores the system's dark-elevation lift so scaled iPad windows don't shift. Painted as the day field `#F1F1F5 → #EBEBF0 → #E1E1E8` (±3–4% L).
+- **Paper Surface** (#F8F8FB, drawn at 92%): Light-mode raised surface for cards and panels (~1.1–1.2:1 over the field, native-calm lift).
+- **Graphite** (#16161C): Dark-mode floor base. Near-black with a blue lean; the theater at house-lights-down. Painted as the night field `#17171E → #16161C → #111116` (1.06:1 span — dimmer than day on purpose; dark-adapted eyes amplify deltas; the inner stop is the launch field's own).
 - **Graphite Surface** (#1A1A22): Dark-mode raised surface.
-- **Espresso Deep** (#2A241D): Solid button fill — the Play pill in both schemes, form CTAs in light.
-- **Paper White** (#F7F2EA): Label color on espresso-filled buttons in light mode.
-- **Player Ink** (#0A0A0C): The player's fixed near-black backdrop, both schemes — the player is pinned dark.
-- **Glass Paper / Glass Graphite** (#F8F4ED at 52% / #1C1C22 at 52%): The tint layer inside `.glassEffect` panels and bars; a 74%-alpha "strong" variant exists for surfaces needing more body.
+- **Ink Deep** (#22222A): Solid button fill for form CTAs in light mode.
+- **Paper White** (#F5F5F8): Label color on ink-filled buttons in light mode.
+- **Player Ink** (#0A0A0C): The player's fixed near-black backdrop, both schemes — the player is pinned dark. (The hero Play pill is likewise theme-FIXED: white fill + player ink label in both schemes, owner directive 2026-07-14.)
+- **Glass Paper / Glass Graphite** (#F6F6FA at 52% / #1C1C22 at 52%): The tint layer inside `.glassEffect` panels and bars; a 74%-alpha "strong" variant exists for surfaces needing more body.
 
 ### Opacity ramp (derived, not separate hexes)
-Secondary label = ink at 62%, tertiary at 34%, separator at 12% (light) / 10% (dark), fill at 12% / 24%. Apple's exact semantic ramp, applied to the custom inks.
+Light: secondary label = ink at 78%, tertiary at 60%, separator 12%, fill 10% / 6% — tuned to clear WCAG AA on the fill backplate (secondary 6.7:1, tertiary 3.97:1). Dark: secondary 62%, tertiary 45%, separator 10%, fill 24% / 16%.
 
 ### Named Rules
 **The No-Accent Rule.** The global tint is `Color.label`. No brand color exists anywhere in chrome — prohibited. Color on screen comes from artwork. The sole exception: destructive red on destructive actions, applied explicitly.
 
 **The Two Faces Rule.** Every adaptive color resolves through `Color(light:dark:)` in `DesignTokens.swift`. Never branch on `colorScheme` at a call site; never use system semantic colors (`.primary`, `.systemBackground`) — the palette is custom on purpose.
+
+**The Lighting Rule.** Screen floors are ambient light-fields, not flat paint: `BackgroundField` (a luminance-only elliptical falloff of the floor's own hue, center x 0.5 / y 0.30) is what `screenFloor()` and every root/sheet floor draws. Fields are LIGHTING and stay inside these bounds — hue-locked, screen-pinned (never scrolling with content), ≤ ~4% L span. Hue gradients and decorative color ramps in chrome remain banned; a field that reads as "a gradient" rather than as light has crossed the line.
 
 ## 3. Typography
 
@@ -158,7 +164,7 @@ Controls are **flat**: each non-player control draws its own solid / `fill` fill
 
 ### Buttons
 - **Shape:** Capsule pills and circles, continuous corners everywhere. Pill height = circle diameter, matched via `ActionRow.controlHeight` (iPhone 50 / iPad 52 / tvOS 62).
-- **Primary (Play pill, `PrimaryPlayButton`):** a flat solid pill that flips with the face — Espresso Deep (#2A241D) + white label by day, white + ink label by night. Reserves its widest title invisibly so Play/Resume swaps never resize.
+- **Primary (Play pill, `PrimaryPlayButton`):** a flat solid pill, theme-FIXED white + player-ink label in BOTH schemes (owner directive 2026-07-14 — it rides artwork and must not flip with the app theme). Reserves its widest title invisibly so Play/Resume swaps never resize.
 - **Icon buttons (`CircleGlassButton`):** circular `heroGlass` fill + hairline + white glyph — the SAME recipe as the 4K/HDR/CC badges; the active state is a glyph swap (heart→heart.fill). 1.05 optical overshoot on iOS.
 - **Form CTAs (`formActionButton`):** `.solid` = solid `buttonFill`; `.glass` (secondary) = `fill` + hairline. Disabled dims the pill but keeps the label legible (no blank-pill bug).
 - **Focus (tvOS):** one bespoke recipe for every flat control — white platter + ink + lift (`flatControlFill` inverts the fill, `tvChipButton`/`tvFocusEffect` lifts). Posters keep the native `.borderless` lockup (image content); the player keeps clear-glass-over-video with a platter on its active/focused state.
@@ -187,7 +193,7 @@ The sanctioned custom island. Monochrome white-on-ink, pinned dark, every dimens
 ## 6. Do's and Don'ts
 
 ### Do:
-- **Do** keep chrome monochrome: tint is the label color, espresso (#221E17) by day, white by night. The artwork is the accent.
+- **Do** keep chrome monochrome: tint is the label color, ink (#1C1C24) by day, white by night. The artwork is the accent.
 - **Do** use the `Radius` enum (panel 24 / card 18 / field 14 / tile 12) and `Space` scale — raw radius or spacing literals in chrome are a defect.
 - **Do** put text over artwork on a scrim or glass layer, always.
 - **Do** let the system own focus, rest, and label states wherever a native style exists; pin colors only where the system demonstrably fails, and document why at the site.
@@ -200,7 +206,7 @@ The sanctioned custom island. Monochrome white-on-ink, pinned dark, every dimens
 - **Don't** ship the **Netflix-clone home** — undifferentiated carousel-of-carousels. Shelves exist because Continue Watching and Next Up are jobs, not decoration.
 - **Don't** ship **hobby-app stock UI** — bare `List` rows, default buttons, settings-screen energy on content surfaces.
 - **Don't** write **custom chrome that fights the platform** — no fake tab bars, no replicated focus, no `.buttonStyle(.plain)` inside the `tv*` wrappers (it kills tvOS focus).
-- **Don't** introduce a brand accent color, gradient, or decorative tint anywhere in chrome. Prohibited without exception.
+- **Don't** introduce a brand accent color, hue gradient, or decorative tint anywhere in chrome. Prohibited without exception. (The `BackgroundField` floors are not an exception but a different thing: luminance-only falloffs of the floor's own hue are lighting — see The Lighting Rule.)
 - **Don't** use system semantic colors or branch on `colorScheme` at call sites — every adaptive color goes through `Color(light:dark:)` tokens.
 - **Don't** put Dynamic Type in the player or fixed sizes in chrome — the Two Scales Rule cuts both ways.
 - **Don't** swap glass structurally inside a `GlassEffectContainer` — fade layers over an always-mounted base, or the morph snaps.

@@ -69,7 +69,7 @@ struct TemplateGlyph: View {
     }
     .padding(20)
     .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .background(Color.background)
+    .screenFloor()
     .preferredColorScheme(.dark)
 }
 #endif

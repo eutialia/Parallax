@@ -31,14 +31,18 @@ private extension UIColor {
 //
 // Named after Apple's semantic vocabulary (label / secondaryLabel / fill /
 // separator / background) + app-specific roles (glass, button, chip, selection).
-// Dark / Light(Matinee) values from the design handoff.
+// Dark / Light values: daylight-graphite face (design-system day-theme-lab, 2026-07-18).
 // Always reference these qualified — `Color.fill` / `Color.background` / `Color.separator`;
 // unqualified `.fill` / `.background` / `.separator` in a modifier resolve to SwiftUI's
 // built-in ShapeStyle, not these tokens.
 extension Color {
-    /// Single screen floor — one FIXED value per appearance, deliberately constant across window
-    /// size. Light = Matinee paper; dark = a deep blue-gray that tames vibrant poster artwork (true
-    /// `#000` makes it bloom), kept just below `surface` so cards still read above it.
+    /// Screen-floor BASE — one FIXED value per appearance, deliberately constant across window
+    /// size. Both faces are one hue family (OKLCH H≈285, adopted 2026-07-18, design-system
+    /// `day-theme-lab` v4·G): light = "daylight graphite", the night hue lifted to daylight;
+    /// dark = the deep blue-gray that tames vibrant poster artwork (true `#000` makes it bloom),
+    /// kept just below `surface` so cards still read above it. Floors normally paint
+    /// `BackgroundField` (this color is its mid stop); use the base directly only where a flat
+    /// color is required.
     ///
     /// We intentionally do NOT use a system background here: `systemBackground` / `secondarySystem…`
     /// lift to a lighter value when the scene is "elevated" (iPad multitasking / scaled window /
@@ -46,27 +50,26 @@ extension Color {
     /// resize the window. A flat custom color ignores `userInterfaceLevel`, and `screenFloor()`
     /// paints it OVER the system's own lifting content backing — so the floor stays put at every
     /// window size. (Light has no lift to defeat; that's a dark-mode-only mechanism.)
-    static let background = Color(light: 0xD0C8BA, dark: 0x16161C)
-    static let surface            = Color(light: 0xFAF7F0, lightAlpha: 0.92, dark: 0x1A1A22)  // dark tile opaque, light 0.92 — per handoff
+    static let background = Color(light: 0xEBEBF0, dark: 0x16161C)
+    static let surface            = Color(light: 0xF8F8FB, lightAlpha: 0.92, dark: 0x1A1A22)  // dark tile opaque, light 0.92 — per handoff
 
-    static let label              = Color(light: 0x221E17, dark: 0xFFFFFF)
-    // Light alphas raised to clear WCAG AA against the BINDING backplate (the Color.fill settings
-    // pill, ~192/183/168 — darker than the screen floor). secondaryLabel carries body/caption text →
-    // 4.5:1 (0.80 → 4.92:1 on the pill); tertiaryLabel is the non-text glyph/placeholder tier → 3:1
-    // (light 0.60 → 3.13:1, dark 0.45 → 3.60:1). The old 0.62/0.34 measured 3.27:1 / 1.82:1 — below
-    // floor. Dark secondary already cleared (5.42:1) so it stays.
-    static let secondaryLabel     = Color(light: 0x2C261C, lightAlpha: 0.80, dark: 0xEBEBF5, darkAlpha: 0.62)
-    static let tertiaryLabel      = Color(light: 0x2C261C, lightAlpha: 0.60, dark: 0xEBEBF5, darkAlpha: 0.45)
-    static let separator          = Color(light: 0x281E0F, lightAlpha: 0.12, dark: 0xFFFFFF, darkAlpha: 0.10)
+    static let label              = Color(light: 0x1C1C24, dark: 0xFFFFFF)
+    // Light alphas tuned to clear WCAG AA against the BINDING backplate (the Color.fill settings
+    // pill over the daylight floor, ~#DEDEE4 effective). secondaryLabel carries body/caption text →
+    // 4.5:1 (0.78 → 6.72:1 on the pill); tertiaryLabel is the non-text glyph/placeholder tier → 3:1
+    // (light 0.60 → 3.97:1, dark 0.45 → 3.60:1). Dark values unchanged (secondary 5.42:1).
+    static let secondaryLabel     = Color(light: 0x1C1C24, lightAlpha: 0.78, dark: 0xEBEBF5, darkAlpha: 0.62)
+    static let tertiaryLabel      = Color(light: 0x1C1C24, lightAlpha: 0.60, dark: 0xEBEBF5, darkAlpha: 0.45)
+    static let separator          = Color(light: 0x1C1C28, lightAlpha: 0.12, dark: 0xFFFFFF, darkAlpha: 0.10)
 
-    static let fill               = Color(light: 0x4A3A24, lightAlpha: 0.12, dark: 0x787887, darkAlpha: 0.24)
-    static let fillSecondary      = Color(light: 0x4A3A24, lightAlpha: 0.07, dark: 0x787887, darkAlpha: 0.16)
+    static let fill               = Color(light: 0x3C3C4B, lightAlpha: 0.10, dark: 0x787887, darkAlpha: 0.24)
+    static let fillSecondary      = Color(light: 0x3C3C4B, lightAlpha: 0.06, dark: 0x787887, darkAlpha: 0.16)
 
-    static let glass              = Color(light: 0xF8F4ED, lightAlpha: 0.52, dark: 0x1C1C22, darkAlpha: 0.52)
-    static let glassBorder        = Color(light: 0xFFFDF7, lightAlpha: 0.80, dark: 0xFFFFFF, darkAlpha: 0.14)
+    static let glass              = Color(light: 0xF6F6FA, lightAlpha: 0.52, dark: 0x1C1C22, darkAlpha: 0.52)
+    static let glassBorder        = Color(light: 0xFDFDFF, lightAlpha: 0.80, dark: 0xFFFFFF, darkAlpha: 0.14)
 
     /// Hero/detail circular glass actions (Favorite, Watched, …). Fixed dark frosted
-    /// chrome over photography — not theme-adaptive, so bright artwork and Matinee mode
+    /// chrome over photography — not theme-adaptive, so bright artwork and the light face
     /// don't wash the control out or flip it to the light-glass variant.
     static let heroGlass          = Color(red: 0.08, green: 0.08, blue: 0.10).opacity(0.62)
     static let heroGlassBorder    = Color.white.opacity(0.28)
@@ -86,9 +89,9 @@ extension Color {
     static let playerTrackBadgeFill = Color(red: 120 / 255, green: 120 / 255, blue: 135 / 255).opacity(0.24)
 
     // Bright pill in dark mode (white fill / ink label), dark pill in light mode
-    // (espresso fill / cream label) — used everywhere including over hero photography.
-    static let buttonFill         = Color(light: 0x2A241D, dark: 0xFFFFFF)
-    static let buttonLabel        = Color(light: 0xF7F2EA, dark: 0x0A0A0C)
+    // (deep-graphite fill / off-white label) — used everywhere including over hero photography.
+    static let buttonFill         = Color(light: 0x22222A, dark: 0xFFFFFF)
+    static let buttonLabel        = Color(light: 0xF5F5F8, dark: 0x0A0A0C)
     // The hero/detail Play pill has NO tokens here on purpose: it is theme-FIXED white + `playerInk`
     // in both themes (owner directive 2026-07-14 — it rides artwork and must not flip with the app
     // theme). See PrimaryPlayButton.swift.
@@ -97,22 +100,54 @@ extension Color {
     /// so the "glass" chip read as flat paint — and on tvOS a solid white chip is the
     /// system's FOCUSED look, which made selection ambiguous. The native `.glass` style
     /// owns the label color against it.
-    static let chipSelectedFill   = Color(light: 0x2A241D, lightAlpha: 0.88, dark: 0xFFFFFF, darkAlpha: 0.78)
-    static let selectionFill      = Color(light: 0x2D200F, lightAlpha: 0.09, dark: 0xFFFFFF, darkAlpha: 0.15)
+    static let chipSelectedFill   = Color(light: 0x22222A, lightAlpha: 0.88, dark: 0xFFFFFF, darkAlpha: 0.78)
+    static let selectionFill      = Color(light: 0x282837, lightAlpha: 0.09, dark: 0xFFFFFF, darkAlpha: 0.15)
 
     /// Status "active" green — the server LED (`--ok #3DA45A`). The one sanctioned non-mono color
     /// besides destructive red; it marks state, not brand, so the No-Accent rule still holds.
     static let ok                 = Color(light: 0x3DA45A, dark: 0x3DA45A)
 
-    /// Destructive action red — Clear / Remove Server (handoff `--destructive #D8513E`). A warm red
-    /// tuned to the Matinee palette rather than the cooler system red; the dark face brightens a touch
-    /// so it clears contrast on the graphite floor. The sanctioned destructive color across Settings.
+    /// Destructive action red — Clear / Remove Server (handoff `--destructive #D8513E`). Warmer
+    /// than the system red on purpose — the one deliberate temperature contrast on the cool floors,
+    /// which is exactly what a destructive accent wants; the dark face brightens a touch so it
+    /// clears contrast on the graphite floor. The sanctioned destructive color across Settings.
     static let destructive        = Color(light: 0xD8513E, dark: 0xE0604D)
 
     /// The loading/missing artwork field behind every poster and thumbnail. Two-faced so it tracks
-    /// the palette: a recessed warm-stone block on Paper, a lifted graphite block at night — never a
-    /// fixed dark gray (which read as a hole punched in the light Matinee floor).
-    static let artworkPlaceholder = Color(light: 0xC2BAAC, dark: 0x26262C)
+    /// the palette: a recessed daylight block by day, a lifted graphite block at night — never a
+    /// fixed dark gray (which read as a hole punched in the light floor).
+    static let artworkPlaceholder = Color(light: 0xDDDDE4, dark: 0x26262C)
+}
+
+// MARK: - Background field
+//
+// The ambient light-field both screen floors paint (adopted 2026-07-18 with the daylight-
+// graphite face): a luminance-only elliptical falloff of the floor's own hue — lighting,
+// not decoration; hue gradients stay banned (see DESIGN.md). Geometry matches the
+// design-system tokens.css `radial-gradient(120% 90% at 50% 30%)`; stops are ±3–4% L by
+// day and a deliberately halved 1.06:1 span at night (dark-adapted eyes amplify deltas).
+// The dark inner stop is the launch field's own `#17171E`, so launch → app dissolves.
+// Screen-pinned by construction: it's painted per content region, never scrolls with content.
+enum BackgroundField {
+    /// Lit center of the field, above `Color.background` (the mid stop).
+    static let inner = Color(light: 0xF1F1F5, dark: 0x17171E)
+    /// Edge falloff of the field, below `Color.background`.
+    static let outer = Color(light: 0xE1E1E8, dark: 0x111116)
+
+    /// The floor style. `EllipticalGradient` is both a `ShapeStyle` and a `View`, so this
+    /// serves `.background {}`, `.presentationBackground()`, and bare `ZStack` layers alike.
+    static var style: EllipticalGradient {
+        EllipticalGradient(
+            stops: [
+                .init(color: inner, location: 0),
+                .init(color: .background, location: 0.55),
+                .init(color: outer, location: 1),
+            ],
+            center: UnitPoint(x: 0.5, y: 0.30),
+            startRadiusFraction: 0,
+            endRadiusFraction: 1.0
+        )
+    }
 }
 
 // MARK: - Metric tokens (radii, spacing)

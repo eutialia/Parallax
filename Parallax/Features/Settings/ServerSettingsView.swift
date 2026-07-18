@@ -185,7 +185,7 @@ private struct JellyfinServerDetailPreview: View {
             )
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.background)
+        .screenFloor()
     }
 }
 

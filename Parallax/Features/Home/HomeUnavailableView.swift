@@ -22,13 +22,13 @@ struct HomeUnavailableView: View {
 #Preview("Home unavailable · dark") {
     HomeUnavailableView()
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.background)
+        .screenFloor()
         .preferredColorScheme(.dark)
 }
 
 #Preview("Home unavailable · light") {
     HomeUnavailableView()
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.background)
+        .screenFloor()
         .preferredColorScheme(.light)
 }

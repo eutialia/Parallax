@@ -48,7 +48,7 @@ struct RootView: View {
                             .disabled(playback.isPlayerPresent)
                         #endif
                     }
-                    .background(Color.background.ignoresSafeArea())
+                    .background(BackgroundField.style.ignoresSafeArea())
                 case .login:
                     // Login sits outside `RootTabView`, so it carries its own floor. The source
                     // picker (Jellyfin / SMB) fronts the sign-in form; `LoggedOutRootView` owns

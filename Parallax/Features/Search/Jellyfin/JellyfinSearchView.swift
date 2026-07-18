@@ -100,7 +100,7 @@ struct JellyfinSearchView: View {
         .navigationBarTitleDisplayMode(.inline)
         // Transparent bar, matching Home and the detail screens: the drawer + scope strip
         // otherwise paint the system bar material — an off-tone band that doesn't blend
-        // with the Matinee floor. Background only; the bar itself stays (zoom rule above).
+        // with the daylight floor. Background only; the bar itself stays (zoom rule above).
         .toolbarBackground(.hidden, for: .navigationBar)
         // Soft top edge: the HIG-recommended style on iPadOS ("hard" is primarily macOS).
         // Over the flat floor it reads as no edge at all while still fading results that

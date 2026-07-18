@@ -3,7 +3,7 @@ import SwiftUI
 
 // Diagnostic preview for the iPad scope-row band: reproduces the search tab's exact
 // chrome stack (sidebarAdaptable TabView → search-role tab → NavigationStack → drawer
-// searchable + scopes) over the Matinee floor, with search presented so the scope row
+// searchable + scopes) over the daylight floor, with search presented so the scope row
 // renders. Render on an iPad destination to inspect how the scope strip blends with
 // the floor; `previewVariant` toggles the candidate treatments for A/B renders.
 private enum DemoTab: Hashable { case home, search }

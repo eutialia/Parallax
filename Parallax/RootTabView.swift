@@ -200,9 +200,10 @@ struct RootTabView: View {
             }
         }
         .tabViewStyle(.sidebarAdaptable)
-        // The screen floor is a single `Color.background` behind the whole tab host (see
+        // The screen floor is a single `BackgroundField` behind the whole tab host (see
         // `RootView`); tabs no longer paint their own. The sidebar / bottom-bar glass now tints
-        // from that floor and reads as a solid bar — fine, there's only a flat color to refract.
+        // from that floor and reads as a solid bar — fine: the field is locally near-flat
+        // (±3–4% L across the whole screen), so there's nothing sharp to refract.
         // The one hand-styled chrome row is `settingsFooter` below: its label color is picked to
         // match the system tab rows on this floor.
         .tabViewSidebarBottomBar { settingsFooter }
@@ -219,7 +220,7 @@ struct RootTabView: View {
 
     /// Pinned settings row at the bottom of the iPad sidebar — separate from the tab
     /// list above. Dark mode uses hierarchical styles to match native rows on glass; light
-    /// mode uses Matinee tokens because hierarchical `.primary` washes out on the light
+    /// mode uses the light-face tokens because hierarchical `.primary` washes out on the light
     /// sidebar material.
     private var settingsFooter: some View {
         Button(action: openSettings) {
@@ -293,7 +294,7 @@ private struct SMBSidebarTabGlyphPreview: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(.vertical, Space.s26)
-        .background(Color.background)
+        .screenFloor()
         .tint(Color.label)
     }
 }

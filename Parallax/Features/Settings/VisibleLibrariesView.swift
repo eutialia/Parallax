@@ -96,6 +96,6 @@ struct VisibleLibrariesView: View {
         .padding(Space.s18)
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-    .background(Color.background)
+    .screenFloor()
 }
 #endif
