@@ -19,7 +19,8 @@ extension BaseItemDto {
             id: CollectionID(rawValue: id),
             name: name,
             collectionType: domainType,
-            primaryTag: primary
+            primaryTag: primary,
+            blurHashes: tagBlurHashes
         )
     }
 }

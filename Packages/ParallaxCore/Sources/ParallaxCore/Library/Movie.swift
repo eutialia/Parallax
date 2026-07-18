@@ -14,7 +14,8 @@ public struct Movie: Sendable, Hashable, Identifiable {
     public let logoTag: ImageTag?
     public let thumbTag: ImageTag?
     public let dateAdded: Date?
-    public let userData: UserItemData
+    /// `var` only for the `withUserData` copy below; immutable to callers.
+    public private(set) var userData: UserItemData
     public let width: Int?
     public let height: Int?
     public let videoRangeType: String?
@@ -23,6 +24,10 @@ public struct Movie: Sendable, Hashable, Identifiable {
     /// Jellyfin mapper leaves this nil — Jellyfin renders server artwork, never a
     /// locally generated frame-grab, so it never needs to key a thumbnail by size.
     public let size: Int64?
+    /// BlurHash per image, keyed by the image TAG (unique per image on the server), so an
+    /// `imageRef(_:)` can hand its decoded blur to the placeholder. Keying by tag rather than
+    /// image type handles indexed backdrops uniformly — each backdrop tag maps to its own hash.
+    public let blurHashes: [ImageTag: String]
 
     public init(
         id: ItemID, title: String, overview: String?, year: Int?, runtime: Duration?,
@@ -32,7 +37,8 @@ public struct Movie: Sendable, Hashable, Identifiable {
         userData: UserItemData,
         width: Int? = nil, height: Int? = nil, videoRangeType: String? = nil,
         hasSubtitles: Bool = false,
-        size: Int64? = nil
+        size: Int64? = nil,
+        blurHashes: [ImageTag: String] = [:]
     ) {
         self.id = id; self.title = title; self.overview = overview; self.year = year
         self.runtime = runtime; self.communityRating = communityRating
@@ -44,6 +50,13 @@ public struct Movie: Sendable, Hashable, Identifiable {
         self.width = width; self.height = height; self.videoRangeType = videoRangeType
         self.hasSubtitles = hasSubtitles
         self.size = size
+        self.blurHashes = blurHashes
+    }
+
+    /// Same item, updated watch state. A mutated copy — NOT an init call listing every field,
+    /// which silently zeroed any field someone forgot to thread through (blurHashes, once).
+    public func withUserData(_ userData: UserItemData) -> Movie {
+        var copy = self; copy.userData = userData; return copy
     }
 
     public func imageRef(_ kind: ImageKind) -> ImageRef? {
@@ -56,6 +69,6 @@ public struct Movie: Sendable, Hashable, Identifiable {
         case .banner, .art, .disc: tag = nil
         }
         guard let tag else { return nil }
-        return ImageRef(itemID: id, kind: kind, tag: tag)
+        return ImageRef(itemID: id, kind: kind, tag: tag, blurHash: blurHashes[tag])
     }
 }

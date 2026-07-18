@@ -27,7 +27,8 @@ extension BaseItemDto {
             seasonImageRef: Self.seasonImageRef(from: self),
             seriesImageRef: Self.seriesImageRef(from: self),
             dateAdded: dateCreated,
-            userData: userData?.toUserItemData() ?? .absent
+            userData: userData?.toUserItemData() ?? .absent,
+            blurHashes: tagBlurHashes
         )
     }
 

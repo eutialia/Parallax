@@ -21,7 +21,8 @@ extension BaseItemDto {
             thumbTag: imageTags?["Thumb"].map(ImageTag.init(rawValue:)),
             bannerTag: imageTags?["Banner"].map(ImageTag.init(rawValue:)),
             dateAdded: dateCreated,
-            userData: userData?.toUserItemData() ?? .absent
+            userData: userData?.toUserItemData() ?? .absent,
+            blurHashes: tagBlurHashes
         )
     }
 }

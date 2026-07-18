@@ -19,7 +19,13 @@ public struct Episode: Sendable, Hashable, Identifiable {
     /// Series poster when season art is missing (DTO hint or repository fetch).
     public private(set) var seriesImageRef: ImageRef?
     public let dateAdded: Date?
-    public let userData: UserItemData
+    /// `var` only for the `withUserData` copy below; immutable to callers.
+    public private(set) var userData: UserItemData
+    /// BlurHash per image, keyed by the image TAG (unique per image on the server), so an
+    /// `imageRef(.primary)` can hand its decoded blur to the placeholder. Only the episode's
+    /// OWN images live here — the season/series fallback refs carry a parent item's images, whose
+    /// hashes aren't on this DTO, so those refs stay hash-less until fetched with their parent.
+    public let blurHashes: [ImageTag: String]
 
     public init(
         id: ItemID, seriesID: ItemID, seasonID: ItemID, name: String,
@@ -29,7 +35,8 @@ public struct Episode: Sendable, Hashable, Identifiable {
         primaryTag: ImageTag?, seasonImageRef: ImageRef? = nil,
         seriesImageRef: ImageRef? = nil,
         dateAdded: Date? = nil,
-        userData: UserItemData
+        userData: UserItemData,
+        blurHashes: [ImageTag: String] = [:]
     ) {
         self.id = id; self.seriesID = seriesID; self.seasonID = seasonID
         self.name = name; self.seriesName = seriesName; self.indexNumber = indexNumber
@@ -39,10 +46,17 @@ public struct Episode: Sendable, Hashable, Identifiable {
         self.seriesImageRef = seriesImageRef
         self.dateAdded = dateAdded
         self.userData = userData
+        self.blurHashes = blurHashes
     }
 
     public func withSeasonImageRef(_ ref: ImageRef?) -> Episode {
         var copy = self; copy.seasonImageRef = ref; return copy
+    }
+
+    /// Same item, updated watch state. A mutated copy — NOT an init call listing every field,
+    /// which silently zeroed any field someone forgot to thread through (blurHashes, once).
+    public func withUserData(_ userData: UserItemData) -> Episode {
+        var copy = self; copy.userData = userData; return copy
     }
 
     public func withSeriesImageRef(_ ref: ImageRef?) -> Episode {
@@ -55,7 +69,7 @@ public struct Episode: Sendable, Hashable, Identifiable {
         switch kind {
         case .primary:
             guard let tag = primaryTag else { return nil }
-            return ImageRef(itemID: id, kind: .primary, tag: tag)
+            return ImageRef(itemID: id, kind: .primary, tag: tag, blurHash: blurHashes[tag])
         case .backdrop, .logo, .thumb, .banner, .art, .disc:
             return nil
         }

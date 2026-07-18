@@ -60,36 +60,14 @@ public enum Item: Sendable, Hashable, Identifiable {
         userData.playedFraction(runtime: runtime)
     }
 
+    /// Delegates to the models' own mutated-copy `withUserData` — this used to re-init each model
+    /// listing every field by hand, and silently reset any field the list forgot (blurHashes
+    /// shipped broken that way: a Favorite toggle stripped every hash until a full reload).
     public func withUserData(_ userData: UserItemData) -> Item {
         switch self {
-        case .movie(let m):
-            return .movie(Movie(
-                id: m.id, title: m.title, overview: m.overview, year: m.year, runtime: m.runtime,
-                communityRating: m.communityRating, officialRating: m.officialRating, genres: m.genres,
-                primaryTag: m.primaryTag, backdropTags: m.backdropTags, logoTag: m.logoTag, thumbTag: m.thumbTag,
-                dateAdded: m.dateAdded,
-                userData: userData, width: m.width, height: m.height, videoRangeType: m.videoRangeType,
-                hasSubtitles: m.hasSubtitles, size: m.size
-            ))
-        case .series(let s):
-            return .series(Series(
-                id: s.id, title: s.title, overview: s.overview, year: s.year, status: s.status,
-                communityRating: s.communityRating, officialRating: s.officialRating,
-                genres: s.genres, primaryTag: s.primaryTag, backdropTags: s.backdropTags,
-                logoTag: s.logoTag, thumbTag: s.thumbTag, bannerTag: s.bannerTag,
-                dateAdded: s.dateAdded,
-                userData: userData
-            ))
-        case .episode(let e):
-            return .episode(Episode(
-                id: e.id, seriesID: e.seriesID, seasonID: e.seasonID, name: e.name,
-                seriesName: e.seriesName,
-                indexNumber: e.indexNumber, parentIndexNumber: e.parentIndexNumber,
-                overview: e.overview, runtime: e.runtime, primaryTag: e.primaryTag,
-                seasonImageRef: e.seasonImageRef, seriesImageRef: e.seriesImageRef,
-                dateAdded: e.dateAdded,
-                userData: userData
-            ))
+        case .movie(let m): return .movie(m.withUserData(userData))
+        case .series(let s): return .series(s.withUserData(userData))
+        case .episode(let e): return .episode(e.withUserData(userData))
         }
     }
 

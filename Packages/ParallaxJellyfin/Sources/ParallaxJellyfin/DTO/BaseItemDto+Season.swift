@@ -12,7 +12,8 @@ extension BaseItemDto {
             indexNumber: indexNumber,
             primaryTag: imageTags?["Primary"].map(ImageTag.init(rawValue:)),
             thumbTag: imageTags?["Thumb"].map(ImageTag.init(rawValue:)),
-            episodeCount: childCount
+            episodeCount: childCount,
+            blurHashes: tagBlurHashes
         )
     }
 }

@@ -34,7 +34,8 @@ extension BaseItemDto {
             width: video?.width,
             height: video?.height,
             videoRangeType: video?.videoRangeType?.rawValue,
-            hasSubtitles: hasSubtitleTracks
+            hasSubtitles: hasSubtitleTracks,
+            blurHashes: tagBlurHashes
         )
     }
 }
