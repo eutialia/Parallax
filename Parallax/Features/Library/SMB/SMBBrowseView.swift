@@ -198,7 +198,10 @@ struct SMBBrowseGrid: View {
                             NavigationLink(value: childPath(folder.name)) {
                                 FolderBrowseCard(name: folder.name)
                             }
-                            .tvPosterButton()
+                            // `pressableTileButton()`: iOS press-scale to match the same bounded,
+                            // glyph-led tile idiom as the library grid; tvOS forwards to
+                            // `tvPosterButton()`, unchanged.
+                            .pressableTileButton()
                         }
                     }
                 }
@@ -213,7 +216,9 @@ struct SMBBrowseGrid: View {
                                 SMBThumbnailTile(item: item, ref: ref, provider: artworkProvider, aspectRatio: MediaImage.landscape)
                                     .lockup()
                             }
-                            .tvPosterButton()
+                            // Same artwork-tile idiom as the library grid/search results — press-scale
+                            // on iOS; tvOS forwards to `tvPosterButton()`, unchanged.
+                            .pressableTileButton()
                         }
                     }
                 }

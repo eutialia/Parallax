@@ -36,7 +36,10 @@ struct LibraryListView: View {
                         ) {
                             ForEach(supported) { coll in
                                 NavigationLink(value: coll) { LibraryCard(collection: coll, session: session) }
-                                    .tvPosterButton()
+                                    // Banner reads as a bounded artwork card (clip, shadow, chip,
+                                    // one-up on iPhone) not a text list row — same tile idiom as the
+                                    // grid/shelf tiles; tvOS forwards to `tvPosterButton()`, unchanged.
+                                    .pressableTileButton()
                             }
                             // SMB libraries after the Jellyfin banners, before Favorites — additive
                             // (driven by `smbEntries`, not the Jellyfin VM) so a failed SMB source
@@ -47,7 +50,9 @@ struct LibraryListView: View {
                             // grid as the server libraries (the iPad/tvOS sidebar lists it as a
                             // Libraries-section tab instead).
                             NavigationLink(value: FavoritesRoute()) { FavoritesCard() }
-                                .tvPosterButton()
+                                // Same `LibraryBannerCard` chrome as the Jellyfin banners above — the
+                                // tile idiom applies here too.
+                                .pressableTileButton()
                         }
                         .padding(AppLayout.contentHMargin(idiom: idiom))
                     }
