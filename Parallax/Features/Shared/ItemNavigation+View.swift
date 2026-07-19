@@ -44,15 +44,29 @@ extension View {
 
 private struct ItemDetailNavigationModifier: ViewModifier {
     @Namespace private var namespace
+    /// Drives the programmatic push from context-menu actions (`\.pushItemDetail`). Distinct from the
+    /// `for:`-based destination below, which NavigationLink taps trigger — `item:` is a binding-based
+    /// presentation, so the two coexist and both resolve through the same `itemDetailDestination`.
+    /// `navigationDestination(item:)` auto-resets it to nil on pop.
+    @State private var pendingNav: ItemNavigation?
 
     func body(content: Content) -> some View {
         content
             .environment(\.itemZoomNamespace, namespace)
+            // Inject the programmatic-push action so menu items on tiles anywhere in this stack can
+            // request a detail push without owning a NavigationLink.
+            .environment(\.pushItemDetail) { pendingNav = $0 }
             .navigationDestination(for: ItemNavigation.self) { nav in
                 itemDetailDestination(nav)
                     #if !os(tvOS)
                     .navigationTransition(.zoom(sourceID: nav, in: namespace))
                     #endif
+            }
+            // Menu-initiated push: a plain push (no matchedTransitionSource exists for a menu, and a
+            // degraded zoom would just cut). Lives at the stack root beside the `for:` destination,
+            // never inside the lazy grids/shelves that host the tiles.
+            .navigationDestination(item: $pendingNav) { nav in
+                itemDetailDestination(nav)
             }
     }
 
@@ -130,6 +144,19 @@ struct ItemNavigator<Label: View>: View {
     @Environment(PlaybackPresenter.self) private var playback
 
     var body: some View {
+        arm
+            // The per-arm long-press menu (iOS/iPadOS; tvOS passthrough). Attached once here, off the
+            // tile's ARM — the menu spec is a function of tap behavior, not the screen. `showsGoToSeries`
+            // stays true: ItemNavigator is never a series' own detail page (that shelf attaches A′ itself).
+            .mediaTileContextMenu(
+                item: item,
+                session: session,
+                context: MediaTileMenuContext(moviePlaysOnTap: movieTap == .plays)
+            )
+    }
+
+    @ViewBuilder
+    private var arm: some View {
         switch item {
         case .episode(let e):
             playButton(e.id)

@@ -83,10 +83,13 @@ final class JellyfinSearchViewModel {
         changesTask?.cancel()
     }
 
-    /// Patch a matching result's `userData` in place — updates the watched badge / favorite
-    /// UI automatically since `MediaTile` reads the item. `SearchResults`' three arrays are
-    /// `let`, so a match rebuilds the whole struct; `state` stays `.loaded` throughout.
-    /// Early-outs when none of the three arrays hold `itemID`, skipping the rebuild.
+    /// Patch a matching result's `userData` in place via `change.merged(into:)` — never the
+    /// raw payload, since a played-operation response's favorite field (or a favorite
+    /// response's played/position fields) is a DTO-boundary default, not real state. Updates
+    /// the watched badge / favorite UI automatically since `MediaTile` reads the item.
+    /// `SearchResults`' three arrays are `let`, so a match rebuilds the whole struct; `state`
+    /// stays `.loaded` throughout. Early-outs when none of the three arrays hold `itemID`,
+    /// skipping the rebuild.
     private func apply(_ change: UserDataActions.Change) {
         guard case .loaded(let results) = state else { return }
         guard results.movies.contains(where: { $0.id == change.itemID })
@@ -94,9 +97,9 @@ final class JellyfinSearchViewModel {
             || results.episodes.contains(where: { $0.id == change.itemID })
         else { return }
         state = .loaded(SearchResults(
-            movies: results.movies.map { $0.id == change.itemID ? $0.withUserData(change.userData) : $0 },
-            series: results.series.map { $0.id == change.itemID ? $0.withUserData(change.userData) : $0 },
-            episodes: results.episodes.map { $0.id == change.itemID ? $0.withUserData(change.userData) : $0 }
+            movies: results.movies.map { $0.id == change.itemID ? $0.withUserData(change.merged(into: $0.userData)) : $0 },
+            series: results.series.map { $0.id == change.itemID ? $0.withUserData(change.merged(into: $0.userData)) : $0 },
+            episodes: results.episodes.map { $0.id == change.itemID ? $0.withUserData(change.merged(into: $0.userData)) : $0 }
         ))
     }
 

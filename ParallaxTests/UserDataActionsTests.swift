@@ -137,6 +137,40 @@ struct UserDataActionsTests {
         #expect(event?.operation == .played)
     }
 
+    // MARK: - Operation-scoped merge
+
+    /// A played-operation `Change` whose payload has `isFavorite: false` (the DTO boundary's
+    /// absent-field default — Jellyfin's played response doesn't carry favorite state) must
+    /// NOT unfavorite an item that's actually favorited. Only the played-derived fields move.
+    @Test("a played-operation change merges in played fields but keeps the existing favorite flag")
+    func playedChangeKeepsExistingFavorite() {
+        let existing = Self.data(favorite: true, played: false)
+        let payload = UserItemData(played: true, playbackPositionTicks: 0, playCount: 1, isFavorite: false)
+        let change = UserDataActions.Change(itemID: ItemID(rawValue: "movie-3"), userData: payload, operation: .played)
+
+        let merged = change.merged(into: existing)
+
+        #expect(merged.isFavorite == true)
+        #expect(merged.played == true)
+        #expect(merged.playCount == 1)
+    }
+
+    /// Symmetric case: a favorite-operation `Change` whose payload has zeroed played/position
+    /// (the DTO boundary's absent-field default for a favorite-only response) must NOT reset
+    /// an item's watch progress. Only `isFavorite` moves.
+    @Test("a favorite-operation change merges in the favorite flag but keeps existing played fields")
+    func favoriteChangeKeepsExistingPlayedFields() {
+        let existing = UserItemData(played: false, playbackPositionTicks: 12_345, playCount: 0, isFavorite: false)
+        let payload = UserItemData(played: false, playbackPositionTicks: 0, playCount: 0, isFavorite: true)
+        let change = UserDataActions.Change(itemID: ItemID(rawValue: "movie-4"), userData: payload, operation: .favorite)
+
+        let merged = change.merged(into: existing)
+
+        #expect(merged.isFavorite == true)
+        #expect(merged.played == false)
+        #expect(merged.playbackPositionTicks == 12_345)
+    }
+
     @Test("failure broadcasts nothing and surfaces the error")
     func failureBroadcastsNothing() async {
         let service = UserDataActions()

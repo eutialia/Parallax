@@ -14,13 +14,8 @@ enum ItemPlayButtonLabel {
             guard let ep = resumeEpisode else { return "Play" }
             return shouldResumeSeries(ep) ? resumeEpisodeTitle(ep) : "Play"
         case .movie, .episode:
-            return hasResumeProgress(item) ? "Resume" : "Play"
+            return item.userData.isInProgress ? "Resume" : "Play"
         }
-    }
-
-    static func hasResumeProgress(_ item: Item) -> Bool {
-        let ud = item.userData
-        return ud.playbackPositionTicks > 0 && !ud.played
     }
 
     /// Resume when the next-up episode has progress, or it isn't the very first episode
@@ -29,7 +24,7 @@ enum ItemPlayButtonLabel {
     /// next-up target presents as Resume (with a separate from-the-beginning Play) or IS
     /// the plain Play.
     static func shouldResumeSeries(_ episode: Episode) -> Bool {
-        if episode.userData.playbackPositionTicks > 0 && !episode.userData.played { return true }
+        if episode.userData.isInProgress { return true }
         let isFirstEpisode = (episode.parentIndexNumber ?? 1) == 1 && (episode.indexNumber ?? 1) == 1
         return !isFirstEpisode
     }

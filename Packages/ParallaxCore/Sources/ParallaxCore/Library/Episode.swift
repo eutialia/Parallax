@@ -101,7 +101,7 @@ public extension Episode {
     /// reports time left, even when the server left stale position ticks behind — that
     /// would contradict the watched check the same surfaces draw.
     func timeCaption(showTimeRemaining: Bool = true, showRuntimeLength: Bool = true) -> String? {
-        if showTimeRemaining, !userData.played, userData.playbackPositionTicks > 0 {
+        if showTimeRemaining, userData.isInProgress {
             return userData.remainingMinutes(runtime: runtime).map { "\($0) min left" }
         }
         if showRuntimeLength, let minutes = runtimeLengthMinutes {

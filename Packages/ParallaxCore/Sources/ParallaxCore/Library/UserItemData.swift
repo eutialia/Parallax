@@ -39,6 +39,15 @@ public struct UserItemData: Sendable, Hashable, Codable {
         return Int((remaining + 59) / 60)
     }
 
+    /// Partially watched, not yet finished — the one canonical test for "show a Resume-style
+    /// affordance / a Play-from-Beginning menu entry" everywhere it's needed (hero, play
+    /// buttons, context menus, hero-feed episode selection). `playbackProgress`/duration alone
+    /// can't express it (nil for series, and it doesn't encode `!played`), so state it directly
+    /// here rather than re-deriving it at each call site.
+    public var isInProgress: Bool {
+        !played && playbackPositionTicks > 0
+    }
+
     public func withFavorite(_ isFavorite: Bool) -> UserItemData {
         UserItemData(
             played: played,

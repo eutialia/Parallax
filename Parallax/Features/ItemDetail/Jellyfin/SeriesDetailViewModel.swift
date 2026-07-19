@@ -49,15 +49,25 @@ final class SeriesDetailViewModel {
     /// server-side but the event still carries only the series' own itemID/UserItemData (no
     /// per-episode fan-out), so refetching is the only way to learn which episodes moved.
     /// Keying on `operation == .played` (rather than diffing a locally-cached flag) skips a
-    /// needless re-pull on a pure favorite toggle. Otherwise, patch a matching episode (resume
-    /// target and/or its season shelf) in place. Stays on `.loaded` throughout — `refresh()`
-    /// already never re-skeletons.
+    /// needless re-pull on a pure favorite toggle. A played change for one of THIS series'
+    /// OWN episodes (matched against `episodesBySeasonID` — this VM holds that list) patches
+    /// the episode in place for the immediate badge, then ALSO refetches: marking an episode
+    /// watched from its own shelf can move `resumeEpisode` to a different episode (or clear
+    /// it), and the event carries only that one episode's data, never the new Next Up target.
+    /// A favorite change on one of our episodes, or any change for an episode of a DIFFERENT
+    /// series, stays a plain in-place patch (or no-op, if the itemID matches nothing we hold).
+    /// Every patch below goes through `change.merged(into:)`, not the raw payload: a
+    /// played-operation response's favorite field (or a favorite response's played/position
+    /// fields) is a DTO-boundary default, not real state, and adopting it wholesale would flip
+    /// the field the OTHER operation owns. Stays on `.loaded` throughout — `refresh()` already
+    /// never re-skeletons.
     private func apply(_ change: UserDataActions.Change) async {
         guard case .loaded(let detail, let seasons) = state else { return }
 
         if detail.series.id == change.itemID {
-            state = .loaded(detail.withSeries(detail.series.withUserData(change.userData)), seasons)
-            isFavorite = change.userData.isFavorite
+            let merged = change.merged(into: detail.series.userData)
+            state = .loaded(detail.withSeries(detail.series.withUserData(merged)), seasons)
+            isFavorite = merged.isFavorite
             if change.operation == .played {
                 await refresh()
             }
@@ -65,11 +75,14 @@ final class SeriesDetailViewModel {
         }
 
         if let resumeEpisode, resumeEpisode.id == change.itemID {
-            self.resumeEpisode = resumeEpisode.withUserData(change.userData)
+            self.resumeEpisode = resumeEpisode.withUserData(change.merged(into: resumeEpisode.userData))
         }
         for (seasonID, episodes) in episodesBySeasonID {
             guard let idx = episodes.firstIndex(where: { $0.id == change.itemID }) else { continue }
-            episodesBySeasonID[seasonID]?[idx] = episodes[idx].withUserData(change.userData)
+            episodesBySeasonID[seasonID]?[idx] = episodes[idx].withUserData(change.merged(into: episodes[idx].userData))
+            if change.operation == .played {
+                await refresh()
+            }
             return
         }
     }

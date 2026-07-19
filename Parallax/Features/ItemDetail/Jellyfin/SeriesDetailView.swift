@@ -185,6 +185,14 @@ struct SeriesDetailView: View {
                                 episodeCard(episode)
                             }
                             .pressableTileButton()
+                            // Menu A′: same as the play-first episode menu elsewhere, minus "Go to
+                            // Series" (this IS that series' page). The VM already subscribes to
+                            // change events, so badges/progress react without extra wiring.
+                            .mediaTileContextMenu(
+                                item: .episode(episode),
+                                session: session,
+                                context: MediaTileMenuContext(showsGoToSeries: false)
+                            )
                         }
                     }
                 }

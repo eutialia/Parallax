@@ -125,7 +125,7 @@ public enum HomeHeroFeedBuilder {
             if let fallback { return fallback }
         }
         let newest = episodes.max(by: { ($0.dateAdded ?? .distantPast) < ($1.dateAdded ?? .distantPast) })!
-        if newest.userData.playbackPositionTicks > 0 && !newest.userData.played {
+        if newest.userData.isInProgress {
             return newest
         }
         if eyebrow == .newEpisodeAvailable {

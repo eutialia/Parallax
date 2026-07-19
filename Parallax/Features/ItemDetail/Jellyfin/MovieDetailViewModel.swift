@@ -21,10 +21,11 @@ final class MovieDetailViewModel {
     /// Drives the stale-while-revalidate dim during `refresh()` (re-pull after a
     /// playback session ends). Also a re-entrancy guard.
     private(set) var isRefreshing = false
-    /// True while a played toggle is round-tripping. `togglePlayed` no longer gates re-entrant
-    /// calls on this (the service's own per-`(itemID, .played)` guard already coalesces those —
-    /// double-guarding it here would just duplicate that contract). It survives purely so
-    /// `refresh()` and `apply(_:)` know not to clobber the optimistic value with a
+    /// True while a played toggle is round-tripping. `togglePlayed` gates re-entrant calls on
+    /// this: the service's own per-`(itemID, .played)` guard coalesces the NETWORK write, but
+    /// not this VM's local optimistic flip — without gating here, a rapid double-tap would flip
+    /// `isPlayed` back for a frame before the first call's `.skipped` resolution re-settles it.
+    /// Also read by `refresh()` and `apply(_:)` so they don't clobber the optimistic value with a
     /// differently-sourced broadcast or re-fetch landing mid-toggle.
     private var playedInFlight = false
     private let repo: LibraryRepository
@@ -47,14 +48,21 @@ final class MovieDetailViewModel {
     }
 
     /// React to a user-data change from any surface (self-notification included — the event
-    /// carries the server's fresh copy, so re-applying it is idempotent). `isPlayed` skips the
-    /// patch while `playedInFlight` — the same no-clobber rule `refresh()` follows — so a
+    /// carries the server's fresh copy, so re-applying it is idempotent). The patch goes
+    /// through `change.merged(into:)`, not the raw payload: a played-operation response's
+    /// favorite field (or a favorite response's played/position fields) is a DTO-boundary
+    /// default, not real state, so adopting it wholesale would flip the field the OTHER
+    /// operation owns. Because the merge already keeps the untouched field equal to what
+    /// `detail.movie.userData` held, mirroring both `isFavorite`/`isPlayed` off the merged
+    /// result is safe even for a same-operation change. `isPlayed` still skips the patch while
+    /// `playedInFlight` — the same no-clobber rule `refresh()` follows — so a
     /// differently-sourced broadcast landing mid-toggle can't revert the optimistic value.
     private func apply(_ change: UserDataActions.Change) {
         guard case .loaded(let detail) = state, detail.movie.id == change.itemID else { return }
-        state = .loaded(detail.withMovie(detail.movie.withUserData(change.userData)))
-        isFavorite = change.userData.isFavorite
-        if !playedInFlight { isPlayed = change.userData.played }
+        let merged = change.merged(into: detail.movie.userData)
+        state = .loaded(detail.withMovie(detail.movie.withUserData(merged)))
+        isFavorite = merged.isFavorite
+        if !playedInFlight { isPlayed = merged.played }
     }
 
     func load() async {
@@ -115,6 +123,11 @@ final class MovieDetailViewModel {
     }
 
     func togglePlayed() async {
+        // The service's in-flight guard coalesces the NETWORK write only — it never sees this
+        // VM's local optimistic flip. Without this early-return, a rapid double-tap would flip
+        // `isPlayed` back to `original` for a frame before the first call's `.skipped` outcome
+        // re-settles it, a visible checkmark flicker.
+        guard !playedInFlight else { return }
         let original = isPlayed
         playedInFlight = true
         defer { playedInFlight = false }

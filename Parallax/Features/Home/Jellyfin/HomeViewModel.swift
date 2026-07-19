@@ -61,7 +61,7 @@ final class HomeViewModel {
     /// ever appearing in Home's local state, so the refresh can't be gated on a local match.
     /// A pure favorite change never refetches.
     private func apply(_ change: UserDataActions.Change) async {
-        mutate(change.itemID) { $0.withUserData(change.userData) }
+        mutate(change.itemID) { $0.withUserData(change.merged(into: $0.userData)) }
         if change.operation == .played {
             await refresh()
         }
@@ -128,7 +128,9 @@ final class HomeViewModel {
 
         switch await userDataActions.toggleFavorite(itemID: itemID, currentlyFavorite: original, via: repo) {
         case .success(let serverUserData):
-            mutate(itemID) { $0.withUserData(serverUserData) }
+            // Merge-scoped like every other patch site: a favorite response's played/position
+            // fields are DTO-boundary defaults, not real state — never adopt them wholesale.
+            mutate(itemID) { $0.withUserData(UserDataActions.merge(.favorite, payload: serverUserData, into: $0.userData)) }
         case .skipped:
             mutate(itemID) { $0.withFavorite(original) }
         case .failure(let error):

@@ -75,4 +75,51 @@ struct LibraryGridViewModelUserDataTests {
         // Non-Favorites-scope stays .loaded throughout (never re-skeletons).
         #expect(vm.state == .loaded)
     }
+
+    @Test("a played-operation change does not drop a favorited item from the Favorites scope")
+    func playedOperationDoesNotDropFavorite() async {
+        let userDataActions = UserDataActions()
+        let itemID = ItemID(rawValue: "movie-fav-played")
+        let fake = FakeMediaRepository()
+        fake.itemsResult = .success(Page(items: [movieItem(id: itemID.rawValue, isFavorite: true)], total: 1, nextCursor: nil))
+        let vm = LibraryGridViewModel(repo: fake, scope: .favorites, userDataActions: userDataActions)
+        await vm.load()
+        #expect(vm.items.count == 1)
+
+        // A real played-operation `UserItemData` from Jellyfin omits the favorite field, which
+        // `UserItemDataDto.toUserItemData()` maps absent -> false. Without gating the removal on
+        // `operation == .favorite`, this would misread as an unfavorite and vanish the item.
+        let played = UserItemData(played: true, playbackPositionTicks: 0, playCount: 1, isFavorite: false)
+        let writer = StubWriter(favorite: .success(played))
+        _ = await userDataActions.togglePlayed(itemID: itemID, currentlyPlayed: false, via: writer)
+
+        await waitUntil { vm.items.first?.userData.played == true }
+        #expect(vm.items.count == 1)
+        // The in-place patch merges the payload, so the untrustworthy `isFavorite: false` on a
+        // played response must not overwrite the item's real (favorited) state.
+        #expect(vm.items.first?.userData.isFavorite == true)
+    }
+
+    @Test("a favorite-operation change patched in place does not reset an item's watch progress")
+    func favoriteOperationDoesNotResetProgress() async {
+        let userDataActions = UserDataActions()
+        let itemID = ItemID(rawValue: "movie-progress-fav")
+        let fake = FakeMediaRepository()
+        var item = movieItem(id: itemID.rawValue, isFavorite: false)
+        item = item.withUserData(UserItemData(played: false, playbackPositionTicks: 54_321, playCount: 0, isFavorite: false))
+        fake.itemsResult = .success(Page(items: [item], total: 1, nextCursor: nil))
+        let vm = LibraryGridViewModel(repo: fake, scope: .collection(CollectionID(rawValue: "movies")), userDataActions: userDataActions)
+        await vm.load()
+        #expect(vm.items.first?.userData.playbackPositionTicks == 54_321)
+
+        // A real favorite-operation `UserItemData` from Jellyfin omits played/position, which
+        // `UserItemDataDto.toUserItemData()` maps absent -> false/0. Without merging, this
+        // would wrongly zero the item's real resume position.
+        let favorited = UserItemData(played: false, playbackPositionTicks: 0, playCount: 0, isFavorite: true)
+        let writer = StubWriter(favorite: .success(favorited))
+        _ = await userDataActions.toggleFavorite(itemID: itemID, currentlyFavorite: false, via: writer)
+
+        await waitUntil { vm.items.first?.userData.isFavorite == true }
+        #expect(vm.items.first?.userData.playbackPositionTicks == 54_321)
+    }
 }

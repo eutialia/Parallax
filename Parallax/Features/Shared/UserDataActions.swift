@@ -49,6 +49,38 @@ final class UserDataActions {
         let itemID: ItemID
         let userData: UserItemData
         let operation: Operation
+
+        /// Convenience for broadcast subscribers: merges this change's payload into `existing`
+        /// via the operation-scoped rule below — never adopt `userData` directly.
+        func merged(into existing: UserItemData) -> UserItemData {
+            UserDataActions.merge(operation, payload: userData, into: existing)
+        }
+    }
+
+    // MARK: - Operation-scoped merge
+
+    /// A single canonical merge every patch site must go through instead of adopting a
+    /// `Change`'s full `userData`. Server responses for one operation may omit the other
+    /// operation's fields — `UserItemDataDto.toUserItemData()` maps an absent field to
+    /// false/0 at the DTO boundary — so a played-operation response can carry
+    /// `isFavorite: false` for an item that IS favorited, and symmetrically a
+    /// favorite-operation response's `played`/`playbackPositionTicks`/`playCount` can read as
+    /// unwatched/zero for an item with real progress. Patching in the full payload would
+    /// silently corrupt whichever field the operation didn't touch (unfavoriting a favorited
+    /// item on watch, or zeroing resume position on a favorite toggle). Merging keeps that
+    /// server default-filling irrelevant: only the field(s) the operation actually owns move.
+    static func merge(_ operation: Operation, payload: UserItemData, into existing: UserItemData) -> UserItemData {
+        switch operation {
+        case .favorite:
+            return existing.withFavorite(payload.isFavorite)
+        case .played:
+            return UserItemData(
+                played: payload.played,
+                playbackPositionTicks: payload.playbackPositionTicks,
+                playCount: payload.playCount,
+                isFavorite: existing.isFavorite
+            )
+        }
     }
 
     /// Result of a toggle, shaped to drive the caller's optimistic UI: `.success` carries the

@@ -17,7 +17,7 @@ public struct HomeHeroFeedEntry: Sendable, Hashable, Identifiable {
     }
 
     public static func playButtonTitle(for playTarget: Item) -> String {
-        guard hasResumeProgress(playTarget) else { return "Play" }
+        guard playTarget.userData.isInProgress else { return "Play" }
         switch playTarget {
         case .episode(let episode):
             if let season = episode.parentIndexNumber, let index = episode.indexNumber {
@@ -29,10 +29,5 @@ public struct HomeHeroFeedEntry: Sendable, Hashable, Identifiable {
         case .series:
             return "Play"
         }
-    }
-
-    private static func hasResumeProgress(_ item: Item) -> Bool {
-        let userData = item.userData
-        return userData.playbackPositionTicks > 0 && !userData.played
     }
 }
