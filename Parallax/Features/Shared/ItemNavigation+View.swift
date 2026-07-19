@@ -148,13 +148,13 @@ struct ItemNavigator<Label: View>: View {
     /// the same `.itemID` path episodes already use, so a half-watched movie resumes, not restarts.
     private func playButton(_ id: ItemID) -> some View {
         Button { playback.play(id, in: session) } label: { label() }
-            .tvPosterButton()
+            .pressableTileButton()
     }
 
     private func detailLink(_ nav: ItemNavigation) -> some View {
         NavigationLink(value: nav) {
             label().environment(\.itemZoomNavigationValue, nav)
         }
-        .tvPosterButton()
+        .pressableTileButton()
     }
 }

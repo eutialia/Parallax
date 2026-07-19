@@ -38,6 +38,11 @@ struct MetadataRow<Item: Identifiable & Hashable, Content: View>: View {
                     ForEach(items) { item in
                         content(item)
                             .frame(width: tileWidth)
+                            // Style resolution: on iOS this outer .tvShelfItem() (.plain) is
+                            // overridden wherever the row's content carries a nearer style —
+                            // Home shelves wrap tiles in ItemNavigator, whose inner
+                            // .pressableTileButton() wins, giving them the press scale. The
+                            // two aren't redundant; don't "clean up" either one.
                             .tvShelfItem()
                     }
                 }

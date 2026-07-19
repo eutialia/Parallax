@@ -52,6 +52,21 @@ extension View {
         #endif
     }
 
+    /// Media-tile tap style for the browse surfaces that push detail (`ItemNavigator`: Home shelves,
+    /// Library grid, Search results). tvOS is byte-identical to `tvPosterButton()` — it forwards to
+    /// it, keeping the native `.borderless` focus lockup — while iOS/iPadOS swaps the flat `.plain`
+    /// for `PressableTileStyle`, so the tile gives a press-in touch-down cue before the `.zoom` push
+    /// (the plain style only dims opacity, which barely reads over artwork). Owns the button style;
+    /// don't pair an inner `.buttonStyle`.
+    @ViewBuilder
+    func pressableTileButton() -> some View {
+        #if os(tvOS)
+        tvPosterButton()
+        #else
+        self.buttonStyle(PressableTileStyle())
+        #endif
+    }
+
     /// Horizontal shelf-item button style: the SAME native `.borderless`/`.plain` recipe as
     /// `tvPosterButton()` (see there for the label-side `tvPosterHighlight` pairing). Forwards to it
     /// so the two can't drift; kept under this name for shelf-item call-site clarity. Owns the button
@@ -196,7 +211,7 @@ struct TVGlassChipButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .opacity(configuration.isPressed ? 0.85 : 1)
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+            .animation(.pressDim, value: configuration.isPressed)
             .tvFocusEffect()
     }
 }
@@ -213,7 +228,7 @@ struct TVQuietButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .opacity(configuration.isPressed ? pressedOpacity : 1)
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+            .animation(.pressDim, value: configuration.isPressed)
     }
 }
 
