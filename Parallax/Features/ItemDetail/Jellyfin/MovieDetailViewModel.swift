@@ -21,15 +21,40 @@ final class MovieDetailViewModel {
     /// Drives the stale-while-revalidate dim during `refresh()` (re-pull after a
     /// playback session ends). Also a re-entrancy guard.
     private(set) var isRefreshing = false
+    /// True while a played toggle is round-tripping. `togglePlayed` no longer gates re-entrant
+    /// calls on this (the service's own per-`(itemID, .played)` guard already coalesces those —
+    /// double-guarding it here would just duplicate that contract). It survives purely so
+    /// `refresh()` and `apply(_:)` know not to clobber the optimistic value with a
+    /// differently-sourced broadcast or re-fetch landing mid-toggle.
     private var playedInFlight = false
     private let repo: LibraryRepository
     private let itemID: ItemID
     private let userDataActions: UserDataActions
+    private var changesTask: Task<Void, Never>?
 
     init(repo: LibraryRepository, itemID: ItemID, userDataActions: UserDataActions) {
         self.repo = repo
         self.itemID = itemID
         self.userDataActions = userDataActions
+        // Own the iterating Task; cancelled in deinit.
+        changesTask = userDataActions.subscribe { [weak self] change in
+            self?.apply(change)
+        }
+    }
+
+    isolated deinit {
+        changesTask?.cancel()
+    }
+
+    /// React to a user-data change from any surface (self-notification included — the event
+    /// carries the server's fresh copy, so re-applying it is idempotent). `isPlayed` skips the
+    /// patch while `playedInFlight` — the same no-clobber rule `refresh()` follows — so a
+    /// differently-sourced broadcast landing mid-toggle can't revert the optimistic value.
+    private func apply(_ change: UserDataActions.Change) {
+        guard case .loaded(let detail) = state, detail.movie.id == change.itemID else { return }
+        state = .loaded(detail.withMovie(detail.movie.withUserData(change.userData)))
+        isFavorite = change.userData.isFavorite
+        if !playedInFlight { isPlayed = change.userData.played }
     }
 
     func load() async {
@@ -90,12 +115,29 @@ final class MovieDetailViewModel {
     }
 
     func togglePlayed() async {
-        guard !playedInFlight else { return }
+        let original = isPlayed
         playedInFlight = true
         defer { playedInFlight = false }
-        let original = isPlayed
         isPlayed = !original
-        do { try await repo.setPlayed(itemID: itemID, isPlayed: !original) }
-        catch { isPlayed = original; Log.ui.error("togglePlayed failed: \(String(describing: type(of: error)))") }
+        switch await userDataActions.togglePlayed(itemID: itemID, currentlyPlayed: original, via: repo) {
+        case .success(let server):
+            isPlayed = server.played
+        case .skipped:
+            isPlayed = original
+        case .failure(let error):
+            isPlayed = original
+            Log.ui.error("togglePlayed failed: \(error.userMessage) (\(error.networkDiagnostic))")
+        }
+    }
+}
+
+/// `MovieDetail`'s fields are `let` (no package-side mutated-copy API — adding one is a
+/// `ParallaxCore` change, out of this task's scope), so patching the `movie` field alone still
+/// needs a full-struct copy. Kept to this one call site rather than rolled ad hoc: every other
+/// field is passed through UNCHANGED (never recomputed), so there's nothing for a future field
+/// to silently drop.
+private extension MovieDetail {
+    func withMovie(_ movie: Movie) -> MovieDetail {
+        MovieDetail(movie: movie, tagline: tagline, studios: studios, directors: directors, people: people, chapters: chapters)
     }
 }

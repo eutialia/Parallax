@@ -47,6 +47,7 @@ struct LibraryGridView: View {
     }
 
     @Environment(AppDependencies.self) private var deps
+    @Environment(UserDataActions.self) private var userDataActions
     @Environment(\.appIdiom) private var idiom
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Jellyfin items carry 2:3 portrait posters; this drives BOTH the tile aspect ratio and the
@@ -113,7 +114,7 @@ struct LibraryGridView: View {
     private func loadViewModel() async {
         guard viewModel == nil else { return }
         let repo = await deps.mediaRepoFactory(session)
-        let vm = LibraryGridViewModel(repo: repo, scope: scope)
+        let vm = LibraryGridViewModel(repo: repo, scope: scope, userDataActions: userDataActions)
         viewModel = vm
         await vm.load()
     }

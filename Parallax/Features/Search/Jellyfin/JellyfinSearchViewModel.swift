@@ -42,15 +42,20 @@ final class JellyfinSearchViewModel {
     private let repo: LibraryRepository
     private let debouncer: AsyncDebouncer<String>
     private var consumerTask: Task<Void, Never>?
+    private var changesTask: Task<Void, Never>?
     /// Monotonic token so only the LATEST query may write results. The consumer loop serializes
     /// debounced queries, but `retry()` calls `runQuery` directly (offline recovery), so a recovery
     /// query can overlap an in-flight debounced one (MainActor is reentrant across `await search`).
     /// Last query wins — mirrors `LibraryGridViewModel`/`SMBBrowseViewModel`'s generation guard.
     private var queryGeneration = 0
 
-    init(repo: LibraryRepository) {
+    init(repo: LibraryRepository, userDataActions: UserDataActions) {
         self.repo = repo
         self.debouncer = AsyncDebouncer<String>(delay: .milliseconds(350))
+        // Own the iterating Task; cancelled below alongside the search consumer loop.
+        changesTask = userDataActions.subscribe { [weak self] change in
+            self?.apply(change)
+        }
     }
 
     func start() {
@@ -75,6 +80,24 @@ final class JellyfinSearchViewModel {
         // `isolated deinit` (SE-0371) runs teardown on the MainActor so it can
         // touch the actor-isolated `consumerTask`.
         consumerTask?.cancel()
+        changesTask?.cancel()
+    }
+
+    /// Patch a matching result's `userData` in place — updates the watched badge / favorite
+    /// UI automatically since `MediaTile` reads the item. `SearchResults`' three arrays are
+    /// `let`, so a match rebuilds the whole struct; `state` stays `.loaded` throughout.
+    /// Early-outs when none of the three arrays hold `itemID`, skipping the rebuild.
+    private func apply(_ change: UserDataActions.Change) {
+        guard case .loaded(let results) = state else { return }
+        guard results.movies.contains(where: { $0.id == change.itemID })
+            || results.series.contains(where: { $0.id == change.itemID })
+            || results.episodes.contains(where: { $0.id == change.itemID })
+        else { return }
+        state = .loaded(SearchResults(
+            movies: results.movies.map { $0.id == change.itemID ? $0.withUserData(change.userData) : $0 },
+            series: results.series.map { $0.id == change.itemID ? $0.withUserData(change.userData) : $0 },
+            episodes: results.episodes.map { $0.id == change.itemID ? $0.withUserData(change.userData) : $0 }
+        ))
     }
 
     /// Re-run the current query after an offline→online recovery (search has no `load()`; the

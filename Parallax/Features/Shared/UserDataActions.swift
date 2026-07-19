@@ -31,17 +31,24 @@ extension LibraryRepository: UserDataWriting {}
 @Observable
 @MainActor
 final class UserDataActions {
+    /// Which user-data field a `Change` came from. Lets a subscriber key its reaction on the
+    /// operation itself (e.g. "any played change" ) instead of diffing its own cached copy of
+    /// the item against the incoming `userData`.
+    enum Operation: Hashable, Sendable { case favorite, played }
+
     /// A committed user-data mutation, broadcast to every subscriber on success. `userData`
-    /// is the server's fresh copy for `itemID`.
+    /// is the server's fresh copy for `itemID`; `operation` is which action produced it.
     ///
     /// SERIES CASCADE: marking a *series* played cascades server-side to all its episodes,
     /// but this event still carries only the series `ItemID` + its own `UserItemData` — the
     /// service does NOT fan out a per-episode event. A subscriber holding episodes of that
     /// series must treat a series-level change as "my episodes are now stale, refetch"; it
-    /// cannot learn each episode's new flag from this event.
+    /// cannot learn each episode's new flag from this event. Subscribers can now key this off
+    /// `operation == .played` on the series id, rather than diffing a locally-cached flag.
     struct Change: Sendable {
         let itemID: ItemID
         let userData: UserItemData
+        let operation: Operation
     }
 
     /// Result of a toggle, shaped to drive the caller's optimistic UI: `.success` carries the
@@ -54,7 +61,6 @@ final class UserDataActions {
         case failure(AppError)
     }
 
-    private enum Operation: Hashable { case favorite, played }
     private struct InFlightKey: Hashable {
         let itemID: ItemID
         let operation: Operation
@@ -70,9 +76,13 @@ final class UserDataActions {
     /// `@Observable` VM stores the `Task` and cancels it in `deinit`). Cancellation ends the
     /// `for await`, which fires `onTermination` and drops the continuation from the registry —
     /// so a dead subscriber leaves nothing behind, with no manual unregister call and no
-    /// retain of the subscriber here.
+    /// retain of the subscriber here. Most callers want `subscribe(_:)` instead, which owns the
+    /// iterating `Task` for you; use `changes()` directly only when you need the raw stream
+    /// (e.g. driving a `for await` from an existing loop, as tests do).
     func changes() -> AsyncStream<Change> {
         let id = UUID()
+        // Unbounded buffer: a subscriber that doesn't drain promptly (its own `for await`
+        // Task) accumulates every Change it misses rather than dropping them.
         let (stream, continuation) = AsyncStream<Change>.makeStream()
         subscribers[id] = continuation
         continuation.onTermination = { _ in
@@ -80,6 +90,22 @@ final class UserDataActions {
             Task { @MainActor [weak self] in self?.subscribers[id] = nil }
         }
         return stream
+    }
+
+    /// Subscribes to `changes()` and forwards each `Change` to `handler`, replacing the
+    /// five-line hand-rolled `Task { for await ... }` every subscriber used to write. Ownership
+    /// is the returned `Task`'s: the caller stores it and cancels it when it dies (the same
+    /// contract `changes()` documents) — this does not manage the subscriber's lifetime for it.
+    /// `handler` should close over its subscriber `weak` (typically `[weak self] change in ...`)
+    /// so the subscription itself never keeps the subscriber alive.
+    @discardableResult
+    func subscribe(_ handler: @escaping @MainActor (Change) async -> Void) -> Task<Void, Never> {
+        let stream = changes()
+        return Task {
+            for await change in stream {
+                await handler(change)
+            }
+        }
     }
 
     // MARK: - Actions
@@ -120,7 +146,7 @@ final class UserDataActions {
 
         do {
             let userData = try await write()
-            broadcast(Change(itemID: itemID, userData: userData))
+            broadcast(Change(itemID: itemID, userData: userData, operation: operation))
             return .success(userData)
         } catch let error as AppError {
             return .failure(error)

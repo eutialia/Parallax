@@ -34,10 +34,37 @@ final class HomeViewModel {
 
     private let repo: LibraryRepository
     private let userDataActions: UserDataActions
+    private var changesTask: Task<Void, Never>?
 
     init(repo: LibraryRepository, userDataActions: UserDataActions) {
         self.repo = repo
         self.userDataActions = userDataActions
+        // Own the iterating Task; cancelled in `isolated deinit` (needed to touch this
+        // MainActor-isolated property). Self-notification is expected — this VM's own
+        // toggleFavorite also lands here, re-applying the same server data it already set
+        // (idempotent).
+        changesTask = userDataActions.subscribe { [weak self] change in
+            await self?.apply(change)
+        }
+    }
+
+    isolated deinit {
+        changesTask?.cancel()
+    }
+
+    /// React to a user-data change from any surface: patch this item wherever it lives (hero,
+    /// Continue Watching, Next Up — `mutate` itself no-ops when Home holds none of them), then
+    /// — for ANY played-operation change, regardless of whether Home currently holds the
+    /// changed item — re-pull the two progress-driven shelves. Played state changes their
+    /// membership (a newly-watched item leaves Continue Watching), and a series-level cascade
+    /// can move episodes that back a Continue Watching/Next Up entry without the series itself
+    /// ever appearing in Home's local state, so the refresh can't be gated on a local match.
+    /// A pure favorite change never refetches.
+    private func apply(_ change: UserDataActions.Change) async {
+        mutate(change.itemID) { $0.withUserData(change.userData) }
+        if change.operation == .played {
+            await refresh()
+        }
     }
 
     func load() async {
@@ -123,8 +150,10 @@ final class HomeViewModel {
     /// Apply `transform` to the matching item wherever it lives (hero, continue-watching,
     /// next-up). It mutates the *current* element rather than re-applying a captured copy,
     /// so a reload that lands mid-toggle keeps its fresh metadata — only the favorite flag
-    /// (or the server's `UserItemData`) is swapped.
+    /// (or the server's `UserItemData`) is swapped. Skips all three rebuilds outright when
+    /// Home doesn't currently hold `itemID` anywhere.
     private func mutate(_ itemID: ItemID, _ transform: (Item) -> Item) {
+        guard currentItem(itemID) != nil else { return }
         heroFeed = heroFeed.map { entry in
             let presentation = entry.presentation.id == itemID ? transform(entry.presentation) : entry.presentation
             let playTarget = entry.playTarget.id == itemID ? transform(entry.playTarget) : entry.playTarget

@@ -113,6 +113,28 @@ struct UserDataActionsTests {
         let event = await events.next()
         #expect(event?.itemID == itemID)
         #expect(event?.userData == fresh)
+        #expect(event?.operation == .favorite)
+    }
+
+    @Test("a played toggle broadcasts a change tagged .played")
+    func playedToggleBroadcastsPlayedOperation() async {
+        let service = UserDataActions()
+        let fresh = Self.data(favorite: false, played: true)
+        let writer = StubWriter(favorite: .success(Self.data(favorite: false)), played: .success(fresh))
+        let itemID = ItemID(rawValue: "movie-played")
+
+        var events = service.changes().makeAsyncIterator()
+        let outcome = await service.togglePlayed(itemID: itemID, currentlyPlayed: false, via: writer)
+
+        guard case .success(let returned) = outcome else {
+            Issue.record("expected .success, got \(outcome)")
+            return
+        }
+        #expect(returned == fresh)
+
+        let event = await events.next()
+        #expect(event?.itemID == itemID)
+        #expect(event?.operation == .played)
     }
 
     @Test("failure broadcasts nothing and surfaces the error")

@@ -5,6 +5,7 @@ import ParallaxCore
 struct JellyfinSearchView: View {
     @Environment(AppDependencies.self) private var deps
     @Environment(AppRouter.self) private var router
+    @Environment(UserDataActions.self) private var userDataActions
     @State private var viewModel: JellyfinSearchViewModel?
     @State private var session: Session?
     // Bind the search field to local state so keystrokes typed before the VM
@@ -127,7 +128,7 @@ struct JellyfinSearchView: View {
             }
             if viewModel == nil, let session {
                 let repo = await deps.jellyfinLibraryRepoFactory(session)
-                let vm = JellyfinSearchViewModel(repo: repo)
+                let vm = JellyfinSearchViewModel(repo: repo, userDataActions: userDataActions)
                 vm.start()
                 // Seed any text/scope set during construction before wiring up — the
                 // field is live while the VM builds, so both can change in that window.

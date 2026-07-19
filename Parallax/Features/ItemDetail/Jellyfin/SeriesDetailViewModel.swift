@@ -27,11 +27,51 @@ final class SeriesDetailViewModel {
     private let repo: LibraryRepository
     private let itemID: ItemID
     private let userDataActions: UserDataActions
+    private var changesTask: Task<Void, Never>?
 
     init(repo: LibraryRepository, itemID: ItemID, userDataActions: UserDataActions) {
         self.repo = repo
         self.itemID = itemID
         self.userDataActions = userDataActions
+        // Own the iterating Task; cancelled in deinit.
+        changesTask = userDataActions.subscribe { [weak self] change in
+            await self?.apply(change)
+        }
+    }
+
+    isolated deinit {
+        changesTask?.cancel()
+    }
+
+    /// React to a user-data change from any surface. A change on THIS series patches the
+    /// loaded detail and, when it's a played change, refetches the episode shelves + resume
+    /// target — series cascade contract: marking a series played moves every episode
+    /// server-side but the event still carries only the series' own itemID/UserItemData (no
+    /// per-episode fan-out), so refetching is the only way to learn which episodes moved.
+    /// Keying on `operation == .played` (rather than diffing a locally-cached flag) skips a
+    /// needless re-pull on a pure favorite toggle. Otherwise, patch a matching episode (resume
+    /// target and/or its season shelf) in place. Stays on `.loaded` throughout — `refresh()`
+    /// already never re-skeletons.
+    private func apply(_ change: UserDataActions.Change) async {
+        guard case .loaded(let detail, let seasons) = state else { return }
+
+        if detail.series.id == change.itemID {
+            state = .loaded(detail.withSeries(detail.series.withUserData(change.userData)), seasons)
+            isFavorite = change.userData.isFavorite
+            if change.operation == .played {
+                await refresh()
+            }
+            return
+        }
+
+        if let resumeEpisode, resumeEpisode.id == change.itemID {
+            self.resumeEpisode = resumeEpisode.withUserData(change.userData)
+        }
+        for (seasonID, episodes) in episodesBySeasonID {
+            guard let idx = episodes.firstIndex(where: { $0.id == change.itemID }) else { continue }
+            episodesBySeasonID[seasonID]?[idx] = episodes[idx].withUserData(change.userData)
+            return
+        }
     }
 
     func load() async {
@@ -149,5 +189,16 @@ final class SeriesDetailViewModel {
             }
         }
         return bySeason
+    }
+}
+
+/// `SeriesDetail`'s fields are `let` (no package-side mutated-copy API — adding one is a
+/// `ParallaxCore` change, out of this task's scope), so patching the `series` field alone still
+/// needs a full-struct copy. Kept to this one call site rather than rolled ad hoc: every other
+/// field is passed through UNCHANGED (never recomputed), so there's nothing for a future field
+/// to silently drop.
+private extension SeriesDetail {
+    func withSeries(_ series: Series) -> SeriesDetail {
+        SeriesDetail(series: series, tagline: tagline, studios: studios, people: people)
     }
 }

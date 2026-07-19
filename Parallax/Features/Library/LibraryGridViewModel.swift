@@ -74,10 +74,15 @@ final class LibraryGridViewModel {
     private var fetchGeneration: UInt = 0
     private let repo: any MediaRepository
     private let scope: LibraryScope
+    private var changesTask: Task<Void, Never>?
 
-    init(repo: any MediaRepository, scope: LibraryScope) {
+    init(repo: any MediaRepository, scope: LibraryScope, userDataActions: UserDataActions) {
         self.repo = repo
         self.scope = scope
+        // Own the iterating Task; cancelled below alongside the grid's other in-flight work.
+        changesTask = userDataActions.subscribe { [weak self] change in
+            self?.apply(change)
+        }
     }
 
     isolated deinit {
@@ -86,7 +91,23 @@ final class LibraryGridViewModel {
         // repo alive until the disconnect completes, after the view model is released.
         inFlight?.cancel()
         genreTask?.cancel()
+        changesTask?.cancel()
         Task { [repo] in await repo.teardown() }
+    }
+
+    /// React to a user-data change from any surface. A Favorites-scope grid drops an item
+    /// outright once it's no longer a favorite (plain removal, no extra animation — it just no
+    /// longer belongs); every other grid patches the matching item's `userData` in place, which
+    /// updates the watched badge / favorite-derived UI automatically since `MediaThumbnail`
+    /// reads the item. Either way `state` stays `.loaded` — no re-skeleton. Early-outs when the
+    /// grid doesn't hold `itemID` at all, skipping the array rebuild.
+    private func apply(_ change: UserDataActions.Change) {
+        if case .favorites = scope, !change.userData.isFavorite {
+            items.removeAll { $0.id == change.itemID }
+            return
+        }
+        guard let index = items.firstIndex(where: { $0.id == change.itemID }) else { return }
+        items[index] = items[index].withUserData(change.userData)
     }
 
     func load() async {

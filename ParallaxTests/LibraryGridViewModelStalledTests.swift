@@ -12,7 +12,7 @@ struct LibraryGridViewModelStalledTests {
     private func makeVM(items: Result<Page<Item>, Error>) -> LibraryGridViewModel {
         let fake = FakeMediaRepository()
         fake.itemsResult = items
-        return LibraryGridViewModel(repo: fake, scope: .favorites)
+        return LibraryGridViewModel(repo: fake, scope: .favorites, userDataActions: UserDataActions())
     }
 
     @Test("idle (pre-load) is not stalled")
