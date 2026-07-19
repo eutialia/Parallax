@@ -13,6 +13,17 @@ private enum LibraryHeaderChip {
     static let sortWidth: CGFloat = 110
 }
 
+/// `LibraryGridView.body`'s branch discriminator — see `crossfadeStateSwap`. Covers both the
+/// pre-view-model placeholder and `gridContent`'s own initial-load placeholder under one
+/// `.skeleton` case (they render identically), so the crossfade fires once, at the outer swap
+/// point, rather than needing a second wrap inside `gridContent`.
+private enum LibraryContentPhase: Hashable {
+    case skeleton
+    case failed
+    case empty
+    case loaded
+}
+
 struct LibraryGridView: View {
     let scope: LibraryScope
     let title: String
@@ -52,6 +63,12 @@ struct LibraryGridView: View {
                 LibraryGridLoadingPlaceholder(columns: columns)
             }
         }
+        // iOS-only crossfade of the whole skeleton→loaded/failed/empty swap; see
+        // `crossfadeStateSwap`. Applied here, INSIDE the chrome modifiers below (navigationTitle,
+        // toolbar, `.task`, …) so those stay on a stable outer node — a phase flip must not
+        // re-fire `loadViewModel()`'s `.task` or tear down navigation/toolbar state. tvOS hard-cuts
+        // as before.
+        .crossfadeStateSwap(contentPhase)
         // The grid owns its own title (the library name) so both iOS entry points — iPhone's
         // Library-list drill-down and iPad's direct sidebar tab — show it identically. Inline so
         // the name shares the bar row with the sort/filter button instead of a large-title row.
@@ -75,6 +92,19 @@ struct LibraryGridView: View {
         // online). Gated on `isStalled` (failed AND no items) so a loaded grid — and the
         // stale-content refresh banner, which keeps its own "Try again" — are untouched.
         .recoversFromOffline(isStalled: viewModel?.isStalled ?? false) { await viewModel?.load() }
+    }
+
+    /// `crossfadeStateSwap`'s discriminator for `body`'s Group. `.loaded` covers BOTH the real
+    /// grid and the "load more" strip beneath it — a background page fetch doesn't move this
+    /// (only `isInitialLoad`/failed/empty do), so it can't compound with the grid's own
+    /// `staleWhileRevalidate` dim on a sort/filter refetch (that keeps `vm.state == .loaded`
+    /// throughout).
+    private var contentPhase: LibraryContentPhase {
+        guard let vm = viewModel else { return .skeleton }
+        if isInitialLoad(vm) { return .skeleton }
+        if case .failed = vm.state, vm.items.isEmpty { return .failed }
+        if showsEmptyState(vm) { return .empty }
+        return .loaded
     }
 
     /// One-shot view-model construction for the `.task`: build the repo-backed model and

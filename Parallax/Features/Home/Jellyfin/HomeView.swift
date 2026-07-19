@@ -2,6 +2,14 @@ import SwiftUI
 import ParallaxJellyfin
 import ParallaxCore
 
+/// `HomeView.content`'s branch discriminator — see `crossfadeStateSwap`.
+private enum HomeContentPhase: Hashable {
+    case skeleton
+    case loaded
+    case failed
+    case unavailable
+}
+
 struct HomeView: View {
     @Environment(AppDependencies.self) private var deps
     @Environment(AppRouter.self) private var router
@@ -28,6 +36,9 @@ struct HomeView: View {
     var body: some View {
         ScrollView {
             content
+                // iOS-only crossfade of the whole skeleton→loaded/failed/unavailable swap; see
+                // `crossfadeStateSwap`. tvOS hard-cuts as before.
+                .crossfadeStateSwap(contentPhase)
         }
         // Feed the hero band its stretch + parallax scroll channel (shared with the detail
         // headers — see `heroScrollChannel` for the geometry math).
@@ -133,6 +144,24 @@ struct HomeView: View {
         // OR failed — both are revealable screens). One-shot; server-switch
         // re-runs are no-ops inside the gate.
         launchGate.markContentReady()
+    }
+
+    /// Discriminates which top-level branch of `content` is showing, for `crossfadeStateSwap`.
+    /// Deliberately NOT `vm.state` itself (payload-carrying, not `Hashable`) — both loading
+    /// branches (the pre-session bootstrap skeleton and `vm.state`'s own `.idle`/`.loading`)
+    /// collapse to the same `.skeleton` case, since they render the identical placeholder.
+    private var contentPhase: HomeContentPhase {
+        if let vm = viewModel, session != nil {
+            switch vm.state {
+            case .idle, .loading: return .skeleton
+            case .loaded: return .loaded
+            case .failed: return .failed
+            }
+        } else if router.destination == .home, router.activeServerID == nil {
+            return .unavailable
+        } else {
+            return .skeleton
+        }
     }
 
     @ViewBuilder

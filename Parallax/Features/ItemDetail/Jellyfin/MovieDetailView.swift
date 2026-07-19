@@ -14,6 +14,18 @@ struct MovieDetailView: View {
     // The hero band's stretch + parallax channel — same wiring as Home (see `heroScrollChannel`).
     @State private var heroScroll = HeroScrollState()
 
+    /// `crossfadeStateSwap`'s discriminator for `body`'s Group. Only `vm.state`'s own case, not
+    /// `vm.isRefreshing` — a post-playback refresh keeps `.loaded` throughout, so it can't
+    /// compound with the page's own `staleWhileRevalidate` dim.
+    private var contentPhase: DetailContentPhase {
+        guard let vm = viewModel else { return .skeleton }
+        switch vm.state {
+        case .idle, .loading: return .skeleton
+        case .loaded: return .loaded
+        case .failed: return .failed
+        }
+    }
+
     var body: some View {
         Group {
             if let vm = viewModel {
@@ -102,6 +114,12 @@ struct MovieDetailView: View {
                 DetailLoadingSkeleton()
             }
         }
+        // iOS-only crossfade of the whole skeleton→loaded/failed swap; see `crossfadeStateSwap`.
+        // Applied here, INSIDE the chrome modifiers below, so those stay on a stable outer node —
+        // a phase flip must not re-fire the `.task` below or touch the pushed container's own
+        // identity (this view sits under a `.navigationTransition(.zoom)` from `ItemNavigation+View`,
+        // applied further out still). tvOS hard-cuts as before.
+        .crossfadeStateSwap(contentPhase)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .heroScreenSafeArea()
         .screenFloor()

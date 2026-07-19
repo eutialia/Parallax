@@ -2,6 +2,14 @@ import SwiftUI
 import ParallaxJellyfin
 import ParallaxCore
 
+/// `MovieDetailView`/`SeriesDetailView.body`'s branch discriminator — see `crossfadeStateSwap`.
+/// Shared by both (their loading/loaded/failed shape is identical) rather than duplicated per file.
+enum DetailContentPhase: Hashable {
+    case skeleton
+    case loaded
+    case failed
+}
+
 /// Hero metadata row: text facts, filled quality badges, and a CC indicator.
 struct DetailHeroMetadataRow: View {
     let metadata: DetailMetadata
