@@ -42,12 +42,13 @@ struct PlaybackPresenterTests {
         presenter.play(ItemID(rawValue: "ep-1"), in: s)
         // The Jellyfin session now rides INSIDE the target after the relocation —
         // a regression check that `play(_:in:)` still carries it.
-        guard case .itemID(let id, let carried) = presenter.request?.target else {
+        guard case .itemID(let id, let carried, let fromBeginning) = presenter.request?.target else {
             Issue.record("expected an itemID target")
             return
         }
         #expect(id == ItemID(rawValue: "ep-1"))
         #expect(carried.id == s.id)
+        #expect(fromBeginning == false)
     }
 
     @Test("play(_ detail:in:) sets a .detail target carrying the session (relocation regression)")
@@ -55,11 +56,36 @@ struct PlaybackPresenterTests {
         let presenter = PlaybackPresenter()
         let s = session()
         presenter.play(PlayerFixtures.movieDetail(), in: s)
-        guard case .detail(_, let carried) = presenter.request?.target else {
+        guard case .detail(_, let carried, let fromBeginning) = presenter.request?.target else {
             Issue.record("expected a detail target")
             return
         }
         #expect(carried.id == s.id)
+        #expect(fromBeginning == false)
+    }
+
+    @Test("play(_:in:fromBeginning:) threads the restart intent into the itemID target")
+    func playItemIDFromBeginning() {
+        let presenter = PlaybackPresenter()
+        let s = session()
+        presenter.play(ItemID(rawValue: "ep-1"), in: s, fromBeginning: true)
+        guard case .itemID(_, _, let fromBeginning) = presenter.request?.target else {
+            Issue.record("expected an itemID target")
+            return
+        }
+        #expect(fromBeginning == true)
+    }
+
+    @Test("play(_ detail:in:fromBeginning:) threads the restart intent into the detail target")
+    func playDetailFromBeginning() {
+        let presenter = PlaybackPresenter()
+        let s = session()
+        presenter.play(PlayerFixtures.movieDetail(), in: s, fromBeginning: true)
+        guard case .detail(_, _, let fromBeginning) = presenter.request?.target else {
+            Issue.record("expected a detail target")
+            return
+        }
+        #expect(fromBeginning == true)
     }
 
     @Test("playSMB sets a .smb target carrying the item + ref (no Jellyfin session)")
@@ -85,7 +111,7 @@ struct PlaybackPresenterTests {
         let first = presenter.request?.id
         presenter.play(ItemID(rawValue: "ep-2"), in: s)
         #expect(presenter.request?.id == first)
-        guard case .itemID(let id, _) = presenter.request?.target else {
+        guard case .itemID(let id, _, _) = presenter.request?.target else {
             Issue.record("expected an itemID target")
             return
         }
@@ -102,7 +128,7 @@ struct PlaybackPresenterTests {
         presenter.dismiss()
         #expect(presenter.request == nil)
         presenter.play(ItemID(rawValue: "ep-2"), in: s)
-        guard case .itemID(let id, _) = presenter.request?.target else {
+        guard case .itemID(let id, _, _) = presenter.request?.target else {
             Issue.record("expected an itemID target")
             return
         }
@@ -124,7 +150,7 @@ struct PlaybackPresenterTests {
         for _ in 0..<200 where presenter.request == nil {
             try await Task.sleep(for: .milliseconds(10))
         }
-        guard case .itemID(let id, _) = presenter.request?.target else {
+        guard case .itemID(let id, _, _) = presenter.request?.target else {
             Issue.record("expected the held pick to present after the grace")
             return
         }

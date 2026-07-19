@@ -6,8 +6,8 @@ import ParallaxPlayback
 
 struct PlayerView: View {
     private enum Source {
-        case resolved(ItemDetail)
-        case unresolved(ItemID)
+        case resolved(ItemDetail, fromBeginning: Bool)
+        case unresolved(ItemID, fromBeginning: Bool)
         /// A browsed SMB file resolved under the loading veil. Carries no `Session`
         /// (SMB has none) — the resolver is reached via the environment in `.task`.
         case smb(Item, SMBServerRef)
@@ -19,13 +19,15 @@ struct PlayerView: View {
     let session: Session?
 
     /// Play an already-loaded detail (e.g. the movie-detail Play button).
-    init(item: ItemDetail, session: Session) {
-        self.source = .resolved(item)
+    /// `fromBeginning` — the context menu's restart intent (Task 4): true starts
+    /// at 0:00 regardless of any saved resume position.
+    init(item: ItemDetail, session: Session, fromBeginning: Bool = false) {
+        self.source = .resolved(item, fromBeginning: fromBeginning)
         self.session = session
     }
     /// Play by id — fetches the detail in the loading cover (direct episode play).
-    init(itemID: ItemID, session: Session) {
-        self.source = .unresolved(itemID)
+    init(itemID: ItemID, session: Session, fromBeginning: Bool = false) {
+        self.source = .unresolved(itemID, fromBeginning: fromBeginning)
         self.session = session
     }
     /// Play a browsed SMB file — the `SMBPlaybackItem` resolves under the loading
@@ -39,8 +41,10 @@ struct PlayerView: View {
     /// (`PlayerPresentationHost` on iOS, the tvOS full-screen cover).
     init(request: PlaybackPresenter.Request) {
         switch request.target {
-        case .detail(let detail, let session): self.init(item: detail, session: session)
-        case .itemID(let itemID, let session): self.init(itemID: itemID, session: session)
+        case .detail(let detail, let session, let fromBeginning):
+            self.init(item: detail, session: session, fromBeginning: fromBeginning)
+        case .itemID(let itemID, let session, let fromBeginning):
+            self.init(itemID: itemID, session: session, fromBeginning: fromBeginning)
         case .smb(let item, let ref): self.init(smbItem: item, ref: ref)
         }
     }
@@ -274,8 +278,8 @@ struct PlayerView: View {
         )
         viewModel = vm
         switch source {
-        case .resolved(let item): await vm.start(item: item)
-        case .unresolved(let id): await vm.start(itemID: id)
+        case .resolved(let item, let fromBeginning): await vm.start(item: item, fromBeginning: fromBeginning)
+        case .unresolved(let id, let fromBeginning): await vm.start(itemID: id, fromBeginning: fromBeginning)
         case .smb: break   // handled above
         }
     }

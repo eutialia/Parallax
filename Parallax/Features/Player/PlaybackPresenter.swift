@@ -16,12 +16,15 @@ final class PlaybackPresenter {
         enum Target {
             /// Detail already in hand (a detail page's Play button) — no refetch.
             /// Carries its Jellyfin `Session`; SMB has none (`.smb` below).
-            case detail(ItemDetail, Session)
+            /// `fromBeginning` is the explicit restart intent (the context menu's
+            /// "Play from Beginning" — Task 4): true skips any saved resume position.
+            case detail(ItemDetail, Session, fromBeginning: Bool)
             /// Play by id — the player resolves it under its loading veil. Carries
-            /// the Jellyfin `Session` it resolves against.
-            case itemID(ItemID, Session)
+            /// the Jellyfin `Session` it resolves against and the same restart intent.
+            case itemID(ItemID, Session, fromBeginning: Bool)
             /// Play a browsed SMB file — the player resolves the `SMBPlaybackItem`
             /// (Keychain + sidecar subs) under its loading veil, no `Session` involved.
+            /// No restart intent: SMB tracks no server-side resume state.
             case smb(Item, SMBServerRef)
         }
 
@@ -64,13 +67,16 @@ final class PlaybackPresenter {
         self.teardownGrace = teardownGrace
     }
 
-    func play(_ itemID: ItemID, in session: Session) {
-        present(.init(target: .itemID(itemID, session)))
+    /// `fromBeginning` defaults false so every existing tap-to-resume call site is
+    /// unaffected — only the context menu's "Play from Beginning" (Task 4) passes true.
+    func play(_ itemID: ItemID, in session: Session, fromBeginning: Bool = false) {
+        present(.init(target: .itemID(itemID, session, fromBeginning: fromBeginning)))
     }
 
     /// Play an already-loaded detail (e.g. the movie detail's Play button).
-    func play(_ detail: ItemDetail, in session: Session) {
-        present(.init(target: .detail(detail, session)))
+    /// `fromBeginning` — see `play(_ itemID:in:fromBeginning:)`.
+    func play(_ detail: ItemDetail, in session: Session, fromBeginning: Bool = false) {
+        present(.init(target: .detail(detail, session, fromBeginning: fromBeginning)))
     }
 
     /// Play a browsed SMB file. The player resolves the `SMBPlaybackItem` under its

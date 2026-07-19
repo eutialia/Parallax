@@ -503,6 +503,12 @@ final class PlayerViewModel {
     /// The id requested via `start(itemID:)`, kept so `retry()` can re-fetch when
     /// the original failure was the detail fetch itself (no `playingItem` yet).
     private var pendingItemID: ItemID?
+    /// The restart intent ("Play from Beginning") of the CURRENT/most recent
+    /// `start(itemID:)`/`start(item:)` call — kept so `retry()` replays the same
+    /// intent instead of silently falling back to resume-from-saved-position on
+    /// a failed restart. Set at the top of both entry points; reset with the rest
+    /// of the per-session state in `stop()`.
+    private var pendingFromBeginning = false
     /// The SMB resolve closure for the current local session (nil for Jellyfin), kept so
     /// `retry()` can replay the SMB path — which sets neither `playingItem` nor `pendingItemID`.
     private var smbResolve: (() async throws -> SMBPlaybackItem)?
@@ -736,13 +742,16 @@ final class PlayerViewModel {
     /// cover stays up through the fetch (phase == .loading), so there's no separate
     /// spinner. Used when a screen has only the item id (an episode tapped in Home /
     /// Search / a library / a season list) — no detail screen in between.
-    func start(itemID: ItemID) async {
+    /// `fromBeginning` — see `start(item:fromBeginning:)`; threaded through once the
+    /// detail fetch lands.
+    func start(itemID: ItemID, fromBeginning: Bool = false) async {
         phase = .loading
         pendingItemID = itemID
+        pendingFromBeginning = fromBeginning
         do {
             let detail = try await fetchDetail(itemID)
             try checkStillActive()
-            await start(item: detail)
+            await start(item: detail, fromBeginning: fromBeginning)
         } catch is CancellationError {
             // Exit raced the detail fetch — the view is gone; nothing to surface.
         } catch let error as AppError {
@@ -753,11 +762,21 @@ final class PlayerViewModel {
         }
     }
 
-    func start(item: ItemDetail) async {
+    /// `fromBeginning`: the context menu's explicit "Play from Beginning" (Task 4) —
+    /// true starts at 0:00 regardless of any saved resume position. Defaulted so
+    /// every existing tap-to-resume call site is unaffected. Threaded straight into
+    /// `startTime` below: `nil` there already means "no offset" for BOTH direct-play
+    /// (its stream URL defaults `startTimeTicks` to 0) and transcode (the server bakes
+    /// the offset into the transcode session AT RESOLVE TIME from the ticks we send —
+    /// omitting them starts ffmpeg at 0), which is exactly the "build for start 0 up
+    /// front" behavior a restart needs — never seek-after-resume, which would re-anchor
+    /// a running transcode's timeline (the 2026-07-17 subtitle-desync class of bug).
+    func start(item: ItemDetail, fromBeginning: Bool = false) async {
         isStartingPlayback = true
         defer { isStartingPlayback = false }
         phase = .loading
         didApplyPreferredTracks = false
+        pendingFromBeginning = fromBeginning
         playingItem = item
         // The chapter set just changed; refresh the derived fractions against whatever
         // duration is known (still the previous item's during an episode→episode swap —
@@ -796,7 +815,12 @@ final class PlayerViewModel {
                 Log.playback.error("audio session activate failed: \(error.networkDiagnostic)")
                 throw AppError.playback(.audioSessionFailed)
             }
-            let resumeTime = ResumePolicy.resumeStartTime(positionTicks: positionTicks, runtime: runtime)
+            // fromBeginning short-circuits straight to nil — identical to the "no
+            // saved position" case below, so an unwatched item behaves exactly the
+            // same under either flag value (nothing to guard: they're the same call).
+            let resumeTime = fromBeginning
+                ? nil
+                : ResumePolicy.resumeStartTime(positionTicks: positionTicks, runtime: runtime)
             try await beginPlayback(
                 item: item,
                 startTime: resumeTime,
@@ -1205,6 +1229,7 @@ final class PlayerViewModel {
         engine = nil
         playingItem = nil
         pendingItemID = nil
+        pendingFromBeginning = false
         smbResolve = nil
         currentAudioStreamIndex = nil
         currentSubtitleStreamIndex = nil
@@ -1331,10 +1356,13 @@ final class PlayerViewModel {
         let item = playingItem
         let id = pendingItemID
         let smb = smbResolve
+        // Captured before resetForReplay() clears it (same pattern as item/id above) —
+        // a retry after a failed restart must stay a restart, not quietly resume.
+        let fromBeginning = pendingFromBeginning
         await resetForReplay()
         if let smb { await start(resolvingSMB: smb) }
-        else if let item { await start(item: item) }
-        else if let id { await start(itemID: id) }
+        else if let item { await start(item: item, fromBeginning: fromBeginning) }
+        else if let id { await start(itemID: id, fromBeginning: fromBeginning) }
         else { Log.playback.error("retry() had no item or id to replay") }
     }
 
