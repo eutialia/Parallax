@@ -174,9 +174,13 @@ public actor LibraryRepository {
         }
     }
 
-    public func setPlayed(itemID: ItemID, isPlayed: Bool) async throws {
+    /// Returns the server's fresh `UserItemData`. `@discardableResult` so surfaces that
+    /// only need the write (e.g. the movie detail's Mark-Watched button) can ignore it,
+    /// while `UserDataActions` uses it to broadcast the change.
+    @discardableResult
+    public func setPlayed(itemID: ItemID, isPlayed: Bool) async throws -> UserItemData {
         do {
-            try await client.setPlayed(itemID: itemID.rawValue, isPlayed: isPlayed)
+            return try await client.setPlayed(itemID: itemID.rawValue, isPlayed: isPlayed)
         } catch {
             throw ErrorMapping.appError(from: error)
         }

@@ -8,6 +8,7 @@ struct MovieDetailView: View {
 
     @Environment(AppDependencies.self) private var deps
     @Environment(PlaybackPresenter.self) private var playback
+    @Environment(UserDataActions.self) private var userDataActions
     @Environment(\.appIdiom) private var idiom
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var viewModel: MovieDetailViewModel?
@@ -128,7 +129,7 @@ struct MovieDetailView: View {
         .task {
             if viewModel == nil {
                 let repo = await deps.jellyfinLibraryRepoFactory(session)
-                viewModel = MovieDetailViewModel(repo: repo, itemID: itemID)
+                viewModel = MovieDetailViewModel(repo: repo, itemID: itemID, userDataActions: userDataActions)
                 await viewModel?.load()
             }
         }

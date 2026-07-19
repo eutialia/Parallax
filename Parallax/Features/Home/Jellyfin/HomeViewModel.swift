@@ -33,9 +33,11 @@ final class HomeViewModel {
     var isStalled: Bool { if case .failed = state { true } else { false } }
 
     private let repo: LibraryRepository
+    private let userDataActions: UserDataActions
 
-    init(repo: LibraryRepository) {
+    init(repo: LibraryRepository, userDataActions: UserDataActions) {
         self.repo = repo
+        self.userDataActions = userDataActions
     }
 
     func load() async {
@@ -97,7 +99,7 @@ final class HomeViewModel {
         mutate(itemID) { $0.withFavorite(!original) }     // optimistic
         favoriteErrorMessage = nil
 
-        switch await FavoriteToggle.perform(itemID: itemID, currentlyFavorite: original, via: repo) {
+        switch await userDataActions.toggleFavorite(itemID: itemID, currentlyFavorite: original, via: repo) {
         case .success(let serverUserData):
             mutate(itemID) { $0.withUserData(serverUserData) }
         case .skipped:

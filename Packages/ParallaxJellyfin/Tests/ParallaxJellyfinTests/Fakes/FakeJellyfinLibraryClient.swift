@@ -30,7 +30,9 @@ final class FakeJellyfinLibraryClient: JellyfinLibraryClient, @unchecked Sendabl
     var setFavoriteResult: Result<UserItemData, Error> = .success(
         UserItemData(played: false, playbackPositionTicks: 0, playCount: 0, isFavorite: true)
     )
-    var setPlayedResult: Result<Void, Error> = .success(())
+    var setPlayedResult: Result<UserItemData, Error> = .success(
+        UserItemData(played: true, playbackPositionTicks: 0, playCount: 1, isFavorite: false)
+    )
 
     // Call records.
     private(set) var collectionsCallCount = 0
@@ -124,9 +126,9 @@ final class FakeJellyfinLibraryClient: JellyfinLibraryClient, @unchecked Sendabl
         )
     }
 
-    func setPlayed(itemID: String, isPlayed: Bool) async throws {
+    func setPlayed(itemID: String, isPlayed: Bool) async throws -> UserItemData {
         setPlayedCalls.append((itemID: itemID, isPlayed: isPlayed))
-        try setPlayedResult.get()
+        return try setPlayedResult.get()
     }
 
     func seriesNextUp(seriesID: String) async throws -> BaseItemDto? {

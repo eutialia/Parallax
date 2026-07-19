@@ -26,10 +26,12 @@ final class SeriesDetailViewModel {
 
     private let repo: LibraryRepository
     private let itemID: ItemID
+    private let userDataActions: UserDataActions
 
-    init(repo: LibraryRepository, itemID: ItemID) {
+    init(repo: LibraryRepository, itemID: ItemID, userDataActions: UserDataActions) {
         self.repo = repo
         self.itemID = itemID
+        self.userDataActions = userDataActions
     }
 
     func load() async {
@@ -107,7 +109,7 @@ final class SeriesDetailViewModel {
     func toggleFavorite() async {
         let original = isFavorite
         isFavorite = !original
-        switch await FavoriteToggle.perform(itemID: itemID, currentlyFavorite: original, via: repo) {
+        switch await userDataActions.toggleFavorite(itemID: itemID, currentlyFavorite: original, via: repo) {
         case .success(let server):
             isFavorite = server.isFavorite
         case .skipped:

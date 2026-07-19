@@ -6,6 +6,7 @@ struct FocusRootView: View {
     @Environment(AppRouter.self) private var router
     @Environment(AppDependencies.self) private var deps
     @Environment(LaunchGate.self) private var launchGate
+    @Environment(UserDataActions.self) private var userDataActions
     @State private var selectedTab: AppTab = .home
     @State private var session: Session?
     @State private var entries: [LibraryEntry] = []
@@ -67,7 +68,7 @@ struct FocusRootView: View {
             // from the sidebar.
             var vm: HomeViewModel?
             if let active = await deps.serverStore.active {
-                vm = HomeViewModel(repo: await deps.jellyfinLibraryRepoFactory(active))
+                vm = HomeViewModel(repo: await deps.jellyfinLibraryRepoFactory(active), userDataActions: userDataActions)
             }
             // Load the sidebar's libraries and Home's feed concurrently, then reveal once both
             // settle — so the UI appears whole, with the hero (if any) already focusable.

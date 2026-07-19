@@ -31,8 +31,10 @@ public protocol JellyfinLibraryClient: Sendable {
     func search(query: String, scope: SearchScope) async throws -> [BaseItemDto]
     /// POST/DELETE the item's favorite flag for the current user (`/UserFavoriteItems/{id}`).
     func setFavorite(itemID: String, isFavorite: Bool) async throws -> UserItemData
-    /// Mark the item (movie/episode/season/series) played or unplayed for the current user.
-    func setPlayed(itemID: String, isPlayed: Bool) async throws
+    /// Mark the item (movie/episode/season/series) played or unplayed for the current
+    /// user; returns the server's fresh `UserItemData` (marking a series cascades to its
+    /// episodes, but only the series' own data comes back here).
+    func setPlayed(itemID: String, isPlayed: Bool) async throws -> UserItemData
     /// The single resume/next-up episode for a series (Jellyfin /Shows/NextUp?seriesId=),
     /// or nil when the series is unwatched-from-start / finished.
     func seriesNextUp(seriesID: String) async throws -> BaseItemDto?

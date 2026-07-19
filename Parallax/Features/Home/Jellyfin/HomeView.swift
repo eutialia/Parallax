@@ -15,6 +15,7 @@ struct HomeView: View {
     @Environment(AppRouter.self) private var router
     @Environment(LaunchGate.self) private var launchGate
     @Environment(PlaybackPresenter.self) private var playback
+    @Environment(UserDataActions.self) private var userDataActions
     /// Supplied by the tvOS launch gate (`FocusRootView`), which loads the feed up front so the
     /// hero is on screen — and focusable — the instant the sidebar appears. When set, the view
     /// skips its own fetch. iOS leaves this nil and self-loads in `.task` as before.
@@ -137,7 +138,7 @@ struct HomeView: View {
         }
         if viewModel == nil {
             let repo = await deps.jellyfinLibraryRepoFactory(session)
-            viewModel = HomeViewModel(repo: repo)
+            viewModel = HomeViewModel(repo: repo, userDataActions: userDataActions)
             await viewModel?.load()
         }
         // Releases the cold-launch sync-hold: `load()` has returned (loaded

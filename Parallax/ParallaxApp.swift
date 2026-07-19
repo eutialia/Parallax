@@ -23,6 +23,10 @@ struct ParallaxApp: App {
     @State private var dependencies: AppDependencies = .live()
     @State private var router: AppRouter = .init()
     @State private var playback: PlaybackPresenter = .init()
+    /// App-wide favorite/played mutations + change broadcast. Injected here so any surface
+    /// (detail pages, and — next wave — long-press menus) mutates through one guarded service
+    /// and every screen showing the item can reflect the result. See `UserDataActions`.
+    @State private var userDataActions: UserDataActions = .init()
     @State private var launchGate: LaunchGate = .init()
     /// App-wide network reachability. Views stuck on an error subscribe via
     /// `.recoversFromOffline` and auto-reload when this flips back online.
@@ -65,6 +69,7 @@ struct ParallaxApp: App {
             .environment(dependencies)
             .environment(router)
             .environment(playback)
+            .environment(userDataActions)
             .environment(launchGate)
             .environment(connectivity)
             .environment(subtitlePreferences)

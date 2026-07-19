@@ -194,11 +194,12 @@ public final class DefaultJellyfinLibraryClient: JellyfinLibraryClient, Sendable
         return response.value.toUserItemData()
     }
 
-    public func setPlayed(itemID: String, isPlayed: Bool) async throws {
+    public func setPlayed(itemID: String, isPlayed: Bool) async throws -> UserItemData {
         let request = isPlayed
             ? Paths.markPlayedItem(itemID: itemID, userID: userID)
             : Paths.markUnplayedItem(itemID: itemID, userID: userID)
-        _ = try await client().send(request)
+        let response = try await client().send(request)
+        return response.value.toUserItemData()
     }
 
     public func seriesNextUp(seriesID: String) async throws -> BaseItemDto? {
