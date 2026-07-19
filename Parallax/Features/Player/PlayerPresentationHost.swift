@@ -112,6 +112,15 @@ struct PlayerPresentationHost: View {
                 sync(height: height)
             }
         }
+        // The player never keyboard-avoids: nothing in it takes text input, and the
+        // keyboard safe-area region can outlive the keyboard in this overlay's
+        // sidebarAdaptable/UISplitViewController ancestry (observed on an 11" iPad,
+        // portrait: a keyboard-height bottom inset with no keyboard on screen pushed
+        // the safe-area-relative HUD rows — scrubber + chips — up to the letterbox
+        // edge while full-bleed siblings sat correctly). Excluding the region here
+        // covers every mounted surface at once — HUD, seek bar, track panels — while
+        // container edges (status bar, home indicator) keep flowing normally.
+        .ignoresSafeArea(.keyboard)
     }
 
     private func sync(height: CGFloat) {
