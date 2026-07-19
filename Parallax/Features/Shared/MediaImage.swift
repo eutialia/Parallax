@@ -100,7 +100,8 @@ struct MediaImage: View {
     }
 
     /// The fill drawn BEHIND the loaded artwork — it pins the cell's box while the real image
-    /// streams in, then the loaded image crossfades/pops on top. For Jellyfin content that carries a
+    /// streams in, then the loaded image fades in on top (network/disk loads ease in over 0.25s;
+    /// memory-cache hits appear instantly — see `ArtworkFadeIn`). For Jellyfin content that carries a
     /// BlurHash we decode it into a blurred impression of the incoming poster (a soft colour field
     /// that matches the artwork) instead of a flat gray box; everything else — SMB/local artwork, or a
     /// Jellyfin ref with no hash — keeps the flat `Color.artworkPlaceholder`. Only reached by `.fill`
@@ -193,6 +194,7 @@ struct MediaImage: View {
                 image.resizable()
                     .aspectRatio(contentMode: style == .logo ? .fit : .fill)
                     .accessibilityIgnoresInvertColors()
+                    .artworkFadeIn(isMemoryHit: state.isArtworkMemoryHit)
             }
         }
         switch style {

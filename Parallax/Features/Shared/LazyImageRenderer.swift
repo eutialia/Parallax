@@ -21,6 +21,7 @@ struct LazyImageRenderer: View {
                     if let image = state.image {
                         image.resizable().aspectRatio(contentMode: contentMode)
                             .accessibilityIgnoresInvertColors()
+                            .artworkFadeIn(isMemoryHit: state.isArtworkMemoryHit)
                     }
                 }
                 .pipeline(pipeline)
