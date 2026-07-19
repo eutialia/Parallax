@@ -130,8 +130,8 @@ struct PlayerView: View {
             exclusionsActive: chromeVisible
         ) { exitPlayer() }
         #endif
-        .animation(.easeInOut(duration: 0.3), value: showsReloadCover)
-        .animation(.easeInOut(duration: 0.3), value: viewModel?.trackSwitchFailure != nil)
+        .animation(.playerCoverFade, value: showsReloadCover)
+        .animation(.playerCoverFade, value: viewModel?.trackSwitchFailure != nil)
         // The debug panel presents from the HUD's chip row (PlayerControlsView)
         // like the track menus — a corner overlay was unreachable (and its
         // ScrollView unscrollable) by the tvOS focus engine.
@@ -660,14 +660,14 @@ struct PlayerView: View {
         // (floor↔scrub flips `isScrubbing`, scrub↔HUD flips both, floor↔HUD flips
         // `isFullHUD`), and swipeScrub↔clickSeek shares one bar identity above, so it
         // needs no transition at all.
-        .animation(.easeInOut(duration: 0.2), value: isScrubbing)
+        .animation(.playerStateCrossfade, value: isScrubbing)
         // Fast ease-out so a Menu press mid-reveal feels instant — the chrome is
         // opacity-driven and the animation retargets from its current value.
-        .animation(.easeOut(duration: 0.15), value: isFullHUD)
-        .animation(.easeInOut(duration: 0.2), value: viewModel?.isPlaying ?? true)
+        .animation(.chromeToggle, value: isFullHUD)
+        .animation(.playerStateCrossfade, value: viewModel?.isPlaying ?? true)
         // …and the stall scrim's arrival, so a paused→stall flip fades the paused
         // glyph out instead of popping it (review-found).
-        .animation(.easeInOut(duration: 0.2), value: viewModel?.showsStallScrim ?? false)
+        .animation(.playerStateCrossfade, value: viewModel?.showsStallScrim ?? false)
         // Dedicated Play/Pause button → reducer, in every HUD state.
         .onPlayPauseCommand { send(.playPause, vm) }
         // Pause pins the full HUD (the auto-hide guard reads isPlaying); resuming

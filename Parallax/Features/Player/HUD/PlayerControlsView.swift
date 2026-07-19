@@ -322,13 +322,13 @@ struct PlayerControlsView: View {
             }
             #endif
         }
-        .animation(.easeOut(duration: 0.15), value: controlsVisible)
-        .animation(.easeInOut(duration: 0.2), value: dragScrubbing)
+        .animation(.chromeToggle, value: controlsVisible)
+        .animation(.playerStateCrossfade, value: dragScrubbing)
         // The centre transport swaps with the stall scrim's ring — fade, don't pop.
-        .animation(.easeInOut(duration: 0.2), value: vm.showsStallScrim)
+        .animation(.playerStateCrossfade, value: vm.showsStallScrim)
         // …and fades back in when an in-flight scrub commit lands (the transport
         // is held out through `isScrubbing` so the paused glyph can't flash).
-        .animation(.easeInOut(duration: 0.2), value: isScrubbing)
+        .animation(.playerStateCrossfade, value: isScrubbing)
         #if !os(tvOS)
         .onAppear { scheduleHide() }
         // The sleeping tasks outlive a dismissed player: the seek commit would fire
@@ -651,7 +651,7 @@ struct PlayerControlsView: View {
                     .opacity(showsCenterTransport ? 1 : 0)
                     .disabled(!showsCenterTransport)
                     .allowsHitTesting(showsCenterTransport)
-                    .animation(.easeInOut(duration: 0.2), value: showsCenterTransport)
+                    .animation(.playerStateCrossfade, value: showsCenterTransport)
 
                 chipRow(m)
             }

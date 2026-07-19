@@ -83,7 +83,7 @@ private struct FlatFormButtonStyle: ButtonStyle {
                 .tint(labelColor(focused: focused))
                 .flatControlFill(focused: focused, rest: restFill, hairline: hairline, in: Capsule())
                 .opacity(opacity(pressed: configuration.isPressed))
-                .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+                .animation(.pressDim, value: configuration.isPressed)
         }
     }
 

@@ -232,4 +232,39 @@ extension Animation {
     /// page settle, detail overview expand). One token so the settle feel can't drift between
     /// surfaces; call sites keep their own Reduce-Motion gating.
     static let organicSettle = Animation.spring(response: 0.4, dampingFraction: 0.86)
+
+    /// Button-style press-dim: fade a label's opacity down while pressed, back up on release.
+    /// Shared by the tvOS chip/quiet button styles and the iOS flat form CTA — three separate
+    /// `ButtonStyle`s doing the identical "dim on `isPressed`" cue, so the feel can't drift
+    /// between them.
+    static let pressDim = Animation.easeOut(duration: 0.12)
+
+    /// Artwork fade-in over its BlurHash/gray placeholder after a real network or disk load
+    /// (`ArtworkFadeIn`). Memory-cache hits skip this entirely — see that file.
+    static let artworkReveal = Animation.easeOut(duration: 0.25)
+
+    /// Screen-level loading→loaded/failed/empty content crossfade (`CrossfadeStateSwap`),
+    /// iOS/iPadOS only — tvOS keeps its pre-existing hard cut (re-identifying focusable
+    /// content mid-animation strands the focus engine).
+    static let contentSwap = Animation.easeOut(duration: 0.25)
+
+    /// iOS touch-down press response for full-bleed artwork tiles (`PressableTileStyle`): a
+    /// subtle press-in scale + opacity, released on the same curve, before the `.zoom` detail
+    /// push fires.
+    static let tilePressResponse = Animation.easeOut(duration: 0.15)
+
+    /// Player HUD chrome opacity toggle (full controls layer, `.fullHUD` vs floor/scrub) — fast
+    /// and retargetable, so a rapid re-tap or Menu-press mid-reveal reverses instantly instead
+    /// of replaying the whole curve from zero.
+    static let chromeToggle = Animation.easeOut(duration: 0.15)
+
+    /// Player HUD/transport sub-element crossfade — the shared pace for the controls' own
+    /// scrim/transport swaps (drag-scrub scrim, stall ring, centre transport) and the floor's
+    /// content-state flags (scrubbing, playing, stall) that drive them. One token so this
+    /// interlocking state machine can't drift between the two files that implement it.
+    static let playerStateCrossfade = Animation.easeInOut(duration: 0.2)
+
+    /// Full-screen player cover crossfade — the reload spinner and the track-switch failure
+    /// overlay, both full-bleed covers gated on a flag over the live floor.
+    static let playerCoverFade = Animation.easeInOut(duration: 0.3)
 }
