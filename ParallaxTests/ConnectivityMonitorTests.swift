@@ -20,14 +20,6 @@ private final class MockReachabilityMonitoring: ReachabilityMonitoring, @uncheck
 @MainActor
 @Suite("ConnectivityMonitor")
 struct ConnectivityMonitorTests {
-    /// Bounded yield loop: hand control to the `observe()` task until it has processed the value,
-    /// without a wall-clock sleep. Everything runs on the MainActor cooperative executor.
-    private func waitUntil(_ condition: @MainActor () -> Bool) async {
-        for _ in 0..<1000 where !condition() {
-            await Task.yield()
-        }
-    }
-
     @Test("defaults to online before the first path update")
     func defaultsOnline() {
         #expect(ConnectivityMonitor(monitor: MockReachabilityMonitoring()).isOnline)

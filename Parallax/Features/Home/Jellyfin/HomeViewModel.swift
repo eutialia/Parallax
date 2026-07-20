@@ -19,6 +19,10 @@ final class HomeViewModel {
     /// The view dims + crossfades them (the library grid's stale-while-revalidate recipe)
     /// instead of dropping back to a skeleton.
     private(set) var isRefreshing = false
+    /// Set when `refresh()` is called while one is already in flight. The in-flight run may
+    /// have started before the change that requested this call, so rather than dropping the
+    /// request, `refresh()` re-runs itself once more after the current pass completes.
+    private var refreshQueued = false
     private(set) var favoriteErrorMessage: String?
 
     /// Drives the favorite-failure alert. The view binds `$vm.isShowingFavoriteError`;
@@ -99,25 +103,38 @@ final class HomeViewModel {
     /// screen (dimmed) through the round-trip, then the fresh lists crossfade in.
     /// No-op until the first `load()` has landed, and re-entrancy-guarded.
     func refresh() async {
-        guard state == .loaded, !isRefreshing else { return }
+        guard state == .loaded else { return }
+        // A refresh requested while one is already in flight can't just drop through: the
+        // in-flight fetch may have started before the change that requested THIS call, so it
+        // can land already stale relative to it. Queue one trailing pass instead of dropping
+        // it — `refreshQueued` is re-checked after every pass, so a queue raised during the
+        // trailing pass itself queues exactly one more (never unbounded: each pass awaits
+        // real network round-trips).
+        guard !isRefreshing else {
+            refreshQueued = true
+            return
+        }
         isRefreshing = true
         defer { isRefreshing = false }
-        do {
-            async let cwTask = repo.continueWatching()
-            async let nuTask = repo.nextUp()
-            let (cw, nu) = try await (cwTask, nuTask)
-            try Task.checkCancellation()
-            continueWatching = cw
-            nextUp = nu
-        } catch is CancellationError {
-            return
-        } catch let error as AppError {
-            if case .network(let urlError) = error, urlError.code == .cancelled { return }
-            // Non-fatal: keep the stale shelves rather than blanking a working screen.
-            Log.ui.error("HomeViewModel refresh failed: \(error.userMessage) (\(error.networkDiagnostic))")
-        } catch {
-            Log.ui.error("HomeViewModel refresh unexpected: \(String(describing: type(of: error)))")
-        }
+        repeat {
+            refreshQueued = false
+            do {
+                async let cwTask = repo.continueWatching()
+                async let nuTask = repo.nextUp()
+                let (cw, nu) = try await (cwTask, nuTask)
+                try Task.checkCancellation()
+                continueWatching = cw
+                nextUp = nu
+            } catch is CancellationError {
+                return
+            } catch let error as AppError {
+                if case .network(let urlError) = error, urlError.code == .cancelled { return }
+                // Non-fatal: keep the stale shelves rather than blanking a working screen.
+                Log.ui.error("HomeViewModel refresh failed: \(error.userMessage) (\(error.networkDiagnostic))")
+            } catch {
+                Log.ui.error("HomeViewModel refresh unexpected: \(String(describing: type(of: error)))")
+            }
+        } while refreshQueued
     }
 
     func toggleFavorite(for itemID: ItemID) async {

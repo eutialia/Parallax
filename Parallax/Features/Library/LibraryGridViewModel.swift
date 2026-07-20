@@ -96,12 +96,12 @@ final class LibraryGridViewModel {
     }
 
     /// React to a user-data change from any surface. A Favorites-scope grid drops an item
-    /// outright once a FAVORITE-operation change reports it's no longer a favorite (plain
-    /// removal, no extra animation — it just no longer belongs). The `operation == .favorite`
-    /// gate matters: a played-operation `UserItemData` can omit the favorite field entirely,
-    /// which `UserItemDataDto.toUserItemData()` maps absent→false, so without the gate marking
-    /// a favorited item watched would read as "unfavorited" and wrongly vanish it from
-    /// Favorites. Every other change (including a played change here) patches the matching
+    /// outright once `change.unfavorited` reports it's no longer a favorite (plain removal, no
+    /// extra animation — it just no longer belongs). `unfavorited` itself is gated on
+    /// `operation == .favorite`: a played-operation `UserItemData` can omit the favorite field
+    /// entirely, which `UserItemDataDto.toUserItemData()` maps absent→false, so without that
+    /// gate marking a favorited item watched would read as "unfavorited" and wrongly vanish it
+    /// from Favorites. Every other change (including a played change here) patches the matching
     /// item's `userData` in place via `change.merged(into:)` — not the raw payload, for the
     /// same absent-field reason: adopting it wholesale would flip the field the OTHER operation
     /// owns to its DTO default. That in-place patch updates the watched badge / favorite-derived
@@ -109,7 +109,7 @@ final class LibraryGridViewModel {
     /// — no re-skeleton. Early-outs when the grid doesn't hold `itemID` at all, skipping the
     /// array rebuild.
     private func apply(_ change: UserDataActions.Change) {
-        if case .favorites = scope, change.operation == .favorite, !change.userData.isFavorite {
+        if case .favorites = scope, change.unfavorited {
             items.removeAll { $0.id == change.itemID }
             return
         }

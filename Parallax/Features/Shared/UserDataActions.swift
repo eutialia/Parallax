@@ -28,6 +28,13 @@ extension LibraryRepository: UserDataWriting {}
 /// App-root injected via `.environment(...)` like `PlaybackPresenter`; callers hand in the
 /// `LibraryRepository` they already resolved for the item's session (playback is per-server
 /// here — the service never assumes a primary).
+///
+/// Consumers patch via `Change.merged(into:)`, never by reading `Change`'s raw payload
+/// directly — that's why the payload itself is deliberately inaccessible outside this type.
+/// One operation's response may omit the other operation's fields (a DTO-boundary default,
+/// not real state; see `merge` below), so a raw read risks adopting a stale/default value the
+/// event never actually carried. The one narrow exception is `Change.unfavorited`, which reads
+/// only the one field a Favorites-scope removal legitimately needs.
 @Observable
 @MainActor
 final class UserDataActions {
@@ -47,14 +54,32 @@ final class UserDataActions {
     /// `operation == .played` on the series id, rather than diffing a locally-cached flag.
     struct Change: Sendable {
         let itemID: ItemID
-        let userData: UserItemData
+        /// Private: an operation's response may omit the OTHER operation's fields (see `merge`
+        /// below), so a raw read outside this type risks adopting a DTO-boundary default as if
+        /// it were real state. Go through `merged(into:)`, or `unfavorited` for the one
+        /// legitimate raw read.
+        private let userData: UserItemData
         let operation: Operation
+
+        init(itemID: ItemID, userData: UserItemData, operation: Operation) {
+            self.itemID = itemID
+            self.userData = userData
+            self.operation = operation
+        }
 
         /// Convenience for broadcast subscribers: merges this change's payload into `existing`
         /// via the operation-scoped rule below — never adopt `userData` directly.
         func merged(into existing: UserItemData) -> UserItemData {
             UserDataActions.merge(operation, payload: userData, into: existing)
         }
+
+        /// True for a favorite-operation change reporting the item is no longer a favorite —
+        /// what a Favorites-scope grid needs to decide whether to drop the row outright (a
+        /// merge doesn't apply there: the row is leaving, not patching). Gated on
+        /// `operation == .favorite` for the same DTO-boundary reason `merge` documents: a
+        /// played-operation payload's `isFavorite` is an absent-field default, not real state,
+        /// so it must never read as an unfavorite.
+        var unfavorited: Bool { operation == .favorite && !userData.isFavorite }
     }
 
     // MARK: - Operation-scoped merge
@@ -74,12 +99,7 @@ final class UserDataActions {
         case .favorite:
             return existing.withFavorite(payload.isFavorite)
         case .played:
-            return UserItemData(
-                played: payload.played,
-                playbackPositionTicks: payload.playbackPositionTicks,
-                playCount: payload.playCount,
-                isFavorite: existing.isFavorite
-            )
+            return existing.withPlayed(from: payload)
         }
     }
 

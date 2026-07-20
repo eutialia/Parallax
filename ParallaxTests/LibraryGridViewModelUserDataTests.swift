@@ -11,16 +11,6 @@ import ParallaxCore
 @MainActor
 @Suite("LibraryGridViewModel user-data subscription")
 struct LibraryGridViewModelUserDataTests {
-    /// A writer with a canned favorite result — no gate, mirrors `UserDataActionsTests.StubWriter`.
-    private final class StubWriter: UserDataWriting, @unchecked Sendable {
-        var favoriteResult: Result<UserItemData, Error>
-
-        init(favorite: Result<UserItemData, Error>) { self.favoriteResult = favorite }
-
-        func setFavorite(itemID: ItemID, isFavorite: Bool) async throws -> UserItemData { try favoriteResult.get() }
-        func setPlayed(itemID: ItemID, isPlayed: Bool) async throws -> UserItemData { try favoriteResult.get() }
-    }
-
     private func movieItem(id: String, isFavorite: Bool) -> Item {
         .movie(Movie(
             id: ItemID(rawValue: id), title: "Example", overview: nil, year: nil, runtime: nil,
@@ -28,14 +18,6 @@ struct LibraryGridViewModelUserDataTests {
             primaryTag: nil, backdropTags: [], logoTag: nil, thumbTag: nil, dateAdded: nil,
             userData: UserItemData(played: false, playbackPositionTicks: 0, playCount: 0, isFavorite: isFavorite)
         ))
-    }
-
-    /// Bounded yield loop: hand control to the subscription's `for await` Task until it has
-    /// processed the broadcast, without a wall-clock sleep (mirrors `ConnectivityMonitorTests`).
-    private func waitUntil(_ condition: @MainActor () -> Bool) async {
-        for _ in 0..<1000 where !condition() {
-            await Task.yield()
-        }
     }
 
     @Test("a change patches a matching item's userData in place")
@@ -49,7 +31,7 @@ struct LibraryGridViewModelUserDataTests {
         #expect(vm.items.first?.userData.isFavorite == false)
 
         let fresh = UserItemData(played: false, playbackPositionTicks: 0, playCount: 0, isFavorite: true)
-        let writer = StubWriter(favorite: .success(fresh))
+        let writer = StubUserDataWriter(favorite: .success(fresh))
         _ = await userDataActions.toggleFavorite(itemID: itemID, currentlyFavorite: false, via: writer)
 
         await waitUntil { vm.items.first?.userData.isFavorite == true }
@@ -67,7 +49,7 @@ struct LibraryGridViewModelUserDataTests {
         #expect(vm.items.count == 1)
 
         let fresh = UserItemData(played: false, playbackPositionTicks: 0, playCount: 0, isFavorite: false)
-        let writer = StubWriter(favorite: .success(fresh))
+        let writer = StubUserDataWriter(favorite: .success(fresh))
         _ = await userDataActions.toggleFavorite(itemID: itemID, currentlyFavorite: true, via: writer)
 
         await waitUntil { vm.items.isEmpty }
@@ -90,7 +72,11 @@ struct LibraryGridViewModelUserDataTests {
         // `UserItemDataDto.toUserItemData()` maps absent -> false. Without gating the removal on
         // `operation == .favorite`, this would misread as an unfavorite and vanish the item.
         let played = UserItemData(played: true, playbackPositionTicks: 0, playCount: 1, isFavorite: false)
-        let writer = StubWriter(favorite: .success(played))
+        // `togglePlayed` below drives `setPlayed`, not `setFavorite` — pass `played`
+        // explicitly (the shared stub's two result fields are independent, unlike the old
+        // file-local `StubWriter` this replaced, which returned the same `favoriteResult` for
+        // both operations).
+        let writer = StubUserDataWriter(favorite: .success(played), played: .success(played))
         _ = await userDataActions.togglePlayed(itemID: itemID, currentlyPlayed: false, via: writer)
 
         await waitUntil { vm.items.first?.userData.played == true }
@@ -116,7 +102,7 @@ struct LibraryGridViewModelUserDataTests {
         // `UserItemDataDto.toUserItemData()` maps absent -> false/0. Without merging, this
         // would wrongly zero the item's real resume position.
         let favorited = UserItemData(played: false, playbackPositionTicks: 0, playCount: 0, isFavorite: true)
-        let writer = StubWriter(favorite: .success(favorited))
+        let writer = StubUserDataWriter(favorite: .success(favorited))
         _ = await userDataActions.toggleFavorite(itemID: itemID, currentlyFavorite: false, via: writer)
 
         await waitUntil { vm.items.first?.userData.isFavorite == true }

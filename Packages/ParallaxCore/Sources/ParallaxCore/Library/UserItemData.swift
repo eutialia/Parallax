@@ -56,4 +56,18 @@ public struct UserItemData: Sendable, Hashable, Codable {
             isFavorite: isFavorite
         )
     }
+
+    /// Same item, adopting the played-owned fields (`played`, `playbackPositionTicks`,
+    /// `playCount`) from `payload` while keeping `self.isFavorite` — the played-operation
+    /// counterpart to `withFavorite`. A played-operation server response's `isFavorite` is a
+    /// DTO-boundary default (an absent field mapped to `false`), not real state, so it must
+    /// never overwrite the existing favorite flag.
+    public func withPlayed(from payload: UserItemData) -> UserItemData {
+        UserItemData(
+            played: payload.played,
+            playbackPositionTicks: payload.playbackPositionTicks,
+            playCount: payload.playCount,
+            isFavorite: isFavorite
+        )
+    }
 }

@@ -28,6 +28,11 @@ final class MovieDetailViewModel {
     /// Also read by `refresh()` and `apply(_:)` so they don't clobber the optimistic value with a
     /// differently-sourced broadcast or re-fetch landing mid-toggle.
     private var playedInFlight = false
+    /// True while a favorite toggle is round-tripping — mirrors `playedInFlight` exactly: the
+    /// service's own per-`(itemID, .favorite)` guard coalesces the NETWORK write, but not this
+    /// VM's local optimistic flip, so this guards `toggleFavorite`'s re-entrancy and gates
+    /// `isFavorite` in `apply(_:)` the same way `playedInFlight` gates `isPlayed`.
+    private var favoriteInFlight = false
     private let repo: LibraryRepository
     private let itemID: ItemID
     private let userDataActions: UserDataActions
@@ -54,14 +59,15 @@ final class MovieDetailViewModel {
     /// default, not real state, so adopting it wholesale would flip the field the OTHER
     /// operation owns. Because the merge already keeps the untouched field equal to what
     /// `detail.movie.userData` held, mirroring both `isFavorite`/`isPlayed` off the merged
-    /// result is safe even for a same-operation change. `isPlayed` still skips the patch while
-    /// `playedInFlight` — the same no-clobber rule `refresh()` follows — so a
-    /// differently-sourced broadcast landing mid-toggle can't revert the optimistic value.
+    /// result is safe even for a same-operation change. Both flags apply the same no-clobber
+    /// rule: `isFavorite` skips the patch while `favoriteInFlight`, `isPlayed` skips while
+    /// `playedInFlight` — so a differently-sourced broadcast landing mid-toggle can't revert
+    /// either optimistic value.
     private func apply(_ change: UserDataActions.Change) {
         guard case .loaded(let detail) = state, detail.movie.id == change.itemID else { return }
         let merged = change.merged(into: detail.movie.userData)
         state = .loaded(detail.withMovie(detail.movie.withUserData(merged)))
-        isFavorite = merged.isFavorite
+        if !favoriteInFlight { isFavorite = merged.isFavorite }
         if !playedInFlight { isPlayed = merged.played }
     }
 
@@ -109,7 +115,14 @@ final class MovieDetailViewModel {
     }
 
     func toggleFavorite() async {
+        // The service's in-flight guard coalesces the NETWORK write only — it never sees this
+        // VM's local optimistic flip. Without this early-return, a rapid double-tap would flip
+        // `isFavorite` back to `original` for a frame before the first call's `.skipped` outcome
+        // re-settles it, a visible flicker.
+        guard !favoriteInFlight else { return }
         let original = isFavorite
+        favoriteInFlight = true
+        defer { favoriteInFlight = false }
         isFavorite = !original
         switch await userDataActions.toggleFavorite(itemID: itemID, currentlyFavorite: original, via: repo) {
         case .success(let server):
@@ -141,16 +154,5 @@ final class MovieDetailViewModel {
             isPlayed = original
             Log.ui.error("togglePlayed failed: \(error.userMessage) (\(error.networkDiagnostic))")
         }
-    }
-}
-
-/// `MovieDetail`'s fields are `let` (no package-side mutated-copy API — adding one is a
-/// `ParallaxCore` change, out of this task's scope), so patching the `movie` field alone still
-/// needs a full-struct copy. Kept to this one call site rather than rolled ad hoc: every other
-/// field is passed through UNCHANGED (never recomputed), so there's nothing for a future field
-/// to silently drop.
-private extension MovieDetail {
-    func withMovie(_ movie: Movie) -> MovieDetail {
-        MovieDetail(movie: movie, tagline: tagline, studios: studios, directors: directors, people: people, chapters: chapters)
     }
 }

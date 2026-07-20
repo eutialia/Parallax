@@ -48,20 +48,6 @@ struct UserDataActionsTests {
         }
     }
 
-    /// A writer with canned, per-call results — no gate.
-    private final class StubWriter: UserDataWriting, @unchecked Sendable {
-        var favoriteResult: Result<UserItemData, Error>
-        var playedResult: Result<UserItemData, Error>
-
-        init(favorite: Result<UserItemData, Error>, played: Result<UserItemData, Error> = .success(data(favorite: false))) {
-            self.favoriteResult = favorite
-            self.playedResult = played
-        }
-
-        func setFavorite(itemID: ItemID, isFavorite: Bool) async throws -> UserItemData { try favoriteResult.get() }
-        func setPlayed(itemID: ItemID, isPlayed: Bool) async throws -> UserItemData { try playedResult.get() }
-    }
-
     private struct Boom: Error {}
 
     @Test("concurrent double-toggle on the same item coalesces via the in-flight guard")
@@ -98,7 +84,7 @@ struct UserDataActionsTests {
     func successBroadcastsOneEvent() async {
         let service = UserDataActions()
         let fresh = Self.data(favorite: true)
-        let writer = StubWriter(favorite: .success(fresh))
+        let writer = StubUserDataWriter(favorite: .success(fresh))
         let itemID = ItemID(rawValue: "movie-2")
 
         var events = service.changes().makeAsyncIterator()
@@ -112,7 +98,10 @@ struct UserDataActionsTests {
 
         let event = await events.next()
         #expect(event?.itemID == itemID)
-        #expect(event?.userData == fresh)
+        // `Change.userData` is private (only `merged(into:)`/`unfavorited` may read it) — merge
+        // into the field the OTHER operation would've defaulted to zero/false, so the result
+        // equals `fresh` only if the broadcast actually carried it.
+        #expect(event?.merged(into: Self.data(favorite: false)) == fresh)
         #expect(event?.operation == .favorite)
     }
 
@@ -120,7 +109,7 @@ struct UserDataActionsTests {
     func playedToggleBroadcastsPlayedOperation() async {
         let service = UserDataActions()
         let fresh = Self.data(favorite: false, played: true)
-        let writer = StubWriter(favorite: .success(Self.data(favorite: false)), played: .success(fresh))
+        let writer = StubUserDataWriter(favorite: .success(Self.data(favorite: false)), played: .success(fresh))
         let itemID = ItemID(rawValue: "movie-played")
 
         var events = service.changes().makeAsyncIterator()
@@ -175,7 +164,7 @@ struct UserDataActionsTests {
     func failureBroadcastsNothing() async {
         let service = UserDataActions()
         let fresh = Self.data(favorite: true)
-        let writer = StubWriter(favorite: .failure(Boom()))
+        let writer = StubUserDataWriter(favorite: .failure(Boom()))
         let failID = ItemID(rawValue: "movie-fail")
         let okID = ItemID(rawValue: "movie-ok")
 

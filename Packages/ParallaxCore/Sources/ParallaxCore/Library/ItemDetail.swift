@@ -17,7 +17,8 @@ public enum ItemDetail: Sendable, Hashable, Identifiable {
 }
 
 public struct MovieDetail: Sendable, Hashable {
-    public let movie: Movie
+    /// `var` only for the `withMovie` copy below; immutable to callers.
+    public private(set) var movie: Movie
     public let tagline: String?
     public let studios: [String]
     /// Directors, extracted from the typed people list — the ledger surfaces them on their own
@@ -32,10 +33,17 @@ public struct MovieDetail: Sendable, Hashable {
         self.people = people
         self.chapters = chapters
     }
+
+    /// Same detail, updated movie. A mutated copy — NOT an init call listing every field,
+    /// which silently zeroes any field someone forgot to thread through as the struct grows.
+    public func withMovie(_ movie: Movie) -> MovieDetail {
+        var copy = self; copy.movie = movie; return copy
+    }
 }
 
 public struct SeriesDetail: Sendable, Hashable {
-    public let series: Series
+    /// `var` only for the `withSeries` copy below; immutable to callers.
+    public private(set) var series: Series
     public let tagline: String?
     public let studios: [String]
     public let people: [String]
@@ -43,6 +51,12 @@ public struct SeriesDetail: Sendable, Hashable {
     public init(series: Series, tagline: String?, studios: [String], people: [String]) {
         self.series = series; self.tagline = tagline
         self.studios = studios; self.people = people
+    }
+
+    /// Same detail, updated series. A mutated copy — NOT an init call listing every field,
+    /// which silently zeroes any field someone forgot to thread through as the struct grows.
+    public func withSeries(_ series: Series) -> SeriesDetail {
+        var copy = self; copy.series = series; return copy
     }
 }
 

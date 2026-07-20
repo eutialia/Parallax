@@ -21,8 +21,19 @@ final class SeriesDetailViewModel {
     private(set) var isFavorite = false
     private(set) var resumeEpisode: Episode?
     /// Drives the stale-while-revalidate dim during `refresh()` (re-pull after a
-    /// playback session ends). Also a re-entrancy guard.
+    /// playback session ends). Also a re-entrancy guard — see `refreshQueued` below for what
+    /// happens to a `refresh()` call that arrives while this is true.
     private(set) var isRefreshing = false
+    /// Set when `refresh()` is called while one is already in flight. The in-flight run may
+    /// have already read stale data by the time the caller's change landed, so rather than
+    /// dropping the request, `refresh()` re-runs itself once more after the current pass
+    /// completes.
+    private var refreshQueued = false
+    /// True while a favorite toggle is round-tripping — mirrors `MovieDetailViewModel`'s
+    /// `playedInFlight` exactly: the service's own per-`(itemID, .favorite)` guard coalesces
+    /// the NETWORK write, but not this VM's local optimistic flip, so this guards
+    /// `toggleFavorite`'s re-entrancy and gates `isFavorite` in `apply(_:)` the same way.
+    private var favoriteInFlight = false
 
     private let repo: LibraryRepository
     private let itemID: ItemID
@@ -54,36 +65,55 @@ final class SeriesDetailViewModel {
     /// the episode in place for the immediate badge, then ALSO refetches: marking an episode
     /// watched from its own shelf can move `resumeEpisode` to a different episode (or clear
     /// it), and the event carries only that one episode's data, never the new Next Up target.
-    /// A favorite change on one of our episodes, or any change for an episode of a DIFFERENT
-    /// series, stays a plain in-place patch (or no-op, if the itemID matches nothing we hold).
-    /// Every patch below goes through `change.merged(into:)`, not the raw payload: a
-    /// played-operation response's favorite field (or a favorite response's played/position
-    /// fields) is a DTO-boundary default, not real state, and adopting it wholesale would flip
-    /// the field the OTHER operation owns. Stays on `.loaded` throughout — `refresh()` already
-    /// never re-skeletons.
+    /// A played change matching `resumeEpisode` directly (not via the shelf loop — e.g. marked
+    /// watched from the hero) refetches for the same reason. A favorite change on one of our
+    /// episodes, or any change for an episode of a DIFFERENT series, stays a plain in-place
+    /// patch (or no-op, if the itemID matches nothing we hold). Every patch below goes through
+    /// `change.merged(into:)`, not the raw payload: a played-operation response's favorite
+    /// field (or a favorite response's played/position fields) is a DTO-boundary default, not
+    /// real state, and adopting it wholesale would flip the field the OTHER operation owns.
+    /// `isFavorite` skips the patch while `favoriteInFlight` — the same no-clobber rule
+    /// `MovieDetailViewModel` follows — so a differently-sourced broadcast landing mid-toggle
+    /// can't revert the optimistic value. Stays on `.loaded` throughout — `refresh()` already
+    /// never re-skeletons. All matches only set `needsRefresh`; the actual `await refresh()`
+    /// runs once at the end, never twice in one `apply`.
     private func apply(_ change: UserDataActions.Change) async {
         guard case .loaded(let detail, let seasons) = state else { return }
+
+        // Single deferred refresh point: every match below only sets `needsRefresh`, and the
+        // one `await refresh()` at the end runs at most once per `apply` regardless of which
+        // branch (or several) matched.
+        var needsRefresh = false
 
         if detail.series.id == change.itemID {
             let merged = change.merged(into: detail.series.userData)
             state = .loaded(detail.withSeries(detail.series.withUserData(merged)), seasons)
-            isFavorite = merged.isFavorite
-            if change.operation == .played {
-                await refresh()
+            if !favoriteInFlight { isFavorite = merged.isFavorite }
+            needsRefresh = change.operation == .played
+        } else {
+            if let resumeEpisode, resumeEpisode.id == change.itemID {
+                self.resumeEpisode = resumeEpisode.withUserData(change.merged(into: resumeEpisode.userData))
+                // A played change landing directly on the current Resume target (e.g. marked
+                // watched from the hero, not from its own shelf row) can move `resumeEpisode`
+                // to a different episode — this in-place patch alone can't discover that, so
+                // it needs the same refetch the shelf-row match below triggers.
+                if change.operation == .played { needsRefresh = true }
             }
-            return
+            // Iterate a snapshot-safe COW pattern: `break` right after the one possible match
+            // (episode IDs are unique) rather than continuing to walk `episodesBySeasonID`
+            // after writing back into it — the in-loop subscript write below triggers a
+            // copy-on-write, so continuing past it would iterate a copy that's already stale
+            // relative to what `episodesBySeasonID` now holds.
+            episodeLoop: for (seasonID, episodes) in episodesBySeasonID {
+                guard let idx = episodes.firstIndex(where: { $0.id == change.itemID }) else { continue }
+                episodesBySeasonID[seasonID]?[idx] = episodes[idx].withUserData(change.merged(into: episodes[idx].userData))
+                if change.operation == .played { needsRefresh = true }
+                break episodeLoop
+            }
         }
 
-        if let resumeEpisode, resumeEpisode.id == change.itemID {
-            self.resumeEpisode = resumeEpisode.withUserData(change.merged(into: resumeEpisode.userData))
-        }
-        for (seasonID, episodes) in episodesBySeasonID {
-            guard let idx = episodes.firstIndex(where: { $0.id == change.itemID }) else { continue }
-            episodesBySeasonID[seasonID]?[idx] = episodes[idx].withUserData(change.merged(into: episodes[idx].userData))
-            if change.operation == .played {
-                await refresh()
-            }
-            return
+        if needsRefresh {
+            await refresh()
         }
     }
 
@@ -130,14 +160,27 @@ final class SeriesDetailViewModel {
     /// `isFavorite` are untouched by playback, so it skips the `detail` re-pull entirely —
     /// fewer round-trips, and no race against an in-flight favorite toggle.
     func refresh() async {
-        guard case .loaded(_, let seasons) = state, !isRefreshing else { return }
+        guard case .loaded(_, let seasons) = state else { return }
+        // A refresh requested while one is already in flight can't just drop through: the
+        // in-flight fetch may have started before the change that requested THIS call, so it
+        // can land already stale relative to it. Queue one trailing pass instead of dropping
+        // it — `refreshQueued` is re-checked after every pass, so a queue raised during the
+        // trailing pass itself queues exactly one more (never unbounded: each pass awaits
+        // real network round-trips).
+        guard !isRefreshing else {
+            refreshQueued = true
+            return
+        }
         isRefreshing = true
         defer { isRefreshing = false }
-        async let resumeTask = repo.resumeEpisode(forSeries: itemID)
-        let refreshedEpisodes = await fetchEpisodes(for: seasons)
-        let refreshedResume = try? await resumeTask
-        episodesBySeasonID = refreshedEpisodes
-        resumeEpisode = refreshedResume
+        repeat {
+            refreshQueued = false
+            async let resumeTask = repo.resumeEpisode(forSeries: itemID)
+            let refreshedEpisodes = await fetchEpisodes(for: seasons)
+            let refreshedResume = try? await resumeTask
+            episodesBySeasonID = refreshedEpisodes
+            resumeEpisode = refreshedResume
+        } while refreshQueued
     }
 
     func episodes(for seasonID: ItemID) -> [Episode] {
@@ -160,7 +203,14 @@ final class SeriesDetailViewModel {
     }
 
     func toggleFavorite() async {
+        // The service's in-flight guard coalesces the NETWORK write only — it never sees this
+        // VM's local optimistic flip. Without this early-return, a rapid double-tap would flip
+        // `isFavorite` back to `original` for a frame before the first call's `.skipped` outcome
+        // re-settles it, a visible flicker.
+        guard !favoriteInFlight else { return }
         let original = isFavorite
+        favoriteInFlight = true
+        defer { favoriteInFlight = false }
         isFavorite = !original
         switch await userDataActions.toggleFavorite(itemID: itemID, currentlyFavorite: original, via: repo) {
         case .success(let server):
@@ -202,16 +252,5 @@ final class SeriesDetailViewModel {
             }
         }
         return bySeason
-    }
-}
-
-/// `SeriesDetail`'s fields are `let` (no package-side mutated-copy API — adding one is a
-/// `ParallaxCore` change, out of this task's scope), so patching the `series` field alone still
-/// needs a full-struct copy. Kept to this one call site rather than rolled ad hoc: every other
-/// field is passed through UNCHANGED (never recomputed), so there's nothing for a future field
-/// to silently drop.
-private extension SeriesDetail {
-    func withSeries(_ series: Series) -> SeriesDetail {
-        SeriesDetail(series: series, tagline: tagline, studios: studios, people: people)
     }
 }
