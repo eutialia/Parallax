@@ -5,10 +5,11 @@ import ParallaxCore
 /// The reusable artwork atom: the image box plus everything drawn *on* it — the top-right watched
 /// badge and an optional bottom shelf footer (caption + progress bar over a frosted blur ramp).
 ///
-/// Used directly by the Home / Series-detail shelves (which carry the footer) and embedded by
-/// `MediaTile` (which adds a metadata row *underneath* and never shows the footer). Presentation
-/// only: the caller owns the semantic accessibility — it just needs a label, since the thumbnail
-/// alone isn't the whole tile when `MediaTile` wraps it.
+/// Always embedded by `MediaTile` (the single tile entry point), which forwards this footer and adds
+/// an optional metadata row *underneath* — a tile carries text on the image (footer caption) OR
+/// below it (metadata row), never both (see `MediaTile`'s one-text-region law). Presentation only:
+/// the caller owns the semantic accessibility — it just needs a label, since the thumbnail alone
+/// isn't the whole tile when `MediaTile` wraps it.
 struct MediaThumbnail: View {
     /// Top-right corner badge state: a progress ring while a title is mid-watch, the check once
     /// it's done — one disc, the ring "fills up into" the check.
@@ -20,8 +21,8 @@ struct MediaThumbnail: View {
     }
 
     /// The bottom shelf footer (Continue Watching / Next Up / episode shelves): a caption line plus
-    /// an optional progress bar, over the frosted blur ramp. Only the shelves use it; grid tiles
-    /// pass nil.
+    /// an optional progress bar, over the frosted blur ramp. Shelf tiles carry it; poster grid tiles
+    /// pass nil. A caption-less (bar-only) footer feathers a shorter ramp — see `shelfArtworkFooter`.
     struct Footer: Equatable {
         let caption: String
         let progress: Double?   // 0.0–1.0; nil hides the bar
@@ -196,8 +197,11 @@ struct MediaThumbnail: View {
 
     @ViewBuilder
     private func shelfArtworkFooter(caption: String, progress: Double?) -> some View {
+        // A bar-only band (empty caption — the series season rows moved their caption to the metadata
+        // row below) feathers a shorter ramp; the caption path keeps the full 56pt bleed byte-for-byte.
+        let featherBleed = caption.isEmpty ? HomeShelf.footerBarOnlyFeatherBleed : HomeShelf.footerBlurFeatherBleed
         VStack(spacing: 0) {
-            Color.clear.frame(height: HomeShelf.footerBlurFeatherBleed)
+            Color.clear.frame(height: featherBleed)
             VStack(alignment: .leading, spacing: 5) {
                 if !caption.isEmpty {
                     Text(caption)

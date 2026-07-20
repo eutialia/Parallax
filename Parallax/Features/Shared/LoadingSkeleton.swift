@@ -81,12 +81,13 @@ struct MediaTileSkeleton: View {
             SkeletonBlock(cornerRadius: Radius.tile)
                 .aspectRatio(aspectRatio, contentMode: .fit)
             if showsMetadata {
-                // Two stub lines sized to the real MediaTile.metadataRow's rendered height (~33pt:
-                // a .subheadline title line + 2pt + a .caption2 line) so the loading→loaded swap
-                // doesn't shift the SMB grid. Heights are the rendered line boxes, not font points.
-                VStack(alignment: .leading, spacing: 2) {
-                    SkeletonBlock(cornerRadius: 4, height: 19)
-                    SkeletonBlock(cornerRadius: 4, height: 12)
+                // Two stub lines reserving the real MediaTile.metadataRow's rendered height (a
+                // .subheadline title line + gap + a .caption2 line) so the loading→loaded swap
+                // doesn't shift the grid. Sizes come from MediaTile's shared statics — compiler-
+                // coupled to the real row, not comment-coupled, so the two can't silently drift.
+                VStack(alignment: .leading, spacing: MediaTile.metadataLineSpacing) {
+                    SkeletonBlock(cornerRadius: 4, height: MediaTile.metadataTitleStubHeight)
+                    SkeletonBlock(cornerRadius: 4, height: MediaTile.metadataDetailStubHeight)
                         .frame(width: 56)
                 }
             }
@@ -314,13 +315,16 @@ struct EpisodeListLoadingSkeleton: View {
                         .frame(width: 120)
                         .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
                     ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: Space.s12) {
+                        // `showsMetadata`: the season-row tiles now carry a title + time row BELOW the
+                        // still (the one-text-region law moved the caption there), so the skeleton must
+                        // reserve those lines or the load→loaded swap jumps. `.top`-aligned like the
+                        // real `MetadataRow`.
+                        HStack(alignment: .top, spacing: Space.s12) {
                             ForEach(0..<5, id: \.self) { _ in
-                                SkeletonBlock(cornerRadius: Radius.tile)
-                                    .frame(
-                                        width: SeriesShelf.episodeTileWidth,
-                                        height: SeriesShelf.episodeTileWidth / MediaImage.landscape
-                                    )
+                                MediaTileSkeleton(aspectRatio: MediaImage.landscape, showsMetadata: true)
+                                    // Idiom-aware, like the loaded shelf: the tv tile is 280pt, and a
+                                    // 240pt skeleton would make the whole row reflow on load there.
+                                    .frame(width: AppLayout.seriesEpisodeTileWidth(idiom: idiom))
                             }
                         }
                         .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))

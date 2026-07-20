@@ -1,6 +1,37 @@
 import SwiftUI
 import Nuke
+import ParallaxCore
 import ParallaxJellyfin
+
+/// The one place a shelf's warm-up URL set is built, so the on-screen tile and its prefetch always
+/// resolve the IDENTICAL server URL (any drift warms a different cache key and just double-downloads).
+enum ArtworkPrefetch {
+    /// The exact artwork URLs a set of shelf tiles will request. Pass the tiles' `serverURL`, the same
+    /// `ceiling` / `renderPointWidth` / `displayScale` / `aspectRatio` the tile feeds `MediaImage`, and
+    /// a per-item `imageRef` mapping (the SAME ref the tile draws — nil refs drop out). Built through
+    /// `ArtworkRequest.boxedSize` + `ImageURLBuilder.url`, the tile's own sizing path.
+    static func urls<Element>(
+        for items: [Element],
+        imageRef: (Element) -> ImageRef?,
+        serverURL: URL,
+        ceiling: Int,
+        renderPointWidth: CGFloat,
+        displayScale: CGFloat,
+        aspectRatio: CGFloat
+    ) -> [URL] {
+        let size = ArtworkRequest.boxedSize(
+            ceiling: ceiling,
+            renderPointWidth: renderPointWidth,
+            displayScale: displayScale,
+            aspectRatio: aspectRatio
+        )
+        return items.compactMap { element in
+            imageRef(element).flatMap {
+                ImageURLBuilder.url(serverURL: serverURL, ref: $0, maxWidth: size.width, maxHeight: size.height)
+            }
+        }
+    }
+}
 
 extension View {
     /// Warm the per-session Nuke cache for a set of artwork URLs while this view is on screen, so a

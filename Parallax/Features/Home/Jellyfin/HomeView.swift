@@ -267,21 +267,19 @@ private struct HomeShelves: View {
 
     // MARK: - Item rendering helpers
 
-    /// The exact artwork URLs the shelf tiles will request, built with `ArtworkRequest` so the
-    /// prefetch warms the SAME cache key the tiles read (any drift = a wasted double-download). Uses
-    /// the same ref (`homeShelfImageRef`), ceiling, render width, scale, and aspect as the tile.
+    /// The exact artwork URLs the shelf tiles will request — the same ref (`homeShelfImageRef`),
+    /// ceiling, render width, scale, and aspect as the tile, via the shared `ArtworkPrefetch.urls`
+    /// so the warm-up hits the SAME cache key the tiles read (any drift = a wasted double-download).
     private func shelfArtworkURLs(_ items: [Item]) -> [URL] {
-        let size = ArtworkRequest.boxedSize(
+        ArtworkPrefetch.urls(
+            for: items,
+            imageRef: { $0.homeShelfImageRef },
+            serverURL: session.serverURL,
             ceiling: HomeShelf.imageMaxWidth,
             renderPointWidth: AppLayout.shelfTileWidth(idiom: idiom),
             displayScale: displayScale,
             aspectRatio: MediaImage.poster
         )
-        return items.compactMap { item in
-            item.homeShelfImageRef.flatMap {
-                ImageURLBuilder.url(serverURL: session.serverURL, ref: $0, maxWidth: size.width, maxHeight: size.height)
-            }
-        }
     }
 
     @ViewBuilder
@@ -289,19 +287,22 @@ private struct HomeShelves: View {
         // Home is play-first: a movie tile plays (and resumes) immediately instead of opening
         // detail. Episodes already play; series still need detail to pick an episode.
         ItemNavigator(item: item, session: session, movieTap: .plays) {
-            MediaThumbnail(
-                jellyfin: item.homeShelfImageRef,
+            // The footer-only tile (metadata nil ⇒ thumbnail alone): a Home poster carries its
+            // caption + progress ON the image, no below-tile text (the one-text-region law).
+            MediaTile(
+                title: item.displayTitle,
+                imageRef: item.homeShelfImageRef,
                 session: session,
-                footer: MediaThumbnail.Footer.make(
-                    caption: homeShelfCaption(item, showProgress: showProgress),
-                    progress: showProgress ? tileProgress(item) : nil
-                ),
                 aspectRatio: MediaImage.poster,
                 maxImageWidth: HomeShelf.imageMaxWidth,
                 // Trim the request to the tile's actual point width × display scale (capped at the
                 // @3x ceiling), so a 2x panel doesn't decode the full @3x thumb. No visual change.
                 maxImageRenderWidth: AppLayout.shelfTileWidth(idiom: idiom),
-                accessibilityLabel: item.displayTitle
+                footer: MediaThumbnail.Footer.make(
+                    caption: homeShelfCaption(item, showProgress: showProgress),
+                    progress: showProgress ? tileProgress(item) : nil
+                ),
+                metadata: nil
             )
         }
     }

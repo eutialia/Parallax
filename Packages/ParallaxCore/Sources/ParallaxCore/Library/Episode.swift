@@ -110,6 +110,15 @@ public extension Episode {
         return nil
     }
 
+    /// Below-tile title for same-series surfaces (season rows): `"E3 · The One With the Embryos"`.
+    /// Index first so truncation eats the name, never the position; falls back to the bare name
+    /// when no index exists. Middle-dot per the app-wide caption convention. Mirrors
+    /// `seriesContextCaption`'s part-dropping so a missing index never leaves a dangling separator.
+    var indexedNameCaption: String {
+        let parts = [indexCaption, name].compactMap(\.self).filter { !$0.isEmpty }
+        return parts.joined(separator: " · ")
+    }
+
     /// Cross-series identity caption — `"S1 · E2 · Breaking Bad"`. Index first so tail
     /// truncation in a tight row eats the show name, never the episode index; empty or
     /// missing parts drop out cleanly (an orphaned episode with a blank SeriesName must
@@ -137,8 +146,12 @@ public extension Episode {
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
-    /// Playback fraction for shelf progress bars; nil when not started or runtime unknown.
+    /// Playback fraction for shelf progress bars; nil when not started, runtime unknown, or the
+    /// episode is played — the server can leave stale position ticks behind on a played episode,
+    /// and a partial bar would contradict the watched check the same surfaces draw (the same guard
+    /// `timeCaption` applies to "min left").
     var shelfPlaybackProgress: Double? {
-        userData.playedFraction(runtime: runtime)
+        guard !userData.played else { return nil }
+        return userData.playedFraction(runtime: runtime)
     }
 }

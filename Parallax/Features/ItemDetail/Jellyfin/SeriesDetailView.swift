@@ -11,6 +11,7 @@ struct SeriesDetailView: View {
     @Environment(UserDataActions.self) private var userDataActions
     @Environment(\.appIdiom) private var idiom
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.displayScale) private var displayScale
     @State private var viewModel: SeriesDetailViewModel?
     // The hero band's stretch + parallax channel — same wiring as Home (see `heroScrollChannel`).
     @State private var heroScroll = HeroScrollState()
@@ -182,7 +183,10 @@ struct SeriesDetailView: View {
                             Button {
                                 playback.play(episode.id, in: session)
                             } label: {
-                                episodeCard(episode)
+                                // `.lockup()`: sibling label children on tvOS so the below-tile title
+                                // nudges clear of the focus lift (contained on iOS) — the metadata row
+                                // now under the tile makes this necessary (a bare thumbnail didn't).
+                                episodeCard(episode).lockup()
                             }
                             .pressableTileButton()
                             // Menu A′: same as the play-first episode menu elsewhere, minus "Go to
@@ -194,30 +198,57 @@ struct SeriesDetailView: View {
                                 context: MediaTileMenuContext(showsGoToSeries: false)
                             )
                         }
+                        // Warm the FIRST season's stills only — the shelf visible on open, matching
+                        // Home's fixed-shelf scope. This VStack is not lazy, so an unconditional
+                        // per-shelf prefetch would fire for EVERY season at once on detail open
+                        // (10 seasons ≈ 130 simultaneous requests contending with the hero + the
+                        // visible shelf). Later seasons load on demand as their tiles appear.
+                        .prefetchArtwork(
+                            season.id == seasons.first?.id ? episodeArtworkURLs(episodes) : [],
+                            session: session
+                        )
                     }
                 }
             }
         }
     }
 
-    @ViewBuilder
-    private func episodeCard(_ episode: Episode) -> some View {
-        MediaThumbnail(
-            jellyfin: episode.imageRef(.primary),
+    /// The exact artwork URLs this season shelf's episode tiles will request — the same ref
+    /// (`imageRef(.primary)`), ceiling, render width, scale, and landscape aspect the tile feeds
+    /// `MediaImage`, via the shared `ArtworkPrefetch.urls` so the warm-up hits the tiles' cache key.
+    private func episodeArtworkURLs(_ episodes: [Episode]) -> [URL] {
+        ArtworkPrefetch.urls(
+            for: episodes,
+            imageRef: { $0.imageRef(.primary) },
+            serverURL: session.serverURL,
+            ceiling: SeriesShelf.imageMaxWidth,
+            renderPointWidth: AppLayout.seriesEpisodeTileWidth(idiom: idiom),
+            displayScale: displayScale,
+            aspectRatio: MediaImage.landscape
+        )
+    }
+
+    /// A season-row episode tile. The one-text-region law puts the identity text BELOW the artwork
+    /// (the indexed episode title on line one, time on line two) with only a bar-only progress band
+    /// on the image — a same-series surface can afford the episode name a bare shelf caption can't.
+    /// Returns `MediaTile` (not `some View`) so the call site can wrap it in `.lockup()` for tvOS.
+    private func episodeCard(_ episode: Episode) -> MediaTile {
+        MediaTile(
+            title: episode.indexedNameCaption,
+            imageRef: episode.imageRef(.primary),
             session: session,
-            // Check only — the footer bar below already carries partial
-            // progress, so a ring would say the same thing twice.
+            // Check only — the footer bar already carries partial progress, so a ring would say the
+            // same thing twice.
             watched: episode.userData.played ? .watched : .none,
-            footer: MediaThumbnail.Footer.make(
-                caption: episode.shelfFooterCaption(),
-                progress: episode.shelfPlaybackProgress
-            ),
             aspectRatio: MediaImage.landscape,
             maxImageWidth: SeriesShelf.imageMaxWidth,
             // Trim the request to the tile's actual point width × display scale (capped at the @3x
             // ceiling), so a 2x panel doesn't decode the full @3x thumb. No visual change.
             maxImageRenderWidth: AppLayout.seriesEpisodeTileWidth(idiom: idiom),
-            accessibilityLabel: episode.name
+            // Bar-only footer per the law — the caption moved to the metadata row below.
+            footer: MediaThumbnail.Footer.make(caption: nil, progress: episode.shelfPlaybackProgress),
+            // Time left-aligned under the title: "22 min left" mid-watch, else the full runtime.
+            metadata: .init(leading: episode.timeCaption(), trailing: nil)
         )
     }
 

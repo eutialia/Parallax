@@ -198,6 +198,10 @@ enum HomeShelf {
     static let imageMaxWidth: Int = 520
     /// Height the frosted blur feathers up from the caption into the poster (TV-style).
     static let footerBlurFeatherBleed: CGFloat = 56
+    /// The bar-only feather (a caption-less footer — the series season rows, whose caption moved to
+    /// the metadata row below). A lone 5pt progress bar needs far less ramp than a caption band, and
+    /// the full 56pt bleed reads as a heavy smear over a short 16:9 episode tile — so feather ~half.
+    static let footerBarOnlyFeatherBleed: CGFloat = 24
     /// Darkening under the caption for text legibility on bright artwork.
     static let footerScrimOpacity: Double = 0.55
     /// Caption/progress insets inside the frosted footer — shared by `MediaTile` and the

@@ -265,27 +265,18 @@ private struct FolderBrowseCard: View {
     let name: String
 
     var body: some View {
-        #if os(tvOS)
-        // SIBLING children, not a VStack: the `.borderless` lockup only slides the name clear of
-        // the lifted card when the text is its own label child — contained, the focused card
-        // landed on the name (the same suppression the search tiles and `SMBThumbnailTile.Lockup`
-        // fixed). The style owns the card↔name gap; tap-shape concerns don't exist on tvOS.
-        glyphCard
-            .accessibilityLabel(name)
-        nameLabel
-            .accessibilityHidden(true)
-        #else
-        VStack(alignment: .leading, spacing: MediaTile.metadataGap) {
-            glyphCard
-            nameLabel
-        }
-        // Pin the whole VStack (glyph card + name + the gap between) as the tap target, matching
-        // `SMBThumbnailTile` — without it only the opaque art + name glyphs are tappable, leaving the
-        // inter-element gap and the trailing space beside a short name dead.
-        .contentShape(.rect(cornerRadius: Radius.tile))
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(name)
-        #endif
+        // The tvOS-sibling / iOS-contained split lives in `TileLockup`; `.flatten(label:)` reproduces
+        // this card's a11y exactly. tvOS: the name is its OWN label child (the `.borderless` lockup
+        // only slides it clear of the lifted card when it is — contained, the focused card landed on
+        // the name, the same suppression the search tiles and `SMBThumbnailTile.Lockup` fixed). iOS:
+        // the whole tile (glyph card + name + the gap between) collapses to one labelled element with
+        // the tap shape, so the inter-element gap and the space beside a short name aren't dead.
+        TileLockup(
+            artwork: glyphCard,
+            caption: { nameLabel },
+            accessibility: .flatten(label: name),
+            iOSContentShapeRadius: Radius.tile
+        )
     }
 
     private var glyphCard: some View {
