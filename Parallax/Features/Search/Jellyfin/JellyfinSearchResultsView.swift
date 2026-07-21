@@ -70,6 +70,10 @@ struct JellyfinSearchResultsView: View, Equatable {
             .padding(.horizontal, hMargin)
             .padding(.vertical, Space.s18)
         }
+        // Don't clip a focused tile's lift at the scroll bounds (the `SMBLibraryListView` precedent):
+        // on tvOS the system search layout butts the results against the keyboard column, and the
+        // first column's focus shadow was sliced flat at this ScrollView's leading edge.
+        .tvScrollClipDisabled()
     }
 
     @ViewBuilder
