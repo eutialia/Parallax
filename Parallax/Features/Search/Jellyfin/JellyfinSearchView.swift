@@ -155,7 +155,7 @@ struct JellyfinSearchView: View {
             searchLoadingPlaceholder
         case .loaded(let results):
             if results.movies.isEmpty && results.series.isEmpty && results.episodes.isEmpty {
-                ContentUnavailableView.search
+                StatusStateView.searchNoResults
             } else {
                 // The grid is an `.equatable()` child so a per-keystroke `query` change
                 // can't re-render the tiles (see JellyfinSearchResultsView). The refine
