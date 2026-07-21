@@ -165,52 +165,66 @@ struct SeriesDetailView: View {
         if vm.episodesLoading {
             EpisodeListLoadingSkeleton()
         } else {
+            // Hybrid eager/lazy: an eager stack over EVERY season built each shelf's ScrollView +
+            // focus section up front, and the page's frame rate fell off linearly with season count
+            // (device-reported at >5-6 seasons, tvOS Release). But a fully lazy stack risks Home's
+            // device-verified focus trap (see `HomeView.content`): below-the-fold rows are never
+            // materialized, so tvOS focus has nothing to move DOWN to. Splitting the difference —
+            // shelf #1 eager (a guaranteed focus target under the hero/ledger), the rest lazy —
+            // keeps focus reachable while deferring the expensive shelves: by the time shelf N is
+            // focused on the ~⅓-viewport-tall rows, shelf N+1 is inside the lazy render window.
+            let populated = seasons.filter { !vm.episodes(for: $0.id).isEmpty }
             VStack(alignment: .leading, spacing: Space.s22) {
-                ForEach(seasons) { season in
-                    let episodes = vm.episodes(for: season.id)
-                    if !episodes.isEmpty {
-                        MetadataRow(
-                            title: season.name,
-                            items: episodes,
-                            tileWidth: AppLayout.seriesEpisodeTileWidth(idiom: idiom)
-                        ) { episode in
-                            // `MetadataRow` applies `.tvShelfItem()` (native `.borderless` lockup on
-                            // tvOS) to every item, so the inner style below only needs to win on iOS —
-                            // `pressableTileButton()` forwards to the same `tvPosterButton()` on tvOS
-                            // (byte-identical focus/lockup there) while giving this tile the same
-                            // touch-down press scale as its closest visual sibling, Home's Continue
-                            // Watching shelf.
-                            Button {
-                                playback.play(episode.id, in: session)
-                            } label: {
-                                // `.lockup()`: sibling label children on tvOS so the below-tile title
-                                // nudges clear of the focus lift (contained on iOS) — the metadata row
-                                // now under the tile makes this necessary (a bare thumbnail didn't).
-                                episodeCard(episode).lockup()
-                            }
-                            .pressableTileButton()
-                            // Menu A′: same as the play-first episode menu elsewhere, minus "Go to
-                            // Series" (this IS that series' page). The VM already subscribes to
-                            // change events, so badges/progress react without extra wiring.
-                            .mediaTileContextMenu(
-                                item: .episode(episode),
-                                session: session,
-                                context: MediaTileMenuContext(showsGoToSeries: false)
-                            )
-                        }
-                        // Warm the FIRST season's stills only — the shelf visible on open, matching
-                        // Home's fixed-shelf scope. This VStack is not lazy, so an unconditional
-                        // per-shelf prefetch would fire for EVERY season at once on detail open
-                        // (10 seasons ≈ 130 simultaneous requests contending with the hero + the
-                        // visible shelf). Later seasons load on demand as their tiles appear.
-                        .prefetchArtwork(
-                            season.id == seasons.first?.id ? episodeArtworkURLs(episodes) : [],
-                            session: session
-                        )
+                if let first = populated.first {
+                    seasonShelf(first, vm: vm, warmsArtwork: true)
+                }
+                LazyVStack(alignment: .leading, spacing: Space.s22) {
+                    ForEach(populated.dropFirst()) { season in
+                        seasonShelf(season, vm: vm, warmsArtwork: false)
                     }
                 }
             }
         }
+    }
+
+    /// One season's horizontal episode shelf. `warmsArtwork` prefetches the FIRST season's stills
+    /// only — the shelf visible on open, matching Home's fixed-shelf scope; an unconditional
+    /// per-shelf prefetch would fire for every materialized season at once on detail open
+    /// (10 seasons ≈ 130 simultaneous requests contending with the hero + the visible shelf).
+    /// Later seasons load on demand as their tiles appear.
+    @ViewBuilder
+    private func seasonShelf(_ season: Season, vm: SeriesDetailViewModel, warmsArtwork: Bool) -> some View {
+        let episodes = vm.episodes(for: season.id)
+        MetadataRow(
+            title: season.name,
+            items: episodes,
+            tileWidth: AppLayout.seriesEpisodeTileWidth(idiom: idiom)
+        ) { episode in
+            // `MetadataRow` applies `.tvShelfItem()` (native `.borderless` lockup on
+            // tvOS) to every item, so the inner style below only needs to win on iOS —
+            // `pressableTileButton()` forwards to the same `tvPosterButton()` on tvOS
+            // (byte-identical focus/lockup there) while giving this tile the same
+            // touch-down press scale as its closest visual sibling, Home's Continue
+            // Watching shelf.
+            Button {
+                playback.play(episode.id, in: session)
+            } label: {
+                // `.lockup()`: sibling label children on tvOS so the below-tile title
+                // nudges clear of the focus lift (contained on iOS) — the metadata row
+                // now under the tile makes this necessary (a bare thumbnail didn't).
+                episodeCard(episode).lockup()
+            }
+            .pressableTileButton()
+            // Menu A′: same as the play-first episode menu elsewhere, minus "Go to
+            // Series" (this IS that series' page). The VM already subscribes to
+            // change events, so badges/progress react without extra wiring.
+            .mediaTileContextMenu(
+                item: .episode(episode),
+                session: session,
+                context: MediaTileMenuContext(showsGoToSeries: false)
+            )
+        }
+        .prefetchArtwork(warmsArtwork ? episodeArtworkURLs(episodes) : [], session: session)
     }
 
     /// The exact artwork URLs this season shelf's episode tiles will request — the same ref
