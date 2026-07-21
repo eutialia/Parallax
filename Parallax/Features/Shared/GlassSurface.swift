@@ -107,6 +107,8 @@ private struct ShelfFooterPreviewTile: View {
                     }
                     .frame(height: 5)
                     .clipShape(.rect(cornerRadius: 2.5))
+                    // Mirrors MediaThumbnail's bar-only corner clearance (see the token).
+                    .padding(.horizontal, HomeShelf.progressBarCornerInsetX)
                 }
                 .padding(.horizontal, HomeShelf.footerCaptionInsetX)
                 .padding(.bottom, HomeShelf.footerCaptionInsetBottom)

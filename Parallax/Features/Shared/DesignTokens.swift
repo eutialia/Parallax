@@ -208,6 +208,11 @@ enum HomeShelf {
     /// `GlassSurface` preview tile so the two can't drift apart.
     static let footerCaptionInsetX: CGFloat = 8
     static let footerCaptionInsetBottom: CGFloat = 7
+    /// Extra horizontal inset for the progress BAR beyond `footerCaptionInsetX`, so the bar's ends
+    /// sit at the tile-radius line (8 + 4 = `Radius.tile`) and clear the corner curvature — at the
+    /// shared 8pt the bar crowded the bottom corners once the tvOS focus lift magnified the tile.
+    /// Bar-only on purpose: the caption keeps the 8pt slot the text-slots redesign chose.
+    static let progressBarCornerInsetX: CGFloat = 4
 }
 
 /// Series detail episode shelves (16:9 landscape — matches Jellyfin episode primary).
