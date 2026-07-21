@@ -36,11 +36,23 @@ struct SMBBrowseView: View {
     @Environment(PlaybackPresenter.self) private var playback
     @Environment(\.appIdiom) private var idiom
     @State private var model: SMBBrowseViewModel?
+    /// Set when the lister can't even be BUILT — there's no view model to carry an error yet.
+    @State private var setupError: String?
+    /// True when `setupError` is unrecoverable without re-adding the server (a confirmed-lost
+    /// Keychain slot). A transient fault (`.unexpected` keychain read error) stays non-terminal
+    /// so `.recoversFromOffline` may clear it and retry `openLevel()`.
+    @State private var setupErrorIsTerminal = false
 
     var body: some View {
         Group {
             if let model {
                 content(model: model)
+            } else if let setupError {
+                StatusStateView(
+                    title: "Can't Open Share",
+                    systemImage: "externaldrive.badge.xmark",
+                    message: setupError
+                )
             } else {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -81,19 +93,44 @@ struct SMBBrowseView: View {
         // listing — fast and stale-tolerant; each level owns an independent lister so the child
         // level is completely unaffected by this level's teardown/reconnect cycle.
         .task {
-            guard model == nil else { return }
-            let lister = await deps.makeSMBLister(path.ref)
-            let source = SMBFileSource(lister: lister, host: path.ref.data.host, share: path.share, root: "")
-            let vm = SMBBrowseViewModel(source: source, share: path.share, path: path.path)
-            model = vm
-            vm.load()
+            guard model == nil, setupError == nil else { return }
+            await openLevel()
         }
         .onDisappear { model?.teardown() }
         // Auto-recover a "Share Unavailable" / "Couldn't open" level when the network returns (or
         // the app foregrounds online) — re-lists this level. Gated on `isStalled` (errored AND
-        // nothing listed) so a populated level isn't re-listed. `load()` is sync (spawns its own
-        // task); the discarded result is fine in this Void closure.
-        .recoversFromOffline(isStalled: model?.isStalled ?? false) { model?.load() }
+        // nothing listed) so a populated level isn't re-listed; a non-terminal setup failure
+        // (transient keychain fault before the model existed) recovers by rebuilding the level.
+        // `load()` is sync (spawns its own task); the discarded result is fine in this Void closure.
+        .recoversFromOffline(isStalled: model?.isStalled ?? (setupError != nil && !setupErrorIsTerminal)) {
+            if let model {
+                model.load()
+            } else {
+                setupError = nil
+                Task { await openLevel() }
+            }
+        }
+    }
+
+    /// Builds this level's lister + view model and starts the first list. Failure before the model
+    /// exists lands in `setupError`; only a confirmed-lost credential slot is terminal (no retry
+    /// helps until the server is re-added) — everything else stays recoverable.
+    private func openLevel() async {
+        do {
+            let lister = try await deps.makeSMBLister(path.ref)
+            let source = SMBFileSource(lister: lister, host: path.ref.data.host, share: path.share, root: "")
+            let vm = SMBBrowseViewModel(source: source, share: path.share, path: path.path)
+            model = vm
+            vm.load()
+        } catch {
+            let appError = error as? AppError
+            if case .auth(.credentialUnavailable) = appError {
+                setupErrorIsTerminal = true
+            } else {
+                setupErrorIsTerminal = false
+            }
+            setupError = appError?.userMessage ?? "Couldn't open this share."
+        }
     }
 
     /// Inline title: the current folder's name (last path component), or the share name at the root.
@@ -107,7 +144,16 @@ struct SMBBrowseView: View {
             ProgressView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let error = model.error, model.folders.isEmpty, model.media.isEmpty {
-            if path.path.isEmpty {
+            if path.path.isEmpty, model.errorIsSignInRefusal {
+                // Share-root SIGN-IN refusal (libsmb2 EPERM — stale/lost stored password): the
+                // share isn't gone, the server rejected the session. Same recovery copy as the
+                // Settings share list so both surfaces give one answer.
+                StatusStateView(
+                    title: "Sign-In Refused",
+                    systemImage: "key.slash",
+                    message: "\(path.ref.data.host) rejected the sign-in. Remove this server in Settings and add it again to update the password."
+                )
+            } else if path.path.isEmpty {
                 // Share-root failure: the share itself wouldn't open — gone server-side (the same
                 // orphan the Settings share list now surfaces as removable) or the server's
                 // unreachable. A dedicated warning beats the generic per-folder error and points at
@@ -338,7 +384,13 @@ private struct SMBBrowseGridPreview: View {
                     ref: ref,
                     share: "Media",
                     parentPath: "Anime",
-                    artworkProvider: MediaArtworkProvider(thumbnailer: VLCThumbnailer(), keychain: Keychain(service: "preview")),
+                    artworkProvider: MediaArtworkProvider(
+                        thumbnailer: VLCThumbnailer(),
+                        serverStore: ServerStore(
+                            settings: SettingsStore(defaults: .standard),
+                            keychain: Keychain(service: "preview")
+                        )
+                    ),
                     onPlay: { _ in }
                 )
                 .padding(Space.s16)

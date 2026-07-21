@@ -222,14 +222,46 @@ struct SMBFileSourceTests {
 
     // MARK: - Error mapping
 
-    @Test("mapListError maps EACCES/EPERM to permissionDenied")
+    @Test("mapListError maps EACCES to permissionDenied")
     func mapListErrorPermissionDenied() {
-        for code in [POSIXErrorCode.EACCES, .EPERM] {
-            let error = NSError(domain: NSPOSIXErrorDomain, code: Int(code.rawValue))
-            guard case .source(.permissionDenied) = SMBFileSource.mapListError(error, share: "Media", path: "x") else {
-                Issue.record("EACCES/EPERM (\(code)) must map to .source(.permissionDenied)")
-                continue
-            }
+        let error = NSError(domain: NSPOSIXErrorDomain, code: Int(POSIXErrorCode.EACCES.rawValue))
+        guard case .source(.permissionDenied) = SMBFileSource.mapListError(error, share: "Media", path: "x") else {
+            Issue.record("EACCES must map to .source(.permissionDenied)")
+            return
+        }
+    }
+
+    @Test("mapListError maps EPERM (server rejected the session) to invalidCredentials, not an ACL denial")
+    func mapListErrorEPERMToInvalidCredentials() {
+        // Proven against a live server (nas.example.lan, 2026-07-21): every credential failure shape
+        // (guest, empty password, wrong password, unknown user) surfaces from libsmb2 as EPERM —
+        // its only EPERM source is the NT-status→errno table, so the TCP connect succeeded and the
+        // SERVER refused the sign-in. A genuine share ACL denial arrives as EACCES instead. They
+        // must not share a bucket: "You don't have access to that item." hides that the fix is
+        // re-entering credentials.
+        let error = NSError(domain: NSPOSIXErrorDomain, code: Int(POSIXErrorCode.EPERM.rawValue))
+        guard case .auth(.invalidCredentials) = SMBFileSource.mapListError(error, share: "Media", path: "") else {
+            Issue.record("EPERM must map to .auth(.invalidCredentials)")
+            return
+        }
+    }
+
+    @Test("mapShareListError classifies EPERM/EACCES/generic like the listing path")
+    func mapShareListErrorSharesClassification() {
+        let eperm = NSError(domain: NSPOSIXErrorDomain, code: Int(POSIXErrorCode.EPERM.rawValue))
+        guard case .auth(.invalidCredentials) = SMBFileSource.mapShareListError(eperm, host: "nas") else {
+            Issue.record("EPERM must map to .auth(.invalidCredentials)")
+            return
+        }
+        let eacces = NSError(domain: NSPOSIXErrorDomain, code: Int(POSIXErrorCode.EACCES.rawValue))
+        guard case .source(.permissionDenied) = SMBFileSource.mapShareListError(eacces, host: "nas") else {
+            Issue.record("EACCES must map to .source(.permissionDenied)")
+            return
+        }
+        let generic = NSError(domain: "SomeOtherDomain", code: 42)
+        guard case .source(.connectionLost) = SMBFileSource.mapShareListError(generic, host: "nas") else {
+            Issue.record("a non-POSIX error must fall through to .source(.connectionLost)")
+            return
         }
     }
 

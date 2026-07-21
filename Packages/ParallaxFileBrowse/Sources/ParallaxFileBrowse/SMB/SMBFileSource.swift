@@ -116,10 +116,31 @@ public struct SMBFileSource: Sendable {
     public static func mapListError(_ error: Error, share: String, path: String) -> AppError {
         let ns = error as NSError
         logger.error("SMB list failed [share=\(share, privacy: .public) path=\(path, privacy: .public)]: \(ns.domain, privacy: .public)#\(ns.code) — \(ns.localizedDescription, privacy: .public)")
+        return classify(error)
+    }
+
+    /// Maps a share-enumeration (`listShares()`) failure to a typed `AppError` — same
+    /// classification as `mapListError`, logged per host since no share is in play yet.
+    public static func mapShareListError(_ error: Error, host: String) -> AppError {
+        let ns = error as NSError
+        logger.error("SMB share list failed [host=\(host, privacy: .public)]: \(ns.domain, privacy: .public)#\(ns.code) — \(ns.localizedDescription, privacy: .public)")
+        return classify(error)
+    }
+
+    /// EPERM is deliberately NOT bucketed with EACCES. libsmb2's only EPERM source is its
+    /// NT-status→errno table — the TCP connect succeeded and the SERVER refused the session —
+    /// and live-server probing (nas.example.lan, 2026-07-21) showed every credential failure shape
+    /// (guest, empty/wrong password, unknown user) surfaces as EPERM, while a genuine share
+    /// ACL denial (NT_STATUS_ACCESS_DENIED) arrives as EACCES. So EPERM is a sign-in failure:
+    /// the recovery is re-entering credentials, not requesting access to an item.
+    private static func classify(_ error: Error) -> AppError {
+        let ns = error as NSError
         let posixCode: Int32? = (error as? POSIXError).map { $0.code.rawValue }
             ?? (ns.domain == NSPOSIXErrorDomain ? Int32(ns.code) : nil)
         switch posixCode {
-        case POSIXErrorCode.EACCES.rawValue, POSIXErrorCode.EPERM.rawValue:
+        case POSIXErrorCode.EPERM.rawValue:
+            return .auth(.invalidCredentials)
+        case POSIXErrorCode.EACCES.rawValue:
             return .source(.permissionDenied)
         case POSIXErrorCode.ENOENT.rawValue, POSIXErrorCode.ENOTDIR.rawValue, POSIXErrorCode.ENODEV.rawValue:
             return .source(.notFound)

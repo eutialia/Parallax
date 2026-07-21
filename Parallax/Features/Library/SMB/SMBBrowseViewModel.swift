@@ -21,6 +21,11 @@ final class SMBBrowseViewModel {
     private(set) var media: [Item] = []
     private(set) var isLoading = false
     private(set) var error: String?
+    /// True when the last failure was the server refusing the SIGN-IN (`.auth`, e.g. libsmb2's
+    /// EPERM for a stale/lost password) rather than a share/connectivity fault. The share-root
+    /// failure screen keys on this: "Share Unavailable — offline or renamed" is a misdiagnosis
+    /// when the actual fix is updating the stored credentials.
+    private(set) var errorIsSignInRefusal = false
 
     /// Showing the blocking full-screen failure with nothing listed (share-root or per-folder
     /// error) — the state an offline→online recovery should re-`load()`. Drives `.recoversFromOffline`.
@@ -88,7 +93,13 @@ final class SMBBrowseViewModel {
                 media = listing.media
             } catch {
                 guard !Task.isCancelled else { return }
-                self.error = SMBFileSource.mapListError(error, share: share, path: path).userMessage
+                let appError = SMBFileSource.mapListError(error, share: share, path: path)
+                if case .auth = appError {
+                    self.errorIsSignInRefusal = true
+                } else {
+                    self.errorIsSignInRefusal = false
+                }
+                self.error = appError.userMessage
             }
         }
     }

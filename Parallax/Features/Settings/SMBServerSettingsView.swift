@@ -173,9 +173,9 @@ struct SMBServerSettingsView: View {
         if let existing = lister { await existing.disconnect() }
         loadState = .loading
         let ref = SMBServerRef(id: server.id, data: data)
-        let newLister = await deps.makeSMBLister(ref)
-        lister = newLister
         do {
+            let newLister = try await deps.makeSMBLister(ref)
+            lister = newLister
             let fetched = try await newLister.listShares()
             let sorted = fetched.sorted { $0.name.localizedCompare($1.name) == .orderedAscending }
             // Seed the toggles from the LIVE store, not the navigation snapshot: `server` is captured
@@ -184,7 +184,19 @@ struct SMBServerSettingsView: View {
             enabledShares = await persistedShares()
             loadState = .loaded(sorted)
         } catch {
-            loadState = .failed("Couldn't load shares from \(host).")
+            // One classification for both throw sites: makeSMBLister's pre-flight already yields a
+            // typed AppError (lost Keychain slot — never reached the server), and listShares' raw
+            // POSIX failures go through the shared mapper. Either way, auth-shaped faults get the
+            // credential recovery instead of a generic host message that reads as connectivity.
+            let appError = (error as? AppError) ?? SMBFileSource.mapShareListError(error, host: host)
+            switch appError {
+            case .auth(.credentialUnavailable):
+                loadState = .failed(appError.userMessage)
+            case .auth:
+                loadState = .failed("\(host) rejected the sign-in. Remove this server and add it again to update the password.")
+            default:
+                loadState = .failed("Couldn't load shares from \(host).")
+            }
         }
     }
 

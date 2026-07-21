@@ -39,20 +39,20 @@ enum SMBSourceResolver {
         SMBFileSource.decodeItemID(item.id)
     }
 
-    /// - Throws: `AppError.source(.notFound)` if the `ItemID` wasn't minted by `SMBFileSource`, or
-    ///   the components can't form a URL.
+    /// - Throws: `AppError.source(.notFound)` if the `ItemID` wasn't minted by `SMBFileSource` or
+    ///   the components can't form a URL; `AppError.auth(.credentialUnavailable)` if the saved
+    ///   password's Keychain slot is lost — never degraded into an empty-password connection.
     static func context(
         for item: Item,
         ref: SMBServerRef,
-        keychain: any KeychainStoring
+        serverStore: ServerStore
     ) async throws -> SMBSourceContext {
         // The share rides in the ItemID (the server can host many shares), so derive it here
         // rather than from `ref` — `SMBServerRef` no longer carries a single share/root.
         guard let (share, path) = SMBFileSource.decodeItemID(item.id) else {
             throw AppError.source(.notFound)
         }
-        let passwordKey = KeychainKey<String>(account: ServerStore.tokenAccount(for: ref.id))
-        let password = (try? await keychain.read(passwordKey)) ?? ""
+        let password = try await serverStore.smbPassword(for: ref.id)
         guard let url = SMBURL.make(host: ref.data.host, share: share, path: path) else {
             throw AppError.source(.notFound)
         }

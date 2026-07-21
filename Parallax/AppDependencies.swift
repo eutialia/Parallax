@@ -21,7 +21,7 @@ final class AppDependencies {
     /// Builds an `AMSMB2Lister` for a configured SMB server, reading the password from the
     /// Keychain (slot `token-<id>`). The one place SMB listers are constructed for browsing,
     /// so every SMB surface (folder picker, file browse) shares the same credential read.
-    let makeSMBLister: @Sendable (SMBServerRef) async -> AMSMB2Lister
+    let makeSMBLister: @Sendable (SMBServerRef) async throws -> AMSMB2Lister
     let imagePipelineFactory: ImagePipelineFactory
     let deviceProfileBuilder: DeviceProfileBuilder
     let playbackInfoFactory: @Sendable (Session) async -> PlaybackInfoService
@@ -45,7 +45,7 @@ final class AppDependencies {
         smbDiscovery: SMBBonjourDiscovery,
         jellyfinLibraryRepoFactory: @Sendable @escaping (Session) async -> LibraryRepository,
         mediaRepoFactory: @Sendable @escaping (Session) async -> any MediaRepository,
-        makeSMBLister: @Sendable @escaping (SMBServerRef) async -> AMSMB2Lister,
+        makeSMBLister: @Sendable @escaping (SMBServerRef) async throws -> AMSMB2Lister,
         imagePipelineFactory: ImagePipelineFactory,
         deviceProfileBuilder: DeviceProfileBuilder,
         playbackInfoFactory: @Sendable @escaping (Session) async -> PlaybackInfoService,
@@ -95,12 +95,13 @@ final class AppDependencies {
         let mediaRepoFactory: @Sendable (Session) async -> any MediaRepository = { session in
             await repoStore.repository(for: session)
         }
-        // The single SMB-lister construction site, sharing the same Keychain as the repos above so
-        // a browsed share reads its password from the slot it was added under. SMB browsing lists
+        // The single SMB-lister construction site. The password comes through
+        // `ServerStore.smbPassword(for:)`, which throws `.auth(.credentialUnavailable)` on a lost
+        // Keychain slot instead of degrading to an empty-password logon the server rejects with
+        // an error that reads as its fault (the live-NAS EPERM incident). SMB browsing lists
         // shares directly via SMBFileSource — no MediaRepository involved.
-        let makeSMBLister: @Sendable (SMBServerRef) async -> AMSMB2Lister = { [keychain] ref in
-            let key = KeychainKey<String>(account: ServerStore.tokenAccount(for: ref.id))
-            let password = (try? await keychain.read(key)) ?? ""
+        let makeSMBLister: @Sendable (SMBServerRef) async throws -> AMSMB2Lister = { [store] ref in
+            let password = try await store.smbPassword(for: ref.id)
             return AMSMB2Lister(
                 host: ref.data.host,
                 username: ref.data.username,
@@ -143,14 +144,14 @@ final class AppDependencies {
         // One SMB resolver, sharing the same Keychain as the media repos above so a
         // tapped SMB file resolves its credentials from the same slot it was browsed
         // under. Default `makeLister` (the live AMSMB2 sidecar-subtitle lister).
-        let smbPlaybackResolver = SMBPlaybackResolver(keychain: keychain)
+        let smbPlaybackResolver = SMBPlaybackResolver(serverStore: store)
 
         // One app-scoped artwork provider. VLCThumbnailer is @MainActor — built here (live() is
-        // @MainActor) and handed to the provider actor. Same Keychain as the media repos so it
+        // @MainActor) and handed to the provider actor. Same ServerStore as the resolvers so it
         // reads SMB passwords from the slot a file was browsed under.
         let mediaArtworkProvider = MediaArtworkProvider(
             thumbnailer: VLCThumbnailer(),
-            keychain: keychain
+            serverStore: store
         )
 
         return AppDependencies(

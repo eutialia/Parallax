@@ -79,12 +79,26 @@ struct SMBPlaybackResolverTests {
 
     // MARK: - Helpers
 
+    /// Builds a resolver over a `ServerStore` wrapping `keychain`. `seedPassword` pre-stores a
+    /// password in the slot `makeRef()`'s id resolves to — the resolver now reads through
+    /// `ServerStore.smbPassword(for:)`, which THROWS `.auth(.credentialUnavailable)` on an empty
+    /// slot instead of degrading to a guest logon, so every happy-path test needs a seeded slot
+    /// (the default `""` mirrors a stored guest password). Pass `nil` to leave the slot empty.
     private func makeResolver(
         keychain: FakeKeychain = FakeKeychain(),
+        seedPassword: String? = "",
         lister: StubSMBLister,
         resumeStore: SMBResumeStore = .shared
     ) -> SMBPlaybackResolver {
-        var resolver = SMBPlaybackResolver(keychain: keychain) { _, _ in lister }
+        if let seedPassword {
+            try? keychain.setValue(seedPassword, for: KeychainKey<String>(account: "token-smb-nas.local|Media|Movies"))
+        }
+        let suite = "SMBPlaybackResolverTests-store-\(UUID().uuidString)"
+        let store = ServerStore(
+            settings: SettingsStore(defaults: UserDefaults(suiteName: suite)!),
+            keychain: keychain
+        )
+        var resolver = SMBPlaybackResolver(serverStore: store) { _, _ in lister }
         resolver.resumeStore = resumeStore
         return resolver
     }
@@ -109,11 +123,8 @@ struct SMBPlaybackResolverTests {
 
     @Test("vlcOptions contain the three smb credential strings with the seeded password")
     func vlcOptionsCarryCredentials() async throws {
-        let keychain = FakeKeychain()
-        try keychain.setValue("s3cr3t", for: KeychainKey<String>(account: "token-smb-nas.local|Media|Movies"))
-
         let lister = StubSMBLister(entries: [])
-        let resolver = makeResolver(keychain: keychain, lister: lister)
+        let resolver = makeResolver(seedPassword: "s3cr3t", lister: lister)
         let item = makeItem()
         let ref = makeRef()
 
@@ -122,16 +133,36 @@ struct SMBPlaybackResolverTests {
         #expect(result.vlcOptions == [":smb-user=alice", ":smb-pwd=s3cr3t", ":smb-domain=WORKGROUP"])
     }
 
-    @Test("missing Keychain entry falls back to empty password without throwing")
-    func missingPasswordFallsBack() async throws {
+    @Test("stored-empty guest password resolves with an empty smb-pwd option")
+    func storedEmptyGuestPasswordResolves() async throws {
         let lister = StubSMBLister(entries: [])
-        let resolver = makeResolver(lister: lister)   // keychain has no entry
+        let resolver = makeResolver(lister: lister)   // default seed: stored ""
         let item = makeItem()
         let ref = makeRef()
 
         let result = try await resolver.resolve(item, ref: ref)
 
         #expect(result.vlcOptions == [":smb-user=alice", ":smb-pwd=", ":smb-domain=WORKGROUP"])
+    }
+
+    @Test("missing Keychain slot throws .auth(.credentialUnavailable) instead of a guest logon")
+    func missingPasswordThrowsCredentialUnavailable() async throws {
+        // The lost-slot incident contract: addSMBServer always stores a password (even ""), so an
+        // absent slot is data loss — the resolver must surface it, never impersonate a guest.
+        let lister = StubSMBLister(entries: [])
+        let resolver = makeResolver(seedPassword: nil, lister: lister)
+        let item = makeItem()
+        let ref = makeRef()
+
+        do {
+            _ = try await resolver.resolve(item, ref: ref)
+            Issue.record("Expected AppError.auth(.credentialUnavailable) to be thrown")
+        } catch let error as AppError {
+            guard case .auth(.credentialUnavailable) = error else {
+                Issue.record("Expected .auth(.credentialUnavailable), got \(error)")
+                return
+            }
+        }
     }
 
     // MARK: - Subtitle resolution

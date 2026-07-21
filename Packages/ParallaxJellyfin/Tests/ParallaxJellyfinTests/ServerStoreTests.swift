@@ -117,17 +117,70 @@ struct ServerStoreTests {
         #expect(stillThere == corruptJSON)
     }
 
-    @Test("Load drops persisted sessions whose token has vanished from Keychain")
-    func loadHandlesMissingToken() async throws {
+    @Test("Load keeps a Jellyfin server whose token vanished, exposing it as signed-out")
+    func loadKeepsMissingTokenServerAsSignedOut() async throws {
         let (store, keychain) = freshStore()
         try await store.add(sampleSession(id: "ghost", token: "tok"))
 
-        // Simulate Keychain reset / sign-out happening underneath us.
+        // Simulate the token disappearing underneath us (access-group change after a
+        // bundle-id rename, device migration with ThisDeviceOnly items, Keychain reset).
+        // A real sign-out goes through remove(_:), which deletes the ROW too — so a
+        // token-less row is always Keychain-side data loss, never a completed sign-out,
+        // and pruning it would destroy the user's server list over a recoverable fault.
         let tokenKey = KeychainKey<String>(account: "token-ghost")
         try await keychain.delete(tokenKey)
 
         try await store.load()
-        let sessions = await store.sessions
-        #expect(sessions.isEmpty)
+
+        #expect(await store.sessions.isEmpty)
+        let servers = await store.servers
+        #expect(servers.map(\.id) == [ServerID(rawValue: "ghost")], "the persisted row must survive")
+        let signedOut = await store.signedOutJellyfinServers
+        #expect(signedOut.map(\.id) == [ServerID(rawValue: "ghost")], "and be surfaced as signed-out")
+    }
+
+    @Test("Re-adding the same server heals its signed-out row")
+    func reAddHealsSignedOutRow() async throws {
+        let (store, keychain) = freshStore()
+        try await store.add(sampleSession(id: "ghost", token: "tok"))
+        try await keychain.delete(KeychainKey<String>(account: "token-ghost"))
+        try await store.load()
+
+        // Signing in again yields the same deterministic server id → add() replaces in place.
+        try await store.add(sampleSession(id: "ghost", token: "tok-new"))
+
+        #expect(await store.signedOutJellyfinServers.isEmpty)
+        #expect(await store.sessions.count == 1)
+        #expect(await store.servers.count == 1)
+    }
+
+    // MARK: - smbPassword
+
+    @Test("smbPassword returns the stored password, including a stored-empty guest password")
+    func smbPasswordReadsStored() async throws {
+        let (store, _) = freshStore()
+        let data = SMBServerData(host: "nas", username: "", domain: "", shares: [])
+        let id = try await store.addSMBServer(data, password: "")
+        // addSMBServer always stores the password — even a guest's empty one — so a
+        // stored-empty read must come back as "", NOT be confused with a lost slot.
+        #expect(try await store.smbPassword(for: id) == "")
+    }
+
+    @Test("smbPassword throws credentialUnavailable when the slot is lost")
+    func smbPasswordThrowsOnLostSlot() async throws {
+        let (store, keychain) = freshStore()
+        let data = SMBServerData(host: "nas", username: "alice", domain: "", shares: [])
+        let id = try await store.addSMBServer(data, password: "secret")
+        try await keychain.delete(KeychainKey<String>(account: "token-\(id.rawValue)"))
+
+        do {
+            _ = try await store.smbPassword(for: id)
+            Issue.record("a lost slot must throw, not degrade to a guest logon")
+        } catch let error as AppError {
+            guard case .auth(.credentialUnavailable) = error else {
+                Issue.record("expected .auth(.credentialUnavailable), got \(error)")
+                return
+            }
+        }
     }
 }

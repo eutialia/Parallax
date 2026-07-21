@@ -165,11 +165,12 @@ struct ServerStoreMigrationTests {
 
     // MARK: - load() token-resolution contracts
 
-    /// A CONFIRMED-nil token read (the slot was wiped / user signed out) prunes
-    /// the persisted Jellyfin server — both the in-memory record and its
-    /// session disappear.
-    @Test("Confirmed-nil Keychain token prunes the persisted Jellyfin server")
-    func prunesServerOnConfirmedNilToken() async throws {
+    /// A CONFIRMED-nil token read keeps the persisted Jellyfin server as signed-out —
+    /// a real sign-out removes the row via `remove(_:)`, so a token-less row is always
+    /// Keychain-side data loss (access-group change, device migration) and pruning it
+    /// would destroy the user's server list over a recoverable fault.
+    @Test("Confirmed-nil Keychain token keeps the persisted Jellyfin server as signed-out")
+    func keepsServerOnConfirmedNilToken() async throws {
         let suiteName = "ServerStoreMigrationTests-prune-\(UUID().uuidString)"
         let serverID = ServerID(rawValue: "srv-prune")
         let server = PersistedServer(
@@ -195,14 +196,16 @@ struct ServerStoreMigrationTests {
 
         let servers = await store.servers
         let sessions = await store.sessions
-        #expect(servers.contains(where: { $0.id == serverID }) == false)
+        #expect(servers.contains(where: { $0.id == serverID }), "the row must survive a lost token")
         #expect(sessions.isEmpty)
+        let signedOut = await store.signedOutJellyfinServers
+        #expect(signedOut.map(\.id) == [serverID])
 
-        // The prune was persisted back — the re-read blob no longer holds it.
+        // Nothing was written back — the persisted blob still holds the row.
         let reread = SettingsStore(defaults: UserDefaults(suiteName: suiteName)!)
         let key = SettingKey<[PersistedServer]>(name: Self.persistedSessionsKeyName, defaultValue: [])
         let persisted = try await reread.tryValue(for: key)
-        #expect(persisted?.isEmpty == true)
+        #expect(persisted?.map(\.id) == [serverID])
     }
 
     // MARK: - Element-tolerant decode (drop incompatible pre-release SMB rows)

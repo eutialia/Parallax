@@ -48,7 +48,13 @@ struct SMBBrowseRenderTests {
             ref: Self.ref,
             share: "Media",
             parentPath: "Anime",
-            artworkProvider: MediaArtworkProvider(thumbnailer: VLCThumbnailer(), keychain: Keychain(service: "render")),
+            artworkProvider: MediaArtworkProvider(
+                thumbnailer: VLCThumbnailer(),
+                serverStore: ServerStore(
+                    settings: SettingsStore(defaults: .standard),
+                    keychain: Keychain(service: "render")
+                )
+            ),
             onPlay: { _ in }
         )
         .padding(Space.s16)

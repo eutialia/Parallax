@@ -9,6 +9,10 @@ import ParallaxJellyfin
 final class SettingsViewModel {
     var sessions: [Session] = []
     var smbServers: [PersistedServer] = []
+    /// Jellyfin servers whose persisted row survives but whose Keychain token was lost (bundle-id/
+    /// access-group change, device migration) — rendered as signed-out rows so they never ghost
+    /// invisibly; re-signing-in heals them in place, removal discards them.
+    var signedOutServers: [PersistedServer] = []
     /// The primary Jellyfin session's id — refreshed from `serverStore.active` (which defaults to the
     /// first session). Read only inside this VM to wire the router; no view observes it, so it's private.
     private var activeID: ServerID?
@@ -35,6 +39,18 @@ final class SettingsViewModel {
             if case .smb = $0.kind { return true }
             return false
         }
+        signedOutServers = await serverStore.signedOutJellyfinServers
+    }
+
+    /// Discards a signed-out Jellyfin row. No router sync needed: a signed-out server had no
+    /// session, so removing it can't move the active session or cross the login/home boundary.
+    func removeSignedOutServer(_ id: ServerID) async {
+        do {
+            try await serverStore.remove(id)
+        } catch {
+            Log.persistence.error("Settings removeSignedOutServer failed for \(id.rawValue): \(error.localizedDescription)")
+        }
+        await refresh()
     }
 
     func removeSMBServer(_ id: ServerID) async {

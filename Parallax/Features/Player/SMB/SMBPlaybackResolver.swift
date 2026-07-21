@@ -15,7 +15,7 @@ private let logger = Logger(subsystem: "Parallax", category: "SMBPlaybackResolve
 /// filename-matched sidecar subtitles. Subtitle resolution failures are non-fatal —
 /// the video plays with an empty subtitle map rather than aborting.
 struct SMBPlaybackResolver {
-    let keychain: any KeychainStoring
+    let serverStore: ServerStore
     /// Injectable so subtitle resolution is fakeable in tests; defaults to the live AMSMB2 lister.
     var makeLister: @Sendable (_ ref: SMBServerRef, _ password: String) -> any SMBLister = { ref, password in
         AMSMB2Lister(host: ref.data.host, username: ref.data.username, password: password, domain: ref.data.domain)
@@ -30,7 +30,7 @@ struct SMBPlaybackResolver {
     func resolve(_ item: Item, ref: SMBServerRef) async throws -> SMBPlaybackItem {
         // Decode the share path, read the Keychain password, build the credential-free smb:// URL
         // + libVLC credential options — one assembly site shared with the thumbnail provider.
-        let ctx = try await SMBSourceResolver.context(for: item, ref: ref, keychain: keychain)
+        let ctx = try await SMBSourceResolver.context(for: item, ref: ref, serverStore: serverStore)
 
         // Resolve sidecar subtitles (best-effort — failures don't abort playback).
         let subtitleURLs: [Int: URL]
@@ -140,8 +140,10 @@ struct SMBPlaybackResolver {
             logger.warning("SMB subtitle URL not decodable")
             return nil
         }
-        let passwordKey = KeychainKey<String>(account: ServerStore.tokenAccount(for: ref.id))
-        let password = (try? await keychain.read(passwordKey)) ?? ""
+        guard let password = try? await serverStore.smbPassword(for: ref.id) else {
+            logger.warning("SMB subtitle skipped — saved password unavailable")
+            return nil
+        }
         let reader = SMBRandomAccessReader(host: ref.data.host, username: ref.data.username,
                                            password: password, domain: ref.data.domain,
                                            share: share, path: path)

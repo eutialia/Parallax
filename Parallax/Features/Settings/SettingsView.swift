@@ -137,6 +137,7 @@ struct SettingsView: View {
                     SettingsJellyfinRow(id: $0.id, name: $0.serverName, host: $0.displayHost)
                 },
                 smbServers: Self.smbServerRows(vm.smbServers),
+                signedOutJellyfinServers: Self.signedOutRows(vm.signedOutServers),
                 signOutError: vm.signOutErrorMessage,
                 onSelectJellyfin: { id in
                     if let session = vm.sessions.first(where: { $0.id == id }) {
@@ -144,6 +145,8 @@ struct SettingsView: View {
                     }
                 },
                 onSelectSMBServer: { server in path.append(.smbServer(server)) },
+                onSignInSignedOut: { _ in path.append(.addJellyfin) },
+                onRemoveSignedOut: { id in Task { await vm.removeSignedOutServer(id) } },
                 onAddServer: {
                     // iPad (Settings IS a form sheet) and tvOS push the task in place; iPhone presents it
                     // as its own page sheet so Cancel aborts the whole flow in one tap (option #1).
@@ -159,6 +162,17 @@ struct SettingsView: View {
         } else {
             ScrollView { ServerListLoadingSkeleton() }
                 .scrollDisabled(true)
+        }
+    }
+
+    /// Maps each signed-out `.jellyfin` `PersistedServer` (row survived, Keychain token lost) to a
+    /// display row so it stays visible and actionable instead of ghosting in UserDefaults.
+    static func signedOutRows(_ servers: [PersistedServer]) -> [SettingsJellyfinRow] {
+        servers.compactMap { server in
+            guard case .jellyfin(let data) = server.kind else { return nil }
+            // Same host fallback as Session.displayHost, so a server whose URL yields no host
+            // reads identically signed-in and signed-out.
+            return SettingsJellyfinRow(id: server.id, name: data.serverName, host: data.serverURL.host() ?? data.serverName)
         }
     }
 
@@ -275,12 +289,18 @@ struct SettingsSMBServerRow: Identifiable {
 struct SettingsContentView<Storage: View>: View {
     let jellyfinServers: [SettingsJellyfinRow]
     let smbServers: [SettingsSMBServerRow]
+    var signedOutJellyfinServers: [SettingsJellyfinRow] = []
     var signOutError: String? = nil
     let onSelectJellyfin: (ServerID) -> Void
     let onSelectSMBServer: (PersistedServer) -> Void
+    var onSignInSignedOut: (ServerID) -> Void = { _ in }
+    var onRemoveSignedOut: (ServerID) -> Void = { _ in }
     let onAddServer: () -> Void
     let onSelectSubtitles: () -> Void
     @ViewBuilder var storage: Storage
+
+    /// The signed-out row awaiting a decision — drives the sign-in-again / remove dialog.
+    @State private var signedOutPrompt: SettingsJellyfinRow?
 
     var body: some View {
         // The redesign root is a plain inset-grouped list under the "Settings" nav title — no brand
@@ -319,6 +339,34 @@ struct SettingsContentView<Storage: View>: View {
                 }
                 .tvListRowButton()
                 .accessibilityHint("Opens server settings")
+            }
+            ForEach(signedOutJellyfinServers) { server in
+                Button { signedOutPrompt = server } label: {
+                    SettingsRowLabel(
+                        image: "JellyfinGlyph",
+                        iconSize: 22,
+                        title: server.name,
+                        subtitle: "Jellyfin · \(server.host) · Signed out"
+                    )
+                }
+                .tvListRowButton()
+                .accessibilityHint("Sign in again or remove this server")
+                // Attached per-row (not on the list) so iPad's popover rendering anchors to the
+                // tapped row; only the row matching `signedOutPrompt` ever presents.
+                .confirmationDialog(
+                    "Signed out of \(server.name)",
+                    isPresented: Binding(
+                        get: { signedOutPrompt?.id == server.id },
+                        set: { if !$0 { signedOutPrompt = nil } }
+                    ),
+                    titleVisibility: .visible
+                ) {
+                    Button("Sign In Again") { onSignInSignedOut(server.id) }
+                    Button("Remove Server", role: .destructive) { onRemoveSignedOut(server.id) }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("The saved sign-in for \(server.host) couldn't be read. Sign in again to restore this server, or remove it.")
+                }
             }
             ForEach(smbServers) { row in
                 Button { onSelectSMBServer(row.server) } label: {
@@ -393,6 +441,11 @@ private struct SettingsRootPreview: View {
             smbServers: [
                 .init(server: PersistedServer(id: ServerID(rawValue: "s1"), kind: .smb(SMBServerData(host: "mynas.local", username: "", domain: "", shares: ["Media"]))), host: "mynas.local", subtitle: "1 share"),
                 .init(server: PersistedServer(id: ServerID(rawValue: "s2"), kind: .smb(SMBServerData(host: "nas2.local", username: "", domain: "", shares: ["Media", "TV"]))), host: "nas2.local", subtitle: "2 shares"),
+            ],
+            // A lost-token row (the Keychain-loss incident): must render between the live Jellyfin
+            // and SMB rows, visibly marked, never ghost out of the list.
+            signedOutJellyfinServers: [
+                .init(id: ServerID(rawValue: "ghost"), name: "old-jellyfin", host: "nas.example.lan"),
             ],
             onSelectJellyfin: { _ in },
             onSelectSMBServer: { _ in },

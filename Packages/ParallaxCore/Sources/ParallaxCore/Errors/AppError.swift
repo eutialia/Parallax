@@ -65,6 +65,11 @@ public enum AuthFailure: Sendable {
     case invalidCredentials
     case quickConnectExpired
     case tokenInvalidated
+    /// A credential that WAS saved can no longer be read from the Keychain (access-group
+    /// change after a bundle-id rename, device migration with ThisDeviceOnly items). The
+    /// server was never contacted — recovery is re-entering the credential, and callers
+    /// must never degrade this into an empty-credential connection attempt.
+    case credentialUnavailable
 
     public var userMessage: String {
         switch self {
@@ -74,6 +79,8 @@ public enum AuthFailure: Sendable {
             return "The pairing code expired before this device was approved."
         case .tokenInvalidated:
             return "Your session expired. Sign in again."
+        case .credentialUnavailable:
+            return "The saved password couldn't be read. Remove this server and add it again."
         }
     }
 }

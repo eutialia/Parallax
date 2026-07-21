@@ -43,7 +43,7 @@ actor MediaArtworkProvider {
     /// `@MainActor`-isolated; constructed on the main actor in `AppDependencies` and called via
     /// `await` (it hops to main for the actual decode).
     private let thumbnailer: VLCThumbnailer
-    private let keychain: any KeychainStoring
+    private let serverStore: ServerStore
 
     /// One permit — see the type doc. A 2-permit round (2026-07-10) was MEASURED WORSE over
     /// VPN: per-fetch bridge stats showed bandwidth contention (lockstep ~30s timeouts, each
@@ -76,11 +76,11 @@ actor MediaArtworkProvider {
 
     init(
         thumbnailer: VLCThumbnailer,
-        keychain: any KeychainStoring,
+        serverStore: ServerStore,
         cache: SMBThumbnailCache = SMBThumbnailCache()
     ) {
         self.thumbnailer = thumbnailer
-        self.keychain = keychain
+        self.serverStore = serverStore
         self.cache = cache
     }
 
@@ -116,9 +116,10 @@ actor MediaArtworkProvider {
         // Real miss → assemble credentials (the only Keychain read) + the smb:// URL.
         let ctx: SMBSourceContext
         do {
-            ctx = try await SMBSourceResolver.context(for: item, ref: ref, keychain: keychain)
+            ctx = try await SMBSourceResolver.context(for: item, ref: ref, serverStore: serverStore)
         } catch {
-            // Bad ItemID / unbuildable URL — not a decode failure, so don't poison the key.
+            // Bad ItemID / unbuildable URL / lost password slot — not a decode failure, so
+            // don't poison the key.
             return .none
         }
 

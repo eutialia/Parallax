@@ -69,6 +69,17 @@ public actor ServerStore {
 
     public var sessions: [Session] { loadedSessions }
 
+    /// Jellyfin servers whose persisted row exists but whose token couldn't be rebuilt into a
+    /// session this launch (Keychain slot lost or unreadable). Surfaced so Settings can render
+    /// them as signed-out instead of letting them ghost invisibly; re-signing-in heals the row
+    /// in place (deterministic server id → `add` replaces), `remove(_:)` discards it.
+    public var signedOutJellyfinServers: [PersistedServer] {
+        persistedServers.filter { server in
+            guard case .jellyfin = server.kind else { return false }
+            return !loadedSessions.contains { $0.id == server.id }
+        }
+    }
+
     /// Whether any SMB server is configured. The app's router folds this into its
     /// login-vs-home decision: an SMB server with no Jellyfin session is still a
     /// browsable home, not a login dead-end.
@@ -108,7 +119,6 @@ public actor ServerStore {
         persistedServers = servers
 
         var rebuilt: [Session] = []
-        var orphanedJellyfinIDs: Set<ServerID> = []
         for server in servers {
             // Only `.jellyfin` servers reconstruct into a `Session`; their
             // Keychain slot holds the bearer token. SMB servers persist but
@@ -120,31 +130,23 @@ public actor ServerStore {
                    let session = Session(persisted: server, accessToken: token) {
                     rebuilt.append(session)
                 } else {
-                    // Token is confirmed ABSENT (Keychain returned nil) — the
-                    // user signed out / the slot was wiped. Safe to prune.
-                    orphanedJellyfinIDs.insert(server.id)
+                    // Token absent. This is NEVER a completed sign-out — signOut goes through
+                    // `remove(_:)`, which deletes the row along with the token — so a token-less
+                    // row means the Keychain lost data underneath us (access-group change after a
+                    // bundle-id rename, device migration with ThisDeviceOnly items). Keep the row:
+                    // it surfaces via `signedOutJellyfinServers`, and re-signing-in heals it in
+                    // place (deterministic server id → `add` replaces). Pruning here once turned
+                    // exactly this fault into a silently vanished server.
+                    Log.persistence.error("ServerStore.load: token missing for \(server.id.rawValue) — keeping row as signed-out")
                 }
             } catch {
                 // A Keychain READ ERROR (locked device, missing entitlement) is
-                // NOT proof the token is gone — pruning here would permanently
-                // lose the saved server over a transient fault. Skip building a
-                // session this load; leave the persisted record untouched.
+                // NOT proof the token is gone. Skip building a session this
+                // load; leave the persisted record untouched.
                 Log.persistence.error("ServerStore.load: Keychain read failed for \(server.id.rawValue) — leaving persisted record intact. \(error.localizedDescription)")
             }
         }
         loadedSessions = rebuilt
-
-        if !orphanedJellyfinIDs.isEmpty {
-            // Drop the orphaned Jellyfin servers (token confirmed gone) while
-            // keeping every other server (SMB, and Jellyfin servers that still
-            // resolve or that we couldn't read this launch).
-            persistedServers.removeAll { orphanedJellyfinIDs.contains($0.id) }
-            do {
-                try await settings.set(persistedServers, for: Self.persistedServersKey)
-            } catch {
-                throw ServerStoreError.persistenceFailed(underlying: String(describing: error))
-            }
-        }
 
         let storedActive = await settings.value(for: Self.activeServerIDKey)
         if let rawID = storedActive {
@@ -462,6 +464,27 @@ public actor ServerStore {
         } catch {
             throw ServerStoreError.persistenceFailed(underlying: String(describing: error))
         }
+    }
+
+    /// The persisted SMB password for `id`. `addSMBServer` ALWAYS stores one — even a guest's
+    /// empty string — so a clean Keychain miss means the slot was LOST (access-group change,
+    /// device migration), never "no password": that's surfaced as `.auth(.credentialUnavailable)`
+    /// instead of being degraded into an empty-password logon the server rejects with an error
+    /// that reads as its fault (the live-NAS EPERM incident).
+    public func smbPassword(for id: ServerID) async throws -> String {
+        let key = KeychainKey<String>(account: Self.tokenAccount(for: id))
+        let stored: String?
+        do {
+            stored = try await keychain.read(key)
+        } catch {
+            Log.persistence.error("ServerStore.smbPassword: Keychain read failed for \(id.rawValue) — \(error.localizedDescription)")
+            throw AppError.unexpected("SMB password read failed", underlying: AnySendableError(error))
+        }
+        guard let stored else {
+            Log.persistence.error("ServerStore.smbPassword: slot missing for \(id.rawValue)")
+            throw AppError.auth(.credentialUnavailable)
+        }
+        return stored
     }
 
     /// The opaque Keychain account that holds a server's secret — the Jellyfin bearer token
