@@ -43,13 +43,11 @@ struct SMBLoginView: View {
     @State private var connectTask: Task<Void, Never>?
     /// UI-level failsafe over the whole connect attempt. The lister already hard-bounds every
     /// AMSMB2 call, yet a device run still spun forever — so the attempt is ALSO bounded here,
-    /// above every layer this view awaits. Runs on the MainActor: if IT doesn't fire either, the
-    /// main actor itself is wedged (which the ticking elapsed counter makes visible).
+    /// above every layer this view awaits. Runs on the MainActor.
     @State private var watchdogTask: Task<Void, Never>?
-    /// When the in-flight attempt started — drives the elapsed counter AND is the single source
-    /// of the connecting state: `isConnecting` derives from it, so "connecting with no start
-    /// time" is unrepresentable and every exit path resets ONE value.
-    @State private var connectStartedAt: Date?
+    /// The single source of the connecting state — every exit path (success, error,
+    /// timeout, cancel, onDisappear) resets this ONE value.
+    @State private var isConnecting = false
     /// Diagnostic breadcrumb: the last stage the connect attempt reached, surfaced by the
     /// watchdog's DEBUG error message. Reference-typed on purpose — stage transitions are
     /// diagnostics, not display state, so writing them must not invalidate the form's view tree.
@@ -57,9 +55,6 @@ struct SMBLoginView: View {
     /// Incremented on Connect; `CredentialRowList` resigns any stale hidden-field first responder
     /// when it moves (see the sweep rationale there).
     @State private var fieldSweep = 0
-
-    /// The form is mid-attempt. Derived — see `connectStartedAt`.
-    private var isConnecting: Bool { connectStartedAt != nil }
 
     #if !os(tvOS)
     /// Return-key field walk: return advances to the next field, "go" on the last (password) connects.
@@ -103,19 +98,6 @@ struct SMBLoginView: View {
                 }
 
                 connectButton
-
-                // Live elapsed counter while connecting. Doubles as a diagnostic: it ticks on the
-                // MainActor, so a counter that FREEZES mid-attempt means the main actor is wedged
-                // (spinners keep animating in the render server and prove nothing).
-                if let startedAt = connectStartedAt {
-                    TimelineView(.periodic(from: startedAt, by: 1)) { context in
-                        let elapsed = max(0, Int(context.date.timeIntervalSince(startedAt)))
-                        Text("Connecting… \(elapsed)s")
-                            .font(.footnote)
-                            .foregroundStyle(Color.secondaryLabel)
-                            .monospacedDigit()
-                    }
-                }
             }
         }
         #if !os(tvOS)
@@ -128,7 +110,7 @@ struct SMBLoginView: View {
         #endif
         // Tear down any in-flight connection test when leaving the form (Menu/Back, or a tab
         // switch away) — a full reset, not just task cancellation: a cancelled task's early
-        // returns skip the epilogue, and a bare cancel left `connectStartedAt` set, so switching
+        // returns skip the epilogue, and a bare cancel left `isConnecting` latched, so switching
         // tabs mid-connect and back showed a stale Cancel+spinner with no live task behind it.
         .onDisappear { cancelConnect() }
         .navigationDestination(isPresented: $showShareSelector) {
@@ -269,7 +251,7 @@ struct SMBLoginView: View {
         let trimUser = username.trimmingCharacters(in: .whitespaces)
 
         connectionError = nil
-        connectStartedAt = Date()
+        isConnecting = true
         diagnostics.stage = "queued"
         // Release any hidden credential field tvOS left as first responder — the prime suspect
         // for Menu presses dying during a connect (see CredentialRowList's sweep rationale).
@@ -303,7 +285,7 @@ struct SMBLoginView: View {
                 guard !shares.isEmpty else {
                     await lister.disconnect()
                     connectionError = "\(trimHost) has no shares to add. Check the server's shared folders."
-                    connectStartedAt = nil
+                    isConnecting = false
                     watchdogTask?.cancel()
                     return
                 }
@@ -327,21 +309,19 @@ struct SMBLoginView: View {
                 // Never expose the password in the error message.
                 connectionError = "Couldn't connect to \(trimHost). Check the host and credentials."
             }
-            connectStartedAt = nil
+            isConnecting = false
             watchdogTask?.cancel()
         }
 
         // UI failsafe ABOVE every awaited layer: the lister hard-bounds each AMSMB2 call, yet a
-        // device run still spun forever — whatever wedges below, this frees the form. It runs on
-        // the MainActor, so if the error never appears AND the elapsed counter stops ticking, the
-        // main actor itself is blocked — that distinction is the diagnostic this exists for.
+        // device run still spun forever — whatever wedges below, this frees the form.
         watchdogTask?.cancel()
         watchdogTask = Task {
             try? await Task.sleep(for: .seconds(30))
             guard !Task.isCancelled, isConnecting else { return }
             connectTask?.cancel()
             connectTask = nil
-            connectStartedAt = nil
+            isConnecting = false
             #if DEBUG
             connectionError = "Timed out after 30 s (stage: \(diagnostics.stage))."
             #else
@@ -359,7 +339,7 @@ struct SMBLoginView: View {
         connectTask = nil
         watchdogTask?.cancel()
         watchdogTask = nil
-        connectStartedAt = nil
+        isConnecting = false
     }
 
 }
