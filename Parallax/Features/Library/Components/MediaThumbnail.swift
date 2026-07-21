@@ -221,8 +221,6 @@ struct MediaThumbnail: View {
                     }
                     .frame(height: 5)
                     .clipShape(.rect(cornerRadius: 2.5))
-                    // Pull the bar's ends clear of the tile's rounded corners (see the token).
-                    .padding(.horizontal, HomeShelf.progressBarCornerInsetX)
                 }
             }
             .padding(.horizontal, HomeShelf.footerCaptionInsetX)
