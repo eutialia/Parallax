@@ -41,11 +41,11 @@ struct DesignTokensTests {
         #expect(abs(d.r - 0x16/255.0) < 0.01 && abs(d.g - 0x16/255.0) < 0.01 && abs(d.b - 0x1C/255.0) < 0.01)
     }
 
-    @Test("buttonFill is white in dark, espresso in light")
+    @Test("buttonFill is white in dark, graphite ink in light")
     func buttonFillFlips() {
         #expect(rgba(.buttonFill, dark: true).r > 0.99)          // #FFFFFF
         let l = rgba(.buttonFill, dark: false)
-        #expect(abs(l.r - 0x2A/255.0) < 0.01 && abs(l.b - 0x1D/255.0) < 0.01)  // #2A241D
+        #expect(abs(l.r - 0x22/255.0) < 0.01 && abs(l.b - 0x2A/255.0) < 0.01)  // #22222A graphite ink
     }
 
     @Test("radius + spacing scales hold the handoff values")
