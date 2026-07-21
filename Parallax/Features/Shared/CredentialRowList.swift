@@ -63,6 +63,11 @@ struct CredentialRowList: View {
                 Button { focusRequest = index } label: { rowLabel(row) }
                     .tvListRowButton()
                     .focused($focusedRow, equals: row.id)
+                    // Float the focused pill above its siblings: the focus platter's shadow
+                    // (radius 11, y 6) reaches into the 8pt row gap, and a later sibling's opaque
+                    // fill painted OVER it sliced the shadow flat at the neighbour's edge — the
+                    // "blocky, cut-off" look. Same reason native lockups float above grid siblings.
+                    .zIndex(focusedRow == row.id ? 1 : 0)
             }
         }
         // The hidden field host sits behind the pills so its text fields are in the window's responder
@@ -171,8 +176,15 @@ private struct CredentialKeyboardHost: UIViewControllerRepresentable {
             // responder sits ahead of the focus system in the press-responder chain and can
             // swallow the remote's Menu press before it pops navigation — the device-reported
             // "stuck on the SMB form, had to kill the app" freeze. Sweep on the next runloop turn
-            // (resigning inside the end-editing callback would recurse into it).
-            DispatchQueue.main.async {
+            // (resigning inside the end-editing callback would recurse into it) — but stand down
+            // if a NEW editing session started in the meantime: `beginEditing`'s resign→become on a
+            // retained first responder lands here synchronously mid-resign, and the deferred sweep
+            // then fired AFTER the become and killed the freshly raised keyboard (device symptom:
+            // re-opening a filled field showed an empty editor). The generation check tells the
+            // two apart.
+            let generation = controller?.editGeneration
+            DispatchQueue.main.async { [weak controller] in
+                guard controller?.editGeneration == generation else { return }
                 if field.isFirstResponder { field.resignFirstResponder() }
             }
         }
@@ -190,6 +202,10 @@ private final class CredentialKeyboardController: UIViewController {
 
     weak var coordinator: CredentialKeyboardHost.Coordinator?
     var rows: [CredentialRow] = []
+    /// Bumped by `beginEditing` between its resign and its become. The coordinator's deferred
+    /// end-editing sweep snapshots this and only resigns if it's unchanged — i.e. no new session
+    /// was raised since the end-editing fired (see `textFieldDidEndEditing`).
+    private(set) var editGeneration = 0
 
     private var fields: [UITextField] = []
     private let stack = UIStackView()
@@ -255,11 +271,16 @@ private final class CredentialKeyboardController: UIViewController {
         guard fields.indices.contains(index) else { return }
         let field = fields[index]
         DispatchQueue.main.async { [weak self] in
-            guard self?.view.window != nil else { return }
+            guard let self, self.view.window != nil else { return }
             // If the field is still first responder from a prior edit (tvOS can keep it across the
             // keyboard scene's commit/dismiss), a bare becomeFirstResponder() no-ops and the editor
             // never re-presents — resign first so re-selecting the SAME pill re-opens the keyboard.
             if field.isFirstResponder { field.resignFirstResponder() }
+            // That resign fired `textFieldDidEndEditing`, which scheduled a deferred resign sweep.
+            // Bump the generation BEFORE raising the new session so the sweep sees it and stands
+            // down — un-bumped, it ran after the become below and resigned the brand-new keyboard
+            // session, which is why a re-opened filled field presented an EMPTY editor.
+            self.editGeneration += 1
             _ = field.becomeFirstResponder()
         }
     }
