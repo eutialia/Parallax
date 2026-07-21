@@ -110,13 +110,16 @@ public extension Episode {
         return nil
     }
 
-    /// Below-tile title for same-series surfaces (season rows): `"E3 · The One With the Embryos"`.
-    /// Index first so truncation eats the name, never the position; falls back to the bare name
-    /// when no index exists. Middle-dot per the app-wide caption convention. Mirrors
-    /// `seriesContextCaption`'s part-dropping so a missing index never leaves a dangling separator.
+    /// Below-tile title for same-series surfaces (season rows): `"3. The One With the Embryos"`.
+    /// A list ordinal, not the app's middle-dot caption — this is the one surface where the
+    /// season is already context (the tile sits inside its season's row), so `"S1 · E3"`
+    /// reads as chrome repeated on every tile. Number first so truncation eats the name,
+    /// never the position. Degrades to the bare name when the index is unknown, and to the
+    /// `"E3"` caption when the name is blank — never a dangling `". "`.
     var indexedNameCaption: String {
-        let parts = [indexCaption, name].compactMap(\.self).filter { !$0.isEmpty }
-        return parts.joined(separator: " · ")
+        guard let index = indexNumber else { return name }
+        guard !name.isEmpty else { return "E\(index)" }
+        return "\(index). \(name)"
     }
 
     /// Cross-series identity caption — `"S1 · E2 · Breaking Bad"`. Index first so tail

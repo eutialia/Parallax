@@ -145,6 +145,31 @@ struct LibraryPrimitivesTests {
         #expect(episode(seriesName: nil, index: nil).seriesContextCaption == nil)
     }
 
+    @Test("Episode indexedNameCaption is a list ordinal, degrading without index or name")
+    func episodeIndexedNameCaption() {
+        func episode(name: String, index: Int?) -> Episode {
+            Episode(
+                id: ItemID(rawValue: "e1"),
+                seriesID: ItemID(rawValue: "s1"),
+                seasonID: ItemID(rawValue: "se1"),
+                name: name,
+                seriesName: "Preview Show",
+                indexNumber: index,
+                parentIndexNumber: index == nil ? nil : 1,
+                overview: nil,
+                runtime: nil,
+                primaryTag: nil,
+                userData: .absent
+            )
+        }
+        // The season-row surface: the season is context, so no "S1" prefix — a bare ordinal.
+        #expect(episode(name: "Pilot", index: 3).indexedNameCaption == "3. Pilot")
+        #expect(episode(name: "Pilot", index: nil).indexedNameCaption == "Pilot")
+        // A blank server-side Name must not leave a dangling "3. ".
+        #expect(episode(name: "", index: 3).indexedNameCaption == "E3")
+        #expect(episode(name: "", index: nil).indexedNameCaption == "")
+    }
+
     @Test("Episode timeCaption never shows time left once played, despite stale position ticks")
     func episodeTimeCaptionPlayedGate() {
         let episode = Episode(
