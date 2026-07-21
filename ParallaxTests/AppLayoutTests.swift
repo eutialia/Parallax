@@ -42,7 +42,7 @@ struct AppLayoutTests {
     func landscapeGridColumns() {
         #expect(AppLayout.landscapeGridColumns(idiom: .compact) == 2)
         #expect(AppLayout.landscapeGridColumns(idiom: .regular) == 4)
-        #expect(AppLayout.landscapeGridColumns(idiom: .tv) == 4)
+        #expect(AppLayout.landscapeGridColumns(idiom: .tv) == 5)
         // A 16:9 tile is far wider than a 2:3 poster at the same column width, so a landscape
         // grid must thin its columns relative to the poster count — never match or exceed it,
         // or the tiles render short and cramped.
