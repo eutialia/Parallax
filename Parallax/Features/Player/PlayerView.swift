@@ -190,6 +190,11 @@ struct PlayerView: View {
             clickSeekCoalescer.cancel()
             DisplayCriteriaMatcher.clear()
             #else
+            // Backstop only: the presentation host already released the lock when the
+            // dismissal began (rotating back mid-slide instead of snapping after it —
+            // see `PlayerPresentationHost.sync`). This idempotent re-release covers
+            // unmounts that never flipped the request (server switch tearing the
+            // player down structurally).
             OrientationController.shared.releasePlayerLock()
             #endif
         }

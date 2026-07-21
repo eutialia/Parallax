@@ -1,5 +1,6 @@
 #if !os(tvOS)
 import SwiftUI
+import UIKit
 
 /// Shared state for the iOS player layer: ONE vertical travel value that every
 /// motion writes — the present spring (height → 0), the pull-to-dismiss finger
@@ -74,6 +75,15 @@ struct PlayerPresentationHost: View {
             // edge — it slides, pauses on that strip, then the unmount snaps it away (the
             // "step"). Parking the present at the full height keeps the slide-in symmetric.
             let height = geo.size.height + geo.safeAreaInsets.top + geo.safeAreaInsets.bottom
+            // How far the dismiss slide must travel to clear the screen. On iPhone the
+            // dismissal itself rotates the window back to portrait (see `sync`), so the
+            // slide computed in landscape must still clear the PORTRAIT height — the
+            // window's larger physical dimension. iPad never rotates on dismiss (the
+            // orientation lock is a no-op there), so it keeps the exact height and the
+            // slide-out speed the present spring matches.
+            let dismissTravel = UIDevice.current.userInterfaceIdiom == .phone
+                ? max(height, geo.size.width + geo.safeAreaInsets.leading + geo.safeAreaInsets.trailing)
+                : height
             ZStack {
                 if let request = mounted {
                     PlayerView(request: request)
@@ -109,7 +119,7 @@ struct PlayerPresentationHost: View {
                 }
             }
             .onChange(of: playback.request?.id) { _, _ in
-                sync(height: height)
+                sync(height: height, dismissTravel: dismissTravel)
             }
         }
         // The player never keyboard-avoids: nothing in it takes text input, and the
@@ -123,7 +133,7 @@ struct PlayerPresentationHost: View {
         .ignoresSafeArea(.keyboard)
     }
 
-    private func sync(height: CGFloat) {
+    private func sync(height: CGFloat, dismissTravel: CGFloat) {
         if let request = playback.request {
             guard mounted?.id != request.id else { return }
             // Park offscreen in the same commit that mounts; onAppear slides in.
@@ -133,6 +143,17 @@ struct PlayerPresentationHost: View {
             mounted = request
         } else {
             guard mounted != nil else { return }
+            // Release the orientation lock the moment dismissal BEGINS — not in the
+            // player's onDisappear, which this host defers until the slide-out's
+            // completion. The browse UI underneath is visible (only disabled) for the
+            // whole slide, so a completion-time release showed it sideways for the
+            // full 0.45s and then snap-rotated to portrait (the dismiss "flash") —
+            // and a backgrounding mid-slide froze the spring's clock, reopening the
+            // app on landscape browse. Rotating now means the window turns portrait
+            // WHILE the card slides out (hence `dismissTravel` clearing the portrait
+            // height). onDisappear keeps an idempotent release as the backstop for
+            // unmounts that never flip `request` (server switch).
+            OrientationController.shared.releasePlayerLock()
             presentation.isSettled = false
             // From wherever the surface is — .zero after a Close tap, the finger's
             // drop point after a committed pull (the card slides on out from there,
@@ -141,7 +162,7 @@ struct PlayerPresentationHost: View {
             // unmount. The completion fires exactly once even if the animation is
             // interrupted, so the player can never linger unmounted-but-visible.
             withAnimation(presentAnimation) {
-                presentation.offset = CGSize(width: 0, height: height)
+                presentation.offset = CGSize(width: 0, height: dismissTravel)
             } completion: {
                 // The slide-out landed: any drag state is stale now, so clear it
                 // unconditionally — even if the race guard below bails, isDragging
