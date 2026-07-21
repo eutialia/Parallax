@@ -62,6 +62,29 @@ final class PlayerViewModel {
     var stopPiPAction: (@MainActor () -> Void)?
     func startPiP() { startPiPAction?() }
     func stopPiP() { stopPiPAction?() }
+
+    /// Freeze/unfreeze the video surface's last frame, pushed up from the AVKit host
+    /// (`onFreezeReady`) like the PiP actions — nil until a host mounts (VLC never
+    /// wires them), so both are safe no-ops in tests and on the VLC path. The VM
+    /// freezes at the top of an engine-reusing reload (`reloadTranscode`) and
+    /// unfreezes on the swapped-in session's first LIVE beat (`.playing` OR `.paused`
+    /// — a paused scrub's re-anchor is re-paused and never plays), keeping the last
+    /// frame under the "Buffering" veil instead of the black `replaceCurrentItem`
+    /// flush. `surfaceFrozen` gates the beat-side unfreeze so ordinary beats never
+    /// call into the host.
+    var freezeSurfaceAction: (@MainActor () -> Void)?
+    var unfreezeSurfaceAction: (@MainActor () -> Void)?
+    private var surfaceFrozen = false
+    private func freezeVideoSurface() {
+        guard !surfaceFrozen else { return }
+        surfaceFrozen = true
+        freezeSurfaceAction?()
+    }
+    private func unfreezeVideoSurface() {
+        guard surfaceFrozen else { return }
+        surfaceFrozen = false
+        unfreezeSurfaceAction?()
+    }
     private(set) var availableAudioTracks: [AudioTrack] = []
     private(set) var availableSubtitleTracks: [SubtitleTrack] = []
     private(set) var selectedAudioTrack: AudioTrack? = nil
@@ -536,6 +559,14 @@ final class PlayerViewModel {
     // a scrub past the buffer can't stack reloads or strand on a stale position.
     private var pendingReanchorTarget: CMTime?
     private var isReanchoring = false
+    /// True once an out-of-buffer transcode seek went IN-STREAM — allowed only while no
+    /// sidecar subtitle renders. The server restarted ffmpeg under the item's established
+    /// timeline mapping, so the mapping may have shifted vs the frames (the 2026-07-17
+    /// desync class); harmless while nothing reads the player clock absolutely, but a
+    /// sidecar subtitle activated on a dirty timeline must re-anchor FIRST (see
+    /// `selectSubtitleTrack`). Cleared whenever a fresh AVPlayerItem re-derives the
+    /// mapping (`beginPlayback`) and on session reset.
+    private var transcodeTimelineDirty = false
 
     /// What the live transcode job is ACTUALLY doing to the video (copy/remux vs
     /// re-encode) — the copy-vs-reencode signal `PlaybackInfo` can't give (the server
@@ -564,6 +595,13 @@ final class PlayerViewModel {
     /// user switches a track on the transcode path.
     typealias ResolveCall = @Sendable (ItemID, DeviceCapabilities, CMTime?, Int?, Int?) async throws -> ResolvedPlayback
 
+    /// Deadline for the re-resolve inside an engine-reusing reload (re-anchor / track
+    /// switch). That span shows the "Buffering" scrim with NO watchdog armed yet —
+    /// `LoadWatchdog`/`StallWatchdog` only arm from `engine.play()` — so an unbounded
+    /// resolve left the scrim up forever (tvOS field report, 2026-07-20). Injectable
+    /// so tests can force the timeout without waiting wall-clock seconds.
+    private let reloadResolveDeadline: Duration
+
     init(
         deviceProfileBuilder: DeviceProfileBuilder,
         playbackInfo: any PlaybackReporting,
@@ -580,6 +618,7 @@ final class PlayerViewModel {
         keepaliveInterval: Duration = .seconds(30),
         fetchDelivery: @escaping @Sendable (String) async -> TranscodeDelivery? = { _ in nil },
         deliveryProbeSchedule: [Duration] = [.seconds(2), .seconds(5)],
+        reloadResolveDeadline: Duration = .seconds(15),
         smbResumeStore: SMBResumeStore = .shared
     ) {
         self.deviceProfileBuilder = deviceProfileBuilder
@@ -595,6 +634,7 @@ final class PlayerViewModel {
         self.keepaliveInterval = keepaliveInterval
         self.fetchDelivery = fetchDelivery
         self.deliveryProbeSchedule = deliveryProbeSchedule
+        self.reloadResolveDeadline = reloadResolveDeadline
         self.smbResumeStore = smbResumeStore
     }
 
@@ -1035,7 +1075,18 @@ final class PlayerViewModel {
         // so it overlaps the long network call instead of stalling makeAsset.
         async let subtitleFonts = SubtitleFontLocator.resolved()
         let caps = await deviceProfileBuilder.build()
-        let resolved = try await resolve(item.id, caps, startTime, audioStreamIndex, subtitleStreamIndex)
+        let resolved: ResolvedPlayback
+        if reusingEngine {
+            // A reload holds the "Buffering" scrim through this call with no watchdog
+            // armed yet (see `reloadResolveDeadline`) — bound it, so a wedged
+            // negotiation becomes the ordinary fallback (old stream resumes, the
+            // failure is loud, the next scrub retries) instead of a stuck scrim.
+            resolved = try await Self.withDeadline(reloadResolveDeadline) { [resolve] in
+                try await resolve(item.id, caps, startTime, audioStreamIndex, subtitleStreamIndex)
+            }
+        } else {
+            resolved = try await resolve(item.id, caps, startTime, audioStreamIndex, subtitleStreamIndex)
+        }
         // The critical fence: resolve is the long network call, so this is where an
         // exit-during-loading usually lands. Bail BEFORE building an engine.
         try checkStillActive()
@@ -1069,6 +1120,35 @@ final class PlayerViewModel {
 
         let asset = Self.makeAsset(from: resolved, subtitleFonts: await subtitleFonts)
         try await loadAndPlay(asset, reusingEngine: reusingEngine)
+        // The engine now plays a FRESH AVPlayerItem whose timeline mapping derives from
+        // this session's own segments — any prior in-stream restart shift is laundered.
+        transcodeTimelineDirty = false
+    }
+
+    /// Races `operation` against a wall-clock deadline; a miss throws
+    /// `.network(.timedOut)` (the standard "server took too long" surface) and
+    /// cancels the operation. The bound is COOPERATIVE: the task group awaits the
+    /// cancelled loser on exit, so an operation that ignores cancellation delays the
+    /// timeout until it unblocks — fine for the URLSession-backed resolve (cancellation-
+    /// aware end to end), but don't reach for this around uncancellable work.
+    private static func withDeadline<T: Sendable>(
+        _ deadline: Duration,
+        _ operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await operation() }
+            group.addTask {
+                try await Task.sleep(for: deadline)
+                throw AppError.network(URLError(.timedOut))
+            }
+            // First child to finish wins — a timeout throws out of `next()`, and the
+            // loser is cancelled either way.
+            guard let first = try await group.next() else {
+                throw AppError.network(URLError(.timedOut))
+            }
+            group.cancelAll()
+            return first
+        }
     }
 
     /// Select the engine for `asset`, (re)build or reuse it, load, fence, and play —
@@ -1237,6 +1317,13 @@ final class PlayerViewModel {
         // state too so a retry()/replay can't inherit a stale target or a stuck flag.
         pendingReanchorTarget = nil
         isReanchoring = false
+        transcodeTimelineDirty = false
+        // Release any held frame THROUGH the action, not by clearing the flag alone: on
+        // an in-place retry the host UIView survives, and a flag-only reset would strand
+        // the pinned snapshot over the replayed video (the beat-side unfreeze guards on
+        // the flag and would no-op forever). If the host is already gone the action's
+        // weak view makes this a no-op.
+        unfreezeVideoSurface()
         deliveryProbeTask?.cancel()
         deliveryProbeTask = nil
         transcodeDelivery = nil
@@ -1465,9 +1552,13 @@ final class PlayerViewModel {
         // direct-play track carries a `.vlc`/`.avKitOption` id the engine renders; `nil`
         // is Off.
         if let track, let index = track.id.jellyfinStreamIndex {
-            if leavingBurnIn {
-                // Sidecar activation must wait for the reload to land — fetching now would
-                // read the still-burning-in outgoing session's (stale) subtitleURLs.
+            // Two states force the reload-then-activate path, and both must wait for the
+            // fresh item before fetching: leaving an active burn-in (the outgoing session
+            // is still burning the image in, and its subtitleURLs are stale) and a DIRTY
+            // timeline (an in-stream out-of-buffer seek restarted ffmpeg under this
+            // item's mapping — permitted only while no sidecar rendered, see `seek(to:)`)
+            // that must be laundered BEFORE absolute-timestamp cues draw.
+            if leavingBurnIn || (resolved?.method == .transcode && transcodeTimelineDirty) {
                 await reloadSubtitleTranscode(to: track, subtitleStreamIndex: index) {
                     await self.activateSidecarSubtitle(track, index: index)
                 }
@@ -1691,17 +1782,25 @@ final class PlayerViewModel {
     /// re-anchor is always clean — "dismiss + restart fixes it", automated.
     ///
     /// In-buffer transcode seeks (segments already downloaded under the live mapping)
-    /// and every direct-play / VLC / SMB seek stay in-stream. Cost: the re-anchor
-    /// re-buffers (loading scrim on every out-of-buffer transcode scrub), but an
-    /// out-of-buffer seek already re-buffers today (the engine fetches the segment),
-    /// so this swaps a drifting in-place restart for a clean fresh one.
+    /// and every direct-play / VLC / SMB seek stay in-stream.
+    ///
+    /// SUBS-AWARE SCOPE (2026-07-20): the shifted mapping only has ONE absolute-clock
+    /// consumer — the sidecar cue overlay. Burn-ins ride the video and embedded tracks
+    /// ride the stream clock, so they shift WITH the frames and stay visually synced.
+    /// While no sidecar renders, an out-of-buffer seek therefore goes IN-STREAM (old
+    /// scrub feel: buffer preserved, plain re-buffer instead of the scrim) and marks
+    /// `transcodeTimelineDirty`; activating a sidecar later launders the timeline with
+    /// one re-anchor (`selectSubtitleTrack`). With a sidecar up, only the re-anchor
+    /// keeps its cues honest. Known accepted skew on a dirty timeline: reported
+    /// positions/resume points can be off by up to a keyframe interval — same as the
+    /// pre-re-anchor behavior.
     ///
     /// REVISIT when the server runs Jellyfin ≥ 12.0: it ships #15926 (drops
     /// `-noaccurate_seek` for full re-encodes) and #16580 (trims copied audio to the
     /// seek target), making RE-ENCODE mid-session restarts frame-accurate — those
-    /// could then seek in-stream again, dropping the scrim. Neither PR touches the
+    /// could then seek in-stream even with a sidecar up. Neither PR touches the
     /// VIDEO-COPY miss (+0.5s remux seek pad / long-GOP keyframe gaps vs the item's
-    /// established mapping), so remuxes likely still need the re-anchor. Re-verify
+    /// established mapping), so remuxes keep the sidecar-gated re-anchor. Re-verify
     /// with the 2026-07-17 witness protocol (Claude memory:
     /// subtitle-scrub-desync-history) before relaxing anything.
     /// Returns `true` when the seek RE-ANCHORED (rebuilt the transcode via
@@ -1727,11 +1826,32 @@ final class PlayerViewModel {
         if await engine.isBuffered(at: target) {
             await engine.seek(to: target)
             return false
-        } else {
-            pendingReanchorTarget = target
-            await drainReanchorSeeks()
-            return true
         }
+        // Out of buffer, no sidecar rendering, no reload in flight: nothing reads the
+        // clock absolutely, so take the in-stream seek (buffer intact, ordinary
+        // re-buffer UX) and record the possibly-shifted mapping for the next sidecar
+        // activation to launder. The `isSwitchingTracks` check is load-bearing: a
+        // reload's OPTIMISTIC selection (e.g. a burn-in pick) can read as "no sidecar"
+        // mid-flight, and an in-stream seek then would both race the dying engine and
+        // mark dirty in a window where a failed switch RESTORES a text sidecar without
+        // laundering. Inside that window only the re-anchor path is safe — it degrades
+        // to the documented drop-don't-queue abandon.
+        if !sidecarSubtitleActive && !isSwitchingTracks {
+            transcodeTimelineDirty = true
+            await engine.seek(to: target)
+            return false
+        }
+        pendingReanchorTarget = target
+        await drainReanchorSeeks()
+        return true
+    }
+
+    /// True while the client-rendered sidecar overlay owns subtitles — the one consumer
+    /// that matches ABSOLUTE cue timestamps against the player clock. (`jellyfinStream`
+    /// ids are exactly the tracks `SubtitleOverlayView` draws; burn-ins carry a stream
+    /// id only until the reload lands, but their pick always reloads anyway.)
+    private var sidecarSubtitleActive: Bool {
+        selectedSubtitleTrack.map { !$0.isBurnedIn && $0.id.jellyfinStreamIndex != nil } ?? false
     }
 
     /// A scrub-commit seek: the gated `seek(to:)` followed by the pre-scrub transport
@@ -1787,7 +1907,13 @@ final class PlayerViewModel {
                 resumeAt: target,
                 audioStreamIndex: currentAudioStreamIndex,
                 subtitleStreamIndex: currentSubtitleStreamIndex
-            ) else { break }
+            ) else {
+                // Also drop any target queued during the failed attempt: the fallback
+                // resumed the OLD stream, and a stale drain against it would fight the
+                // user's next (fresh) scrub.
+                pendingReanchorTarget = nil
+                break
+            }
         }
     }
 
@@ -1813,7 +1939,11 @@ final class PlayerViewModel {
 
         // Freeze the current frame at the moment of the swap — the frosted cover
         // frosts over it while the new transcode buffers, and pausing stops the
-        // outgoing audio instead of letting it play on under the cover.
+        // outgoing audio instead of letting it play on under the cover. The snapshot
+        // (not the layer) is what actually holds the frame: `replaceCurrentItem` can
+        // flush AVPlayerLayer to black (see `AVKitVideoLayerHost.onFreezeReady`).
+        // Taken BEFORE the pause's await so the frame on screen is the live one.
+        freezeVideoSurface()
         await engine?.pause()
         phase = .loading
         // The outgoing stream's buffer is meaningless for the new transcode —
@@ -1908,6 +2038,10 @@ final class PlayerViewModel {
         // a dismissed player — stop() owns the teardown, so just walk away.
         guard !isExiting else { return .abandoned }
         guard let engine else {
+            // The reload froze the surface before tearing the engine down; nothing will
+            // emit a live beat now, so release the held frame here or it outlives the
+            // failure (and an in-place retry would play under a pinned stale snapshot).
+            unfreezeVideoSurface()
             phase = .failed(error)
             await audioSession.deactivate()
             return .failed
@@ -1983,6 +2117,9 @@ final class PlayerViewModel {
             }
         case .playing(let position, let duration, let buffered):
             phase = .playing
+            // First live beat after an engine-reusing reload (beats are dropped while
+            // `isSwitchingTracks`): the new session is rendering — release the held frame.
+            unfreezeVideoSurface()
             // First `.playing` beat of this session: land the startup metric and consume
             // the anchor so a later `.playing` (resume-from-pause, post-stall) never
             // overwrites it. `nil` when this beat isn't the first (already consumed).
@@ -2017,6 +2154,10 @@ final class PlayerViewModel {
                 saveSMBResumeThrottled()
             }
         case .paused(let position, let duration, let buffered):
+            // A LIVE beat like .playing: a paused scrub's re-anchor is re-paused by
+            // `commitScrubSeek` and may never emit .playing — a paused AVPlayer still
+            // renders the seeked-to frame, so the held frame must release here too.
+            unfreezeVideoSurface()
             // While a scrub latch holds an intent, ignore the transient .paused beats the
             // drag/seek emit (they'd flash the glyph); the commit clears the latch when it
             // settles. nil = honor the beat directly. See scrubResumeIntent.
@@ -2106,6 +2247,10 @@ final class PlayerViewModel {
             isPlaying = false
             scrubResumeIntent = nil   // a terminal beat drops any pending scrub latch
             clearStall()
+            // A terminal beat also releases any held frame — no live beat will ever
+            // arrive to do it, and a stale snapshot must not sit latched under the
+            // error scrim into a retry.
+            unfreezeVideoSurface()
             phase = .failed(Self.map(error))
         }
     }

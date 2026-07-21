@@ -491,6 +491,9 @@ struct PlayerView: View {
                 AVKitVideoLayerHost(engine: engine, onPiPReady: { start, stop in
                     vm.startPiPAction = start
                     vm.stopPiPAction = stop
+                }, onFreezeReady: { freeze, unfreeze in
+                    vm.freezeSurfaceAction = freeze
+                    vm.unfreezeSurfaceAction = unfreeze
                 })
                 .ignoresSafeArea()
             case .vlcKit:
