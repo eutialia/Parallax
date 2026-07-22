@@ -1,6 +1,7 @@
 import Foundation
 import CoreMedia
 import JellyfinAPI
+import os
 import ParallaxCore
 
 /// A track pick the player reports for server-side persistence — see
@@ -119,6 +120,7 @@ public actor PlaybackInfoService {
             """
             resolve item=\(item.rawValue, privacy: .public) \
             method=\(String(describing: method), privacy: .public) \
+            sentMaxBitrate=\(profile.maxStreamingBitrate ?? -1, privacy: .public) \
             container=\(source.container ?? "nil", privacy: .public) \
             video=\(videoStream?.codec ?? "nil", privacy: .public)/\(videoStream?.profile ?? "nil", privacy: .public) \
             bitDepth=\(videoStream?.bitDepth.map(String.init) ?? "nil", privacy: .public) \

@@ -81,4 +81,19 @@ struct DefaultJellyfinPlaybackClientTests {
         #expect(body.allowVideoStreamCopy == true)
         #expect(body.allowAudioStreamCopy == true)
     }
+
+    @Test("The PlaybackInfo POST body carries the deviceProfile that was passed in")
+    func bodyCarriesDeviceProfile() {
+        let profile = DeviceProfileTranslator.deviceProfile(from: sampleCapabilities())
+        let body = DefaultJellyfinPlaybackClient.playbackInfoBody(
+            profile: profile,
+            startTimeTicks: nil,
+            userID: "u1",
+            audioStreamIndex: nil,
+            subtitleStreamIndex: nil
+        )
+        // Assert identity via a distinctive field (sampleCapabilities' 120 Mbps maxBitrate)
+        // rather than object equality — proves the exact profile instance made it into the body.
+        #expect(body.deviceProfile?.maxStreamingBitrate == 120_000_000)
+    }
 }

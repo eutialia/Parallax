@@ -7,6 +7,7 @@
 
 import SwiftUI
 import os
+import AVFoundation
 import ParallaxCore
 import ParallaxJellyfin
 import ParallaxFileBrowse
@@ -123,10 +124,25 @@ struct ParallaxApp: App {
                     await dependencies.deviceProfileBuilder.invalidate()
                 }
             }
-            // Republish network reachability into `connectivity` for the app's lifetime. A
+            // Republish network reachability into `connectivity` for the app's lifetime, and
+            // forward the Low Data Mode / constrained-path signal into the device profile
+            // builder so the next resolve clamps `maxBitrate` (see `DeviceProfileBuilder`). A
             // SEPARATE `.task` so it runs concurrently with the route-change loop above (which
             // never returns); both share the view's cancellation. Drives `.recoversFromOffline`
             // on views stuck in an error state.
-            .task { await connectivity.observe() }
+            .task { await connectivity.observe(reportingConstraintTo: dependencies.deviceProfileBuilder) }
+            // Rebuild the device profile on the next resolve whenever HDR eligibility changes
+            // (display connect/disconnect, Low Power Mode, other system resource shifts).
+            // `AVPlayer.eligibleForHDRPlayback` is dynamic and explicitly NOT KVO-observable;
+            // this notification is Apple's supported way to learn it moved. Per the spec,
+            // in-flight playback is intentionally NOT interrupted. A SEPARATE `.task` (mirrors
+            // the two above) so it shares the view's cancellation instead of leaking.
+            .task {
+                for await _ in NotificationCenter.default.notifications(
+                    named: AVPlayer.eligibleForHDRPlaybackDidChangeNotification
+                ) {
+                    await dependencies.deviceProfileBuilder.invalidate()
+                }
+            }
     }
 }

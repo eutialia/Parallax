@@ -47,6 +47,8 @@ enum DeviceProfileTranslator {
         // (direct-play) and streaming (transcode/remux) so neither path is
         // silently throttled to the default.
         let maxBitrate = Int(capabilities.maxBitrate.rawValue)
+        // containerProfiles/id/name/maxStaticMusicBitrate/musicStreamingTranscodingBitrate are
+        // left nil by design: video-only client, server defaults suffice.
         return DeviceProfile(
             codecProfiles: codecProfiles(for: capabilities),
             directPlayProfiles: directPlayProfiles,

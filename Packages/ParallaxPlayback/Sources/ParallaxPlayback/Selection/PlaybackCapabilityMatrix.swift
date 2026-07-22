@@ -42,8 +42,7 @@ public enum PlaybackCapabilityMatrix {
     // MARK: — VLC (VLCKit 4.x) capability set
 
     /// Containers VLC's libavformat demuxer supports. Broad; covers the long
-    /// tail that AVKit cannot open. The `avi` container is not yet a `Container`
-    /// enum case — add it when the enum is extended.
+    /// tail that AVKit cannot open.
     public static let vlcContainers: Set<Container> = [
         .mp4, .mov, .hls,   // everything AVKit handles
         .mkv, .webm, .avi, .ts, .flac, .mp3,

@@ -193,6 +193,46 @@ struct DeviceProfileBuilderTests {
         let count = await probe.callCount
         #expect(count == 2, "Expected probe called twice after invalidate, got \(count)")
     }
+
+    // MARK: - Low Data Mode bitrate clamp
+
+    @Test("build() defaults to the unclamped 360 Mbps ceiling")
+    func defaultBitrateUnclamped() async {
+        let builder = DeviceProfileBuilder(probe: FakeCapabilityProbe())
+        let caps = await builder.build()
+        #expect(caps.maxBitrate == .megabits(360))
+    }
+
+    @Test("setNetworkConstrained(true) clamps the next build() to 8 Mbps")
+    func constrainedClampsBitrate() async {
+        let builder = DeviceProfileBuilder(probe: FakeCapabilityProbe())
+        await builder.setNetworkConstrained(true)
+        let caps = await builder.build()
+        #expect(caps.maxBitrate == .megabits(8))
+    }
+
+    @Test("a genuine constraint change invalidates the cache")
+    func constraintChangeInvalidates() async {
+        let probe = CountingFakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
+        let builder = DeviceProfileBuilder(probe: probe)
+        _ = await builder.build()
+        await builder.setNetworkConstrained(true)
+        _ = await builder.build()
+        let count = await probe.callCount
+        #expect(count == 2, "Expected probe called twice after a real constraint change, got \(count)")
+    }
+
+    @Test("setting the same constraint value again does not invalidate the cache")
+    func sameConstraintValueDoesNotInvalidate() async {
+        let probe = CountingFakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
+        let builder = DeviceProfileBuilder(probe: probe)
+        await builder.setNetworkConstrained(true)
+        _ = await builder.build()
+        await builder.setNetworkConstrained(true)
+        _ = await builder.build()
+        let count = await probe.callCount
+        #expect(count == 1, "Expected probe called once — the repeat setNetworkConstrained(true) is a no-op, got \(count)")
+    }
 }
 
 // A variant of FakeCapabilityProbe that counts how many times it is called.
