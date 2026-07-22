@@ -18,6 +18,9 @@ jobs:
     # macos-26 is the first image with Xcode >= 26.5, the floor set by
     # IPHONEOS_DEPLOYMENT_TARGET = 26.5 (macos-15 tops out at Xcode 26.3).
     runs-on: macos-26
+    # A hung media/simulator call must fail the job in minutes, not squat on the
+    # runner for the 6-hour default (ImageIO finalize hangs observed on this image).
+    timeout-minutes: 20
     strategy:
       # One package's runner-speed flake must not cancel (and mask) the others.
       fail-fast: false
@@ -61,6 +64,7 @@ jobs:
 
   app-build:
     runs-on: macos-26
+    timeout-minutes: 30
     needs: [drift-check, package-tests]
     steps:
       - uses: actions/checkout@v4
@@ -79,6 +83,7 @@ jobs:
 
   tvos-build:
     runs-on: macos-26
+    timeout-minutes: 30
     needs: [drift-check, package-tests]
     steps:
       - uses: actions/checkout@v4
