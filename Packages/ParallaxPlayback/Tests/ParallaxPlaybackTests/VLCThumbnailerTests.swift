@@ -4,7 +4,8 @@ import CoreGraphics
 import ImageIO
 @testable import ParallaxPlayback
 
-/// Decode PNG `Data` back into a `CGImage` to assert pixel dimensions / validity.
+/// Decode the encoded thumbnail `Data` (HEIC, or JPEG on a host with no HEVC encoder) back into a
+/// `CGImage` to assert pixel dimensions / validity. Codec-agnostic: ImageIO sniffs the format.
 private func decodeImage(_ data: Data) -> CGImage? {
     guard let source = CGImageSourceCreateWithData(data as CFData, nil),
           CGImageSourceGetCount(source) >= 1 else { return nil }
@@ -77,7 +78,7 @@ struct VLCThumbnailerFailureTests {
 @MainActor
 struct VLCThumbnailerHappyPathTests {
 
-    /// The bundled 160×90 (16:9) clip thumbnails to non-empty PNG data that decodes
+    /// The bundled 160×90 (16:9) clip thumbnails to non-empty image data that decodes
     /// as a valid image whose aspect ratio matches the 16:9 source (NOT a stretched
     /// 320×240 / 4:3 box). This is the empirical aspect-behavior check called for in
     /// the task: with `width: 0, height: 320` libvlc should derive width from the
@@ -87,7 +88,7 @@ struct VLCThumbnailerHappyPathTests {
     /// H.264 clip is feasible there (unlike a full `VLCMediaPlayer` render which needs
     /// a drawable). If a future VLCKit build can't decode in the sim, this is the test
     /// to mark device-only.
-    @Test("bundled 16:9 clip yields valid PNG data with a 16:9-ish aspect")
+    @Test("bundled 16:9 clip yields valid image data with a 16:9-ish aspect")
     func bundledClipThumbnails() async throws {
         let url = try #require(
             Bundle.module.url(forResource: "tiny", withExtension: "mp4", subdirectory: "Fixtures"),
@@ -97,7 +98,7 @@ struct VLCThumbnailerHappyPathTests {
         let frame = try await thumbnailer.thumbnailData(for: url, height: 320, timeout: .seconds(20))
         #expect(!frame.data.isEmpty)
 
-        let image = try #require(decodeImage(frame.data), "PNG data did not decode as an image")
+        let image = try #require(decodeImage(frame.data), "thumbnail data did not decode as an image")
         #expect(image.width > 0)
         #expect(image.height > 0)
         // Source is 16:9 (~1.778). With width derived from aspect, expect roughly that —

@@ -45,11 +45,9 @@ public actor AMSMB2Lister: SMBLister {
     ///     so a dead host fails fast instead of hanging on AMSMB2's 60s default.
     public init(host: String, username: String, password: String, domain: String = "", connectTimeout: TimeInterval = 15) {
         // Scheme-only URL; AMSMB2 derives the connection target from it. No credentials here.
-        // Percent-encode the host so a Bonjour-synthesised name with a space (e.g.
-        // "My NAS.local") forms a real URL and attempts a resolve, instead of silently
-        // collapsing to the bogus "smb://invalid" fallback.
-        let encodedHost = host.addingPercentEncoding(withAllowedCharacters: .urlHostAllowed) ?? host
-        self.serverURL = URL(string: "smb://\(encodedHost)") ?? URL(string: "smb://invalid")!
+        // The Bonjour-space percent-encoding subtlety lives in SMBURL.hostOnly, shared with
+        // the connection pool's SMBConnectionTarget.
+        self.serverURL = SMBURL.hostOnly(host)
         self.domain = domain
         // The NT domain/workgroup is passed to AMSMB2's dedicated `domain:` init
         // parameter — NOT folded into the user field. In libsmb2, a `DOMAIN\user`

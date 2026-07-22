@@ -313,6 +313,30 @@ struct SMBFileSourceTests {
         #expect(listing.media.first?.id == ItemID(rawValue: "Media:A.mp4")) // name-sorted, path-encoded
     }
 
+    @Test("browse strictly matches sidecar artwork per media item, ignoring folder art")
+    func browseMatchesSidecarArtwork() async throws {
+        let lister = FakeSMBLister(entries: [
+            SMBDirectoryEntry(name: "Film.mkv", isDirectory: false, size: 5, modifiedAt: nil),
+            SMBDirectoryEntry(name: "Film-thumb.jpg", isDirectory: false, size: 900, modifiedAt: nil),
+            SMBDirectoryEntry(name: "Other.mkv", isDirectory: false, size: 5, modifiedAt: nil),
+            SMBDirectoryEntry(name: "Other.png", isDirectory: false, size: 800, modifiedAt: nil),
+            SMBDirectoryEntry(name: "Lonely.mkv", isDirectory: false, size: 5, modifiedAt: nil),
+            // Folder-level art with no same-stemmed video: must NOT attach to any tile.
+            SMBDirectoryEntry(name: "folder.jpg", isDirectory: false, size: 700, modifiedAt: nil),
+        ])
+        let source = SMBFileSource(lister: lister, host: "nas", share: "Media", root: "")
+        let listing = try await source.browse(in: "Movies")
+
+        // Film → its explicit -thumb; Other → its bare same-stem png; Lonely → no sidecar (falls
+        // through to a frame-grab); folder.jpg is attached to nobody.
+        #expect(listing.artwork[ItemID(rawValue: "Media:Movies/Film.mkv")]?.name == "Film-thumb.jpg")
+        #expect(listing.artwork[ItemID(rawValue: "Media:Movies/Other.mkv")]?.name == "Other.png")
+        #expect(listing.artwork[ItemID(rawValue: "Media:Movies/Lonely.mkv")] == nil)
+        #expect(listing.artwork.count == 2, "only the two strictly-matched items carry artwork")
+        // The matched entry carries size (the provider gates on it) — the image, not the video.
+        #expect(listing.artwork[ItemID(rawValue: "Media:Movies/Film.mkv")]?.size == 900)
+    }
+
     @Test("default sort is Date Created, newest first")
     func defaultSortIsNewestCreated() {
         #expect(SMBBrowseSort.default == SMBBrowseSort(field: .dateCreated, direction: .descending))

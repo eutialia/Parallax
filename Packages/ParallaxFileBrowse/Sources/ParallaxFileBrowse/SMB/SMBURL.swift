@@ -27,6 +27,17 @@ public enum SMBURL {
         return URL(string: "smb://\(encHost)/\(tail)")
     }
 
+    /// Scheme-only connection URL (`smb://host`, no share/path, no userinfo) — what
+    /// `SMB2Manager` derives its connection target from. Percent-encodes the host so a
+    /// Bonjour-synthesised name with a space (e.g. "My NAS.local") forms a real URL and
+    /// attempts a resolve, instead of silently collapsing to the bogus `smb://invalid`
+    /// fallback. ONE home for that fallback subtlety — `AMSMB2Lister` and
+    /// `SMBConnectionTarget` both build their connection URL here.
+    public static func hostOnly(_ host: String) -> URL {
+        let encHost = host.addingPercentEncoding(withAllowedCharacters: .urlHostAllowed) ?? host
+        return URL(string: "smb://\(encHost)") ?? URL(string: "smb://invalid")!
+    }
+
     /// Inverse of `make`: decodes an `smb://host/share/path` URL back into its parts.
     ///
     /// `URL.pathComponents` percent-decodes each component, so the literal share/path a

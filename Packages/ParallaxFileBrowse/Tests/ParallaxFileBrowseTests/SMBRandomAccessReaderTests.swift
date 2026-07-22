@@ -6,12 +6,14 @@ import Testing
 struct SMBRandomAccessReaderTests {
 
     /// After `disconnect()` the reader is permanently closed: a straggler `read` (an HTTP-bridge
-    /// serve loop that raced the teardown) must throw immediately instead of lazily REconnecting
-    /// a fresh SMB session nothing would tear down. Prompt failure (vs. the 15s connect timeout
-    /// a reconnect attempt would burn against this unroutable host) proves no connect happened.
-    @Test("read after disconnect throws instead of reconnecting")
+    /// serve loop that raced the teardown) must throw immediately instead of lazily re-BORROWING
+    /// a fresh pool connection nothing would check back in. Prompt failure (vs. the 15s connect
+    /// timeout a checkout attempt would burn against this unroutable host) proves no checkout happened.
+    /// `disconnect()` before any read leaves no borrow to check in, so the pool is never touched.
+    @Test("read after disconnect throws instead of re-borrowing")
     func readAfterDisconnectThrows() async {
         let reader = SMBRandomAccessReader(
+            pool: SMBSharePool(),
             host: "203.0.113.0", username: "u", password: "p",
             share: "share", path: "file.mp4"
         )

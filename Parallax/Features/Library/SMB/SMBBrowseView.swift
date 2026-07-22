@@ -36,6 +36,13 @@ struct SMBBrowseView: View {
     @Environment(PlaybackPresenter.self) private var playback
     @Environment(\.appIdiom) private var idiom
     @State private var model: SMBBrowseViewModel?
+    /// Highest media index the viewport-ahead prefetch window has covered; -1 = none yet. Monotonic
+    /// per listing so scroll-back re-appearances don't re-hand items to the provider.
+    @State private var prefetchedThrough = -1
+    /// The `listingGeneration` the watermark belongs to. Checked SYNCHRONOUSLY in `prefetchWindow`
+    /// (not via an async `.task` reset, which loses to re-materialized cells' onAppear and would
+    /// leave a stale-high watermark suppressing the new listing's window).
+    @State private var prefetchedGeneration = -1
     /// Set when the lister can't even be BUILT — there's no view model to carry an error yet.
     @State private var setupError: String?
     /// True when `setupError` is unrecoverable without re-adding the server (a confirmed-lost
@@ -138,6 +145,36 @@ struct SMBBrowseView: View {
         path.path.split(separator: "/").last.map(String.init) ?? path.share
     }
 
+    /// Rows of thumbnails warmed BEYOND the tile that just appeared — a perception buffer, not the
+    /// whole folder (explicit user policy: scroll landings should be warm, but a huge directory must
+    /// not fetch wall-to-wall; un-approached items wait until the viewport nears them).
+    private static let prefetchLookaheadRows = 12
+
+    /// Viewport-ahead prefetch: when the media tile at `index` materialises in the lazy grid, hand
+    /// the provider the next `prefetchLookaheadRows` rows' worth of items past the current watermark.
+    /// Monotonic via `prefetchedThrough`, so each item is handed over once per listing; the provider
+    /// dedupes any overlap (cache / pending / negative-cache) anyway. The tile's own `.task` covers
+    /// `index` itself at visible priority.
+    private func prefetchWindow(from index: Int, model: SMBBrowseViewModel) {
+        // A fresh listing (load, re-sort) invalidates the watermark: indices reshuffled, so the
+        // coverage bound belongs to a dead order. Reset SYNCHRONOUSLY here — this handler runs in
+        // the same commit that materializes the new cells, so no onAppear can beat it.
+        if prefetchedGeneration != model.listingGeneration {
+            prefetchedGeneration = model.listingGeneration
+            prefetchedThrough = -1
+        }
+        let lookahead = Self.prefetchLookaheadRows * AppLayout.landscapeGridColumns(idiom: idiom)
+        let upper = min(index + lookahead, model.media.count - 1)
+        let lower = max(prefetchedThrough + 1, index + 1)
+        guard lower <= upper else { return }
+        let slice = Array(model.media[lower...upper])
+        prefetchedThrough = upper
+        let sidecars = model.artwork
+        Task {
+            await deps.mediaArtworkProvider.prefetch(slice, ref: path.ref, sidecars: sidecars)
+        }
+    }
+
     @ViewBuilder
     private func content(model: SMBBrowseViewModel) -> some View {
         if model.isLoading, model.folders.isEmpty, model.media.isEmpty {
@@ -181,10 +218,12 @@ struct SMBBrowseView: View {
                     SMBBrowseGrid(
                         folders: model.folders,
                         media: model.media,
+                        artwork: model.artwork,
                         ref: path.ref,
                         share: path.share,
                         parentPath: path.path,
                         artworkProvider: deps.mediaArtworkProvider,
+                        onMediaTileAppeared: { prefetchWindow(from: $0, model: model) },
                         onPlay: { playback.playSMB($0, ref: path.ref) }
                     )
                 }
@@ -222,12 +261,18 @@ struct SMBBrowseView: View {
 struct SMBBrowseGrid: View {
     let folders: [SMBDirectoryEntry]
     let media: [Item]
+    /// Strict per-item sidecar-image matches (keyed by `ItemID`); threaded into each tile so the
+    /// provider prefers a real poster over a frame-grab. Only matched items appear.
+    var artwork: [ItemID: SMBDirectoryEntry] = [:]
     let ref: SMBServerRef
     let share: String
     /// Share-relative path of the level being shown — a child folder's path is `parentPath/name`
     /// (or just `name` at the root).
     let parentPath: String
     let artworkProvider: MediaArtworkProvider
+    /// Fired when a media tile materialises in the lazy grid (its index in `media`) — drives the
+    /// owner's viewport-ahead prefetch window. Optional so previews need no prefetch plumbing.
+    var onMediaTileAppeared: ((Int) -> Void)? = nil
     let onPlay: (Item) -> Void
 
     @Environment(\.appIdiom) private var idiom
@@ -255,16 +300,23 @@ struct SMBBrowseGrid: View {
             if !media.isEmpty {
                 browseSection("Videos") {
                     LazyVGrid(columns: columns, spacing: AppLayout.posterGridRowSpacing(idiom: idiom)) {
-                        ForEach(media) { item in
+                        // Indexed so a cell's materialisation can report its position for the
+                        // prefetch window; identity stays the item's own id (not the offset), so
+                        // moves under a re-sort animate as moves, not wholesale replacements.
+                        ForEach(Array(media.enumerated()), id: \.element.id) { index, item in
                             Button { onPlay(item) } label: {
                                 // `.lockup()`: sibling label children on tvOS so the filename
                                 // nudges clear of the focus lift (contained on iOS).
-                                SMBThumbnailTile(item: item, ref: ref, provider: artworkProvider, aspectRatio: MediaImage.landscape)
+                                SMBThumbnailTile(item: item, ref: ref, provider: artworkProvider, sidecar: artwork[item.id], aspectRatio: MediaImage.landscape)
                                     .lockup()
                             }
                             // Same artwork-tile idiom as the library grid/search results — press-scale
                             // on iOS; tvOS forwards to `tvPosterButton()`, unchanged.
                             .pressableTileButton()
+                            // `onAppear` on a lazy-grid cell fires at materialisation (viewport-near),
+                            // which is exactly the "the user is approaching this row" signal the
+                            // prefetch window keys on.
+                            .onAppear { onMediaTileAppeared?(index) }
                         }
                     }
                 }

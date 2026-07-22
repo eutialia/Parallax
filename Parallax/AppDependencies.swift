@@ -141,17 +141,25 @@ final class AppDependencies {
 
         let audioSession = LiveAudioSession()
 
+        // ONE app-scoped SMB connection pool, shared by the thumbnail provider and the playback
+        // resolver: a browse-then-play flow reuses the same warm authenticated share connections
+        // (and the single cold-connect LAN/WAN classification) instead of re-handshaking per surface.
+        let smbConnectionPool = SMBSharePool()
+
         // One SMB resolver, sharing the same Keychain as the media repos above so a
         // tapped SMB file resolves its credentials from the same slot it was browsed
-        // under. Default `makeLister` (the live AMSMB2 sidecar-subtitle lister).
-        let smbPlaybackResolver = SMBPlaybackResolver(serverStore: store)
+        // under. Default `makeLister` (the live AMSMB2 sidecar-subtitle lister); its
+        // ad-hoc probe/subtitle readers borrow from the shared pool.
+        let smbPlaybackResolver = SMBPlaybackResolver(serverStore: store, pool: smbConnectionPool)
 
         // One app-scoped artwork provider. VLCThumbnailer is @MainActor — built here (live() is
         // @MainActor) and handed to the provider actor. Same ServerStore as the resolvers so it
-        // reads SMB passwords from the slot a file was browsed under.
+        // reads SMB passwords from the slot a file was browsed under; same pool so its sidecar +
+        // frame-grab reads ride the warm connections.
         let mediaArtworkProvider = MediaArtworkProvider(
             thumbnailer: VLCThumbnailer(),
-            serverStore: store
+            serverStore: store,
+            pool: smbConnectionPool
         )
 
         return AppDependencies(

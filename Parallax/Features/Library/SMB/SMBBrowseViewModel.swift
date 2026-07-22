@@ -19,6 +19,14 @@ import ParallaxJellyfin
 final class SMBBrowseViewModel {
     private(set) var folders: [SMBDirectoryEntry] = []
     private(set) var media: [Item] = []
+    /// Bumped every time a fresh listing lands (load, re-sort). The browse view keys its prefetch
+    /// watermark on this SYNCHRONOUSLY (checked inside the tile-appear handler), because an async
+    /// reset (`.task(id:)`) loses to the re-materialized cells' synchronous `onAppear` and a
+    /// stale-high watermark would silently suppress the new listing's prefetch window.
+    private(set) var listingGeneration = 0
+    /// Strict per-item sidecar-image matches for `media` (keyed by `ItemID`); only matched items
+    /// appear. Threaded to each tile so the thumbnail provider prefers a real poster over a frame-grab.
+    private(set) var artwork: [ItemID: SMBDirectoryEntry] = [:]
     private(set) var isLoading = false
     private(set) var error: String?
     /// True when the last failure was the server refusing the SIGN-IN (`.auth`, e.g. libsmb2's
@@ -91,6 +99,8 @@ final class SMBBrowseViewModel {
                 guard !Task.isCancelled else { return }
                 folders = listing.folders
                 media = listing.media
+                artwork = listing.artwork
+                listingGeneration += 1
             } catch {
                 guard !Task.isCancelled else { return }
                 let appError = SMBFileSource.mapListError(error, share: share, path: path)

@@ -1,14 +1,15 @@
 import Foundation
 import CoreGraphics
-import ImageIO
 import ParallaxCore
-import UniformTypeIdentifiers
 import VLCKitSPM
 
 /// Source-agnostic still-frame thumbnailer backed by VLCKit's `VLCMediaThumbnailer`.
 /// Decodes one frame from a video `URL` (local file or `smb://`) and returns it as
-/// PNG `Data` — `Sendable`, so the result crosses the package→app boundary cleanly
-/// without exposing a non-`Sendable` `CGImage`/`UIImage`.
+/// HEIC `Data` (via `ImageTranscode.encodeHEIC`, which falls back to JPEG on a host
+/// with no HEVC encoder) — `Sendable`, so the result crosses the package→app boundary
+/// cleanly without exposing a non-`Sendable` `CGImage`/`UIImage`. A video frame is a
+/// photographic still, so a lossy photographic codec stores it a fraction of the size
+/// PNG's lossless coder would.
 ///
 /// **Concurrency:** `VLCMedia`/`VLCMediaThumbnailer` are non-`Sendable`; like
 /// `VLCKitEngine`, all VLC work is pinned to `@MainActor`. `VLCMediaThumbnailer`
@@ -69,7 +70,7 @@ public final class VLCThumbnailer {
     /// Keyed by a per-fetch id so concurrent calls don't clobber each other's refs.
     private var inFlight: [UUID: Fetch] = [:]
 
-    /// Generates a still frame from `url`, returned as PNG data.
+    /// Generates a still frame from `url`, returned as HEIC data (JPEG on a host with no HEVC encoder).
     /// - Parameters:
     ///   - url: local file or `smb://` URL to thumbnail.
     ///   - options: pre-built VLC media option strings (e.g. credential options for
@@ -80,7 +81,7 @@ public final class VLCThumbnailer {
     ///     below the 0.3 default are applied as a `:start-time=` media option when the
     ///     pre-parse resolved a duration, so the decode opens at the target offset directly.
     ///   - timeout: hard ceiling; if VLC neither finishes nor times out by then, throws `.timedOut`.
-    /// - Returns: the PNG frame plus the source duration (nil if libvlc couldn't read the length).
+    /// - Returns: the encoded frame plus the source duration (nil if libvlc couldn't read the length).
     public func thumbnailData(
         for url: URL,
         options: [String] = [],
@@ -186,7 +187,17 @@ public final class VLCThumbnailer {
             }
         }
 
-        let data = try Self.encodePNG(cgImage)
+        // Encode the decoded frame as HEIC (JPEG fallback if this host has no HEVC encoder). A
+        // video frame is a photographic still, so the lossy photographic codec stores it far
+        // smaller than PNG's lossless coder would. `ImageTranscode` throws only on a genuine
+        // ImageIO failure (both destinations dead) — surface that as `.encodingFailed`, the case
+        // callers already handle, rather than leaking the ParallaxCore error type across the seam.
+        let data: Data
+        do {
+            data = try ImageTranscode.encodeHEIC(cgImage)
+        } catch {
+            throw VLCThumbnailError.encodingFailed
+        }
         // `media.length` is populated as a side effect of the parse+seek the thumbnailer just
         // performed (positional snapshotting can't seek to 5% without knowing the duration), so
         // it's read here — after a successful frame — without a second parse. nil/0 means libvlc
@@ -213,22 +224,6 @@ public final class VLCThumbnailer {
         fetch.delegate.resolve = nil  // block any late delegate callback
         fetch.delegate.continuation.resume(with: result.mapError { $0 as Error })
     }
-
-    /// Encode a `CGImage` to PNG `Data` via ImageIO. Throws `.encodingFailed` if the
-    /// destination can't be created or finalized.
-    private static func encodePNG(_ image: CGImage) throws -> Data {
-        let data = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(
-            data, UTType.png.identifier as CFString, 1, nil
-        ) else {
-            throw VLCThumbnailError.encodingFailed
-        }
-        CGImageDestinationAddImage(destination, image, nil)
-        guard CGImageDestinationFinalize(destination) else {
-            throw VLCThumbnailError.encodingFailed
-        }
-        return data as Data
-    }
 }
 
 public enum VLCThumbnailError: Error, Sendable {
@@ -244,7 +239,7 @@ public enum VLCThumbnailError: Error, Sendable {
     /// to distinguish it. Callers treat this and `.parseTimedOut` the same
     /// (poison-unless-cancelled); the split is diagnostic only.
     case timedOut
-    case encodingFailed  // CGImage → PNG data failed
+    case encodingFailed  // CGImage → HEIC/JPEG data failed (genuine ImageIO failure, not a missing HEVC encoder)
 }
 
 // MARK: - Pre-parse

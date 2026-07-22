@@ -1,20 +1,24 @@
 import SwiftUI
 import ParallaxCore
+import ParallaxFileBrowse
 
 /// SMB grid cell: the same poster chrome as the Jellyfin `MediaTile`, but its artwork resolves
-/// lazily — a frame-grab generated + cached on first appearance by `MediaArtworkProvider` (an SMB
-/// file carries no server poster). Until one exists it shows the same gray placeholder as a
-/// missing Jellyfin poster.
+/// lazily — a strict sidecar image or a frame-grab, generated + cached on first appearance by
+/// `MediaArtworkProvider` (an SMB file carries no server poster). Until one exists it shows the same
+/// gray placeholder as a missing Jellyfin poster.
 ///
-/// The `.task(id:)` is the whole concurrency story: SwiftUI starts it when the cell scrolls into
-/// the `LazyVGrid` and cancels it on scroll-off or item-identity change. That cancellation
-/// propagates through the provider's single-permit gate into `VLCThumbnailer`, so a scrolled-past
-/// tile gives up the one generation slot to a still-visible one instead of holding it behind a
-/// 20s demux.
+/// The `.task(id:)` starts when the cell scrolls into the `LazyVGrid` and is cancelled on scroll-off
+/// or item-identity change — but that cancellation now abandons only this tile's AWAIT of the shared,
+/// provider-owned generation, never the generation itself (which runs to completion; a folder-wide
+/// prefetch wants every key anyway). So a scrolled-past tile costs nothing extra; the work it kicked
+/// off still finishes and lands in the cache for the next appearance.
 struct SMBThumbnailTile: View {
     let item: Item
     let ref: SMBServerRef
     let provider: MediaArtworkProvider
+    /// The strict sidecar-image match for this item (from the browse listing), or nil. Threaded into
+    /// the provider so the sidecar tier can short-circuit the frame-grab.
+    var sidecar: SMBDirectoryEntry?
     /// 16:9 by default — an SMB tile is a video frame-grab, which reads naturally wide. The grid
     /// passes the source-derived shape so the tile, its column count, and the cached thumbnail's
     /// crop all agree (a 16:9 frame forced into a 2:3 box overflowed and stole the cell's taps).
@@ -37,7 +41,7 @@ struct SMBThumbnailTile: View {
         // just the artwork (unlike LibraryCard/FavoritesCard, which wrap a single artwork rect).
         .contentShape(.rect(cornerRadius: Radius.tile))
         .task(id: item.id) {
-            artwork = await provider.artwork(for: item, ref: ref)
+            artwork = await provider.artwork(for: item, ref: ref, sidecar: sidecar)
         }
     }
 
@@ -58,7 +62,7 @@ struct SMBThumbnailTile: View {
         var body: some View {
             #if os(tvOS)
             tile.mediaTile(artwork: artwork).lockup(thumbnailTaskID: tile.item.id) {
-                artwork = await tile.provider.artwork(for: tile.item, ref: tile.ref)
+                artwork = await tile.provider.artwork(for: tile.item, ref: tile.ref, sidecar: tile.sidecar)
             }
             #else
             tile

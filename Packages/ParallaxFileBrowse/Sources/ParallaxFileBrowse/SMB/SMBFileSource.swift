@@ -178,9 +178,31 @@ public struct SMBFileSource: Sendable {
         let dirPath = path.isEmpty ? root : path
         let entries = try await allEntries(in: path)
         let folders = sort.sorted(entries.filter(\.isDirectory))
-        let media = sort.sorted(entries.filter { Self.isMediaFile($0) && $0.size > 0 })
-            .map { Self.item(from: $0, share: share, in: dirPath) }
-        return SMBBrowseListing(folders: folders, media: media)
+        // Keep the sorted media ENTRIES so sidecar matching can read each file's real name; the
+        // `Item`s are mapped from them below and stay index-aligned.
+        let mediaEntries = sort.sorted(entries.filter { Self.isMediaFile($0) && $0.size > 0 })
+        let media = mediaEntries.map { Self.item(from: $0, share: share, in: dirPath) }
+
+        // Sidecar artwork, computed from the SAME single listing pass (no extra I/O). Only the image
+        // siblings of THIS directory are candidates — `ArtworkSidecarMatcher` is strict (exact stem,
+        // optional `-thumb`/`-poster`), so a `folder.jpg` with no same-stemmed video never attaches.
+        // Keyed by the item's `ItemID` so the browse view/thumbnail provider can look up a match
+        // without re-deriving the path.
+        let imageEntries = entries.filter { !$0.isDirectory && ArtworkSidecarMatcher.isImageFile(name: $0.name) }
+        var artwork: [ItemID: SMBDirectoryEntry] = [:]
+        if !imageEntries.isEmpty {
+            // One index per listing; each video then matches in O(1) instead of rescanning the
+            // image names (a flat dump directory can hold thousands of each).
+            let index = ArtworkSidecarMatcher.Index(imageNames: imageEntries.map(\.name))
+            let imageByName = Dictionary(imageEntries.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
+            for (entry, item) in zip(mediaEntries, media) {
+                if let matchName = ArtworkSidecarMatcher.match(videoName: entry.name, in: index),
+                   let imageEntry = imageByName[matchName] {
+                    artwork[item.id] = imageEntry
+                }
+            }
+        }
+        return SMBBrowseListing(folders: folders, media: media, artwork: artwork)
     }
 
     /// Forwards disconnect to the underlying lister.
@@ -191,12 +213,19 @@ public struct SMBFileSource: Sendable {
 
 // MARK: - SMBBrowseListing
 
-/// A single directory listing partitioned into subfolders and playable media items.
+/// A single directory listing partitioned into subfolders and playable media items, plus the
+/// strict sidecar-image match (if any) for each media item.
 public struct SMBBrowseListing: Sendable {
     public let folders: [SMBDirectoryEntry]
     public let media: [Item]
-    public init(folders: [SMBDirectoryEntry], media: [Item]) {
+    /// Per-item sidecar artwork: the sibling image entry (`<stem>-thumb`/`-poster`/`.<ext>`) matched
+    /// for a media item, keyed by its `ItemID`. Only matched items appear — a miss means "no strict
+    /// sidecar; fall back to a frame-grab". Carries name + size so the thumbnail provider can build
+    /// the share-relative path and gate on file size without a second listing.
+    public let artwork: [ItemID: SMBDirectoryEntry]
+    public init(folders: [SMBDirectoryEntry], media: [Item], artwork: [ItemID: SMBDirectoryEntry] = [:]) {
         self.folders = folders
         self.media = media
+        self.artwork = artwork
     }
 }

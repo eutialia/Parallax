@@ -17,7 +17,7 @@ struct HardTimeoutError: Error {}
 /// callers already accept when they abandon an in-flight connect); the losing TIMER, by
 /// contrast, is always cancelled so a fast success doesn't leave a sleeper holding the race
 /// state for the full ceiling.
-func withHardTimeout<T: Sendable>(
+public func withHardTimeout<T: Sendable>(
     seconds: TimeInterval,
     operation: @escaping @Sendable () async throws -> T
 ) async throws -> T {

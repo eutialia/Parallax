@@ -6,6 +6,11 @@
 	     TestFlight/App Store uploads skip the export-compliance questionnaire. -->
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<!-- Deliberately NOT NSAllowsLocalNetworking (tried first — see 76b0ec4): server URLs
+	     are user-entered, and home-lab DNS suffixes (.lan/.home/.internal) or public TLDs
+	     resolving to private boxes read as ordinary hosts to ATS, so plain-HTTP Jellyfin
+	     sign-ins fail with -1022 under the narrower key. Every Jellyfin/Plex/Infuse client
+	     ships this same exception. The loopback SMB bridge also rides on it. -->
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>

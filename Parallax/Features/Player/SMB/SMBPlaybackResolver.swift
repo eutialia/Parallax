@@ -16,6 +16,12 @@ private let logger = Logger(subsystem: "Parallax", category: "SMBPlaybackResolve
 /// the video plays with an empty subtitle map rather than aborting.
 struct SMBPlaybackResolver {
     let serverStore: ServerStore
+    /// Shared warm-connection pool. The container probe and the sidecar-subtitle fetch borrow their
+    /// readers from here instead of standing up a fresh SMB session per resolve. Defaults to a fresh
+    /// pool so tests need not name one (the app-test bundle doesn't link AMSMB2, so instantiating the
+    /// `SMB2Manager` specialization in the test module fails to link); production injects the ONE
+    /// app-scoped pool from `AppDependencies`.
+    var pool: SMBSharePool = SMBSharePool()
     /// Injectable so subtitle resolution is fakeable in tests; defaults to the live AMSMB2 lister.
     var makeLister: @Sendable (_ ref: SMBServerRef, _ password: String) -> any SMBLister = { ref, password in
         AMSMB2Lister(host: ref.data.host, username: ref.data.username, password: password, domain: ref.data.domain)
@@ -61,7 +67,7 @@ struct SMBPlaybackResolver {
         // (HDR display-match + AirPlay + real buffered ranges). Best-effort with a
         // hard deadline: a hung share must not stall the loading veil — on timeout
         // or error we fall back to today's smb://+VLC route, which needs no probe.
-        let reader = SMBRandomAccessReader(host: ref.data.host, username: ref.data.username,
+        let reader = SMBRandomAccessReader(pool: pool, host: ref.data.host, username: ref.data.username,
                                            password: ctx.password, domain: ref.data.domain,
                                            share: ctx.share, path: ctx.path)
         let probeResult = await Self.probeWithDeadline(reader)
@@ -92,22 +98,28 @@ struct SMBPlaybackResolver {
                 // bridgeEligible gate) — AVKit reads the container's own duration atom, no estimate.
                 hasTrustworthyDuration: true,
                 hints: hints,
-                cleanup: { await session.stop() }
+                // The borrow's LIFETIME disqualifies it from pool reuse: an hours-long playback
+                // socket may be silently degraded (stalls surface as short reads, never a thrown
+                // error, so the taint rule can't catch them), and checking it in would hand the
+                // next thumbnail fetch a broken "warm" connection. Mark it before the ordered
+                // teardown so the drain path disconnects instead of donating.
+                cleanup: { await reader.markUnreusable(); await session.stop() }
             )
         }
 
         // VLC route — release the probe's SMB connection (libVLC opens its own) and carry
         // whatever the probe learned so the engine can size its cache; scheme stays smb.
         if probeResult == nil {
-            // Probe timed out or failed: the reader may be wedged in a native AMSMB2 read
-            // that won't return until its socket timeout. Awaiting disconnect() inline would
-            // serialize behind that wedge on the reader's actor and re-stall resolve()'s
-            // return — the very veil-stall the 4s deadline just avoided. Fire-and-forget:
-            // disconnect is best-effort cleanup, and it drains behind the wedged read either
-            // way once the native call unwinds.
+            // Probe timed out or failed: the reader may be wedged in a native AMSMB2 read that won't
+            // return until its socket timeout. Awaiting disconnect() inline would serialize behind that
+            // wedge on the reader's actor and re-stall resolve()'s return — the very veil-stall the 4s
+            // deadline just avoided. Fire-and-forget cleanup. With pooling this is also the CORRECTNESS
+            // path: disconnect() sees the still-in-flight op (inFlightOps > 0) and DISCARDS the borrow
+            // rather than checking it in — a wedged/error-tainted socket is never handed to the next
+            // borrower; the pool drains it gracefully in the background once the native call unwinds.
             Task { await reader.disconnect() }
         } else {
-            // Probe completed; the reader is idle — release it inline before returning.
+            // Probe completed cleanly; the reader is idle — check its borrow back in (reusable) inline.
             await reader.disconnect()
         }
         return SMBPlaybackItem(
@@ -144,7 +156,7 @@ struct SMBPlaybackResolver {
             logger.warning("SMB subtitle skipped — saved password unavailable")
             return nil
         }
-        let reader = SMBRandomAccessReader(host: ref.data.host, username: ref.data.username,
+        let reader = SMBRandomAccessReader(pool: pool, host: ref.data.host, username: ref.data.username,
                                            password: password, domain: ref.data.domain,
                                            share: share, path: path)
         defer { Task { await reader.disconnect() } }

@@ -130,7 +130,7 @@ struct SMBThumbnailCacheTests {
 
         let urls = try FileManager.default.contentsOfDirectory(
             at: dir, includingPropertiesForKeys: [.totalFileAllocatedSizeKey]
-        ).filter { $0.pathExtension == "png" }
+        ).filter { $0.pathExtension == "heic" }
         let total = try urls.reduce(Int64(0)) {
             $0 + Int64((try $1.resourceValues(forKeys: [.totalFileAllocatedSizeKey])).totalFileAllocatedSize ?? 0)
         }
@@ -140,7 +140,7 @@ struct SMBThumbnailCacheTests {
         #expect(!urls.isEmpty, "the most recent write must survive the sweep")
     }
 
-    @Test("sweep co-evicts each PNG's .dur sidecar — no orphans, sidecars excluded from the cap")
+    @Test("sweep co-evicts each image's .dur sidecar — no orphans, sidecars excluded from the cap")
     func sweepCoEvictsSidecars() async throws {
         let dir = makeTempDir()
         defer { cleanup(dir) }
@@ -153,27 +153,27 @@ struct SMBThumbnailCacheTests {
             sweepInterval: 1
         )
 
-        // Every store carries a positive duration, so each PNG also writes a .dur sidecar.
+        // Every store carries a positive duration, so each image also writes a .dur sidecar.
         for i in 0..<8 {
             let key = SMBThumbnailKey(serverID: "s", share: "Media", path: "f\(i).mkv", size: Int64(i), modifiedAt: nil)
             _ = await cache.store(blob, duration: .seconds(60 + i), for: key)
         }
 
         let entries = try FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.totalFileAllocatedSizeKey])
-        let pngs = entries.filter { $0.pathExtension == "png" }
+        let images = entries.filter { $0.pathExtension == "heic" }
         let durs = entries.filter { $0.pathExtension == "dur" }
 
-        #expect(pngs.count < 8, "the sweep must have evicted at least one PNG")
-        #expect(!pngs.isEmpty, "the most recent write must survive the sweep")
-        // Each evicted PNG drops its sidecar and each survivor keeps its own — so the two counts match,
-        // i.e. no orphaned .dur is left behind.
-        #expect(durs.count == pngs.count, "sidecars must track PNGs 1:1 after sweep (no orphans)")
+        #expect(images.count < 8, "the sweep must have evicted at least one image")
+        #expect(!images.isEmpty, "the most recent write must survive the sweep")
+        // Each evicted image drops its sidecar and each survivor keeps its own — so the two counts
+        // match, i.e. no orphaned .dur is left behind.
+        #expect(durs.count == images.count, "sidecars must track images 1:1 after sweep (no orphans)")
 
-        // Sidecars (tens of bytes) must not count toward the cap: the surviving PNG bytes alone hold within it.
-        let pngBytes = try pngs.reduce(Int64(0)) {
+        // Sidecars (tens of bytes) must not count toward the cap: the surviving image bytes hold within it.
+        let imageBytes = try images.reduce(Int64(0)) {
             $0 + Int64((try $1.resourceValues(forKeys: [.totalFileAllocatedSizeKey])).totalFileAllocatedSize ?? 0)
         }
-        #expect(pngBytes <= cap, "surviving PNG bytes \(pngBytes) must stay within the cap \(cap)")
+        #expect(imageBytes <= cap, "surviving image bytes \(imageBytes) must stay within the cap \(cap)")
     }
 
     @Test("totalSize sums cached files; clear wipes them, recreating the dir on the next store")
@@ -199,6 +199,82 @@ struct SMBThumbnailCacheTests {
         #expect(await cache.existing(for: key) == nil)
         #expect(try #require(await cache.store(blob, duration: nil, for: key)).url.isFileURL,
                 "store must recreate the directory after a clear")
+    }
+
+    @Test("store writes a .heic file for a new key")
+    func storeWritesHEIC() async throws {
+        let dir = makeTempDir()
+        defer { cleanup(dir) }
+        let cache = SMBThumbnailCache(directory: dir)
+        let key = SMBThumbnailKey(serverID: "smb-nas", share: "Media", path: "Movies/Film.mkv", size: 1234, modifiedAt: Date(timeIntervalSince1970: 1_000))
+
+        let stored = try #require(await cache.store(Self.pngData, duration: nil, for: key))
+        #expect(stored.url.pathExtension == "heic", "new writes use the .heic extension")
+    }
+
+    @Test("existing falls back to a legacy .png when no .heic exists")
+    func existingFallsBackToLegacyPNG() async throws {
+        let dir = makeTempDir()
+        defer { cleanup(dir) }
+        let cache = SMBThumbnailCache(directory: dir)
+        let key = SMBThumbnailKey(serverID: "smb-nas", share: "Media", path: "Movies/Old.mkv", size: 55, modifiedAt: Date(timeIntervalSince1970: 3_000))
+
+        // Simulate a pre-HEIC cache entry at this key's exact base name: store writes the .heic, then
+        // move it to .png so only the legacy extension remains on disk.
+        let seeded = try #require(await cache.store(Self.pngData, duration: nil, for: key))
+        let legacyPNG = seeded.url.deletingPathExtension().appendingPathExtension("png")
+        try FileManager.default.moveItem(at: seeded.url, to: legacyPNG)
+
+        // existing() must find the legacy PNG (no .heic present) and return its URL.
+        let hit = try #require(await cache.existing(for: key))
+        #expect(hit.url.pathExtension == "png")
+        #expect(hit.url == legacyPNG)
+
+        // A later store writes a .heic; existing() then prefers the .heic over the surviving legacy PNG.
+        let stored = try #require(await cache.store(Self.pngData, duration: nil, for: key))
+        #expect(stored.url.pathExtension == "heic")
+        let afterStore = try #require(await cache.existing(for: key))
+        #expect(afterStore.url.pathExtension == "heic", "a .heic shadows the legacy .png once written")
+    }
+
+    @Test("failure markers accumulate attempts, survive as a file, and clear on store")
+    func failureMarkersLifecycle() async throws {
+        let dir = makeTempDir()
+        defer { cleanup(dir) }
+        let cache = SMBThumbnailCache(directory: dir)
+        let key = SMBThumbnailKey(serverID: "smb-nas", share: "Media", path: "Broken/File.mkv", size: 9, modifiedAt: Date(timeIntervalSince1970: 4_000))
+
+        // No marker on a fresh key.
+        #expect(await cache.failureState(for: key) == nil)
+
+        let before = Date()
+        await cache.recordFailure(for: key)
+        let first = try #require(await cache.failureState(for: key))
+        #expect(first.attempts == 1)
+        #expect(first.lastAttempt.timeIntervalSince(before) >= -1, "lastAttempt is stamped ~now")
+
+        await cache.recordFailure(for: key)
+        #expect(try #require(await cache.failureState(for: key)).attempts == 2, "attempts accumulate")
+
+        // A successful store clears the marker (the file just proved decodable).
+        _ = try #require(await cache.store(Self.pngData, duration: nil, for: key))
+        #expect(await cache.failureState(for: key) == nil, "store clears the failure marker")
+
+        // A post-success failure re-records from a fresh count (store wiped the history).
+        let restarted = await cache.recordFailure(for: key)
+        #expect(restarted.attempts == 1, "a cleared marker restarts at attempt 1, not the old count")
+    }
+
+    @Test("clear() wipes failure markers too")
+    func clearWipesFailureMarkers() async throws {
+        let dir = makeTempDir()
+        defer { cleanup(dir) }
+        let cache = SMBThumbnailCache(directory: dir)
+        let key = SMBThumbnailKey(serverID: "s", share: "Media", path: "x.mkv", size: 1, modifiedAt: nil)
+        await cache.recordFailure(for: key)
+        #expect(await cache.failureState(for: key) != nil)
+        await cache.clear()
+        #expect(await cache.failureState(for: key) == nil, "clear() drops persistent failure markers")
     }
 
     @Test("two servers with the same share-relative path get distinct cache entries")
