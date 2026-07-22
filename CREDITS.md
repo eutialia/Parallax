@@ -12,8 +12,7 @@
 | [VLCKit](https://code.videolan.org/videolan/VLCKit) (via [vlckit-spm](https://github.com/virtualox/vlckit-spm)) | LGPL-2.1 | Alternate playback engine (© VideoLAN) |
 
 ¹ The official Jellyfin Swift SDK currently publishes no license file. The Jellyfin
-project distributes it for building clients, so the practical risk is small, but an
-upstream issue asking for a license declaration is open work. Re-check before wide release.
+project distributes it for building clients, so the practical risk is small.
 
 LGPL note (AMSMB2/libsmb2, VLCKit): Parallax meets the LGPL relink requirement because
 the whole app is open source. Anyone can modify these libraries and rebuild the app from
@@ -31,8 +30,3 @@ Settings and the logged-out source picker) comes from the
 - Used **unmodified**, rendered as a monochrome template glyph solely to indicate
   interoperability with Jellyfin servers (nominative use). It is not Parallax's own
   brand mark; the app's identity is its own `BrandIcon`.
-
-> **Release TODO:** surface everything on this page in a user-visible
-> Acknowledgements / About screen before shipping. CC-BY-SA asks that the credit reach
-> end users of the binary, and the LGPL notices belong there too; this repo-level file
-> is the interim placement.

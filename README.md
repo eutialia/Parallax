@@ -22,7 +22,7 @@ A native media player for iPhone and iPad, built for [Jellyfin](https://jellyfin
 
 The app is coming to the App Store (link to follow). The App Store build is compiled from this repository; the price covers the Apple developer membership and ongoing development.
 
-To build it yourself you need Xcode 26. Clone the repo, open `Parallax.xcodeproj`, set your own signing team, and run. App logic lives in the local Swift packages under `Packages/`; the app target is UI and wiring.
+To build it yourself you need Xcode 26. Clone the repo, open `Parallax.xcodeproj`, and run — simulator builds work as-is. For device builds, supply your signing team once (it stays out of git): `echo 'DEVELOPMENT_TEAM = YOURTEAMID' > Config/Signing.local.xcconfig`. App logic lives in the local Swift packages under `Packages/`; the app target is UI and wiring.
 
 ## License
 

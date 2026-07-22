@@ -1,0 +1,4 @@
+// Code signing. Simulator builds need no team; for device builds, supply yours locally:
+//   echo 'DEVELOPMENT_TEAM = YOURTEAMID' > Config/Signing.local.xcconfig
+// Signing.local.xcconfig is gitignored, so your team never lands in a commit.
+#include? "Signing.local.xcconfig"

@@ -32,6 +32,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		DAC3F7002FC6700000EF06E5 /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = Signing.xcconfig; path = Config/Signing.xcconfig; sourceTree = "<group>"; };
 		DAC3F6652FC652DA00EF06E5 /* Parallax.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Parallax.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		DAC3F6722FC652DB00EF06E5 /* ParallaxTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ParallaxTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		DAC3F67C2FC652DB00EF06E5 /* ParallaxUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ParallaxUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -91,6 +92,7 @@
 				DAC3F6672FC652DA00EF06E5 /* Parallax */,
 				DAC3F6752FC652DB00EF06E5 /* ParallaxTests */,
 				DAC3F67F2FC652DB00EF06E5 /* ParallaxUITests */,
+				DAC3F7002FC6700000EF06E5 /* Signing.xcconfig */,
 				DAC3F6662FC652DA00EF06E5 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -293,6 +295,7 @@
 /* Begin XCBuildConfiguration section */
 		DAC3F6842FC652DB00EF06E5 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = DAC3F7002FC6700000EF06E5 /* Signing.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
@@ -354,6 +357,7 @@
 		};
 		DAC3F6852FC652DB00EF06E5 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = DAC3F7002FC6700000EF06E5 /* Signing.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;

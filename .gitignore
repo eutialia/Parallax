@@ -19,3 +19,10 @@ Packages/*/.swiftpm/
 
 # Claude Code (local skills/settings)
 .claude/
+
+# Local dev-tool state
+.superpowers/
+.impeccable/
+
+# Per-developer signing (see Config/Signing.xcconfig)
+Config/Signing.local.xcconfig
