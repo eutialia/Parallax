@@ -30,7 +30,9 @@ struct HardTimeoutTests {
             }
         }
         // The caller must be released at ~the ceiling, not when the hung operation finishes.
-        #expect(ContinuousClock.now - start < .seconds(5))
+        // The bound only needs to discriminate ceiling (0.2s) from hung-op completion (30s);
+        // 15s absorbs loaded-CI scheduling latency (6.7s observed) without losing that.
+        #expect(ContinuousClock.now - start < .seconds(15))
     }
 
     @Test("Caller cancellation settles the race immediately")
@@ -46,6 +48,6 @@ struct HardTimeoutTests {
         racing.cancel()
         // Must throw (CancellationError) well before either the operation or the 30s ceiling.
         await #expect(throws: (any Error).self) { try await racing.value }
-        #expect(ContinuousClock.now - start < .seconds(5))
+        #expect(ContinuousClock.now - start < .seconds(15))
     }
 }
