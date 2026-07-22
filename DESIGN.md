@@ -44,6 +44,8 @@ rounded:
   field: "14pt"
   tile: "12pt"
   nav-item: "12pt"
+  chip: "10pt"
+  badge: "7pt"
 spacing:
   s3: "3pt"
   s8: "8pt"
@@ -84,7 +86,7 @@ The palette has two committed faces sharing one hue family (OKLCH H≈285): **Pa
 
 **The material rule (glass is earned, not default).** Liquid Glass is reserved for two places: the **player** (clear, refractive glass over video — `.glassEffect(.clear)`, so footage shows through) and the **system bars** the platform owns (the `.sidebarAdaptable` sidebar / tab bar, the navigation bar — left native). **Everything the app itself draws is flat:** buttons are solid or `fill` fills (the Play pill, circle actions, form CTAs), cards are `surface` panels (the detail description card, settings rows), fields and badges are `fill`. This mirrors Apple's own split — playback is glossy glass, the menus are opaque — and it keeps glass meaningful: when chrome refracts, it's because content (video) is behind it. The player remains the one custom island (monochrome white-on-ink, geometric metrics) because system platters fight video.
 
-This system explicitly rejects (from PRODUCT.md): **Plex's busy chrome**, the **Netflix-clone carousel-of-carousels home**, **hobby-app stock UI**, and **custom chrome that fights the platform**.
+This system explicitly rejects: **Plex's busy chrome**, the **Netflix-clone carousel-of-carousels home**, **hobby-app stock UI**, and **custom chrome that fights the platform**.
 
 **Key Characteristics:**
 - Monochrome, accentless: tint = label color; the library provides all color
@@ -110,13 +112,13 @@ A two-faced monochrome system in one hue family (OKLCH H≈285): daylight graphi
 - **Ink Deep** (#22222A): Solid button fill for form CTAs in light mode.
 - **Paper White** (#F5F5F8): Label color on ink-filled buttons in light mode.
 - **Player Ink** (#0A0A0C): The player's fixed near-black backdrop, both schemes — the player is pinned dark. (The hero Play pill is likewise theme-FIXED: white fill + player ink label in both schemes, owner directive 2026-07-14.)
-- **Glass Paper / Glass Graphite** (#F6F6FA at 52% / #1C1C22 at 52%): The tint layer inside `.glassEffect` panels and bars; a 74%-alpha "strong" variant exists for surfaces needing more body.
+- **Glass Paper / Glass Graphite** (#F6F6FA at 52% / #1C1C22 at 52%): The tint layer inside `.glassEffect` where glass is sanctioned (the player, hero chrome); one token, no variants.
 
 ### Opacity ramp (derived, not separate hexes)
 Light: secondary label = ink at 78%, tertiary at 60%, separator 12%, fill 10% / 6% — tuned to clear WCAG AA on the fill backplate (secondary 6.7:1, tertiary 3.97:1). Dark: secondary 62%, tertiary 45%, separator 10%, fill 24% / 16%.
 
 ### Named Rules
-**The No-Accent Rule.** The global tint is `Color.label`. No brand color exists anywhere in chrome — prohibited. Color on screen comes from artwork. The sole exception: destructive red on destructive actions, applied explicitly.
+**The No-Accent Rule.** The global tint is `Color.label`. No brand color exists anywhere in chrome — prohibited. Color on screen comes from artwork. The sole exceptions, both marking state rather than brand: destructive red on destructive actions, and the `ok` green (#3DA45A) server LED — each applied explicitly.
 
 **The Two Faces Rule.** Every adaptive color resolves through `Color(light:dark:)` in `DesignTokens.swift`. Never branch on `colorScheme` at a call site; never use system semantic colors (`.primary`, `.systemBackground`) — the palette is custom on purpose.
 
@@ -144,12 +146,11 @@ Light: secondary label = ink at 78%, tertiary at 60%, separator 12%, fill 10% / 
 
 ## 4. Elevation
 
-Depth in Parallax is **glass and scrim layering, not shadow stacking**. Surfaces separate through Liquid Glass materials (`.glassEffect` + hairline `glassBorder` stroke), and legibility over artwork comes from band scrims and gradient washes — never bare text, never text shadows in chrome. The system is flat at rest; what reads as "elevation" is material translucency.
+Depth in Parallax is **material and scrim layering, not shadow stacking**. Surfaces separate through tone and hairline strokes — Liquid Glass (`.glassEffect` + `glassBorder`) where glass is sanctioned, flat `surface` panels everywhere else — and legibility over artwork comes from band scrims and gradient washes — never bare text, never text shadows in chrome. The system is flat at rest; what reads as "elevation" is material translucency.
 
 ### Shadow Vocabulary
 Shadows exist only where something floats over *media*:
 - **Player handle/bubble** (`black @0.5–0.6, radius 2–20 × u`): scrub affordances over video.
-- **Play button** (`black @0.32, radius 8 scaled, y 4`): the one floating control.
 - **Subtitle legibility** (`black @0.9, radius 3`): text over unpredictable frames.
 - **Library card** (`black @0.2, radius 8, y 4`): the single chrome shadow, under 16:9 banners.
 
@@ -175,12 +176,12 @@ Controls are **flat**: each non-player control draws its own solid / `fill` fill
 
 ### Cards / Containers
 - **Corner Style:** panel 24pt / card 18pt / tile 12pt — the concentric `Radius` system is the brand's shape lever; nav items inset 12pt from panels (24 − 12).
-- **Background:** `glassPanel()` / `glassBar()` = `.glassEffect` tinted Glass Paper/Graphite + 1pt hairline border.
+- **Background:** `surfacePanel(cornerRadius:)` (`GlassSurface.swift`) = opaque `surface` fill + 1pt hairline border. Flat per the material rule — no glass on app-drawn cards.
 - **Shadow Strategy:** none (see Elevation); LibraryCard is the lone exception.
-- **Poster tiles (`MediaTile`):** artwork-only, no visible title (the title survives as the VoiceOver label); optional progressive-blur footer (real `.ultraThinMaterial` masked by an alpha ramp) for captions and progress.
+- **Poster tiles (`MediaTile`):** artwork-only, no visible title (the title survives as the VoiceOver label); optional progressive-blur footer (real `.ultraThinMaterial` masked by an alpha ramp) for captions and progress. Artwork loads fade in over a BlurHash (or gray) placeholder via `artworkReveal`; memory-cache hits render instantly, never re-fading.
 
 ### Inputs / Fields
-- **Search (`SearchBar`):** custom rounded `fill` field with magnifier and clear — replaces `.searchable`, which iPadOS 26 hoists into the top-trailing glass slot and breaks the sidebar toggle.
+- **Search:** system `.searchable`, everywhere — no custom search field. (A custom bar was built and deleted: an in-content field under the `.sidebarAdaptable` keyboard hits an off-screen bug no inset fix reaches. The system slot is the contract; don't resurrect the custom one.)
 - **Text fields:** field radius (14pt), `fill` background, no stroke at rest.
 
 ### Navigation
@@ -190,11 +191,27 @@ Controls are **flat**: each non-player control draws its own solid / `fill` fill
 ### The Player (signature)
 The sanctioned custom island. Monochrome white-on-ink, pinned dark, every dimension a `PlayerMetrics × u` formula. Shared scrim vocabulary (`PlayerScrimStyle`: ink dim × state factor — cold start 0.74, live frame 0.50, error 0.62), one loading primitive (`PlayerScrimRing`, a unit-tested indeterminate white arc), calm loading vs loud error scrims with frozen geometry so the ring never jumps, double-tap seek flash, and a three-mode progress bar (track 0.20 → buffered 0.36 → played white) that reserves its tallest handle so the centerline never shifts. Custom because native platters fight video — and still bound by platform contracts: focus inversion, Reduce Motion, remote semantics.
 
-## 6. Do's and Don'ts
+## 6. Motion
+
+One shared vocabulary — `extension Animation` in `DesignTokens.swift` plus the focus timing in `TVFocusModifiers.swift`; call sites keep their own Reduce-Motion gating. The house feel is the **organic spring settle**: user-initiated motion lands with life, not a snap — and conversely, motion is never re-sprung app-wide unscoped.
+
+- **organicSettle** (spring, response 0.4, damping 0.86): user-initiated reveals and snaps — hero carousel page settle, detail overview expand.
+- **pressDim** (easeOut 0.12): the one press-dim cue, shared by the tvOS chip/quiet styles and the iOS flat form CTA.
+- **tilePressResponse** (easeOut 0.15): iOS touch-down scale + opacity on full-bleed artwork tiles, released on the same curve before the `.zoom` push.
+- **chromeToggle** (easeOut 0.15): player HUD chrome opacity toggle — fast and retargetable, so a rapid re-tap reverses mid-flight instead of replaying.
+- **tvFocusChrome** (easeOut 0.18): focus platter/ink crossfade on the SAME curve as the focus scale lift, so chrome never snaps mid-scale.
+- **playerStateCrossfade** (easeInOut 0.2): the player's interlocking scrim/transport swaps — one token across the two files implementing that state machine.
+- **artworkReveal** (easeOut 0.25): artwork fade-in over its BlurHash/gray placeholder after a real load; memory-cache hits skip it entirely.
+- **contentSwap** (easeOut 0.25): screen-level loading→loaded crossfade, iOS/iPadOS only (tvOS keeps a hard cut — re-identifying focusable content mid-animation strands the focus engine).
+- **playerCoverFade** (easeInOut 0.3): full-bleed player covers — the reload spinner and the track-switch failure overlay.
+
+**The One-Token Rule.** Any feel that repeats ships as ONE named token — three button styles share `pressDim`, both player HUD files share `playerStateCrossfade` — so timing can't drift between surfaces. A raw duration literal in chrome is a defect, same as a raw radius.
+
+## 7. Do's and Don'ts
 
 ### Do:
 - **Do** keep chrome monochrome: tint is the label color, ink (#1C1C24) by day, white by night. The artwork is the accent.
-- **Do** use the `Radius` enum (panel 24 / card 18 / field 14 / tile 12) and `Space` scale — raw radius or spacing literals in chrome are a defect.
+- **Do** use the `Radius` enum (panel 24 / card 18 / field 14 / tile 12 / chip 10 / badge 7) and `Space` scale — raw radius or spacing literals in chrome are a defect.
 - **Do** put text over artwork on a scrim or glass layer, always.
 - **Do** let the system own focus, rest, and label states wherever a native style exists; pin colors only where the system demonstrably fails, and document why at the site.
 - **Do** carry warmth in copy and empty states — "your library", human error messages — while the palette stays monochrome.
