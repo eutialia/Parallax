@@ -46,6 +46,10 @@ jobs:
         # The device is discovered from the image's own inventory instead of
         # hardcoding a model name that rots when the simulator lineup rotates.
         working-directory: Packages/${{ matrix.package }}
+        env:
+          # Forwarded into the simulator test host as CI= (xcodebuild strips the
+          # TEST_RUNNER_ prefix); the live-VLC-decode suite skips itself on it.
+          TEST_RUNNER_CI: 'true'
         run: |
           DEVICE=$(xcrun simctl list devices available | grep -E '^ +iPhone' | head -1 | sed -E 's/^ +//; s/ \(.*//')
           echo "Testing on simulator: ${DEVICE}"
