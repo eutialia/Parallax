@@ -3,7 +3,14 @@ import JellyfinAPI
 import ParallaxCore
 @testable import ParallaxJellyfin
 
+/// Every method body runs under `lock`: the repository fans some flows out concurrently
+/// (`homeHeroFeed` fetches movies + episodes in parallel; `.all` search is a three-way fan-out),
+/// so unsynchronized appends to the call records occasionally lost one under CI scheduling
+/// ("recentlyAddedCalls.count == 2" flake). Tests configure hooks before calling and read
+/// records after awaiting, so only the fake's own internal mutation needs the lock.
 final class FakeJellyfinLibraryClient: JellyfinLibraryClient, @unchecked Sendable {
+    private let lock = NSLock()
+
     // Programmable hooks — each Result is reused per call (unlike the
     // one-shot pattern in FakeJellyfinAuthClient — repository tests can
     // call the same method multiple times in one test).
@@ -55,116 +62,156 @@ final class FakeJellyfinLibraryClient: JellyfinLibraryClient, @unchecked Sendabl
     enum FakeError: Error { case notConfigured }
 
     func getCollections() async throws -> [BaseItemDto] {
-        collectionsCallCount += 1
-        return try collectionsResult.get()
+        try lock.withLock {
+            collectionsCallCount += 1
+            return try collectionsResult.get()
+        }
     }
 
     func getItems(scope: LibraryScope, filter: ParallaxCore.ItemFilter, sort: ParallaxCore.ItemSort, startIndex: Int, limit: Int) async throws -> (items: [BaseItemDto], total: Int) {
-        itemsCalls.append((scope, filter, sort, startIndex, limit))
-        if !itemsPagedResults.isEmpty {
-            let result = itemsPagedResults.removeFirst()
-            return try result.get()
+        try lock.withLock {
+            itemsCalls.append((scope, filter, sort, startIndex, limit))
+            if !itemsPagedResults.isEmpty {
+                let result = itemsPagedResults.removeFirst()
+                return try result.get()
+            }
+            return try itemsResult.get()
         }
-        return try itemsResult.get()
     }
 
     func getItemDetail(itemID: String) async throws -> BaseItemDto {
-        detailCalls.append(itemID)
-        return try detailResult.get()
+        try lock.withLock {
+            detailCalls.append(itemID)
+            return try detailResult.get()
+        }
     }
 
     func getItemsByIDs(_ ids: [String]) async throws -> [BaseItemDto] {
-        itemsByIDsCalls.append(ids)
-        return try itemsByIDsResult.get()
+        try lock.withLock {
+            itemsByIDsCalls.append(ids)
+            return try itemsByIDsResult.get()
+        }
     }
 
     func getSeasons(seriesID: String) async throws -> [BaseItemDto] {
-        seasonsCalls.append(seriesID)
-        return try seasonsResult.get()
+        try lock.withLock {
+            seasonsCalls.append(seriesID)
+            return try seasonsResult.get()
+        }
     }
 
     func getEpisodes(seasonID: String) async throws -> [BaseItemDto] {
-        episodesCalls.append(seasonID)
-        return try episodesResult.get()
+        try lock.withLock {
+            episodesCalls.append(seasonID)
+            return try episodesResult.get()
+        }
     }
 
     func getContinueWatching() async throws -> [BaseItemDto] {
-        continueWatchingCallCount += 1
-        return try continueWatchingResult.get()
+        try lock.withLock {
+            continueWatchingCallCount += 1
+            return try continueWatchingResult.get()
+        }
     }
 
     func getNextUp() async throws -> [BaseItemDto] {
-        nextUpCallCount += 1
-        return try nextUpResult.get()
+        try lock.withLock {
+            nextUpCallCount += 1
+            return try nextUpResult.get()
+        }
     }
 
     func getRecentlyAdded(limit: Int, includeItemTypes: [BaseItemKind]) async throws -> [BaseItemDto] {
-        recentlyAddedCalls.append((limit, includeItemTypes))
-        if includeItemTypes.count == 1, let type = includeItemTypes.first,
-           let perType = recentlyAddedResultsByTypes[type] {
-            return try perType.get()
+        try lock.withLock {
+            recentlyAddedCalls.append((limit, includeItemTypes))
+            if includeItemTypes.count == 1, let type = includeItemTypes.first,
+               let perType = recentlyAddedResultsByTypes[type] {
+                return try perType.get()
+            }
+            return try recentlyAddedResult.get()
         }
-        return try recentlyAddedResult.get()
     }
 
     func search(query: String, scope: SearchScope) async throws -> [BaseItemDto] {
-        searchCalls.append((query, scope))
-        if let perScope = searchResultsByScope[scope] {
-            return try perScope.get()
+        try lock.withLock {
+            searchCalls.append((query, scope))
+            if let perScope = searchResultsByScope[scope] {
+                return try perScope.get()
+            }
+            return try searchResult.get()
         }
-        return try searchResult.get()
     }
 
     func setFavorite(itemID: String, isFavorite: Bool) async throws -> UserItemData {
-        setFavoriteCalls.append((itemID: itemID, isFavorite: isFavorite))
-        let resolved = try setFavoriteResult.get()
-        return UserItemData(
-            played: resolved.played,
-            playbackPositionTicks: resolved.playbackPositionTicks,
-            playCount: resolved.playCount,
-            isFavorite: isFavorite
-        )
+        try lock.withLock {
+            setFavoriteCalls.append((itemID: itemID, isFavorite: isFavorite))
+            let resolved = try setFavoriteResult.get()
+            return UserItemData(
+                played: resolved.played,
+                playbackPositionTicks: resolved.playbackPositionTicks,
+                playCount: resolved.playCount,
+                isFavorite: isFavorite
+            )
+        }
     }
 
     func setPlayed(itemID: String, isPlayed: Bool) async throws -> UserItemData {
-        setPlayedCalls.append((itemID: itemID, isPlayed: isPlayed))
-        return try setPlayedResult.get()
+        try lock.withLock {
+            setPlayedCalls.append((itemID: itemID, isPlayed: isPlayed))
+            return try setPlayedResult.get()
+        }
     }
 
     func seriesNextUp(seriesID: String) async throws -> BaseItemDto? {
-        seriesNextUpCalls.append(seriesID)
-        return try seriesNextUpResult.get()
+        try lock.withLock {
+            seriesNextUpCalls.append(seriesID)
+            return try seriesNextUpResult.get()
+        }
     }
 
     func mediaSegments(itemID: String) async throws -> [MediaSegmentDto] {
-        mediaSegmentsCalls.append(itemID)
-        return try mediaSegmentsResult.get()
+        try lock.withLock {
+            mediaSegmentsCalls.append(itemID)
+            return try mediaSegmentsResult.get()
+        }
     }
 
     func adjacentEpisodes(seriesID: String, episodeID: String) async throws -> [BaseItemDto] {
-        adjacentEpisodesCalls.append((seriesID, episodeID))
-        return try adjacentEpisodesResult.get()
+        try lock.withLock {
+            adjacentEpisodesCalls.append((seriesID, episodeID))
+            return try adjacentEpisodesResult.get()
+        }
     }
 
     func genres(scope: LibraryScope) async throws -> [String] {
-        genresCalls.append(scope)
-        return try genresResult.get()
+        try lock.withLock {
+            genresCalls.append(scope)
+            return try genresResult.get()
+        }
     }
 }
 
 final class FakeJellyfinLibraryClientFactory: JellyfinLibraryClientFactory, @unchecked Sendable {
+    private let lock = NSLock()
     private var clientsBySession: [ServerID: FakeJellyfinLibraryClient] = [:]
     private(set) var makeCalls: [ServerID] = []
 
     func client(for session: Session) -> FakeJellyfinLibraryClient {
+        lock.withLock { lockedClient(for: session) }
+    }
+
+    func make(for session: Session) async -> JellyfinLibraryClient {
+        lock.withLock {
+            makeCalls.append(session.id)
+            return lockedClient(for: session)
+        }
+    }
+
+    /// Callers hold `lock` (NSLock is not reentrant, so the public accessors can't call each other).
+    private func lockedClient(for session: Session) -> FakeJellyfinLibraryClient {
         if let existing = clientsBySession[session.id] { return existing }
         let new = FakeJellyfinLibraryClient()
         clientsBySession[session.id] = new
         return new
-    }
-
-    func make(for session: Session) async -> JellyfinLibraryClient {
-        makeCalls.append(session.id)
-        return client(for: session)
     }
 }
