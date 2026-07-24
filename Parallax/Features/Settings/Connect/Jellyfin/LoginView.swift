@@ -186,7 +186,8 @@ struct LoginView: View {
                     .padding(.horizontal, SettingsMetrics.headerInset)
             }
 
-            // Connect (solid primary) — needs all three fields before it's tappable.
+            // Connect (solid primary) — needs a server and a username; passwordless Jellyfin
+            // accounts are valid, so the password field is not part of the gate.
             Button {
                 fieldSweep += 1
                 Task { await submitSignIn(vm: vm) }
@@ -229,8 +230,9 @@ struct LoginView: View {
     }
 
     #if !os(tvOS)
-    /// The iOS return chain's submit on the last field — only fires a sign-in when all three fields are
-    /// filled; an incomplete form is a no-op, the same gate the Connect button enforces. tvOS has no
+    /// The iOS return chain's submit on the last field — only fires a sign-in when the server and
+    /// username are filled (the password is optional, see `canSubmitPassword`); an incomplete form is
+    /// a no-op, the same gate the Connect button enforces. tvOS has no
     /// last-field submit: its system keyboard's Done returns to the form and the Connect button signs in.
     private func handleSubmit(vm: LoginViewModel) {
         // `!vm.isWorking` too: the Button is disabled while signing in, but the keyboard bypasses it —

@@ -12,24 +12,15 @@ import ParallaxJellyfin
 @Suite("Settings view model · SMB server removal")
 @MainActor
 struct SettingsViewModelTests {
-    /// `SettingsViewModel` requires a `SessionManager`, but the SMB-removal path never reaches the
-    /// network. This factory just satisfies the initializer and traps if anything ever calls into it.
-    private struct UnusedClientFactory: JellyfinClientFactory {
-        func make(serverURL: URL) async -> JellyfinAuthClient {
-            fatalError("JellyfinClientFactory.make must not be reached in SMB-removal tests")
-        }
-    }
-
     private func makeStore() -> ServerStore {
-        let suiteName = "SettingsViewModelTests-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        return ServerStore(settings: SettingsStore(defaults: defaults), keychain: FakeKeychain())
+        makeIsolatedServerStore(label: "SettingsViewModelTests")
     }
 
+    /// `SettingsViewModel` requires a `SessionManager`, but the SMB-removal path never reaches the
+    /// network — `UnusedJellyfinClientFactory` traps if it ever does.
     private func makeViewModel(store: ServerStore, router: AppRouter) -> SettingsViewModel {
         SettingsViewModel(
-            sessionManager: SessionManager(serverStore: store, factory: UnusedClientFactory()),
+            sessionManager: SessionManager(serverStore: store, factory: UnusedJellyfinClientFactory()),
             serverStore: store,
             router: router
         )
