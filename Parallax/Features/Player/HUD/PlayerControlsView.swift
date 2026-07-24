@@ -83,6 +83,11 @@ struct PlayerControlsView: View {
     #endif
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    #if !os(tvOS)
+    /// iPhone orientation, for the rotate button (see `rotateButton`): on iPhone a
+    /// `.compact` vertical size class means landscape, `.regular` means portrait.
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
+    #endif
 
     @State private var hideTask: Task<Void, Never>? = nil
     @State private var isScrubbing = false
@@ -721,6 +726,7 @@ struct PlayerControlsView: View {
                 PlayerSplitPill(metrics: m, airPlayAvailable: vm.isVideoAirPlayAvailable,
                                 pipAvailable: vm.isPiPAvailable) { resetHideTimer(); vm.startPiP() }
             }
+            rotateButton(m)
             #endif
         }
         .padding(.horizontal, m.padX)
@@ -740,6 +746,34 @@ struct PlayerControlsView: View {
         .ignoresSafeArea(edges: dragging ? [] : .top)
         #endif
     }
+
+    #if !os(tvOS)
+    /// iPhone-only orientation toggle, docked in the top bar beside the AirPlay/PiP pill.
+    /// The player follows the device (see `OrientationController`), so this exists to force
+    /// the other side when the system rotation lock is on, or the user just wants it — in
+    /// portrait it offers landscape, in landscape it offers portrait. NEVER on iPad (its
+    /// canvas is orientation-agnostic and never managed), guarded by the same `UIDevice`
+    /// idiom check as `isPad`. Icon-only circular glass, sized to row with the split pill.
+    @ViewBuilder
+    private func rotateButton(_ m: PlayerMetrics) -> some View {
+        if !isPad {
+            // iPhone `.regular` vertical size class == portrait, so it offers landscape.
+            let toLandscape = verticalSizeClass == .regular
+            PlayerRoundButton(
+                systemImage: toLandscape ? "rectangle.landscape.rotate" : "rectangle.portrait.rotate",
+                size: m.splitPillHeight, iconScale: 0.42,
+                accessibilityLabel: toLandscape ? "Rotate to Landscape" : "Rotate to Portrait"
+            ) {
+                resetHideTimer()
+                // `.landscapeLeft` = Dynamic Island on the RIGHT (the plist docs name these by
+                // the home-button side, camera opposite) — the user's stated grip. A single
+                // side, not `.landscape`: under an active rotation lock UIKit has no reliable
+                // physical side to prefer, and letting it pick landed the island on the left.
+                OrientationController.shared.rotatePlayer(to: toLandscape ? .landscapeLeft : .portrait)
+            }
+        }
+    }
+    #endif
 
     /// Player title. iPhone rides Dynamic Type off a 17pt headline; big screens scale a
     /// fixed size from `u` (a `scaledFont` at 10 feet would swing wildly with the accessibility
@@ -790,8 +824,20 @@ struct PlayerControlsView: View {
             #if os(tvOS)
             PlayerRoundButton(systemImage: "chevron.down", size: m.closeSize, iconScale: 0.46,
                               accessibilityLabel: "Close") { onDismiss() }
-            #endif
             chips(m)
+            #else
+            // Labeled row while it fits (any orientation), icon-only only under real
+            // overflow: `ViewThatFits` prefers the first (labeled) candidate and drops to
+            // the second (icon-only) when the labeled chips can't fit the width — a narrow
+            // portrait phone with the full audio+subtitles+speed+chapters set. Each
+            // candidate wraps the loose chips in its own `HStack` so they lay out
+            // horizontally inside `ViewThatFits` (which arranges candidates, not their
+            // contents).
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: m.chipRowGap) { chips(m) }
+                HStack(spacing: m.chipRowGap) { chips(m, iconOnly: true) }
+            }
+            #endif
             Spacer(minLength: 0)
         }
         .padding(.horizontal, m.padX)
@@ -864,21 +910,23 @@ struct PlayerControlsView: View {
     /// shape. A transcode track switch keeps `phase == .playing`, so the chips never
     /// flicker there — only a true (re)load hides them, which already shows the scrim.
     @ViewBuilder
-    private func chips(_ m: PlayerMetrics) -> some View {
+    private func chips(_ m: PlayerMetrics, iconOnly: Bool = false) -> some View {
         if playbackReady {
-            chipSet(m)
+            chipSet(m, iconOnly: iconOnly)
         }
     }
 
+    /// `iconOnly` drops each chip's text (iOS overflow fallback; see `chipRow`'s
+    /// `ViewThatFits`). Always `false` on tvOS — the TV chip row has room to spare.
     @ViewBuilder
-    private func chipSet(_ m: PlayerMetrics) -> some View {
+    private func chipSet(_ m: PlayerMetrics, iconOnly: Bool = false) -> some View {
         if !vm.availableAudioTracks.isEmpty {
             PlayerGlassChip(systemImage: "waveform",
                             label: vm.selectedAudioTrack?.displayName ?? "Audio",
                             // Channels promoted onto the chip ("English 7.1"); the codec
                             // stays on the menu detail line (channelLabel strips it).
                             sub: vm.selectedAudioTrack?.channelLabel,
-                            isActive: openMenu == .audio, isVacated: isVacated(.audio), metrics: m,
+                            isActive: openMenu == .audio, isVacated: isVacated(.audio), iconOnly: iconOnly, metrics: m,
                             accessibilityLabel: "Audio, \(vm.selectedAudioTrack?.displayName ?? "default")") {
                 resetHideTimer(); openMenu = .audio
             }
@@ -890,7 +938,7 @@ struct PlayerControlsView: View {
             // category, Apple-player style); VoiceOver still says "Subtitles, <lang>".
             PlayerGlassChip(systemImage: "captions.bubble",
                             label: vm.selectedSubtitleTrack?.displayName ?? "Off",
-                            isActive: openMenu == .subtitles, isVacated: isVacated(.subtitles), metrics: m,
+                            isActive: openMenu == .subtitles, isVacated: isVacated(.subtitles), iconOnly: iconOnly, metrics: m,
                             accessibilityLabel: "Subtitles, \(vm.selectedSubtitleTrack?.displayName ?? "Off")") {
                 resetHideTimer(); openMenu = .subtitles
             }
@@ -898,7 +946,7 @@ struct PlayerControlsView: View {
             .tvFocused($chipFocus, equals: .subtitles)
         }
         PlayerGlassChip(systemImage: "timer", label: SpeedMenu.label(Double(vm.playbackRate)),
-                        isActive: openMenu == .speed, isVacated: isVacated(.speed), metrics: m,
+                        isActive: openMenu == .speed, isVacated: isVacated(.speed), iconOnly: iconOnly, metrics: m,
                         accessibilityLabel: "Playback speed, \(SpeedMenu.label(Double(vm.playbackRate)))") {
             resetHideTimer(); openMenu = .speed
         }
@@ -908,7 +956,7 @@ struct PlayerControlsView: View {
             // The whole row only mounts once `playbackReady` (see `chips`), so the
             // engine is live by the time this shows — no mid-load dimming needed.
             PlayerGlassChip(systemImage: "list.bullet", label: "Chapters",
-                            isActive: openMenu == .chapters, isVacated: isVacated(.chapters), metrics: m,
+                            isActive: openMenu == .chapters, isVacated: isVacated(.chapters), iconOnly: iconOnly, metrics: m,
                             accessibilityLabel: "Chapters") {
                 resetHideTimer(); openMenu = .chapters
             }
@@ -917,7 +965,7 @@ struct PlayerControlsView: View {
         }
         #if DEBUG
         PlayerGlassChip(systemImage: "ladybug", label: "Debug",
-                        isActive: debugHUD, metrics: m, accessibilityLabel: "Debug info") {
+                        isActive: debugHUD, iconOnly: iconOnly, metrics: m, accessibilityLabel: "Debug info") {
             resetHideTimer(); debugHUD = true
         }
         .trackPresentation(isPresented: $debugHUD) { debugMenuList }
@@ -1629,4 +1677,21 @@ private struct PlayerControlsPreviewHost: View {
 
 #Preview("HUD — phone") { PlayerControlsPreviewHost(bigWidth: nil) }
 #Preview("HUD — big (iPad)") { PlayerControlsPreviewHost(bigWidth: 1180) }
+
+// Orientation-v2 render checks (iPhone sim destination). Portrait at the phone's true
+// ~393pt width: the labeled audio+subtitles+speed+chapters(+Debug) row can't fit, so
+// `chipRow`'s `ViewThatFits` drops to the ICON-ONLY fallback — and the top bar carries the
+// iPhone-only rotate control. Landscape (~852pt): the same set fits, so the row stays
+// fully LABELED (the `ViewThatFits` primary) with the rotate control still present.
+#Preview("HUD — phone portrait (icon-only overflow)", traits: .fixedLayout(width: 393, height: 852)) {
+    // `.fixedLayout` canvases don't derive a size class from their aspect, so inject the
+    // one the rotate button reads (iPhone portrait == `.regular` → offers landscape).
+    PlayerControlsPreviewHost(bigWidth: nil)
+        .environment(\.verticalSizeClass, .regular)
+}
+#Preview("HUD — phone landscape (labeled)", traits: .fixedLayout(width: 852, height: 393)) {
+    // iPhone landscape == `.compact` → the rotate button offers portrait.
+    PlayerControlsPreviewHost(bigWidth: nil)
+        .environment(\.verticalSizeClass, .compact)
+}
 #endif

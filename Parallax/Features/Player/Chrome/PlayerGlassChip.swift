@@ -16,6 +16,11 @@ struct PlayerGlassChip: View {
     /// focus-ghost class of bug; the chip row's container is gone, but identity
     /// keeps this correct regardless of future containment).
     var isVacated: Bool = false
+    /// Icon-only rendering (iOS chip-row overflow fallback): the primary `label` and the
+    /// `sub` caption are dropped, leaving just the glyph in a tight capsule. The full label
+    /// is retained as `accessibilityLabel`, so VoiceOver is unaffected. `chipRow`'s
+    /// `ViewThatFits` selects this only when the labeled row can't fit the width.
+    var iconOnly: Bool = false
     let metrics: PlayerMetrics
     let accessibilityLabel: String
     let action: () -> Void
@@ -89,14 +94,16 @@ struct PlayerGlassChip: View {
         return HStack(spacing: metrics.chipGap) {
             Image(systemName: systemImage)
                 .font(.system(size: metrics.chipIconSize, weight: .semibold))
-            Text(label)
-                .font(.system(size: metrics.chipFontSize, weight: .semibold))
-                .lineLimit(1)
-            if let sub {
-                Text(sub)
+            if !iconOnly {
+                Text(label)
                     .font(.system(size: metrics.chipFontSize, weight: .semibold))
-                    .foregroundStyle(fg.opacity(0.6))
                     .lineLimit(1)
+                if let sub {
+                    Text(sub)
+                        .font(.system(size: metrics.chipFontSize, weight: .semibold))
+                        .foregroundStyle(fg.opacity(0.6))
+                        .lineLimit(1)
+                }
             }
         }
         .foregroundStyle(fg)

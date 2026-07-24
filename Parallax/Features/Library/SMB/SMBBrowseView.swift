@@ -49,6 +49,13 @@ struct SMBBrowseView: View {
     /// Keychain slot). A transient fault (`.unexpected` keychain read error) stays non-terminal
     /// so `.recoversFromOffline` may clear it and retry `openLevel()`.
     @State private var setupErrorIsTerminal = false
+    /// Identity of the top-most visible tile, maintained by `scrollPosition(id:)` — never
+    /// written here. It exists so the system re-anchors the wall to the same tile whenever
+    /// the scroll view's SIZE changes: an iPhone landscape playback session reflows this
+    /// (covered) level at landscape width and back, and a bare point offset doesn't survive
+    /// the round trip — the wall came back scrolled to the top. `AnyHashable` because the
+    /// wall mixes two identity types (folders by entry, videos by `ItemID`).
+    @State private var scrollAnchorID: AnyHashable?
 
     var body: some View {
         Group {
@@ -230,6 +237,9 @@ struct SMBBrowseView: View {
             }
             .contentMargins(.horizontal, AppLayout.contentHMargin(idiom: idiom), for: .scrollContent)
             .contentMargins(.vertical, idiom == .tv ? Space.s40 : Space.s12, for: .scrollContent)
+            // Pairs with the grids' `.scrollTargetLayout()` (see `SMBBrowseGrid`): identity-
+            // anchored scroll restoration across the player's landscape reflow.
+            .scrollPosition(id: $scrollAnchorID)
         }
     }
 
@@ -295,6 +305,9 @@ struct SMBBrowseGrid: View {
                             .pressableTileButton()
                         }
                     }
+                    // Each tile is a scroll target so the owner's `scrollPosition(id:)`
+                    // can re-anchor the wall by identity when the scroll view resizes.
+                    .scrollTargetLayout()
                 }
             }
             if !media.isEmpty {
@@ -319,6 +332,7 @@ struct SMBBrowseGrid: View {
                             .onAppear { onMediaTileAppeared?(index) }
                         }
                     }
+                    .scrollTargetLayout()
                 }
             }
         }
