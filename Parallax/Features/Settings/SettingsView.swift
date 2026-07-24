@@ -36,6 +36,8 @@ struct SettingsView: View {
         case addJellyfin
         case addSMB
         case subtitles
+        case about
+        case license(Acknowledgement)
     }
 
     var body: some View {
@@ -126,6 +128,10 @@ struct SettingsView: View {
                 #endif
         case .subtitles:
             SubtitleSettingsView()
+        case .about:
+            AboutView()
+        case .license(let entry):
+            LicenseTextView(entry: entry)
         }
     }
 
@@ -157,6 +163,7 @@ struct SettingsView: View {
                     #endif
                 },
                 onSelectSubtitles: { path.append(.subtitles) },
+                onSelectAbout: { path.append(.about) },
                 storage: { ThumbnailCacheCard() }
             )
         } else {
@@ -297,6 +304,7 @@ struct SettingsContentView<Storage: View>: View {
     var onRemoveSignedOut: (ServerID) -> Void = { _ in }
     let onAddServer: () -> Void
     let onSelectSubtitles: () -> Void
+    var onSelectAbout: () -> Void = {}
     @ViewBuilder var storage: Storage
 
     /// The signed-out row awaiting a decision — drives the sign-in-again / remove dialog.
@@ -309,6 +317,7 @@ struct SettingsContentView<Storage: View>: View {
             serversSection
             playbackSection
             storage
+            aboutSection
             // iOS/iPadOS show the build line at the end of the list; tvOS relocates it to the top-right
             // tag in the chrome (handoff `.tv-build`) — see `RootBuildTag` below.
             #if !os(tvOS)
@@ -394,6 +403,13 @@ struct SettingsContentView<Storage: View>: View {
                             accessory: .chevron, action: onSelectSubtitles)
             SettingsListRow(systemImage: "film", title: "Video", accessory: .soon)
             SettingsListRow(systemImage: "waveform", title: "Audio", accessory: .soon)
+        }
+    }
+
+    private var aboutSection: some View {
+        SettingsGroup(title: "About") {
+            SettingsListRow(systemImage: "info.circle", title: "About Parallax",
+                            accessory: .chevron, action: onSelectAbout)
         }
     }
 }
