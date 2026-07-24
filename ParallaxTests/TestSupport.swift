@@ -1,5 +1,6 @@
 import Foundation
 import ParallaxCore
+import ParallaxJellyfin
 @testable import Parallax
 
 /// Bounded yield loop shared by every test that waits on an async subscription (a
@@ -12,6 +13,24 @@ func waitUntil(_ condition: @MainActor () -> Bool) async {
     for _ in 0..<1000 where !condition() {
         await Task.yield()
     }
+}
+
+/// A `JellyfinClientFactory` for suites that must construct a `SessionManager` (view models take
+/// one) but never reach the network. It only satisfies the initializer, and traps if a test ever
+/// does walk into it — a call here means the suite is exercising a path it didn't intend to.
+struct UnusedJellyfinClientFactory: JellyfinClientFactory {
+    func make(serverURL: URL) async -> JellyfinAuthClient {
+        fatalError("JellyfinClientFactory.make must not be reached in this suite")
+    }
+}
+
+/// A `ServerStore` on a fresh, per-call `UserDefaults` suite, so persisted servers never leak
+/// between tests or into the standard domain. `label` just makes the suite name greppable.
+func makeIsolatedServerStore(label: String) -> ServerStore {
+    let suiteName = "\(label)-\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suiteName)!
+    defaults.removePersistentDomain(forName: suiteName)
+    return ServerStore(settings: SettingsStore(defaults: defaults), keychain: FakeKeychain())
 }
 
 /// A `UserDataWriting` with canned, per-call results for each operation, independently — no
