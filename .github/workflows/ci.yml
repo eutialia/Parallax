@@ -13,6 +13,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Run no-platform-drift check
         run: ./scripts/check-no-platform-drift.sh
+      - name: Run acknowledgements drift check
+        run: ./scripts/check-acknowledgements.sh
 
   package-tests:
     # macos-26 is the first image with Xcode >= 26.5, the floor set by

@@ -1,0 +1,8 @@
+// The app's version, in ONE place. Bumped only by scripts/release.sh, which also
+// creates the matching git tag (vMARKETING_VERSION) — never edit by hand, or the
+// tag-check CI job will fail the release tag.
+// CURRENT_PROJECT_VERSION is the commit count of the release commit: monotonic
+// across releases with no bookkeeping, and it maps back to an exact commit via
+// `git rev-list --count`.
+MARKETING_VERSION = 0.1.0
+CURRENT_PROJECT_VERSION = 558

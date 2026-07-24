@@ -1,0 +1,22 @@
+name: Release tag check
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  tag-matches-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag must equal MARKETING_VERSION
+        # The tag and Config/Version.xcconfig have one source of truth (scripts/release.sh);
+        # this is the lock against a hand-made tag that disagrees with the built app's version.
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          VERSION=$(sed -n 's/^MARKETING_VERSION = //p' Config/Version.xcconfig)
+          if [ "$TAG" != "$VERSION" ]; then
+            echo "tag v${TAG} != MARKETING_VERSION ${VERSION} in Config/Version.xcconfig" >&2
+            exit 1
+          fi
+          echo "tag v${TAG} matches MARKETING_VERSION"

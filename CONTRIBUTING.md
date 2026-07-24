@@ -19,3 +19,9 @@ You keep the copyright to your work. Contributions are voluntary and unpaid. Bli
 - `#if os(...)` is allowed only in the app target, never in `Packages/`. CI enforces this.
 - Packages must not import SwiftUI or Combine.
 - Run the package tests before submitting (the CI workflow shows the schemes and destinations).
+- New SwiftPM dependencies must be credited in the in-app About screen
+  (`Parallax/Features/Settings/About/Acknowledgements.swift`) and `CREDITS.md`;
+  `scripts/check-acknowledgements.sh` enforces this in CI.
+- Versioning (maintainer): the app version lives only in `Config/Version.xcconfig`,
+  bumped by `scripts/release.sh`, which also creates the matching `vX.Y.Z` tag. CI
+  rejects a release tag that disagrees with `MARKETING_VERSION`.

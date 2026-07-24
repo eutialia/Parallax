@@ -1,3 +1,7 @@
+// This file is the project's base configuration, so it pulls in the other
+// Config/*.xcconfig pieces: version first, then signing below.
+#include "Version.xcconfig"
+
 // Code signing. Simulator builds need no team; for device builds, supply yours locally:
 //   echo 'DEVELOPMENT_TEAM = YOURTEAMID' > Config/Signing.local.xcconfig
 // Signing.local.xcconfig is gitignored, so your team never lands in a commit.

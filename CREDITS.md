@@ -1,5 +1,9 @@
 # Credits & Third-Party Attributions
 
+This file mirrors the in-app screen at Settings → About Parallax
+(`Parallax/Features/Settings/About/Acknowledgements.swift`, checked by
+`scripts/check-acknowledgements.sh` in CI so neither can silently miss a dependency).
+
 ## Swift package dependencies
 
 | Component | License | Role |
