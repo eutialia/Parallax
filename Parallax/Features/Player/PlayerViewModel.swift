@@ -2526,6 +2526,25 @@ extension PlayerViewModel {
                                      detailLabel: "SRT · External", isExternal: true)
         vm.availableSubtitleTracks = [subtitle]
         vm.selectedSubtitleTrack = subtitle
+        // A chaptered movie so the HUD previews render the full chip set (audio +
+        // subtitles + speed + chapters) — the input the icon-only overflow fallback needs.
+        // `playingItem` is the only source of `chapters` (a computed pass-through); the
+        // display title still comes from `itemTitle` above, so this doesn't disturb it.
+        let movie = Movie(
+            id: ItemID(rawValue: "preview-movie"),
+            title: "The Grand Budapest Hotel", overview: nil, year: 2014,
+            runtime: .seconds(5_460), communityRating: nil, officialRating: nil, genres: [],
+            primaryTag: nil, backdropTags: [], logoTag: nil, thumbTag: nil,
+            userData: UserItemData(played: false, playbackPositionTicks: 0, playCount: 0, isFavorite: false)
+        )
+        vm.playingItem = .movie(MovieDetail(
+            movie: movie, tagline: nil, studios: [], directors: [], people: [],
+            chapters: [
+                Chapter(index: 0, name: "Opening", start: .seconds(0)),
+                Chapter(index: 1, name: "The Lobby", start: .seconds(900)),
+                Chapter(index: 2, name: "Finale", start: .seconds(5_400))
+            ]
+        ))
         return vm
     }
 }

@@ -6,18 +6,18 @@ import UIKit
 /// SwiftUI's lifecycle app has an auto-generated scene with no `SceneDelegate`, so the
 /// only hook UIKit exposes for orientation is the app delegate's
 /// `application(_:supportedInterfaceOrientationsFor:)` (see `OrientationAppDelegate`). That
-/// method reads `mask` here; flipping `mask` and asking the scene for a geometry update is
-/// what forces a rotation.
+/// method reads `mask` here; widening `mask` lets UIKit follow the device, and a geometry
+/// request forces a specific side.
 ///
-/// Parallax doesn't offer portrait video, so the iPhone has exactly two orientation
-/// states — browse is portrait-only, the player is landscape-only (the Netflix shape) —
-/// and every transition between them is a FORCED rotation, never "follow the device".
-/// Exclusive masks are what make the hand-offs deterministic: releasing the player's
-/// lock rotates back to portrait even when the phone was already physically portrait
-/// throughout playback (with landscape still allowed at rest, UIKit saw no reason to
-/// rotate and the browse UI stayed stuck sideways until a scene re-activation).
-/// iPad is never locked — its canvas is fine in any orientation — so both calls are
-/// no-ops there.
+/// The iPhone player FOLLOWS THE DEVICE (v2): browse is portrait-only, but presenting the
+/// player widens the mask to portrait+landscape so the physical orientation drives the
+/// rotation — hold the phone sideways and it goes landscape on its own, hold it upright and
+/// it stays portrait. The rotate button (`rotatePlayer(to:)`) forces a side on top of that,
+/// overriding even the system rotation lock. DISMISS narrows back to the EXCLUSIVE portrait
+/// browse mask and force-rotates there: a permissive rest mask left the browse UI stuck
+/// sideways after a landscape session (UIKit saw no reason to rotate), so the exclusive
+/// narrow-then-force hand-off stays. iPad is never orientation-managed — its canvas is fine
+/// any way up — so every call is a no-op there.
 @MainActor
 final class OrientationController {
     static let shared = OrientationController()
@@ -35,17 +35,37 @@ final class OrientationController {
     /// swaps it for landscape on iPhone.
     private(set) lazy var mask: UIInterfaceOrientationMask = browseDefault
 
-    /// Lock iPhone playback to landscape and rotate there now. No-op on iPad.
-    func lockLandscapeForPlayer() {
+    /// Player PRESENT (iPhone only): widen the reported mask to portrait+landscape (the
+    /// plist set, minus upside-down) and invalidate so UIKit re-queries it. NO geometry
+    /// request — the device's physical orientation drives the rotation from here; if the
+    /// user is already holding landscape, UIKit rotates the moment the mask widens.
+    /// No-op on iPad (never managed).
+    func beginPlayerPresentation() {
         guard UIDevice.current.userInterfaceIdiom == .phone else { return }
-        apply(.landscape)
+        mask = [.portrait, .landscape]
+        invalidateSupportedOrientations()
     }
 
-    /// Restore the portrait-only browse mask and rotate back now. No-op on iPad
-    /// (never locked).
-    func releasePlayerLock() {
+    /// Player DISMISS (iPhone only): restore the EXCLUSIVE portrait browse mask and force
+    /// the rotation back now (the full `apply` — invalidate → request → verify). The rest
+    /// mask must stay exclusive portrait: with landscape still allowed at rest UIKit saw no
+    /// reason to rotate and browse stayed stuck sideways. No-op on iPad (never managed).
+    func endPlayerPresentation() {
         guard UIDevice.current.userInterfaceIdiom == .phone else { return }
         apply(browseDefault)
+    }
+
+    /// Force the player to a specific orientation (iPhone only) — the rotate button's
+    /// action, only meaningful while the player's wide mask is active. The mask stays WIDE
+    /// (portrait+landscape); this one-shot geometry request OVERRIDES the system rotation
+    /// lock, which is the whole point of the button. `target` is `.landscapeLeft` (a single
+    /// side — Dynamic Island on the right, the user's grip; with the lock on UIKit has no
+    /// physical side to prefer from a pair) or `.portrait`. Invalidate-then-request is
+    /// harmless here (the wide mask already contains `target`) but keeps one rotation code
+    /// path.
+    func rotatePlayer(to target: UIInterfaceOrientationMask) {
+        guard UIDevice.current.userInterfaceIdiom == .phone else { return }
+        forceRotation(to: target)
     }
 
     /// One in-flight settle check per `apply` — a lock/release landing while the
@@ -62,6 +82,15 @@ final class OrientationController {
         verifySettled(on: newMask)
     }
 
+    /// Invalidate the delegate-vended mask so UIKit re-queries
+    /// `application(_:supportedInterfaceOrientationsFor:)`. The present path uses this
+    /// ALONE (no geometry request — the device drives); `forceRotation` chains it before
+    /// the request.
+    private func invalidateSupportedOrientations() {
+        activeWindowScene?.keyWindow?.rootViewController?
+            .setNeedsUpdateOfSupportedInterfaceOrientations()
+    }
+
     /// The two UIKit calls that turn the vended mask into an actual rotation.
     /// Invalidate BEFORE requesting: the geometry request is validated against the
     /// scene's CACHED resolved orientations, and with exclusive masks the stale cache
@@ -69,9 +98,8 @@ final class OrientationController {
     /// difference between rotating and a silent UISceneErrorDomain 101 rejection
     /// (sim-reproduced; the player mounted in portrait).
     private func forceRotation(to newMask: UIInterfaceOrientationMask) {
-        guard let scene = activeWindowScene else { return }
-        scene.keyWindow?.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
-        scene.requestGeometryUpdate(.iOS(interfaceOrientations: newMask))
+        invalidateSupportedOrientations()
+        activeWindowScene?.requestGeometryUpdate(.iOS(interfaceOrientations: newMask))
     }
 
     /// The self-heal for a dropped geometry request — e.g. one that landed while

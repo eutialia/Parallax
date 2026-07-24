@@ -40,18 +40,31 @@ struct RootTabView: View {
         // reload token (above) doesn't move on a reconnect, so without this the libraries stayed gone
         // until a server switch. Event-based — no pull-to-refresh.
         .recoversFromOffline(isStalled: librariesStalled) { await loadLibraries() }
-        // Tabs that exist at only one width — Library + Settings are compact-only (regular browses
-        // libraries from the sidebar and hosts Settings in its footer), the per-library tabs are
-        // regular-only. Crossing the size-class boundary (iPad Split View / Stage Manager resize)
-        // removes the selected tab and would leave the selection dangling on a blank pane, so snap
-        // back to one that exists at the new width.
-        .onChange(of: hSize) { _, newValue in
-            if newValue == .regular {
+        // Tabs that exist at only one layout — Library + Settings are compact-only (sidebar
+        // layouts browse libraries from the sidebar and host Settings in its footer), the
+        // per-library tabs are sidebar-only. Crossing the layout boundary (iPad Split View /
+        // Stage Manager resize — iPhone never crosses, see `isSidebarLayout`) removes the
+        // selected tab and would leave the selection dangling on a blank pane, so snap back
+        // to one that exists in the new layout.
+        .onChange(of: isSidebarLayout) { _, isSidebar in
+            if isSidebar {
                 if selectedTab == .settings || selectedTab == .library { selectedTab = .home }
             } else if isLibraryTab(selectedTab) {
                 selectedTab = .library
             }
         }
+    }
+
+    /// Sidebar (iPad-regular) vs compact tab structure. Deliberately DEVICE-gated, not pure
+    /// size class: a Pro Max iPhone reports `.regular` width in landscape, and keying the tab
+    /// STRUCTURE on size class there tears down whole `Tab`/`NavigationStack` subtrees on every
+    /// rotation — a landscape playback session silently swapped the tree under the player, so
+    /// dismissing landed on Home with the Library drill-in and scroll position gone. iPhone
+    /// therefore always keeps the compact structure (same principle as
+    /// `PlayerControlsView.isPad`); iPad keeps following its real size class so Split View /
+    /// Stage Manager still adapt.
+    private var isSidebarLayout: Bool {
+        UIDevice.current.userInterfaceIdiom == .pad && hSize == .regular
     }
 
     /// Resolve + commit the sidebar's merged library list. Shared by the launch `.task` and offline
@@ -121,7 +134,7 @@ struct RootTabView: View {
             // iPhone only: the card-list browser. On iPad the sidebar's per-library tabs (below)
             // ARE the browser — selecting a library drills straight to its grid — so there's no
             // separate Library tab to duplicate that, and no list to push a drill-down from.
-            if hSize == .compact {
+            if !isSidebarLayout {
                 Tab("Library", systemImage: "rectangle.stack", value: AppTab.library) {
                     NavigationStack {
                         LibraryHostView()
@@ -150,7 +163,7 @@ struct RootTabView: View {
             // iPhone only: Settings rides the bottom tab bar — there's no sidebar to host the
             // footer entry iPad uses. It's an inline tab in its own NavigationStack; iPad instead
             // opens the modal sheet from `RootView` via its sidebar footer.
-            if hSize == .compact {
+            if !isSidebarLayout {
                 Tab("Settings", systemImage: "gearshape", value: AppTab.settings) {
                     NavigationStack {
                         SettingsView()
@@ -168,7 +181,7 @@ struct RootTabView: View {
             // appear as the lone dynamic slot to the right of Search; nothing shows before any
             // library is opened (`lastVisitedLibraryID` starts nil). The expanded sidebar ignores
             // `.tabBar` visibility and lists every library under the header.
-            if hSize == .regular, !entries.isEmpty {
+            if isSidebarLayout, !entries.isEmpty {
                 // TODO: per-server sections — one `TabSection` per source (each Jellyfin /
                 // SMB server its own titled group), instead of this single merged section.
                 // Deferred UI polish; the merge already tags every entry by source.
@@ -207,7 +220,10 @@ struct RootTabView: View {
         // The one hand-styled chrome row is `settingsFooter` below: its label color is picked to
         // match the system tab rows on this floor.
         .tabViewSidebarBottomBar { settingsFooter }
-        .environment(\.appIdiom, hSize == .regular ? .regular : .compact)
+        // Pinned to the same device-gated predicate as the tab structure: a Pro Max in
+        // landscape must not flip downstream `appIdiom` layout branches to iPad forms
+        // while the tab tree stays in its compact shape.
+        .environment(\.appIdiom, isSidebarLayout ? .regular : .compact)
     }
 
     // MARK: - Settings entry

@@ -76,11 +76,12 @@ struct PlayerPresentationHost: View {
             // "step"). Parking the present at the full height keeps the slide-in symmetric.
             let height = geo.size.height + geo.safeAreaInsets.top + geo.safeAreaInsets.bottom
             // How far the dismiss slide must travel to clear the screen. On iPhone the
-            // dismissal itself rotates the window back to portrait (see `sync`), so the
-            // slide computed in landscape must still clear the PORTRAIT height — the
-            // window's larger physical dimension. iPad never rotates on dismiss (the
-            // orientation lock is a no-op there), so it keeps the exact height and the
-            // slide-out speed the present spring matches.
+            // dismissal narrows back to portrait (see `sync`) — which MAY rotate the window
+            // when the player was left in landscape — so the slide computed in landscape must
+            // still clear the PORTRAIT height, the window's larger physical dimension. (When
+            // the player was already portrait `max` is a no-op.) iPad never rotates on dismiss
+            // (orientation is unmanaged there), so it keeps the exact height and the slide-out
+            // speed the present spring matches.
             let dismissTravel = UIDevice.current.userInterfaceIdiom == .phone
                 ? max(height, geo.size.width + geo.safeAreaInsets.leading + geo.safeAreaInsets.trailing)
                 : height
@@ -143,17 +144,18 @@ struct PlayerPresentationHost: View {
             mounted = request
         } else {
             guard mounted != nil else { return }
-            // Release the orientation lock the moment dismissal BEGINS — not in the
+            // End the player presentation the moment dismissal BEGINS — not in the
             // player's onDisappear, which this host defers until the slide-out's
             // completion. The browse UI underneath is visible (only disabled) for the
-            // whole slide, so a completion-time release showed it sideways for the
-            // full 0.45s and then snap-rotated to portrait (the dismiss "flash") —
-            // and a backgrounding mid-slide froze the spring's clock, reopening the
-            // app on landscape browse. Rotating now means the window turns portrait
-            // WHILE the card slides out (hence `dismissTravel` clearing the portrait
-            // height). onDisappear keeps an idempotent release as the backstop for
-            // unmounts that never flip `request` (server switch).
-            OrientationController.shared.releasePlayerLock()
+            // whole slide, so a completion-time narrow-to-portrait showed it sideways
+            // for the full 0.45s and then snap-rotated (the dismiss "flash") whenever the
+            // player was left in landscape — and a backgrounding mid-slide froze the
+            // spring's clock, reopening the app on landscape browse. Narrowing now means
+            // the window turns portrait WHILE the card slides out (hence `dismissTravel`
+            // clearing the portrait height when the player was landscape). onDisappear
+            // keeps an idempotent re-call as the backstop for unmounts that never flip
+            // `request` (server switch).
+            OrientationController.shared.endPlayerPresentation()
             presentation.isSettled = false
             // From wherever the surface is — .zero after a Close tap, the finger's
             // drop point after a committed pull (the card slides on out from there,
