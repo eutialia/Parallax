@@ -9,176 +9,127 @@ struct DeviceProfileTranslatorTests {
 
     // MARK: — Fixtures
 
+    /// AVKit-native only: no software codecs, so no VLC tier may be emitted.
     private func avKitOnlyCaps() -> DeviceCapabilities {
-        DeviceCapabilities(
-            supportedVideoCodecs: [.h264, .hevc],
-            supportedAudioCodecs: [.aac, .ac3, .eac3, .mp3],
-            supportedContainers: [.mp4, .mov],
-            hdr: .none,
-            maxResolution: .uhd4K,
-            maxBitrate: .megabits(120),
-            audioOutput: .stereo,
-            preferredSubtitleFormats: [.vtt, .srt],
-            softwareVideoCodecs: [],
-            softwareAudioCodecs: [],
-            softwareContainers: []
-        )
+        JellyfinFixtures.caps(containers: [.mp4, .mov])
     }
 
-    private func tieredCaps() -> DeviceCapabilities {
-        DeviceCapabilities(
-            supportedVideoCodecs: [.h264, .hevc],
-            supportedAudioCodecs: [.aac, .ac3, .eac3, .mp3],
-            supportedContainers: [.mp4, .mov],
-            hdr: .none,
-            maxResolution: .uhd4K,
-            maxBitrate: .megabits(120),
-            audioOutput: .stereo,
-            preferredSubtitleFormats: [.vtt, .srt],
-            softwareVideoCodecs: [.vc1, .mpeg2video, .vp9, .av1],
-            softwareAudioCodecs: [.dts, .trueHD, .flac, .opus],
-            softwareContainers: [.mkv, .webm, .avi, .ts, .mp3, .flac]
-        )
-    }
-
-    /// tieredCaps() with Dolby Vision reported (hardware decode confirmed) and
-    /// a non-default resolution ceiling, for the DOVI / resolution tests.
-    private func dolbyVisionCaps(maxResolution: Resolution = .uhd4K) -> DeviceCapabilities {
-        DeviceCapabilities(
-            supportedVideoCodecs: [.h264, .hevc],
-            supportedAudioCodecs: [.aac, .ac3, .eac3, .mp3],
-            supportedContainers: [.mp4, .mov],
-            hdr: [.hdr10, .dolbyVision],
+    /// Both tiers present. `hdr: .none` on purpose — several tests below assert the HEVC range
+    /// whitelist does NOT shrink when the probe reports no HDR.
+    private func tieredCaps(
+        hdr: HDRSupport = .none,
+        maxResolution: Resolution = .uhd4K,
+        containers: [Container] = [.mp4, .mov]
+    ) -> DeviceCapabilities {
+        JellyfinFixtures.caps(
+            containers: containers,
+            hdr: hdr,
             maxResolution: maxResolution,
-            maxBitrate: .megabits(120),
-            audioOutput: .stereo,
-            preferredSubtitleFormats: [.vtt, .srt],
             softwareVideoCodecs: [.vc1, .mpeg2video, .vp9, .av1],
             softwareAudioCodecs: [.dts, .trueHD, .flac, .opus],
             softwareContainers: [.mkv, .webm, .avi, .ts, .mp3, .flac]
         )
     }
 
-    /// Mirrors DeviceProfileBuilder.build(): supportedContainers INCLUDES .hls.
+    /// Dolby Vision hardware decode confirmed — the one signal that adds bare DOVI to the gate.
+    private func dolbyVisionCaps(maxResolution: Resolution = .uhd4K) -> DeviceCapabilities {
+        tieredCaps(hdr: [.hdr10, .dolbyVision], maxResolution: maxResolution)
+    }
+
+    /// Mirrors `DeviceProfileBuilder.build()`, whose `supportedContainers` INCLUDES `.hls` — the
+    /// input shape that proves hls is stripped rather than never present.
     private func realBuildCaps() -> DeviceCapabilities {
-        DeviceCapabilities(
-            supportedVideoCodecs: [.h264, .hevc],
-            supportedAudioCodecs: [.aac, .ac3, .eac3, .mp3],
-            supportedContainers: [.mp4, .mov, .hls],
-            hdr: .none,
-            maxResolution: .uhd4K,
-            maxBitrate: .megabits(120),
-            audioOutput: .stereo,
-            preferredSubtitleFormats: [.vtt, .srt],
-            softwareVideoCodecs: [.vc1, .mpeg2video, .vp9, .av1],
-            softwareAudioCodecs: [.dts, .trueHD, .flac, .opus],
-            softwareContainers: [.mkv, .webm, .avi, .ts, .mp3, .flac]
-        )
+        tieredCaps(containers: [.mp4, .mov, .hls])
+    }
+
+    // MARK: — Tier lookup
+    //
+    // The two DirectPlay entries are distinguished by container membership: the AVKit tier carries
+    // mp4 and never mkv, the software tier is the mkv one. Naming that once keeps a dozen
+    // assertions from re-typing the predicate (and silently matching the wrong entry).
+
+    private func avKitEntry(in profile: DeviceProfile) -> DirectPlayProfile? {
+        (profile.directPlayProfiles ?? []).first {
+            let container = $0.container ?? ""
+            return container.contains("mp4") && !container.contains("mkv")
+        }
+    }
+
+    private func vlcEntry(in profile: DeviceProfile) -> DirectPlayProfile? {
+        (profile.directPlayProfiles ?? []).first { ($0.container ?? "").contains("mkv") }
+    }
+
+    /// The profile serializes each list as a sorted CSV, so membership questions are set questions.
+    private func csvParts(_ value: String?) -> Set<String> {
+        Set((value ?? "").split(separator: ",").map(String.init))
     }
 
     // MARK: — AVKit DirectPlay tier
 
-    @Test("AVKit DirectPlay profile advertises mp4 and mov containers")
-    func avKitDirectPlayContainers() {
-        let profile = DeviceProfileTranslator.deviceProfile(from: tieredCaps())
-        let direct = profile.directPlayProfiles ?? []
-        let avKitEntry = direct.first { ($0.container ?? "").contains("mp4") && !($0.container ?? "").contains("mkv") }
-        #expect(avKitEntry != nil, "No AVKit DirectPlay entry with container containing mp4")
-        #expect(avKitEntry?.type == .video)
-        // Containers are sorted and joined — verify via set decomposition
-        let parts = Set((avKitEntry?.container ?? "").split(separator: ",").map(String.init))
-        #expect(parts == ["mp4", "mov"])
+    /// The AVKit tier is an EXACT set per field: anything extra would be advertised as
+    /// direct-playable when AVFoundation can't actually decode it.
+    @Test(
+        "The AVKit DirectPlay tier advertises exactly the hardware-native sets",
+        arguments: [ProfileField.container, .videoCodec, .audioCodec]
+    )
+    func avKitDirectPlayTier(field: ProfileField) throws {
+        let capabilities = tieredCaps()
+        let entry = try #require(avKitEntry(in: DeviceProfileTranslator.deviceProfile(from: capabilities)))
+        #expect(entry.type == .video)
+        // Compared against the capabilities under test, not a re-typed codec list.
+        switch field {
+        case .container:
+            #expect(csvParts(entry.container) == Set(capabilities.supportedContainers.map(\.rawValue)))
+        case .videoCodec:
+            #expect(csvParts(entry.videoCodec) == Set(capabilities.supportedVideoCodecs.map(\.rawValue)))
+        case .audioCodec:
+            #expect(csvParts(entry.audioCodec) == Set(capabilities.supportedAudioCodecs.map(\.rawValue)))
+        }
     }
 
-    @Test("AVKit DirectPlay profile lists h264,hevc as video codecs")
-    func avKitDirectPlayVideoCodecs() {
-        let profile = DeviceProfileTranslator.deviceProfile(from: tieredCaps())
-        let direct = profile.directPlayProfiles ?? []
-        let avKitEntry = direct.first { ($0.container ?? "").contains("mp4") && !($0.container ?? "").contains("mkv") }
-        let codecs = avKitEntry?.videoCodec ?? ""
-        let parts = Set(codecs.split(separator: ",").map(String.init))
-        #expect(parts == ["h264", "hevc"])
-    }
-
-    @Test("AVKit DirectPlay profile lists aac,ac3,eac3,mp3 as audio codecs")
-    func avKitDirectPlayAudioCodecs() {
-        let profile = DeviceProfileTranslator.deviceProfile(from: tieredCaps())
-        let direct = profile.directPlayProfiles ?? []
-        let avKitEntry = direct.first { ($0.container ?? "").contains("mp4") && !($0.container ?? "").contains("mkv") }
-        let codecs = avKitEntry?.audioCodec ?? ""
-        let parts = Set(codecs.split(separator: ",").map(String.init))
-        #expect(parts == ["aac", "ac3", "eac3", "mp3"])
-    }
+    enum ProfileField: Sendable { case container, videoCodec, audioCodec }
 
     // MARK: — VLC DirectPlay tier
 
-    @Test("VLC DirectPlay profile exists when softwareVideoCodecs is non-empty")
-    func vlcDirectPlayExists() {
-        let profile = DeviceProfileTranslator.deviceProfile(from: tieredCaps())
-        let direct = profile.directPlayProfiles ?? []
-        let vlcEntry = direct.first { ($0.container ?? "").contains("mkv") }
-        #expect(vlcEntry != nil, "No VLC DirectPlay entry containing mkv")
-        #expect(vlcEntry?.type == .video)
+    /// The software tier exists only when the device reports software codecs, and each of its
+    /// fields is derived from the capabilities' software sets — audio additionally keeps the AVKit
+    /// codecs, since a VLC-routed file can still carry AAC.
+    @Test(
+        "The VLC DirectPlay tier is derived from the software capability sets",
+        arguments: [ProfileField.container, .videoCodec, .audioCodec]
+    )
+    func vlcDirectPlayTier(field: ProfileField) throws {
+        let capabilities = tieredCaps()
+        let entry = try #require(vlcEntry(in: DeviceProfileTranslator.deviceProfile(from: capabilities)))
+        #expect(entry.type == .video)
+        switch field {
+        case .container:
+            #expect(csvParts(entry.container).isSuperset(of: Set(capabilities.softwareContainers.map(\.rawValue))))
+        case .videoCodec:
+            #expect(csvParts(entry.videoCodec) == Set(capabilities.softwareVideoCodecs.map(\.rawValue)))
+        case .audioCodec:
+            let audio = csvParts(entry.audioCodec)
+            #expect(audio.isSuperset(of: Set(capabilities.softwareAudioCodecs.map(\.rawValue))))
+            #expect(audio.isSuperset(of: Set(capabilities.supportedAudioCodecs.map(\.rawValue))))
+        }
     }
 
-    @Test("VLC DirectPlay video codecs exclude h264 and hevc")
-    func vlcDirectPlayExcludesAVKitVideoCodecs() {
-        let profile = DeviceProfileTranslator.deviceProfile(from: tieredCaps())
-        let direct = profile.directPlayProfiles ?? []
-        let vlcEntry = direct.first { ($0.container ?? "").contains("mkv") }
-        let codecs = Set((vlcEntry?.videoCodec ?? "").split(separator: ",").map(String.init))
-        #expect(!codecs.contains("h264"),
-            "h264 must not appear in the VLC DirectPlay tier — premium MKV must remux to AVKit")
-        #expect(!codecs.contains("hevc"),
-            "hevc must not appear in the VLC DirectPlay tier — premium MKV must remux to AVKit")
-    }
-
-    @Test("VLC DirectPlay video codecs contain vc1, mpeg2video, vp9, av1")
-    func vlcDirectPlayVideoCodecs() {
-        let profile = DeviceProfileTranslator.deviceProfile(from: tieredCaps())
-        let direct = profile.directPlayProfiles ?? []
-        let vlcEntry = direct.first { ($0.container ?? "").contains("mkv") }
-        let codecs = Set((vlcEntry?.videoCodec ?? "").split(separator: ",").map(String.init))
-        #expect(codecs.contains("vc1"))
-        #expect(codecs.contains("mpeg2video"))
-        #expect(codecs.contains("vp9"))
-        #expect(codecs.contains("av1"))
-    }
-
-    @Test("VLC DirectPlay audio codecs include dts, trueHD, flac, opus plus AVKit audio")
-    func vlcDirectPlayAudioCodecs() {
-        let profile = DeviceProfileTranslator.deviceProfile(from: tieredCaps())
-        let direct = profile.directPlayProfiles ?? []
-        let vlcEntry = direct.first { ($0.container ?? "").contains("mkv") }
-        let codecs = Set((vlcEntry?.audioCodec ?? "").split(separator: ",").map(String.init))
-        #expect(codecs.contains("dts"))
-        // AudioCodec.trueHD.rawValue == "trueHD" (capital H)
-        #expect(codecs.contains("trueHD"))
-        #expect(codecs.contains("flac"))
-        #expect(codecs.contains("opus"))
-        // AVKit audio is also allowed in VLC-routed files
-        #expect(codecs.contains("aac"))
-        #expect(codecs.contains("eac3"))
-    }
-
-    @Test("VLC DirectPlay container string includes mkv, webm, avi, ts")
-    func vlcDirectPlayContainers() {
-        let profile = DeviceProfileTranslator.deviceProfile(from: tieredCaps())
-        let direct = profile.directPlayProfiles ?? []
-        let vlcEntry = direct.first { ($0.container ?? "").contains("mkv") }
-        let containers = Set((vlcEntry?.container ?? "").split(separator: ",").map(String.init))
-        #expect(containers.contains("mkv"))
-        #expect(containers.contains("webm"))
-        #expect(containers.contains("avi"))
-        #expect(containers.contains("ts"))
+    /// The routing rule this tier exists to express: a premium MKV must remux to AVKit rather than
+    /// route to the software engine, so the hardware video codecs must NOT appear here.
+    @Test("VLC DirectPlay video codecs exclude the AVKit-native ones")
+    func vlcDirectPlayExcludesAVKitVideoCodecs() throws {
+        let capabilities = tieredCaps()
+        let entry = try #require(vlcEntry(in: DeviceProfileTranslator.deviceProfile(from: capabilities)))
+        let codecs = csvParts(entry.videoCodec)
+        for hardware in capabilities.supportedVideoCodecs.map(\.rawValue) {
+            #expect(codecs.contains(hardware) == false, "\(hardware) must remux to AVKit, not route to VLC")
+        }
     }
 
     @Test("No VLC DirectPlay entry when softwareVideoCodecs is empty (avKit-only caps)")
     func noVLCTierWhenSoftwareEmpty() {
         let profile = DeviceProfileTranslator.deviceProfile(from: avKitOnlyCaps())
-        let direct = profile.directPlayProfiles ?? []
-        let vlcEntry = direct.first { ($0.container ?? "").contains("mkv") }
-        #expect(vlcEntry == nil,
+        #expect(vlcEntry(in: profile) == nil,
             "VLC DirectPlay entry must not appear when softwareVideoCodecs is empty")
     }
 
@@ -192,24 +143,19 @@ struct DeviceProfileTranslatorTests {
 
     // MARK: — .hls exclusion (delivery format, not a source container)
 
-    @Test("AVKit DirectPlay container string excludes hls (delivery format, not a source container)")
-    func avKitDirectPlayExcludesHLS() {
-        let profile = DeviceProfileTranslator.deviceProfile(from: realBuildCaps())
-        let direct = profile.directPlayProfiles ?? []
-        let avKitEntry = direct.first { ($0.container ?? "").contains("mp4") && !($0.container ?? "").contains("mkv") }
-        let parts = Set((avKitEntry?.container ?? "").split(separator: ",").map(String.init))
-        #expect(!parts.contains("hls"))
-        #expect(parts == ["mp4", "mov"])
+    /// `hls` is a DELIVERY format, so advertising it as a direct-playable source container would
+    /// invite the server to hand back a playlist where a file was expected. It must be stripped
+    /// from both tiers even though the capability set contains it.
+    @Test("hls is stripped from both DirectPlay tiers", arguments: [Tier.avKit, .vlc])
+    func directPlayExcludesHLS(tier: Tier) throws {
+        let capabilities = realBuildCaps()
+        #expect(capabilities.supportedContainers.contains(.hls), "the input must actually contain hls")
+        let profile = DeviceProfileTranslator.deviceProfile(from: capabilities)
+        let entry = try #require(tier == .avKit ? avKitEntry(in: profile) : vlcEntry(in: profile))
+        #expect(csvParts(entry.container).contains(Container.hls.rawValue) == false)
     }
 
-    @Test("VLC DirectPlay container string excludes hls")
-    func vlcDirectPlayExcludesHLS() {
-        let profile = DeviceProfileTranslator.deviceProfile(from: realBuildCaps())
-        let direct = profile.directPlayProfiles ?? []
-        let vlcEntry = direct.first { ($0.container ?? "").contains("mkv") }
-        let parts = Set((vlcEntry?.container ?? "").split(separator: ",").map(String.init))
-        #expect(!parts.contains("hls"))
-    }
+    enum Tier: Sendable { case avKit, vlc }
 
     // MARK: — TranscodingProfile
 
@@ -224,6 +170,8 @@ struct DeviceProfileTranslatorTests {
         // `-noaccurate_seek` subtitle drift (jellyfin#15845), handled above the container.
         #expect(trans.first?.container == "mp4")
         #expect(trans.first?.type == .video)
+        // These CSVs are the wire spec the server parses — the translator holds them as literals
+        // and exposes no named constant, so the expectation is the literal by necessity.
         #expect(trans.first?.videoCodec == "h264,hevc")
         #expect(trans.first?.audioCodec == "aac,ac3,eac3")
         // Always request up to 7.1 (8ch); the OS downmixes/spatializes per route.
@@ -243,42 +191,30 @@ struct DeviceProfileTranslatorTests {
 
     // MARK: — SubtitleProfiles
 
-    @Test("SubtitleProfiles deliver VTT external only — never in-manifest HLS (jellyfin#16647)")
-    func vttSubtitleProfiles() {
-        let profile = DeviceProfileTranslator.deviceProfile(from: tieredCaps())
-        let subs = profile.subtitleProfiles ?? []
-        #expect(subs.contains { $0.format == "vtt" && $0.method == .external })
-        // No subtitle may be delivered in the HLS manifest: an in-manifest WebVTT
-        // mis-times on fMP4 segments and AVPlayer auto-renders it under our sidecar.
-        #expect(!subs.contains { $0.method == .hls })
+    /// Delivery method per format is the whole subtitle policy: TEXT formats are fetched and
+    /// rendered client-side (one cross-engine overlay, and it dodges the in-manifest WebVTT drift),
+    /// while IMAGE formats have no sidecar to render and must be burned in server-side.
+    @Test(
+        "Each subtitle format declares the only delivery method that can work for it",
+        arguments: [
+            ("vtt", SubtitleDeliveryMethod.external),
+            ("srt", .external),
+            ("ass", .external),
+            ("pgs", .encode),
+            ("vobsub", .encode),
+        ]
+    )
+    func subtitleProfileMethods(format: String, method: SubtitleDeliveryMethod) {
+        let subs = DeviceProfileTranslator.deviceProfile(from: tieredCaps()).subtitleProfiles ?? []
+        #expect(subs.contains { $0.format == format && $0.method == method })
     }
 
-    @Test("SubtitleProfiles include SRT external for VLC sidecar delivery")
-    func srtExternalSubtitleProfile() {
-        let profile = DeviceProfileTranslator.deviceProfile(from: tieredCaps())
-        let subs = profile.subtitleProfiles ?? []
-        #expect(subs.contains { $0.format == "srt" && $0.method == .external })
-    }
-
-    @Test("SubtitleProfiles include ASS external for VLC libass rendering")
-    func assExternalSubtitleProfile() {
-        let profile = DeviceProfileTranslator.deviceProfile(from: tieredCaps())
-        let subs = profile.subtitleProfiles ?? []
-        #expect(subs.contains { $0.format == "ass" && $0.method == .external })
-    }
-
-    @Test("SubtitleProfiles declare PGS as server-side burn-in (Encode) — .external can never match an image format")
-    func pgsEncodeSubtitleProfile() {
-        let profile = DeviceProfileTranslator.deviceProfile(from: tieredCaps())
-        let subs = profile.subtitleProfiles ?? []
-        #expect(subs.contains { $0.format == "pgs" && $0.method == .encode })
-    }
-
-    @Test("SubtitleProfiles declare VobSub as server-side burn-in (Encode) — .external can never match an image format")
-    func vobsubEncodeSubtitleProfile() {
-        let profile = DeviceProfileTranslator.deviceProfile(from: tieredCaps())
-        let subs = profile.subtitleProfiles ?? []
-        #expect(subs.contains { $0.format == "vobsub" && $0.method == .encode })
+    /// No subtitle may ride in the HLS manifest: an in-manifest WebVTT mis-times on fMP4 segments
+    /// AND AVPlayer auto-renders it underneath our own sidecar (jellyfin#16647).
+    @Test("No subtitle profile uses in-manifest HLS delivery")
+    func noInManifestSubtitles() {
+        let subs = DeviceProfileTranslator.deviceProfile(from: tieredCaps()).subtitleProfiles ?? []
+        #expect(subs.contains { $0.method == .hls } == false)
     }
 
     // MARK: — CodecProfiles (unchanged)
@@ -346,9 +282,9 @@ struct DeviceProfileTranslatorTests {
             let width = entry?.conditions?.first { $0.property == .width }
             let height = entry?.conditions?.first { $0.property == .height }
             #expect(width?.condition == .lessThanEqual, "\(codec) missing Width condition")
-            #expect(width?.value == "1920", "\(codec) Width should reflect maxResolution")
+            #expect(width?.value == String(custom.width), "\(codec) Width should reflect maxResolution")
             #expect(height?.condition == .lessThanEqual, "\(codec) missing Height condition")
-            #expect(height?.value == "1080", "\(codec) Height should reflect maxResolution")
+            #expect(height?.value == String(custom.height), "\(codec) Height should reflect maxResolution")
         }
     }
 
@@ -377,10 +313,10 @@ struct DeviceProfileTranslatorTests {
 
     @Test("Bitrate caps are serialized from capabilities.maxBitrate")
     func serializesBitrateCap() {
-        let profile = DeviceProfileTranslator.deviceProfile(from: tieredCaps())
-        // tieredCaps() declares .megabits(120) → 120_000_000 bps on the wire.
-        // nil would make Jellyfin apply an 8 Mbps default and re-encode 4K HDR.
-        let expected = Int(Bitrate.megabits(120).rawValue)
+        let capabilities = tieredCaps()
+        let profile = DeviceProfileTranslator.deviceProfile(from: capabilities)
+        // nil here would make Jellyfin apply its 8 Mbps default and re-encode 4K HDR to 1080p SDR.
+        let expected = Int(capabilities.maxBitrate.rawValue)
         #expect(profile.maxStreamingBitrate == expected)
         #expect(profile.maxStaticBitrate == expected)
     }

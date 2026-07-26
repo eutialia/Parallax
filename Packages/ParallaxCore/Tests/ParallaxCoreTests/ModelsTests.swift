@@ -21,10 +21,7 @@ struct BytesTests {
 
     @Test("Bytes round-trips through Codable")
     func codableRoundTrip() throws {
-        let original = Bytes(rawValue: 1_234_567)
-        let data = try JSONEncoder().encode(original)
-        let decoded = try JSONDecoder().decode(Bytes.self, from: data)
-        #expect(decoded == original)
+        try assertCodableRoundTrip(Bytes(rawValue: 1_234_567))
     }
 }
 
@@ -100,31 +97,53 @@ struct FilePathTests {
 
 @Suite("MediaInfo enums")
 struct MediaInfoTests {
-    @Test("Container enum covers expected values")
+    /// The full set, not a spot-check: `Container` is a wire vocabulary, so a case appearing or
+    /// vanishing is a compatibility event that should have to be acknowledged here.
+    @Test("Container covers exactly the families the app routes")
     func containerCases() {
-        #expect(Container.allCases.contains(.mp4))
-        #expect(Container.allCases.contains(.mkv))
-        #expect(Container.allCases.contains(.hls))
+        #expect(Set(Container.allCases) == [.mp4, .mov, .mkv, .webm, .ts, .hls, .flac, .mp3, .avi])
     }
 
-    @Test("VideoCodec parses from common identifier strings")
-    func videoCodecFromIdentifier() {
-        #expect(VideoCodec(identifier: "h264") == .h264)
-        #expect(VideoCodec(identifier: "hevc") == .hevc)
-        #expect(VideoCodec(identifier: "H.264") == .h264)
-        #expect(VideoCodec(identifier: "HEVC") == .hevc)
-        #expect(VideoCodec(identifier: "av1") == .av1)
-        #expect(VideoCodec(identifier: "unknown-codec") == nil)
+    /// One table for every wire spelling the mapper must accept: server strings arrive
+    /// punctuated ("H.264"), cased ("HEVC"), abbreviated ("mpeg2") and aliased ("hvc1").
+    @Test("VideoCodec parses every accepted wire identifier", arguments: [
+        ("h264", VideoCodec.h264), ("avc", .h264), ("avc1", .h264), ("H.264", .h264), ("H264", .h264),
+        ("hevc", .hevc), ("h265", .hevc), ("hvc1", .hevc), ("HEVC", .hevc),
+        ("av1", .av1), ("vp9", .vp9),
+        ("vc1", .vc1), ("mpeg2video", .mpeg2video), ("mpeg2", .mpeg2video),
+    ])
+    func videoCodecFromIdentifier(identifier: String, expected: VideoCodec) {
+        #expect(VideoCodec(identifier: identifier) == expected)
     }
 
-    @Test("AudioCodec parses common identifiers")
-    func audioCodecFromIdentifier() {
-        #expect(AudioCodec(identifier: "aac") == .aac)
-        #expect(AudioCodec(identifier: "eac3") == .eac3)
-        #expect(AudioCodec(identifier: "ac3") == .ac3)
-        #expect(AudioCodec(identifier: "flac") == .flac)
-        #expect(AudioCodec(identifier: "dts") == .dts)
-        #expect(AudioCodec(identifier: "truehd") == .trueHD)
+    @Test("VideoCodec rejects identifiers it doesn't know", arguments: ["unknown-codec", "", "vp8", "h26"])
+    func videoCodecRejectsUnknown(identifier: String) {
+        #expect(VideoCodec(identifier: identifier) == nil)
+    }
+
+    @Test("AudioCodec parses every accepted wire identifier", arguments: [
+        ("aac", AudioCodec.aac), ("ac3", .ac3), ("AC-3", .ac3),
+        ("eac3", .eac3), ("ec3", .eac3), ("E-AC-3", .eac3),
+        ("flac", .flac), ("mp3", .mp3), ("opus", .opus),
+        ("dts", .dts), ("dca", .dts), ("truehd", .trueHD), ("TrueHD", .trueHD),
+    ])
+    func audioCodecFromIdentifier(identifier: String, expected: AudioCodec) {
+        #expect(AudioCodec(identifier: identifier) == expected)
+    }
+
+    @Test("AudioCodec rejects identifiers it doesn't know", arguments: ["pcm", "", "vorbis"])
+    func audioCodecRejectsUnknown(identifier: String) {
+        #expect(AudioCodec(identifier: identifier) == nil)
+    }
+
+    /// `avPlayerSupported` is the hinge the whole engine-selection story turns on, so it gets a
+    /// membership test rather than being taken on trust from the codec list.
+    @Test("avPlayerSupported holds the hardware-decodable audio codecs only")
+    func avPlayerSupportedSet() {
+        #expect(AudioCodec.avPlayerSupported == [.aac, .ac3, .eac3, .mp3])
+        for codec in [AudioCodec.dts, .trueHD, .flac, .opus] {
+            #expect(AudioCodec.avPlayerSupported.contains(codec) == false)
+        }
     }
 
     @Test("HDRSupport composes as an OptionSet")
@@ -133,8 +152,8 @@ struct MediaInfoTests {
         #expect(HDRSupport.both.includes(.hdr10))
         #expect(HDRSupport.both.includes(.dolbyVision))
         #expect(HDRSupport.hdr10.includes(.hdr10))
-        #expect(!HDRSupport.hdr10.includes(.dolbyVision))
-        #expect(!HDRSupport.none.includes(.hdr10))
+        #expect(HDRSupport.hdr10.includes(.dolbyVision) == false)
+        #expect(HDRSupport.none.includes(.hdr10) == false)
     }
 
     @Test("HDRSupport covers HDR10+ and combinations")
@@ -144,31 +163,21 @@ struct MediaInfoTests {
         #expect(modern.includes(.hdr10))
         #expect(modern.includes(.dolbyVision))
         #expect(modern.includes([.hdr10, .dolbyVision]))
-        #expect(!HDRSupport.hdr10.includes(.hdr10Plus))
+        #expect(HDRSupport.hdr10.includes(.hdr10Plus) == false)
     }
 
     @Test("HDRSupport round-trips through Codable")
     func hdrCodable() throws {
         let original: HDRSupport = [.hdr10, .hdr10Plus, .dolbyVision]
-        let data = try JSONEncoder().encode(original)
-        let decoded = try JSONDecoder().decode(HDRSupport.self, from: data)
-        #expect(decoded == original)
+        try assertCodableRoundTrip(original)
     }
 
-    @Test("VideoCodec has vc1 and mpeg2video cases")
-    func videoCodecVLCOnlyCases() {
-        // Compile-time proof the cases exist.
-        let codecs: [VideoCodec] = [.vc1, .mpeg2video]
-        #expect(codecs.count == 2)
+    /// The VLC-only codecs' raw values ARE their ffmpeg wire strings — the profile the device
+    /// sends to Jellyfin is built from them, so a rename would silently change the negotiation.
+    @Test("VLC-only video codecs keep their ffmpeg raw values")
+    func videoCodecVLCOnlyRawValues() {
         #expect(VideoCodec.vc1.rawValue == "vc1")
         #expect(VideoCodec.mpeg2video.rawValue == "mpeg2video")
-    }
-
-    @Test("VideoCodec.init?(identifier:) parses vc1 and mpeg2video wire strings")
-    func videoCodecIdentifierVLC() {
-        #expect(VideoCodec(identifier: "vc1") == .vc1)
-        #expect(VideoCodec(identifier: "mpeg2video") == .mpeg2video)
-        #expect(VideoCodec(identifier: "mpeg2") == .mpeg2video)
     }
 
     @Test("Container.avi exists and rawValue is 'avi'")
@@ -217,48 +226,117 @@ struct MediaStreamInfoHelperTests {
         #expect(sub(nil).trackDetailLabel == "Embedded")
     }
 
-    @Test("TrackDisplay maps codec identifiers to listener-facing names")
-    func trackDisplayNames() {
-        #expect(TrackDisplay.audioCodecName(codec: "eac3") == "Dolby Digital+")
-        #expect(TrackDisplay.audioCodecName(codec: "ac3") == "Dolby Digital")
-        #expect(TrackDisplay.audioCodecName(codec: "TRUEHD") == "TrueHD")
-        #expect(TrackDisplay.audioCodecName(codec: "dts", profile: "DTS-HD MA") == "DTS-HD MA")
-        #expect(TrackDisplay.audioCodecName(codec: "dts", profile: nil) == "DTS")
-        #expect(TrackDisplay.audioCodecName(codec: "pcm_s24le") == "PCM")
-        #expect(TrackDisplay.audioCodecName(codec: "exotic") == "EXOTIC")   // honest fallback
+    /// Split per mapping (was one bundled test): a regression in the channel table used to hide
+    /// behind an earlier codec-name failure in the same body.
+    @Test("audio codec names read as the marketing name, falling back to an uppercased identifier",
+          arguments: [
+              ("eac3", nil, "Dolby Digital+"),
+              ("ac3", nil, "Dolby Digital"),
+              ("TRUEHD", nil, "TrueHD"),
+              ("dts", "DTS-HD MA", "DTS-HD MA"),   // the profile is more specific than the codec
+              ("dts", nil, "DTS"),
+              ("pcm_s24le", nil, "PCM"),
+              ("exotic", nil, "EXOTIC"),           // honest fallback, never a blank label
+          ] as [(String, String?, String)])
+    func audioCodecNames(codec: String, profile: String?, expected: String) {
+        #expect(TrackDisplay.audioCodecName(codec: codec, profile: profile) == expected)
+    }
+
+    @Test("an absent audio codec has no name rather than an empty one")
+    func audioCodecNameNil() {
         #expect(TrackDisplay.audioCodecName(codec: nil) == nil)
+    }
 
-        #expect(TrackDisplay.subtitleFormatName("subrip") == "SRT")
-        #expect(TrackDisplay.subtitleFormatName("webvtt") == "VTT")
-        #expect(TrackDisplay.subtitleFormatName("mov_text") == "Timed Text")
-        #expect(TrackDisplay.subtitleFormatName("hdmv_pgs_subtitle") == "PGS")
+    @Test("subtitle format names collapse ffmpeg spellings to the familiar label", arguments: [
+        ("subrip", "SRT"), ("webvtt", "VTT"), ("mov_text", "Timed Text"), ("hdmv_pgs_subtitle", "PGS"),
+    ])
+    func subtitleFormatNames(codec: String, expected: String) {
+        #expect(TrackDisplay.subtitleFormatName(codec) == expected)
+    }
+
+    @Test("an absent subtitle codec has no format name")
+    func subtitleFormatNameNil() {
         #expect(TrackDisplay.subtitleFormatName(nil) == nil)
+    }
 
-        #expect(TrackDisplay.channelLayout(2) == "Stereo")
-        #expect(TrackDisplay.channelLayout(6) == "5.1")
-        #expect(TrackDisplay.channelLayout(8) == "7.1")
-        #expect(TrackDisplay.channelLayout(10) == "10ch")
+    @Test("channel counts render as layouts, with a bare count for exotic ones", arguments: [
+        (2, "Stereo"), (6, "5.1"), (8, "7.1"), (10, "10ch"),
+    ])
+    func channelLayouts(channels: Int, expected: String) {
+        #expect(TrackDisplay.channelLayout(channels) == expected)
+    }
+
+    @Test("an unknown channel count has no layout")
+    func channelLayoutNil() {
         #expect(TrackDisplay.channelLayout(nil) == nil)
+    }
 
+    @Test("language names localize, and the undetermined tag has none")
+    func languageNames() {
         #expect(TrackDisplay.languageName("eng", locale: en) == "English")
         #expect(TrackDisplay.languageName("und", locale: en) == nil)
         #expect(TrackDisplay.languageName(nil, locale: en) == nil)
     }
 
-    @Test("isImageSubtitle flags burn-in-only formats and clears text formats")
-    func imageSubtitleClassification() {
-        #expect(sub("PGSSUB").isImageSubtitle)
-        #expect(sub("hdmv_pgs_subtitle").isImageSubtitle)
-        #expect(sub("vobsub").isImageSubtitle)
-        #expect(sub("dvd_subtitle").isImageSubtitle)
-        #expect(!sub("subrip").isImageSubtitle)
-        #expect(!sub("ass").isImageSubtitle)
-        #expect(!sub("webvtt").isImageSubtitle)
-        #expect(!sub(nil).isImageSubtitle)                             // unknown → treat as text
-        // Audio is never an image subtitle, whatever the codec string.
+    @Test("image-based subtitle formats are flagged for burn-in",
+          arguments: ["PGSSUB", "hdmv_pgs_subtitle", "vobsub", "dvd_subtitle"])
+    func imageSubtitleFormats(codec: String) {
+        #expect(sub(codec).isImageSubtitle)
+    }
+
+    /// An unknown codec must read as TEXT: mislabelling it as an image would force a burn-in
+    /// transcode for a track the player could have rendered client-side.
+    @Test("text and unknown subtitle formats are not image subtitles",
+          arguments: ["subrip", "ass", "webvtt"])
+    func textSubtitleFormats(codec: String) {
+        #expect(sub(codec).isImageSubtitle == false)
+    }
+
+    @Test("a subtitle track with no codec is treated as text")
+    func unknownSubtitleFormatIsText() {
+        #expect(sub(nil).isImageSubtitle == false)
+    }
+
+    /// The detail line describes what a track is MADE OF; a video track (or an unclassified
+    /// one) has nothing to say there, and an empty " · " would be worse than no line.
+    @Test("video and other tracks have no detail label")
+    func videoTracksHaveNoDetailLabel() {
+        let video = MediaStreamInfo(index: 0, kind: .video, displayTitle: nil, language: nil,
+                                    codec: "hevc", channels: nil, isExternal: false,
+                                    isForced: false, isDefault: true)
+        #expect(video.trackDetailLabel == nil)
+
+        let other = MediaStreamInfo(index: 5, kind: .other, displayTitle: nil, language: nil,
+                                    codec: "bin_data", channels: nil, isExternal: false,
+                                    isForced: false, isDefault: false)
+        #expect(other.trackDetailLabel == nil)
+    }
+
+    /// Track lists are rendered from these, so identity has to be the stream index — two
+    /// same-named commentary tracks would otherwise collapse into one row.
+    @Test("a stream is identified by its index")
+    func identityIsTheStreamIndex() {
+        #expect(sub("subrip").id == 1)
+        let third = MediaStreamInfo(index: 3, kind: .audio, displayTitle: nil, language: nil,
+                                    codec: nil, channels: nil, isExternal: false,
+                                    isForced: false, isDefault: false)
+        #expect(third.id == 3)
+    }
+
+    /// The no-argument accessor exists so call sites don't have to thread a locale; it must be
+    /// the same derivation, just with the current locale.
+    @Test("the locale-free menuLabel is the same derivation as the explicit one")
+    func menuLabelConvenienceMatchesExplicit() {
+        let track = sub("subrip", streamTitle: "Signs & Songs")
+        #expect(track.menuLabel == track.menuLabel(locale: .current))
+        #expect(track.menuLabel == "Signs & Songs")
+    }
+
+    @Test("an audio track is never an image subtitle, whatever its codec string reads")
+    func audioIsNeverAnImageSubtitle() {
         let audio = MediaStreamInfo(index: 1, kind: .audio, displayTitle: nil, language: nil,
                                     codec: "pgs", channels: nil, isExternal: false, isForced: false, isDefault: false)
-        #expect(!audio.isImageSubtitle)
+        #expect(audio.isImageSubtitle == false)
     }
 }
 
@@ -275,13 +353,11 @@ struct TrackLanguageTests {
         #expect(TrackLanguage.matches("nld", "dut"))
     }
 
-    @Test("Different languages and missing tags never match")
-    func mismatches() {
-        #expect(!TrackLanguage.matches("eng", "fra"))
-        #expect(!TrackLanguage.matches(nil, "eng"))
-        #expect(!TrackLanguage.matches("eng", nil))
-        #expect(!TrackLanguage.matches(nil, nil))
-        #expect(!TrackLanguage.matches("", "eng"))
+    @Test("Different languages and missing tags never match", arguments: [
+        ("eng", "fra"), (nil, "eng"), ("eng", nil), (nil, nil), ("", "eng"),
+    ] as [(String?, String?)])
+    func mismatches(lhs: String?, rhs: String?) {
+        #expect(TrackLanguage.matches(lhs, rhs) == false)
     }
 
     @Test("Unknown codes still match themselves (pass-through)")

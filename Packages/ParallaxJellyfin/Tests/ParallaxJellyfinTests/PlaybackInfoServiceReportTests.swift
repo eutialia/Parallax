@@ -29,16 +29,34 @@ struct PlaybackInfoServiceReportTests {
         #expect(fake.startInfos.first?.positionTicks == 0)
     }
 
-    @Test("reportProgress throttles to ~10s between beats")
+    /// The window itself is the service's policy, so the beats are placed RELATIVE to it: a
+    /// re-tuned interval must not silently break this test, and the boundary is inclusive
+    /// (`elapsed >= interval` reports).
+    @Test("reportProgress drops beats inside the throttle window and sends the first one past it")
     func progressThrottle() async {
+        let window = PlaybackInfoService.progressThrottleSeconds
         let fake = FakeJellyfinPlaybackClient()
         let service = PlaybackInfoService(client: fake)
-        await service.reportStart(beat(position: 0))            // primes lastReport at now=0
-        await service.reportProgress(beat(position: 10_000_000), now: 3)   // 3s elapsed — dropped
-        await service.reportProgress(beat(position: 50_000_000), now: 9)   // 9s — still dropped
-        await service.reportProgress(beat(position: 110_000_000), now: 11) // 11s — sent
+        await service.reportStart(beat(position: 0))  // primes the window at now = 0
+        await service.reportProgress(beat(position: 10_000_000), now: window * 0.3)   // dropped
+        await service.reportProgress(beat(position: 50_000_000), now: window * 0.9)   // dropped
+        await service.reportProgress(beat(position: 110_000_000), now: window)        // on the edge — sent
         #expect(fake.progressInfos.count == 1)
         #expect(fake.progressInfos.first?.positionTicks == 110_000_000)
+    }
+
+    /// After a beat is sent the window restarts from it, so a second beat one window later is also
+    /// sent — otherwise long playbacks would report once and go quiet.
+    @Test("The window restarts from each sent beat")
+    func progressThrottleWindowRestarts() async {
+        let window = PlaybackInfoService.progressThrottleSeconds
+        let fake = FakeJellyfinPlaybackClient()
+        let service = PlaybackInfoService(client: fake)
+        await service.reportStart(beat(position: 0))
+        await service.reportProgress(beat(position: 100), now: window)
+        await service.reportProgress(beat(position: 200), now: window * 1.5)   // inside the new window
+        await service.reportProgress(beat(position: 300), now: window * 2)     // past it
+        #expect(fake.progressInfos.map(\.positionTicks) == [100, 300])
     }
 
     @Test("A pause flip sends an immediate progress beat regardless of throttle")
@@ -61,39 +79,33 @@ struct PlaybackInfoServiceReportTests {
         #expect(fake.stoppedInfos.first?.playSessionID == "ps-1")
     }
 
-    @Test("stopEncoding DELETEs the session's active encoding and is best-effort")
-    func stopEncodingForwards() async {
+    /// Both session-lifecycle calls follow one named non-fatal policy: forward the play session id,
+    /// and never let a failure reach the caller — a failed transcode kill or a dropped keepalive
+    /// must not tear down playback.
+    @Test(
+        "Session-lifecycle calls forward the play session and swallow failures",
+        arguments: [SessionCall.stopEncoding, .ping], [false, true]
+    )
+    func sessionCallsAreBestEffort(call: SessionCall, fails: Bool) async {
         let fake = FakeJellyfinPlaybackClient()
         let service = PlaybackInfoService(client: fake)
-        await service.stopEncoding(playSessionID: "ps-1")
-        #expect(fake.stopEncodingSessionIDs == ["ps-1"])
+        let failure = FakeJellyfinPlaybackClient.FakeError.reportFailed
+
+        switch call {
+        case .stopEncoding:
+            if fails { fake.stopEncodingError = failure }
+            await service.stopEncoding(playSessionID: "ps-1")
+            #expect(fake.stopEncodingSessionIDs == ["ps-1"])
+            #expect(fake.pingSessionIDs.isEmpty)
+        case .ping:
+            if fails { fake.pingError = failure }
+            await service.pingSession(playSessionID: "ps-1")
+            #expect(fake.pingSessionIDs == ["ps-1"])
+            #expect(fake.stopEncodingSessionIDs.isEmpty)
+        }
     }
 
-    @Test("A thrown stopEncoding is non-fatal — it does not propagate")
-    func stopEncodingFailureSwallowed() async {
-        let fake = FakeJellyfinPlaybackClient()
-        fake.stopEncodingError = FakeJellyfinPlaybackClient.FakeError.reportFailed
-        let service = PlaybackInfoService(client: fake)
-        await service.stopEncoding(playSessionID: "ps-1")
-        #expect(fake.stopEncodingSessionIDs == ["ps-1"])
-    }
-
-    @Test("pingSession POSTs the session keepalive and is best-effort")
-    func pingForwards() async {
-        let fake = FakeJellyfinPlaybackClient()
-        let service = PlaybackInfoService(client: fake)
-        await service.pingSession(playSessionID: "ps-1")
-        #expect(fake.pingSessionIDs == ["ps-1"])
-    }
-
-    @Test("A thrown ping is non-fatal — it does not propagate")
-    func pingFailureSwallowed() async {
-        let fake = FakeJellyfinPlaybackClient()
-        fake.pingError = FakeJellyfinPlaybackClient.FakeError.reportFailed
-        let service = PlaybackInfoService(client: fake)
-        await service.pingSession(playSessionID: "ps-1")
-        #expect(fake.pingSessionIDs == ["ps-1"])
-    }
+    enum SessionCall: Sendable { case stopEncoding, ping }
 
     @Test("A thrown report is non-fatal — it does not propagate")
     func reportFailureSwallowed() async {

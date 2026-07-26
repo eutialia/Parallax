@@ -23,82 +23,131 @@ struct ThrowingAudioSession: AudioSessionControlling {
     func deactivate() async {}
 }
 
-enum PlayerFixtures {
-    static func movieDetail(positionTicks: Int64 = 0) -> ItemDetail {
-        let movie = Movie(
-            id: ItemID(rawValue: "movie-1"),
-            title: "Fixture Movie",
-            overview: nil,
-            year: 2024,
-            runtime: .seconds(7200),
-            communityRating: nil,
-            officialRating: nil,
-            genres: [],
-            primaryTag: nil,
-            backdropTags: [],
-            logoTag: nil,
-            thumbTag: nil,
-            userData: UserItemData(
-                played: false,
-                playbackPositionTicks: positionTicks,
-                playCount: 0,
-                isFavorite: false
-            )
-        )
-        return .movie(MovieDetail(movie: movie, tagline: nil, studios: [], directors: [], people: []))
-    }
+/// The device profile every player suite builds its view model on: no HDR, stereo out.
+func makeTestDeviceProfileBuilder() -> DeviceProfileBuilder {
+    DeviceProfileBuilder(probe: FakeCapabilityProbe(hdr: .none, audioOutput: .stereo))
+}
 
-    static func movieDetailNamed(_ title: String, positionTicks: Int64 = 0) -> ItemDetail {
-        let movie = Movie(
-            id: ItemID(rawValue: "movie-1"),
-            title: title,
-            overview: nil,
-            year: 2024,
-            runtime: .seconds(7200),
-            communityRating: nil,
-            officialRating: nil,
-            genres: [],
-            primaryTag: nil,
-            backdropTags: [],
-            logoTag: nil,
-            thumbTag: nil,
-            userData: UserItemData(
-                played: false,
-                playbackPositionTicks: positionTicks,
-                playCount: 0,
-                isFavorite: false
-            )
+/// THE `PlayerViewModel` builder for every player suite: the test device profile, a
+/// recording reporting stub, and one hook per injectable seam. Defaults mirror
+/// `PlayerViewModel.init`'s own EXCEPT `subtitleFetch`, which returns empty data instead
+/// of hitting the real `URLSession` — no test may reach the network. Module-scope so the
+/// NowPlaying sub-suite and the segment suite share the identical builder.
+@MainActor
+func makePlayerVM(
+    reporting: StubPlaybackReporting = StubPlaybackReporting(),
+    resolve: @escaping PlayerViewModel.ResolveCall,
+    engineFactory: @escaping @MainActor @Sendable (PlaybackEngineID) -> any PlaybackEngine,
+    audioSession: any AudioSessionControlling = NoopAudioSession(),
+    fetchDetail: @escaping @Sendable (ItemID) async throws -> ItemDetail = { _ in
+        throw AppError.playback(.unsupportedFormat)
+    },
+    subtitleFetch: @escaping @Sendable (URL) async -> Data? = { _ in Data() },
+    fetchSegments: @escaping @Sendable (ItemID) async -> [MediaSegment] = { _ in [] },
+    fetchAdjacent: @escaping @Sendable (ItemID, ItemID) async -> AdjacentEpisodes = { _, _ in .none },
+    keepaliveInterval: Duration = .seconds(30),
+    fetchDelivery: @escaping @Sendable (String) async -> TranscodeDelivery? = { _ in nil },
+    deliveryProbeSchedule: [Duration] = [.seconds(2), .seconds(5)],
+    reloadResolveDeadline: Duration = .seconds(15)
+) -> PlayerViewModel {
+    PlayerViewModel(
+        deviceProfileBuilder: makeTestDeviceProfileBuilder(),
+        playbackInfo: reporting,
+        resolve: resolve,
+        engineFactory: engineFactory,
+        audioSession: audioSession,
+        fetchDetail: fetchDetail,
+        subtitleFetch: subtitleFetch,
+        fetchSegments: fetchSegments,
+        fetchAdjacent: fetchAdjacent,
+        keepaliveInterval: keepaliveInterval,
+        fetchDelivery: fetchDelivery,
+        deliveryProbeSchedule: deliveryProbeSchedule,
+        reloadResolveDeadline: reloadResolveDeadline
+    )
+}
+
+/// Single-engine convenience: the engine factory hands back the same fake for every id.
+@MainActor
+func makePlayerVM(
+    reporting: StubPlaybackReporting = StubPlaybackReporting(),
+    resolve: @escaping PlayerViewModel.ResolveCall,
+    engine: FakePlaybackEngine,
+    audioSession: any AudioSessionControlling = NoopAudioSession(),
+    fetchDetail: @escaping @Sendable (ItemID) async throws -> ItemDetail = { _ in
+        throw AppError.playback(.unsupportedFormat)
+    },
+    subtitleFetch: @escaping @Sendable (URL) async -> Data? = { _ in Data() },
+    fetchSegments: @escaping @Sendable (ItemID) async -> [MediaSegment] = { _ in [] },
+    fetchAdjacent: @escaping @Sendable (ItemID, ItemID) async -> AdjacentEpisodes = { _, _ in .none },
+    keepaliveInterval: Duration = .seconds(30),
+    fetchDelivery: @escaping @Sendable (String) async -> TranscodeDelivery? = { _ in nil },
+    deliveryProbeSchedule: [Duration] = [.seconds(2), .seconds(5)],
+    reloadResolveDeadline: Duration = .seconds(15)
+) -> PlayerViewModel {
+    makePlayerVM(
+        reporting: reporting,
+        resolve: resolve,
+        engineFactory: { _ in engine },
+        audioSession: audioSession,
+        fetchDetail: fetchDetail,
+        subtitleFetch: subtitleFetch,
+        fetchSegments: fetchSegments,
+        fetchAdjacent: fetchAdjacent,
+        keepaliveInterval: keepaliveInterval,
+        fetchDelivery: fetchDelivery,
+        deliveryProbeSchedule: deliveryProbeSchedule,
+        reloadResolveDeadline: reloadResolveDeadline
+    )
+}
+
+/// Canned-resolve convenience: resolve always returns `resolved`, optionally reporting
+/// the requested item id to `capturedItem`.
+@MainActor
+func makePlayerVM(
+    reporting: StubPlaybackReporting = StubPlaybackReporting(),
+    engine: FakePlaybackEngine,
+    resolved: ResolvedPlayback,
+    audioSession: any AudioSessionControlling = NoopAudioSession(),
+    capturedItem: @escaping @Sendable (ItemID) -> Void = { _ in }
+) -> PlayerViewModel {
+    makePlayerVM(
+        reporting: reporting,
+        resolve: { id, _, _, _, _ in
+            capturedItem(id)
+            return resolved
+        },
+        engine: engine,
+        audioSession: audioSession
+    )
+}
+
+enum PlayerFixtures {
+    /// The one `MovieDetail` shape every non-episode player test starts from. `chapters` is
+    /// what the `chapterFractions` memoization suite varies; `runtime` moves with it so the
+    /// expected fractions stay exact.
+    static func movieDetail(
+        title: String = "Fixture Movie",
+        positionTicks: Int64 = 0,
+        runtime: Duration = .seconds(7200),
+        chapters: [Chapter] = []
+    ) -> ItemDetail {
+        let movie = makeMovie(
+            "movie-1", title: title, year: 2024, runtime: runtime, positionTicks: positionTicks
         )
-        return .movie(MovieDetail(movie: movie, tagline: nil, studios: [], directors: [], people: []))
+        return .movie(MovieDetail(movie: movie, tagline: nil, studios: [], directors: [], people: [], chapters: chapters))
     }
 
     /// A movie detail carrying chapter markers — for the `chapterFractions` memoization.
     /// `runtime` and the chapter starts are caller-chosen so the expected fractions are exact.
     static func movieDetailWithChapters(startsSeconds: [Double], runtime: Duration) -> ItemDetail {
-        let movie = Movie(
-            id: ItemID(rawValue: "movie-1"),
+        movieDetail(
             title: "Chaptered Movie",
-            overview: nil,
-            year: 2024,
             runtime: runtime,
-            communityRating: nil,
-            officialRating: nil,
-            genres: [],
-            primaryTag: nil,
-            backdropTags: [],
-            logoTag: nil,
-            thumbTag: nil,
-            userData: UserItemData(
-                played: false,
-                playbackPositionTicks: 0,
-                playCount: 0,
-                isFavorite: false
-            )
+            chapters: startsSeconds.enumerated().map { index, seconds in
+                Chapter(index: index, name: "Chapter \(index + 1)", start: .seconds(seconds))
+            }
         )
-        let chapters = startsSeconds.enumerated().map { index, seconds in
-            Chapter(index: index, name: "Chapter \(index + 1)", start: .seconds(seconds))
-        }
-        return .movie(MovieDetail(movie: movie, tagline: nil, studios: [], directors: [], people: [], chapters: chapters))
     }
 
     /// An episode `ItemDetail` (carries `seriesID`, so adjacency wiring applies).
@@ -144,36 +193,36 @@ enum PlayerFixtures {
         )
     }
 
-    /// A direct-play `ResolvedPlayback` for an arbitrary episode id — used by the
-    /// succession tests whose resolve closure keys on the requested item.
-    static func resolvedEpisode(id: String) -> ResolvedPlayback {
+    /// The plain AVKit-playable direct-play resolve (mp4 / h264 / aac). Both public
+    /// entry points below are this one literal with a different id and runtime.
+    private static func resolvedDirectPlay(
+        itemID: String,
+        mediaSourceID: String,
+        playSessionID: String,
+        runtimeSeconds: Double
+    ) -> ResolvedPlayback {
         ResolvedPlayback(
-            itemID: id,
-            url: URL(string: "https://jf.example.com/Videos/\(id)/stream.m3u8?api_key=abc")!,
+            itemID: itemID,
+            url: URL(string: "https://jf.example.com/Videos/\(itemID)/stream.m3u8?api_key=abc")!,
             method: .directPlay,
             container: .mp4,
             videoCodec: .h264,
             audioCodec: .aac,
-            mediaSourceID: "ms-\(id)",
-            playSessionID: "ps-\(id)",
-            runtime: CMTime(seconds: 1800, preferredTimescale: 600),
+            mediaSourceID: mediaSourceID,
+            playSessionID: playSessionID,
+            runtime: CMTime(seconds: runtimeSeconds, preferredTimescale: 600),
             startTime: nil
         )
     }
 
+    /// A direct-play `ResolvedPlayback` for an arbitrary episode id — used by the
+    /// succession tests whose resolve closure keys on the requested item.
+    static func resolvedEpisode(id: String) -> ResolvedPlayback {
+        resolvedDirectPlay(itemID: id, mediaSourceID: "ms-\(id)", playSessionID: "ps-\(id)", runtimeSeconds: 1800)
+    }
+
     static func resolved() -> ResolvedPlayback {
-        ResolvedPlayback(
-            itemID: "movie-1",
-            url: URL(string: "https://jf.example.com/Videos/movie-1/stream.m3u8?api_key=abc")!,
-            method: .directPlay,
-            container: .mp4,
-            videoCodec: .h264,
-            audioCodec: .aac,
-            mediaSourceID: "ms-1",
-            playSessionID: "ps-1",
-            runtime: CMTime(seconds: 7200, preferredTimescale: 600),
-            startTime: nil
-        )
+        resolvedDirectPlay(itemID: "movie-1", mediaSourceID: "ms-1", playSessionID: "ps-1", runtimeSeconds: 7200)
     }
 
     /// A server-transcoded MKV (bug #2): the *source* is MKV / AV1 / DTS — none
@@ -237,30 +286,20 @@ enum PlayerFixtures {
     }
 
     /// VC-1 MKV direct-play — routes to .vlcKit because .vc1 is not in
-    /// EngineSelector's avKitVideoCodecs set.
-    static func resolvedVC1MKV() -> ResolvedPlayback {
+    /// EngineSelector's avKitVideoCodecs set. The audio codec is the only axis the two
+    /// callers differ on (a DTS track vs an AVKit-playable AAC one).
+    static func resolvedVC1MKV(audioCodec: AudioCodec = .dts) -> ResolvedPlayback {
         ResolvedPlayback(
             itemID: "movie-2",
             url: URL(string: "https://jf.example.com/Videos/movie-2/stream.mkv?api_key=abc")!,
             method: .directPlay,
             container: .mkv,
             videoCodec: .vc1,
-            audioCodec: .dts,
+            audioCodec: audioCodec,
             mediaSourceID: "ms-2",
             playSessionID: "ps-2",
             runtime: CMTime(seconds: 5400, preferredTimescale: 600),
             startTime: nil
-        )
-    }
-
-    /// A VLC direct-play MKV with VC-1 video (routes to .vlcKit).
-    static func resolvedVLCDirectPlayMKV() -> ResolvedPlayback {
-        ResolvedPlayback(
-            itemID: "movie-2",
-            url: URL(string: "https://jf.example.com/Videos/movie-2/stream.mkv?api_key=abc")!,
-            method: .directPlay, container: .mkv, videoCodec: .vc1, audioCodec: .aac,
-            mediaSourceID: "ms-2", playSessionID: "ps-2",
-            runtime: CMTime(seconds: 5400, preferredTimescale: 600), startTime: nil
         )
     }
 

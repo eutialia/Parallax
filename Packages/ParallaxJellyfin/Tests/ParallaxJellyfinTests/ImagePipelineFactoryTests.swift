@@ -6,64 +6,40 @@ import ParallaxCore
 
 @Suite("ImagePipelineFactory")
 struct ImagePipelineFactoryTests {
-    private func session(id: String, token: String) -> Session {
-        Session(
-            id: ServerID(rawValue: id),
-            data: JellyfinServerData(
-                serverURL: URL(string: "https://\(id).example.com")!,
-                serverName: id,
-                user: UserSnapshot(id: "u-\(id)", name: "alice", serverLastUpdatedAt: nil)
-            ),
-            accessToken: token
-        )
-    }
-
-    private func identity() -> DeviceIdentity {
-        DeviceIdentity(client: "Parallax", deviceName: "iPhone Test", deviceID: "test-dev-id", version: "0.3.0")
-    }
-
+    /// A private, purged defaults suite rather than `.standard` — the provider persists a device
+    /// id, and a shared domain would leak one test's id into the next run.
     private func provider() -> DeviceIdentityProvider {
-        let suiteName = "ImagePipelineFactoryTests-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
+        let (settings, _) = JellyfinFixtures.settingsStore("ImagePipelineFactoryTests")
         return DeviceIdentityProvider(
-            client: "Parallax", deviceName: "iPhone Test", version: "0.3.0",
-            settings: SettingsStore(defaults: defaults)
+            client: "Parallax",
+            deviceName: "iPhone Test",
+            version: "0.3.0",
+            settings: settings
         )
     }
 
-    @Test("Same session returns the same pipeline instance (memoised)")
-    func memoised() async {
+    /// A rotated token must produce a fresh pipeline: the old one's URLSession carries the dead
+    /// token in its additional headers, so every image request would keep 401ing.
+    @Test("Pipelines are memoized per server and rebuilt on a rotated token")
+    func memoizationContract() async {
         let factory = ImagePipelineFactory(identityProvider: provider())
-        let s = session(id: "a", token: "tok-a")
-        let p1 = await factory.pipeline(for: s)
-        let p2 = await factory.pipeline(for: s)
-        #expect(p1 === p2)
-    }
-
-    @Test("Different sessions return different pipelines")
-    func perSession() async {
-        let factory = ImagePipelineFactory(identityProvider: provider())
-        let p1 = await factory.pipeline(for: session(id: "a", token: "tok-a"))
-        let p2 = await factory.pipeline(for: session(id: "b", token: "tok-b"))
-        #expect(p1 !== p2)
-    }
-
-    @Test("Same ServerID with rotated token returns a fresh pipeline")
-    func tokenRotation() async {
-        let factory = ImagePipelineFactory(identityProvider: provider())
-        let p1 = await factory.pipeline(for: session(id: "a", token: "tok-old"))
-        let p2 = await factory.pipeline(for: session(id: "a", token: "tok-new"))
-        #expect(p1 !== p2)
+        await verifyMemoization { await factory.pipeline(for: $0) }
     }
 
     @Test("Authorization header builder includes Token and Client metadata")
     func authHeader() {
-        let header = ImagePipelineFactory.authorizationHeader(identity: identity(), token: "tok-abc")
-        #expect(header.contains("Client=\"Parallax\""))
-        #expect(header.contains("DeviceId=\"test-dev-id\""))
-        #expect(header.contains("Version=\"0.3.0\""))
-        #expect(header.contains("Token=\"tok-abc\""))
+        let identity = JellyfinFixtures.identity(
+            client: "Parallax",
+            deviceName: "iPhone Test",
+            deviceID: "test-dev-id",
+            version: "0.3.0"
+        )
+        let header = ImagePipelineFactory.authorizationHeader(identity: identity, token: "tok-abc")
         #expect(header.hasPrefix("MediaBrowser "))
+        #expect(header.contains("Client=\"\(identity.client)\""))
+        #expect(header.contains("Device=\"\(identity.deviceName)\""))
+        #expect(header.contains("DeviceId=\"\(identity.deviceID)\""))
+        #expect(header.contains("Version=\"\(identity.version)\""))
+        #expect(header.contains("Token=\"tok-abc\""))
     }
 }

@@ -10,31 +10,6 @@ import ParallaxJellyfin
 @MainActor
 @Suite("FavoritesViewModel")
 struct FavoritesViewModelTests {
-    private func session(_ id: String, name: String? = nil) -> Session {
-        Session(
-            id: ServerID(rawValue: id),
-            data: JellyfinServerData(
-                serverURL: URL(string: "https://\(id).example.test")!,
-                serverName: name ?? "Server \(id)",
-                user: UserSnapshot(id: "u-\(id)", name: "alice", serverLastUpdatedAt: nil)
-            ),
-            accessToken: "tok-\(id)"
-        )
-    }
-
-    private func movie(_ id: String) -> Item {
-        .movie(Movie(
-            id: ItemID(rawValue: id), title: id, overview: nil, year: nil, runtime: nil,
-            communityRating: nil, officialRating: nil, genres: [],
-            primaryTag: nil, backdropTags: [], logoTag: nil, thumbTag: nil,
-            userData: UserItemData(played: false, playbackPositionTicks: 0, playCount: 0, isFavorite: true)
-        ))
-    }
-
-    private func page(_ ids: [String]) -> Page<Item> {
-        Page(items: ids.map(movie), total: ids.count, nextCursor: nil)
-    }
-
     /// Builds a coordinator over the given per-server fakes, keyed by server id.
     private func load(
         _ repos: [(id: String, repo: FakeMediaRepository)],
@@ -45,16 +20,18 @@ struct FavoritesViewModelTests {
         let vm = existing ?? FavoritesViewModel()
         let table = Dictionary(uniqueKeysWithValues: repos.map { ($0.id, $0.repo) })
         await vm.load(
-            sessions: repos.map { session($0.id) },
+            sessions: repos.map { makeSession($0.id) },
             repoFactory: { @Sendable session in table[session.id.rawValue]! },
             userDataActions: UserDataActions()
         )
         return vm
     }
 
+    /// A server whose favorites are exactly `items`, in that order — everything this wall
+    /// reads is a favorite, so the fixture hard-codes it.
     private func repo(items: [String], genres: [String] = []) -> FakeMediaRepository {
         let fake = FakeMediaRepository()
-        fake.itemsResult = .success(page(items))
+        fake.itemsResult = .success(makePage(items.map { makeMovieItem($0, isFavorite: true) }))
         fake.genresResult = .success(genres)
         return fake
     }
@@ -102,58 +79,81 @@ struct FavoritesViewModelTests {
 
     // MARK: - Sort fan-out
 
-    /// Without this the sort control would be decorative on every server but the first.
-    @Test("Choosing a sort pushes it to every section")
+    /// Without this the sort control would be decorative on every server but the first. Asserted on
+    /// BOTH sides: the section's own state, and the sort each server's repository was last asked
+    /// for — a coordinator that stored the choice locally and never refetched would satisfy the
+    /// first half alone while every section kept showing the server's default order.
+    @Test("Choosing a sort pushes it to every section, and to every server")
     func sortFansOutToEverySection() async {
-        let vm = await load([
-            (id: "a", repo: repo(items: ["a1"])),
-            (id: "b", repo: repo(items: ["b1"])),
-        ])
+        let repoA = repo(items: ["a1"])
+        let repoB = repo(items: ["b1"])
+        let vm = await load([(id: "a", repo: repoA), (id: "b", repo: repoB)])
 
         vm.sortField = .title
+        await waitUntil { repoA.lastSort?.field == .title && repoB.lastSort?.field == .title }
 
         let expected = ItemSort(field: .title, direction: .ascending)
         #expect(vm.sections.allSatisfy { $0.grid.sort == expected })
+        #expect(repoA.lastSort == expected)
+        #expect(repoB.lastSort == expected)
     }
 
     /// A field switch adopts that field's natural direction rather than inheriting the previous
-    /// one — otherwise picking "Title" after "Newest" would silently mean "Z to A".
+    /// one — otherwise picking "Title" after "Newest" would silently mean "Z to A". The expectation
+    /// reads the field's OWN `naturalDirection` rather than restating the mapping, so retuning a
+    /// field's default doesn't require editing this test to keep it honest.
     @Test("A field switch resets to that field's natural direction, everywhere")
     func fieldSwitchAdoptsNaturalDirection() async {
-        let vm = await load([(id: "a", repo: repo(items: ["a1"]))])
+        let repoA = repo(items: ["a1"])
+        let vm = await load([(id: "a", repo: repoA)])
 
         vm.sortField = .title                 // ascending is natural
         vm.sortDirection = .descending        // user then flips it
         vm.sortField = .dateAdded             // natural: descending
 
-        #expect(vm.sort == ItemSort(field: .dateAdded, direction: .descending))
-        #expect(vm.sections[0].grid.sort == vm.sort)
+        let expected = ItemSort(field: .dateAdded, direction: ItemSort.Field.dateAdded.naturalDirection)
+        await waitUntil { repoA.lastSort == expected }
+        #expect(vm.sort == expected)
+        #expect(vm.sections[0].grid.sort == expected)
+        #expect(repoA.lastSort == expected)
     }
 
-    @Test("A genre choice fans out as a filter to every section")
+    @Test("A genre choice fans out as a filter to every section, and to every server")
     func genreFansOut() async {
-        let vm = await load([
-            (id: "a", repo: repo(items: ["a1"], genres: ["Action"])),
-            (id: "b", repo: repo(items: ["b1"], genres: ["Action"])),
-        ])
+        let repoA = repo(items: ["a1"], genres: ["Action"])
+        let repoB = repo(items: ["b1"], genres: ["Action"])
+        let vm = await load([(id: "a", repo: repoA), (id: "b", repo: repoB)])
 
         vm.selectedGenre = "Action"
+        await waitUntil { repoA.lastFilter?.genres == ["Action"] && repoB.lastFilter?.genres == ["Action"] }
 
         #expect(vm.sections.allSatisfy { $0.grid.filter.genres == ["Action"] })
+        #expect(repoA.lastFilter?.genres == ["Action"])
+        #expect(repoB.lastFilter?.genres == ["Action"])
     }
 
     /// A server signed into AFTER a sort was chosen must open on that sort, not the default —
     /// otherwise adding a server silently gives you one section ordered differently from the rest.
-    @Test("A section built after a sort was chosen inherits it")
+    /// Its FIRST fetch has to carry the choice too: inheriting it only in local state would fetch
+    /// the default order and then quietly display it under the wrong sort label.
+    @Test("A section built after a sort was chosen inherits it, first fetch included")
     func newSectionsInheritTheCurrentSort() async {
         let vm = FavoritesViewModel()
         vm.sortField = .communityRating
         vm.selectedGenre = "Drama"
 
-        _ = await load([(id: "a", repo: repo(items: ["a1"]))], into: vm)
+        let late = repo(items: ["a1"])
+        _ = await load([(id: "a", repo: late)], into: vm)
 
-        #expect(vm.sections[0].grid.sort == ItemSort(field: .communityRating, direction: .descending))
+        let expected = ItemSort(field: .communityRating, direction: ItemSort.Field.communityRating.naturalDirection)
+        #expect(vm.sections[0].grid.sort == expected)
         #expect(vm.sections[0].grid.filter.genres == ["Drama"])
+        // No barrier: a seeded grid arms no fetch of its own, so the ONE fetch each section makes is
+        // the awaited `load()` — by the time `FavoritesViewModel.load()` returns, its server has
+        // been asked, on this sort. (It used to need `await waitUntil { late.lastSort != nil }`,
+        // because seeding also armed a racing reload.)
+        #expect(late.lastSort == expected)
+        #expect(late.lastFilter?.genres == ["Drama"])
     }
 
     // MARK: - Genres
@@ -169,61 +169,98 @@ struct FavoritesViewModelTests {
         #expect(vm.availableGenres == ["Action", "Drama", "Sci-Fi"])
     }
 
-    // MARK: - Failure isolation
+    // MARK: - Failure / empty state matrix
 
-    /// One unreachable server must not blank a working one — the difference between "a server is
-    /// down" and "Favorites is broken".
-    @Test("One failed server keeps the others' sections and doesn't fail the screen")
-    func partialFailureKeepsWorkingSections() async {
-        let vm = await load([
-            (id: "a", repo: repo(items: ["a1"])),
-            (id: "b", repo: failingRepo()),
-        ])
+    /// The whole screen-state matrix in one table. The five separate tests this replaced each read
+    /// ONE property off a VM in one of these shapes, so no single one could catch a regression that
+    /// got a different property wrong for the same input — the "a failure is not emptiness" and
+    /// "a failed section stays visible" pairs are exactly that mistake, stated twice.
+    ///
+    /// `sections` here means "which server ids each derived list should contain", so a shape's whole
+    /// observable surface is spelled out at once.
+    @Test("screen state per failure shape", arguments: favoritesShapes)
+    func screenStateFollowsTheFailureShape(_ shape: FavoritesShape) async {
+        let vm = await load(shape.servers.map { server in
+            (id: server.id, repo: server.fails ? failingRepo() : repo(items: server.items))
+        })
 
-        #expect(vm.hasFailedEntirely == false)
-        #expect(vm.sections[0].grid.items.map(\.id.rawValue) == ["a1"])
-        #expect(vm.failedSections.map(\.id) == [ServerID(rawValue: "b")])
-    }
-
-    /// A failed section stays VISIBLE (unlike an empty one) so the user learns which server is
-    /// unreachable, instead of quietly seeing fewer favorites than they have.
-    @Test("A failed section is still shown, so the missing server is named")
-    func failedSectionsStayVisible() async {
-        let vm = await load([
-            (id: "a", repo: repo(items: ["a1"])),
-            (id: "b", repo: failingRepo()),
-        ])
-        #expect(vm.visibleSections.map(\.id) == [ServerID(rawValue: "a"), ServerID(rawValue: "b")])
-    }
-
-    @Test("Only an all-server failure turns the whole screen into an error")
-    func totalFailureFailsTheScreen() async {
-        let vm = await load([
-            (id: "a", repo: failingRepo()),
-            (id: "b", repo: failingRepo()),
-        ])
-        #expect(vm.hasFailedEntirely)
-        #expect(vm.isEmpty == false)
-    }
-
-    // MARK: - Empty state
-
-    @Test("Every server settling with nothing is the real empty state")
-    func allEmptyIsEmptyState() async {
-        let vm = await load([
-            (id: "a", repo: repo(items: [])),
-            (id: "b", repo: repo(items: [])),
-        ])
-        #expect(vm.isEmpty)
-        #expect(vm.hasFailedEntirely == false)
-        #expect(vm.visibleSections.isEmpty)
-    }
-
-    /// A failed server has nothing to show but is NOT "no favorites" — that message would be a lie
-    /// about content the user may well have.
-    @Test("A failure is never reported as an empty Favorites list")
-    func failureIsNotEmptiness() async {
-        let vm = await load([(id: "a", repo: failingRepo())])
-        #expect(vm.isEmpty == false)
+        #expect(vm.hasFailedEntirely == shape.hasFailedEntirely)
+        #expect(vm.isEmpty == shape.isEmpty)
+        #expect(vm.visibleSections.map(\.id.rawValue) == shape.visible)
+        #expect(vm.failedSections.map(\.id.rawValue) == shape.failed)
+        // The working server keeps its items regardless of what its neighbours did — the difference
+        // between "a server is down" and "Favorites is broken".
+        for server in shape.servers where !server.fails {
+            let section = vm.sections.first { $0.id.rawValue == server.id }
+            #expect(section?.grid.items.map(\.id.rawValue) == server.items)
+        }
     }
 }
+
+/// One configuration of the Favorites wall plus every screen-level answer it must give.
+struct FavoritesShape: Sendable, CustomTestStringConvertible {
+    struct Server: Sendable {
+        let id: String
+        let items: [String]
+        var fails: Bool = false
+    }
+
+    let name: String
+    let servers: [Server]
+    let hasFailedEntirely: Bool
+    let isEmpty: Bool
+    /// Server ids expected in `visibleSections`, in order.
+    let visible: [String]
+    /// Server ids expected in `failedSections`, in order.
+    let failed: [String]
+
+    var testDescription: String { name }
+}
+
+private let favoritesShapes: [FavoritesShape] = [
+    // A failed section stays VISIBLE (unlike an empty one) so the user learns which server is
+    // unreachable, instead of quietly seeing fewer favorites than they have.
+    FavoritesShape(
+        name: "one server down, one healthy",
+        servers: [.init(id: "a", items: ["a1"]), .init(id: "b", items: [], fails: true)],
+        hasFailedEntirely: false,
+        isEmpty: false,
+        visible: ["a", "b"],
+        failed: ["b"]
+    ),
+    // Only an all-server failure turns the whole screen into an error — and a failed server has
+    // nothing to show but is NOT "no favorites", which would be a lie about content the user has.
+    FavoritesShape(
+        name: "every server down",
+        servers: [.init(id: "a", items: [], fails: true), .init(id: "b", items: [], fails: true)],
+        hasFailedEntirely: true,
+        isEmpty: false,
+        visible: ["a", "b"],
+        failed: ["a", "b"]
+    ),
+    FavoritesShape(
+        name: "the only server is down",
+        servers: [.init(id: "a", items: [], fails: true)],
+        hasFailedEntirely: true,
+        isEmpty: false,
+        visible: ["a"],
+        failed: ["a"]
+    ),
+    // Every server settling with nothing is the one true empty state.
+    FavoritesShape(
+        name: "every server settles empty",
+        servers: [.init(id: "a", items: []), .init(id: "b", items: [])],
+        hasFailedEntirely: false,
+        isEmpty: true,
+        visible: [],
+        failed: []
+    ),
+    FavoritesShape(
+        name: "every server has favorites",
+        servers: [.init(id: "a", items: ["a1"]), .init(id: "b", items: ["b1"])],
+        hasFailedEntirely: false,
+        isEmpty: false,
+        visible: ["a", "b"],
+        failed: []
+    ),
+]

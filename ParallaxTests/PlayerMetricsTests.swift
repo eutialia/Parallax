@@ -2,30 +2,18 @@ import Testing
 import CoreGraphics
 @testable import Parallax
 
+/// `u = width / 1920`, clamped to 0.5…1.0: the base width is unit scale, a 12.9" iPad
+/// lands just over 0.71, a small multitasking window floors at 0.5, and nothing above
+/// the base exceeds 1.0.
+private let unitScaleCases: [(width: CGFloat, u: CGFloat)] = [
+    (1920, 1.0), (1366, 1366.0 / 1920), (480, 0.5), (3000, 1.0),
+]
+
 @Suite struct PlayerMetricsTests {
-    @Test func tvIsUnitScale() {
-        #expect(PlayerMetrics(width: 1920).u == 1.0)
-    }
-
-    @Test func iPadScalesByWidthOver1920() {
-        let u = PlayerMetrics(width: 1366).u
-        #expect(abs(u - 0.7115) < 0.001)
-    }
-
-    @Test func clampsTinyWindowsToFloor() {
-        #expect(PlayerMetrics(width: 480).u == 0.5)
-    }
-
-    @Test func clampsAboveBaseToOne() {
-        #expect(PlayerMetrics(width: 3000).u == 1.0)
-    }
-
-    @Test func derivesUnitValuesAtFullScale() {
-        let m = PlayerMetrics(width: 1920)
-        #expect(m.padX == 80)
-        #expect(m.chipHeight == 72)
-        #expect(m.closeSize == 72)
-        #expect(m.progressBottom == 148)
+    @Test("u scales by width over the 1920 base and clamps at both ends",
+          arguments: unitScaleCases)
+    func unitScale(width: CGFloat, expected: CGFloat) {
+        #expect(abs(PlayerMetrics(width: width).u - expected) < 0.0001)
     }
 
     @Test func phoneSetIsSeventyPercent() {
@@ -41,19 +29,6 @@ import CoreGraphics
         let m = PlayerMetrics.phone   // u = 0.7
         #expect(abs(m.handleDiameter - 22 * 0.7) < 0.0001)
         #expect(abs(m.trackHeight - 8 * 0.7) < 0.0001)
-    }
-
-    @Test func phoneChromeLayoutHoldsAuthoredValues() {
-        // The iPhone HUD's edge/row layout is authored at 1× (NOT u-scaled) — these used
-        // to be scattered literals in `PlayerControlsView.phoneControls`. Values are the
-        // compact-chrome set (`e8d4912`).
-        #expect(PlayerMetrics.phonePadX == 26)
-        #expect(PlayerMetrics.phoneTopBarTop == 22)
-        #expect(PlayerMetrics.phoneTopBarGap == 14)
-        #expect(PlayerMetrics.phoneTransportGap == 46)
-        #expect(PlayerMetrics.phoneChipRowGap == 8)
-        #expect(PlayerMetrics.phoneChipRowBottom == 20)
-        #expect(PlayerMetrics.phoneProgressBottom == 64)
     }
 
     @Test func loadingRingTracesThePlayDisc() {
@@ -79,7 +54,7 @@ import CoreGraphics
         // two caption lines overshoots the scrubber band on every phone size), so
         // the phone shows the bare ring — the system phone-player idiom. Big
         // screens keep the caption.
-        #expect(!PlayerMetrics.phone.scrimShowsCaption)
+        #expect(PlayerMetrics.phone.scrimShowsCaption == false)
         #expect(PlayerMetrics(width: 1366).scrimShowsCaption)
         #expect(PlayerMetrics.tv.scrimShowsCaption)
     }

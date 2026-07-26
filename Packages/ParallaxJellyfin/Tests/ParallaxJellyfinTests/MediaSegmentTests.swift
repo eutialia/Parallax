@@ -22,18 +22,22 @@ struct MediaSegmentMappingTests {
         #expect(segment.end == .seconds(900))
     }
 
-    @Test("Missing start/end ticks → nil (unusable segment)")
-    func nilWhenMissingTicks() {
-        let dto = MediaSegmentDto(endTicks: nil, id: "x", itemID: "i", startTicks: nil, type: .outro)
-        #expect(dto.toMediaSegment() == nil)
-    }
-
-    @Test("Non-positive span (end <= start) → nil (unusable segment)")
-    func nilWhenSpanNonPositive() {
-        // Inverted: a half-open [start, end) range that can never contain a playhead.
-        #expect(MediaSegmentDto(endTicks: 100, id: "x", itemID: "i", startTicks: 900, type: .intro).toMediaSegment() == nil)
-        // Zero-length: start == end.
-        #expect(MediaSegmentDto(endTicks: 500, id: "x", itemID: "i", startTicks: 500, type: .intro).toMediaSegment() == nil)
+    /// A segment the playhead can never fall inside is worse than no segment: the player would
+    /// draw a Skip affordance that never triggers. Each unusable tick combination reports
+    /// separately so one failure can't mask another.
+    @Test(
+        "Unusable tick combinations map to nil",
+        arguments: [
+            (nil, nil, "neither bound"),
+            (0 as Int?, nil as Int?, "no end"),
+            (nil, 900, "no start"),
+            (900, 100, "inverted — a half-open [start, end) that can never contain a playhead"),
+            (500, 500, "zero length"),
+        ] as [(Int?, Int?, String)]
+    )
+    func unusableSpansMapToNil(startTicks: Int?, endTicks: Int?, reason: String) {
+        let dto = MediaSegmentDto(endTicks: endTicks, id: "x", itemID: "i", startTicks: startTicks, type: .intro)
+        #expect(dto.toMediaSegment() == nil, "\(reason) must be dropped")
     }
 
     @Test("Absent/unknown type folds to .unknown, not dropped")
@@ -68,61 +72,52 @@ struct MediaSegmentMappingTests {
 
 @Suite("Adjacent episodes")
 struct AdjacentEpisodesTests {
-    private func ep(_ id: String, s: Int, e: Int) -> Episode {
-        Episode(
-            id: ItemID(rawValue: id),
-            seriesID: ItemID(rawValue: "series"),
-            seasonID: ItemID(rawValue: "season\(s)"),
+    private static func ep(_ id: String, s: Int, e: Int) -> Episode {
+        JellyfinFixtures.episode(
+            id: id,
+            seriesID: "series",
+            seasonID: "season\(s)",
             name: "S\(s)E\(e)",
-            seriesName: nil,
             indexNumber: e,
-            parentIndexNumber: s,
-            overview: nil,
-            runtime: nil,
-            primaryTag: nil,
-            userData: .absent
+            parentIndexNumber: s
         )
     }
 
-    @Test("Middle of a 3-item window → both neighbors")
-    func middle() {
-        let window = [ep("a", s: 1, e: 1), ep("b", s: 1, e: 2), ep("c", s: 1, e: 3)]
-        let adj = AdjacentEpisodes(around: ItemID(rawValue: "b"), in: window)
-        #expect(adj.previous?.id == ItemID(rawValue: "a"))
-        #expect(adj.next?.id == ItemID(rawValue: "c"))
+    /// Adjacency is PURELY POSITIONAL in the server's window, so every case is the same lookup
+    /// over a different (window, queried id) pair — including the two defensive ones (a solo item,
+    /// an id the window doesn't contain), which must yield no neighbour rather than a wrong one.
+    @Test(
+        "Neighbours come from position in the window",
+        arguments: [
+            (Window.threeInSeason, "b", "a", "c"),
+            (.twoAtStart, "a", nil, "b"),
+            (.twoAtEnd, "b", "a", nil),
+            (.solo, "a", nil, nil),
+            (.solo, "not-in-window", nil, nil),
+        ] as [(Window, String, String?, String?)]
+    )
+    func neighbours(window: Window, queried: String, expectedPrevious: String?, expectedNext: String?) {
+        let adjacent = AdjacentEpisodes(around: ItemID(rawValue: queried), in: window.episodes)
+        #expect(adjacent.previous?.id == expectedPrevious.map(ItemID.init(rawValue:)))
+        #expect(adjacent.next?.id == expectedNext.map(ItemID.init(rawValue:)))
     }
 
-    @Test("First episode → next only (2-item boundary window)")
-    func firstEpisode() {
-        let window = [ep("a", s: 1, e: 1), ep("b", s: 1, e: 2)]
-        let adj = AdjacentEpisodes(around: ItemID(rawValue: "a"), in: window)
-        #expect(adj.previous == nil)
-        #expect(adj.next?.id == ItemID(rawValue: "b"))
-    }
+    enum Window: Sendable {
+        case threeInSeason, twoAtStart, twoAtEnd, solo
 
-    @Test("Last episode → previous only (2-item boundary window)")
-    func lastEpisode() {
-        let window = [ep("a", s: 2, e: 9), ep("b", s: 2, e: 10)]
-        let adj = AdjacentEpisodes(around: ItemID(rawValue: "b"), in: window)
-        #expect(adj.previous?.id == ItemID(rawValue: "a"))
-        #expect(adj.next == nil)
-    }
-
-    @Test("Solo episode → no neighbors")
-    func solo() {
-        let adj = AdjacentEpisodes(around: ItemID(rawValue: "a"), in: [ep("a", s: 1, e: 1)])
-        #expect(adj == .none)
-    }
-
-    @Test("Queried episode absent from window → none (defensive)")
-    func notFound() {
-        let adj = AdjacentEpisodes(around: ItemID(rawValue: "z"), in: [ep("a", s: 1, e: 1)])
-        #expect(adj == .none)
+        var episodes: [Episode] {
+            switch self {
+            case .threeInSeason: [ep("a", s: 1, e: 1), ep("b", s: 1, e: 2), ep("c", s: 1, e: 3)]
+            case .twoAtStart: [ep("a", s: 1, e: 1), ep("b", s: 1, e: 2)]
+            case .twoAtEnd: [ep("a", s: 2, e: 9), ep("b", s: 2, e: 10)]
+            case .solo: [ep("a", s: 1, e: 1)]
+            }
+        }
     }
 
     @Test("Cross-season window → S2E1 is next after the S1 finale")
     func crossSeason() {
-        let window = [ep("a", s: 1, e: 10), ep("b", s: 1, e: 11), ep("c", s: 2, e: 1)]
+        let window = [Self.ep("a", s: 1, e: 10), Self.ep("b", s: 1, e: 11), Self.ep("c", s: 2, e: 1)]
         let adj = AdjacentEpisodes(around: ItemID(rawValue: "b"), in: window)
         #expect(adj.next?.id == ItemID(rawValue: "c"))
         #expect(adj.next?.parentIndexNumber == 2)

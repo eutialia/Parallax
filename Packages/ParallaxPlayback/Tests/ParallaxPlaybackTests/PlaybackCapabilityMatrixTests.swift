@@ -2,175 +2,106 @@ import Testing
 import ParallaxCore
 import ParallaxPlayback
 
+/// The matrix is a declaration, so here — and only here — the literal sets ARE the
+/// spec. Every other suite in the package asserts against `PlaybackCapabilityMatrix.*`
+/// rather than re-typing these lists.
 @Suite("PlaybackCapabilityMatrix")
 struct PlaybackCapabilityMatrixTests {
 
-    // MARK: — AVKit sets
+    // MARK: — AVKit exact whitelists (what EngineSelector routes on)
 
-    @Test("avKitContainers includes mp4, mov, hls and nothing else")
+    @Test("avKitContainers is exactly mp4/mov/hls")
     func avKitContainers() {
         #expect(PlaybackCapabilityMatrix.avKitContainers == [.mp4, .mov, .hls])
     }
 
-    @Test("avKitVideoCodecs includes h264 and hevc only")
+    @Test("avKitVideoCodecs is exactly h264/hevc")
     func avKitVideoCodecs() {
         #expect(PlaybackCapabilityMatrix.avKitVideoCodecs == [.h264, .hevc])
     }
 
-    @Test("avKitAudioCodecs includes aac, ac3, eac3, mp3")
+    /// Also pins the wiring to ParallaxCore's shared `avPlayerSupported`, which
+    /// MediaProbe's worst-case track pick reads from the other side.
+    @Test("avKitAudioCodecs is exactly aac/ac3/eac3/mp3, shared with ParallaxCore")
     func avKitAudioCodecs() {
         #expect(PlaybackCapabilityMatrix.avKitAudioCodecs == [.aac, .ac3, .eac3, .mp3])
+        #expect(PlaybackCapabilityMatrix.avKitAudioCodecs == AudioCodec.avPlayerSupported)
     }
 
-    @Test("avKitSubtitleFormats includes vtt and srt only")
+    @Test("avKitSubtitleFormats is exactly vtt/srt")
     func avKitSubtitleFormats() {
         #expect(PlaybackCapabilityMatrix.avKitSubtitleFormats == [.vtt, .srt])
     }
 
-    // MARK: — VLC sets
+    // MARK: — VLC is a superset on every axis
 
-    @Test("vlcContainers is a superset of avKitContainers")
-    func vlcContainersSupersetOfAVKit() {
-        #expect(PlaybackCapabilityMatrix.avKitContainers.isSubset(of: PlaybackCapabilityMatrix.vlcContainers))
+    /// Compared as raw-value sets so one table can cover four differently-typed axes.
+    /// A VLC set that ever lost an AVKit-playable format would silently make the
+    /// fallback engine *less* capable than the primary.
+    @Test("every VLC axis is a superset of the matching AVKit axis", arguments: [
+        ("containers", Set(PlaybackCapabilityMatrix.avKitContainers.map(\.rawValue)),
+         Set(PlaybackCapabilityMatrix.vlcContainers.map(\.rawValue))),
+        ("videoCodecs", Set(PlaybackCapabilityMatrix.avKitVideoCodecs.map(\.rawValue)),
+         Set(PlaybackCapabilityMatrix.vlcVideoCodecs.map(\.rawValue))),
+        ("audioCodecs", Set(PlaybackCapabilityMatrix.avKitAudioCodecs.map(\.rawValue)),
+         Set(PlaybackCapabilityMatrix.vlcAudioCodecs.map(\.rawValue))),
+        ("subtitleFormats", Set(PlaybackCapabilityMatrix.avKitSubtitleFormats.map(\.rawValue)),
+         Set(PlaybackCapabilityMatrix.vlcSubtitleFormats.map(\.rawValue))),
+    ])
+    func vlcIsSupersetOfAVKit(axis: String, avKit: Set<String>, vlc: Set<String>) {
+        #expect(avKit.isSubset(of: vlc), "\(axis): VLC dropped \(avKit.subtracting(vlc))")
     }
 
-    @Test("vlcContainers includes mkv, webm, ts, flac, mp3")
-    func vlcContainersIncludes() {
-        let vlc = PlaybackCapabilityMatrix.vlcContainers
-        #expect(vlc.contains(.mkv))
-        #expect(vlc.contains(.webm))
-        #expect(vlc.contains(.ts))
-        #expect(vlc.contains(.flac))
-        #expect(vlc.contains(.mp3))
+    // MARK: — VLC-only coverage (the reason the fallback engine exists)
+
+    @Test("vlcContainers covers the long tail AVKit cannot open",
+          arguments: [Container.mkv, .webm, .ts, .flac, .mp3, .avi])
+    func vlcContainersInclude(container: Container) {
+        #expect(PlaybackCapabilityMatrix.vlcContainers.contains(container))
     }
 
-    @Test("vlcVideoCodecs is a superset of avKitVideoCodecs")
-    func vlcVideoCodecsSupersetOfAVKit() {
-        #expect(PlaybackCapabilityMatrix.avKitVideoCodecs.isSubset(of: PlaybackCapabilityMatrix.vlcVideoCodecs))
+    @Test("vlcVideoCodecs covers the codecs VideoToolbox cannot feed AVPlayer",
+          arguments: [VideoCodec.vp9, .av1, .vc1, .mpeg2video])
+    func vlcVideoCodecsInclude(codec: VideoCodec) {
+        #expect(PlaybackCapabilityMatrix.vlcVideoCodecs.contains(codec))
     }
 
-    @Test("vlcVideoCodecs includes vp9 and av1")
-    func vlcVideoCodecsIncludes() {
-        let vlc = PlaybackCapabilityMatrix.vlcVideoCodecs
-        #expect(vlc.contains(.vp9))
-        #expect(vlc.contains(.av1))
+    @Test("vlcAudioCodecs covers the lossless/object formats AVPlayer rejects",
+          arguments: [AudioCodec.dts, .trueHD, .flac, .opus])
+    func vlcAudioCodecsInclude(codec: AudioCodec) {
+        #expect(PlaybackCapabilityMatrix.vlcAudioCodecs.contains(codec))
     }
 
-    @Test("vlcAudioCodecs is a superset of avKitAudioCodecs")
-    func vlcAudioCodecsSupersetOfAVKit() {
-        #expect(PlaybackCapabilityMatrix.avKitAudioCodecs.isSubset(of: PlaybackCapabilityMatrix.vlcAudioCodecs))
+    @Test("vlcSubtitleFormats covers libass and the image-based formats",
+          arguments: [SubtitleFormat.ass, .pgs, .vobsub])
+    func vlcSubtitleFormatsInclude(format: SubtitleFormat) {
+        #expect(PlaybackCapabilityMatrix.vlcSubtitleFormats.contains(format))
     }
 
-    @Test("vlcAudioCodecs includes dts, trueHD, flac, opus")
-    func vlcAudioCodecsIncludes() {
-        let vlc = PlaybackCapabilityMatrix.vlcAudioCodecs
-        #expect(vlc.contains(.dts))
-        #expect(vlc.contains(.trueHD))
-        #expect(vlc.contains(.flac))
-        #expect(vlc.contains(.opus))
-    }
+    // MARK: — Derived "software" tier stays derived
 
-    @Test("vlcSubtitleFormats includes ass, pgs, vobsub")
-    func vlcSubtitleFormatsIncludes() {
-        let vlc = PlaybackCapabilityMatrix.vlcSubtitleFormats
-        #expect(vlc.contains(.ass))
-        #expect(vlc.contains(.pgs))
-        #expect(vlc.contains(.vobsub))
-    }
+    /// These three guard against a future hand-edit turning a derived set into a typed
+    /// literal — the failure mode that would quietly ship a VLC direct-play tier
+    /// advertising h264/hevc and lose HDR/DV/Atmos on premium MKV content.
 
-    // MARK: — Derived "software" sets (vlc minus avKit)
-
-    @Test("softwareVideoCodecs excludes h264 and hevc")
-    func softwareVideoCodecsExcludesAVKit() {
-        let sw = PlaybackCapabilityMatrix.softwareVideoCodecs
-        #expect(!sw.contains(.h264))
-        #expect(!sw.contains(.hevc))
-    }
-
-    @Test("softwareVideoCodecs includes vp9 and av1")
-    func softwareVideoCodecsIncludesVLCExtra() {
-        let sw = PlaybackCapabilityMatrix.softwareVideoCodecs
-        #expect(sw.contains(.vp9))
-        #expect(sw.contains(.av1))
-    }
-
-    @Test("softwareAudioCodecs excludes aac, ac3, eac3, mp3")
-    func softwareAudioCodecsExcludesAVKit() {
-        let sw = PlaybackCapabilityMatrix.softwareAudioCodecs
-        #expect(!sw.contains(.aac))
-        #expect(!sw.contains(.ac3))
-        #expect(!sw.contains(.eac3))
-        #expect(!sw.contains(.mp3))
-    }
-
-    @Test("softwareAudioCodecs includes dts, trueHD, flac, opus")
-    func softwareAudioCodecsIncludesVLCExtra() {
-        let sw = PlaybackCapabilityMatrix.softwareAudioCodecs
-        #expect(sw.contains(.dts))
-        #expect(sw.contains(.trueHD))
-        #expect(sw.contains(.flac))
-        #expect(sw.contains(.opus))
-    }
-
-    @Test("softwareContainers excludes mp4, mov, hls")
-    func softwareContainersExcludesAVKit() {
-        let sw = PlaybackCapabilityMatrix.softwareContainers
-        #expect(!sw.contains(.mp4))
-        #expect(!sw.contains(.mov))
-        #expect(!sw.contains(.hls))
-    }
-
-    @Test("softwareContainers includes mkv, webm, ts")
-    func softwareContainersIncludesVLCExtra() {
-        let sw = PlaybackCapabilityMatrix.softwareContainers
-        #expect(sw.contains(.mkv))
-        #expect(sw.contains(.webm))
-        #expect(sw.contains(.ts))
-    }
-
-    // MARK: — Derived sets are mathematically correct
-
-    @Test("softwareVideoCodecs == vlcVideoCodecs subtracting avKitVideoCodecs")
+    @Test("softwareVideoCodecs == vlcVideoCodecs − avKitVideoCodecs")
     func softwareVideoCodecsDerivedCorrectly() {
-        let expected = PlaybackCapabilityMatrix.vlcVideoCodecs
-            .subtracting(PlaybackCapabilityMatrix.avKitVideoCodecs)
-        #expect(PlaybackCapabilityMatrix.softwareVideoCodecs == expected)
+        #expect(PlaybackCapabilityMatrix.softwareVideoCodecs
+            == PlaybackCapabilityMatrix.vlcVideoCodecs
+                .subtracting(PlaybackCapabilityMatrix.avKitVideoCodecs))
     }
 
-    @Test("softwareAudioCodecs == vlcAudioCodecs subtracting avKitAudioCodecs")
+    @Test("softwareAudioCodecs == vlcAudioCodecs − avKitAudioCodecs")
     func softwareAudioCodecsDerivedCorrectly() {
-        let expected = PlaybackCapabilityMatrix.vlcAudioCodecs
-            .subtracting(PlaybackCapabilityMatrix.avKitAudioCodecs)
-        #expect(PlaybackCapabilityMatrix.softwareAudioCodecs == expected)
+        #expect(PlaybackCapabilityMatrix.softwareAudioCodecs
+            == PlaybackCapabilityMatrix.vlcAudioCodecs
+                .subtracting(PlaybackCapabilityMatrix.avKitAudioCodecs))
     }
 
-    @Test("softwareContainers == vlcContainers subtracting avKitContainers")
+    @Test("softwareContainers == vlcContainers − avKitContainers")
     func softwareContainersDerivedCorrectly() {
-        let expected = PlaybackCapabilityMatrix.vlcContainers
-            .subtracting(PlaybackCapabilityMatrix.avKitContainers)
-        #expect(PlaybackCapabilityMatrix.softwareContainers == expected)
-    }
-
-    // MARK: — 5d.1: VLC-only codecs + AVI container
-
-    @Test("vlcVideoCodecs includes vc1 and mpeg2video")
-    func vlcVideoCodecsIncludesVC1MPEG2() {
-        let vlc = PlaybackCapabilityMatrix.vlcVideoCodecs
-        #expect(vlc.contains(.vc1))
-        #expect(vlc.contains(.mpeg2video))
-    }
-
-    @Test("vlcContainers includes avi")
-    func vlcContainersIncludesAVI() {
-        #expect(PlaybackCapabilityMatrix.vlcContainers.contains(.avi))
-    }
-
-    @Test("softwareVideoCodecs covers vc1/mpeg2video but never h264/hevc")
-    func softwareVideoCodecsCoversVLCOnly() {
-        let sw = PlaybackCapabilityMatrix.softwareVideoCodecs
-        #expect(sw.contains(.vc1))
-        #expect(sw.contains(.mpeg2video))
-        #expect(!sw.contains(.h264))
-        #expect(!sw.contains(.hevc))
+        #expect(PlaybackCapabilityMatrix.softwareContainers
+            == PlaybackCapabilityMatrix.vlcContainers
+                .subtracting(PlaybackCapabilityMatrix.avKitContainers))
     }
 }

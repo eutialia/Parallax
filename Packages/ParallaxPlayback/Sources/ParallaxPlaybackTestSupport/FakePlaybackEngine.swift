@@ -1,5 +1,6 @@
 import Foundation
 import CoreMedia
+import Synchronization
 import ParallaxPlayback
 
 // MARK: — PlaybackEngineCapabilities convenience stubs
@@ -25,6 +26,8 @@ extension PlaybackEngineCapabilities {
 /// Deterministic `PlaybackEngine` test double.
 ///
 /// - Push states via `push(_:)` — emitted to the `state` stream in order.
+/// - `await settle()` after pushing to wait for the consumer to finish processing
+///   every pushed state — the deterministic replacement for a `Task.sleep` barrier.
 /// - Inspect recorded calls via `calls`, `loadedAssets`, `selectedAudioTrackID`, etc.
 /// - `teardown()` finishes the stream so async `for await` loops terminate.
 /// - Call `finish()` to close the stream without recording "teardown".
@@ -55,23 +58,76 @@ public final class FakePlaybackEngine: PlaybackEngine {
     public nonisolated(unsafe) var bufferedRange: ClosedRange<Double>? = nil
 
     private let continuation: AsyncStream<PlaybackState>.Continuation
+    /// The hand-off ledger `settle()` reads — see `DrainBarrier`.
+    private let barrier: DrainBarrier
 
     public init(id: PlaybackEngineID, capabilities: PlaybackEngineCapabilities) {
         self.id = id
         self.capabilities = capabilities
-        let (stream, cont) = AsyncStream<PlaybackState>.makeStream()
-        self.state = stream
+        // Two-layer stream. The inner buffered stream keeps the ORIGINAL semantics
+        // (`push` never blocks, states queue in order, `finish()` still drains what's
+        // already queued, a cancelled consumer ends its loop). The outer `unfolding`
+        // stream wraps it purely to expose the one thing a continuation-backed stream
+        // can't: the moment the consumer asks for the NEXT element — which is exactly
+        // the moment its `for await` body finished processing the previous one.
+        let (buffered, cont) = AsyncStream<PlaybackState>.makeStream()
+        let barrier = DrainBarrier()
+        let source = BufferedSource(buffered)
         self.continuation = cont
+        self.barrier = barrier
+        self.state = AsyncStream(unfolding: {
+            // Re-entered ⇒ the consumer's loop body for every delivered state returned.
+            barrier.noteConsumerTurn()
+            guard let next = await source.next() else { return nil }
+            barrier.noteDelivery()
+            return next
+        })
     }
 
     /// Push a state into the stream immediately.
     public func push(_ state: PlaybackState) {
+        // A push after the stream finished is dropped by the stream, so it must not be
+        // counted either — otherwise it would be a debt `settle()` could never clear.
+        guard barrier.notePush() else { return }
         continuation.yield(state)
     }
 
     /// Finish the stream without recording a "teardown" call.
     public func finish() {
+        barrier.noteFinish()
         continuation.finish()
+    }
+
+    /// Thrown by `settle()` when the consumer never drained — a real deadlock/bug,
+    /// surfaced as a test failure instead of a hung run.
+    public struct SettleTimeout: Error, CustomStringConvertible {
+        public let pushed: Int
+        public let processed: Int
+        public var description: String {
+            "FakePlaybackEngine.settle() timed out: \(processed) of \(pushed) pushed states processed"
+        }
+    }
+
+    /// Suspends until every state pushed **so far** has been delivered to the
+    /// `state` consumer AND that consumer's `for await` body has run to completion
+    /// for each of them.
+    ///
+    /// Deterministic, not a shorter sleep: an `AsyncStream` iterator only re-enters
+    /// the outer stream's producer once the loop body for the previous element has
+    /// returned, so "the consumer pulled element n+1" *is* the proof that element n
+    /// was fully processed. `settle()` waits for that pull count to reach the push
+    /// count — no wall-clock guessing. Note it covers the consumer's own turn only;
+    /// work the consumer detaches into a separate `Task` needs its own barrier.
+    ///
+    /// `timeout` is a safety net for the pathological "nobody will pull again" cases
+    /// (nothing subscribed, the consumer parked forever inside its body, or a consumer
+    /// that `break`s out of its loop); it never fires on the happy path, so it adds no
+    /// flakiness.
+    public func settle(timeout: Duration = .seconds(5)) async throws {
+        let target = barrier.pushCount()
+        guard try await barrier.waitForDrain(upTo: target, timeout: timeout) else {
+            throw SettleTimeout(pushed: target, processed: barrier.processedCount())
+        }
     }
 
     public func load(_ asset: PlayableAsset) async throws {
@@ -111,6 +167,140 @@ public final class FakePlaybackEngine: PlaybackEngine {
 
     public func teardown() async {
         calls.append("teardown")
-        continuation.finish()
+        finish()
+    }
+}
+
+// MARK: — settle() machinery
+
+/// Holds the inner buffered stream's iterator. `AsyncStream.Iterator` is a
+/// non-`Sendable` mutable struct, so it needs a reference home to be pulled from the
+/// outer stream's producer closure. Single-consumer by construction (one `for await`
+/// over `FakePlaybackEngine.state`), which is what makes the unchecked conformance safe.
+private final class BufferedSource: @unchecked Sendable {
+    private var iterator: AsyncStream<PlaybackState>.Iterator
+
+    init(_ stream: AsyncStream<PlaybackState>) {
+        self.iterator = stream.makeAsyncIterator()
+    }
+
+    /// Nil on finish AND on consumer cancellation — `AsyncStream`'s own iterator
+    /// handles both, so the outer stream inherits the original termination behavior.
+    func next() async -> PlaybackState? {
+        await iterator.next()
+    }
+}
+
+/// The push/deliver/process ledger behind `FakePlaybackEngine.settle()`.
+///
+/// `processed` advances only when the consumer comes back for another element, so it
+/// counts states whose handler RETURNED — never states merely handed over.
+private final class DrainBarrier: Sendable {
+    /// One `settle()` caller. Registered BEFORE its continuation exists so a
+    /// cancellation (or a drain) landing in that window is recorded rather than lost:
+    /// `continuation == nil` + `isCancelled` is resolved by whichever side arrives second.
+    private struct Waiter {
+        let target: Int
+        var continuation: CheckedContinuation<Void, Never>?
+        var isCancelled = false
+    }
+
+    private struct Ledger {
+        var pushed = 0
+        var delivered = 0
+        var processed = 0
+        var finished = false
+        var nextWaiterID = 0
+        var waiters: [Int: Waiter] = [:]
+    }
+
+    private let ledger = Mutex(Ledger())
+
+    /// False once the stream is finished — the caller must then drop the push.
+    func notePush() -> Bool {
+        ledger.withLock { l in
+            guard !l.finished else { return false }
+            l.pushed += 1
+            return true
+        }
+    }
+
+    func noteFinish() {
+        ledger.withLock { $0.finished = true }
+    }
+
+    func noteDelivery() {
+        ledger.withLock { $0.delivered += 1 }
+    }
+
+    /// The consumer pulled again ⇒ everything delivered so far is processed.
+    func noteConsumerTurn() {
+        let due = ledger.withLock { l -> [CheckedContinuation<Void, Never>] in
+            l.processed = l.delivered
+            var resumable: [CheckedContinuation<Void, Never>] = []
+            for (id, waiter) in l.waiters where waiter.target <= l.processed {
+                // Removing an as-yet-continuation-less waiter is the signal its own
+                // `withCheckedContinuation` body reads to resume immediately.
+                l.waiters.removeValue(forKey: id)
+                if let continuation = waiter.continuation { resumable.append(continuation) }
+            }
+            return resumable
+        }
+        for continuation in due { continuation.resume() }
+    }
+
+    func pushCount() -> Int { ledger.withLock { $0.pushed } }
+    func processedCount() -> Int { ledger.withLock { $0.processed } }
+
+    /// True once `processed >= target`; false if `timeout` elapsed first.
+    func waitForDrain(upTo target: Int, timeout: Duration) async throws -> Bool {
+        guard ledger.withLock({ $0.processed < target }) else { return true }
+        return try await withThrowingTaskGroup(of: Bool.self) { group in
+            group.addTask { await self.park(until: target); return true }
+            group.addTask { try await Task.sleep(for: timeout); return false }
+            // First child to finish wins; the loser is cancelled (the parked waiter
+            // resumes through its cancellation handler, the sleeper just throws).
+            let drained = try await group.next() ?? false
+            group.cancelAll()
+            return drained
+        }
+    }
+
+    private func park(until target: Int) async {
+        let id: Int? = ledger.withLock { l in
+            guard l.processed < target else { return nil }
+            l.nextWaiterID += 1
+            l.waiters[l.nextWaiterID] = Waiter(target: target)
+            return l.nextWaiterID
+        }
+        guard let id else { return }
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                let resumeNow = ledger.withLock { l -> Bool in
+                    // Gone ⇒ the drain already satisfied it. Cancelled ⇒ the handler
+                    // below fired before the continuation existed. Either way: resume.
+                    guard var waiter = l.waiters[id], !waiter.isCancelled else {
+                        l.waiters.removeValue(forKey: id)
+                        return true
+                    }
+                    waiter.continuation = continuation
+                    l.waiters[id] = waiter
+                    return false
+                }
+                if resumeNow { continuation.resume() }
+            }
+        } onCancel: {
+            let continuation = ledger.withLock { l -> CheckedContinuation<Void, Never>? in
+                guard var waiter = l.waiters[id] else { return nil }
+                guard let continuation = waiter.continuation else {
+                    waiter.isCancelled = true
+                    l.waiters[id] = waiter
+                    return nil
+                }
+                l.waiters.removeValue(forKey: id)
+                return continuation
+            }
+            continuation?.resume()
+        }
     }
 }

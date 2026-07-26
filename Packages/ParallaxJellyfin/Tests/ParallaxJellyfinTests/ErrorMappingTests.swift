@@ -7,97 +7,92 @@ import ParallaxCore
 
 @Suite("Error mapping")
 struct ErrorMappingTests {
-    @Test("URLError maps to AppError.network")
-    func urlError() {
-        let urlErr = URLError(.notConnectedToInternet)
-        let app = ErrorMapping.appError(from: urlErr)
-        if case .network(let inner) = app {
-            #expect(inner.code == .notConnectedToInternet)
-        } else {
-            Issue.record("expected .network, got \(app)")
+    /// The auth-shaped mappings are all the same question — "which AuthFailure does this error
+    /// mean?" — and each answer drives different recovery copy, so they're one table.
+    @Test(
+        "Auth-shaped errors map to the failure whose recovery advice fits",
+        arguments: [
+            // The SDK's tokenless-success error: the login form rejected the credential.
+            (AuthCase.noAccessToken, AuthFailure.invalidCredentials),
+            // A raw 401 only reaches here from a client with NO validator — sign-in and Quick
+            // Connect — so it's a rejected credential, not an expired session. "Sign in again"
+            // would be nonsense advice to someone already signing in.
+            (.unauthorizedWithoutValidator, .invalidCredentials),
+            // A typed AppError from the validator must pass through, not be re-derived.
+            (.alreadyTypedAppError, .tokenInvalidated),
+            // Same passthrough, from the other typed producer: `DefaultJellyfinAuthClient` throws
+            // the expiry verdict itself once its polling budget is spent, and `SessionManager`
+            // keys `.expired` off exactly this case surviving the mapping.
+            (.quickConnectBudgetSpent, .quickConnectExpired),
+        ]
+    )
+    func authFailureMapping(input: AuthCase, expected: AuthFailure) {
+        let mapped = ErrorMapping.appError(from: input.error)
+        guard case .auth(let failure) = mapped else {
+            Issue.record("expected .auth for \(input), got \(mapped)")
+            return
+        }
+        #expect(failure == expected)
+    }
+
+    enum AuthCase: Sendable {
+        case noAccessToken, unauthorizedWithoutValidator, alreadyTypedAppError, quickConnectBudgetSpent
+
+        var error: Error {
+            switch self {
+            case .noAccessToken: JellyfinClient.ClientError.noAccessToken
+            case .unauthorizedWithoutValidator: APIError.unacceptableStatusCode(401)
+            case .alreadyTypedAppError: AppError.auth(.tokenInvalidated)
+            case .quickConnectBudgetSpent: AppError.auth(.quickConnectExpired)
+            }
         }
     }
 
-    @Test("JellyfinClient.ClientError.noAccessToken maps to invalidCredentials")
-    func noAccessToken() {
-        let app = ErrorMapping.appError(from: JellyfinClient.ClientError.noAccessToken)
-        if case .auth(let failure) = app {
-            #expect(failure == .invalidCredentials)
-        } else {
-            Issue.record("expected .auth, got \(app)")
+    @Test("URLError maps to AppError.network with its code preserved")
+    func urlError() {
+        let mapped = ErrorMapping.appError(from: URLError(.notConnectedToInternet))
+        guard case .network(let inner) = mapped else {
+            Issue.record("expected .network, got \(mapped)")
+            return
         }
+        #expect(inner.code == .notConnectedToInternet)
     }
 
     @Test("Unknown errors fall through to .unexpected with the underlying preserved")
     func unknown() {
         struct WeirdError: Error {}
-        let app = ErrorMapping.appError(from: WeirdError())
-        if case .unexpected(let note, let underlying) = app {
-            #expect(note.contains("WeirdError"))
-            #expect(underlying?.diagnosticDescription.contains("WeirdError") == true)
-        } else {
-            Issue.record("expected .unexpected, got \(app)")
+        let mapped = ErrorMapping.appError(from: WeirdError())
+        guard case .unexpected(let note, let underlying) = mapped else {
+            Issue.record("expected .unexpected, got \(mapped)")
+            return
         }
+        #expect(note.contains("WeirdError"))
+        #expect(underlying?.diagnosticDescription.contains("WeirdError") == true)
     }
 
-    @Test("APIError.unacceptableStatusCode carries its status through to .server")
-    func unacceptableStatusCode() {
-        let app = ErrorMapping.appError(from: APIError.unacceptableStatusCode(404))
-        if case .server(let code, let message) = app {
-            #expect(code == 404)
-            #expect(message == nil)
-        } else {
-            Issue.record("expected .server, got \(app)")
+    @Test("APIError.unacceptableStatusCode carries its status through to .server", arguments: [404, 500, 503])
+    func unacceptableStatusCode(status: Int) {
+        let mapped = ErrorMapping.appError(from: APIError.unacceptableStatusCode(status))
+        guard case .server(let code, let message) = mapped else {
+            Issue.record("expected .server, got \(mapped)")
+            return
         }
+        #expect(code == status)
+        #expect(message == nil)
     }
 
-    /// The only clients that still reach `ErrorMapping` with a raw `APIError` are the ones with
-    /// no `JellyfinResponseValidator`: sign-in and Quick Connect. A 401 there is a rejected
-    /// credential at the login form, NOT an expired session — "sign in again" would be nonsense
-    /// advice to someone already signing in.
-    @Test("A 401 outside a live session reads as a rejected credential, not an expired session")
-    func unauthorizedDuringSignInIsInvalidCredentials() {
-        let app = ErrorMapping.appError(from: APIError.unacceptableStatusCode(401))
-        if case .auth(let failure) = app {
-            #expect(failure == .invalidCredentials)
-        } else {
-            Issue.record("expected .auth(.invalidCredentials), got \(app)")
+    /// The mapping classifies by TYPE, never by what an error happens to be called. It used to
+    /// recognise the SDK's internal Quick Connect error by stringifying it, so any error whose
+    /// name and description looked the part was silently promoted to an auth verdict — and one
+    /// upstream rename would have silently demoted the real thing. Names carry no authority.
+    @Test("An error is never classified by its type name or description")
+    func namesCarryNoAuthority() {
+        struct QuickConnectError: Error, CustomStringConvertible { let description = "maxPollingHit" }
+        let mapped = ErrorMapping.appError(from: QuickConnectError())
+        guard case .unexpected(let note, _) = mapped else {
+            Issue.record("expected .unexpected (an unknown type), got \(mapped)")
+            return
         }
-    }
-
-    /// `JellyfinResponseValidator` throws typed `AppError`s straight from the response hook;
-    /// `appError(from:)` must pass those through untouched rather than re-deriving them.
-    @Test("An AppError thrown by the response validator passes through unchanged")
-    func appErrorPassesThrough() {
-        let app = ErrorMapping.appError(from: AppError.auth(.tokenInvalidated))
-        if case .auth(let failure) = app {
-            #expect(failure == .tokenInvalidated)
-        } else {
-            Issue.record("expected .auth(.tokenInvalidated), got \(app)")
-        }
-    }
-
-    @Test("Quick Connect maxPollingHit maps to .auth(.quickConnectExpired)")
-    func quickConnectExpired() {
-        struct QuickConnectError: Error, CustomStringConvertible {
-            var description: String { "maxPollingHit" }
-        }
-        let app = ErrorMapping.appError(from: QuickConnectError())
-        if case .auth(let failure) = app {
-            #expect(failure == .quickConnectExpired)
-        } else {
-            Issue.record("expected .auth(.quickConnectExpired), got \(app)")
-        }
-    }
-
-    @Test("Quick Connect retrievingCodeFailed falls through to .unexpected (not .auth) — server/transport problems must not be mis-rendered as 'rejected'")
-    func retrievingCodeFailedFallsThrough() {
-        struct QuickConnectError: Error, CustomStringConvertible {
-            var description: String { "retrievingCodeFailed" }
-        }
-        let app = ErrorMapping.appError(from: QuickConnectError())
-        if case .auth = app {
-            Issue.record("retrievingCodeFailed should NOT map to .auth — it's a server/transport failure")
-        }
+        #expect(note.contains("QuickConnectError"))
     }
 }

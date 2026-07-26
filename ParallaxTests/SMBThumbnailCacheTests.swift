@@ -2,6 +2,49 @@ import Foundation
 import Testing
 @testable import Parallax
 
+/// One key field that must participate in the cache's file name, and the pair of keys that differ
+/// only in it. A named case rather than a tuple because Swift Testing only destructures 2-tuples.
+struct KeyDiscriminatorCase: Sendable, CustomTestStringConvertible {
+    let name: String
+    let first: SMBThumbnailKey
+    let second: SMBThumbnailKey
+    var testDescription: String { name }
+}
+
+private let keyDiscriminatorCases: [KeyDiscriminatorCase] = [
+    // One host maps to one serverID ("smb-<host>"), so two NAS boxes over a mirrored layout would
+    // otherwise overwrite each other's frame-grab.
+    KeyDiscriminatorCase(
+        name: "serverID",
+        first: SMBTestFixtures.thumbnailKey(serverID: "smb-a"),
+        second: SMBTestFixtures.thumbnailKey(serverID: "smb-b")
+    ),
+    // The cross-share collision the share-hierarchy migration introduced: same host, same relative
+    // path, different share.
+    KeyDiscriminatorCase(
+        name: "share",
+        first: SMBTestFixtures.thumbnailKey(share: "Media"),
+        second: SMBTestFixtures.thumbnailKey(share: "Backups")
+    ),
+    KeyDiscriminatorCase(
+        name: "path",
+        first: SMBTestFixtures.thumbnailKey(path: "Movies/Film.mkv"),
+        second: SMBTestFixtures.thumbnailKey(path: "Shows/Film.mkv")
+    ),
+    // Size + mtime are what make a key self-invalidating: an edited file is a NEW cache entry rather
+    // than a stale frame under the old name.
+    KeyDiscriminatorCase(
+        name: "size",
+        first: SMBTestFixtures.thumbnailKey(size: 1234),
+        second: SMBTestFixtures.thumbnailKey(size: 5678)
+    ),
+    KeyDiscriminatorCase(
+        name: "modification date",
+        first: SMBTestFixtures.thumbnailKey(modifiedAt: Date(timeIntervalSince1970: 1_000)),
+        second: SMBTestFixtures.thumbnailKey(modifiedAt: Date(timeIntervalSince1970: 9_999))
+    ),
+]
+
 @Suite("SMBThumbnailCache")
 struct SMBThumbnailCacheTests {
 
@@ -21,293 +64,241 @@ struct SMBThumbnailCacheTests {
 
     private static var pngData: Data { Data(onePixelPNG) }
 
-    /// A fresh temp directory, removed at the end of each test.
-    private func makeTempDir() -> URL {
-        FileManager.default.temporaryDirectory
-            .appendingPathComponent("smb-thumb-tests-\(UUID().uuidString)", isDirectory: true)
-    }
+    /// Blobs sized well above the filesystem block floor, so the byte math in the eviction tests
+    /// holds regardless of allocation rounding.
+    private static let blob = Data(count: 16 * 1024)
 
-    private func cleanup(_ dir: URL) {
-        try? FileManager.default.removeItem(at: dir)
-    }
-
-    @Test("existing misses on a fresh key; store writes the PNG and returns its file URL")
+    @Test("existing misses on a fresh key; store writes the image and returns its file URL")
     func storeWritesAndExistingFinds() async throws {
-        let dir = makeTempDir()
-        defer { cleanup(dir) }
-        let cache = SMBThumbnailCache(directory: dir)
-        let key = SMBThumbnailKey(serverID: "smb-nas", share: "Media", path: "Movies/Film.mkv", size: 1234, modifiedAt: Date(timeIntervalSince1970: 1_000))
+        try await SMBTestFixtures.withThumbnailCache { cache, _ in
+            let key = SMBTestFixtures.thumbnailKey()
 
-        // Fresh key: a miss, no file written.
-        #expect(await cache.existing(for: key) == nil)
+            // Fresh key: a miss, no file written.
+            #expect(await cache.existing(for: key) == nil)
 
-        let stored = try #require(await cache.store(Self.pngData, duration: nil, for: key))
-        #expect(stored.url.isFileURL)
-        #expect(FileManager.default.fileExists(atPath: stored.url.path))
-        #expect(try Data(contentsOf: stored.url) == Self.pngData)
+            let stored = try #require(await cache.store(Self.pngData, duration: nil, for: key))
+            #expect(stored.url.isFileURL)
+            // The extension comes from the cache's own table, not a re-typed "heic".
+            #expect(stored.url.pathExtension == SMBThumbnailCache.currentImageExtension)
+            #expect(FileManager.default.fileExists(atPath: stored.url.path))
+            #expect(try Data(contentsOf: stored.url) == Self.pngData)
 
-        // After storing, the same key resolves to the same file via existing.
-        #expect(await cache.existing(for: key) == stored)
+            // After storing, the same key resolves to the same file via existing.
+            #expect(await cache.existing(for: key) == stored)
+        }
     }
 
     @Test("store persists the duration; existing reads it back from the sidecar")
     func durationRoundTrips() async throws {
-        let dir = makeTempDir()
-        defer { cleanup(dir) }
-        let cache = SMBThumbnailCache(directory: dir)
-        let key = SMBThumbnailKey(serverID: "smb-nas", share: "Media", path: "Movies/Film.mkv", size: 1234, modifiedAt: Date(timeIntervalSince1970: 1_000))
+        try await SMBTestFixtures.withThumbnailCache { cache, _ in
+            let key = SMBTestFixtures.thumbnailKey()
+            let duration = Duration.seconds(5_025)  // 1h 23m 45s — sub-minute precision survives the ms round-trip
 
-        let duration = Duration.seconds(5_025)  // 1h 23m 45s — sub-minute precision survives the ms round-trip
-        let stored = try #require(await cache.store(Self.pngData, duration: duration, for: key))
-        #expect(stored.duration == duration)
+            let stored = try #require(await cache.store(Self.pngData, duration: duration, for: key))
+            #expect(stored.duration == duration)
 
-        // A fresh peek reads the duration back from the `.dur` sidecar, not from memory.
-        let hit = try #require(await cache.existing(for: key))
-        #expect(hit.duration == duration)
+            // A fresh peek reads the duration back from the `.dur` sidecar, not from memory.
+            let hit = try #require(await cache.existing(for: key))
+            #expect(hit.duration == duration)
+        }
     }
 
     @Test("a store with no duration round-trips a nil duration (no sidecar)")
     func absentDurationIsNil() async throws {
-        let dir = makeTempDir()
-        defer { cleanup(dir) }
-        let cache = SMBThumbnailCache(directory: dir)
-        let key = SMBThumbnailKey(serverID: "smb-nas", share: "Media", path: "Shows/E02.mkv", size: 7, modifiedAt: nil)
+        try await SMBTestFixtures.withThumbnailCache { cache, _ in
+            let key = SMBTestFixtures.thumbnailKey(path: "Shows/E02.mkv", size: 7, modifiedAt: nil)
 
-        _ = try #require(await cache.store(Self.pngData, duration: nil, for: key))
-        let hit = try #require(await cache.existing(for: key))
-        #expect(hit.duration == nil)
+            _ = try #require(await cache.store(Self.pngData, duration: nil, for: key))
+            let hit = try #require(await cache.existing(for: key))
+            #expect(hit.duration == nil)
+        }
     }
 
     @Test("existing is read-only — repeated lookups return the same URL, never re-storing")
     func existingIsStableAndReadOnly() async throws {
-        let dir = makeTempDir()
-        defer { cleanup(dir) }
-        let cache = SMBThumbnailCache(directory: dir)
-        let key = SMBThumbnailKey(serverID: "smb-nas", share: "Media", path: "Shows/E01.mkv", size: 42, modifiedAt: Date(timeIntervalSince1970: 2_000))
+        try await SMBTestFixtures.withThumbnailCache { cache, _ in
+            let key = SMBTestFixtures.thumbnailKey(path: "Shows/E01.mkv", size: 42)
 
-        let stored = try #require(await cache.store(Self.pngData, duration: nil, for: key))
-        let first = await cache.existing(for: key)
-        let second = await cache.existing(for: key)
-        #expect(first?.url == stored.url)
-        #expect(second?.url == stored.url)
+            let stored = try #require(await cache.store(Self.pngData, duration: nil, for: key))
+            let first = await cache.existing(for: key)
+            let second = await cache.existing(for: key)
+            #expect(first?.url == stored.url)
+            #expect(second?.url == stored.url)
+        }
     }
 
-    @Test("a changed modification date is a distinct key, so it stores a distinct file")
-    func changedMtimeIsADistinctEntry() async throws {
-        let dir = makeTempDir()
-        defer { cleanup(dir) }
-        let cache = SMBThumbnailCache(directory: dir)
+    /// Every field of the key has to reach the file name. A discriminator dropped from the hash
+    /// shows up as one file overwriting another's frame-grab — invisible until a user sees the
+    /// wrong thumbnail on the wrong file.
+    @Test("varying one key field alone yields a distinct cache file", arguments: keyDiscriminatorCases)
+    func keyFieldsDiscriminate(_ discriminator: KeyDiscriminatorCase) async throws {
+        try await SMBTestFixtures.withThumbnailCache { cache, _ in
+            let firstURL = try #require(await cache.store(Self.pngData, duration: nil, for: discriminator.first)).url
+            let secondURL = try #require(await cache.store(Self.pngData, duration: nil, for: discriminator.second)).url
 
-        let original = SMBThumbnailKey(serverID: "smb-nas", share: "Media", path: "Movies/Film.mkv", size: 1234, modifiedAt: Date(timeIntervalSince1970: 1_000))
-        let edited = SMBThumbnailKey(serverID: "smb-nas", share: "Media", path: "Movies/Film.mkv", size: 1234, modifiedAt: Date(timeIntervalSince1970: 9_999))
-
-        let firstURL = try #require(await cache.store(Self.pngData, duration: nil, for: original)).url
-        let secondURL = try #require(await cache.store(Self.pngData, duration: nil, for: edited)).url
-        #expect(firstURL != secondURL)
-        #expect(FileManager.default.fileExists(atPath: firstURL.path))
-        #expect(FileManager.default.fileExists(atPath: secondURL.path))
+            #expect(firstURL != secondURL, "\(discriminator.name) must participate in the cache file name")
+            // Both survive: this is a distinct entry, not an overwrite.
+            #expect(FileManager.default.fileExists(atPath: firstURL.path))
+            #expect(FileManager.default.fileExists(atPath: secondURL.path))
+        }
     }
 
-    @Test("bounded LRU: the cache sweeps to stay within its size cap, keeping the newest")
+    /// The sweep's survivor set is fully determined, so it's asserted exactly rather than as a count
+    /// band. Cap holds 3 blobs, the trim target is 1, and the sweep runs on every store:
+    /// f0…f2 fit, f3 trips the cap and evicts f0–f2 down to itself, f4/f5 refill, f6 trips it again
+    /// and evicts f3–f5, and f7 lands on top. Survivors: exactly f6 and f7.
+    @Test("bounded LRU: the sweep trims to the target, keeping exactly the newest writes")
     func boundedEviction() async throws {
-        let dir = makeTempDir()
-        defer { cleanup(dir) }
-        // 16 KB blobs sit comfortably above the filesystem block floor, so byte math holds
-        // regardless of allocation rounding. Cap holds ~3; trim toward ~1; sweep every store.
-        let blob = Data(count: 16 * 1024)
-        let cap = Int64(blob.count) * 3
-        let cache = SMBThumbnailCache(
-            directory: dir,
-            sizeCapBytes: cap,
-            trimTargetBytes: Int64(blob.count),
+        try await SMBTestFixtures.withThumbnailCache(
+            sizeCapBytes: Int64(Self.blob.count) * 3,
+            trimTargetBytes: Int64(Self.blob.count),
             sweepInterval: 1
-        )
+        ) { cache, directory in
+            var storedURLs: [URL] = []
+            for i in 0..<8 {
+                let key = SMBTestFixtures.thumbnailKey(serverID: "s", path: "f\(i).mkv", size: Int64(i), modifiedAt: nil)
+                storedURLs.append(try #require(await cache.store(Self.blob, duration: nil, for: key)).url)
+            }
 
-        for i in 0..<8 {
-            let key = SMBThumbnailKey(serverID: "s", share: "Media", path: "f\(i).mkv", size: Int64(i), modifiedAt: nil)
-            _ = await cache.store(blob, duration: nil, for: key)
+            let survivors = try Self.imageFiles(in: directory)
+            #expect(Set(survivors) == Set(storedURLs.suffix(2)))
         }
-
-        let urls = try FileManager.default.contentsOfDirectory(
-            at: dir, includingPropertiesForKeys: [.totalFileAllocatedSizeKey]
-        ).filter { $0.pathExtension == "heic" }
-        let total = try urls.reduce(Int64(0)) {
-            $0 + Int64((try $1.resourceValues(forKeys: [.totalFileAllocatedSizeKey])).totalFileAllocatedSize ?? 0)
-        }
-
-        #expect(total <= cap, "post-sweep total \(total) must stay within the cap \(cap)")
-        #expect(urls.count < 8, "the sweep must have evicted at least one file")
-        #expect(!urls.isEmpty, "the most recent write must survive the sweep")
     }
 
     @Test("sweep co-evicts each image's .dur sidecar — no orphans, sidecars excluded from the cap")
     func sweepCoEvictsSidecars() async throws {
-        let dir = makeTempDir()
-        defer { cleanup(dir) }
-        let blob = Data(count: 16 * 1024)
-        let cap = Int64(blob.count) * 3
-        let cache = SMBThumbnailCache(
-            directory: dir,
+        let cap = Int64(Self.blob.count) * 3
+        try await SMBTestFixtures.withThumbnailCache(
             sizeCapBytes: cap,
-            trimTargetBytes: Int64(blob.count),
+            trimTargetBytes: Int64(Self.blob.count),
             sweepInterval: 1
-        )
+        ) { cache, directory in
+            // Every store carries a positive duration, so each image also writes a .dur sidecar.
+            var storedURLs: [URL] = []
+            for i in 0..<8 {
+                let key = SMBTestFixtures.thumbnailKey(serverID: "s", path: "f\(i).mkv", size: Int64(i), modifiedAt: nil)
+                storedURLs.append(try #require(await cache.store(Self.blob, duration: .seconds(60 + i), for: key)).url)
+            }
 
-        // Every store carries a positive duration, so each image also writes a .dur sidecar.
-        for i in 0..<8 {
-            let key = SMBThumbnailKey(serverID: "s", share: "Media", path: "f\(i).mkv", size: Int64(i), modifiedAt: nil)
-            _ = await cache.store(blob, duration: .seconds(60 + i), for: key)
+            let entries = try FileManager.default.contentsOfDirectory(
+                at: directory, includingPropertiesForKeys: [.totalFileAllocatedSizeKey]
+            )
+            let images = entries.filter { SMBThumbnailCache.imageExtensions.contains($0.pathExtension) }
+            let durs = entries.filter { $0.pathExtension == "dur" }
+
+            // Same determinism as `boundedEviction`: exactly the last two writes survive.
+            #expect(Set(images) == Set(storedURLs.suffix(2)))
+            // Each evicted image drops its sidecar and each survivor keeps its own, so the sidecars
+            // sit on exactly the surviving base names — no orphan, no missing one.
+            #expect(Set(durs.map { $0.deletingPathExtension() }) == Set(images.map { $0.deletingPathExtension() }))
+
+            // Sidecars (tens of bytes) must not count toward the cap: the surviving image bytes hold
+            // within it even though the sidecars push the directory total past it.
+            let imageBytes = try Self.allocatedBytes(of: images)
+            #expect(imageBytes <= cap, "surviving image bytes \(imageBytes) must stay within the cap \(cap)")
         }
-
-        let entries = try FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.totalFileAllocatedSizeKey])
-        let images = entries.filter { $0.pathExtension == "heic" }
-        let durs = entries.filter { $0.pathExtension == "dur" }
-
-        #expect(images.count < 8, "the sweep must have evicted at least one image")
-        #expect(!images.isEmpty, "the most recent write must survive the sweep")
-        // Each evicted image drops its sidecar and each survivor keeps its own — so the two counts
-        // match, i.e. no orphaned .dur is left behind.
-        #expect(durs.count == images.count, "sidecars must track images 1:1 after sweep (no orphans)")
-
-        // Sidecars (tens of bytes) must not count toward the cap: the surviving image bytes hold within it.
-        let imageBytes = try images.reduce(Int64(0)) {
-            $0 + Int64((try $1.resourceValues(forKeys: [.totalFileAllocatedSizeKey])).totalFileAllocatedSize ?? 0)
-        }
-        #expect(imageBytes <= cap, "surviving image bytes \(imageBytes) must stay within the cap \(cap)")
     }
 
     @Test("totalSize sums cached files; clear wipes them, recreating the dir on the next store")
     func clearWipesCacheAndSize() async throws {
-        let dir = makeTempDir()
-        defer { cleanup(dir) }
-        let cache = SMBThumbnailCache(directory: dir)
+        try await SMBTestFixtures.withThumbnailCache { cache, _ in
+            #expect(await cache.totalSize() == 0)  // nothing stored yet
 
-        #expect(await cache.totalSize() == 0)  // nothing stored yet
+            let blob = Data(count: 4 * 1024)
+            for i in 0..<3 {
+                let key = SMBTestFixtures.thumbnailKey(serverID: "s", path: "f\(i).mkv", size: Int64(i), modifiedAt: nil)
+                _ = await cache.store(blob, duration: .seconds(60 + i), for: key)  // image + .dur sidecar each
+            }
+            #expect(await cache.totalSize() > 0, "stored files should count toward the size")
 
-        let blob = Data(count: 4 * 1024)
-        for i in 0..<3 {
-            let key = SMBThumbnailKey(serverID: "s", share: "Media", path: "f\(i).mkv", size: Int64(i), modifiedAt: nil)
-            _ = await cache.store(blob, duration: .seconds(60 + i), for: key)  // PNG + .dur sidecar each
+            await cache.clear()
+            #expect(await cache.totalSize() == 0, "clear must wipe the cache")
+
+            // A previously-stored key now misses, and a fresh store still works (dir recreated).
+            let key = SMBTestFixtures.thumbnailKey(serverID: "s", path: "f0.mkv", size: 0, modifiedAt: nil)
+            #expect(await cache.existing(for: key) == nil)
+            let reStored = try #require(await cache.store(blob, duration: nil, for: key))
+            #expect(reStored.url.isFileURL, "store must recreate the directory after a clear")
         }
-        #expect(await cache.totalSize() > 0, "stored files should count toward the size")
-
-        await cache.clear()
-        #expect(await cache.totalSize() == 0, "clear must wipe the cache")
-
-        // A previously-stored key now misses, and a fresh store still works (dir recreated).
-        let key = SMBThumbnailKey(serverID: "s", share: "Media", path: "f0.mkv", size: 0, modifiedAt: nil)
-        #expect(await cache.existing(for: key) == nil)
-        #expect(try #require(await cache.store(blob, duration: nil, for: key)).url.isFileURL,
-                "store must recreate the directory after a clear")
     }
 
-    @Test("store writes a .heic file for a new key")
-    func storeWritesHEIC() async throws {
-        let dir = makeTempDir()
-        defer { cleanup(dir) }
-        let cache = SMBThumbnailCache(directory: dir)
-        let key = SMBThumbnailKey(serverID: "smb-nas", share: "Media", path: "Movies/Film.mkv", size: 1234, modifiedAt: Date(timeIntervalSince1970: 1_000))
+    /// The pre-HEIC migration path: regenerating a whole wall at ~11s/tile over VPN just because the
+    /// codec changed would be hostile, so a legacy image at the same base name still reads — and a
+    /// later write in the current codec shadows it.
+    @Test("existing honours a legacy-extension image, and a current-codec write shadows it")
+    func existingFallsBackToLegacyImage() async throws {
+        try await SMBTestFixtures.withThumbnailCache { cache, _ in
+            let key = SMBTestFixtures.thumbnailKey(path: "Movies/Old.mkv", size: 55, modifiedAt: Date(timeIntervalSince1970: 3_000))
+            let legacy = SMBThumbnailCache.legacyImageExtension
+            let current = SMBThumbnailCache.currentImageExtension
 
-        let stored = try #require(await cache.store(Self.pngData, duration: nil, for: key))
-        #expect(stored.url.pathExtension == "heic", "new writes use the .heic extension")
-    }
+            // Simulate a pre-HEIC entry at this key's exact base name: store writes the current
+            // extension, then move it to the legacy one so only that remains on disk.
+            let seeded = try #require(await cache.store(Self.pngData, duration: nil, for: key))
+            let legacyURL = seeded.url.deletingPathExtension().appendingPathExtension(legacy)
+            try FileManager.default.moveItem(at: seeded.url, to: legacyURL)
 
-    @Test("existing falls back to a legacy .png when no .heic exists")
-    func existingFallsBackToLegacyPNG() async throws {
-        let dir = makeTempDir()
-        defer { cleanup(dir) }
-        let cache = SMBThumbnailCache(directory: dir)
-        let key = SMBThumbnailKey(serverID: "smb-nas", share: "Media", path: "Movies/Old.mkv", size: 55, modifiedAt: Date(timeIntervalSince1970: 3_000))
+            let hit = try #require(await cache.existing(for: key))
+            #expect(hit.url == legacyURL)
 
-        // Simulate a pre-HEIC cache entry at this key's exact base name: store writes the .heic, then
-        // move it to .png so only the legacy extension remains on disk.
-        let seeded = try #require(await cache.store(Self.pngData, duration: nil, for: key))
-        let legacyPNG = seeded.url.deletingPathExtension().appendingPathExtension("png")
-        try FileManager.default.moveItem(at: seeded.url, to: legacyPNG)
-
-        // existing() must find the legacy PNG (no .heic present) and return its URL.
-        let hit = try #require(await cache.existing(for: key))
-        #expect(hit.url.pathExtension == "png")
-        #expect(hit.url == legacyPNG)
-
-        // A later store writes a .heic; existing() then prefers the .heic over the surviving legacy PNG.
-        let stored = try #require(await cache.store(Self.pngData, duration: nil, for: key))
-        #expect(stored.url.pathExtension == "heic")
-        let afterStore = try #require(await cache.existing(for: key))
-        #expect(afterStore.url.pathExtension == "heic", "a .heic shadows the legacy .png once written")
+            // A later store writes the current codec; existing() then prefers it over the survivor.
+            let stored = try #require(await cache.store(Self.pngData, duration: nil, for: key))
+            #expect(stored.url.pathExtension == current)
+            let afterStore = try #require(await cache.existing(for: key))
+            #expect(afterStore.url.pathExtension == current, "the current codec shadows the legacy image once written")
+        }
     }
 
     @Test("failure markers accumulate attempts, survive as a file, and clear on store")
     func failureMarkersLifecycle() async throws {
-        let dir = makeTempDir()
-        defer { cleanup(dir) }
-        let cache = SMBThumbnailCache(directory: dir)
-        let key = SMBThumbnailKey(serverID: "smb-nas", share: "Media", path: "Broken/File.mkv", size: 9, modifiedAt: Date(timeIntervalSince1970: 4_000))
+        try await SMBTestFixtures.withThumbnailCache { cache, _ in
+            let key = SMBTestFixtures.thumbnailKey(path: "Broken/File.mkv", size: 9, modifiedAt: Date(timeIntervalSince1970: 4_000))
 
-        // No marker on a fresh key.
-        #expect(await cache.failureState(for: key) == nil)
+            // No marker on a fresh key.
+            #expect(await cache.failureState(for: key) == nil)
 
-        let before = Date()
-        await cache.recordFailure(for: key)
-        let first = try #require(await cache.failureState(for: key))
-        #expect(first.attempts == 1)
-        #expect(first.lastAttempt.timeIntervalSince(before) >= -1, "lastAttempt is stamped ~now")
+            let before = Date()
+            await cache.recordFailure(for: key)
+            let first = try #require(await cache.failureState(for: key))
+            #expect(first.attempts == 1)
+            #expect(first.lastAttempt.timeIntervalSince(before) >= -1, "lastAttempt is stamped ~now")
 
-        await cache.recordFailure(for: key)
-        #expect(try #require(await cache.failureState(for: key)).attempts == 2, "attempts accumulate")
+            await cache.recordFailure(for: key)
+            let second = try #require(await cache.failureState(for: key))
+            #expect(second.attempts == 2, "attempts accumulate")
 
-        // A successful store clears the marker (the file just proved decodable).
-        _ = try #require(await cache.store(Self.pngData, duration: nil, for: key))
-        #expect(await cache.failureState(for: key) == nil, "store clears the failure marker")
+            // A successful store clears the marker (the file just proved decodable).
+            _ = try #require(await cache.store(Self.pngData, duration: nil, for: key))
+            #expect(await cache.failureState(for: key) == nil, "store clears the failure marker")
 
-        // A post-success failure re-records from a fresh count (store wiped the history).
-        let restarted = await cache.recordFailure(for: key)
-        #expect(restarted.attempts == 1, "a cleared marker restarts at attempt 1, not the old count")
+            // A post-success failure re-records from a fresh count (store wiped the history).
+            let restarted = await cache.recordFailure(for: key)
+            #expect(restarted.attempts == 1, "a cleared marker restarts at attempt 1, not the old count")
+        }
     }
 
     @Test("clear() wipes failure markers too")
     func clearWipesFailureMarkers() async throws {
-        let dir = makeTempDir()
-        defer { cleanup(dir) }
-        let cache = SMBThumbnailCache(directory: dir)
-        let key = SMBThumbnailKey(serverID: "s", share: "Media", path: "x.mkv", size: 1, modifiedAt: nil)
-        await cache.recordFailure(for: key)
-        #expect(await cache.failureState(for: key) != nil)
-        await cache.clear()
-        #expect(await cache.failureState(for: key) == nil, "clear() drops persistent failure markers")
+        try await SMBTestFixtures.withThumbnailCache { cache, _ in
+            let key = SMBTestFixtures.thumbnailKey(serverID: "s", path: "x.mkv", size: 1, modifiedAt: nil)
+            await cache.recordFailure(for: key)
+            #expect(await cache.failureState(for: key) != nil)
+            await cache.clear()
+            #expect(await cache.failureState(for: key) == nil, "clear() drops persistent failure markers")
+        }
     }
 
-    @Test("two servers with the same share-relative path get distinct cache entries")
-    func differentServerIDsDoNotCollide() async throws {
-        let dir = makeTempDir()
-        defer { cleanup(dir) }
-        let cache = SMBThumbnailCache(directory: dir)
-        // Same share, path, size, and mtime — only the owning server differs.
-        let serverA = SMBThumbnailKey(serverID: "smb-a", share: "Media", path: "Movies/Film.mkv", size: 1234, modifiedAt: Date(timeIntervalSince1970: 1_000))
-        let serverB = SMBThumbnailKey(serverID: "smb-b", share: "Media", path: "Movies/Film.mkv", size: 1234, modifiedAt: Date(timeIntervalSince1970: 1_000))
+    // MARK: - Directory helpers
 
-        let urlA = try #require(await cache.store(Self.pngData, duration: nil, for: serverA)).url
-        let urlB = try #require(await cache.store(Self.pngData, duration: nil, for: serverB)).url
-        #expect(urlA != urlB, "Different servers must not share one cache file for the same relative path")
-        #expect(FileManager.default.fileExists(atPath: urlA.path))
-        #expect(FileManager.default.fileExists(atPath: urlB.path))
+    private static func imageFiles(in directory: URL) throws -> [URL] {
+        try FileManager.default
+            .contentsOfDirectory(at: directory, includingPropertiesForKeys: [.totalFileAllocatedSizeKey])
+            .filter { SMBThumbnailCache.imageExtensions.contains($0.pathExtension) }
     }
 
-    @Test("two shares on ONE host with the same relative path get distinct cache entries")
-    func differentSharesDoNotCollide() async throws {
-        let dir = makeTempDir()
-        defer { cleanup(dir) }
-        let cache = SMBThumbnailCache(directory: dir)
-        // One host now maps to one serverID ("smb-<host>"), so the share is the only discriminator
-        // here. Without it in the key these two files would overwrite each other's frame-grab — the
-        // cross-share collision the share-hierarchy migration introduced.
-        let media = SMBThumbnailKey(serverID: "smb-nas", share: "Media", path: "Movies/Film.mkv", size: 1234, modifiedAt: Date(timeIntervalSince1970: 1_000))
-        let backups = SMBThumbnailKey(serverID: "smb-nas", share: "Backups", path: "Movies/Film.mkv", size: 1234, modifiedAt: Date(timeIntervalSince1970: 1_000))
-
-        let urlMedia = try #require(await cache.store(Self.pngData, duration: nil, for: media)).url
-        let urlBackups = try #require(await cache.store(Self.pngData, duration: nil, for: backups)).url
-        #expect(urlMedia != urlBackups, "Two shares on one host must not share one cache file for the same relative path")
-        #expect(FileManager.default.fileExists(atPath: urlMedia.path))
-        #expect(FileManager.default.fileExists(atPath: urlBackups.path))
+    private static func allocatedBytes(of urls: [URL]) throws -> Int64 {
+        try urls.reduce(Int64(0)) {
+            $0 + Int64((try $1.resourceValues(forKeys: [.totalFileAllocatedSizeKey])).totalFileAllocatedSize ?? 0)
+        }
     }
 }

@@ -3,48 +3,31 @@ import Testing
 import ParallaxCore
 @testable import ParallaxJellyfin
 
+/// The three per-server stores share ONE contract — same server+token reuses the instance, a
+/// different server gets its own, a rotated token rebuilds — so it is asserted once in
+/// `verifyMemoization` and applied to each store. What differs per store is what a cache MISS
+/// costs, which each suite adds on top.
 @Suite("LibraryRepositoryStore")
 struct LibraryRepositoryStoreTests {
-    private func session(id: String, token: String) -> Session {
-        Session(
-            id: ServerID(rawValue: id),
-            data: JellyfinServerData(
-                serverURL: URL(string: "https://\(id).example.com")!,
-                serverName: id,
-                user: UserSnapshot(id: "u-\(id)", name: "alice", serverLastUpdatedAt: nil)
-            ),
-            accessToken: token
-        )
-    }
-
-    @Test("Same server returns the same repo and builds the client once")
-    func memoised() async {
+    @Test("Repositories are memoized per server and rebuilt on a rotated token")
+    func memoizationContract() async {
         let factory = FakeJellyfinLibraryClientFactory()
         let store = LibraryRepositoryStore(clientFactory: factory)
-        let s = session(id: "a", token: "tok-a")
-        let r1 = await store.repository(for: s)
-        let r2 = await store.repository(for: s)
-        #expect(r1 === r2)
+        await verifyMemoization { await store.repository(for: $0) }
+    }
+
+    /// The point of the cache: without it every screen's `.task` builds its own repo AND its own
+    /// backing client, duplicating network calls for the same item.
+    @Test("A cache hit costs no new client; a rotation costs exactly one")
+    func clientConstructionFollowsTheCache() async {
+        let factory = FakeJellyfinLibraryClientFactory()
+        let store = LibraryRepositoryStore(clientFactory: factory)
+
+        _ = await store.repository(for: JellyfinFixtures.session(id: "a", token: "tok-a"))
+        _ = await store.repository(for: JellyfinFixtures.session(id: "a", token: "tok-a"))
         #expect(factory.makeCalls == [ServerID(rawValue: "a")])
-    }
 
-    @Test("Different servers get distinct repos")
-    func perServer() async {
-        let factory = FakeJellyfinLibraryClientFactory()
-        let store = LibraryRepositoryStore(clientFactory: factory)
-        let r1 = await store.repository(for: session(id: "a", token: "tok-a"))
-        let r2 = await store.repository(for: session(id: "b", token: "tok-b"))
-        #expect(r1 !== r2)
-        #expect(factory.makeCalls.count == 2)
-    }
-
-    @Test("Rotated token rebuilds the repo for the same server")
-    func tokenRotation() async {
-        let factory = FakeJellyfinLibraryClientFactory()
-        let store = LibraryRepositoryStore(clientFactory: factory)
-        let r1 = await store.repository(for: session(id: "a", token: "tok-old"))
-        let r2 = await store.repository(for: session(id: "a", token: "tok-new"))
-        #expect(r1 !== r2)
-        #expect(factory.makeCalls.count == 2)
+        _ = await store.repository(for: JellyfinFixtures.session(id: "a", token: "tok-new"))
+        #expect(factory.makeCalls == [ServerID(rawValue: "a"), ServerID(rawValue: "a")])
     }
 }

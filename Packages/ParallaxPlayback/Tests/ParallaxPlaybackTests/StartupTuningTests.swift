@@ -5,37 +5,51 @@ import Testing
 @Suite("StartupTuning")
 @MainActor
 struct StartupTuningTests {
-    /// A `AVPlayerItem` never asked to load network data — enough to read/write its
+    /// An `AVPlayerItem` never asked to load network data — enough to read/write its
     /// `preferredForwardBufferDuration`, which is all `applyTuning` touches.
     private func makeItem() -> AVPlayerItem {
         AVPlayerItem(asset: AVURLAsset(url: URL(string: "https://example.invalid/video.mp4")!))
     }
 
-    @Test(".systemDefault leaves the AVPlayerItem untouched")
+    /// `nil` means "leave the property alone", NOT "write the documented default" — the
+    /// distinction the type doc calls out, because touching a property at all pins
+    /// behavior against a future OS default change.
+    @Test(".systemDefault carries no knobs and leaves the item untouched")
     func systemDefaultAppliesNothing() {
+        #expect(StartupTuning.systemDefault.preferredForwardBufferSeconds == nil)
+
         let item = makeItem()
-        let player = AVPlayer()
-        let bufferBefore = item.preferredForwardBufferDuration
-
-        AVKitEngine.applyTuning(.systemDefault, to: item, player: player)
-
-        #expect(item.preferredForwardBufferDuration == bufferBefore)
+        let before = item.preferredForwardBufferDuration
+        AVKitEngine.applyTuning(.systemDefault, to: item, player: AVPlayer())
+        #expect(item.preferredForwardBufferDuration == before)
     }
 
-    @Test("An explicit tuning applies the forward-buffer target")
-    func explicitTuningApplies() {
+    /// 0 is a *meaningful* value ("let AVFoundation choose per-item"), distinct from nil,
+    /// so it must be written through rather than treated as absent.
+    @Test("an explicit forward-buffer target is written onto the item",
+          arguments: [0.0, 1.0, 3.0, 12.5] as [Double])
+    func explicitTuningApplies(seconds: Double) {
         let item = makeItem()
-        let player = AVPlayer()
-        let tuning = StartupTuning(preferredForwardBufferSeconds: 3)
-
-        AVKitEngine.applyTuning(tuning, to: item, player: player)
-
-        #expect(item.preferredForwardBufferDuration == 3)
+        AVKitEngine.applyTuning(
+            StartupTuning(preferredForwardBufferSeconds: seconds),
+            to: item,
+            player: AVPlayer()
+        )
+        #expect(item.preferredForwardBufferDuration == seconds)
     }
 
-    @Test("AVKitEngine.init defaults to .systemDefault and existing zero-arg call sites still compile")
-    func engineDefaultsToSystemTuning() {
-        let engine = AVKitEngine()
-        #expect(engine.id == .avKit)
+    /// The tuning is item-scoped: the shipping profile must never mutate the shared
+    /// `AVPlayer` (an `automaticallyWaitsToMinimizeStalling` knob lived here once and
+    /// was deleted after it wedged the first `.playing` beat on device).
+    @Test("applyTuning leaves the AVPlayer's stall-waiting policy alone")
+    func doesNotTouchThePlayer() {
+        let player = AVPlayer()
+        let before = player.automaticallyWaitsToMinimizeStalling
+        AVKitEngine.applyTuning(
+            StartupTuning(preferredForwardBufferSeconds: 4),
+            to: makeItem(),
+            player: player
+        )
+        #expect(player.automaticallyWaitsToMinimizeStalling == before)
     }
 }

@@ -14,18 +14,16 @@ struct DesignTokensTests {
         return (r, g, b, a)
     }
 
-    @Test("Color(light:dark:) resolves the dark hex in dark appearance")
-    func resolvesDark() {
-        let c = Color(light: 0x000000, dark: 0xFFFFFF)
-        let d = rgba(c, dark: true)
-        #expect(abs(d.r - 1) < 0.01 && abs(d.g - 1) < 0.01 && abs(d.b - 1) < 0.01)
-    }
-
-    @Test("Color(light:dark:) resolves the light hex in light appearance")
-    func resolvesLight() {
-        let c = Color(light: 0x000000, dark: 0xFFFFFF)
-        let l = rgba(c, dark: false)
-        #expect(l.r < 0.01 && l.g < 0.01 && l.b < 0.01)
+    @Test(
+        "Color(light:dark:) resolves the hex for the appearance in play",
+        // (dark appearance?, expected value on every channel) — black in light, white in dark.
+        arguments: [(true, 1.0), (false, 0.0)]
+    )
+    func resolvesPerAppearance(dark: Bool, expected: CGFloat) {
+        let resolved = rgba(Color(light: 0x000000, dark: 0xFFFFFF), dark: dark)
+        #expect(abs(resolved.r - expected) < 0.01)
+        #expect(abs(resolved.g - expected) < 0.01)
+        #expect(abs(resolved.b - expected) < 0.01)
     }
 
     @Test("alpha is applied per-appearance")
@@ -48,10 +46,20 @@ struct DesignTokensTests {
         #expect(abs(l.r - 0x22/255.0) < 0.01 && abs(l.b - 0x2A/255.0) < 0.01)  // #22222A graphite ink
     }
 
-    @Test("radius + spacing scales hold the handoff values")
-    func metricScales() {
-        #expect(Radius.panel == 24 && Radius.card == 18 && Radius.field == 14 && Radius.tile == 12)
-        #expect(Space.s8 == 8 && Space.s16 == 16 && Space.s22 == 22 && Space.s40 == 40)
+    /// Both scales must stay strictly ordered by nesting depth: a panel contains cards, a card
+    /// contains fields and tiles, so a corner radius that isn't monotonic reads as a mis-rounded
+    /// child poking out of its parent. Asserted as ordering rather than as the handoff numbers —
+    /// the numbers get retuned on purpose, the ordering never does, and `Space.sN`'s value is its
+    /// own name anyway (`s16 == 16`), which makes an equality test a tautology.
+    @Test("the radius and spacing scales stay strictly ordered")
+    func metricScalesAreMonotonic() {
+        #expect(Radius.panel > Radius.card)
+        #expect(Radius.card > Radius.field)
+        #expect(Radius.field > Radius.tile)
+        #expect(Radius.tile > 0)
+        let spacing = [Space.s8, Space.s16, Space.s22, Space.s40]
+        #expect(spacing == spacing.sorted())
+        #expect(Set(spacing).count == spacing.count)
     }
 
     @Test("chipSelectedFill stays translucent so selected chips read as glass, not flat paint")

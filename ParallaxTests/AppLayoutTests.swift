@@ -4,51 +4,64 @@ import Testing
 import UIKit
 @testable import Parallax
 
+/// Every per-idiom layout number in one row.
+struct IdiomMetrics: Sendable, CustomTestStringConvertible {
+    let idiom: AppIdiom
+    let contentHMargin: CGFloat
+    let posterColumns: Int
+    let posterColumnSpacing: CGFloat
+    let posterRowSpacing: CGFloat
+    let landscapeColumns: Int
+    let shelfTileWidth: CGFloat
+    let libraryListColumns: Int
+    var testDescription: String { "\(idiom)" }
+}
+
+private let idiomMetrics: [IdiomMetrics] = [
+    // 16 = the system compact layout margin, where the nav bar also parks its trailing glass
+    // circles — the library sort button lines up with the grid edge only at this value
+    // (render-measured). iOS poster grids use the tokenized s12/s16 spacing (caption breathing room).
+    // iOS shelves share ONE tile width — `HomeShelf.tileWidth` is the source of truth, referenced
+    // rather than re-typed, because both idioms are meant to move together if it's retuned.
+    IdiomMetrics(
+        idiom: .compact, contentHMargin: 16, posterColumns: 3,
+        posterColumnSpacing: Space.s12, posterRowSpacing: Space.s16,
+        landscapeColumns: 2, shelfTileWidth: HomeShelf.tileWidth, libraryListColumns: 1
+    ),
+    IdiomMetrics(
+        idiom: .regular, contentHMargin: 20, posterColumns: 5,
+        posterColumnSpacing: Space.s12, posterRowSpacing: Space.s16,
+        landscapeColumns: 4, shelfTileWidth: HomeShelf.tileWidth, libraryListColumns: 2
+    ),
+    IdiomMetrics(
+        idiom: .tv, contentHMargin: 40, posterColumns: 6,
+        posterColumnSpacing: 40, posterRowSpacing: 40,
+        landscapeColumns: 5, shelfTileWidth: 220, libraryListColumns: 3
+    ),
+]
+
 struct AppLayoutTests {
-    @Test("tv idiom uses 40pt content inset and 6 poster columns")
-    func tvMetrics() {
-        #expect(AppLayout.contentHMargin(idiom: .tv) == 40)
-        #expect(AppLayout.posterGridColumns(idiom: .tv) == 6)
-        #expect(AppLayout.posterGridColumnSpacing(idiom: .tv) == 40)
-        #expect(AppLayout.posterGridRowSpacing(idiom: .tv) == 40)
-        #expect(AppLayout.shelfTileWidth(idiom: .tv) == 220)
-        #expect(AppLayout.libraryListColumns(idiom: .tv) == 3)
+    /// The per-idiom numbers, in one table. These ARE the design handoff (they have no derivation to
+    /// assert against), so they stay literal — but as one row per idiom rather than three near-identical
+    /// tests, which is what made the compact/regular pair drift into asserting different subsets.
+    @Test("per-idiom layout metrics", arguments: idiomMetrics)
+    func metrics(_ expected: IdiomMetrics) {
+        let idiom = expected.idiom
+        #expect(AppLayout.contentHMargin(idiom: idiom) == expected.contentHMargin)
+        #expect(AppLayout.posterGridColumns(idiom: idiom) == expected.posterColumns)
+        #expect(AppLayout.posterGridColumnSpacing(idiom: idiom) == expected.posterColumnSpacing)
+        #expect(AppLayout.posterGridRowSpacing(idiom: idiom) == expected.posterRowSpacing)
+        #expect(AppLayout.landscapeGridColumns(idiom: idiom) == expected.landscapeColumns)
+        #expect(AppLayout.shelfTileWidth(idiom: idiom) == expected.shelfTileWidth)
+        #expect(AppLayout.libraryListColumns(idiom: idiom) == expected.libraryListColumns)
     }
 
-    @Test("compact idiom preserves iPhone metrics")
-    func compactMetrics() {
-        // 16 = the system compact layout margin, where the nav bar also parks
-        // its trailing glass circles — the library sort button lines up with
-        // the grid edge only at this value (render-measured).
-        #expect(AppLayout.contentHMargin(idiom: .compact) == 16)
-        #expect(AppLayout.posterGridColumns(idiom: .compact) == 3)
-    }
-
-    @Test("iOS poster grids: tokenized s12 columns / s16 rows (caption breathing room)")
-    func iosPosterGridSpacing() {
-        for idiom in [AppIdiom.compact, .regular] {
-            #expect(AppLayout.posterGridColumnSpacing(idiom: idiom) == Space.s12)
-            #expect(AppLayout.posterGridRowSpacing(idiom: idiom) == Space.s16)
-        }
-    }
-
-    @Test("regular idiom preserves iPad metrics")
-    func regularMetrics() {
-        #expect(AppLayout.contentHMargin(idiom: .regular) == 20)
-        #expect(AppLayout.posterGridColumns(idiom: .regular) == 5)
-    }
-
-    @Test("landscape (SMB) grids run fewer columns than poster grids on every idiom")
-    func landscapeGridColumns() {
-        #expect(AppLayout.landscapeGridColumns(idiom: .compact) == 2)
-        #expect(AppLayout.landscapeGridColumns(idiom: .regular) == 4)
-        #expect(AppLayout.landscapeGridColumns(idiom: .tv) == 5)
-        // A 16:9 tile is far wider than a 2:3 poster at the same column width, so a landscape
-        // grid must thin its columns relative to the poster count — never match or exceed it,
-        // or the tiles render short and cramped.
-        for idiom in [AppIdiom.compact, .regular, .tv] {
-            #expect(AppLayout.landscapeGridColumns(idiom: idiom) < AppLayout.posterGridColumns(idiom: idiom))
-        }
+    /// A 16:9 tile is far wider than a 2:3 poster at the same column width, so a landscape grid must
+    /// thin its columns relative to the poster count — never match or exceed it, or the tiles render
+    /// short and cramped. The invariant, unlike the counts above, holds through any retune.
+    @Test("landscape grids always run fewer columns than poster grids", arguments: [AppIdiom.compact, .regular, .tv])
+    func landscapeGridsAreThinner(idiom: AppIdiom) {
+        #expect(AppLayout.landscapeGridColumns(idiom: idiom) < AppLayout.posterGridColumns(idiom: idiom))
     }
 
     @Test("landscape hero band on regular and tv only")

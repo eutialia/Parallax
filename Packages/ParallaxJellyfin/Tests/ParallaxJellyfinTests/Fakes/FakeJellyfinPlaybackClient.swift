@@ -2,12 +2,26 @@ import Foundation
 import JellyfinAPI
 @testable import ParallaxJellyfin
 
+/// Programmable stand-in for the SDK-backed playback client.
+///
+/// The canned URLs are deliberately OPAQUE SENTINELS, not imitations of the real ones: a fake that
+/// fabricated `api_key=…&master.m3u8` would let a resolve test "prove" URL construction that the
+/// fake itself wrote. URL shape belongs to `DefaultJellyfinPlaybackClientTests`, where the real
+/// builder runs; here the only URL fact worth asserting is that `resolve` returned the sentinel
+/// the corresponding builder was asked for — i.e. the wiring.
+///
+/// Every method body runs under `lock`: the service is an actor but the fake is shared state, and
+/// its library counterpart already needed the same guard after a lost-append flake.
 final class FakeJellyfinPlaybackClient: JellyfinPlaybackClient, @unchecked Sendable {
+    private let lock = NSLock()
+
     // Programmable responses.
     var playbackInfoResult: Result<PlaybackInfoResponse, Error> = .success(PlaybackInfoResponse())
-    // Canned URLs — both carry api_key so resolve tests can assert auth.
-    var streamURLValue = URL(string: "https://fake.example.com/Videos/x/stream.mp4?api_key=tok-1&mediaSourceId=ms-1")
-    var transcodeURLValue = URL(string: "https://fake.example.com/videos/x/master.m3u8?api_key=tok-1&PlaySessionId=ps-1")
+    var streamURLValue = URL(string: "https://fake.invalid/direct-play-sentinel")
+    var transcodeURLValue = URL(string: "https://fake.invalid/transcode-sentinel")
+    /// Returns a per-index sentinel so a test can tell one subtitle stream's URL from another's
+    /// without the fake pretending to know the real endpoint's shape.
+    var subtitleURLForIndex: @Sendable (Int) -> URL? = { URL(string: "https://fake.invalid/subtitle-sentinel/\($0)") }
     // Per-call failures so the named non-fatal policy can be exercised.
     var startError: Error?
     var progressError: Error?
@@ -35,48 +49,66 @@ final class FakeJellyfinPlaybackClient: JellyfinPlaybackClient, @unchecked Senda
         audioStreamIndex: Int?,
         subtitleStreamIndex: Int?
     ) async throws -> PlaybackInfoResponse {
-        playbackInfoCalls.append((itemID, profile, startTimeTicks, audioStreamIndex, subtitleStreamIndex))
-        return try playbackInfoResult.get()
+        try lock.withLock {
+            playbackInfoCalls.append((itemID, profile, startTimeTicks, audioStreamIndex, subtitleStreamIndex))
+            return try playbackInfoResult.get()
+        }
     }
 
     func streamURL(_ request: StreamRequest) -> URL? {
-        streamURLRequests.append(request)
-        return streamURLValue
+        lock.withLock {
+            streamURLRequests.append(request)
+            return streamURLValue
+        }
     }
 
     func transcodeURL(relativePath: String) -> URL? {
-        transcodePaths.append(relativePath)
-        return transcodeURLValue
+        lock.withLock {
+            transcodePaths.append(relativePath)
+            return transcodeURLValue
+        }
     }
 
     func subtitleStreamURL(itemID: String, mediaSourceID: String, streamIndex: Int, format: String) -> URL? {
-        subtitleStreamURLRequests.append((itemID, mediaSourceID, streamIndex, format))
-        return URL(string: "https://fake.example.com/Videos/\(itemID)/\(mediaSourceID)/Subtitles/\(streamIndex)/Stream.\(format)?api_key=tok-1&copyTimestamps=true")
+        lock.withLock {
+            subtitleStreamURLRequests.append((itemID, mediaSourceID, streamIndex, format))
+            return subtitleURLForIndex(streamIndex)
+        }
     }
 
     func reportStart(_ info: PlaybackStateInfo) async throws {
-        startInfos.append(info)
-        if let startError { throw startError }
+        try lock.withLock {
+            startInfos.append(info)
+            if let startError { throw startError }
+        }
     }
 
     func reportProgress(_ info: PlaybackStateInfo) async throws {
-        progressInfos.append(info)
-        if let progressError { throw progressError }
+        try lock.withLock {
+            progressInfos.append(info)
+            if let progressError { throw progressError }
+        }
     }
 
     func reportStopped(_ info: PlaybackStopInfo) async throws {
-        stoppedInfos.append(info)
-        if let stoppedError { throw stoppedError }
+        try lock.withLock {
+            stoppedInfos.append(info)
+            if let stoppedError { throw stoppedError }
+        }
     }
 
     func stopEncoding(playSessionID: String) async throws {
-        stopEncodingSessionIDs.append(playSessionID)
-        if let stopEncodingError { throw stopEncodingError }
+        try lock.withLock {
+            stopEncodingSessionIDs.append(playSessionID)
+            if let stopEncodingError { throw stopEncodingError }
+        }
     }
 
     func pingSession(playSessionID: String) async throws {
-        pingSessionIDs.append(playSessionID)
-        if let pingError { throw pingError }
+        try lock.withLock {
+            pingSessionIDs.append(playSessionID)
+            if let pingError { throw pingError }
+        }
     }
 
     // Delivery probe.
@@ -84,8 +116,10 @@ final class FakeJellyfinPlaybackClient: JellyfinPlaybackClient, @unchecked Senda
     private(set) var transcodingDeliveryCalls: [String] = []
 
     func transcodingDelivery(playSessionID: String) async throws -> TranscodeDelivery? {
-        transcodingDeliveryCalls.append(playSessionID)
-        return try transcodingDeliveryResult.get()
+        try lock.withLock {
+            transcodingDeliveryCalls.append(playSessionID)
+            return try transcodingDeliveryResult.get()
+        }
     }
 
     // User configuration round-trip.
@@ -95,13 +129,17 @@ final class FakeJellyfinPlaybackClient: JellyfinPlaybackClient, @unchecked Senda
     private(set) var updatedUserConfigurations: [UserConfiguration] = []
 
     func currentUserConfiguration() async throws -> UserConfiguration {
-        userConfigurationFetchCount += 1
-        return try userConfigurationResult.get()
+        try lock.withLock {
+            userConfigurationFetchCount += 1
+            return try userConfigurationResult.get()
+        }
     }
 
     func updateUserConfiguration(_ configuration: UserConfiguration) async throws {
-        updatedUserConfigurations.append(configuration)
-        if let updateUserConfigurationError { throw updateUserConfigurationError }
+        try lock.withLock {
+            updatedUserConfigurations.append(configuration)
+            if let updateUserConfigurationError { throw updateUserConfigurationError }
+        }
     }
 }
 

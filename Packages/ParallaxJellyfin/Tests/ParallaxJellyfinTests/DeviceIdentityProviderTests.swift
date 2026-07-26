@@ -5,47 +5,60 @@ import ParallaxCore
 
 @Suite("DeviceIdentityProvider")
 struct DeviceIdentityProviderTests {
-    private func freshDefaults() -> UserDefaults {
-        let suiteName = "DeviceIdentityProviderTests-\(UUID().uuidString)"
-        let suite = UserDefaults(suiteName: suiteName)!
-        suite.removePersistentDomain(forName: suiteName)
-        return suite
-    }
-
-    @Test("First vend creates and persists a stable device ID")
-    func firstVendPersistsID() async throws {
-        let defaults = freshDefaults()
-        let store = SettingsStore(defaults: defaults)
-        let provider = DeviceIdentityProvider(
+    private func provider(settings: SettingsStore) -> DeviceIdentityProvider {
+        DeviceIdentityProvider(
             client: "Parallax",
             deviceName: "Test Device",
             version: "0.2.0",
-            settings: store
+            settings: settings
         )
-
-        let identity1 = await provider.current()
-        let identity2 = await provider.current()
-
-        #expect(identity1.deviceID == identity2.deviceID)
-        #expect(!identity1.deviceID.isEmpty)
-        #expect(identity1.client == "Parallax")
-        #expect(identity1.deviceName == "Test Device")
-        #expect(identity1.version == "0.2.0")
     }
 
-    @Test("A new provider reads the same ID back from settings")
-    func idSurvivesProviderRecreation() async throws {
-        let defaults = freshDefaults()
-        let store = SettingsStore(defaults: defaults)
+    /// The device id is what the server attributes sessions to, so it has to be minted once and
+    /// then stay put — for the life of the process AND across relaunches. Anything else re-registers
+    /// the app as a new device on every launch (and breaks the deviceId-scoped transcode kill).
+    @Test("A device id is minted once and read back by a later provider")
+    func idIsStableAndPersisted() async {
+        let (settings, _) = JellyfinFixtures.settingsStore("DeviceIdentityProviderTests")
 
-        let firstID = await DeviceIdentityProvider(
-            client: "Parallax", deviceName: "Test", version: "0.2.0", settings: store
-        ).current().deviceID
+        let first = provider(settings: settings)
+        let minted = await first.current().deviceID
+        #expect(minted.isEmpty == false)
+        #expect(await first.current().deviceID == minted, "repeat calls must not re-mint")
 
-        let secondID = await DeviceIdentityProvider(
-            client: "Parallax", deviceName: "Test", version: "0.2.0", settings: store
-        ).current().deviceID
+        // A fresh provider over the SAME store — i.e. the next launch — reads the persisted id.
+        #expect(await provider(settings: settings).current().deviceID == minted)
+    }
 
-        #expect(firstID == secondID)
+    /// The produce-once `Task` exists for exactly this: without it two concurrent callers both see
+    /// no cached value, both mint a UUID, and the in-process id disagrees with the persisted one.
+    @Test("Concurrent first callers observe one id")
+    func concurrentCallersAgree() async {
+        let (settings, _) = JellyfinFixtures.settingsStore("DeviceIdentityProviderTests-race")
+        let subject = provider(settings: settings)
+
+        let ids = await withTaskGroup(of: String.self) { group in
+            for _ in 0..<16 {
+                group.addTask { await subject.current().deviceID }
+            }
+            var seen: Set<String> = []
+            for await id in group { seen.insert(id) }
+            return seen
+        }
+
+        #expect(ids.count == 1)
+        // And the one they agreed on is the one that got persisted.
+        #expect(await provider(settings: settings).current().deviceID == ids.first)
+    }
+
+    /// A pre-existing id must be adopted, never overwritten — a fresh one would look like a new
+    /// device to every server the user has configured.
+    @Test("An already-persisted id is adopted as-is")
+    func adoptsPersistedID() async throws {
+        let (settings, _) = JellyfinFixtures.settingsStore("DeviceIdentityProviderTests-adopt")
+        let seeded = "seeded-device-id"
+        try await settings.set(Optional(seeded), for: SettingKey<String?>(name: "ParallaxJellyfin.deviceID", defaultValue: nil))
+
+        #expect(await provider(settings: settings).current().deviceID == seeded)
     }
 }

@@ -5,13 +5,25 @@ import ParallaxCore
 
 @Suite("HomeHeroFeedBuilder")
 struct HomeHeroFeedBuilderTests {
-    private let importWindow: TimeInterval = 24 * 60 * 60
+    private let importWindow: TimeInterval = HomeHeroFeedBuilder.defaultImportWindow
 
-    @Test("episode Latest over-fetch scales with presentation limit")
+    /// The over-fetch has a floor (a bulk import can flood the batch, so a small carousel still
+    /// needs a wide net) and a cap (the request is on the launch path). Both are the builder's own
+    /// constants; only the ×4 scaling in between is stated here.
+    @Test("The episode over-fetch is floored, scales, then caps")
     func episodeLatestFetchLimit() {
-        #expect(HomeHeroFeedBuilder.episodeLatestFetchLimit(presentationLimit: 12) == 48)
-        #expect(HomeHeroFeedBuilder.episodeLatestFetchLimit(presentationLimit: 3) == 48)
-        #expect(HomeHeroFeedBuilder.episodeLatestFetchLimit(presentationLimit: 30) == 100)
+        let cap = HomeHeroFeedBuilder.episodeLatestFetchCap
+        let floor = HomeHeroFeedBuilder.episodeLatestFetchLimit(presentationLimit: 1)
+
+        #expect(floor < cap, "the floor has to leave room to scale")
+        // Below the floor's crossover, the floor wins.
+        #expect(HomeHeroFeedBuilder.episodeLatestFetchLimit(presentationLimit: 3) == floor)
+        #expect(HomeHeroFeedBuilder.episodeLatestFetchLimit(presentationLimit: floor / 4) == floor)
+        // In between it scales with the presentation limit.
+        let scaling = (floor / 4) + 1
+        #expect(HomeHeroFeedBuilder.episodeLatestFetchLimit(presentationLimit: scaling) == scaling * 4)
+        // And it never exceeds the cap.
+        #expect(HomeHeroFeedBuilder.episodeLatestFetchLimit(presentationLimit: cap) == cap)
     }
 
     @Test("Bulk episode import without series date is NEWLY ADDED and plays S1E1")
@@ -53,10 +65,8 @@ struct HomeHeroFeedBuilderTests {
     }
 
     private func movie(id: String, date: Date, ticks: Int64 = 0) -> Item {
-        .movie(Movie(
-            id: ItemID(rawValue: id), title: "Movie \(id)", overview: nil, year: 2024,
-            runtime: nil, communityRating: nil, officialRating: nil, genres: [],
-            primaryTag: nil, backdropTags: [], logoTag: nil, thumbTag: nil,
+        .movie(JellyfinFixtures.movie(
+            id: id,
             dateAdded: date,
             userData: UserItemData(played: false, playbackPositionTicks: ticks, playCount: 0, isFavorite: false)
         ))
@@ -66,15 +76,14 @@ struct HomeHeroFeedBuilderTests {
         id: String, seriesID: String, season: Int, index: Int, date: Date,
         ticks: Int64 = 0
     ) -> Item {
-        .episode(Episode(
-            id: ItemID(rawValue: id),
-            seriesID: ItemID(rawValue: seriesID),
-            seasonID: ItemID(rawValue: "sea-\(season)"),
+        .episode(JellyfinFixtures.episode(
+            id: id,
+            seriesID: seriesID,
+            seasonID: "sea-\(season)",
             name: "Ep \(id)",
             seriesName: "Series \(seriesID)",
             indexNumber: index,
             parentIndexNumber: season,
-            overview: nil, runtime: nil, primaryTag: nil,
             dateAdded: date,
             userData: UserItemData(played: false, playbackPositionTicks: ticks, playCount: 0, isFavorite: false)
         ))
@@ -109,34 +118,33 @@ struct HomeHeroFeedBuilderTests {
         #expect(entries[0].presentation.id == ItemID(rawValue: "s1"))
     }
 
-    @Test("NEWLY ADDED when series and newest episode share import window")
-    func eyebrowNewSeries() {
-        let d = Date(timeIntervalSince1970: 3_000_000)
-        let items = [episode(id: "e1", seriesID: "s1", season: 1, index: 1, date: d)]
+    /// The eyebrow is a judgement about WHY something is on the hero: a series that landed in the
+    /// same import window as its newest episode is new to the library, one that predates it just
+    /// got another episode. Getting this wrong tells the user "NEWLY ADDED" about a show they've
+    /// been watching for months.
+    @Test(
+        "The eyebrow follows how far the series predates its newest episode",
+        arguments: [
+            (0.0, HeroEyebrow.newlyAdded, "same import window"),
+            (importWindowSeconds - 1, .newlyAdded, "just inside the window"),
+            (importWindowSeconds + 1, .newEpisodeAvailable, "just outside the window"),
+            (importWindowSeconds * 100, .newEpisodeAvailable, "long-established series"),
+        ] as [(TimeInterval, HeroEyebrow, String)]
+    )
+    func eyebrowClassification(seriesAge: TimeInterval, expected: HeroEyebrow, label: String) {
+        let episodeDate = Date(timeIntervalSince1970: 10_000_000)
+        let items = [episode(id: "e1", seriesID: "s1", season: 1, index: 1, date: episodeDate)]
         let entries = HomeHeroFeedBuilder.build(
             latestItems: items,
-            seriesByID: ["s1": series(id: "s1", date: d)],
+            seriesByID: ["s1": series(id: "s1", date: episodeDate.addingTimeInterval(-seriesAge))],
             firstEpisodeBySeriesID: [:],
             limit: 12,
             importWindow: importWindow
         )
-        #expect(entries[0].eyebrow == .newlyAdded)
+        #expect(entries.first?.eyebrow == expected, "\(label) should read as \(expected)")
     }
 
-    @Test("NEW EPISODE AVAILABLE when series predates newest episode")
-    func eyebrowExistingSeries() {
-        let seriesDate = Date(timeIntervalSince1970: 1_000_000)
-        let epDate = Date(timeIntervalSince1970: 5_000_000)
-        let items = [episode(id: "e9", seriesID: "s1", season: 2, index: 3, date: epDate)]
-        let entries = HomeHeroFeedBuilder.build(
-            latestItems: items,
-            seriesByID: ["s1": series(id: "s1", date: seriesDate)],
-            firstEpisodeBySeriesID: [:],
-            limit: 12,
-            importWindow: importWindow
-        )
-        #expect(entries[0].eyebrow == .newEpisodeAvailable)
-    }
+    private static let importWindowSeconds = HomeHeroFeedBuilder.defaultImportWindow
 
     @Test("Cold series play target is S1E1 from batch")
     func playS1E1() {
@@ -192,62 +200,50 @@ struct HomeHeroFeedBuilderTests {
         #expect(entries[0].playTarget == m)
     }
 
-    @Test("Movie with progress shows Resume play button title")
-    func movieResumePlayButtonTitle() {
-        let d = Date(timeIntervalSince1970: 2_000_000)
-        let m = movie(id: "m1", date: d, ticks: 5_000_000_000)
-        let entries = HomeHeroFeedBuilder.build(
-            latestItems: [m],
-            seriesByID: [:],
-            firstEpisodeBySeriesID: [:],
-            limit: 12,
-            importWindow: importWindow
-        )
-        #expect(entries[0].playButtonTitle == "Resume")
-    }
-
-    @Test("Movie without progress shows Play play button title")
-    func moviePlayPlayButtonTitle() {
-        let d = Date(timeIntervalSince1970: 2_000_000)
-        let m = movie(id: "m1", date: d)
-        let entries = HomeHeroFeedBuilder.build(
-            latestItems: [m],
-            seriesByID: [:],
-            firstEpisodeBySeriesID: [:],
-            limit: 12,
-            importWindow: importWindow
-        )
-        #expect(entries[0].playButtonTitle == "Play")
-    }
-
-    @Test("Episode with progress shows Resume S# E# play button title")
-    func episodeResumePlayButtonTitle() {
+    /// The button has to say what tapping it DOES. A partially watched movie resumes; an episode
+    /// names which one it resumes so a series hero isn't ambiguous; anything unwatched just plays.
+    @Test(
+        "The play button names the action, and for an episode which episode",
+        arguments: [
+            (HeroTarget.movieInProgress, "Resume"),
+            (.movieUnwatched, "Play"),
+            (.episodeInProgress, "Resume S2 E3"),
+            (.episodeUnwatched, "Play"),
+        ]
+    )
+    func playButtonTitle(target: HeroTarget, expected: String) {
         let seriesDate = Date(timeIntervalSince1970: 1_000_000)
-        let epDate = Date(timeIntervalSince1970: 5_000_000)
-        let items = [episode(id: "e9", seriesID: "s1", season: 2, index: 3, date: epDate, ticks: 5_000_000_000)]
-        let entries = HomeHeroFeedBuilder.build(
-            latestItems: items,
-            seriesByID: ["s1": series(id: "s1", date: seriesDate)],
-            firstEpisodeBySeriesID: [:],
-            limit: 12,
-            importWindow: importWindow
-        )
-        #expect(entries[0].playButtonTitle == "Resume S2 E3")
+        let itemDate = Date(timeIntervalSince1970: 5_000_000)
+        let ticks: Int64 = target.isInProgress ? 5_000_000_000 : 0
+
+        let entries: [HomeHeroFeedEntry]
+        switch target {
+        case .movieInProgress, .movieUnwatched:
+            entries = HomeHeroFeedBuilder.build(
+                latestItems: [movie(id: "m1", date: itemDate, ticks: ticks)],
+                seriesByID: [:],
+                firstEpisodeBySeriesID: [:],
+                limit: 12,
+                importWindow: importWindow
+            )
+        case .episodeInProgress, .episodeUnwatched:
+            entries = HomeHeroFeedBuilder.build(
+                latestItems: [episode(id: "e9", seriesID: "s1", season: 2, index: 3, date: itemDate, ticks: ticks)],
+                seriesByID: ["s1": series(id: "s1", date: seriesDate)],
+                firstEpisodeBySeriesID: [:],
+                limit: 12,
+                importWindow: importWindow
+            )
+        }
+        #expect(entries.first?.playButtonTitle == expected)
     }
 
-    @Test("Episode without progress shows Play play button title")
-    func episodePlayPlayButtonTitle() {
-        let seriesDate = Date(timeIntervalSince1970: 1_000_000)
-        let epDate = Date(timeIntervalSince1970: 5_000_000)
-        let items = [episode(id: "e9", seriesID: "s1", season: 2, index: 3, date: epDate)]
-        let entries = HomeHeroFeedBuilder.build(
-            latestItems: items,
-            seriesByID: ["s1": series(id: "s1", date: seriesDate)],
-            firstEpisodeBySeriesID: [:],
-            limit: 12,
-            importWindow: importWindow
-        )
-        #expect(entries[0].playButtonTitle == "Play")
+    enum HeroTarget: Sendable {
+        case movieInProgress, movieUnwatched, episodeInProgress, episodeUnwatched
+
+        var isInProgress: Bool {
+            self == .movieInProgress || self == .episodeInProgress
+        }
     }
 
     @Test("NEWLY ADDED series in continue watching is excluded from hero")
@@ -340,6 +336,109 @@ struct HomeHeroFeedBuilderTests {
         guard case .episode(let e12ep) = s1finale else { return }
         #expect(HomeHeroFeedBuilder.isSequentialNextUp(from: e11ep, to: e12ep))
         #expect(HomeHeroFeedBuilder.isSequentialNextUp(from: e12ep, to: s2e1ep))
+    }
+
+    /// A series row in the Latest response is metadata, not a hero candidate — the hero presents a
+    /// series only as the wrapper around a new EPISODE, so a bare series must contribute nothing.
+    @Test("A bare series row in the batch produces no entry")
+    func bareSeriesRowIsSkipped() {
+        let entries = HomeHeroFeedBuilder.build(
+            latestItems: [.series(series(id: "s1", date: Date(timeIntervalSince1970: 3_000_000)))],
+            seriesByID: ["s1": series(id: "s1", date: Date(timeIntervalSince1970: 3_000_000))],
+            firstEpisodeBySeriesID: [:],
+            limit: 12,
+            importWindow: importWindow
+        )
+        #expect(entries.isEmpty)
+    }
+
+    /// An episode batch whose series metadata never arrived can't be presented (there'd be nothing
+    /// to show as the hero's identity), so it's dropped rather than rendered half-built.
+    @Test("Episodes whose series metadata is missing are dropped")
+    func episodesWithoutSeriesMetadataAreDropped() {
+        let entries = HomeHeroFeedBuilder.build(
+            latestItems: [episode(id: "e1", seriesID: "unknown", season: 1, index: 1, date: Date())],
+            seriesByID: [:],
+            firstEpisodeBySeriesID: [:],
+            limit: 12,
+            importWindow: importWindow
+        )
+        #expect(entries.isEmpty)
+    }
+
+    /// A movie with no `dateAdded` has nothing to sort the carousel by, so it can't be placed.
+    @Test("A movie with no dateAdded is dropped")
+    func movieWithoutDateIsDropped() {
+        let entries = HomeHeroFeedBuilder.build(
+            latestItems: [.movie(JellyfinFixtures.movie(id: "m1", dateAdded: nil))],
+            seriesByID: [:],
+            firstEpisodeBySeriesID: [:],
+            limit: 12,
+            importWindow: importWindow
+        )
+        #expect(entries.isEmpty)
+    }
+
+    /// A part-watched newest episode wins the play target even for a newly-added series: the viewer
+    /// is already mid-episode, and sending them back to S1E1 would throw that away.
+    @Test("A part-watched newest episode is the play target even on a newly added series")
+    func inProgressNewestWinsPlayTarget() {
+        let importedAt = Date(timeIntervalSince1970: 3_000_000)
+        let items = [
+            episode(id: "e1", seriesID: "s1", season: 1, index: 1, date: importedAt),
+            episode(id: "e3", seriesID: "s1", season: 1, index: 3, date: importedAt.addingTimeInterval(10), ticks: 5_000_000_000),
+        ]
+        let entries = HomeHeroFeedBuilder.build(
+            latestItems: items,
+            seriesByID: ["s1": series(id: "s1", date: nil)],
+            firstEpisodeBySeriesID: [:],
+            limit: 12,
+            importWindow: importWindow
+        )
+        #expect(entries.first?.eyebrow == .newlyAdded)
+        #expect(entries.first?.playTarget.id == ItemID(rawValue: "e1"))
+        #expect(entries.first?.playButtonTitle == "Play")
+    }
+
+    /// The carousel is newest-first and capped, so an over-long batch has to be truncated from the
+    /// OLD end — dropping the newest arrivals would defeat the whole rail.
+    @Test("Entries are ordered newest-first and truncated to the limit")
+    func orderedNewestFirstAndLimited() {
+        let base = Date(timeIntervalSince1970: 1_000_000)
+        let movies = (0..<5).map { (offset: Int) in
+            movie(id: "m\(offset)", date: base.addingTimeInterval(Double(offset) * 1_000))
+        }
+        let entries = HomeHeroFeedBuilder.build(
+            latestItems: movies,
+            seriesByID: [:],
+            firstEpisodeBySeriesID: [:],
+            limit: 3,
+            importWindow: importWindow
+        )
+        #expect(entries.map(\.presentation.id) == [
+            ItemID(rawValue: "m4"), ItemID(rawValue: "m3"), ItemID(rawValue: "m2"),
+        ])
+    }
+
+    /// Adjacency is per SERIES: two shows' episode numbers must never chain into each other, or a
+    /// hero would survive on a Continue Watching row from an unrelated show.
+    @Test("Sequence adjacency never crosses series")
+    func sequentialNextUpRequiresSameSeries() {
+        guard case .episode(let showA) = episode(id: "a", seriesID: "s1", season: 1, index: 1, date: .distantPast),
+              case .episode(let showB) = episode(id: "b", seriesID: "s2", season: 1, index: 2, date: .distantPast) else {
+            Issue.record("expected episodes")
+            return
+        }
+        #expect(HomeHeroFeedBuilder.isSequentialNextUp(from: showA, to: showB) == false)
+    }
+
+    /// Missing indices can't be compared, so adjacency has to answer "no" rather than guess.
+    @Test("Sequence adjacency requires both indices on both episodes")
+    func sequentialNextUpRequiresIndices() {
+        let known = JellyfinFixtures.episode(id: "a", seriesID: "s1", indexNumber: 1, parentIndexNumber: 1)
+        let indexless = JellyfinFixtures.episode(id: "b", seriesID: "s1", indexNumber: nil, parentIndexNumber: nil)
+        #expect(HomeHeroFeedBuilder.isSequentialNextUp(from: known, to: indexless) == false)
+        #expect(HomeHeroFeedBuilder.isSequentialNextUp(from: indexless, to: known) == false)
     }
 
     @Test("NEWLY ADDED movie in continue watching is excluded from hero")

@@ -7,12 +7,19 @@ import ParallaxCore
 struct JellyfinTrackMatcherTests {
     private let en = Locale(identifier: "en_US")
 
+    /// Codec/channels are parameters, not fixed to TrueHD: fixtures whose title said
+    /// "AC3"/"DTS" while carrying TrueHD metadata made the codec axis untestable.
     private func audioStream(
-        index: Int, title: String?, lang: String?, streamTitle: String? = nil
+        index: Int,
+        title: String?,
+        lang: String?,
+        streamTitle: String? = nil,
+        codec: String = "truehd",
+        channels: Int = 8
     ) -> MediaStreamInfo {
         MediaStreamInfo(
             index: index, kind: .audio, displayTitle: title, title: streamTitle, language: lang,
-            codec: "truehd", channels: 8, isExternal: false, isForced: false, isDefault: true
+            codec: codec, channels: channels, isExternal: false, isForced: false, isDefault: true
         )
     }
 
@@ -31,32 +38,33 @@ struct JellyfinTrackMatcherTests {
         #expect(name == "Chinese, Traditional (Taiwan)")
     }
 
-    @Test("single transcoded audio with no manifest name uses the server default-index stream's clean name")
+    /// A single transcoded rendition is identified by the server's default index, and
+    /// named by LANGUAGE — codec detail belongs on the menu's secondary line, never
+    /// in the primary name.
+    @Test("single unnamed rendition takes the server default-index stream's clean name")
     func unnamedSingleAudioUsesServerDefaultIndex() {
         let streams = [
-            audioStream(index: 1, title: "Commentary", lang: "eng"),
+            audioStream(index: 1, title: "Commentary", lang: "eng", codec: "ac3", channels: 2),
             audioStream(index: 3, title: "English - TrueHD 7.1 - Default", lang: "eng"),
         ]
         let name = JellyfinTrackMatcher.name(
             kind: .audio,
-            optionDisplayName: "Unknown",     // manifest carried no name
+            optionDisplayName: "Unknown",     // manifest carried no name…
             optionLanguage: nil,              // …and no language
             ordinal: 1,
-            optionCount: 1,                   // single rendition in the manifest
+            optionCount: 1,
             streams: streams,
             defaultStreamIndex: 3,
             locale: en
         )
-        // Picks index 3 (the transcoded default) and names it by LANGUAGE — codec
-        // detail lives on the menu's secondary line now, never in the name.
         #expect(name == "English")
     }
 
-    @Test("a stream's own title outranks the language name")
+    @Test("a stream's own title outranks its language name")
     func streamTitleWins() {
         let streams = [
             audioStream(index: 3, title: "English - AC3 - Default", lang: "eng",
-                        streamTitle: "Director's Commentary"),
+                        streamTitle: "Director's Commentary", codec: "ac3", channels: 6),
         ]
         let name = JellyfinTrackMatcher.name(
             kind: .audio,
@@ -71,21 +79,29 @@ struct JellyfinTrackMatcherTests {
         #expect(name == "Director's Commentary")
     }
 
-    @Test("matchedStream exposes the joined server stream for codec detail")
-    func matchedStreamCarriesDetail() {
+    /// The join exists so the menu's secondary line can show codec/channel detail the
+    /// manifest never carries. Asserted on the joined stream's own fields — the
+    /// "TrueHD · 7.1" *formatting* is ParallaxCore's `trackDetailLabel` contract.
+    @Test("matchedStream returns the server stream carrying the codec detail")
+    func matchedStreamCarriesDetail() throws {
         let streams = [
-            audioStream(index: 2, title: "Français", lang: "fra"),
-            audioStream(index: 3, title: "English - TrueHD", lang: "eng"),
+            audioStream(index: 2, title: "Français", lang: "fra", codec: "aac", channels: 2),
+            audioStream(index: 3, title: "English - TrueHD", lang: "eng", codec: "truehd", channels: 8),
         ]
-        let matched = JellyfinTrackMatcher.matchedStream(
+        let matched = try #require(JellyfinTrackMatcher.matchedStream(
             kind: .audio,
             optionLanguage: "en",
             optionCount: 2,
             streams: streams,
             defaultStreamIndex: nil
-        )
-        #expect(matched?.index == 3)
-        #expect(matched?.trackDetailLabel == "TrueHD · 7.1")
+        ))
+        #expect(matched.index == 3)
+        #expect(matched.codec == "truehd")
+        #expect(matched.channels == 8)
+        // Detail-line wording/separator are ParallaxCore's vocabulary, not this test's.
+        let codecName = try #require(TrackDisplay.audioCodecName(codec: "truehd"))
+        let layout = try #require(TrackDisplay.channelLayout(8))
+        #expect(matched.trackDetailLabel == "\(codecName) · \(layout)")
     }
 
     @Test("falls back to the ordinal label when no server stream matches")
@@ -103,12 +119,12 @@ struct JellyfinTrackMatcherTests {
         #expect(name == "Audio 1")
     }
 
-    @Test("multiple unnamed audio options match the server stream by language")
+    @Test("multiple unnamed options join the server stream by language and take its title")
     func multipleAudioMatchByLanguage() {
         let streams = [
-            audioStream(index: 2, title: "Français", lang: "fra"),
+            audioStream(index: 2, title: "Français", lang: "fra", codec: "aac", channels: 2),
             audioStream(index: 3, title: "English - AC3", lang: "eng",
-                        streamTitle: "Theatrical Mix"),
+                        streamTitle: "Theatrical Mix", codec: "ac3", channels: 6),
         ]
         let name = JellyfinTrackMatcher.name(
             kind: .audio,
@@ -123,56 +139,40 @@ struct JellyfinTrackMatcherTests {
         #expect(name == "Theatrical Mix")
     }
 
-    @Test("language match normalizes BCP-47 'en' against ISO 639-2/T 'eng'")
-    func languageMatchNormalizesAlpha2VsAlpha3() {
+    /// AVFoundation yields BCP-47 (`en`, `fr`) while Jellyfin reports ISO 639-2 — often
+    /// the BIBLIOGRAPHIC form (`fre`/`ger`/`chi`) that ICU does not recognize. Without
+    /// `TrackLanguage`'s B→T map both of these missed and fell back to "Audio 2".
+    @Test("language matching normalizes across BCP-47 / 639-2 T / 639-2 B forms", arguments: [
+        ("alpha-2 vs alpha-3 T", "en", "eng", "fra", "English"),
+        ("alpha-2 vs alpha-3 B", "fr", "fre", "eng", "French"),
+    ] as [(String, String, String, String, String)])
+    func languageMatchNormalizesCodeForms(
+        label: String, optionLanguage: String, serverLang: String,
+        otherLang: String, expected: String
+    ) {
         let streams = [
-            audioStream(index: 2, title: "Français", lang: "fra"),
-            audioStream(index: 3, title: "English - DTS", lang: "eng"),
+            audioStream(index: 2, title: "Other", lang: otherLang, codec: "aac", channels: 2),
+            audioStream(index: 3, title: "Target", lang: serverLang, codec: "dts", channels: 6),
         ]
         let name = JellyfinTrackMatcher.name(
             kind: .audio,
             optionDisplayName: "Unknown",
-            optionLanguage: "en",             // AVFoundation BCP-47, vs server "eng"
+            optionLanguage: optionLanguage,
             ordinal: 2,
             optionCount: 2,
             streams: streams,
             defaultStreamIndex: nil,
             locale: en
         )
-        // Before the alpha-2/alpha-3 normalization this missed → "Audio 2".
-        #expect(name == "English")
+        #expect(name == expected, "\(label)")
     }
 
-    @Test("language match handles ISO 639-2 bibliographic tags ('fre' vs 'fr')")
-    func languageMatchNormalizesBibliographicCodes() {
-        // mkvmerge/ffmpeg historically stamp the B form ("fre"/"ger"/"chi"),
-        // which ICU's Locale.Language does NOT recognize — only TrackLanguage's
-        // B→T map joins these. Before routing through TrackLanguage.matches,
-        // this pair missed and the track fell back to "Audio 2".
-        let streams = [
-            audioStream(index: 2, title: "English - DTS", lang: "eng"),
-            audioStream(index: 3, title: "Français", lang: "fre"),
-        ]
-        let name = JellyfinTrackMatcher.name(
-            kind: .audio,
-            optionDisplayName: "Unknown",
-            optionLanguage: "fr",             // AVFoundation BCP-47, vs server "fre"
-            ordinal: 2,
-            optionCount: 2,
-            streams: streams,
-            defaultStreamIndex: nil,
-            locale: en
-        )
-        #expect(name == "French")   // the matched stream's language name, in the menu locale
-    }
-
-    @Test("ambiguous same-language streams (zh-Hant vs zh-Hans) produce no match")
+    /// Two server streams both report "zho" (script lives only in the title) while
+    /// AVFoundation distinguishes them by tag. Alpha-3 normalization makes both equal,
+    /// so a first-match join would label BOTH the same — the matcher must decline and
+    /// let AVFoundation's script-aware naming take over.
+    @Test("ambiguous same-language streams produce no match")
     func ambiguousLanguageDoesNotFalseMatch() {
-        // Two server streams both report lang "zho" (script lives only in the title);
-        // AVFoundation distinguishes them by tag. Alpha-3 normalization makes both
-        // "zh-Hant" and "zho" equal, so a first-match join would label BOTH the same —
-        // the matcher must return nil instead and let AVFoundation's script-aware
-        // locale naming take over.
         let streams = [
             audioStream(index: 2, title: "Chinese - Traditional", lang: "zho"),
             audioStream(index: 3, title: "Chinese - Simplified", lang: "zho"),
@@ -183,6 +183,21 @@ struct JellyfinTrackMatcherTests {
             optionCount: 2,
             streams: streams,
             defaultStreamIndex: nil
+        )
+        #expect(matched == nil)
+    }
+
+    /// The kind filter must hold: a subtitle option can never join an audio stream just
+    /// because the languages line up.
+    @Test("the join never crosses audio and subtitle streams")
+    func kindFilterHolds() {
+        let streams = [audioStream(index: 3, title: "English", lang: "eng")]
+        let matched = JellyfinTrackMatcher.matchedStream(
+            kind: .subtitle,
+            optionLanguage: "en",
+            optionCount: 1,
+            streams: streams,
+            defaultStreamIndex: 3
         )
         #expect(matched == nil)
     }

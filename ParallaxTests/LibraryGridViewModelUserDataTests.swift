@@ -12,31 +12,19 @@ import ParallaxJellyfin
 @MainActor
 @Suite("LibraryGridViewModel user-data subscription")
 struct LibraryGridViewModelUserDataTests {
-    /// Every fixture in this suite is one server; the grid ignores other sources' changes.
-    private let previewSource = MediaSourceID.jellyfin(ServerID(rawValue: "test-server"))
-
-    private func movieItem(id: String, isFavorite: Bool) -> Item {
-        .movie(Movie(
-            id: ItemID(rawValue: id), title: "Example", overview: nil, year: nil, runtime: nil,
-            communityRating: nil, officialRating: nil, genres: [],
-            primaryTag: nil, backdropTags: [], logoTag: nil, thumbTag: nil, dateAdded: nil,
-            userData: UserItemData(played: false, playbackPositionTicks: 0, playCount: 0, isFavorite: isFavorite)
-        ))
-    }
-
     @Test("a change patches a matching item's userData in place")
     func patchesMatchingItem() async {
         let userDataActions = UserDataActions()
         let itemID = ItemID(rawValue: "movie-patch")
         let fake = FakeMediaRepository()
-        fake.itemsResult = .success(Page(items: [movieItem(id: itemID.rawValue, isFavorite: false)], total: 1, nextCursor: nil))
-        let vm = LibraryGridViewModel(repo: fake, source: previewSource, scope: .collection(CollectionID(rawValue: "movies")), userDataActions: userDataActions)
+        fake.itemsResult = .success(makePage([makeMovieItem(itemID.rawValue, title: "Example", isFavorite: false)]))
+        let vm = LibraryGridViewModel(repo: fake, source: testJellyfinSource, scope: .collection(CollectionID(rawValue: "movies")), userDataActions: userDataActions)
         await vm.load()
         #expect(vm.items.first?.userData.isFavorite == false)
 
         let fresh = UserItemData(played: false, playbackPositionTicks: 0, playCount: 0, isFavorite: true)
         let writer = StubUserDataWriter(favorite: .success(fresh))
-        _ = await userDataActions.toggleFavorite(itemID: itemID, source: previewSource, currentlyFavorite: false, via: writer)
+        _ = await userDataActions.toggleFavorite(itemID: itemID, source: testJellyfinSource, currentlyFavorite: false, via: writer)
 
         await waitUntil { vm.items.first?.userData.isFavorite == true }
         #expect(vm.items.first?.userData.isFavorite == true)
@@ -47,14 +35,14 @@ struct LibraryGridViewModelUserDataTests {
         let userDataActions = UserDataActions()
         let itemID = ItemID(rawValue: "movie-fav")
         let fake = FakeMediaRepository()
-        fake.itemsResult = .success(Page(items: [movieItem(id: itemID.rawValue, isFavorite: true)], total: 1, nextCursor: nil))
-        let vm = LibraryGridViewModel(repo: fake, source: previewSource, scope: .favorites, userDataActions: userDataActions)
+        fake.itemsResult = .success(makePage([makeMovieItem(itemID.rawValue, title: "Example", isFavorite: true)]))
+        let vm = LibraryGridViewModel(repo: fake, source: testJellyfinSource, scope: .favorites, userDataActions: userDataActions)
         await vm.load()
         #expect(vm.items.count == 1)
 
         let fresh = UserItemData(played: false, playbackPositionTicks: 0, playCount: 0, isFavorite: false)
         let writer = StubUserDataWriter(favorite: .success(fresh))
-        _ = await userDataActions.toggleFavorite(itemID: itemID, source: previewSource, currentlyFavorite: true, via: writer)
+        _ = await userDataActions.toggleFavorite(itemID: itemID, source: testJellyfinSource, currentlyFavorite: true, via: writer)
 
         await waitUntil { vm.items.isEmpty }
         #expect(vm.items.isEmpty)
@@ -67,8 +55,8 @@ struct LibraryGridViewModelUserDataTests {
         let userDataActions = UserDataActions()
         let itemID = ItemID(rawValue: "movie-fav-played")
         let fake = FakeMediaRepository()
-        fake.itemsResult = .success(Page(items: [movieItem(id: itemID.rawValue, isFavorite: true)], total: 1, nextCursor: nil))
-        let vm = LibraryGridViewModel(repo: fake, source: previewSource, scope: .favorites, userDataActions: userDataActions)
+        fake.itemsResult = .success(makePage([makeMovieItem(itemID.rawValue, title: "Example", isFavorite: true)]))
+        let vm = LibraryGridViewModel(repo: fake, source: testJellyfinSource, scope: .favorites, userDataActions: userDataActions)
         await vm.load()
         #expect(vm.items.count == 1)
 
@@ -81,7 +69,7 @@ struct LibraryGridViewModelUserDataTests {
         // file-local `StubWriter` this replaced, which returned the same `favoriteResult` for
         // both operations).
         let writer = StubUserDataWriter(favorite: .success(played), played: .success(played))
-        _ = await userDataActions.togglePlayed(itemID: itemID, source: previewSource, currentlyPlayed: false, via: writer)
+        _ = await userDataActions.togglePlayed(itemID: itemID, source: testJellyfinSource, currentlyPlayed: false, via: writer)
 
         await waitUntil { vm.items.first?.userData.played == true }
         #expect(vm.items.count == 1)
@@ -90,15 +78,48 @@ struct LibraryGridViewModelUserDataTests {
         #expect(vm.items.first?.userData.isFavorite == true)
     }
 
+    /// The (source, itemID) key, from the grid's side. Jellyfin derives item GUIDs deterministically
+    /// from the media path, so two servers over a mirrored library genuinely mint the SAME id — and
+    /// independently of any collision, favoriting on one server must never repaint another server's
+    /// tile. A grid matching on `itemID` alone passes every other test in this suite.
+    @Test("a change from a DIFFERENT source is ignored, even for an identical item id")
+    func ignoresChangesFromAnotherSource() async {
+        let userDataActions = UserDataActions()
+        let itemID = ItemID(rawValue: "mirrored-guid")
+        let otherServer = MediaSourceID.jellyfin(ServerID(rawValue: "other-server"))
+        let fake = FakeMediaRepository()
+        fake.itemsResult = .success(makePage([makeMovieItem(itemID.rawValue, title: "Example", isFavorite: true)]))
+        let vm = LibraryGridViewModel(repo: fake, source: testJellyfinSource, scope: .favorites, userDataActions: userDataActions)
+        await vm.load()
+        #expect(vm.items.count == 1)
+
+        // An unfavorite on the OTHER server: same item id, so an id-only match would drop this
+        // grid's row (Favorites scope removes on `unfavorited`).
+        let unfavorited = UserItemData(played: false, playbackPositionTicks: 0, playCount: 0, isFavorite: false)
+        let writer = StubUserDataWriter(favorite: .success(unfavorited))
+        _ = await userDataActions.toggleFavorite(itemID: itemID, source: otherServer, currentlyFavorite: true, via: writer)
+
+        // Then a change this grid DOES own, on the same item, as the barrier: once its visible
+        // effect has landed, the cross-source event ahead of it in the same serial stream has
+        // provably been processed — and ignored, or there'd be no row left to patch.
+        let played = UserItemData(played: true, playbackPositionTicks: 0, playCount: 1, isFavorite: true)
+        let playedWriter = StubUserDataWriter(favorite: .success(played), played: .success(played))
+        _ = await userDataActions.togglePlayed(itemID: itemID, source: testJellyfinSource, currentlyPlayed: false, via: playedWriter)
+        await waitUntil { vm.items.first?.userData.played == true }
+
+        #expect(vm.items.map(\.id.rawValue) == [itemID.rawValue])
+        #expect(vm.items.first?.userData.isFavorite == true)
+    }
+
     @Test("a favorite-operation change patched in place does not reset an item's watch progress")
     func favoriteOperationDoesNotResetProgress() async {
         let userDataActions = UserDataActions()
         let itemID = ItemID(rawValue: "movie-progress-fav")
         let fake = FakeMediaRepository()
-        var item = movieItem(id: itemID.rawValue, isFavorite: false)
+        var item = makeMovieItem(itemID.rawValue, title: "Example", isFavorite: false)
         item = item.withUserData(UserItemData(played: false, playbackPositionTicks: 54_321, playCount: 0, isFavorite: false))
-        fake.itemsResult = .success(Page(items: [item], total: 1, nextCursor: nil))
-        let vm = LibraryGridViewModel(repo: fake, source: previewSource, scope: .collection(CollectionID(rawValue: "movies")), userDataActions: userDataActions)
+        fake.itemsResult = .success(makePage([item]))
+        let vm = LibraryGridViewModel(repo: fake, source: testJellyfinSource, scope: .collection(CollectionID(rawValue: "movies")), userDataActions: userDataActions)
         await vm.load()
         #expect(vm.items.first?.userData.playbackPositionTicks == 54_321)
 
@@ -107,7 +128,7 @@ struct LibraryGridViewModelUserDataTests {
         // would wrongly zero the item's real resume position.
         let favorited = UserItemData(played: false, playbackPositionTicks: 0, playCount: 0, isFavorite: true)
         let writer = StubUserDataWriter(favorite: .success(favorited))
-        _ = await userDataActions.toggleFavorite(itemID: itemID, source: previewSource, currentlyFavorite: false, via: writer)
+        _ = await userDataActions.toggleFavorite(itemID: itemID, source: testJellyfinSource, currentlyFavorite: false, via: writer)
 
         await waitUntil { vm.items.first?.userData.isFavorite == true }
         #expect(vm.items.first?.userData.playbackPositionTicks == 54_321)

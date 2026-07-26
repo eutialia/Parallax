@@ -26,12 +26,12 @@ struct SMBPlaybackStartTests {
         engine: FakePlaybackEngine,
         audioSession: any AudioSessionControlling = NoopAudioSession(),
         subtitleFetch: @escaping @Sendable (URL) async -> Data? = { _ in nil },
-        smbResumeStore: SMBResumeStore = .shared
+        // NOT `SMBResumeStore.shared`: that one reads and writes the real `UserDefaults.standard`
+        // domain, so every test here that drives a `.playing` beat was writing live app state.
+        smbResumeStore: SMBResumeStore? = nil
     ) -> PlayerViewModel {
-        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
-        let builder = DeviceProfileBuilder(probe: probe)
         return PlayerViewModel(
-            deviceProfileBuilder: builder,
+            deviceProfileBuilder: makeTestDeviceProfileBuilder(),
             playbackInfo: reporting,
             resolve: { _, _, _, _, _ in
                 Issue.record("SMB playback must not call the Jellyfin resolve")
@@ -40,7 +40,7 @@ struct SMBPlaybackStartTests {
             engineFactory: { _ in engine },
             audioSession: audioSession,
             subtitleFetch: subtitleFetch,
-            smbResumeStore: smbResumeStore
+            smbResumeStore: smbResumeStore ?? SMBTestFixtures.inertResumeStore()
         )
     }
 
@@ -125,7 +125,7 @@ struct SMBPlaybackStartTests {
 
         let track = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(0) })
         await vm.selectSubtitleTrack(track)
-        try await Task.sleep(for: .milliseconds(50))
+        await vm.debugAwaitSubtitleFetch()
 
         #expect(vm.activeSubtitleCues.count == 1)
         #expect(vm.activeSubtitleCues.first?.text == "Hello world")
@@ -163,7 +163,7 @@ struct SMBPlaybackStartTests {
             duration: CMTime(seconds: 6000, preferredTimescale: 1),
             buffered: nil
         ))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
         #expect(vm.phase == .playing)
         #expect(vm.isPlaying == true)
     }
@@ -186,7 +186,7 @@ struct SMBPlaybackStartTests {
             duration: CMTime(seconds: 6000, preferredTimescale: 1),
             tracks: TrackInventory(audio: [audio], subtitles: [sub])
         ))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
 
         #expect(vm.availableAudioTracks.map(\.id) == [.vlc("a1")])
         // Exactly the engine's one sub — no Jellyfin sidecar tracks appended on SMB.
@@ -230,7 +230,7 @@ struct SMBPlaybackStartTests {
             buffered: nil
         ))
         engine.push(.ended)
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
 
         // resolved == nil is observable through the report contract: a Jellyfin
         // session would have fired start/progress/stopped beats; the SMB session
@@ -242,113 +242,96 @@ struct SMBPlaybackStartTests {
 
     @Test("stop() tears the SMB session down cleanly: subtitleURLs cleared, no reporting")
     func stopTearsDownCleanly() async throws {
-        let suite = "SMBPlaybackStartTests.stopTearsDownCleanly"
-        let (store, defaults) = try SMBTestFixtures.makeResumeStore(suite: suite)
-        defer { defaults.removePersistentDomain(forName: suite) }
-        let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
-        let vm = makeVM(reporting: reporting, engine: engine, smbResumeStore: store)
+        try await SMBTestFixtures.withResumeStore(suite: #function) { store in
+            let reporting = StubPlaybackReporting()
+            let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+            let vm = makeVM(reporting: reporting, engine: engine, smbResumeStore: store)
 
-        let subURL = URL(string: "file:///tmp/Example.en.srt")!
-        await vm.start(smbItem: smbItem(subtitleURLs: [0: subURL]))
-        engine.push(.playing(
-            position: CMTime(seconds: 15, preferredTimescale: 1),
-            duration: CMTime(seconds: 6000, preferredTimescale: 1),
-            buffered: nil
-        ))
-        try await Task.sleep(for: .milliseconds(50))
-        #expect(vm.debugSubtitleURLs == [0: subURL])
+            let subURL = URL(string: "file:///tmp/Example.en.srt")!
+            await vm.start(smbItem: smbItem(subtitleURLs: [0: subURL]))
+            engine.push(.playing(
+                position: CMTime(seconds: 15, preferredTimescale: 1),
+                duration: CMTime(seconds: 6000, preferredTimescale: 1),
+                buffered: nil
+            ))
+            try await engine.settle()
+            #expect(vm.debugSubtitleURLs == [0: subURL])
 
-        await vm.stop()
+            await vm.stop()
 
-        #expect(engine.calls.contains("teardown"))
-        #expect(vm.debugSubtitleURLs.isEmpty)
-        // A session that never reported start must never report stop.
-        #expect(await reporting.events.isEmpty)
-        #expect(await reporting.stoppedEncodings.isEmpty)
+            #expect(engine.calls.contains("teardown"))
+            #expect(vm.debugSubtitleURLs.isEmpty)
+            // A session that never reported start must never report stop.
+            #expect(await reporting.events.isEmpty)
+            #expect(await reporting.stoppedEncodings.isEmpty)
+        }
     }
 
     // MARK: - Local resume vs an untrusted (estimated) duration
 
-    @Test("an untrusted duration never lets the 95%-complete rule clear a real resume position")
-    func untrustedDurationSurvivesNearEndSave() async throws {
-        let suite = "SMBPlaybackStartTests.untrustedDurationSurvivesNearEndSave"
-        let (store, defaults) = try SMBTestFixtures.makeResumeStore(suite: suite)
-        defer { defaults.removePersistentDomain(forName: suite) }
-        let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
-        let vm = makeVM(reporting: reporting, engine: engine, smbResumeStore: store)
-        let id = ItemID(rawValue: "smb-untrusted-duration")
+    /// One position/duration shape, two verdicts, decided solely by whether the duration can be
+    /// trusted. 5900s of a 6000s runtime is 98.3% — past the store's completion fraction, so it's
+    /// the shape that clears a finished film AND the shape that would silently wipe real progress on
+    /// an incomplete file, where VLCKitEngine synthesizes the "duration" from its read-rate estimate.
+    @Test(
+        "the completion-clear rule applies only to a duration the file can actually vouch for",
+        arguments: [
+            // (hasTrustworthyDuration, expected resume seconds after stop)
+            (false, Double?.some(5_900)),
+            (true, Double?.none),
+        ]
+    )
+    func completionClearHonoursDurationTrust(trustworthy: Bool, expectedResume: Double?) async throws {
+        try await SMBTestFixtures.withResumeStore(suite: #function) { store in
+            let reporting = StubPlaybackReporting()
+            let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+            let vm = makeVM(reporting: reporting, engine: engine, smbResumeStore: store)
+            let id = ItemID(rawValue: "smb-duration-trust-\(trustworthy)")
 
-        // An incomplete/still-downloading file: VLCKitEngine synthesizes a numeric duration
-        // from its read-rate estimate, so `hasKnownDuration` reads true even though the
-        // length isn't real. Position sits at 98.3% of that estimate — the shape that would
-        // trip the store's 95%-complete clear if the duration were trusted.
-        await vm.start(smbItem: smbItem(itemID: id, hasTrustworthyDuration: false))
-        engine.push(.playing(
-            position: CMTime(seconds: 5_900, preferredTimescale: 1),
-            duration: CMTime(seconds: 6_000, preferredTimescale: 1),
-            buffered: nil
-        ))
-        try await Task.sleep(for: .milliseconds(50))
+            await vm.start(smbItem: smbItem(itemID: id, hasTrustworthyDuration: trustworthy))
+            engine.push(.playing(
+                position: CMTime(seconds: 5_900, preferredTimescale: 1),
+                duration: CMTime(seconds: 6_000, preferredTimescale: 1),
+                buffered: nil
+            ))
+            try await engine.settle()
 
-        // stop()'s final save is unthrottled and inline-awaited — deterministic to assert
-        // straight after, no throttle-window race.
-        await vm.stop()
+            // stop()'s final save is unthrottled and inline-awaited — deterministic to assert
+            // straight after, no throttle-window race.
+            await vm.stop()
 
-        let resumed = try #require(await store.resumeTime(for: id))
-        #expect(abs(CMTimeGetSeconds(resumed) - 5_900) < 0.001)
-    }
-
-    @Test("a trusted duration DOES let the 95%-complete rule clear the resume position (counterpart)")
-    func trustedDurationClearsNearEndSave() async throws {
-        let suite = "SMBPlaybackStartTests.trustedDurationClearsNearEndSave"
-        let (store, defaults) = try SMBTestFixtures.makeResumeStore(suite: suite)
-        defer { defaults.removePersistentDomain(forName: suite) }
-        let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
-        let vm = makeVM(reporting: reporting, engine: engine, smbResumeStore: store)
-        let id = ItemID(rawValue: "smb-trusted-duration")
-
-        // Identical position/duration shape, but a proven-complete file this time — the
-        // 95%-complete rule is meant to fire here (a finished film restarts from the top).
-        await vm.start(smbItem: smbItem(itemID: id, hasTrustworthyDuration: true))
-        engine.push(.playing(
-            position: CMTime(seconds: 5_900, preferredTimescale: 1),
-            duration: CMTime(seconds: 6_000, preferredTimescale: 1),
-            buffered: nil
-        ))
-        try await Task.sleep(for: .milliseconds(50))
-
-        await vm.stop()
-
-        #expect(await store.resumeTime(for: id) == nil)
+            let resumed = await store.resumeTime(for: id)
+            if let expectedResume {
+                #expect(abs(CMTimeGetSeconds(try #require(resumed)) - expectedResume) < 0.001)
+            } else {
+                #expect(resumed == nil)
+            }
+        }
     }
 
     @Test("a stale throttled save can't outrun .ended's terminal clear")
     func throttledSaveNeverOutrunsEndedClear() async throws {
-        let suite = "SMBPlaybackStartTests.throttledSaveNeverOutrunsEndedClear"
-        let (store, defaults) = try SMBTestFixtures.makeResumeStore(suite: suite)
-        defer { defaults.removePersistentDomain(forName: suite) }
-        let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
-        let vm = makeVM(reporting: reporting, engine: engine, smbResumeStore: store)
-        let id = ItemID(rawValue: "smb-save-vs-clear")
+        try await SMBTestFixtures.withResumeStore(suite: #function) { store in
+            let reporting = StubPlaybackReporting()
+            let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+            let vm = makeVM(reporting: reporting, engine: engine, smbResumeStore: store)
+            let id = ItemID(rawValue: "smb-save-vs-clear")
 
-        await vm.start(smbItem: smbItem(itemID: id))
+            await vm.start(smbItem: smbItem(itemID: id))
 
-        // The throttle window is wide open (first beat), so `.playing` spawns the untracked
-        // save `.ended` must now await. Before the fix, the save Task's actor hop could lose
-        // a race against `.ended`'s clear() — landing after it and resurrecting this position.
-        engine.push(.playing(
-            position: CMTime(seconds: 100, preferredTimescale: 1),
-            duration: CMTime(seconds: 6_000, preferredTimescale: 1),
-            buffered: nil
-        ))
-        engine.push(.ended)
-        try await Task.sleep(for: .milliseconds(50))
+            // The throttle window is wide open (first beat), so `.playing` spawns the untracked
+            // save `.ended` must now await. Before the fix, the save Task's actor hop could lose
+            // a race against `.ended`'s clear() — landing after it and resurrecting this position.
+            engine.push(.playing(
+                position: CMTime(seconds: 100, preferredTimescale: 1),
+                duration: CMTime(seconds: 6_000, preferredTimescale: 1),
+                buffered: nil
+            ))
+            engine.push(.ended)
+            try await engine.settle()
 
-        #expect(await store.resumeTime(for: id) == nil)
+            #expect(await store.resumeTime(for: id) == nil)
+        }
     }
 
     // MARK: - start(resolvingSMB:) — resolve under the veil
@@ -379,7 +362,7 @@ struct SMBPlaybackStartTests {
             duration: CMTime(seconds: 6000, preferredTimescale: 1),
             buffered: nil
         ))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
         #expect(vm.phase == .playing)
 
         // No server in the loop: the resolve-then-delegate path reports nothing.
@@ -468,26 +451,5 @@ struct SMBPlaybackStartTests {
         // stashed cleanup was reaped exactly once by the CancellationError branch.
         #expect(!engine.calls.contains("load"))
         #expect(await spy.count == 1)
-    }
-
-    @Test("NoOpPlaybackReporting swallows every call without recording")
-    func noOpReportingIsInert() async {
-        let noop = NoOpPlaybackReporting()
-        let beat = ProgressBeat(
-            positionTicks: 1,
-            isPaused: false,
-            method: .directPlay,
-            itemID: "x",
-            mediaSourceID: "y",
-            playSessionID: "z"
-        )
-        // All five methods are inert no-ops — no crash, nothing to assert beyond
-        // "they're callable and return". (The real SMB safety is resolved == nil
-        // gating the beat handler; this is belt-and-suspenders for the VM init.)
-        await noop.reportStart(beat)
-        await noop.reportProgress(beat)
-        await noop.reportStopped(beat)
-        await noop.stopEncoding(playSessionID: "z")
-        await noop.pingSession(playSessionID: "z")
     }
 }

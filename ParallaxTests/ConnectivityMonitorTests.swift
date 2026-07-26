@@ -64,19 +64,24 @@ struct ConnectivityMonitorTests {
         let builder = DeviceProfileBuilder(probe: StubCapabilityProbe())
         let task = Task { await monitor.observe(reportingConstraintTo: builder) }
 
+        // The two ceilings are the builder's own constants, not re-typed 8/360: retuning either one
+        // must not leave this test asserting a bitrate the app no longer serves.
+        let clamped = DeviceProfileBuilder.lowDataBitrateCeiling
+        let unclamped = DeviceProfileBuilder.lanBitrateCeiling
+
         // Satisfied + constrained clamps the profile bitrate.
         mock.send(true, isConstrained: true)
-        #expect(await eventually { await builder.build().maxBitrate == .megabits(8) })
+        #expect(await eventually { await builder.build().maxBitrate == clamped })
 
         // A connectivity blip (unsatisfied, constrained bit meaningless) must NOT lift the
         // clamp. The isOnline flip is the barrier proving the loop processed the element.
         mock.send(false, isConstrained: false)
         await waitUntil { monitor.isOnline == false }
-        #expect(await builder.build().maxBitrate == .megabits(8))
+        #expect(await builder.build().maxBitrate == clamped)
 
         // Re-satisfaction with Low Data Mode off un-clamps.
         mock.send(true, isConstrained: false)
-        #expect(await eventually { await builder.build().maxBitrate == .megabits(360) })
+        #expect(await eventually { await builder.build().maxBitrate == unclamped })
 
         task.cancel()
         mock.finish()

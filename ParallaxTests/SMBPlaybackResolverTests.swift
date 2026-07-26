@@ -31,17 +31,10 @@ private final class StubSMBLister: SMBLister, @unchecked Sendable {
 
 // MARK: - Test fixtures
 
-private func makeRef(
-    id: String = "smb-nas.local|Media|Movies",
-    host: String = "nas.local",
-    share: String = "Media",
-    username: String = "alice",
-    domain: String = "WORKGROUP"
-) -> SMBServerRef {
-    SMBServerRef(
-        id: ServerID(rawValue: id),
-        data: SMBServerData(host: host, username: username, domain: domain, shares: [share])
-    )
+/// The one NAS every test here resolves against. Its id is load-bearing: `makeResolver`
+/// seeds the Keychain slot `token-<id>`, so the resolver finds a password.
+private func makeRef(share: String = "Media") -> SMBServerRef {
+    makeSMBRef(id: "smb-nas.local|Media|Movies", shares: [share])
 }
 
 /// Returns a `.movie` `Item` whose `ItemID` is encoded the same way `SMBMediaRepository` encodes it.
@@ -49,27 +42,7 @@ private func makeRef(
 private func makeItem(share: String = "Media", path: String = "Movies/Example.mkv", rawID: String? = nil) -> Item {
     let title = (path as NSString).lastPathComponent
     let displayTitle = (title as NSString).deletingPathExtension
-    let movie = Movie(
-        id: ItemID(rawValue: rawID ?? "\(share):\(path)"),
-        title: displayTitle,
-        overview: nil,
-        year: nil,
-        runtime: nil,
-        communityRating: nil,
-        officialRating: nil,
-        genres: [],
-        primaryTag: nil,
-        backdropTags: [],
-        logoTag: nil,
-        thumbTag: nil,
-        dateAdded: nil,
-        userData: UserItemData(played: false, playbackPositionTicks: 0, playCount: 0, isFavorite: false),
-        width: nil,
-        height: nil,
-        videoRangeType: nil,
-        hasSubtitles: false
-    )
-    return .movie(movie)
+    return makeMovieItem(rawID ?? "\(share):\(path)", title: displayTitle)
 }
 
 // MARK: - Tests
@@ -84,14 +57,21 @@ struct SMBPlaybackResolverTests {
     /// `ServerStore.smbPassword(for:)`, which THROWS `.auth(.credentialUnavailable)` on an empty
     /// slot instead of degrading to a guest logon, so every happy-path test needs a seeded slot
     /// (the default `""` mirrors a stored guest password). Pass `nil` to leave the slot empty.
+    /// `resumeStore` defaults to a throwaway isolated store, NOT `SMBResumeStore.shared`: the shared
+    /// one reads and writes the real `UserDefaults.standard` domain, so every test that didn't pass
+    /// its own store was touching (and could inherit) live app state.
     private func makeResolver(
         keychain: FakeKeychain = FakeKeychain(),
         seedPassword: String? = "",
         lister: StubSMBLister,
-        resumeStore: SMBResumeStore = .shared
+        resumeStore: SMBResumeStore? = nil
     ) -> SMBPlaybackResolver {
         if let seedPassword {
-            try? keychain.setValue(seedPassword, for: KeychainKey<String>(account: "token-smb-nas.local|Media|Movies"))
+            // Derived from the production slot rule, not a re-typed "token-<id>" literal — a change
+            // to the derivation must fail this suite rather than leave it passing against a slot the
+            // resolver no longer reads.
+            let account = ServerStore.tokenAccount(for: makeRef().id)
+            try? keychain.setValue(seedPassword, for: KeychainKey<String>(account: account))
         }
         let suite = "SMBPlaybackResolverTests-store-\(UUID().uuidString)"
         let store = ServerStore(
@@ -99,7 +79,7 @@ struct SMBPlaybackResolverTests {
             keychain: keychain
         )
         var resolver = SMBPlaybackResolver(serverStore: store) { _, _ in lister }
-        resolver.resumeStore = resumeStore
+        resolver.resumeStore = resumeStore ?? SMBTestFixtures.inertResumeStore()
         return resolver
     }
 
@@ -256,38 +236,31 @@ struct SMBPlaybackResolverTests {
 
     @Test("startTime is nil when the local resume store has no entry")
     func startTimeNilWithoutStoredResume() async throws {
-        let suite = "SMBPlaybackResolverTests.startTimeNilWithoutStoredResume"
-        let (store, defaults) = try SMBTestFixtures.makeResumeStore(suite: suite)
-        defer { defaults.removePersistentDomain(forName: suite) }
-        let lister = StubSMBLister(entries: [])
-        let resolver = makeResolver(lister: lister, resumeStore: store)
-        let item = makeItem()
-        let ref = makeRef()
+        try await SMBTestFixtures.withResumeStore(suite: #function) { store in
+            let resolver = makeResolver(lister: StubSMBLister(entries: []), resumeStore: store)
 
-        let result = try await resolver.resolve(item, ref: ref)
+            let result = try await resolver.resolve(makeItem(), ref: makeRef())
 
-        #expect(result.startTime == nil)
+            #expect(result.startTime == nil)
+        }
     }
 
     @Test("startTime comes from the local resume store when it holds a position")
     func startTimeFromStoredResume() async throws {
-        let suite = "SMBPlaybackResolverTests.startTimeFromStoredResume"
-        let (store, defaults) = try SMBTestFixtures.makeResumeStore(suite: suite)
-        defer { defaults.removePersistentDomain(forName: suite) }
-        let lister = StubSMBLister(entries: [])
-        let resolver = makeResolver(lister: lister, resumeStore: store)
-        let item = makeItem(path: "Movies/Resumable.mkv")
-        let ref = makeRef()
-        await store.save(
-            position: CMTime(seconds: 300, preferredTimescale: 600),
-            duration: CMTime(seconds: 7200, preferredTimescale: 600),
-            for: item.id
-        )
+        try await SMBTestFixtures.withResumeStore(suite: #function) { store in
+            let resolver = makeResolver(lister: StubSMBLister(entries: []), resumeStore: store)
+            let item = makeItem(path: "Movies/Resumable.mkv")
+            await store.save(
+                position: CMTime(seconds: 300, preferredTimescale: 600),
+                duration: CMTime(seconds: 7200, preferredTimescale: 600),
+                for: item.id
+            )
 
-        let result = try await resolver.resolve(item, ref: ref)
+            let result = try await resolver.resolve(item, ref: makeRef())
 
-        let startTime = try #require(result.startTime)
-        #expect(abs(CMTimeGetSeconds(startTime) - 300) < 0.001)
+            let startTime = try #require(result.startTime)
+            #expect(abs(CMTimeGetSeconds(startTime) - 300) < 0.001)
+        }
     }
 
     // MARK: - Root-level path (no directory)

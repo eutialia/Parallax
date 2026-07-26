@@ -2,64 +2,57 @@ import Testing
 import ParallaxFileBrowse
 @testable import Parallax
 
+/// One reconciliation row: what the user has enabled, what the server currently offers, and the
+/// names the settings screen must flag as gone. A named case rather than a tuple because Swift
+/// Testing only destructures 2-tuples into test parameters.
+struct ShareReconciliationCase: Sendable, CustomTestStringConvertible {
+    let name: String
+    let enabled: Set<String>
+    let live: [String]
+    let unavailable: [String]
+    var testDescription: String { name }
+}
+
+private let shareReconciliationCases: [ShareReconciliationCase] = [
+    ShareReconciliationCase(
+        name: "every enabled share is live",
+        enabled: ["Media", "Photos"], live: ["Media", "Photos", "Backups"], unavailable: []
+    ),
+    ShareReconciliationCase(
+        name: "an enabled share the server no longer offers",
+        enabled: ["Media", "OldArchive"], live: ["Media", "Photos"], unavailable: ["OldArchive"]
+    ),
+    // Sorted, not set-ordered: the rows sit in a list, so a per-launch shuffle reads as churn.
+    ShareReconciliationCase(
+        name: "names come back sorted for a stable row order",
+        enabled: ["Zeta", "Alpha", "Mike"], live: [], unavailable: ["Alpha", "Mike", "Zeta"]
+    ),
+    ShareReconciliationCase(
+        name: "a live-but-not-enabled share is never flagged",
+        enabled: ["Media"], live: ["Media", "Backups"], unavailable: []
+    ),
+    ShareReconciliationCase(
+        name: "every enabled share vanished server-side",
+        enabled: ["Media", "Photos"], live: [], unavailable: ["Media", "Photos"]
+    ),
+    ShareReconciliationCase(
+        name: "nothing enabled, whatever is live",
+        enabled: [], live: ["Media", "Photos"], unavailable: []
+    ),
+]
+
 @Suite("SMB server settings · share reconciliation")
 @MainActor
 struct SMBServerSettingsViewTests {
-    private func share(_ name: String, _ comment: String = "") -> SMBShare {
-        SMBShare(name: name, comment: comment)
-    }
-
-    @Test("Every enabled share is live → nothing is unavailable")
-    func allLive() {
+    @Test(
+        "an enabled share is unavailable exactly when the server stopped offering it",
+        arguments: shareReconciliationCases
+    )
+    func unavailableShares(_ reconciliation: ShareReconciliationCase) {
         let unavailable = SMBServerSettingsView.unavailableShares(
-            enabled: ["Media", "Photos"],
-            live: [share("Media"), share("Photos"), share("Backups")]
+            enabled: reconciliation.enabled,
+            live: reconciliation.live.map { SMBShare(name: $0, comment: "") }
         )
-        #expect(unavailable.isEmpty)
-    }
-
-    @Test("An enabled share the server no longer offers is reported as unavailable")
-    func absentShareSurfaces() {
-        let unavailable = SMBServerSettingsView.unavailableShares(
-            enabled: ["Media", "OldArchive"],
-            live: [share("Media"), share("Photos")]
-        )
-        #expect(unavailable == ["OldArchive"])
-    }
-
-    @Test("Unavailable names come back sorted for a stable row order")
-    func sortedOrder() {
-        let unavailable = SMBServerSettingsView.unavailableShares(
-            enabled: ["Zeta", "Alpha", "Mike"],
-            live: []
-        )
-        #expect(unavailable == ["Alpha", "Mike", "Zeta"])
-    }
-
-    @Test("A live-but-not-enabled share is never reported unavailable")
-    func liveButDisabledIgnored() {
-        let unavailable = SMBServerSettingsView.unavailableShares(
-            enabled: ["Media"],
-            live: [share("Media"), share("Backups")]
-        )
-        #expect(unavailable.isEmpty)
-    }
-
-    @Test("All enabled shares vanished server-side → all are recoverable as unavailable")
-    func everyShareGone() {
-        let unavailable = SMBServerSettingsView.unavailableShares(
-            enabled: ["Media", "Photos"],
-            live: []
-        )
-        #expect(unavailable == ["Media", "Photos"])
-    }
-
-    @Test("No enabled shares → nothing unavailable regardless of what's live")
-    func noneEnabled() {
-        let unavailable = SMBServerSettingsView.unavailableShares(
-            enabled: [],
-            live: [share("Media"), share("Photos")]
-        )
-        #expect(unavailable.isEmpty)
+        #expect(unavailable == reconciliation.unavailable)
     }
 }

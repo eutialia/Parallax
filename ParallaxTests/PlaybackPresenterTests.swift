@@ -4,96 +4,53 @@ import ParallaxCore
 import ParallaxJellyfin
 @testable import Parallax
 
+/// Which `PlaybackPresenter.play` entry point a case exercises.
+private enum PlayTargetKind: String, Sendable, CustomTestStringConvertible {
+    case itemID, detail
+    var testDescription: String { rawValue }
+}
+
 @MainActor
 struct PlaybackPresenterTests {
-    private func session() -> Session {
-        Session(
-            id: ServerID(rawValue: "s1"),
-            data: JellyfinServerData(
-                serverURL: URL(string: "https://s1.example.test")!,
-                serverName: "S1",
-                user: UserSnapshot(id: "u1", name: "U", serverLastUpdatedAt: nil)
-            ),
-            accessToken: "t1"
-        )
-    }
+    /// The one server every test in this suite plays from.
+    private func session() -> Session { makeSession("s1", name: "S1") }
 
-    private func smbRef(id: String = "smb-nas|Media|Movies") -> SMBServerRef {
-        SMBServerRef(
-            id: ServerID(rawValue: id),
-            data: SMBServerData(host: "nas.local", username: "alice", domain: "WORKGROUP", shares: ["Media"])
-        )
-    }
-
-    private func movieItem(id: String = "Media:Movies/Example.mkv", title: String = "Example") -> Item {
-        .movie(Movie(
-            id: ItemID(rawValue: id), title: title, overview: nil, year: nil, runtime: nil,
-            communityRating: nil, officialRating: nil, genres: [],
-            primaryTag: nil, backdropTags: [], logoTag: nil, thumbTag: nil, dateAdded: nil,
-            userData: UserItemData(played: false, playbackPositionTicks: 0, playCount: 0, isFavorite: false)
-        ))
-    }
-
-    @Test("play sets a request carrying the item id and session")
-    func playSetsRequest() {
+    /// Both `play` entry points × both restart intents. The Jellyfin session rides
+    /// INSIDE the target after the relocation, so every cell re-checks that it's
+    /// carried — plus that `fromBeginning` threads through unchanged.
+    @Test("play sets a request whose target carries the item, the session, and the restart intent",
+          arguments: [PlayTargetKind.itemID, .detail], [false, true])
+    fileprivate func playSetsRequest(kind: PlayTargetKind, fromBeginning: Bool) throws {
         let presenter = PlaybackPresenter()
         #expect(presenter.request == nil)
         let s = session()
-        presenter.play(ItemID(rawValue: "ep-1"), in: s)
-        // The Jellyfin session now rides INSIDE the target after the relocation —
-        // a regression check that `play(_:in:)` still carries it.
-        guard case .itemID(let id, let carried, let fromBeginning) = presenter.request?.target else {
-            Issue.record("expected an itemID target")
-            return
-        }
-        #expect(id == ItemID(rawValue: "ep-1"))
-        #expect(carried.id == s.id)
-        #expect(fromBeginning == false)
-    }
+        let itemID = ItemID(rawValue: "ep-1")
 
-    @Test("play(_ detail:in:) sets a .detail target carrying the session (relocation regression)")
-    func playDetailCarriesSession() {
-        let presenter = PlaybackPresenter()
-        let s = session()
-        presenter.play(PlayerFixtures.movieDetail(), in: s)
-        guard case .detail(_, let carried, let fromBeginning) = presenter.request?.target else {
-            Issue.record("expected a detail target")
-            return
+        switch kind {
+        case .itemID: presenter.play(itemID, in: s, fromBeginning: fromBeginning)
+        case .detail: presenter.play(PlayerFixtures.movieDetail(), in: s, fromBeginning: fromBeginning)
         }
-        #expect(carried.id == s.id)
-        #expect(fromBeginning == false)
-    }
 
-    @Test("play(_:in:fromBeginning:) threads the restart intent into the itemID target")
-    func playItemIDFromBeginning() {
-        let presenter = PlaybackPresenter()
-        let s = session()
-        presenter.play(ItemID(rawValue: "ep-1"), in: s, fromBeginning: true)
-        guard case .itemID(_, _, let fromBeginning) = presenter.request?.target else {
-            Issue.record("expected an itemID target")
-            return
+        let target = try #require(presenter.request?.target)
+        switch (kind, target) {
+        case (.itemID, .itemID(let id, let carried, let restart)):
+            #expect(id == itemID)
+            #expect(carried.id == s.id)
+            #expect(restart == fromBeginning)
+        case (.detail, .detail(_, let carried, let restart)):
+            #expect(carried.id == s.id)
+            #expect(restart == fromBeginning)
+        default:
+            Issue.record("expected a \(kind) target, got \(target)")
         }
-        #expect(fromBeginning == true)
-    }
-
-    @Test("play(_ detail:in:fromBeginning:) threads the restart intent into the detail target")
-    func playDetailFromBeginning() {
-        let presenter = PlaybackPresenter()
-        let s = session()
-        presenter.play(PlayerFixtures.movieDetail(), in: s, fromBeginning: true)
-        guard case .detail(_, _, let fromBeginning) = presenter.request?.target else {
-            Issue.record("expected a detail target")
-            return
-        }
-        #expect(fromBeginning == true)
     }
 
     @Test("playSMB sets a .smb target carrying the item + ref (no Jellyfin session)")
     func playSMBSetsSMBTarget() {
         let presenter = PlaybackPresenter()
         #expect(presenter.request == nil)
-        let item = movieItem()
-        let ref = smbRef()
+        let item = makeMovieItem("Media:Movies/Example.mkv", title: "Example")
+        let ref = makeSMBRef()
         presenter.playSMB(item, ref: ref)
         guard case .smb(let carriedItem, let carriedRef) = presenter.request?.target else {
             Issue.record("expected an smb target")

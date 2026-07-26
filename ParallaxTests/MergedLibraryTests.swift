@@ -9,31 +9,11 @@ import ParallaxJellyfin
 struct MergedLibraryTests {
     // MARK: - Fixtures
 
-    private func session(_ rawID: String) -> Session {
-        Session(
-            id: ServerID(rawValue: rawID),
-            data: JellyfinServerData(
-                serverURL: URL(string: "https://\(rawID).example.test")!,
-                serverName: "Server \(rawID)",
-                user: UserSnapshot(id: "user-\(rawID)", name: "User", serverLastUpdatedAt: nil)
-            ),
-            accessToken: "token-\(rawID)"
-        )
-    }
-
     private func smbServer(_ rawID: String, host: String, shares: [String]) -> PersistedServer {
         PersistedServer(
             id: ServerID(rawValue: rawID),
-            kind: .smb(SMBServerData(host: host, username: "guest", domain: "", shares: shares))
+            kind: .smb(makeSMBServerData(host: host, username: "guest", domain: "", shares: shares))
         )
-    }
-
-    private func collection(
-        _ id: String,
-        _ name: String,
-        type: CollectionType = .movies
-    ) -> MediaCollection {
-        MediaCollection(id: CollectionID(rawValue: id), name: name, collectionType: type, primaryTag: nil)
     }
 
     /// A Jellyfin repo factory keyed by session id, so per-server grouping is observable. Only
@@ -61,10 +41,10 @@ struct MergedLibraryTests {
     func jellyfinOutranksSMBRegardlessOfAddOrder() async {
         // The real config that exposed this: the NAS was added before the Jellyfin server, so pure
         // add order put a metadata-less file wall above the app's primary source.
-        let jSession = session("jelly")
+        let jSession = makeSession("jelly")
         let nas1 = smbServer("nas-1", host: "nas1.local", shares: ["Films"])
         let nas2 = smbServer("nas-2", host: "nas2.local", shares: ["Archive"])
-        let repo = jellyfinRepo([jSession.id: [collection("c1", "Movies")]])
+        let repo = jellyfinRepo([jSession.id: [makeCollection("c1", "Movies")]])
 
         let outcome = await MergedLibrary.resolve(
             sessions: [jSession],
@@ -85,13 +65,13 @@ struct MergedLibraryTests {
     func addOrderIsTheTieBreakWithinAKind() async {
         // Two Jellyfin servers and two NAS boxes, added interleaved. Ranking by kind must not
         // scramble each kind's internal add order — nor let the concurrent fan-out decide it.
-        let first = session("first")
-        let second = session("second")
+        let first = makeSession("first")
+        let second = makeSession("second")
         let nasA = smbServer("nas-a", host: "a.local", shares: ["A"])
         let nasB = smbServer("nas-b", host: "b.local", shares: ["B"])
         let repo = jellyfinRepo([
-            first.id: [collection("c1", "Movies")],
-            second.id: [collection("c2", "Shows")],
+            first.id: [makeCollection("c1", "Movies")],
+            second.id: [makeCollection("c2", "Shows")],
         ])
 
         let outcome = await MergedLibrary.resolve(
@@ -110,11 +90,11 @@ struct MergedLibraryTests {
 
     @Test("Two servers with identically named libraries stay SEPARATE groups with distinct refs")
     func sameNamedLibrariesAreNeverMerged() async {
-        let a = session("a")
-        let b = session("b")
+        let a = makeSession("a")
+        let b = makeSession("b")
         let repo = jellyfinRepo([
-            a.id: [collection("c1", "Movies"), collection("c2", "Shows")],
-            b.id: [collection("c1", "Movies")],
+            a.id: [makeCollection("c1", "Movies"), makeCollection("c2", "Shows")],
+            b.id: [makeCollection("c1", "Movies")],
         ])
 
         let outcome = await MergedLibrary.resolve(
@@ -132,11 +112,11 @@ struct MergedLibraryTests {
 
     @Test("A Jellyfin collection and an SMB share sharing a raw id still get distinct ids")
     func sourceDisambiguatesSharedID() async {
-        let jSession = session("jelly")
+        let jSession = makeSession("jelly")
         // The SMB share name "shared" round-trips to a CollectionID that collides with the Jellyfin
         // collection's raw id — the source tag must still split them apart.
         let smb = smbServer("nas-1", host: "nas.local", shares: ["shared"])
-        let repo = jellyfinRepo([jSession.id: [collection("shared", "J Movies")]])
+        let repo = jellyfinRepo([jSession.id: [makeCollection("shared", "J Movies")]])
 
         let entries = await MergedLibrary.resolve(
             sessions: [jSession],
@@ -152,11 +132,11 @@ struct MergedLibraryTests {
 
     @Test("Hidden collections are filtered PER SERVER — hiding on one server spares the other's namesake")
     func hiddenIsPerServer() async {
-        let a = session("a")
-        let b = session("b")
+        let a = makeSession("a")
+        let b = makeSession("b")
         let repo = jellyfinRepo([
-            a.id: [collection("shared-id", "Movies"), collection("a2", "Shows")],
-            b.id: [collection("shared-id", "Movies")],
+            a.id: [makeCollection("shared-id", "Movies"), makeCollection("a2", "Shows")],
+            b.id: [makeCollection("shared-id", "Movies")],
         ])
 
         let outcome = await MergedLibrary.resolve(
@@ -174,11 +154,11 @@ struct MergedLibraryTests {
 
     @Test("Collections this app can't browse (music/photos) are dropped for every root")
     func unbrowsableCollectionsDropped() async {
-        let jSession = session("jelly")
+        let jSession = makeSession("jelly")
         let repo = jellyfinRepo([jSession.id: [
-            collection("c1", "Movies"),
-            collection("c2", "Music", type: .other("music")),
-            collection("c3", "Shows", type: .tvShows),
+            makeCollection("c1", "Movies"),
+            makeCollection("c2", "Music", type: .other("music")),
+            makeCollection("c3", "Shows", type: .tvShows),
         ]])
 
         let outcome = await MergedLibrary.resolve(
@@ -192,11 +172,11 @@ struct MergedLibraryTests {
 
     @Test("A server whose every library is hidden contributes NO group — not an empty titled section")
     func fullyHiddenServerContributesNoGroup() async {
-        let a = session("a")
-        let b = session("b")
+        let a = makeSession("a")
+        let b = makeSession("b")
         let repo = jellyfinRepo([
-            a.id: [collection("a1", "Movies")],
-            b.id: [collection("b1", "Shows")],
+            a.id: [makeCollection("a1", "Movies")],
+            b.id: [makeCollection("b1", "Shows")],
         ])
 
         let outcome = await MergedLibrary.resolve(
@@ -229,11 +209,11 @@ struct MergedLibraryTests {
 
     @Test("One server down: its group drops out and only ITS id is flagged — the rest survive")
     func perServerFailureIsIsolated() async {
-        let up = session("up")
-        let down = session("down")
+        let up = makeSession("up")
+        let down = makeSession("down")
         let smb = smbServer("nas-1", host: "nas.local", shares: ["Films"])
         let repo = jellyfinRepo(
-            [up.id: [collection("c1", "Movies")], down.id: [collection("c2", "Shows")]],
+            [up.id: [makeCollection("c1", "Movies")], down.id: [makeCollection("c2", "Shows")]],
             failing: [down.id]
         )
 
@@ -258,14 +238,14 @@ struct MergedLibraryTests {
     /// notice sits above a list that IS in server order, so a different order would read as random.
     @Test("Failed server names come back in the order the servers were added")
     func failedNamesFollowServerOrder() async {
-        let first = session("first")
-        let second = session("second")
-        let third = session("third")
+        let first = makeSession("first")
+        let second = makeSession("second")
+        let third = makeSession("third")
         let repo = jellyfinRepo(
             [
-                first.id: [collection("c1", "Movies")],
-                second.id: [collection("c2", "Shows")],
-                third.id: [collection("c3", "Films")],
+                first.id: [makeCollection("c1", "Movies")],
+                second.id: [makeCollection("c2", "Shows")],
+                third.id: [makeCollection("c3", "Films")],
             ],
             failing: [third.id, first.id]
         )
@@ -299,9 +279,9 @@ struct MergedLibraryTests {
     func signedOutJellyfinRowIsSkippedNotFailed() async {
         // Its Keychain token was lost, so `ServerStore` rebuilt no session for it. Settings surfaces
         // that state; the library list must not report it as an offline failure and spin recovery.
-        let live = session("live")
-        let signedOut = session("signed-out")
-        let repo = jellyfinRepo([live.id: [collection("c1", "Movies")]])
+        let live = makeSession("live")
+        let signedOut = makeSession("signed-out")
+        let repo = jellyfinRepo([live.id: [makeCollection("c1", "Movies")]])
 
         let outcome = await MergedLibrary.resolve(
             sessions: [live],
@@ -317,11 +297,11 @@ struct MergedLibraryTests {
 
     @Test("A single source keeps the plain \"Libraries\" title; two or more title each by server")
     func sectionTitlesDependOnSourceCount() async {
-        let a = session("a")
-        let b = session("b")
+        let a = makeSession("a")
+        let b = makeSession("b")
         let repo = jellyfinRepo([
-            a.id: [collection("a1", "Movies")],
-            b.id: [collection("b1", "Shows")],
+            a.id: [makeCollection("a1", "Movies")],
+            b.id: [makeCollection("b1", "Shows")],
         ])
 
         let single = await MergedLibrary.resolve(

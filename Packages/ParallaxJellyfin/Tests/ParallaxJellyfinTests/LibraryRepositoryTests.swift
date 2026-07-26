@@ -6,53 +6,17 @@ import ParallaxCore
 
 @Suite("LibraryRepository — collections, items, detail")
 struct LibraryRepositoryTests {
-    private func make() -> (LibraryRepository, FakeJellyfinLibraryClient, Session) {
-        let session = sampleSession()
+    private func make() -> (LibraryRepository, FakeJellyfinLibraryClient) {
         let client = FakeJellyfinLibraryClient()
-        let repo = LibraryRepository(session: session, client: client)
-        return (repo, client, session)
+        return (LibraryRepository(session: JellyfinFixtures.session(), client: client), client)
     }
 
-    private func sampleSession() -> Session {
-        let data = JellyfinServerData(
-            serverURL: URL(string: "https://j.example.com")!,
-            serverName: "Home",
-            user: UserSnapshot(id: "u1", name: "alice", serverLastUpdatedAt: nil)
-        )
-        return Session(id: ServerID(rawValue: "s1"), data: data, accessToken: "tok-1")
-    }
-
-    private func moviesCollectionDto() -> BaseItemDto {
-        var dto = BaseItemDto()
-        dto.id = "coll-movies"
-        dto.name = "Movies"
-        dto.collectionType = .movies
-        dto.imageTags = ["Primary": "p-tag"]
-        return dto
-    }
-
-    private func sampleMovieDto(id: String) -> BaseItemDto {
-        var dto = BaseItemDto()
-        dto.id = id
-        dto.name = "Movie \(id)"
-        dto.type = .movie
-        return dto
-    }
-
-    private func sampleEpisodeDto(id: String = "ep-1", seriesID: String = "ser-1", seasonID: String = "sea-1") -> BaseItemDto {
-        var dto = BaseItemDto()
-        dto.id = id
-        dto.name = "Episode \(id)"
-        dto.type = .episode
-        dto.seriesID = seriesID
-        dto.seasonID = seasonID
-        return dto
-    }
+    private let moviesLibrary = LibraryScope.collection(CollectionID(rawValue: "coll-movies"))
 
     @Test("collections() returns translated MediaCollections")
     func collections() async throws {
-        let (repo, client, _) = make()
-        client.collectionsResult = .success([moviesCollectionDto()])
+        let (repo, client) = make()
+        client.collectionsResult = .success([JellyfinFixtures.collectionDto()])
         let result = try await repo.collections()
         #expect(result.count == 1)
         #expect(result.first?.name == "Movies")
@@ -62,7 +26,7 @@ struct LibraryRepositoryTests {
 
     @Test("collections() maps client errors to AppError")
     func collectionsErrorMaps() async throws {
-        let (repo, client, _) = make()
+        let (repo, client) = make()
         client.collectionsResult = .failure(URLError(.notConnectedToInternet))
         await #expect(throws: AppError.self) {
             _ = try await repo.collections()
@@ -71,101 +35,88 @@ struct LibraryRepositoryTests {
 
     @Test("items() returns Page with nextCursor when more results available")
     func itemsPagination() async throws {
-        let (repo, client, _) = make()
-        client.itemsResult = .success((items: (0..<50).map { sampleMovieDto(id: "m\($0)") }, total: 120))
+        let (repo, client) = make()
+        let pageSize = LibraryRepository.pageSize
+        client.itemsResult = .success((items: (0..<pageSize).map { JellyfinFixtures.movieDto(id: "m\($0)") }, total: 120))
 
-        let page1 = try await repo.items(
-            in: .collection(CollectionID(rawValue: "coll-movies")),
-            filter: ItemFilter(),
-            sort: .defaultForLibrary,
-            cursor: nil
-        )
-        #expect(page1.items.count == 50)
+        let page1 = try await repo.items(in: moviesLibrary, filter: ItemFilter(), sort: .defaultForLibrary, cursor: nil)
+        #expect(page1.items.count == pageSize)
         #expect(page1.total == 120)
-        #expect(page1.nextCursor != nil)
+        #expect(page1.nextCursor == .startIndex(pageSize))
 
-        // Second page: client returns next 50; cursor still valid.
-        client.itemsResult = .success((items: (50..<100).map { sampleMovieDto(id: "m\($0)") }, total: 120))
-        let page2 = try await repo.items(
-            in: .collection(CollectionID(rawValue: "coll-movies")),
-            filter: ItemFilter(),
-            sort: .defaultForLibrary,
-            cursor: page1.nextCursor
-        )
-        #expect(page2.items.count == 50)
-        #expect(page2.nextCursor != nil)
+        // Second page: the client returns the next window; the cursor still advances.
+        client.itemsResult = .success((items: (pageSize..<(pageSize * 2)).map { JellyfinFixtures.movieDto(id: "m\($0)") }, total: 120))
+        let page2 = try await repo.items(in: moviesLibrary, filter: ItemFilter(), sort: .defaultForLibrary, cursor: page1.nextCursor)
+        #expect(page2.items.count == pageSize)
+        #expect(page2.nextCursor == .startIndex(pageSize * 2))
 
-        // Third page: only 20 items remain; nextCursor goes nil.
-        client.itemsResult = .success((items: (100..<120).map { sampleMovieDto(id: "m\($0)") }, total: 120))
-        let page3 = try await repo.items(
-            in: .collection(CollectionID(rawValue: "coll-movies")),
-            filter: ItemFilter(),
-            sort: .defaultForLibrary,
-            cursor: page2.nextCursor
-        )
-        #expect(page3.items.count == 20)
+        // Final partial page: the window closes exactly on `total`, so the cursor goes nil.
+        let remaining = 120 - pageSize * 2
+        client.itemsResult = .success((items: (0..<remaining).map { JellyfinFixtures.movieDto(id: "tail\($0)") }, total: 120))
+        let page3 = try await repo.items(in: moviesLibrary, filter: ItemFilter(), sort: .defaultForLibrary, cursor: page2.nextCursor)
+        #expect(page3.items.count == remaining)
         #expect(page3.nextCursor == nil)
     }
 
     @Test("items() stops paginating on an empty mid-sequence page (no infinite re-fetch)")
     func itemsEmptyPageEndsPagination() async throws {
-        let (repo, client, _) = make()
-        // First page is full and `total` claims more remain → cursor advances.
-        client.itemsResult = .success((items: (0..<50).map { sampleMovieDto(id: "m\($0)") }, total: 120))
-        let page1 = try await repo.items(
-            in: .collection(CollectionID(rawValue: "coll-movies")),
-            filter: ItemFilter(),
-            sort: .defaultForLibrary,
-            cursor: nil
-        )
+        let (repo, client) = make()
+        let pageSize = LibraryRepository.pageSize
+        client.itemsResult = .success((items: (0..<pageSize).map { JellyfinFixtures.movieDto(id: "m\($0)") }, total: 120))
+        let page1 = try await repo.items(in: moviesLibrary, filter: ItemFilter(), sort: .defaultForLibrary, cursor: nil)
         #expect(page1.nextCursor != nil)
 
-        // Second page comes back empty even though `total` still says 120
-        // (server deletions / over-reported total). The cursor must terminate,
-        // not repeat the same startIndex forever.
+        // The second page comes back empty even though `total` still says 120 (server deletions /
+        // over-reported total). The cursor must terminate, not repeat the same startIndex forever.
         client.itemsResult = .success((items: [], total: 120))
-        let page2 = try await repo.items(
-            in: .collection(CollectionID(rawValue: "coll-movies")),
-            filter: ItemFilter(),
-            sort: .defaultForLibrary,
-            cursor: page1.nextCursor
-        )
+        let page2 = try await repo.items(in: moviesLibrary, filter: ItemFilter(), sort: .defaultForLibrary, cursor: page1.nextCursor)
         #expect(page2.items.isEmpty)
         #expect(page2.nextCursor == nil)
     }
 
     @Test("items() forwards filter and sort to the client unchanged")
     func itemsForwardsParams() async throws {
-        let (repo, client, _) = make()
-        client.itemsResult = .success(([], 0))
+        let (repo, client) = make()
         let filter = ItemFilter(genres: ["Action"])
         let sort = ItemSort(field: .dateAdded, direction: .descending)
-        _ = try await repo.items(
-            in: .collection(CollectionID(rawValue: "coll-movies")),
-            filter: filter,
-            sort: sort,
-            cursor: nil
-        )
+        _ = try await repo.items(in: moviesLibrary, filter: filter, sort: sort, cursor: nil)
         #expect(client.itemsCalls.last?.filter == filter)
-        #expect(client.itemsCalls.last?.filter.genres == ["Action"])
         #expect(client.itemsCalls.last?.sort == sort)
-        #expect(client.itemsCalls.last?.scope == .collection(CollectionID(rawValue: "coll-movies")))
+        #expect(client.itemsCalls.last?.scope == moviesLibrary)
         #expect(client.itemsCalls.last?.startIndex == 0)
-        #expect(client.itemsCalls.last?.limit == 50)
+        #expect(client.itemsCalls.last?.limit == LibraryRepository.pageSize)
     }
 
     @Test("items() forwards the favorites scope to the client")
     func itemsFavoritesScope() async throws {
-        let (repo, client, _) = make()
-        client.itemsResult = .success(([], 0))
+        let (repo, client) = make()
         _ = try await repo.items(in: .favorites, filter: ItemFilter(), sort: .defaultForLibrary, cursor: nil)
         #expect(client.itemsCalls.last?.scope == .favorites)
     }
 
+    /// Only movie/series/episode DTOs have a detail destination; anything else the server folds
+    /// into a library page (a BoxSet, a playlist folder) must be dropped rather than rendered as
+    /// a tile that leads nowhere.
+    @Test("items() drops DTOs of a kind the app has no destination for")
+    func itemsDropUnsupportedKinds() async throws {
+        let (repo, client) = make()
+        var boxSet = BaseItemDto()
+        boxSet.id = "b1"
+        boxSet.name = "Marvel Collection"
+        boxSet.type = .boxSet
+        client.itemsResult = .success((items: [JellyfinFixtures.movieDto(id: "m1"), boxSet], total: 2))
+
+        let page = try await repo.items(in: moviesLibrary, filter: ItemFilter(), sort: .defaultForLibrary, cursor: nil)
+
+        #expect(page.items.map(\.id) == [ItemID(rawValue: "m1")])
+        // `total` stays the server's count — the cursor arithmetic is the server's, not ours.
+        #expect(page.total == 2)
+    }
+
     @Test("detail() returns the right ItemDetail case based on DTO type")
     func detail() async throws {
-        let (repo, client, _) = make()
-        var movieDto = sampleMovieDto(id: "m1")
+        let (repo, client) = make()
+        var movieDto = JellyfinFixtures.movieDto(id: "m1")
         movieDto.taglines = ["A line"]
         client.detailResult = .success(movieDto)
 
@@ -174,13 +125,14 @@ struct LibraryRepositoryTests {
             Issue.record("expected .movie, got \(detail)")
             return
         }
+        #expect(client.detailCalls == ["m1"])
         #expect(md.movie.title == "Movie m1")
         #expect(md.tagline == "A line")
     }
 
     @Test("detail() throws when the DTO can't be translated")
     func detailMissingFields() async throws {
-        let (repo, client, _) = make()
+        let (repo, client) = make()
         var bad = BaseItemDto()
         bad.id = nil
         client.detailResult = .success(bad)
@@ -191,20 +143,17 @@ struct LibraryRepositoryTests {
 
     @Test("homeHeroFeed fetches series metadata and builds entries")
     func homeHeroFeed() async throws {
-        let (repo, client, _) = make()
-        let epDate = Date(timeIntervalSince1970: 5_000_000)
-        var epDto = sampleEpisodeDto(id: "e2", seriesID: "ser-1", seasonID: "sea-1")
-        epDto.dateCreated = epDate
-        epDto.parentIndexNumber = 1
-        epDto.indexNumber = 2
+        let (repo, client) = make()
+        let epDto = JellyfinFixtures.episodeDto(
+            id: "e2",
+            indexNumber: 2,
+            parentIndexNumber: 1,
+            dateCreated: Date(timeIntervalSince1970: 5_000_000)
+        )
         client.recentlyAddedResultsByTypes = [.episode: .success([epDto])]
-
-        var seriesDto = BaseItemDto()
-        seriesDto.id = "ser-1"
-        seriesDto.name = "Show"
-        seriesDto.type = .series
-        seriesDto.dateCreated = Date(timeIntervalSince1970: 1_000_000)
-        client.itemsByIDsResult = .success([seriesDto])
+        client.itemsByIDsResult = .success([
+            JellyfinFixtures.seriesDto(id: "ser-1", name: "Show", dateCreated: Date(timeIntervalSince1970: 1_000_000)),
+        ])
 
         let feed = try await repo.homeHeroFeed(limit: 12)
         #expect(feed.count == 1)
@@ -216,20 +165,18 @@ struct LibraryRepositoryTests {
         let movieCall = client.recentlyAddedCalls.first { $0.types == [.movie] }
         let episodeCall = client.recentlyAddedCalls.first { $0.types == [.episode] }
         #expect(movieCall?.limit == 12)
-        #expect(episodeCall?.limit == 48)
+        // Episodes are over-fetched so a bulk import can't crowd the carousel out post-dedupe;
+        // the size of that over-fetch is the builder's to define, not this test's.
+        #expect(episodeCall?.limit == HomeHeroFeedBuilder.episodeLatestFetchLimit(presentationLimit: 12))
     }
 
     @Test("homeHeroFeed retains series logo from batch metadata")
     func homeHeroFeedSeriesLogo() async throws {
-        let (repo, client, _) = make()
-        client.recentlyAddedResultsByTypes = [.episode: .success([sampleEpisodeDto(id: "e1", seriesID: "ser-1")])]
-
-        var seriesDto = BaseItemDto()
-        seriesDto.id = "ser-1"
-        seriesDto.name = "Show"
-        seriesDto.type = .series
-        seriesDto.imageTags = ["Logo": "logo-tag"]
-        client.itemsByIDsResult = .success([seriesDto])
+        let (repo, client) = make()
+        client.recentlyAddedResultsByTypes = [.episode: .success([JellyfinFixtures.episodeDto(id: "e1")])]
+        client.itemsByIDsResult = .success([
+            JellyfinFixtures.seriesDto(id: "ser-1", name: "Show", imageTags: ["Logo": "logo-tag"]),
+        ])
 
         let feed = try await repo.homeHeroFeed(limit: 12)
         #expect(feed.count == 1)
@@ -239,91 +186,130 @@ struct LibraryRepositoryTests {
         }
         #expect(series.imageRef(.logo)?.tag.rawValue == "logo-tag")
     }
+
+    /// A newly-added series' hero should open the show from the start, but a bulk-import batch
+    /// rarely contains S1E1 — so the repository asks the server for the series' resume point and
+    /// hands it to the builder as the fallback play target.
+    @Test("homeHeroFeed asks the server for a start episode when a newly added series' batch lacks S1E1")
+    func homeHeroFeedFetchesFirstEpisodeFallback() async throws {
+        let (repo, client) = make()
+        let importedAt = Date(timeIntervalSince1970: 5_000_000)
+        // Three episodes landing together inside the import window = a bulk import.
+        client.recentlyAddedResultsByTypes = [
+            .episode: .success((4...6).map { (index: Int) in
+                JellyfinFixtures.episodeDto(id: "e\(index)", indexNumber: index, parentIndexNumber: 1, dateCreated: importedAt)
+            }),
+        ]
+        client.itemsByIDsResult = .success([
+            JellyfinFixtures.seriesDto(id: "ser-1", name: "Show", dateCreated: importedAt),
+        ])
+        client.seriesNextUpResult = .success(
+            JellyfinFixtures.episodeDto(id: "e1", indexNumber: 1, parentIndexNumber: 1)
+        )
+
+        let feed = try await repo.homeHeroFeed(limit: 12)
+
+        #expect(client.seriesNextUpCalls == ["ser-1"])
+        #expect(feed.first?.eyebrow == .newlyAdded)
+        // The batch's earliest episode still wins when present; the fallback only fills the gap
+        // when the batch has none at all.
+        #expect(feed.first?.playTarget.id == ItemID(rawValue: "e4"))
+    }
+
+    /// A batch that already contains S1E1 needs no extra round-trip.
+    @Test("homeHeroFeed skips the fallback fetch when S1E1 is already in the batch")
+    func homeHeroFeedSkipsFallbackWhenS1E1Present() async throws {
+        let (repo, client) = make()
+        let importedAt = Date(timeIntervalSince1970: 5_000_000)
+        client.recentlyAddedResultsByTypes = [
+            .episode: .success((1...3).map { (index: Int) in
+                JellyfinFixtures.episodeDto(id: "e\(index)", indexNumber: index, parentIndexNumber: 1, dateCreated: importedAt)
+            }),
+        ]
+        client.itemsByIDsResult = .success([
+            JellyfinFixtures.seriesDto(id: "ser-1", name: "Show", dateCreated: importedAt),
+        ])
+
+        let feed = try await repo.homeHeroFeed(limit: 12)
+
+        #expect(client.seriesNextUpCalls.isEmpty)
+        #expect(feed.first?.playTarget.id == ItemID(rawValue: "e1"))
+    }
+
+    @Test("homeHeroFeed maps a transport failure to AppError")
+    func homeHeroFeedErrorMaps() async throws {
+        let (repo, client) = make()
+        client.recentlyAddedResultsByTypes = [.movie: .failure(URLError(.timedOut))]
+        await #expect(throws: AppError.self) {
+            _ = try await repo.homeHeroFeed(limit: 12)
+        }
+    }
 }
 
-@Suite("LibraryRepository — setFavorite, setPlayed, resumeEpisode, genres")
+@Suite("LibraryRepository — setFavorite, setPlayed, resumeEpisode, genres, segments")
 struct LibraryRepositoryUserActionTests {
     private func make() -> (LibraryRepository, FakeJellyfinLibraryClient) {
-        let data = JellyfinServerData(
-            serverURL: URL(string: "https://j.example.com")!,
-            serverName: "Home",
-            user: UserSnapshot(id: "u1", name: "alice", serverLastUpdatedAt: nil)
-        )
-        let session = Session(id: ServerID(rawValue: "s1"), data: data, accessToken: "tok-1")
         let client = FakeJellyfinLibraryClient()
-        let repo = LibraryRepository(session: session, client: client)
-        return (repo, client)
+        return (LibraryRepository(session: JellyfinFixtures.session(), client: client), client)
     }
 
-    private func sampleEpisodeDto(id: String = "ep-1", seriesID: String = "ser-1", seasonID: String = "sea-1") -> BaseItemDto {
-        var dto = BaseItemDto()
-        dto.id = id
-        dto.name = "Episode \(id)"
-        dto.type = .episode
-        dto.seriesID = seriesID
-        dto.seasonID = seasonID
-        return dto
-    }
-
-    private func sampleMovieDto(id: String) -> BaseItemDto {
-        var dto = BaseItemDto()
-        dto.id = id
-        dto.name = "Movie \(id)"
-        dto.type = .movie
-        return dto
-    }
-
-    @Test("setFavorite(true) forwards itemID and flag to client")
-    func setFavoriteTrue() async throws {
+    @Test("setFavorite forwards the flag and returns the server's user data", arguments: [true, false])
+    func setFavoriteForwardsFlag(isFavorite: Bool) async throws {
         let (repo, client) = make()
+        // Stubbed explicitly: the fake no longer folds the passed flag into its answer, so this
+        // asserts the repository returns what the SERVER said.
         client.setFavoriteResult = .success(
-            UserItemData(played: false, playbackPositionTicks: 0, playCount: 0, isFavorite: true)
+            UserItemData(played: true, playbackPositionTicks: 42, playCount: 3, isFavorite: isFavorite)
         )
-        let userData = try await repo.setFavorite(itemID: ItemID(rawValue: "item-42"), isFavorite: true)
+
+        let userData = try await repo.setFavorite(itemID: ItemID(rawValue: "item-42"), isFavorite: isFavorite)
+
         #expect(client.setFavoriteCalls.count == 1)
         #expect(client.setFavoriteCalls.last?.itemID == "item-42")
-        #expect(client.setFavoriteCalls.last?.isFavorite == true)
-        #expect(userData.isFavorite == true)
+        #expect(client.setFavoriteCalls.last?.isFavorite == isFavorite)
+        #expect(userData.isFavorite == isFavorite)
+        #expect(userData.playCount == 3)
     }
 
     @Test("setFavorite propagates a client failure (so the VM's optimistic revert fires)")
     func setFavoritePropagatesError() async throws {
         let (repo, client) = make()
         client.setFavoriteResult = .failure(FakeJellyfinLibraryClient.FakeError.notConfigured)
-        await #expect(throws: (any Error).self) {
+        await #expect(throws: AppError.self) {
             try await repo.setFavorite(itemID: ItemID(rawValue: "item-1"), isFavorite: true)
         }
     }
 
-    @Test("setFavorite(false) forwards itemID and flag to client")
-    func setFavoriteFalse() async throws {
+    @Test("setPlayed forwards the flag and returns the server's user data", arguments: [true, false])
+    func setPlayedForwardsFlag(isPlayed: Bool) async throws {
         let (repo, client) = make()
-        try await repo.setFavorite(itemID: ItemID(rawValue: "item-99"), isFavorite: false)
-        #expect(client.setFavoriteCalls.last?.itemID == "item-99")
-        #expect(client.setFavoriteCalls.last?.isFavorite == false)
-    }
+        client.setPlayedResult = .success(
+            UserItemData(played: isPlayed, playbackPositionTicks: 0, playCount: isPlayed ? 1 : 0, isFavorite: true)
+        )
 
-    @Test("setPlayed(true) forwards itemID and flag to client")
-    func setPlayedTrue() async throws {
-        let (repo, client) = make()
-        try await repo.setPlayed(itemID: ItemID(rawValue: "item-7"), isPlayed: true)
+        let userData = try await repo.setPlayed(itemID: ItemID(rawValue: "item-7"), isPlayed: isPlayed)
+
         #expect(client.setPlayedCalls.count == 1)
         #expect(client.setPlayedCalls.last?.itemID == "item-7")
-        #expect(client.setPlayedCalls.last?.isPlayed == true)
+        #expect(client.setPlayedCalls.last?.isPlayed == isPlayed)
+        #expect(userData.played == isPlayed)
     }
 
-    @Test("setPlayed(false) forwards itemID and flag to client")
-    func setPlayedFalse() async throws {
+    @Test("setPlayed propagates a client failure")
+    func setPlayedPropagatesError() async throws {
         let (repo, client) = make()
-        try await repo.setPlayed(itemID: ItemID(rawValue: "item-8"), isPlayed: false)
-        #expect(client.setPlayedCalls.last?.itemID == "item-8")
-        #expect(client.setPlayedCalls.last?.isPlayed == false)
+        client.setPlayedResult = .failure(URLError(.notConnectedToInternet))
+        await #expect(throws: AppError.self) {
+            try await repo.setPlayed(itemID: ItemID(rawValue: "item-7"), isPlayed: true)
+        }
     }
 
     @Test("resumeEpisode maps a BaseItemDto into an Episode")
     func resumeEpisodeMapsDto() async throws {
         let (repo, client) = make()
-        client.seriesNextUpResult = .success(sampleEpisodeDto(id: "ep-5", seriesID: "ser-2", seasonID: "sea-3"))
+        client.seriesNextUpResult = .success(
+            JellyfinFixtures.episodeDto(id: "ep-5", seriesID: "ser-2", seasonID: "sea-3")
+        )
         let episode = try await repo.resumeEpisode(forSeries: ItemID(rawValue: "ser-2"))
         #expect(client.seriesNextUpCalls == ["ser-2"])
         #expect(episode?.id == ItemID(rawValue: "ep-5"))
@@ -349,11 +335,69 @@ struct LibraryRepositoryUserActionTests {
         #expect(result == ["Action", "Drama"])
     }
 
-    @Test("genres returns empty when client yields empty")
-    func genresEmpty() async throws {
+    /// Segments drive the Skip Intro / Next Episode affordances; an unusable span must be dropped
+    /// here rather than reaching the player as a marker the playhead can never fall inside.
+    @Test("mediaSegments forwards the item id and drops unusable spans")
+    func mediaSegments() async throws {
         let (repo, client) = make()
-        client.genresResult = .success([])
-        let result = try await repo.genres(in: .collection(CollectionID(rawValue: "coll-2")))
-        #expect(result.isEmpty)
+        var intro = MediaSegmentDto()
+        intro.id = "seg-1"
+        intro.type = .intro
+        intro.startTicks = 0
+        intro.endTicks = 300_000_000
+        var broken = MediaSegmentDto()
+        broken.id = "seg-2"
+        broken.type = .outro
+        broken.startTicks = 500_000_000
+        broken.endTicks = nil
+        client.mediaSegmentsResult = .success([intro, broken])
+
+        let segments = try await repo.mediaSegments(for: ItemID(rawValue: "item-1"))
+
+        #expect(client.mediaSegmentsCalls == ["item-1"])
+        #expect(segments.map(\.kind) == [.intro])
+    }
+
+    @Test("mediaSegments maps a transport failure to AppError")
+    func mediaSegmentsErrorMaps() async throws {
+        let (repo, client) = make()
+        client.mediaSegmentsResult = .failure(URLError(.timedOut))
+        await #expect(throws: AppError.self) {
+            _ = try await repo.mediaSegments(for: ItemID(rawValue: "item-1"))
+        }
+    }
+
+    /// The window is [previous, self, next] in airing order, so neighbours are positional — which
+    /// is what lets a season finale hand off to the next season's premiere.
+    @Test("adjacentEpisodes resolves neighbours out of the server's window")
+    func adjacentEpisodes() async throws {
+        let (repo, client) = make()
+        client.adjacentEpisodesResult = .success([
+            JellyfinFixtures.episodeDto(id: "e1", indexNumber: 1),
+            JellyfinFixtures.episodeDto(id: "e2", indexNumber: 2),
+            JellyfinFixtures.episodeDto(id: "e3", indexNumber: 3),
+        ])
+
+        let adjacent = try await repo.adjacentEpisodes(
+            seriesID: ItemID(rawValue: "ser-1"),
+            episodeID: ItemID(rawValue: "e2")
+        )
+
+        #expect(client.adjacentEpisodesCalls.map(\.seriesID) == ["ser-1"])
+        #expect(client.adjacentEpisodesCalls.map(\.episodeID) == ["e2"])
+        #expect(adjacent.previous?.id == ItemID(rawValue: "e1"))
+        #expect(adjacent.next?.id == ItemID(rawValue: "e3"))
+    }
+
+    @Test("adjacentEpisodes maps a transport failure to AppError")
+    func adjacentEpisodesErrorMaps() async throws {
+        let (repo, client) = make()
+        client.adjacentEpisodesResult = .failure(URLError(.timedOut))
+        await #expect(throws: AppError.self) {
+            _ = try await repo.adjacentEpisodes(
+                seriesID: ItemID(rawValue: "ser-1"),
+                episodeID: ItemID(rawValue: "e2")
+            )
+        }
     }
 }

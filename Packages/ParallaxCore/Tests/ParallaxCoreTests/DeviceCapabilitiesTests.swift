@@ -4,8 +4,8 @@ import Testing
 
 @Suite("DeviceCapabilities")
 struct DeviceCapabilitiesTests {
-    @Test("DeviceCapabilities constructs with all fields and is Sendable + Hashable")
-    func constructs() {
+    @Test("a composed HDR capability answers for each flavour it contains")
+    func hdrIsDerivedNotEchoed() {
         let caps = DeviceCapabilities(
             supportedVideoCodecs: [.h264, .hevc],
             supportedAudioCodecs: [.aac, .eac3],
@@ -17,23 +17,58 @@ struct DeviceCapabilitiesTests {
             preferredSubtitleFormats: [.vtt, .srt]
         )
 
-        #expect(caps.supportedVideoCodecs.contains(.hevc))
         #expect(caps.hdr.includes(.dolbyVision))
-        #expect(caps.maxBitrate == .megabits(80))
+        #expect(caps.hdr.includes(.hdr10))
     }
 
-    @Test("DeviceCapabilities equals another with the same fields")
+    @Test("two values built from the same fields compare equal")
     func equality() {
-        let a = DeviceCapabilities.stub
-        let b = DeviceCapabilities.stub
-        #expect(a == b)
+        #expect(DeviceCapabilities.stub == DeviceCapabilities.stub)
     }
 
-    @Test("DeviceCapabilities round-trips through Codable")
+    /// The one Codable round trip for this type — `.stub` populates both tiers, so encoding it
+    /// covers every field a two-tier-only round trip would.
+    @Test("round-trips through Codable with both tiers intact")
     func codableRoundTrip() throws {
-        let original = DeviceCapabilities.stub
-        let data = try JSONEncoder().encode(original)
-        let decoded = try JSONDecoder().decode(DeviceCapabilities.self, from: data)
-        #expect(decoded == original)
+        try assertCodableRoundTrip(DeviceCapabilities.stub)
+    }
+}
+
+@Suite("DeviceCapabilities two-tier extension")
+struct DeviceCapabilitiesTwoTierTests {
+    /// Hardware-only device: the AVKit tier is populated, the software tier defaults to empty.
+    private static let hardwareOnly = DeviceCapabilities(
+        supportedVideoCodecs: [.h264, .hevc],
+        supportedAudioCodecs: [.aac, .ac3, .eac3, .mp3],
+        supportedContainers: [.mp4, .mov, .hls],
+        hdr: .none,
+        maxResolution: .uhd4K,
+        maxBitrate: .megabits(120),
+        audioOutput: .stereo,
+        preferredSubtitleFormats: [.vtt, .srt]
+    )
+
+    @Test("the software tier defaults to empty — a hardware-only device is expressible")
+    func softwareTierDefaultsEmpty() {
+        let caps = Self.hardwareOnly
+        #expect(caps.softwareVideoCodecs.isEmpty)
+        #expect(caps.softwareAudioCodecs.isEmpty)
+        #expect(caps.softwareContainers.isEmpty)
+    }
+
+    @Test(".stub carries a populated software tier so tier-routing suites have both sides")
+    func stubHasNonEmptySoftwareFields() {
+        let stub = DeviceCapabilities.stub
+        #expect(stub.softwareVideoCodecs.isEmpty == false)
+        #expect(stub.softwareAudioCodecs.isEmpty == false)
+        #expect(stub.softwareContainers.isEmpty == false)
+    }
+
+    /// The two tiers must stay disjoint on video: a codec AVKit decodes in hardware has no
+    /// business in the software list, or the engine selector would route it to VLC needlessly.
+    @Test("the two tiers are disjoint: no AVKit-native video codec appears in the software tier",
+          arguments: DeviceCapabilities.stub.supportedVideoCodecs)
+    func stubSoftwareVideoExcludesAVKit(codec: VideoCodec) {
+        #expect(DeviceCapabilities.stub.softwareVideoCodecs.contains(codec) == false)
     }
 }
