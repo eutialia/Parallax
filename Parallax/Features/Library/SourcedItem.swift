@@ -13,6 +13,17 @@ import ParallaxJellyfin
 ///
 /// Library grids stay single-server and keep passing a plain `Item` + one screen-level `Session`;
 /// only the surfaces that actually mix sources pay for this.
+/// One item's identity on an aggregated surface: which server it came from, and its id there.
+///
+/// Its own type rather than reusing `LibraryRef`, which pairs a source with a `CollectionID` — an
+/// `ItemID` squeezed into that slot happens to work (both wrap a String) while quietly erasing the
+/// distinction between "a library on server A" and "an item on server A". Keeping them apart is
+/// what stops an item identity being handed to something expecting a library.
+struct SourcedItemID: Hashable {
+    let source: MediaSourceID
+    let item: ItemID
+}
+
 struct SourcedItem: Identifiable, Hashable {
     let item: Item
     let source: LibrarySource
@@ -20,7 +31,7 @@ struct SourcedItem: Identifiable, Hashable {
     /// Compound identity. The `ItemID` alone is NOT unique across servers, so a `ForEach` keyed on
     /// it would collide (SwiftUI drops duplicate ids, silently losing a tile) the moment two
     /// servers hold the same title with a path-derived id.
-    var id: LibraryRef { LibraryRef(source: source.sourceID, collection: CollectionID(rawValue: item.id.rawValue)) }
+    var id: SourcedItemID { SourcedItemID(source: source.sourceID, item: item.id) }
 
     /// The Jellyfin session backing this item, when it came from a Jellyfin server. Home is
     /// Jellyfin-only today (SMB has no watch-progress feed), so its tiles unwrap this; Search will
@@ -37,8 +48,8 @@ struct SourcedHeroEntry: Identifiable, Hashable {
     let entry: HomeHeroFeedEntry
     let source: LibrarySource
 
-    var id: LibraryRef {
-        LibraryRef(source: source.sourceID, collection: CollectionID(rawValue: entry.id.rawValue))
+    var id: SourcedItemID {
+        SourcedItemID(source: source.sourceID, item: entry.id)
     }
 
     var jellyfinSession: Session? {
