@@ -34,12 +34,17 @@ final class MovieDetailViewModel {
     /// `isFavorite` in `apply(_:)` the same way `playedInFlight` gates `isPlayed`.
     private var favoriteInFlight = false
     private let repo: LibraryRepository
+    /// Which server this movie lives on. Carried so user-data broadcasts are keyed by
+    /// (source, itemID) — an aggregated surface must not repaint a different server's tile, and
+    /// Jellyfin's path-derived item GUIDs mean two servers can genuinely mint the same id.
+    private let source: MediaSourceID
     private let itemID: ItemID
     private let userDataActions: UserDataActions
     private var changesTask: Task<Void, Never>?
 
-    init(repo: LibraryRepository, itemID: ItemID, userDataActions: UserDataActions) {
+    init(repo: LibraryRepository, itemID: ItemID, source: MediaSourceID, userDataActions: UserDataActions) {
         self.repo = repo
+        self.source = source
         self.itemID = itemID
         self.userDataActions = userDataActions
         // Own the iterating Task; cancelled in deinit.
@@ -64,6 +69,10 @@ final class MovieDetailViewModel {
     /// `playedInFlight` — so a differently-sourced broadcast landing mid-toggle can't revert
     /// either optimistic value.
     private func apply(_ change: UserDataActions.Change) {
+        // Match on (source, itemID). This screen is single-server, so a change from ANOTHER server
+        // is never about this movie — and an id match alone can't prove otherwise, since Jellyfin
+        // derives item GUIDs deterministically from the media path (mirrored libraries collide).
+        guard change.source == source else { return }
         guard case .loaded(let detail) = state, detail.movie.id == change.itemID else { return }
         let merged = change.merged(into: detail.movie.userData)
         state = .loaded(detail.withMovie(detail.movie.withUserData(merged)))
@@ -124,7 +133,7 @@ final class MovieDetailViewModel {
         favoriteInFlight = true
         defer { favoriteInFlight = false }
         isFavorite = !original
-        switch await userDataActions.toggleFavorite(itemID: itemID, currentlyFavorite: original, via: repo) {
+        switch await userDataActions.toggleFavorite(itemID: itemID, source: source, currentlyFavorite: original, via: repo) {
         case .success(let server):
             isFavorite = server.isFavorite
         case .skipped:
@@ -145,7 +154,7 @@ final class MovieDetailViewModel {
         playedInFlight = true
         defer { playedInFlight = false }
         isPlayed = !original
-        switch await userDataActions.togglePlayed(itemID: itemID, currentlyPlayed: original, via: repo) {
+        switch await userDataActions.togglePlayed(itemID: itemID, source: source, currentlyPlayed: original, via: repo) {
         case .success(let server):
             isPlayed = server.played
         case .skipped:

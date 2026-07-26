@@ -9,13 +9,15 @@ struct FocusRootView: View {
     @Environment(UserDataActions.self) private var userDataActions
     @State private var selectedTab: AppTab = .home
     @State private var session: Session?
-    @State private var entries: [LibraryEntry] = []
-    /// True while a Jellyfin session is active but its `collections()` fetch failed — the sidebar
-    /// shows SMB-only (or nothing) because the network is down, not because the server has no
-    /// libraries. Gates `.recoversFromOffline` so the libraries repopulate on reconnect; the local
-    /// SMB shares are unaffected. Home recovers itself via `HomeView`'s own modifier (it shares the
-    /// preloaded view model), so recovery here re-resolves only the libraries.
-    @State private var librariesStalled = false
+    /// One group per configured source, in server add order — the sidebar's titled sections.
+    /// Libraries are never merged across servers, so a group is exactly one server's libraries.
+    @State private var groups: [LibraryGroup] = []
+    /// Sources whose library listing failed this pass — the sidebar is missing THOSE servers'
+    /// libraries because the network is down, not because they have none. Gates
+    /// `.recoversFromOffline` so they repopulate on reconnect; healthy servers and the local SMB
+    /// shares are never re-pulled. Home recovers itself via `HomeView`'s own modifier (it shares
+    /// the preloaded view model), so recovery here re-resolves only the libraries.
+    @State private var failedSourceIDs: Set<MediaSourceID> = []
     @State private var homeViewModel: HomeViewModel?
     /// Flips true once the first library load settles — the readiness signal that reveals the tab
     /// host. Independent of `session`: an SMB-only config has no Jellyfin session yet is fully ready
@@ -62,13 +64,17 @@ struct FocusRootView: View {
             // but `hasAuxiliarySources == true`, so it passes here — where the old `activeServerID`
             // gate stranded it on the launch spinner.
             guard router.hasAnySource else { return }
-            // Home's feed (hero / Continue Watching / Next Up) is Jellyfin-only, so build its model
-            // only for a live session — its concrete repo carries the feed methods the merged list
-            // doesn't. SMB-only: no model; Home renders `HomeUnavailableView` and the libraries come
-            // from the sidebar.
+            // Home's feed (hero / Continue Watching / Next Up) is Jellyfin-only, and aggregates
+            // EVERY signed-in server — so the model is built from the full session list, not the
+            // active one. SMB-only (no sessions): no model; Home renders `HomeUnavailableView` and
+            // the libraries come from the sidebar.
             var vm: HomeViewModel?
-            if let active = await deps.serverStore.active {
-                vm = HomeViewModel(repo: await deps.jellyfinLibraryRepoFactory(active), userDataActions: userDataActions)
+            let feeds = await HomeViewModel.Feed.all(
+                for: await deps.serverStore.sessions,
+                repoFactory: deps.jellyfinLibraryRepoFactory
+            )
+            if !feeds.isEmpty {
+                vm = HomeViewModel(feeds: feeds, userDataActions: userDataActions)
             }
             // Load the sidebar's libraries and Home's feed concurrently, then reveal once both
             // settle — so the UI appears whole, with the hero (if any) already focusable.
@@ -91,10 +97,10 @@ struct FocusRootView: View {
         }
         // Repopulate the sidebar's Jellyfin libraries when the network returns (or the app
         // foregrounds online) after a launch that couldn't reach the server. Gated on
-        // `librariesStalled` so a healthy list — and the local SMB shares — are never re-pulled; the
+        // the failed-source set so healthy servers — and the local SMB shares — are never re-pulled; the
         // reload token doesn't move on a reconnect, so without this the libraries stayed gone until a
         // server switch. Home recovers separately via its own modifier. Event-based, no pull-to-refresh.
-        .recoversFromOffline(isStalled: librariesStalled) { await loadLibraries() }
+        .recoversFromOffline(isStalled: !failedSourceIDs.isEmpty) { await loadLibraries() }
     }
 
     /// Resolve + commit just the sidebar's merged library list. Shared by the launch `.task` (run
@@ -104,23 +110,39 @@ struct FocusRootView: View {
     /// selection off a tab still valid in the latest entries). Does NOT touch `isReady` / the launch
     /// gate / the Home model — those are the launch task's to commit once both loads settle.
     private func loadLibraries() async {
-        guard router.hasAnySource else { entries = []; session = nil; librariesStalled = false; return }
-        let active = await deps.serverStore.active
-        var hiddenJellyfin: Set<String> = []
-        if let active { hiddenJellyfin = await deps.serverStore.hiddenCollectionIDs(for: active.id) }
+        guard router.hasAnySource else { groups = []; session = nil; failedSourceIDs = []; return }
         let outcome = await MergedLibrary.resolve(
-            jellyfinSession: active,
-            smbServers: await deps.serverStore.servers,
-            hiddenJellyfinCollectionIDs: hiddenJellyfin,
+            sessions: await deps.serverStore.sessions,
+            servers: await deps.serverStore.servers,
+            hiddenCollectionIDs: await deps.serverStore.allHiddenCollectionIDs,
             jellyfinRepo: deps.mediaRepoFactory
         )
+        let active = await deps.serverStore.active
         guard !Task.isCancelled else { return }
         session = active
-        entries = outcome.entries
-        librariesStalled = outcome.jellyfinCollectionsFailed
+        groups = outcome.groups
+        failedSourceIDs = outcome.failedSourceIDs
         // If the selected library tab's backing entry just vanished, snap to Home so the tab host
         // isn't left on a gone tab (shared with RootTabView via `snappedIfStale`).
         selectedTab = selectedTab.snappedIfStale(against: outcome.entries)
+    }
+
+    /// One library row in a server's sidebar section. Extracted with an EXPLICIT
+    /// `some TabContent<AppTab>` return type, and not inlined, for two reasons that bit here:
+    /// the annotation pins `TabValue` to non-optional `AppTab` (left to infer inside two nested
+    /// `ForEach`es, `TabSection` resolves to its optional-selection overload and the whole
+    /// `TabContentBuilder` stops matching), and pulling the `NavigationStack` + destination out of
+    /// the doubly-nested builder keeps the remaining expression under the type-checker's limit.
+    /// Without it the roots fail as `TabView` silently falls back to its legacy `ViewBuilder`
+    /// overload and reports "Tab … does not conform to 'View'" against the FIRST tab in the file.
+    private func libraryTab(for entry: LibraryEntry) -> some TabContent<AppTab> {
+        Tab(entry.collection.name, systemImage: entry.tabSymbolName, value: AppTab.collection(entry.id)) {
+            NavigationStack {
+                // SMB shares drill into the folder browser; Jellyfin collections into the poster
+                // grid (shared with the iPhone list — one dispatch site).
+                libraryEntryDestination(for: entry)
+            }
+        }
     }
 
     private var tabView: some View {
@@ -139,7 +161,7 @@ struct FocusRootView: View {
             // Search is Jellyfin-backed (SMB has no search index) — omitted in an SMB-only config
             // rather than shown as a permanently-empty tab. `role: .search` = the system search
             // tab; JellyfinSearchView's `.searchable` renders the HIG search screen inside it.
-            if session != nil {
+            if router.hasSearchableSource {
                 Tab(value: AppTab.search, role: .search) {
                     NavigationStack {
                         JellyfinSearchView()
@@ -151,25 +173,23 @@ struct FocusRootView: View {
             // drills straight to its grid. With no list to push a drill-down from, the selected
             // library tab's own label drives the collapsed sidebar's top-left name (the old
             // drill-down path showed a stale "Library" there).
-            if !entries.isEmpty {
-                TabSection("Libraries") {
-                    ForEach(entries) { entry in
-                        Tab(entry.collection.name, systemImage: entry.tabSymbolName, value: AppTab.collection(entry.id)) {
-                            NavigationStack {
-                                // SMB shares drill into the folder browser; Jellyfin collections into
-                                // the poster grid (shared with the iPhone list — one dispatch site).
-                                libraryEntryDestination(for: entry)
-                            }
-                        }
+            // Favorites is a cross-SERVER virtual library, so it sits at top level rather than
+            // inside a server's section (which would claim it belongs to that server). Jellyfin
+            // concept — omitted SMB-only. Mirrors RootTabView's placement.
+            if let session {
+                Tab("Favorites", systemImage: "heart", value: AppTab.favorites) {
+                    NavigationStack {
+                        FavoritesView()
                     }
-                    // Favorites is a Jellyfin concept (cross-library favorites) — omitted SMB-only.
-                    if let session {
-                        Tab("Favorites", systemImage: "heart", value: AppTab.favorites) {
-                            NavigationStack {
-                                LibraryGridView(scope: .favorites, title: "Favorites", session: session)
-                            }
-                        }
-                    }
+                }
+            }
+
+            // One collapsible section per server, in the order the user added them — libraries are
+            // never merged across servers, so two servers that both expose "Movies" stay two rows
+            // under two headers. A single configured source keeps the plain "Libraries" title.
+            ForEach(groups) { group in
+                TabSection(groups.sectionTitle(for: group)) {
+                    ForEach(group.entries) { libraryTab(for: $0) }
                 }
             }
 

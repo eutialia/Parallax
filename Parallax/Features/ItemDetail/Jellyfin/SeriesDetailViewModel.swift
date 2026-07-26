@@ -36,12 +36,15 @@ final class SeriesDetailViewModel {
     private var favoriteInFlight = false
 
     private let repo: LibraryRepository
+    /// Which server this series lives on — see `MovieDetailViewModel.source`.
+    private let source: MediaSourceID
     private let itemID: ItemID
     private let userDataActions: UserDataActions
     private var changesTask: Task<Void, Never>?
 
-    init(repo: LibraryRepository, itemID: ItemID, userDataActions: UserDataActions) {
+    init(repo: LibraryRepository, itemID: ItemID, source: MediaSourceID, userDataActions: UserDataActions) {
         self.repo = repo
+        self.source = source
         self.itemID = itemID
         self.userDataActions = userDataActions
         // Own the iterating Task; cancelled in deinit.
@@ -78,6 +81,8 @@ final class SeriesDetailViewModel {
     /// never re-skeletons. All matches only set `needsRefresh`; the actual `await refresh()`
     /// runs once at the end, never twice in one `apply`.
     private func apply(_ change: UserDataActions.Change) async {
+        // Single-server screen: ignore other servers' changes outright (see MovieDetailViewModel).
+        guard change.source == source else { return }
         guard case .loaded(let detail, let seasons) = state else { return }
 
         // Single deferred refresh point: every match below only sets `needsRefresh`, and the
@@ -212,7 +217,7 @@ final class SeriesDetailViewModel {
         favoriteInFlight = true
         defer { favoriteInFlight = false }
         isFavorite = !original
-        switch await userDataActions.toggleFavorite(itemID: itemID, currentlyFavorite: original, via: repo) {
+        switch await userDataActions.toggleFavorite(itemID: itemID, source: source, currentlyFavorite: original, via: repo) {
         case .success(let server):
             isFavorite = server.isFavorite
         case .skipped:

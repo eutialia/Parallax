@@ -41,7 +41,10 @@ struct SettingsViewModelTests {
         await vm.refresh()
         #expect(vm.smbServers.contains { $0.id == keep })
         #expect(vm.smbServers.contains { $0.id == drop })
-        let revisionBefore = router.libraryRevision
+        // Baseline the reload key with BOTH servers configured, so the assertion below is about the
+        // removal rather than about the router leaving its pristine pre-launch state.
+        await vm.reloadAfterSMBChange()
+        let tokenWithBothServers = router.libraryReloadToken
 
         await vm.removeSMBServer(drop)
 
@@ -50,8 +53,11 @@ struct SettingsViewModelTests {
         #expect(vm.smbServers.contains { $0.id == drop } == false)
         // The surviving server stays put.
         #expect(vm.smbServers.contains { $0.id == keep })
-        // And the sidebar reload signal fired (the same revision bump the roots rebuild on).
-        #expect(router.libraryRevision > revisionBefore)
+        // And the roots' reload key moved, so the sidebar rebuilds. Asserted on the TOKEN, not on
+        // `libraryRevision`: a source add/removal now moves the token via the store's source-set
+        // fingerprint, and the manual revision bump this used to check is reserved for changes to
+        // the contents of an unchanged set (visible-libraries edits, SMB share re-selection).
+        #expect(router.libraryReloadToken != tokenWithBothServers)
     }
 
     @Test("removeSMBServer clearing the last source routes the empty config back to login")

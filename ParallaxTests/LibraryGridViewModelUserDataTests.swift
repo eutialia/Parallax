@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import ParallaxCore
+import ParallaxJellyfin
 @testable import Parallax
 
 /// `LibraryGridViewModel`'s `UserDataActions.changes()` subscription: a matching item's
@@ -11,6 +12,9 @@ import ParallaxCore
 @MainActor
 @Suite("LibraryGridViewModel user-data subscription")
 struct LibraryGridViewModelUserDataTests {
+    /// Every fixture in this suite is one server; the grid ignores other sources' changes.
+    private let previewSource = MediaSourceID.jellyfin(ServerID(rawValue: "test-server"))
+
     private func movieItem(id: String, isFavorite: Bool) -> Item {
         .movie(Movie(
             id: ItemID(rawValue: id), title: "Example", overview: nil, year: nil, runtime: nil,
@@ -26,13 +30,13 @@ struct LibraryGridViewModelUserDataTests {
         let itemID = ItemID(rawValue: "movie-patch")
         let fake = FakeMediaRepository()
         fake.itemsResult = .success(Page(items: [movieItem(id: itemID.rawValue, isFavorite: false)], total: 1, nextCursor: nil))
-        let vm = LibraryGridViewModel(repo: fake, scope: .collection(CollectionID(rawValue: "movies")), userDataActions: userDataActions)
+        let vm = LibraryGridViewModel(repo: fake, source: previewSource, scope: .collection(CollectionID(rawValue: "movies")), userDataActions: userDataActions)
         await vm.load()
         #expect(vm.items.first?.userData.isFavorite == false)
 
         let fresh = UserItemData(played: false, playbackPositionTicks: 0, playCount: 0, isFavorite: true)
         let writer = StubUserDataWriter(favorite: .success(fresh))
-        _ = await userDataActions.toggleFavorite(itemID: itemID, currentlyFavorite: false, via: writer)
+        _ = await userDataActions.toggleFavorite(itemID: itemID, source: previewSource, currentlyFavorite: false, via: writer)
 
         await waitUntil { vm.items.first?.userData.isFavorite == true }
         #expect(vm.items.first?.userData.isFavorite == true)
@@ -44,13 +48,13 @@ struct LibraryGridViewModelUserDataTests {
         let itemID = ItemID(rawValue: "movie-fav")
         let fake = FakeMediaRepository()
         fake.itemsResult = .success(Page(items: [movieItem(id: itemID.rawValue, isFavorite: true)], total: 1, nextCursor: nil))
-        let vm = LibraryGridViewModel(repo: fake, scope: .favorites, userDataActions: userDataActions)
+        let vm = LibraryGridViewModel(repo: fake, source: previewSource, scope: .favorites, userDataActions: userDataActions)
         await vm.load()
         #expect(vm.items.count == 1)
 
         let fresh = UserItemData(played: false, playbackPositionTicks: 0, playCount: 0, isFavorite: false)
         let writer = StubUserDataWriter(favorite: .success(fresh))
-        _ = await userDataActions.toggleFavorite(itemID: itemID, currentlyFavorite: true, via: writer)
+        _ = await userDataActions.toggleFavorite(itemID: itemID, source: previewSource, currentlyFavorite: true, via: writer)
 
         await waitUntil { vm.items.isEmpty }
         #expect(vm.items.isEmpty)
@@ -64,7 +68,7 @@ struct LibraryGridViewModelUserDataTests {
         let itemID = ItemID(rawValue: "movie-fav-played")
         let fake = FakeMediaRepository()
         fake.itemsResult = .success(Page(items: [movieItem(id: itemID.rawValue, isFavorite: true)], total: 1, nextCursor: nil))
-        let vm = LibraryGridViewModel(repo: fake, scope: .favorites, userDataActions: userDataActions)
+        let vm = LibraryGridViewModel(repo: fake, source: previewSource, scope: .favorites, userDataActions: userDataActions)
         await vm.load()
         #expect(vm.items.count == 1)
 
@@ -77,7 +81,7 @@ struct LibraryGridViewModelUserDataTests {
         // file-local `StubWriter` this replaced, which returned the same `favoriteResult` for
         // both operations).
         let writer = StubUserDataWriter(favorite: .success(played), played: .success(played))
-        _ = await userDataActions.togglePlayed(itemID: itemID, currentlyPlayed: false, via: writer)
+        _ = await userDataActions.togglePlayed(itemID: itemID, source: previewSource, currentlyPlayed: false, via: writer)
 
         await waitUntil { vm.items.first?.userData.played == true }
         #expect(vm.items.count == 1)
@@ -94,7 +98,7 @@ struct LibraryGridViewModelUserDataTests {
         var item = movieItem(id: itemID.rawValue, isFavorite: false)
         item = item.withUserData(UserItemData(played: false, playbackPositionTicks: 54_321, playCount: 0, isFavorite: false))
         fake.itemsResult = .success(Page(items: [item], total: 1, nextCursor: nil))
-        let vm = LibraryGridViewModel(repo: fake, scope: .collection(CollectionID(rawValue: "movies")), userDataActions: userDataActions)
+        let vm = LibraryGridViewModel(repo: fake, source: previewSource, scope: .collection(CollectionID(rawValue: "movies")), userDataActions: userDataActions)
         await vm.load()
         #expect(vm.items.first?.userData.playbackPositionTicks == 54_321)
 
@@ -103,7 +107,7 @@ struct LibraryGridViewModelUserDataTests {
         // would wrongly zero the item's real resume position.
         let favorited = UserItemData(played: false, playbackPositionTicks: 0, playCount: 0, isFavorite: true)
         let writer = StubUserDataWriter(favorite: .success(favorited))
-        _ = await userDataActions.toggleFavorite(itemID: itemID, currentlyFavorite: false, via: writer)
+        _ = await userDataActions.toggleFavorite(itemID: itemID, source: previewSource, currentlyFavorite: false, via: writer)
 
         await waitUntil { vm.items.first?.userData.isFavorite == true }
         #expect(vm.items.first?.userData.playbackPositionTicks == 54_321)

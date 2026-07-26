@@ -8,7 +8,7 @@ import ParallaxJellyfin
 @MainActor
 final class JellyfinSearchViewModel {
     enum LoadState: Equatable {
-        case idle, loading, loaded(SearchResults), failed(String)
+        case idle, loading, loaded(AggregatedSearchResults), failed(String)
     }
 
     var query: String = "" {
@@ -39,7 +39,10 @@ final class JellyfinSearchViewModel {
     /// scope row's visibility so it enters/leaves in the same motion as the content swap
     /// (both flip on the same debounced state transition, unlike the raw keystroke).
     var hasActiveSearch: Bool { state != .idle }
-    private let repo: LibraryRepository
+    /// Every searchable source. Sources that can't answer yet (SMB, until it has an index) report
+    /// `canSearch == false` and are filtered out here, so they contribute nothing rather than
+    /// erroring — see `SearchProviding`.
+    private let providers: [any SearchProviding]
     private let debouncer: AsyncDebouncer<String>
     private var consumerTask: Task<Void, Never>?
     private var changesTask: Task<Void, Never>?
@@ -49,8 +52,21 @@ final class JellyfinSearchViewModel {
     /// Last query wins — mirrors `LibraryGridViewModel`/`SMBBrowseViewModel`'s generation guard.
     private var queryGeneration = 0
 
-    init(repo: LibraryRepository, userDataActions: UserDataActions) {
-        self.repo = repo
+    /// The sources this model searches, in order. `providers` is fixed at init, so a change here
+    /// means the model is answering for the wrong set of servers and must be rebuilt — see
+    /// `matches(_:)` (mirrors `HomeViewModel.sourceIDs`).
+    var sourceIDs: [MediaSourceID] { providers.map(\.source.sourceID) }
+
+    /// Whether this model already answers for exactly `candidates`. The `canSearch` filter is
+    /// applied here rather than at the call site so the view's rebuild test can't drift from
+    /// `init`'s filtering — otherwise a source that reports `canSearch == false` (SMB, until it
+    /// has an index) would never compare equal and the model would be rebuilt on every token.
+    func matches(_ candidates: [any SearchProviding]) -> Bool {
+        sourceIDs == candidates.filter(\.canSearch).map(\.source.sourceID)
+    }
+
+    init(providers: [any SearchProviding], userDataActions: UserDataActions) {
+        self.providers = providers.filter(\.canSearch)
         self.debouncer = AsyncDebouncer<String>(delay: .milliseconds(350))
         // Own the iterating Task; cancelled below alongside the search consumer loop.
         changesTask = userDataActions.subscribe { [weak self] change in
@@ -92,15 +108,12 @@ final class JellyfinSearchViewModel {
     /// skipping the rebuild.
     private func apply(_ change: UserDataActions.Change) {
         guard case .loaded(let results) = state else { return }
-        guard results.movies.contains(where: { $0.id == change.itemID })
-            || results.series.contains(where: { $0.id == change.itemID })
-            || results.episodes.contains(where: { $0.id == change.itemID })
-        else { return }
-        state = .loaded(SearchResults(
-            movies: results.movies.map { $0.id == change.itemID ? $0.withUserData(change.merged(into: $0.userData)) : $0 },
-            series: results.series.map { $0.id == change.itemID ? $0.withUserData(change.merged(into: $0.userData)) : $0 },
-            episodes: results.episodes.map { $0.id == change.itemID ? $0.withUserData(change.merged(into: $0.userData)) : $0 }
-        ))
+        // Matched on (source, itemID): results now mix servers, so an id-only match could patch a
+        // same-id item belonging to a different server.
+        guard results.contains(itemID: change.itemID, source: change.source) else { return }
+        state = .loaded(results.patching(itemID: change.itemID, source: change.source) {
+            $0.withUserData(change.merged(into: $0.userData))
+        })
     }
 
     /// Re-run the current query after an offline→online recovery (search has no `load()`; the
@@ -126,19 +139,35 @@ final class JellyfinSearchViewModel {
         isSearching = true
         // A newer query owns `isSearching` once it starts, so only the latest clears it.
         defer { if generation == queryGeneration { isSearching = false } }
-        do {
-            let results = try await repo.search(trimmed, scope: scope)
-            guard generation == queryGeneration else { return }
-            state = .loaded(results)
-        } catch let error as AppError {
-            guard generation == queryGeneration else { return }
-            Log.ui.error("JellyfinSearch failed: \(error.userMessage)")
-            state = .failed(error.userMessage)
-        } catch {
-            guard generation == queryGeneration else { return }
-            Log.ui.error("JellyfinSearch unexpected: \(String(describing: type(of: error)))")
-            state = .failed("Something went wrong.")
+        // Fan out across every searchable source concurrently. Each source fails INDEPENDENTLY —
+        // a dead server contributes nothing rather than failing the whole search, which is the
+        // difference between "one server is unreachable" and "search is broken". `.failed` only
+        // when EVERY source threw.
+        let currentScope = scope
+        let perSource = await withTaskGroup(
+            of: (Int, (source: LibrarySource, results: SearchResults)?).self
+        ) { group in
+            for (index, provider) in providers.enumerated() {
+                group.addTask {
+                    do {
+                        return (index, (provider.source, try await provider.search(trimmed, scope: currentScope)))
+                    } catch {
+                        Log.ui.error("Search failed for \(provider.source.displayName): \(error.networkDiagnostic)")
+                        return (index, nil)
+                    }
+                }
+            }
+            var out: [(Int, (source: LibrarySource, results: SearchResults)?)] = []
+            for await result in group { out.append(result) }
+            return out.sorted { $0.0 < $1.0 }.map(\.1)
         }
+        guard generation == queryGeneration else { return }
+        let answered = perSource.compactMap { $0 }
+        guard !answered.isEmpty else {
+            state = providers.isEmpty ? .loaded(.empty) : .failed("Parallax couldn't reach your servers.")
+            return
+        }
+        state = .loaded(AggregatedSearchResults.interleaving(answered))
     }
 
 }

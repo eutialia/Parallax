@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import ParallaxCore
+import ParallaxJellyfin
 @testable import Parallax
 
 /// Covers `UserDataActions`' two load-bearing contracts: the per-(item, op) in-flight guard
@@ -8,6 +9,9 @@ import ParallaxCore
 @MainActor
 @Suite("UserDataActions")
 struct UserDataActionsTests {
+    /// These tests exercise one server; the (source, itemID) key is covered by SourcedItemMergeTests.
+    private let testSource = MediaSourceID.jellyfin(ServerID(rawValue: "test-server"))
+
     nonisolated private static func data(favorite: Bool, played: Bool = false) -> UserItemData {
         UserItemData(played: played, playbackPositionTicks: 0, playCount: 0, isFavorite: favorite)
     }
@@ -60,12 +64,12 @@ struct UserDataActionsTests {
         let itemID = ItemID(rawValue: "movie-1")
 
         // First toggle parks inside the writer, holding the guard.
-        let first = Task { await service.toggleFavorite(itemID: itemID, currentlyFavorite: false, via: writer) }
+        let first = Task { await service.toggleFavorite(itemID: itemID, source: testSource, currentlyFavorite: false, via: writer) }
         var startedIterator = startedStream.makeAsyncIterator()
         _ = await startedIterator.next()
 
         // Second toggle, issued while the first is provably in flight, must skip.
-        let secondOutcome = await service.toggleFavorite(itemID: itemID, currentlyFavorite: false, via: writer)
+        let secondOutcome = await service.toggleFavorite(itemID: itemID, source: testSource, currentlyFavorite: false, via: writer)
         writer.releaseGate()
         let firstOutcome = await first.value
 
@@ -88,7 +92,7 @@ struct UserDataActionsTests {
         let itemID = ItemID(rawValue: "movie-2")
 
         var events = service.changes().makeAsyncIterator()
-        let outcome = await service.toggleFavorite(itemID: itemID, currentlyFavorite: false, via: writer)
+        let outcome = await service.toggleFavorite(itemID: itemID, source: testSource, currentlyFavorite: false, via: writer)
 
         guard case .success(let returned) = outcome else {
             Issue.record("expected .success, got \(outcome)")
@@ -113,7 +117,7 @@ struct UserDataActionsTests {
         let itemID = ItemID(rawValue: "movie-played")
 
         var events = service.changes().makeAsyncIterator()
-        let outcome = await service.togglePlayed(itemID: itemID, currentlyPlayed: false, via: writer)
+        let outcome = await service.togglePlayed(itemID: itemID, source: testSource, currentlyPlayed: false, via: writer)
 
         guard case .success(let returned) = outcome else {
             Issue.record("expected .success, got \(outcome)")
@@ -135,7 +139,7 @@ struct UserDataActionsTests {
     func playedChangeKeepsExistingFavorite() {
         let existing = Self.data(favorite: true, played: false)
         let payload = UserItemData(played: true, playbackPositionTicks: 0, playCount: 1, isFavorite: false)
-        let change = UserDataActions.Change(itemID: ItemID(rawValue: "movie-3"), userData: payload, operation: .played)
+        let change = UserDataActions.Change(itemID: ItemID(rawValue: "movie-3"), source: testSource, userData: payload, operation: .played)
 
         let merged = change.merged(into: existing)
 
@@ -151,7 +155,7 @@ struct UserDataActionsTests {
     func favoriteChangeKeepsExistingPlayedFields() {
         let existing = UserItemData(played: false, playbackPositionTicks: 12_345, playCount: 0, isFavorite: false)
         let payload = UserItemData(played: false, playbackPositionTicks: 0, playCount: 0, isFavorite: true)
-        let change = UserDataActions.Change(itemID: ItemID(rawValue: "movie-4"), userData: payload, operation: .favorite)
+        let change = UserDataActions.Change(itemID: ItemID(rawValue: "movie-4"), source: testSource, userData: payload, operation: .favorite)
 
         let merged = change.merged(into: existing)
 
@@ -169,7 +173,7 @@ struct UserDataActionsTests {
         let okID = ItemID(rawValue: "movie-ok")
 
         var events = service.changes().makeAsyncIterator()
-        let failOutcome = await service.toggleFavorite(itemID: failID, currentlyFavorite: false, via: writer)
+        let failOutcome = await service.toggleFavorite(itemID: failID, source: testSource, currentlyFavorite: false, via: writer)
         guard case .failure = failOutcome else {
             Issue.record("expected .failure, got \(failOutcome)")
             return
@@ -178,7 +182,7 @@ struct UserDataActionsTests {
         // A subsequent success on a DIFFERENT item: if the failed toggle had emitted, the
         // first buffered event would carry `failID`. Seeing `okID` first proves it did not.
         writer.favoriteResult = .success(fresh)
-        _ = await service.toggleFavorite(itemID: okID, currentlyFavorite: false, via: writer)
+        _ = await service.toggleFavorite(itemID: okID, source: testSource, currentlyFavorite: false, via: writer)
 
         let event = await events.next()
         #expect(event?.itemID == okID)

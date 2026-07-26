@@ -54,6 +54,12 @@ final class UserDataActions {
     /// `operation == .played` on the series id, rather than diffing a locally-cached flag.
     struct Change: Sendable {
         let itemID: ItemID
+        /// Which SOURCE the changed item belongs to. Subscribers match on (source, itemID), never
+        /// `itemID` alone: Jellyfin derives item GUIDs deterministically from the media path, so two
+        /// servers over a mirrored library layout can mint the SAME id — and independently of any
+        /// collision, a favorite toggled on one server must not repaint another server's tile on an
+        /// aggregated surface (Home, Search, Favorites).
+        let source: MediaSourceID
         /// Private: an operation's response may omit the OTHER operation's fields (see `merge`
         /// below), so a raw read outside this type risks adopting a DTO-boundary default as if
         /// it were real state. Go through `merged(into:)`, or `unfavorited` for the one
@@ -61,8 +67,9 @@ final class UserDataActions {
         private let userData: UserItemData
         let operation: Operation
 
-        init(itemID: ItemID, userData: UserItemData, operation: Operation) {
+        init(itemID: ItemID, source: MediaSourceID, userData: UserItemData, operation: Operation) {
             self.itemID = itemID
+            self.source = source
             self.userData = userData
             self.operation = operation
         }
@@ -113,8 +120,11 @@ final class UserDataActions {
         case failure(AppError)
     }
 
+    /// Keyed by SOURCE as well as item: the same item id on two servers is two independent writes,
+    /// and coalescing them would drop one server's toggle entirely.
     private struct InFlightKey: Hashable {
         let itemID: ItemID
+        let source: MediaSourceID
         let operation: Operation
     }
 
@@ -164,20 +174,22 @@ final class UserDataActions {
 
     func toggleFavorite(
         itemID: ItemID,
+        source: MediaSourceID,
         currentlyFavorite: Bool,
         via repo: some UserDataWriting
     ) async -> Outcome {
-        await perform(.favorite, itemID: itemID) {
+        await perform(.favorite, itemID: itemID, source: source) {
             try await repo.setFavorite(itemID: itemID, isFavorite: !currentlyFavorite)
         }
     }
 
     func togglePlayed(
         itemID: ItemID,
+        source: MediaSourceID,
         currentlyPlayed: Bool,
         via repo: some UserDataWriting
     ) async -> Outcome {
-        await perform(.played, itemID: itemID) {
+        await perform(.played, itemID: itemID, source: source) {
             try await repo.setPlayed(itemID: itemID, isPlayed: !currentlyPlayed)
         }
     }
@@ -190,15 +202,16 @@ final class UserDataActions {
     private func perform(
         _ operation: Operation,
         itemID: ItemID,
+        source: MediaSourceID,
         _ write: () async throws -> UserItemData
     ) async -> Outcome {
-        let key = InFlightKey(itemID: itemID, operation: operation)
+        let key = InFlightKey(itemID: itemID, source: source, operation: operation)
         guard inFlight.insert(key).inserted else { return .skipped }
         defer { inFlight.remove(key) }
 
         do {
             let userData = try await write()
-            broadcast(Change(itemID: itemID, userData: userData, operation: operation))
+            broadcast(Change(itemID: itemID, source: source, userData: userData, operation: operation))
             return .success(userData)
         } catch let error as AppError {
             return .failure(error)

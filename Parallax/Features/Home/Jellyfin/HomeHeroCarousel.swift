@@ -14,8 +14,9 @@ import ParallaxCore
 ///
 /// Infinite both ways via modular indexing; native dots + pill in `HeroPageIndicator`.
 struct HomeHeroCarousel: View {
-    let entries: [HomeHeroFeedEntry]
-    let session: Session
+    /// Source-tagged, because the hero mixes servers: each page's artwork, title logo, and play
+    /// target must resolve against the server the entry actually came from.
+    let entries: [SourcedHeroEntry]
     let viewModel: HomeViewModel
     /// Scroll channel from the Home `ScrollView`'s geometry, held as a reference type so a per-frame
     /// write invalidates ONLY its two readers inside `HeroBand` — the parallax wrapper and the
@@ -53,7 +54,7 @@ struct HomeHeroCarousel: View {
     private var displayedBleedHash: String? {
         guard count > 0 else { return nil }
         let page = ((displayedPage % count) + count) % count
-        return entries[page].presentation.heroArtwork(regularWidth: regularWidth).ref?.blurHash
+        return entries[page].entry.presentation.heroArtwork(regularWidth: regularWidth).ref?.blurHash
     }
 
     var body: some View {
@@ -83,7 +84,6 @@ struct HomeHeroCarousel: View {
             CrossfadeArtwork(
                 position: position,
                 entries: entries,
-                session: session,
                 regularWidth: regularWidth
             )
         } foreground: {
@@ -148,53 +148,59 @@ struct HomeHeroCarousel: View {
         #endif
     }
 
+    @ViewBuilder
     private func foregroundLayer(page: Int) -> some View {
-        let entry = entries[wrapping: page]
+        let sourced = entries[wrapping: page]
+        let entry = sourced.entry
         let item = entry.presentation
-        // Placement (readable column + insets) and the action-row focus section now live in
-        // `HeroBand`/`HeroForeground`; this just binds the slots for the settled page.
-        return HeroForeground(
-            eyebrow: entry.eyebrow.rawValue,
-            title: HeroTitle(item: item, session: session, idiom: idiom, scale: .home)
-        ) {
-            if let overview = AdaptiveHeroOverview(item: item) {
-                overview
-            } else if let meta = item.heroMetadataLine {
-                Text(meta)
-                    .font(.cardHeaderSubtitle)
-                    .foregroundStyle(.white)
-            }
-        } actions: {
-            primaryPlay(entry)
-            FavoriteActionButton(isFavorite: item.userData.isFavorite) {
-                Task { await viewModel.toggleFavorite(for: item.id) }
-            }
-            #if os(tvOS)
-            // The forward pager affordance — the RIGHTMOST focusable in the action row. A bare
-            // chevron at rest (`bareUntilFocused`); on focus it lights up to the same white platter
-            // + lift as Favorite. Select advances; so does a right-press, but ONLY because the
-            // chevron is the focused control — `onMoveCommand` below gates on `chevronFocused`, so a
-            // right-press during ordinary Play→Favorite→chevron navigation never pages. There is no
-            // left/previous counterpart by design (left from Play just reveals the sidebar). Shown
-            // only for a real carousel.
-            if count > 1 {
-                CircleGlassButton(
-                    systemImage: "chevron.right",
-                    accessibilityLabel: "Next featured item",
-                    bareUntilFocused: true
-                ) {
-                    commit(to: displayedPage + 1)
+        // Every page resolves ITS OWN server: the hero mixes servers, so a screen-level session
+        // would bind page 2's artwork and play target to page 1's host and token.
+        if let session = sourced.jellyfinSession {
+            // Placement (readable column + insets) and the action-row focus section now live in
+            // `HeroBand`/`HeroForeground`; this just binds the slots for the settled page.
+            HeroForeground(
+                eyebrow: entry.eyebrow.rawValue,
+                title: HeroTitle(item: item, session: session, idiom: idiom, scale: .home)
+            ) {
+                if let overview = AdaptiveHeroOverview(item: item) {
+                    overview
+                } else if let meta = item.heroMetadataLine {
+                    Text(meta)
+                        .font(.cardHeaderSubtitle)
+                        .foregroundStyle(.white)
                 }
-                .focused($chevronFocused)
+            } actions: {
+                primaryPlay(entry, session: session)
+                FavoriteActionButton(isFavorite: item.userData.isFavorite) {
+                    Task { await viewModel.toggleFavorite(for: item.id, source: sourced.source.sourceID) }
+                }
+                #if os(tvOS)
+                // The forward pager affordance — the RIGHTMOST focusable in the action row. A bare
+                // chevron at rest (`bareUntilFocused`); on focus it lights up to the same white platter
+                // + lift as Favorite. Select advances; so does a right-press, but ONLY because the
+                // chevron is the focused control — `onMoveCommand` below gates on `chevronFocused`, so a
+                // right-press during ordinary Play→Favorite→chevron navigation never pages. There is no
+                // left/previous counterpart by design (left from Play just reveals the sidebar). Shown
+                // only for a real carousel.
+                if count > 1 {
+                    CircleGlassButton(
+                        systemImage: "chevron.right",
+                        accessibilityLabel: "Next featured item",
+                        bareUntilFocused: true
+                    ) {
+                        commit(to: displayedPage + 1)
+                    }
+                    .focused($chevronFocused)
+                }
+                #endif
             }
-            #endif
         }
     }
 
     /// Play pill, bound to the carousel's `@FocusState` on tvOS so the carousel can pull launch
     /// focus onto it (out of the `.sidebarAdaptable` menu) when the feed mounts; inert on iOS.
     @ViewBuilder
-    private func primaryPlay(_ entry: HomeHeroFeedEntry) -> some View {
+    private func primaryPlay(_ entry: HomeHeroFeedEntry, session: Session) -> some View {
         let button = PrimaryPlayButton(
             title: entry.playButtonTitle,
             fillWidth: false,
@@ -247,24 +253,27 @@ struct HomeHeroCarousel: View {
 /// Full-bleed artwork for one hero item — the crossfading layers inside `CrossfadeArtwork`,
 /// which stacks two of these. The iPad sidebar `backgroundExtensionEffect` is owned by `HeroBand`.
 private struct HeroArtwork: View {
-    let item: Item
-    let session: Session
+    /// Source-tagged so each page fetches from ITS server. A hero mixing two servers with one
+    /// screen-level session would request page 2's backdrop from page 1's host and token.
+    let sourced: SourcedHeroEntry
     let regularWidth: Bool
 
     private var artwork: (ref: ImageRef?, kind: ImageKind) {
-        item.heroArtwork(regularWidth: regularWidth)
+        sourced.entry.presentation.heroArtwork(regularWidth: regularWidth)
     }
 
     var body: some View {
-        MediaImage(
-            jellyfin: artwork.ref,
-            session: session,
-            maxWidth: 1600,
-            aspectRatio: HeroMetrics.bandAspectRatio(regularWidth: regularWidth),
-            style: .fill
-        )
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .clipped()
+        if let session = sourced.jellyfinSession {
+            MediaImage(
+                jellyfin: artwork.ref,
+                session: session,
+                maxWidth: 1600,
+                aspectRatio: HeroMetrics.bandAspectRatio(regularWidth: regularWidth),
+                style: .fill
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipped()
+        }
     }
 }
 
@@ -276,8 +285,7 @@ private struct HeroArtwork: View {
 /// rebuilds nothing but the two images.
 private struct CrossfadeArtwork: View, Animatable {
     var position: Double
-    let entries: [HomeHeroFeedEntry]
-    let session: Session
+    let entries: [SourcedHeroEntry]
     let regularWidth: Bool
 
     var animatableData: Double {
@@ -289,8 +297,8 @@ private struct CrossfadeArtwork: View, Animatable {
         let lower = Int(floor(position))
         let frac = position - Double(lower)
         return ZStack {
-            HeroArtwork(item: entries[wrapping: lower].presentation, session: session, regularWidth: regularWidth)
-            HeroArtwork(item: entries[wrapping: lower + 1].presentation, session: session, regularWidth: regularWidth)
+            HeroArtwork(sourced: entries[wrapping: lower], regularWidth: regularWidth)
+            HeroArtwork(sourced: entries[wrapping: lower + 1], regularWidth: regularWidth)
                 .opacity(frac)
         }
     }

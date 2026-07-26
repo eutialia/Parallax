@@ -1,16 +1,32 @@
 import Foundation
 
 public struct UserItemData: Sendable, Hashable, Codable {
-    public let played: Bool
-    public let playbackPositionTicks: Int64
-    public let playCount: Int
-    public let isFavorite: Bool
+    /// `private(set) var` rather than `let` so the copy helpers below can mutate a copy instead of
+    /// re-initializing with a hand-written field list — the pattern that silently zeroed fields
+    /// whenever one was added and a call site forgot it. Immutable to callers either way.
+    public private(set) var played: Bool
+    public private(set) var playbackPositionTicks: Int64
+    public private(set) var playCount: Int
+    public private(set) var isFavorite: Bool
+    /// When the server last recorded playback of this item. The ONE key that makes Continue
+    /// Watching mergeable across servers: each Jellyfin server returns its own list already sorted
+    /// by play date, and without a timestamp two such lists can only be concatenated ("server A's
+    /// stale items, then server B's fresh ones"), never interleaved. Optional because it's absent
+    /// for never-played items and for sources that don't track it.
+    public private(set) var lastPlayedDate: Date?
 
-    public init(played: Bool, playbackPositionTicks: Int64, playCount: Int, isFavorite: Bool) {
+    public init(
+        played: Bool,
+        playbackPositionTicks: Int64,
+        playCount: Int,
+        isFavorite: Bool,
+        lastPlayedDate: Date? = nil
+    ) {
         self.played = played
         self.playbackPositionTicks = playbackPositionTicks
         self.playCount = playCount
         self.isFavorite = isFavorite
+        self.lastPlayedDate = lastPlayedDate
     }
 
     // Derived at the call site: runtime ticks live on the parent item
@@ -49,12 +65,9 @@ public struct UserItemData: Sendable, Hashable, Codable {
     }
 
     public func withFavorite(_ isFavorite: Bool) -> UserItemData {
-        UserItemData(
-            played: played,
-            playbackPositionTicks: playbackPositionTicks,
-            playCount: playCount,
-            isFavorite: isFavorite
-        )
+        var copy = self
+        copy.isFavorite = isFavorite
+        return copy
     }
 
     /// Same item, adopting the played-owned fields (`played`, `playbackPositionTicks`,
@@ -63,11 +76,13 @@ public struct UserItemData: Sendable, Hashable, Codable {
     /// DTO-boundary default (an absent field mapped to `false`), not real state, so it must
     /// never overwrite the existing favorite flag.
     public func withPlayed(from payload: UserItemData) -> UserItemData {
-        UserItemData(
-            played: payload.played,
-            playbackPositionTicks: payload.playbackPositionTicks,
-            playCount: payload.playCount,
-            isFavorite: isFavorite
-        )
+        var copy = self
+        copy.played = payload.played
+        copy.playbackPositionTicks = payload.playbackPositionTicks
+        copy.playCount = payload.playCount
+        // `lastPlayedDate` is played-owned too: marking something watched moves it, and Continue
+        // Watching orders on it, so a patch that kept the stale date would sort the item wrong.
+        copy.lastPlayedDate = payload.lastPlayedDate
+        return copy
     }
 }

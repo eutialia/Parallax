@@ -265,10 +265,7 @@ struct LoginView: View {
             // per-source tasks (Home/Library/Search/RootTabView) are gated on the router's source
             // state, so routing through `updateForSources` is what actually lets them fetch — setting
             // only `destination` would strand every tab on its loading skeleton.
-            router.updateForSources(
-                activeSession: await deps.serverStore.active,
-                hasAuxiliarySources: await deps.serverStore.hasSMBServers
-            )
+            router.updateForSources(await deps.serverStore.sourceSnapshot)
         }
     }
 }

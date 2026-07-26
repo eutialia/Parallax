@@ -10,12 +10,15 @@ struct RootTabView: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var selectedTab: AppTab = .home
     @State private var session: Session?
-    @State private var entries: [LibraryEntry] = []
-    /// True while a Jellyfin session is active but its `collections()` fetch failed — the sidebar is
-    /// showing SMB-only (or nothing) because the network is down, not because the server has no
-    /// libraries. Gates `.recoversFromOffline` so the libraries repopulate when connectivity returns;
-    /// SMB entries, being local, are unaffected. Mirrors the content views' `isStalled`.
-    @State private var librariesStalled = false
+    /// One group per configured source, in server add order — the sidebar's titled, collapsible
+    /// sections. Libraries are never merged across servers, so a group is exactly one server's
+    /// libraries.
+    @State private var groups: [LibraryGroup] = []
+    /// Sources whose library listing failed this pass — the sidebar is missing THOSE servers'
+    /// libraries because the network is down, not because they have none. Gates
+    /// `.recoversFromOffline` so they repopulate when connectivity returns; healthy servers and
+    /// the local SMB shares are never re-pulled. Mirrors the content views' `isStalled`.
+    @State private var failedSourceIDs: Set<MediaSourceID> = []
     /// The last library opened from the sidebar's Libraries section (a server collection or
     /// the virtual Favorites grid), surfaced as the lone dynamic tab in the collapsed tab bar
     /// (Apple Music style). In-memory only: this `@State` resets on the `.id(activeServerID)`
@@ -36,10 +39,10 @@ struct RootTabView: View {
         .task(id: router.libraryReloadToken) { await loadLibraries() }
         // Repopulate the sidebar's Jellyfin libraries when the network returns (or the app
         // foregrounds online) after a launch that couldn't reach the server. Gated on
-        // `librariesStalled`, so a healthy list — and the local SMB shares — are never re-pulled. The
+        // the failed-source set, so healthy servers — and the local SMB shares — are never re-pulled. The
         // reload token (above) doesn't move on a reconnect, so without this the libraries stayed gone
         // until a server switch. Event-based — no pull-to-refresh.
-        .recoversFromOffline(isStalled: librariesStalled) { await loadLibraries() }
+        .recoversFromOffline(isStalled: !failedSourceIDs.isEmpty) { await loadLibraries() }
         // Tabs that exist at only one layout — Library + Settings are compact-only (sidebar
         // layouts browse libraries from the sidebar and host Settings in its footer), the
         // per-library tabs are sidebar-only. Crossing the layout boundary (iPad Split View /
@@ -74,20 +77,18 @@ struct RootTabView: View {
     /// change cancels the launch task and starts a fresh one, and a now-stale snapshot must not
     /// clobber the newer state (or snap selection off a tab that's still valid in the latest entries).
     private func loadLibraries() async {
-        guard router.hasAnySource else { entries = []; session = nil; librariesStalled = false; return }
-        let active = await deps.serverStore.active
-        var hiddenJellyfin: Set<String> = []
-        if let active { hiddenJellyfin = await deps.serverStore.hiddenCollectionIDs(for: active.id) }
+        guard router.hasAnySource else { groups = []; session = nil; failedSourceIDs = []; return }
         let outcome = await MergedLibrary.resolve(
-            jellyfinSession: active,
-            smbServers: await deps.serverStore.servers,
-            hiddenJellyfinCollectionIDs: hiddenJellyfin,
+            sessions: await deps.serverStore.sessions,
+            servers: await deps.serverStore.servers,
+            hiddenCollectionIDs: await deps.serverStore.allHiddenCollectionIDs,
             jellyfinRepo: deps.mediaRepoFactory
         )
+        let active = await deps.serverStore.active
         guard !Task.isCancelled else { return }
         session = active
-        entries = outcome.entries
-        librariesStalled = outcome.jellyfinCollectionsFailed
+        groups = outcome.groups
+        failedSourceIDs = outcome.failedSourceIDs
         // If the selected library tab's backing entry just vanished, snap to Home so the detail
         // pane isn't left on a gone tab (shared with FocusRootView via `snappedIfStale`).
         selectedTab = selectedTab.snappedIfStale(against: outcome.entries)
@@ -122,6 +123,27 @@ struct RootTabView: View {
         return tab == .favorites
     }
 
+    /// One library row in a server's sidebar section, plus its collapsed-tab-bar visibility.
+    /// Extracted with an EXPLICIT `some TabContent<AppTab>` return type, and not inlined, for two
+    /// reasons that bit here: the annotation pins `TabValue` to non-optional `AppTab` (left to
+    /// infer inside two nested `ForEach`es, `TabSection` resolves to its optional-selection
+    /// overload and the whole `TabContentBuilder` stops matching), and pulling the
+    /// `NavigationStack` + destination out of the doubly-nested builder keeps the remaining
+    /// expression under the type-checker's limit — inline, this body failed with "unable to
+    /// type-check this expression in reasonable time". Mirrored in `FocusRootView`.
+    private func libraryTab(for entry: LibraryEntry) -> some TabContent<AppTab> {
+        Tab(entry.collection.name, systemImage: entry.tabSymbolName, value: AppTab.collection(entry.id)) {
+            NavigationStack {
+                // SMB shares drill into the folder browser; Jellyfin collections into the poster
+                // grid (shared with the iPhone list — one dispatch site).
+                libraryEntryDestination(for: entry)
+            }
+        }
+        // The last-opened library is the lone dynamic slot in the collapsed bar (Apple Music style);
+        // every other library row stays sidebar-only.
+        .defaultVisibility(AppTab.collection(entry.id) == lastVisitedLibraryTab ? .visible : .hidden, for: .tabBar)
+    }
+
     private var tabView: some View {
         TabView(selection: tabSelection) {
             Tab("Home", systemImage: "house", value: AppTab.home) {
@@ -152,12 +174,28 @@ struct RootTabView: View {
             // chrome keeps the field out of the keyboard-avoidance path entirely — the
             // old in-content custom bar got translated off-screen by the keyboard under
             // the TabView's hosting.
-            if router.activeServerID != nil {
+            if router.hasSearchableSource {
                 Tab(value: AppTab.search, role: .search) {
                     NavigationStack {
                         JellyfinSearchView()
                     }
                 }
+            }
+
+            // The virtual cross-server Favorites grid — movies + shows the user favorited, every
+            // library on every server. TOP LEVEL, deliberately outside the per-server sections
+            // below: favorites span servers, so listing it under one server's header would claim
+            // it belongs to that server. Sidebar-only (the iPhone card list carries its own
+            // Favorites card) and Jellyfin-only — favorites are a Jellyfin concept, so an SMB-only
+            // config (nil session) omits it. Hidden from the collapsed bar unless it's the
+            // last-opened library, sharing the dynamic slot with the real libraries.
+            if isSidebarLayout, let session {
+                Tab("Favorites", systemImage: "heart", value: AppTab.favorites) {
+                    NavigationStack {
+                        FavoritesView()
+                    }
+                }
+                .defaultVisibility(lastVisitedLibraryTab == .favorites ? .visible : .hidden, for: .tabBar)
             }
 
             // iPhone only: Settings rides the bottom tab bar — there's no sidebar to host the
@@ -181,35 +219,25 @@ struct RootTabView: View {
             // appear as the lone dynamic slot to the right of Search; nothing shows before any
             // library is opened (`lastVisitedLibraryID` starts nil). The expanded sidebar ignores
             // `.tabBar` visibility and lists every library under the header.
-            if isSidebarLayout, !entries.isEmpty {
-                // TODO: per-server sections — one `TabSection` per source (each Jellyfin /
-                // SMB server its own titled group), instead of this single merged section.
-                // Deferred UI polish; the merge already tags every entry by source.
-                TabSection("Libraries") {
-                    ForEach(entries) { entry in
-                        Tab(entry.collection.name, systemImage: entry.tabSymbolName, value: AppTab.collection(entry.id)) {
-                            NavigationStack {
-                                // SMB shares drill into the folder browser; Jellyfin collections into
-                                // the poster grid (shared with the iPhone list — one dispatch site).
-                                libraryEntryDestination(for: entry)
-                            }
-                        }
-                        .defaultVisibility(AppTab.collection(entry.id) == lastVisitedLibraryTab ? .visible : .hidden, for: .tabBar)
+            // iPad regular only: the libraries as grouped, titled sidebar sections — ONE SECTION
+            // PER SERVER, in the order the user added their servers, each collapsible (the Music
+            // app's sidebar shape). Libraries are never merged across servers: two servers that
+            // both expose "Movies" stay two rows in two sections. A single configured source keeps
+            // the plain "Libraries" title — there'd be nothing to disambiguate it from.
+            //
+            // Collapsed tab bar: every SECTION is hidden from the bar (`.defaultVisibility` below)
+            // so its header doesn't render there — per-tab hiding alone left the empty header
+            // behind as a stray pill. The last-opened library then overrides that hiding to appear
+            // as the lone dynamic slot to the right of Search; nothing shows before any library is
+            // opened (`lastVisitedLibraryTab` starts nil). The expanded sidebar ignores `.tabBar`
+            // visibility and lists every library under its server's header.
+            if isSidebarLayout {
+                ForEach(groups) { group in
+                    TabSection(groups.sectionTitle(for: group)) {
+                        ForEach(group.entries) { libraryTab(for: $0) }
                     }
-                    // The virtual cross-library Favorites grid — movies + shows the user
-                    // favorited, every server library merged. Rides the same dynamic
-                    // collapsed-bar slot as the real libraries. Jellyfin-only: favorites are a
-                    // Jellyfin concept, so an SMB-only config (nil session) omits it.
-                    if let session {
-                        Tab("Favorites", systemImage: "heart", value: AppTab.favorites) {
-                            NavigationStack {
-                                LibraryGridView(scope: .favorites, title: "Favorites", session: session)
-                            }
-                        }
-                        .defaultVisibility(lastVisitedLibraryTab == .favorites ? .visible : .hidden, for: .tabBar)
-                    }
+                    .defaultVisibility(.hidden, for: .tabBar)
                 }
-                .defaultVisibility(.hidden, for: .tabBar)
             }
         }
         .tabViewStyle(.sidebarAdaptable)

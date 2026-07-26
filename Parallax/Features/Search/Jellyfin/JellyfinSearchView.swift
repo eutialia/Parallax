@@ -7,7 +7,6 @@ struct JellyfinSearchView: View {
     @Environment(AppRouter.self) private var router
     @Environment(UserDataActions.self) private var userDataActions
     @State private var viewModel: JellyfinSearchViewModel?
-    @State private var session: Session?
     // Bind the search field to local state so keystrokes typed before the VM
     // finishes its async construction aren't dropped on the floor (the old
     // `viewModel?.query = $0` was a silent no-op while viewModel was nil).
@@ -45,8 +44,8 @@ struct JellyfinSearchView: View {
             #endif
 
             Group {
-                if let vm = viewModel, let session {
-                    content(vm: vm, session: session)
+                if let vm = viewModel {
+                    content(vm: vm)
                 } else {
                     searchLoadingPlaceholder
                 }
@@ -121,14 +120,21 @@ struct JellyfinSearchView: View {
         }
         .screenFloor()
         .itemDetailNavigation()
-        .task(id: router.activeServerID) {
-            guard router.activeServerID != nil else { return }
-            if session == nil {
-                session = await deps.serverStore.active
-            }
-            if viewModel == nil, let session {
-                let repo = await deps.jellyfinLibraryRepoFactory(session)
-                let vm = JellyfinSearchViewModel(repo: repo, userDataActions: userDataActions)
+        // Keyed on the reload token, not `activeServerID`: search aggregates EVERY signed-in
+        // server, so adding or removing one must rebuild the provider list — and adding a second
+        // server never moves the active id (see AppRouter.libraryReloadToken).
+        .task(id: router.libraryReloadToken) {
+            let providers = await JellyfinSearchProvider.all(
+                for: await deps.serverStore.sessions,
+                repoFactory: deps.jellyfinLibraryRepoFactory
+            )
+            guard !providers.isEmpty else { return }
+            // Rebuild when the SET of servers changed, not just when there's no model yet: a
+            // model's providers are fixed at init, so signing into a second server left the
+            // existing single-server model in place and Search kept querying one server until the
+            // next launch — the exact bug keying this task on the reload token exists to fix.
+            if viewModel?.matches(providers) != true {
+                let vm = JellyfinSearchViewModel(providers: providers, userDataActions: userDataActions)
                 vm.start()
                 // Seed any text/scope set during construction before wiring up — the
                 // field is live while the VM builds, so both can change in that window.
@@ -143,7 +149,7 @@ struct JellyfinSearchView: View {
     }
 
     @ViewBuilder
-    private func content(vm: JellyfinSearchViewModel, session: Session) -> some View {
+    private func content(vm: JellyfinSearchViewModel) -> some View {
         switch vm.state {
         case .idle:
             StatusStateView(
@@ -154,13 +160,13 @@ struct JellyfinSearchView: View {
         case .loading:
             searchLoadingPlaceholder
         case .loaded(let results):
-            if results.movies.isEmpty && results.series.isEmpty && results.episodes.isEmpty {
+            if results.isEmpty {
                 StatusStateView.searchNoResults
             } else {
                 // The grid is an `.equatable()` child so a per-keystroke `query` change
                 // can't re-render the tiles (see JellyfinSearchResultsView). The refine
                 // overlay stays out here, in the reactive parent.
-                JellyfinSearchResultsView(results: results, session: session, idiom: idiom)
+                JellyfinSearchResultsView(results: results, idiom: idiom)
                 .equatable()
                 // Floating indicator while refining — an overlay (not an inline row)
                 // so the results don't shift down/up on every debounced keystroke.
