@@ -36,6 +36,12 @@ final class AppDependencies {
     /// artwork (SMB). App-scoped so generated thumbnail URLs survive grid teardown/re-entry;
     /// shares the same `keychain` as the media repos so it reads passwords from the same slot.
     let mediaArtworkProvider: MediaArtworkProvider
+    /// Servers whose access token the server itself rejected (HTTP 401), reported from the
+    /// `JellyfinResponseValidator` on every Jellyfin client. `RootView` consumes this to sign the
+    /// server out and re-route — see its `.task`. A stream rather than a direct call so the
+    /// network layer never has to know about `AppRouter` or the main actor, and so a burst of
+    /// simultaneous 401s is handled serially by one consumer instead of racing.
+    let tokenRejections: AsyncStream<ServerID>
 
     init(
         serverStore: ServerStore,
@@ -52,7 +58,8 @@ final class AppDependencies {
         playbackEngineFactory: @MainActor @Sendable @escaping (PlaybackEngineID) -> any PlaybackEngine,
         audioSession: any AudioSessionControlling,
         smbPlaybackResolver: SMBPlaybackResolver,
-        mediaArtworkProvider: MediaArtworkProvider
+        mediaArtworkProvider: MediaArtworkProvider,
+        tokenRejections: AsyncStream<ServerID> = .init { $0.finish() }
     ) {
         self.serverStore = serverStore
         self.sessionManager = sessionManager
@@ -69,6 +76,7 @@ final class AppDependencies {
         self.audioSession = audioSession
         self.smbPlaybackResolver = smbPlaybackResolver
         self.mediaArtworkProvider = mediaArtworkProvider
+        self.tokenRejections = tokenRejections
     }
 
     static func live() -> AppDependencies {
@@ -83,7 +91,17 @@ final class AppDependencies {
         )
         let authFactory = DefaultJellyfinClientFactory(identityProvider: identity)
         let manager = SessionManager(serverStore: store, factory: authFactory)
-        let libraryClientFactory = DefaultJellyfinLibraryClientFactory(identityProvider: identity)
+
+        // Every Jellyfin client validates its responses through `JellyfinResponseValidator`, which
+        // reports here when a server rejects our access token. The auth factory above is
+        // deliberately NOT wired: a 401 while signing in is a wrong password, not a dead session.
+        let (tokenRejections, reportTokenRejected) = AsyncStream<ServerID>.makeStream()
+        let onTokenRejected: @Sendable (ServerID) -> Void = { reportTokenRejected.yield($0) }
+
+        let libraryClientFactory = DefaultJellyfinLibraryClientFactory(
+            identityProvider: identity,
+            onTokenRejected: onTokenRejected
+        )
 
         // One repo per server, reused across every screen (see
         // LibraryRepositoryStore). Both factories delegate to the same store so
@@ -120,7 +138,10 @@ final class AppDependencies {
         // built exactly like the library one (same identity provider), and the
         // canonical store lives in ParallaxJellyfin (Task 4c.6); the app only
         // delegates to it, never re-implements it.
-        let playbackClientFactory = DefaultJellyfinPlaybackClientFactory(identityProvider: identity)
+        let playbackClientFactory = DefaultJellyfinPlaybackClientFactory(
+            identityProvider: identity,
+            onTokenRejected: onTokenRejected
+        )
         let playbackStore = PlaybackInfoServiceStore(clientFactory: playbackClientFactory)
         let playbackInfoFactory: @Sendable (Session) async -> PlaybackInfoService = { session in
             await playbackStore.service(for: session)
@@ -180,7 +201,8 @@ final class AppDependencies {
             playbackEngineFactory: engineFactory,
             audioSession: audioSession,
             smbPlaybackResolver: smbPlaybackResolver,
-            mediaArtworkProvider: mediaArtworkProvider
+            mediaArtworkProvider: mediaArtworkProvider,
+            tokenRejections: tokenRejections
         )
     }
 

@@ -69,10 +69,11 @@ public actor ServerStore {
 
     public var sessions: [Session] { loadedSessions }
 
-    /// Jellyfin servers whose persisted row exists but whose token couldn't be rebuilt into a
-    /// session this launch (Keychain slot lost or unreadable). Surfaced so Settings can render
-    /// them as signed-out instead of letting them ghost invisibly; re-signing-in heals the row
-    /// in place (deterministic server id → `add` replaces), `remove(_:)` discards it.
+    /// Jellyfin servers with a persisted row but no live session — either the token couldn't be
+    /// rebuilt at launch (Keychain slot lost or unreadable) or the server rejected it at runtime
+    /// (`invalidateSession(_:)`). Surfaced so Settings can render them as signed-out instead of
+    /// letting them ghost invisibly; re-signing-in heals the row in place (deterministic server
+    /// id → `add` replaces), `remove(_:)` discards it.
     public var signedOutJellyfinServers: [PersistedServer] {
         persistedServers.filter { server in
             guard case .jellyfin = server.kind else { return false }
@@ -468,6 +469,49 @@ public actor ServerStore {
             persistedServers = previous
             throw ServerStoreError.persistenceFailed(underlying: String(describing: error))
         }
+    }
+
+    /// Drops a Jellyfin server's live session after the SERVER rejected its token (HTTP 401),
+    /// keeping the persisted row. The server then reads as signed-out (`signedOutJellyfinServers`),
+    /// which Settings renders with a "Sign In Again" prompt.
+    ///
+    /// Distinct from `remove(_:)`, which is a deliberate sign-out and discards the row entirely.
+    /// Here the user still wants this server — only its credential died, for reasons the app never
+    /// saw (an admin revoking devices, a server rebuild, the public demo server's nightly reset).
+    /// Before this existed a revoked token left the row looking connected while every request
+    /// 401'd, so the sidebar simply had no libraries under it and the only way out was removing
+    /// and re-adding the server by hand.
+    ///
+    /// The Keychain token is deleted, not kept: it is now known-dead, and leaving it would let the
+    /// next launch rebuild the same doomed session and reproduce the exact silent-empty state. A
+    /// failed delete is logged but not fatal — the stale token just gets re-rejected and
+    /// re-invalidated next launch, which is self-healing rather than stuck.
+    ///
+    /// - Returns: `true` when a live session was actually dropped. Callers use this to skip
+    ///   redundant work: a burst of concurrent requests all 401 at once, so this is called several
+    ///   times for one dead token and only the first call changes anything.
+    @discardableResult
+    public func invalidateSession(_ id: ServerID) async -> Bool {
+        guard loadedSessions.contains(where: { $0.id == id }) else { return false }
+        loadedSessions.removeAll { $0.id == id }
+
+        let key = KeychainKey<String>(account: Self.tokenAccount(for: id))
+        do {
+            try await keychain.delete(key)
+        } catch {
+            Log.persistence.error("ServerStore.invalidateSession: Keychain delete failed for \(id.rawValue) — the dead token will be re-rejected next launch. \(error.localizedDescription)")
+        }
+
+        if activeID == id {
+            activeID = loadedSessions.first?.id
+            do {
+                try await persistActiveID()
+            } catch {
+                Log.persistence.error("ServerStore.invalidateSession: activeID persist failed — \(error.localizedDescription)")
+            }
+        }
+        Log.persistence.info("ServerStore.invalidateSession: \(id.rawValue) signed out after a rejected token")
+        return true
     }
 
     public func setActive(_ id: ServerID) async throws {

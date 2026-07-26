@@ -5,10 +5,18 @@ import ParallaxCore
 public final class DefaultJellyfinLibraryClient: JellyfinLibraryClient, Sendable {
     private let session: Session
     private let identity: DeviceIdentity
+    /// Called when this server rejects the session's access token (HTTP 401) — see
+    /// `JellyfinResponseValidator`. nil in tests and previews, where nothing acts on it.
+    private let onTokenRejected: (@Sendable (ServerID) -> Void)?
 
-    public init(session: Session, identity: DeviceIdentity) {
+    public init(
+        session: Session,
+        identity: DeviceIdentity,
+        onTokenRejected: (@Sendable (ServerID) -> Void)? = nil
+    ) {
         self.session = session
         self.identity = identity
+        self.onTokenRejected = onTokenRejected
     }
 
     private func client() -> JellyfinClient {
@@ -20,7 +28,14 @@ public final class DefaultJellyfinLibraryClient: JellyfinLibraryClient, Sendable
             deviceID: identity.deviceID,
             version: identity.version
         )
-        return JellyfinClient(configuration: config)
+        // The validator sees every response this client receives, so a dead token is caught
+        // whichever screen happens to ask first.
+        return JellyfinClient(
+            configuration: config,
+            delegate: onTokenRejected.map {
+                JellyfinResponseValidator(serverID: session.id, onTokenRejected: $0)
+            }
+        )
     }
 
     private var userID: String { session.user.id }

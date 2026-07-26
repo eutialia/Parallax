@@ -7,6 +7,11 @@ import ParallaxJellyfin
 /// (the picker pushes via its `NavigationStack`), so the chromeless / onBack / external-VM plumbing the
 /// slide needed is gone.
 struct LoginView: View {
+    /// Seeds the server field when re-authenticating a server Parallax already knows — a signed-out
+    /// row whose token was lost or revoked. Nil for a genuine add, where the field starts empty (and
+    /// LAN discovery may fill it). Set, it also suppresses that autofill: a discovered LAN server is
+    /// a guess, and it must not overwrite the exact address the user asked to sign back into.
+    var prefilledServerURL: String?
     /// Called after a successful sign-in. When nil (the logged-out Connect path) the view drives the
     /// router itself; Settings' add-server flow passes a closure to refresh + pop.
     var onSignedIn: (() -> Void)?
@@ -53,6 +58,11 @@ struct LoginView: View {
         .task {
             if viewModel == nil {
                 viewModel = LoginViewModel(sessionManager: deps.sessionManager)
+            }
+            // Re-authenticating a known server: fill its address before anything else can. Both
+            // discovery paths below only write into an EMPTY field, so this claims it first.
+            if let prefilledServerURL, let vm = viewModel, vm.serverURLInput.isEmpty {
+                vm.serverURLInput = prefilledServerURL
             }
             #if !os(tvOS)
             // Auto-fill the server URL from LAN discovery when the field is empty (most networks have

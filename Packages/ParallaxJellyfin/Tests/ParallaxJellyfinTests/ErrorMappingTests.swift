@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import Get
 import JellyfinAPI
 import ParallaxCore
 @testable import ParallaxJellyfin
@@ -39,12 +40,9 @@ struct ErrorMappingTests {
         }
     }
 
-    @Test("Synthetic unacceptableStatusCode(404) maps to .server(404, nil)")
+    @Test("APIError.unacceptableStatusCode carries its status through to .server")
     func unacceptableStatusCode() {
-        struct FakeAPIError: Error, CustomStringConvertible {
-            var description: String { "unacceptableStatusCode(404)" }
-        }
-        let app = ErrorMapping.appError(from: FakeAPIError())
+        let app = ErrorMapping.appError(from: APIError.unacceptableStatusCode(404))
         if case .server(let code, let message) = app {
             #expect(code == 404)
             #expect(message == nil)
@@ -53,18 +51,29 @@ struct ErrorMappingTests {
         }
     }
 
-    @Test("unacceptableStatusCode parser ignores unrelated digits in the description")
-    func unacceptableStatusCodeIgnoresOtherDigits() {
-        struct FakeAPIError: Error, CustomStringConvertible {
-            // Port 8096 and a byte count are present; only the 503 inside the
-            // unacceptableStatusCode(...) call should be extracted.
-            var description: String { "host=127.0.0.1:8096 bytes=1024 unacceptableStatusCode(503)" }
-        }
-        let app = ErrorMapping.appError(from: FakeAPIError())
-        if case .server(let code, _) = app {
-            #expect(code == 503)
+    /// The only clients that still reach `ErrorMapping` with a raw `APIError` are the ones with
+    /// no `JellyfinResponseValidator`: sign-in and Quick Connect. A 401 there is a rejected
+    /// credential at the login form, NOT an expired session — "sign in again" would be nonsense
+    /// advice to someone already signing in.
+    @Test("A 401 outside a live session reads as a rejected credential, not an expired session")
+    func unauthorizedDuringSignInIsInvalidCredentials() {
+        let app = ErrorMapping.appError(from: APIError.unacceptableStatusCode(401))
+        if case .auth(let failure) = app {
+            #expect(failure == .invalidCredentials)
         } else {
-            Issue.record("expected .server(503,_), got \(app)")
+            Issue.record("expected .auth(.invalidCredentials), got \(app)")
+        }
+    }
+
+    /// `JellyfinResponseValidator` throws typed `AppError`s straight from the response hook;
+    /// `appError(from:)` must pass those through untouched rather than re-deriving them.
+    @Test("An AppError thrown by the response validator passes through unchanged")
+    func appErrorPassesThrough() {
+        let app = ErrorMapping.appError(from: AppError.auth(.tokenInvalidated))
+        if case .auth(let failure) = app {
+            #expect(failure == .tokenInvalidated)
+        } else {
+            Issue.record("expected .auth(.tokenInvalidated), got \(app)")
         }
     }
 

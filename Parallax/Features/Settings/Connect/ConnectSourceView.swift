@@ -1,4 +1,6 @@
 import SwiftUI
+import os
+import ParallaxCore
 import ParallaxJellyfin
 
 /// The logged-out entry point, folded onto the same surface as Settings: a `SettingsScaffold` (brand
@@ -13,12 +15,41 @@ struct ConnectSourceView: View {
     @Environment(AppDependencies.self) private var deps
     @Environment(AppRouter.self) private var router
     @State private var path: [ConnectRoute] = []
+    /// Servers Parallax still has on file but can no longer sign requests for. Non-empty when the
+    /// LAST source lost its session — a revoked token, or a Keychain slot that didn't survive.
+    @State private var signedOutServers: [SignedOutServerRow] = []
 
-    private enum ConnectRoute: Hashable { case jellyfin, smb }
+    private enum ConnectRoute: Hashable {
+        case jellyfin
+        /// Re-authenticating a known server; payload is its address to pre-fill.
+        case signInAgain(String)
+        case smb
+    }
 
     var body: some View {
         NavigationStack(path: $path) {
-            SettingsScaffold(brandSubtitle: "Choose how to connect") {
+            // The subtitle follows the actual situation. "Choose how to connect" reads as a
+            // first-run greeting; arriving here because a token was revoked isn't first-run, and
+            // being greeted as though you'd never set anything up is the wrong tone for it.
+            SettingsScaffold(brandSubtitle: signedOutServers.isEmpty ? "Choose how to connect" : "Sign back in, or add another source") {
+                // Above the "add something" choices, because this isn't adding anything: it's the
+                // server you already had, one tap from working again. Landing here after a token
+                // was revoked and being offered only a blank "Jellyfin Server" form would mean
+                // retyping an address the app still has on disk.
+                if !signedOutServers.isEmpty {
+                    SettingsGroup(
+                        title: "Signed Out",
+                        footer: "Parallax still has these servers, but not a valid sign-in for them."
+                    ) {
+                        ForEach(signedOutServers) { server in
+                            SignedOutServerButton(
+                                server: server,
+                                onSignIn: { path.append(.signInAgain($0.serverURL)) },
+                                onRemove: { id in Task { await removeSignedOutServer(id) } }
+                            )
+                        }
+                    }
+                }
                 ServerTypeChoiceGroup(
                     onChooseJellyfin: { path.append(.jellyfin) },
                     onChooseSMB: { path.append(.smb) }
@@ -32,6 +63,15 @@ struct ConnectSourceView: View {
                         #if !os(tvOS)
                         .navigationBarTitleDisplayMode(.inline)
                         #endif
+                case .signInAgain(let serverURL):
+                    // `onSignedIn` stays nil, as on the add path: LoginView drives the router
+                    // itself, and a successful sign-in replaces the persisted row in place
+                    // (deterministic server id) rather than adding a duplicate.
+                    LoginView(prefilledServerURL: serverURL)
+                        .navigationTitle("Sign In Again")
+                        #if !os(tvOS)
+                        .navigationBarTitleDisplayMode(.inline)
+                        #endif
                 case .smb:
                     SMBLoginView(onAdded: { routeAfterSMBAdd() })
                         .navigationTitle("Network Share")
@@ -41,6 +81,7 @@ struct ConnectSourceView: View {
                 }
             }
         }
+        .task { await loadSignedOutServers() }
         // tvOS: pin the app icon to the left, outside the stack, so it stays put while pushing into
         // the Jellyfin / SMB add flows. No-op on iOS. The surface color is owned by whoever wraps this
         // per platform — `TVSettingsRail` on tvOS, the `SettingsScaffold` it hosts on iOS — so this view
@@ -57,6 +98,22 @@ struct ConnectSourceView: View {
             router.updateForSources(await deps.serverStore.sourceSnapshot)
         }
     }
+
+    private func loadSignedOutServers() async {
+        signedOutServers = await deps.serverStore.signedOutJellyfinServers.compactMap(SignedOutServerRow.init)
+    }
+
+    /// Discards a signed-out row from here. No router sync: a signed-out server contributes no
+    /// source, so removing it can't cross the login/home boundary — we're already on the far side
+    /// of it. Re-reads the list so the group empties (and disappears) once the last row goes.
+    private func removeSignedOutServer(_ id: ServerID) async {
+        do {
+            try await deps.serverStore.remove(id)
+        } catch {
+            Log.persistence.error("Connect removeSignedOutServer failed for \(id.rawValue): \(error.localizedDescription)")
+        }
+        await loadSignedOutServers()
+    }
 }
 
 /// The logged-out root. Hosts `ConnectSourceView` full-screen on every platform — there's no signed-in
@@ -70,17 +127,53 @@ struct LoggedOutRootView: View {
 }
 
 #if DEBUG
-/// Env-free render of the logged-out Connect surface — the real `ConnectSourceView` reads
-/// `AppDependencies`/`AppRouter`, so it can't render in a preview. Mirrors the body's scaffold + group.
-#Preview("Connect · logged out", traits: .fixedLayout(width: 1920, height: 1080)) {
-    SettingsScaffold(brandSubtitle: "Choose how to connect") {
-        SettingsGroup(footer: "More server types are on the way.") {
-            SettingsListRow(image: "JellyfinGlyph", iconSize: 22, title: "Jellyfin Server", subtitle: "Sign in to your media server", accessory: .chevron) {}
-            SettingsListRow(systemImage: "externaldrive.badge.wifi", iconSize: 22, title: "Network Share", subtitle: "Connect over SMB to a shared folder", accessory: .chevron) {}
+/// Env-free renders of the logged-out Connect surface — the real `ConnectSourceView` reads
+/// `AppDependencies`/`AppRouter`, so it can't render in a preview. Mirrors the body's scaffold +
+/// groups.
+private struct ConnectPreview: View {
+    var signedOut: [SignedOutServerRow] = []
+
+    var body: some View {
+        SettingsScaffold(brandSubtitle: signedOut.isEmpty ? "Choose how to connect" : "Sign back in, or add another source") {
+            if !signedOut.isEmpty {
+                SettingsGroup(
+                    title: "Signed Out",
+                    footer: "Parallax still has these servers, but not a valid sign-in for them."
+                ) {
+                    ForEach(signedOut) { server in
+                        SignedOutServerButton(server: server, onSignIn: { _ in }, onRemove: { _ in })
+                    }
+                }
+            }
+            SettingsGroup(footer: "More server types are on the way.") {
+                SettingsListRow(image: "JellyfinGlyph", iconSize: 22, title: "Jellyfin Server", subtitle: "Sign in to your media server", accessory: .chevron) {}
+                SettingsListRow(systemImage: "externaldrive.badge.wifi", iconSize: 22, title: "Network Share", subtitle: "Connect over SMB to a shared folder", accessory: .chevron) {}
+            }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .screenFloor()
     }
-    .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .screenFloor()
-    .preferredColorScheme(.dark)
+
+    static func row(_ name: String, _ host: String) -> SignedOutServerRow? {
+        SignedOutServerRow(PersistedServer(
+            id: ServerID(rawValue: host),
+            kind: .jellyfin(JellyfinServerData(
+                serverURL: URL(string: "https://\(host):8096")!,
+                serverName: name,
+                user: UserSnapshot(id: "u", name: "alice", serverLastUpdatedAt: nil)
+            ))
+        ))
+    }
+}
+
+#Preview("Connect · logged out", traits: .fixedLayout(width: 1920, height: 1080)) {
+    ConnectPreview().preferredColorScheme(.dark)
+}
+
+/// The state a revoked token lands you in when it was your ONLY source: the server you already had
+/// is offered first, one tap from working again, instead of a blank form that makes you retype an
+/// address the app still has on disk.
+#Preview("Connect · signed out server", traits: .fixedLayout(width: 540, height: 980)) {
+    ConnectPreview(signedOut: [ConnectPreview.row("home-jellyfin", "jellyfin.example.lan")].compactMap { $0 })
 }
 #endif

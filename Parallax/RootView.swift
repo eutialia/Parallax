@@ -1,4 +1,5 @@
 import SwiftUI
+import ParallaxJellyfin
 
 struct RootView: View {
     @Environment(AppRouter.self) private var router
@@ -71,6 +72,22 @@ struct RootView: View {
                 launchGate.rearm()
             case .home, .bootstrapping:
                 break
+            }
+        }
+        // A server revoked our access token (HTTP 401 — an admin clearing devices, a server
+        // rebuild, the public demo server's nightly reset). Sign that ONE server out and re-route:
+        // the row stays in Settings as signed-out with a "Sign In Again" prompt, the other servers
+        // are untouched, and `updateForSources` moves the reload token so the sidebar and Home
+        // drop its libraries. Without this the app kept showing the server as connected while
+        // every request 401'd — no libraries, no error, no way back but removing it by hand.
+        //
+        // Lives at the root, above `RootTabView`'s `.id(activeServerID)` remount, so the consumer
+        // survives the re-route it triggers. Serial by construction: concurrent requests all 401
+        // together, and `invalidateSession` returns false for every call after the first.
+        .task {
+            for await serverID in deps.tokenRejections {
+                guard await deps.serverStore.invalidateSession(serverID) else { continue }
+                router.updateForSources(await deps.serverStore.sourceSnapshot)
             }
         }
         // Monochrome chrome: no brand accent anywhere. This overrides the system
