@@ -22,13 +22,23 @@ struct LibraryHostView: View {
     /// distinguishes "every server is unreachable" (a real failure worth a message) from "no
     /// server has any visible library" (an empty state).
     @State private var failedSourceIDs: Set<MediaSourceID> = []
+    /// Names of the servers in `failedSourceIDs`, for the partial-failure notice.
+    @State private var failedSourceNames: [String] = []
     @State private var isResolvingSource = true
 
     var body: some View {
         Group {
             if !groups.isEmpty {
-                LibraryListView(groups: groups, showsFavorites: hasJellyfinSource)
-                    .navigationTitle("Library")
+                LibraryListView(
+                    groups: groups,
+                    showsFavorites: hasJellyfinSource,
+                    // A PARTIAL failure used to be silent: the full-screen error below only shows
+                    // when every source failed, so with two servers one unreachable server just
+                    // read as "I have fewer libraries than I remember". Naming it in-place is the
+                    // same answer the Favorites wall gives with its per-section failure row.
+                    unreachableServers: failedSourceNames
+                )
+                .navigationTitle("Library")
                 // Note: no `.navigationSubtitle(session.serverName)`. It named a single server
                 // above a list that already mixed sources, and with several servers there is no
                 // one name to put there. Server identity now rides the per-server section headers
@@ -71,7 +81,7 @@ struct LibraryHostView: View {
         // Clear, don't just early-return: dropping the last source without a remount must not
         // leave a stale list rendered (mirrors the roots' tasks).
         guard router.hasAnySource else {
-            groups = []; hasJellyfinSource = false; failedSourceIDs = []; isResolvingSource = false
+            groups = []; hasJellyfinSource = false; failedSourceIDs = []; failedSourceNames = []; isResolvingSource = false
             return
         }
         // One read of the sessions, shared by the resolve and the Favorites gate — two reads are
@@ -90,6 +100,7 @@ struct LibraryHostView: View {
         groups = outcome.groups
         hasJellyfinSource = !sessions.isEmpty
         failedSourceIDs = outcome.failedSourceIDs
+        failedSourceNames = outcome.failedSourceNames
         isResolvingSource = false
     }
 }

@@ -248,6 +248,35 @@ struct MergedLibraryTests {
         // Only the failed source is flagged, so recovery re-pulls just that one.
         #expect(outcome.failedSourceIDs == [.jellyfin(down.id)])
         #expect(outcome.hasFailures)
+        // A failed source contributes no group, so its NAME has to come out of the resolver —
+        // there's nothing left in `groups` to read it from, and a partial outage the UI can't name
+        // just reads as "I have fewer libraries than I remember".
+        #expect(outcome.failedSourceNames == [down.serverName])
+    }
+
+    /// Names follow the user's server order, not whichever request happened to fail first — the
+    /// notice sits above a list that IS in server order, so a different order would read as random.
+    @Test("Failed server names come back in the order the servers were added")
+    func failedNamesFollowServerOrder() async {
+        let first = session("first")
+        let second = session("second")
+        let third = session("third")
+        let repo = jellyfinRepo(
+            [
+                first.id: [collection("c1", "Movies")],
+                second.id: [collection("c2", "Shows")],
+                third.id: [collection("c3", "Films")],
+            ],
+            failing: [third.id, first.id]
+        )
+
+        let outcome = await MergedLibrary.resolve(
+            sessions: [first, second, third],
+            servers: [first.persisted, second.persisted, third.persisted],
+            jellyfinRepo: repo
+        )
+
+        #expect(outcome.failedSourceNames == [first.serverName, third.serverName])
     }
 
     @Test("SMB-only: no Jellyfin fetch, so never a stall")

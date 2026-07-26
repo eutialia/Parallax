@@ -15,6 +15,9 @@ extension CollectionType {
         switch self {
         case .movies: return "film"
         case .tvShows: return "tv"
+        // A mixed library holds both, so neither film nor tv is honest — the generic library
+        // glyph is.
+        case .mixed: return "rectangle.stack"
         case .other(let raw):
             let kind = raw.lowercased()
             if kind.contains("music") { return "music.note" }

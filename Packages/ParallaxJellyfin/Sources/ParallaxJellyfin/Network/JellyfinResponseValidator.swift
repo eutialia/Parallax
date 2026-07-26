@@ -43,6 +43,23 @@ final class JellyfinResponseValidator: APIClientDelegate, Sendable {
             throw AppError.server(statusCode: response.statusCode, message: nil)
         }
 
+        // Not every 401 is Jellyfin rejecting our token. A Jellyfin behind an auth gateway
+        // (Authelia, Authentik, a reverse proxy with basic auth) answers 401 for ITS OWN missing
+        // credential, with the Jellyfin token perfectly intact — and signing the user out there
+        // would destroy a working token to fix a problem it had nothing to do with, then send them
+        // to a sign-in screen that 401s too.
+        //
+        // `WWW-Authenticate` separates the two, and it's a spec guarantee rather than a heuristic:
+        // RFC 7235 §3.1 REQUIRES a server issuing a 401 challenge to send it. Jellyfin doesn't
+        // (verified against a live server: a garbage token returns a bare 401 with no challenge
+        // header), because its 401 isn't an HTTP-auth challenge at all. So a challenge present
+        // means something in FRONT of Jellyfin is asking — leave the session alone and report a
+        // plain server error.
+        guard response.value(forHTTPHeaderField: "WWW-Authenticate") == nil else {
+            Log.network.error("Jellyfin \(self.serverID.rawValue): HTTP 401 carrying an auth challenge — an upstream gateway, not a rejected token; session kept")
+            throw AppError.server(statusCode: 401, message: nil)
+        }
+
         // Fire-and-forget: the handler is expected to be cheap and idempotent (a burst of
         // concurrent requests all 401 together, so it WILL be called several times for one dead
         // token). Deduplication belongs to the consumer, which can see whether the session is
