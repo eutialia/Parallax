@@ -19,9 +19,12 @@ actor SMBResumeStore {
     /// Storage shape: one dictionary under `smb.resume.v1`, entry per item —
     /// `["pos": seconds, "at": epochSeconds]`. `at` orders LRU eviction.
     private static let key = "smb.resume.v1"
-    private static let maxEntries = 500
-    private static let minimumProgressSeconds: Double = 5
-    private static let completionFraction: Double = 0.95
+    /// The resume policy's three numbers. Internal rather than private so the tests assert against
+    /// the values the store actually applies instead of re-typing them — a retune then shows up as a
+    /// deliberate edit here, not as a silently-still-green test.
+    static let maxEntries = 500
+    static let minimumProgressSeconds: Double = 5
+    static let completionFraction: Double = 0.95
 
     /// `defaults` is the test seam — `UserDefaults(suiteName:)` keeps test writes
     /// out of the real standard domain.

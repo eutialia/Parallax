@@ -8,10 +8,18 @@ public actor AsyncDebouncer<Value: Sendable> {
     public nonisolated let stream: AsyncStream<Value>
     private nonisolated let continuation: AsyncStream<Value>.Continuation
     private let delay: Duration
+    private let sleep: @Sendable (Duration) async throws -> Void
     private var currentTask: Task<Void, Never>?
 
-    public init(delay: Duration) {
+    /// - Parameter sleep: how the pending emission waits out the delay. Defaults to
+    ///   `Task.sleep(for:)`; tests inject a manually released sleeper so debounce ordering is
+    ///   driven by the test rather than by the scheduler.
+    public init(
+        delay: Duration,
+        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+    ) {
         self.delay = delay
+        self.sleep = sleep
         (self.stream, self.continuation) = AsyncStream<Value>.makeStream()
     }
 
@@ -19,9 +27,10 @@ public actor AsyncDebouncer<Value: Sendable> {
         currentTask?.cancel()
         let continuation = self.continuation
         let delay = self.delay
+        let sleep = self.sleep
         currentTask = Task {
             do {
-                try await Task.sleep(for: delay)
+                try await sleep(delay)
             } catch is CancellationError {
                 return
             } catch {

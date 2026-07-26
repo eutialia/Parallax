@@ -39,9 +39,9 @@ enum SMBSourceResolver {
         SMBFileSource.decodeItemID(item.id)
     }
 
-    /// - Throws: `AppError.source(.notFound)` if the `ItemID` wasn't minted by `SMBFileSource` or
-    ///   the components can't form a URL; `AppError.auth(.credentialUnavailable)` if the saved
-    ///   password's Keychain slot is lost — never degraded into an empty-password connection.
+    /// - Throws: `AppError.source(.notFound)` if the `ItemID` wasn't minted by `SMBFileSource`;
+    ///   `AppError.auth(.credentialUnavailable)` if the saved password's Keychain slot is lost —
+    ///   never degraded into an empty-password connection.
     static func context(
         for item: Item,
         ref: SMBServerRef,
@@ -53,9 +53,7 @@ enum SMBSourceResolver {
             throw AppError.source(.notFound)
         }
         let password = try await serverStore.smbPassword(for: ref.id)
-        guard let url = SMBURL.make(host: ref.data.host, share: share, path: path) else {
-            throw AppError.source(.notFound)
-        }
+        let url = SMBURL.make(host: ref.data.host, share: share, path: path)
         let vlcOptions = ref.data.vlcCredentialOptions(password: password)
         return SMBSourceContext(share: share, path: path, url: url, password: password, vlcOptions: vlcOptions)
     }

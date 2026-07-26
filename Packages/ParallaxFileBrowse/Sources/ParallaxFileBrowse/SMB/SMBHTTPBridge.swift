@@ -54,7 +54,9 @@ public actor SMBHTTPBridge {
     }
 
     /// Body chunk ceiling: read + send the file in slices so the whole file is never buffered.
-    private static let chunkSize = 2 * 1024 * 1024
+    /// Package-internal so the multi-chunk tests size their fixtures off the real ceiling instead
+    /// of a literal that a retune would silently stop exercising.
+    static let chunkSize = 2 * 1024 * 1024
     /// First-chunk size per response. Chunks DOUBLE per consumed chunk up to `chunkSize`
     /// (see `streamBody`): a seeky prober (libvlc's http input walking a Matroska header →
     /// cues → target cluster opens, reads a little, and RESETS the connection per hop)
@@ -62,9 +64,9 @@ public actor SMBHTTPBridge {
     /// chunk per hop — over a VPN that waste dwarfed the useful reads. A well-behaved long
     /// stream (AVPlayer playback) reaches the 2 MiB ceiling within four sends, so steady
     /// throughput is unaffected.
-    private static let initialChunkSize = 256 * 1024
+    static let initialChunkSize = 256 * 1024
     /// Request-head cap: reject a head that doesn't terminate within 16 KiB (malformed / abusive).
-    private static let maxHeadBytes = 16 * 1024
+    static let maxHeadBytes = 16 * 1024
 
     public init(reader: any RandomAccessReading, fileName: String, contentType: String) {
         self.reader = reader
@@ -412,7 +414,7 @@ public actor SMBHTTPBridge {
         return Data(head.utf8)
     }
 
-    enum BridgeError: Error, Sendable {
+    enum BridgeError: Error, Sendable, Equatable {
         case stopped
         case alreadyStarted
         case noPort

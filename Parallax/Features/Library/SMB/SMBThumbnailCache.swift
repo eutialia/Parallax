@@ -65,7 +65,14 @@ actor SMBThumbnailCache {
     /// The image extensions the cache reads, newest-codec first. `existing` probes them in order, so
     /// a key that has both (a legacy PNG never overwritten by a later HEIC store) resolves to the
     /// HEIC and the PNG ages out via LRU.
-    private static let imageExtensions = ["heic", "png"]
+    /// Internal rather than private so the tests assert against the extensions the cache actually
+    /// writes and probes, instead of re-typing "heic"/"png".
+    static let imageExtensions = ["heic", "png"]
+
+    /// The extension every new write uses — `imageExtensions` is newest-codec first.
+    static var currentImageExtension: String { imageExtensions[0] }
+    /// The pre-HEIC extension `existing` still honours so an old cache isn't invalidated wholesale.
+    static var legacyImageExtension: String { imageExtensions[1] }
 
     /// - Parameters:
     ///   - directory: where thumbnails live; defaults to `<Caches>/SMBThumbnails/`.
@@ -123,7 +130,7 @@ actor SMBThumbnailCache {
     /// `.fail` marker for the key (the file just proved decodable).
     func store(_ data: Data, duration: Duration?, for key: SMBThumbnailKey) -> CachedThumbnail? {
         let base = baseName(for: key)
-        let url = directory.appendingPathComponent("\(base).heic")
+        let url = directory.appendingPathComponent("\(base).\(Self.currentImageExtension)")
         do {
             try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
             try data.write(to: url, options: .atomic)

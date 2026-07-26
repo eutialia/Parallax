@@ -17,6 +17,13 @@ import ParallaxCore
 /// time the new profile is used on the next `PlaybackInfoService.resolve(...)`
 /// call.
 public actor DeviceProfileBuilder {
+    /// Unclamped LAN ceiling serialized into the wire profile — above UHD-BD's ~144 Mbps
+    /// so it never forces a bitrate transcode (nil would mean Jellyfin's 8 Mbps default).
+    public static let lanBitrateCeiling: Bitrate = .megabits(360)
+    /// Low Data Mode clamp — Jellyfin's own capped-client default, known to produce a
+    /// good 1080p transcode.
+    public static let lowDataBitrateCeiling: Bitrate = .megabits(8)
+
     private let probe: any CapabilityProbe
     private var cached: DeviceCapabilities?
     /// `true` when the OS last reported a constrained path (Low Data Mode).
@@ -49,7 +56,7 @@ public actor DeviceProfileBuilder {
             // constrained path (Low Data Mode), clamp to 8 Mbps — Jellyfin's own capped-client
             // default, known to produce a good 1080p transcode. `isExpensive` is deliberately
             // not consulted; cellular/hotspot alone isn't a reason to throttle.
-            maxBitrate: networkConstrained ? .megabits(8) : .megabits(360),
+            maxBitrate: networkConstrained ? Self.lowDataBitrateCeiling : Self.lanBitrateCeiling,
             audioOutput: audioOutput,
             preferredSubtitleFormats: PlaybackCapabilityMatrix.avKitSubtitleFormats
                 .sorted(by: { $0.rawValue < $1.rawValue }),

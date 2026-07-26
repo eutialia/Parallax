@@ -540,7 +540,7 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     /// Trailing path of an HLS resource URI with the query dropped (the query
     /// is where the api_key lives): "main/123.mp4". Enough to tell playlist vs
     /// init vs media segment apart without leaking credentials.
-    private static func redactedTail(of uri: String) -> String? {
+    static func redactedTail(of uri: String) -> String? {
         guard let components = URLComponents(string: uri) else { return nil }
         let parts = components.path.split(separator: "/")
         guard !parts.isEmpty else { return nil }

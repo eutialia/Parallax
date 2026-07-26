@@ -794,7 +794,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// Playback (ms) that must elapse before the read-rate estimate is trusted — long enough for
     /// the bounded read-ahead cache (network-caching, ~3s) to amortize so `readBytes / playedTime`
     /// approximates the content byte-rate rather than the cache-fill spike.
-    nonisolated private static let estimateFloorMs: Int32 = 3_000
+    nonisolated static let estimateFloorMs: Int32 = 3_000
 
     /// Estimate the total runtime (ms) of media whose container length never resolves — a
     /// truncated/incomplete file (no trailing `moov` atom). libvlc's `position` is `time / length`,

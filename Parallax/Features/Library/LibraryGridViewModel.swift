@@ -36,22 +36,47 @@ final class LibraryGridViewModel {
     /// items still visible) is deliberately excluded: it keeps its manual "Try again".
     var isStalled: Bool { if case .failed = state, items.isEmpty { true } else { false } }
 
-    var sort: ItemSort = .defaultForLibrary {
-        didSet { if sort != oldValue { Task { await reload() } } }
-    }
-    var filter: ItemFilter = ItemFilter() {
-        didSet { if filter != oldValue { Task { await reload() } } }
+    /// The grid's order and filter. Read-only from outside; changing either goes through
+    /// `setSort`/`setFilter`, which is what also refetches.
+    ///
+    /// Deliberately NOT `didSet`-driven. Under `@Observable` these are rewritten into computed
+    /// properties over generated `_sort`/`_filter` storage, so `self.sort = sort` in `init` runs the
+    /// *setter* — property observers are only skipped for a genuine stored-property initialization.
+    /// A `didSet` here therefore fired during `init` and armed a reload nobody asked for, which then
+    /// raced the caller's own `load()` and could make it bail on `guard state != .loading` (dropping
+    /// `loadGenres()` with it, so the genre picker came up permanently empty). Explicit setters make
+    /// the fetch trigger a call, not a side effect of assignment.
+    private(set) var sort: ItemSort
+    private(set) var filter: ItemFilter
+
+    /// Adopt a new order and refetch from the server. A no-op when unchanged, so repeated fan-out
+    /// from a coordinator costs nothing.
+    func setSort(_ newSort: ItemSort) {
+        guard newSort != sort else { return }
+        sort = newSort
+        Task { await reload() }
     }
 
-    // Picker lenses over the value-type `sort`/`filter`, so the views bind straight to these
-    // (`$vm.selectedGenre`, `$vm.sortField`, `$vm.sortDirection`) instead of hand-rolling
-    // `Binding(get:set:)` per call site. Each setter writes back through `sort`/`filter`, so their
-    // `didSet` reload still fires; each getter reads the stored value, so `@Observable` tracks it.
+    /// Adopt a new filter and refetch from the server. A no-op when unchanged.
+    func setFilter(_ newFilter: ItemFilter) {
+        guard newFilter != filter else { return }
+        filter = newFilter
+        Task { await reload() }
+    }
+
+    // Picker lenses over the value-type `sort`/`filter`, so the views drive these
+    // (`vm.selectedGenre`, `vm.sortField`, `vm.sortDirection`) instead of hand-rolling
+    // `Binding(get:set:)` per call site. Each setter writes back through `setSort`/`setFilter`, so
+    // the refetch happens; each getter reads the stored value, so `@Observable` tracks it.
     var selectedGenre: String? {
         // One genre at a time — a title can carry several, so this is "show me everything tagged X",
         // not a mutually-exclusive bucket. nil clears the filter.
         get { filter.genres.first }
-        set { filter.genres = newValue.map { [$0] } ?? [] }
+        set {
+            var updated = filter
+            updated.genres = newValue.map { [$0] } ?? []
+            setFilter(updated)
+        }
     }
     var sortField: ItemSort.Field {
         get { sort.field }
@@ -59,11 +84,11 @@ final class LibraryGridViewModel {
         // titles A→Z) instead of inheriting the previous field's order — the
         // direction palette re-labels per field, so a carried-over direction
         // would silently flip meaning ("Newest" → "Z to A").
-        set { sort = ItemSort(field: newValue, direction: newValue.naturalDirection) }
+        set { setSort(ItemSort(field: newValue, direction: newValue.naturalDirection)) }
     }
     var sortDirection: ItemSort.Direction {
         get { sort.direction }
-        set { sort = ItemSort(field: sort.field, direction: newValue) }
+        set { setSort(ItemSort(field: sort.field, direction: newValue)) }
     }
 
     private var cursor: PageCursor?
@@ -82,11 +107,10 @@ final class LibraryGridViewModel {
     private var changesTask: Task<Void, Never>?
 
     /// - Parameters:
-    ///   - sort: the grid's starting order, and `filter` its starting filter. Passed in rather than
-    ///     assigned after construction because assigning fires the `didSet` reload — which races
-    ///     the caller's own `load()` and can make it bail on `guard state != .loading`, skipping
-    ///     `loadGenres()` and leaving the genre picker permanently empty. A coordinator that opens
-    ///     several grids on an already-chosen sort (the Favorites wall) hits that every time.
+    ///   - sort: the grid's starting order, and `filter` its starting filter. Seeding them here
+    ///     arms no fetch at all — the grid stays `.idle` until the caller's own `load()` — so a
+    ///     coordinator that opens several grids on an already-chosen sort (the Favorites wall)
+    ///     gets exactly one fetch per grid, on that sort.
     init(
         repo: any MediaRepository,
         source: MediaSourceID,
@@ -98,8 +122,6 @@ final class LibraryGridViewModel {
         self.repo = repo
         self.source = source
         self.scope = scope
-        // Set in `init`, so the observers above don't fire (Swift skips property observers during
-        // initialization) — exactly the point.
         self.sort = sort
         self.filter = filter
         // Own the iterating Task; cancelled below alongside the grid's other in-flight work.
@@ -142,7 +164,17 @@ final class LibraryGridViewModel {
     }
 
     func load() async {
-        guard state != .loading else { return }
+        // Awaiting `load()` means "settle this grid", so a fetch already in flight is joined, never
+        // silently dropped: a sort change (which drives `reload()`) can beat the view's first
+        // `load()` to the punch, and returning early there left the caller believing the grid had
+        // settled AND skipped the genre fetch — `reload()` doesn't do genres. `genreTask == nil` is
+        // exactly "genres were never requested", so the join repairs that without restarting a
+        // genre fetch that's already running or done.
+        if state == .loading {
+            if genreTask == nil { loadGenres() }
+            await inFlight?.value
+            return
+        }
         refreshErrorMessage = nil
         reloadSnapshot = nil
         state = .loading

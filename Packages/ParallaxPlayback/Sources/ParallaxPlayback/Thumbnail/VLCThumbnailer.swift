@@ -255,7 +255,7 @@ public enum VLCThumbnailError: Error, Sendable {
 /// itself; `media.delegate` is weak, and `safetyTask` captures `self` weakly, so
 /// nothing cycles.
 @MainActor
-private final class MediaParseAwaiter: NSObject, VLCMediaDelegate {
+final class MediaParseAwaiter: NSObject, VLCMediaDelegate {
 
     private var continuation: CheckedContinuation<VLCMediaParsedStatus, Never>?
     private var safetyTask: Task<Void, Never>?
@@ -325,7 +325,7 @@ private final class MediaParseAwaiter: NSObject, VLCMediaDelegate {
 
     /// `Duration` → whole milliseconds for `parse(options:timeout:)`, clamped to ≥ 1
     /// (0 would mean "no deadline") and to `Int32.max`.
-    private static func milliseconds(_ duration: Duration) -> Int32 {
+    static func milliseconds(_ duration: Duration) -> Int32 {
         let components = duration.components
         let ms = components.seconds * 1_000 + components.attoseconds / 1_000_000_000_000_000
         return Int32(clamping: max(1, ms))

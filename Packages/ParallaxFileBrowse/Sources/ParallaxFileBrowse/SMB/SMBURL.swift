@@ -10,32 +10,42 @@ import Foundation
 /// not). libVLC's RFC-3986 MRL parser decodes the encoding back to the literal path when it
 /// opens the file — proven by the fact that auto-encoded spaces (`%20`) already play.
 public enum SMBURL {
+    /// Percent-encoding makes the construction TOTAL: every character that could break the parse
+    /// is escaped first, so `URL(string:)` always succeeds and neither builder below is failable.
+    /// Pinned by `SMBURLTests.hostOnlyAlwaysProducesAnSMBURL` / `makeAlwaysProducesAnSMBURL`
+    /// (hostile hosts, shares and paths — delimiters, brackets, `%`, spaces, unicode, empty).
+    ///
     /// - Parameters:
     ///   - host: bare host (no scheme/userinfo).
     ///   - share: share name.
     ///   - path: share-relative path with `/` separators; empty = the share root.
-    /// - Returns: the encoded `smb://` URL, or nil if the components still can't form a URL.
-    public static func make(host: String, share: String, path: String) -> URL? {
+    /// - Returns: the encoded `smb://` URL.
+    public static func make(host: String, share: String, path: String) -> URL {
         // `.urlPathAllowed` keeps `/` (so path separators survive) and ordinary name
         // characters, while encoding `#`, `?`, spaces, brackets, etc.
         let pathChars = CharacterSet.urlPathAllowed
-        let encHost = host.addingPercentEncoding(withAllowedCharacters: .urlHostAllowed) ?? host
-        let encShare = share.addingPercentEncoding(withAllowedCharacters: pathChars) ?? share
+        let encHost = encoded(host, allowing: .urlHostAllowed)
+        let encShare = encoded(share, allowing: pathChars)
         let trimmedPath = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let encPath = trimmedPath.addingPercentEncoding(withAllowedCharacters: pathChars) ?? trimmedPath
+        let encPath = encoded(trimmedPath, allowing: pathChars)
         let tail = encPath.isEmpty ? encShare : "\(encShare)/\(encPath)"
-        return URL(string: "smb://\(encHost)/\(tail)")
+        return URL(string: "smb://\(encHost)/\(tail)")!
     }
 
     /// Scheme-only connection URL (`smb://host`, no share/path, no userinfo) — what
     /// `SMB2Manager` derives its connection target from. Percent-encodes the host so a
     /// Bonjour-synthesised name with a space (e.g. "My NAS.local") forms a real URL and
-    /// attempts a resolve, instead of silently collapsing to the bogus `smb://invalid`
-    /// fallback. ONE home for that fallback subtlety — `AMSMB2Lister` and
+    /// attempts a resolve. ONE home for that encoding subtlety — `AMSMB2Lister` and
     /// `SMBConnectionTarget` both build their connection URL here.
     public static func hostOnly(_ host: String) -> URL {
-        let encHost = host.addingPercentEncoding(withAllowedCharacters: .urlHostAllowed) ?? host
-        return URL(string: "smb://\(encHost)") ?? URL(string: "smb://invalid")!
+        URL(string: "smb://\(encoded(host, allowing: .urlHostAllowed))")!
+    }
+
+    /// `addingPercentEncoding` is only documented to fail for a string the target encoding can't
+    /// represent — impossible for a Swift `String` over UTF-8 — so the identity fallback is a
+    /// formality, kept in one place instead of repeated at each component.
+    private static func encoded(_ component: String, allowing allowed: CharacterSet) -> String {
+        component.addingPercentEncoding(withAllowedCharacters: allowed) ?? component
     }
 
     /// Inverse of `make`: decodes an `smb://host/share/path` URL back into its parts.

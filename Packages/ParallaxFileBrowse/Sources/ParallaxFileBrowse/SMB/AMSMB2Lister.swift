@@ -163,7 +163,7 @@ public actor AMSMB2Lister: SMBLister {
 }
 
 /// Errors surfaced by `AMSMB2Lister`. Carries no credential material.
-public enum SMBListerError: Error, Sendable {
+public enum SMBListerError: Error, Sendable, Equatable {
     /// `SMB2Manager(url:domain:credential:)` returned nil (malformed host URL).
     case managerInitFailed
     /// The operation outlived the hard wall-clock ceiling (`connectTimeout` + grace) — an

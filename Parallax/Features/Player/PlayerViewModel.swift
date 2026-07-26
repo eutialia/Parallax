@@ -148,10 +148,18 @@ final class PlayerViewModel {
     /// `isSwitchingTracks` too) — `isReanchoring` must win first, since a scrub is not
     /// an audio switch.
     var loaderTitle: String {
-        if isReanchoring { return "Buffering" }
-        if isSwitchingTracks { return "Switching audio" }
-        if showsStallScrim { return "Buffering" }
-        return "Loading video"
+        if isReanchoring { return LoaderCaption.buffering }
+        if isSwitchingTracks { return LoaderCaption.switchingAudio }
+        if showsStallScrim { return LoaderCaption.buffering }
+        return LoaderCaption.loadingVideo
+    }
+
+    /// The scrim's three captions, named so the view's fallback and the tests
+    /// reference one source instead of re-typing the user-facing strings.
+    enum LoaderCaption {
+        static let buffering = "Buffering"
+        static let switchingAudio = "Switching audio"
+        static let loadingVideo = "Loading video"
     }
     var loaderSubtitle: String? { isSwitchingTracks && !isReanchoring ? selectedAudioTrack?.displayName : nil }
 
@@ -2481,6 +2489,21 @@ extension PlayerViewModel {
 
     /// The active engine's id, for the HUD's engine label.
     var debugEngineID: PlaybackEngineID? { engine?.id }
+
+    /// Awaits the in-flight sidecar fetch+parse (`subtitleFetchTask`) so a test can assert
+    /// `activeSubtitleCues` deterministically instead of sleeping past the Task hop. The
+    /// engine-beat analog is `FakePlaybackEngine.settle()`; this covers the ONE piece of
+    /// per-selection work the VM detaches from the awaited call. No-op when none is in flight.
+    func debugAwaitSubtitleFetch() async {
+        await subtitleFetchTask?.value
+    }
+
+    /// Awaits the best-effort segments + adjacent-episode fetch (`segmentsTask`) that the
+    /// `start` path deliberately detaches, so a test can assert `segments`/`adjacentEpisodes`
+    /// without sleeping past its hop. No-op when none is in flight.
+    func debugAwaitSegmentsLoad() async {
+        await segmentsTask?.value
+    }
 
     /// The engine's live decode snapshot (actual dimensions, bitrates, the true
     /// audio/subtitle selection). Polled by the HUD.

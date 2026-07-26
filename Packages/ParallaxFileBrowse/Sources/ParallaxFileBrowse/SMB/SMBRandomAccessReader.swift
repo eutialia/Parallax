@@ -1,6 +1,5 @@
 import AMSMB2
 import Foundation
-import OSLog
 import ParallaxCore
 
 /// `RandomAccessReading` over AMSMB2 (libsmb2 SMB2/3), for container probing, sidecar-image reads,
@@ -27,11 +26,14 @@ import ParallaxCore
 /// DIGEST, never the raw secret) and used only to build the `URLCredential` the pool's connector
 /// hands `SMB2Manager` — never logged, never embedded in a URL. The file `path` may be logged
 /// (matches the `SMBFileSource.mapListError` precedent).
-public actor SMBRandomAccessReader: RandomAccessReading {
+///
+/// Generic over `SMBReadableConnection` for the same reason `SMBConnectionPool` is generic over
+/// `PoolableSMBConnection`: production instantiates it with `SMB2Manager` (inferred from the pool
+/// argument, so no call site names the parameter), and tests inject a fake so the borrow/taint/
+/// drain lifecycle is exercised without a share.
+public actor SMBRandomAccessReader<Connection: SMBReadableConnection>: RandomAccessReading {
 
-    private static let logger = Log.custom(category: "SMBRandomAccessReader")
-
-    private let pool: SMBConnectionPool<SMB2Manager>
+    private let pool: SMBConnectionPool<Connection>
     private let target: SMBConnectionTarget
     private let path: String
 
@@ -41,11 +43,11 @@ public actor SMBRandomAccessReader: RandomAccessReading {
     private let connectTimeout: TimeInterval
 
     /// The live borrowed manager, set on first use. Reset by `disconnect()`.
-    private var manager: SMB2Manager?
+    private var manager: Connection?
 
     /// The pool borrow backing `manager`. Held so `disconnect()` can check the exact connection back
     /// in (or discard it).
-    private var handle: SMBPooledConnection<SMB2Manager>?
+    private var handle: SMBPooledConnection<Connection>?
 
     /// Set by `disconnect()`, permanently. Guards `connectedManager()` so a straggler read (an
     /// HTTP-bridge serve loop that was already past its own stop check) can't lazily re-borrow a
@@ -81,7 +83,7 @@ public actor SMBRandomAccessReader: RandomAccessReading {
     ///   - share: the share to connect (e.g. `"Media"`).
     ///   - path: share-relative file path (e.g. `"Movies/film.mp4"`).
     ///   - connectTimeout: per-read ceiling on the borrowed manager (the pool owns the connect ceiling).
-    public init(pool: SMBConnectionPool<SMB2Manager>, host: String, username: String, password: String,
+    public init(pool: SMBConnectionPool<Connection>, host: String, username: String, password: String,
                 domain: String = "", share: String, path: String, connectTimeout: TimeInterval = 15) {
         self.pool = pool
         self.target = SMBConnectionTarget(
@@ -99,8 +101,7 @@ public actor SMBRandomAccessReader: RandomAccessReading {
             inFlightOps += 1
             defer { opFinished() }
             do {
-                let attributes = try await client.attributesOfItem(atPath: path)
-                let size = UInt64(max(0, attributes.fileSize ?? 0))
+                let size = UInt64(max(0, try await client.fileSizeOfItem(atPath: path) ?? 0))
                 cachedFileSize = size
                 return size
             } catch {
@@ -121,9 +122,14 @@ public actor SMBRandomAccessReader: RandomAccessReading {
         let client = try await connectedManager()
         inFlightOps += 1
         defer { opFinished() }
-        let upperBound = offset.addingReportingOverflow(UInt64(length)).partialValue
+        // SATURATING, not wrapping: an offset within `length` of `UInt64.max` (a corrupt
+        // `Content-Range`, a bogus probe seek) would wrap the sum BELOW `offset` and trap the
+        // `Range` construction on `lowerBound > upperBound`. Clamping to `UInt64.max` keeps the
+        // range valid; being at or past EOF, it simply returns the available (empty) prefix.
+        let sum = offset.addingReportingOverflow(UInt64(length))
+        let upperBound = sum.overflow ? UInt64.max : sum.partialValue
         do {
-            return try await client.contents(atPath: path, range: offset..<upperBound)
+            return try await client.readBytes(atPath: path, range: offset..<upperBound)
         } catch let error as POSIXError where error.code == .ENODATA || error.code == .ERANGE {
             // Defensive: if a future AMSMB2 surfaced an EOF-shaped POSIX error instead of a short
             // read, honor the pread contract by returning the empty prefix. NOT a taint — an expected
@@ -239,7 +245,7 @@ public actor SMBRandomAccessReader: RandomAccessReading {
     /// bridge fronts this reader from many connections, but it always probes/starts via one
     /// `fileSize`/`read` before serving, and AMSMB2 itself serialises; if concurrent cold-start ever
     /// becomes real, memoize an in-flight checkout `Task` here.
-    private func connectedManager() async throws -> SMB2Manager {
+    private func connectedManager() async throws -> Connection {
         // A read that lost the race with `disconnect()` fails like a cancellation — the serve loop it
         // belongs to is being torn down anyway.
         guard !isClosed else { throw CancellationError() }
@@ -256,9 +262,50 @@ public actor SMBRandomAccessReader: RandomAccessReading {
         // Pin the per-read ceiling on the borrowed manager: a warm reuse inherits the previous
         // borrower's `timeout`, so re-assert ours so a wedged read fails in `connectTimeout` rather
         // than whatever the last borrow left set (or AMSMB2's 60s default).
-        borrowed.connection.timeout = connectTimeout
+        borrowed.connection.setOperationTimeout(connectTimeout)
         handle = borrowed
         manager = borrowed.connection
         return borrowed.connection
     }
 }
+
+// MARK: - Connection abstraction
+
+/// The reads a pooled SMB connection must serve for `SMBRandomAccessReader`, layered on the pool's
+/// own `PoolableSMBConnection` lifecycle contract. Production conforms `SMB2Manager` (below); tests
+/// conform a fake, so the borrow/taint/drain lifecycle above is testable without a live share.
+///
+/// The three members are deliberately thin renames of AMSMB2's own API rather than a wider
+/// abstraction: `SMB2Manager`'s `contents(atPath:range:)` is generic over `RangeExpression` and its
+/// `timeout` is a settable property, neither of which can witness a protocol requirement directly.
+public protocol SMBReadableConnection: PoolableSMBConnection {
+    /// Pins the per-operation response ceiling. Warm reuse inherits the previous borrower's value,
+    /// so each borrow re-asserts its own.
+    func setOperationTimeout(_ seconds: TimeInterval)
+
+    /// Size in bytes of the item at `path`, or nil when the server reports none.
+    func fileSizeOfItem(atPath path: String) async throws -> Int64?
+
+    /// Bytes in `range`. Honors the POSIX-pread contract: a range at or past EOF yields the
+    /// available prefix (possibly empty) rather than throwing.
+    func readBytes(atPath path: String, range: Range<UInt64>) async throws -> Data
+}
+
+extension SMB2Manager: SMBReadableConnection {
+    public func setOperationTimeout(_ seconds: TimeInterval) {
+        timeout = seconds
+    }
+
+    public func fileSizeOfItem(atPath path: String) async throws -> Int64? {
+        try await attributesOfItem(atPath: path).fileSize
+    }
+
+    public func readBytes(atPath path: String, range: Range<UInt64>) async throws -> Data {
+        try await contents(atPath: path, range: range)
+    }
+}
+
+/// The production reader specialization — a reader over real `SMB2Manager` share connections.
+/// Aliased so app-side owners can name the type without importing AMSMB2, exactly as `SMBSharePool`
+/// does for the pool.
+public typealias SMBShareReader = SMBRandomAccessReader<SMB2Manager>

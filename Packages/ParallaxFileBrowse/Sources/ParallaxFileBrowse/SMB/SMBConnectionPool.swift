@@ -44,7 +44,16 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
     /// single threshold cleanly separates them. This is NOT a speed test and reads nothing about
     /// throughput — it only distinguishes "on the same network" from "across a tunnel" for latency-
     /// sensitive policy (e.g. how aggressively to prefetch).
-    private static var lanThreshold: Duration { .milliseconds(300) }
+    ///
+    /// Package-internal so the classification tests straddle THIS value rather than re-typing
+    /// latencies that a retune would silently invert.
+    static var lanThreshold: Duration { .milliseconds(300) }
+
+    /// Slack added to `connectTimeout` for the cold-connect `withHardTimeout` ceiling: AMSMB2 bounds
+    /// SMB PDU responses itself, so this outer race only has to catch the phases it doesn't cover
+    /// (name resolution in particular) — it should fire only when the inner timeout has already
+    /// failed to. Package-internal so a test can derive a sub-second ceiling from it.
+    static var hardTimeoutGrace: TimeInterval { 5 }
 
     private let connectTimeout: TimeInterval
     private let maxIdlePerKey: Int
@@ -134,7 +143,7 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
         let connection: Connection
         do {
             let connector = connect
-            connection = try await withHardTimeout(seconds: connectTimeout + 5) {
+            connection = try await withHardTimeout(seconds: connectTimeout + Self.hardTimeoutGrace) {
                 try await connector(target)
             }
         } catch is HardTimeoutError {

@@ -43,14 +43,14 @@ final class FavoritesViewModel {
     var sort: ItemSort = .defaultForLibrary {
         didSet {
             guard sort != oldValue else { return }
-            for section in sections { section.grid.sort = sort }
+            for section in sections { section.grid.setSort(sort) }
         }
     }
 
     var filter: ItemFilter = ItemFilter() {
         didSet {
             guard filter != oldValue else { return }
-            for section in sections { section.grid.filter = filter }
+            for section in sections { section.grid.setFilter(filter) }
         }
     }
 
@@ -145,10 +145,10 @@ final class FavoritesViewModel {
         }
         var built: [Section] = []
         for session in sessions {
-            // The current sort/filter go in through `init`, not assigned afterwards: assigning
-            // fires the grid's `didSet` reload, which races the `load()` below and can make it
-            // bail (`guard state != .loading`) — taking `loadGenres()` with it, so a wall rebuilt
-            // while a sort was active came back with no genres to pick from.
+            // The current sort/filter go in through `init`, not pushed afterwards via
+            // `setSort`/`setFilter`: seeding arms no fetch, so each grid does exactly one — the
+            // `load()` below, already carrying the choice. Pushing instead would arm a second one
+            // that races it.
             let grid = LibraryGridViewModel(
                 repo: await repoFactory(session),
                 source: .jellyfin(session.id),
