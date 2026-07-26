@@ -3,12 +3,12 @@ import Foundation
 import CoreMedia
 @testable import ParallaxPlayback
 
+/// SRT-specific parsing. The cross-parser behaviours (sorting, garbage tolerance, the
+/// `Data` overload) live in `SubtitleParserContractTests`.
 @Suite("SRTParser")
 struct SRTParserTests {
 
-    private func seconds(_ t: CMTime) -> Double { CMTimeGetSeconds(t) }
-
-    @Test("parses basic SRT: index line, comma-millis timecodes, multi-line text")
+    @Test("parses index line, comma-millis timecodes and multi-line text")
     func parsesBasicSRT() {
         let srt = """
         1
@@ -23,75 +23,23 @@ struct SRTParserTests {
         """
         let cues = SRTParser.parse(srt)
         #expect(cues.count == 2)
-        #expect(seconds(cues[0].start) == 1.0)
-        #expect(seconds(cues[0].end) == 4.0)
+        #expect(cueSeconds(cues[0].start) == 1.0)
+        #expect(cueSeconds(cues[0].end) == 4.0)
         #expect(cues[0].text == "Line one\nLine two")
-        #expect(seconds(cues[1].start) == 5.5)
-        #expect(seconds(cues[1].end) == 6.0)
+        #expect(cueSeconds(cues[1].start) == 5.5)
+        #expect(cueSeconds(cues[1].end) == 6.0)
         #expect(cues[1].text == "Next")
     }
 
-    @Test("HH:MM:SS,mmm with hours > 0")
+    @Test("converts the hours field (01:02:03,500 → 3723.5s)")
     func withHours() {
-        let srt = """
-        1
-        01:02:03,500 --> 01:02:05,000
-        Hi
-
-        """
-        let cues = SRTParser.parse(srt)
+        let cues = SRTParser.parse("1\n01:02:03,500 --> 01:02:05,000\nHi\n\n")
         #expect(cues.count == 1)
-        #expect(seconds(cues[0].start) == 3723.5)
-        #expect(seconds(cues[0].end) == 3725.0)
+        #expect(cueSeconds(cues[0].start) == 3723.5)
+        #expect(cueSeconds(cues[0].end) == 3725.0)
     }
 
-    @Test("tolerates CRLF line endings")
-    func crlf() {
-        let srt = "1\r\n00:00:01,000 --> 00:00:02,000\r\nHello\r\n\r\n"
-        let cues = SRTParser.parse(srt)
-        #expect(cues.count == 1)
-        #expect(cues[0].text == "Hello")
-    }
-
-    @Test("tolerates UTF-8 BOM")
-    func bom() {
-        let bomPrefix = "\u{FEFF}"
-        let srt = bomPrefix + "1\n00:00:01,000 --> 00:00:02,000\nHi\n\n"
-        let cues = SRTParser.parse(srt)
-        #expect(cues.count == 1)
-        #expect(cues[0].text == "Hi")
-    }
-
-    @Test("re-sorts out-of-order cues by start time")
-    func sortsByStart() {
-        let srt = """
-        1
-        00:00:10,000 --> 00:00:12,000
-        Later
-
-        2
-        00:00:01,000 --> 00:00:02,000
-        Earlier
-
-        """
-        let cues = SRTParser.parse(srt)
-        #expect(cues.map(\.text) == ["Earlier", "Later"])
-    }
-
-    @Test("empty and garbage input yield no cues")
-    func emptyAndGarbage() {
-        #expect(SRTParser.parse("").isEmpty)
-        #expect(SRTParser.parse("not a subtitle file at all").isEmpty)
-        #expect(SRTParser.parse("1\n\n2\n\n").isEmpty)
-    }
-
-    @Test("parses via Data convenience")
-    func parsesData() {
-        let data = Data("1\n00:00:01,000 --> 00:00:02,000\nHi\n\n".utf8)
-        #expect(SRTParser.parse(data: data).first?.text == "Hi")
-    }
-
-    @Test("accumulates multi-line text until blank line; trailing whitespace trimmed")
+    @Test("accumulates every text line until the blank separator")
     func multilineAndTrim() {
         let srt = """
         1
@@ -101,38 +49,24 @@ struct SRTParserTests {
         Third line
 
         """
-        let cues = SRTParser.parse(srt)
-        #expect(cues.first?.text == "First line\nSecond line\nThird line")
+        #expect(SRTParser.parse(srt).first?.text == "First line\nSecond line\nThird line")
     }
 
-    @Test("period as decimal separator (non-standard but tolerated)")
-    func periodDecimalSeparator() {
-        let srt = """
-        1
-        00:00:01.500 --> 00:00:02.000
-        Dot
-
-        """
-        let cues = SRTParser.parse(srt)
-        #expect(seconds(cues.first?.start ?? .invalid) == 1.5)
-    }
-
-    @Test("cue index line is not treated as text")
-    func cueIndexNotInText() {
-        let srt = """
-        42
-        00:00:01,000 --> 00:00:02,000
-        Only text
-
-        """
-        let cues = SRTParser.parse(srt)
-        #expect(cues.first?.text == "Only text")
-    }
-
-    @Test("produces SubtitleCue values (not a distinct type)")
-    func producesSubtitleCueType() {
-        let srt = "1\n00:00:01,000 --> 00:00:02,000\nHi\n\n"
-        let cues: [SubtitleCue] = SRTParser.parse(srt)
-        #expect(cues.count == 1)
+    /// Every row is the same one-cue file written the way some real muxer writes it.
+    /// The literals here ARE the spec — this is a parser, its input format is the
+    /// contract.
+    @Test("tolerated encoding/format variations all yield the same cue", arguments: [
+        ("CRLF line endings", "1\r\n00:00:01,000 --> 00:00:02,000\r\nHello\r\n\r\n", "Hello", 1.0),
+        ("UTF-8 BOM", "\u{FEFF}1\n00:00:01,000 --> 00:00:02,000\nHi\n\n", "Hi", 1.0),
+        ("period decimal separator", "1\n00:00:01.500 --> 00:00:02.000\nDot\n\n", "Dot", 1.5),
+        ("multi-digit cue index", "42\n00:00:01,000 --> 00:00:02,000\nOnly text\n\n", "Only text", 1.0),
+        ("no cue index line", "00:00:01,000 --> 00:00:02,000\nNo index\n\n", "No index", 1.0),
+        ("bare CR line endings", "1\r00:00:01,000 --> 00:00:02,000\rMac\r\r", "Mac", 1.0),
+    ] as [(String, String, String, Double)])
+    func toleratedVariations(label: String, source: String, text: String, start: Double) {
+        let cues = SRTParser.parse(source)
+        #expect(cues.count == 1, "\(label): expected exactly one cue, got \(cues.count)")
+        #expect(cues.first?.text == text, "\(label)")
+        #expect(cues.first.map { cueSeconds($0.start) } == start, "\(label)")
     }
 }

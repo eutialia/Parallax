@@ -10,24 +10,12 @@ import ParallaxCoreTestSupport
 @Suite("ServerStore token invalidation")
 struct ServerStoreInvalidationTests {
     private func freshStore() -> (ServerStore, FakeKeychain, SettingsStore) {
-        let suiteName = "ServerStoreInvalidationTests-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        let settings = SettingsStore(defaults: defaults)
-        let keychain = FakeKeychain()
-        return (ServerStore(settings: settings, keychain: keychain), keychain, settings)
+        let harness = JellyfinFixtures.serverStore("ServerStoreInvalidationTests")
+        return (harness.store, harness.keychain, harness.settings)
     }
 
     private func session(id: String, token: String) -> Session {
-        Session(
-            id: ServerID(rawValue: id),
-            data: JellyfinServerData(
-                serverURL: URL(string: "https://\(id).example.test")!,
-                serverName: "Server \(id)",
-                user: UserSnapshot(id: "u-\(id)", name: "alice", serverLastUpdatedAt: nil)
-            ),
-            accessToken: token
-        )
+        JellyfinFixtures.session(id: id, token: token)
     }
 
     @Test("A rejected token drops the session but keeps the row, so the server reads as signed-out")
@@ -55,7 +43,7 @@ struct ServerStoreInvalidationTests {
 
         await store.invalidateSession(ServerID(rawValue: "s1"))
 
-        let stored: String? = try await keychain.read(KeychainKey<String>(account: "token-s1"))
+        let stored: String? = try await keychain.read(JellyfinFixtures.tokenKey(forRawID: "s1"))
         #expect(stored == nil)
 
         let relaunched = ServerStore(settings: settings, keychain: keychain)
@@ -116,8 +104,11 @@ struct ServerStoreInvalidationTests {
         let after = await store.sourceSnapshot
 
         #expect(before.setIdentity != after.setIdentity)
-        // The row is still there, just no longer live — the identity records both facts.
-        #expect(after.setIdentity.contains("s2-"))
+        // The row is still there, just no longer live — the identity records both facts. Its exact
+        // composition is pinned once, in ServerStoreSourceSnapshotTests; here the point is that the
+        // invalidated id survives in the identity while its live marker moves.
+        #expect(await store.servers.map(\.id).contains(ServerID(rawValue: "s2")))
+        #expect(before.setIdentity.split(separator: ",").count == after.setIdentity.split(separator: ",").count)
     }
 
     @Test("Invalidating an unknown or already-removed server is a no-op")

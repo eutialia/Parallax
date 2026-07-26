@@ -6,10 +6,14 @@ import ParallaxCore
 
 @Suite("DTO mapping")
 struct DTOMappingTests {
+    /// Decodes a captured server payload. `#require` rather than a force-unwrap so a renamed or
+    /// missing fixture fails ONE test instead of trapping the whole suite.
     private func loadDto(_ name: String) throws -> BaseItemDto {
-        let url = Bundle.module.url(forResource: name, withExtension: "json", subdirectory: "Fixtures")!
-        let data = try Data(contentsOf: url)
-        return try JSONDecoder().decode(BaseItemDto.self, from: data)
+        let url = try #require(
+            Bundle.module.url(forResource: name, withExtension: "json", subdirectory: "Fixtures"),
+            "missing test fixture Fixtures/\(name).json"
+        )
+        return try JSONDecoder().decode(BaseItemDto.self, from: try Data(contentsOf: url))
     }
 
     @Test("collection_movies.json → MediaCollection with .movies type")
@@ -134,83 +138,63 @@ struct DTOMappingTests {
         #expect(movieDetail.directors == ["Lana Wachowski"])
     }
 
-    @Test("BaseItemDto with two chapters maps to MovieDetail with 2 Chapters (names + start offsets)")
-    func movieDetailChapters() {
-        var dto = BaseItemDto()
-        dto.id = "movie-uuid-ch"
-        dto.name = "Chapters Movie"
-        dto.type = .movie
-        var ch0 = ChapterInfo()
-        ch0.name = "Opening"
-        ch0.startPositionTicks = 0                  // 0 µs → .zero
-        var ch1 = ChapterInfo()
-        ch1.name = "Act 2"
-        ch1.startPositionTicks = 3_000_000_000       // 300_000_000 µs = 300 s
-        dto.chapters = [ch0, ch1]
-        let detail = dto.toItemDetail()
-        guard case .movie(let md) = detail else {
-            Issue.record("expected .movie, got \(String(describing: detail))")
-            return
-        }
-        #expect(md.chapters.count == 2)
-        #expect(md.chapters[0].index == 0)
-        #expect(md.chapters[0].name == "Opening")
-        #expect(md.chapters[0].start == .microseconds(0))
-        #expect(md.chapters[1].index == 1)
-        #expect(md.chapters[1].name == "Act 2")
-        // 3_000_000_000 ticks / 10 = 300_000_000 µs = 300 s
-        #expect(md.chapters[1].start == .seconds(300))
+    /// Chapter mapping is shared by both detail branches, so it's asserted once per branch off one
+    /// builder rather than twice over hand-copied DTOs. 100-ns ticks → `Duration`, in order, with
+    /// the array position as the index.
+    @Test("Chapters map in order with ticks converted, for every detail branch", arguments: [BaseItemKind.movie, .episode])
+    func detailChapters(type: BaseItemKind) throws {
+        var opening = ChapterInfo()
+        opening.name = "Opening"
+        opening.startPositionTicks = 0
+        var second = ChapterInfo()
+        second.name = "Act 2"
+        second.startPositionTicks = 3_000_000_000       // /10 → 300_000_000 µs = 300 s
+
+        let detail = try #require(chapterDto(type: type, chapters: [opening, second]).toItemDetail())
+        let chapters = try #require(Self.chapters(of: detail))
+
+        #expect(chapters.count == 2)
+        #expect(chapters[0].index == 0)
+        #expect(chapters[0].name == "Opening")
+        #expect(chapters[0].start == .microseconds(0))
+        #expect(chapters[1].index == 1)
+        #expect(chapters[1].name == "Act 2")
+        #expect(chapters[1].start == .seconds(300))
     }
 
-    @Test("Chapter with nil startPositionTicks is dropped from mapping")
-    func chapterNilTicksDropped() {
-        var dto = BaseItemDto()
-        dto.id = "movie-uuid-ch2"
-        dto.name = "Partial"
-        dto.type = .movie
-        var ch = ChapterInfo()
-        ch.name = "No Ticks"
-        ch.startPositionTicks = nil
-        dto.chapters = [ch]
-        let detail = dto.toItemDetail()
-        guard case .movie(let md) = detail else {
-            Issue.record("expected .movie, got \(String(describing: detail))")
-            return
-        }
-        #expect(md.chapters.isEmpty)
+    /// A chapter with no start offset can't be seeked to, so it's dropped rather than defaulted to
+    /// zero (which would put a bogus marker at the head of the scrubber).
+    @Test("A chapter with no start offset is dropped", arguments: [BaseItemKind.movie, .episode])
+    func chapterNilTicksDropped(type: BaseItemKind) throws {
+        var chapter = ChapterInfo()
+        chapter.name = "No Ticks"
+        chapter.startPositionTicks = nil
+
+        let detail = try #require(chapterDto(type: type, chapters: [chapter]).toItemDetail())
+        #expect(Self.chapters(of: detail)?.isEmpty == true)
     }
 
-    @Test("BaseItemDto with two chapters maps to EpisodeDetail with 2 Chapters")
-    func episodeDetailChapters() {
-        var dto = BaseItemDto()
-        dto.id = "ep-uuid-ch"
-        dto.name = "Chapter Episode"
-        dto.type = .episode
-        dto.seriesID = "series-uuid-1"
-        dto.seasonID = "season-uuid-1"
-        var ch0 = ChapterInfo()
-        ch0.name = "Intro"
-        ch0.startPositionTicks = 0
-        var ch1 = ChapterInfo()
-        ch1.name = "Main"
-        ch1.startPositionTicks = 900_000_000        // 90_000_000 µs = 90 s
-        dto.chapters = [ch0, ch1]
-        let detail = dto.toItemDetail()
-        guard case .episode(let ed) = detail else {
-            Issue.record("expected .episode, got \(String(describing: detail))")
-            return
+    /// `ItemDetail` carries chapters per case rather than on the enum, so the branch under test has
+    /// to be unwrapped — and a case that shouldn't have chapters at all reads as nil, not empty.
+    private static func chapters(of detail: ItemDetail) -> [Chapter]? {
+        switch detail {
+        case .movie(let d): d.chapters
+        case .episode(let d): d.chapters
+        case .series, .season: nil
         }
-        #expect(ed.chapters.count == 2)
-        #expect(ed.chapters[1].name == "Main")
-        #expect(ed.chapters[1].start == .seconds(90))
+    }
+
+    private func chapterDto(type: BaseItemKind, chapters: [ChapterInfo]) -> BaseItemDto {
+        var dto = type == .movie
+            ? JellyfinFixtures.movieDto(id: "movie-uuid-ch", name: "Chapters Movie")
+            : JellyfinFixtures.episodeDto(id: "ep-uuid-ch", seriesID: "series-uuid-1", seasonID: "season-uuid-1")
+        dto.chapters = chapters
+        return dto
     }
 
     @Test("3840×2160 DOVI video stream → detailMetadata includes quality labels")
     func movieDetailMetadataQuality() {
-        var dto = BaseItemDto()
-        dto.id = "movie-badge-4k"
-        dto.name = "Badge Movie"
-        dto.type = .movie
+        var dto = JellyfinFixtures.movieDto(id: "movie-badge-4k", name: "Badge Movie")
         dto.productionYear = 2020
         var stream = MediaStream()
         stream.type = .video
@@ -225,12 +209,8 @@ struct DTOMappingTests {
 
     @Test("No video stream → detailMetadata omits quality labels")
     func movieDetailMetadataNoStream() {
-        var dto = BaseItemDto()
-        dto.id = "movie-badge-empty"
-        dto.name = "No Stream Movie"
-        dto.type = .movie
+        var dto = JellyfinFixtures.movieDto(id: "movie-badge-empty", name: "No Stream Movie")
         dto.productionYear = 1999
-        dto.mediaStreams = nil
         let meta = dto.toMovie().map { DetailMetadata(movie: $0) }
         #expect(meta?.textParts == ["1999"])
         #expect(meta?.qualityLabels.isEmpty == true)
@@ -238,25 +218,17 @@ struct DTOMappingTests {
 
     @Test("Subtitle stream → hasSubtitles is true")
     func movieHasSubtitlesFromStream() {
-        var dto = BaseItemDto()
-        dto.id = "movie-subs"
-        dto.name = "Subtitled Movie"
-        dto.type = .movie
         var sub = MediaStream()
         sub.type = .subtitle
-        dto.mediaStreams = [sub]
+        let dto = JellyfinFixtures.movieDto(id: "movie-subs", name: "Subtitled Movie", streams: [sub])
         #expect(dto.toMovie()?.hasSubtitles == true)
         #expect(dto.toMovie().map { DetailMetadata(movie: $0).hasSubtitles } == true)
     }
 
     @Test("hasSubtitles DTO flag without streams → hasSubtitles is true")
     func movieHasSubtitlesFromFlag() {
-        var dto = BaseItemDto()
-        dto.id = "movie-subs-flag"
-        dto.name = "Sidecar Subs Movie"
-        dto.type = .movie
+        var dto = JellyfinFixtures.movieDto(id: "movie-subs-flag", name: "Sidecar Subs Movie")
         dto.hasSubtitles = true
-        dto.mediaStreams = nil
         let movie = dto.toMovie()
         #expect(movie?.hasSubtitles == true)
         #expect(movie.map { DetailMetadata(movie: $0).hasSubtitles } == true)
@@ -264,57 +236,63 @@ struct DTOMappingTests {
 
     @Test("series maps communityRating and officialRating")
     func seriesRatings() {
-        var dto = BaseItemDto()
-        dto.id = "series-rated"
-        dto.name = "Rated Show"
-        dto.type = .series
+        var dto = JellyfinFixtures.seriesDto(id: "series-rated", name: "Rated Show")
         dto.communityRating = 9.1
         dto.officialRating = "TV-MA"
         let series = dto.toSeries()
         let meta = series.map { DetailMetadata(series: $0) }
         #expect(abs((series?.communityRating ?? 0) - 9.1) < 0.001)
         #expect(series?.officialRating == "TV-MA")
+        // A formatted-string expectation: the star glyph + one-decimal shape IS the spec the hero
+        // renders, and `DetailMetadata`'s formatter is private, so the literal is the assertion.
         #expect(meta?.textParts.contains("★ 9.1") == true)
         #expect(meta?.textParts.contains("TV-MA") == true)
         #expect(meta?.qualityLabels.isEmpty == true)
         #expect(meta?.hasSubtitles == false)
     }
 
-    @Test("Episode maps dateCreated to dateAdded")
-    func episodeDateAdded() throws {
-        var dto = try loadDto("episode")
-        let fixed = ISO8601DateFormatter().date(from: "2026-06-01T12:00:00Z")!
+    /// `dateCreated` is what the hero feed's newly-added-vs-new-episode classification runs on, so
+    /// every model that can appear there has to carry it through. Same mapping, three models.
+    @Test(
+        "dateCreated becomes dateAdded for every model the hero feed can present",
+        arguments: [DatedModel.movie, .series, .episode]
+    )
+    func dateAddedMapping(model: DatedModel) throws {
+        let fixed = try #require(ISO8601DateFormatter().date(from: "2026-06-01T12:00:00Z"))
+        var dto = try loadDto(model.fixtureName)
         dto.dateCreated = fixed
-        let episode = dto.toEpisode()
-        #expect(episode?.dateAdded == fixed)
+        #expect(model.dateAdded(of: dto) == fixed)
     }
 
-    @Test("Series maps dateCreated to dateAdded")
-    func seriesDateAdded() throws {
-        var dto = try loadDto("series")
-        let fixed = ISO8601DateFormatter().date(from: "2025-01-15T08:00:00Z")!
-        dto.dateCreated = fixed
-        let series = dto.toSeries()
-        #expect(series?.dateAdded == fixed)
-    }
+    enum DatedModel: Sendable {
+        case movie, series, episode
 
-    @Test("Movie maps dateCreated to dateAdded")
-    func movieDateAdded() throws {
-        var dto = try loadDto("movie")
-        let fixed = ISO8601DateFormatter().date(from: "2024-03-20T18:30:00Z")!
-        dto.dateCreated = fixed
-        let movie = dto.toMovie()
-        #expect(movie?.dateAdded == fixed)
+        var fixtureName: String {
+            switch self {
+            case .movie: "movie"
+            case .series: "series"
+            case .episode: "episode"
+            }
+        }
+
+        func dateAdded(of dto: BaseItemDto) -> Date? {
+            switch self {
+            case .movie: dto.toMovie()?.dateAdded
+            case .series: dto.toSeries()?.dateAdded
+            case .episode: dto.toEpisode()?.dateAdded
+            }
+        }
     }
 
     @Test("Unknown item type returns nil from toItemDetail")
     func unknownDetailType() {
-        // Nil type → guard let type rejects
+        // Nil type → guard let type rejects.
         var dto = BaseItemDto()
         dto.id = "x"; dto.name = "x"; dto.type = nil
         #expect(dto.toItemDetail() == nil)
 
-        // Known-but-unhandled type (e.g. .audio) → switch's default arm rejects
+        // Known-but-unhandled type (e.g. .audio) → the switch's default arm rejects, so a music
+        // item the server slipped into a response can't open a video detail screen.
         var audioDto = BaseItemDto()
         audioDto.id = "x"; audioDto.name = "x"; audioDto.type = .audio
         #expect(audioDto.toItemDetail() == nil)

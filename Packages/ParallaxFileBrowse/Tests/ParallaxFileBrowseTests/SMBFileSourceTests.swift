@@ -8,135 +8,101 @@ struct SMBFileSourceTests {
 
     // MARK: - Media filter
 
-    @Test("SMBFileSource lists only top-level media files, excludes dirs/non-media")
-    func filtersToTopLevelMedia() async throws {
-        let lister = FakeSMBLister(entries: [
-            .init(name: "A.mkv",    isDirectory: false, size: 1, modifiedAt: nil),
-            .init(name: "B.mp4",    isDirectory: false, size: 1, modifiedAt: nil),
-            .init(name: "poster.jpg", isDirectory: false, size: 1, modifiedAt: nil),
-            .init(name: "readme.txt", isDirectory: false, size: 1, modifiedAt: nil),
-            .init(name: "Season 1", isDirectory: true,  size: 0, modifiedAt: nil),
-        ])
-        let source = SMBFileSource(lister: lister, host: "nas", share: "Media", root: "")
-        let files = try await source.mediaFiles(in: "")
-        #expect(files.map(\.name).sorted() == ["A.mkv", "B.mp4"])
+    struct FilterCase: Sendable, CustomTestStringConvertible {
+        let name: String
+        let entries: [SMBDirectoryEntry]
+        let expected: [String]
+        var testDescription: String { name }
     }
 
-    @Test("SMBFileSource excludes all directory entries regardless of extension")
-    func excludesDirectories() async throws {
-        let lister = FakeSMBLister(entries: [
-            .init(name: "FakeDir.mkv", isDirectory: true,  size: 0, modifiedAt: nil),
-            .init(name: "Real.m4v",    isDirectory: false, size: 1, modifiedAt: nil),
-        ])
-        let source = SMBFileSource(lister: lister, host: "nas", share: "Media", root: "")
-        let files = try await source.mediaFiles(in: "")
-        #expect(files.map(\.name) == ["Real.m4v"])
+    static let filterCases: [FilterCase] = [
+        .init(name: "non-media siblings and folders excluded",
+              entries: [SMBEntry.file("A.mkv"), SMBEntry.file("B.mp4"), SMBEntry.file("poster.jpg"),
+                        SMBEntry.file("readme.txt"), SMBEntry.dir("Season 1")],
+              expected: ["A.mkv", "B.mp4"]),
+        .init(name: "a directory with a media extension is still a directory",
+              entries: [SMBEntry.dir("FakeDir.mkv"), SMBEntry.file("Real.m4v")],
+              expected: ["Real.m4v"]),
+        .init(name: "zero-byte media (an interrupted download's stub) is dropped",
+              entries: [SMBEntry.file("Complete.mkv"), SMBEntry.file("Stub.mkv", size: 0)],
+              expected: ["Complete.mkv"]),
+        .init(name: "extension matching is case-insensitive",
+              entries: [SMBEntry.file("Movie.MKV"), SMBEntry.file("Film.Mp4")],
+              expected: ["Movie.MKV", "Film.Mp4"]),
+        .init(name: "temp-suffix partials never reach the grid",
+              entries: [SMBEntry.file("Film.mkv.part"), SMBEntry.file("Film.mkv.crdownload"),
+                        SMBEntry.file("Film.mkv.!qB"), SMBEntry.file("Film.mkv")],
+              expected: ["Film.mkv"]),
+        .init(name: "an extensionless file is not media",
+              entries: [SMBEntry.file("README"), SMBEntry.file("Film.avi")],
+              expected: ["Film.avi"]),
+    ]
+
+    @Test("mediaFiles keeps only playable media", arguments: filterCases)
+    func mediaFilesFilter(_ testCase: FilterCase) async throws {
+        let files = try await makeFileSource(testCase.entries).mediaFiles(in: "")
+        #expect(files.map(\.name) == testCase.expected)
     }
 
-    @Test("SMBFileSource accepts every whitelisted media extension")
+    @Test("every extension in the allowlist is accepted")
     func recognisesAllMediaExtensions() async throws {
-        // Drive from the real allowlist so this can't go stale when the set is widened.
-        let extensions = Array(SMBFileSource.mediaExtensions)
-        let entries = extensions.map { ext in
-            SMBDirectoryEntry(name: "file.\(ext)", isDirectory: false, size: 1, modifiedAt: nil)
-        }
-        let lister = FakeSMBLister(entries: entries)
-        let source = SMBFileSource(lister: lister, host: "nas", share: "Media", root: "")
-        let files = try await source.mediaFiles(in: "")
-        #expect(files.count == extensions.count)
-        // Lock in the widened legacy set (RealMedia + the other libVLC-decodable containers).
-        let widened: Set<String> = ["rmvb", "rm", "3gp", "mts", "vob", "divx", "asf", "m2v", "ogv", "ogm"]
-        #expect(widened.isSubset(of: SMBFileSource.mediaExtensions))
+        // Driven from the production allowlist so widening the set can't leave this stale.
+        let extensions = SMBFileSource.mediaExtensions.sorted()
+        let entries = extensions.map { SMBEntry.file("file.\($0)") }
+        let files = try await makeFileSource(entries).mediaFiles(in: "")
+        #expect(files.map(\.name) == entries.map(\.name))
     }
 
-    @Test("SMBFileSource excludes a zero-byte media file (incomplete/stub)")
-    func excludesZeroByteMedia() async throws {
-        let lister = FakeSMBLister(entries: [
-            .init(name: "Complete.mkv", isDirectory: false, size: 1, modifiedAt: nil),
-            .init(name: "Stub.mkv",     isDirectory: false, size: 0, modifiedAt: nil),
-        ])
-        let source = SMBFileSource(lister: lister, host: "nas", share: "Media", root: "")
-        let files = try await source.mediaFiles(in: "")
-        #expect(files.map(\.name) == ["Complete.mkv"])
-    }
-
-    @Test("SMBFileSource extension check is case-insensitive")
-    func extensionCaseInsensitive() async throws {
-        let lister = FakeSMBLister(entries: [
-            .init(name: "Movie.MKV", isDirectory: false, size: 1, modifiedAt: nil),
-            .init(name: "Film.MP4",  isDirectory: false, size: 1, modifiedAt: nil),
-        ])
-        let source = SMBFileSource(lister: lister, host: "nas", share: "Media", root: "")
-        let files = try await source.mediaFiles(in: "")
-        #expect(files.count == 2)
-    }
-
-    // MARK: - No recursion
-
-    @Test("SMBFileSource does not recurse into subdirectories")
+    @Test("mediaFiles calls list exactly once — no recursive descent")
     func noRecursion() async throws {
-        // The fake always returns the same flat list — even directories are not followed.
-        // The source must never call list() more than once (no recursive descent).
-        var listCallCount = 0
-        final class CountingLister: SMBLister, @unchecked Sendable {
-            var count = 0
-            let inner: FakeSMBLister
-            init(inner: FakeSMBLister) { self.inner = inner }
-            func listShares() async throws -> [SMBShare] { try await inner.listShares() }
-            func list(share: String, path: String) async throws -> [SMBDirectoryEntry] {
-                count += 1
-                return try await inner.list(share: share, path: path)
-            }
-            func disconnect() async { await inner.disconnect() }
-        }
+        // The fake returns the same entries at every level, so only the call count can tell a
+        // single listing apart from a walk.
+        let lister = CountingSMBLister(FakeSMBLister(entries: [SMBEntry.dir("SubDir"), SMBEntry.file("A.mkv")]))
+        let source = SMBFileSource(lister: lister, host: "nas", share: "Media", root: "")
 
-        let base = FakeSMBLister(entries: [
-            .init(name: "SubDir",  isDirectory: true,  size: 0, modifiedAt: nil),
-            .init(name: "A.mkv",   isDirectory: false, size: 1, modifiedAt: nil),
-        ])
-        let counter = CountingLister(inner: base)
-        let source = SMBFileSource(lister: counter, host: "nas", share: "Media", root: "")
         _ = try await source.mediaFiles(in: "")
-        listCallCount = counter.count
-        #expect(listCallCount == 1, "mediaFiles(in:) must call list exactly once — no recursion")
+
+        #expect(lister.listCallCount == 1)
+    }
+
+    @Test("an empty path lists the configured root; a non-empty path replaces it")
+    func pathReplacesRootRatherThanJoining() async throws {
+        let lister = RecordingPathLister()
+        let source = SMBFileSource(lister: lister, host: "nas", share: "Media", root: "Movies")
+
+        _ = try await source.mediaFiles(in: "")
+        _ = try await source.mediaFiles(in: "TV/Show")
+
+        #expect(lister.listedPaths == ["Movies", "TV/Show"])
     }
 
     // MARK: - playableURL
 
-    @Test("playableURL builds smb://host/share/name for a top-level file")
-    func playableURLTopLevel() {
-        let entry = SMBDirectoryEntry(name: "Movie.mkv", isDirectory: false, size: 1, modifiedAt: nil)
-        let source = SMBFileSource(lister: FakeSMBLister(entries: []), host: "192.168.1.10", share: "Media", root: "")
-        let url = source.playableURL(for: entry, in: "")
-        #expect(url?.absoluteString == "smb://192.168.1.10/Media/Movie.mkv")
+    @Test("playableURL builds a credential-free smb://host/share/path")
+    func playableURLShape() {
+        let source = makeFileSource([], host: "192.168.1.10", share: "Media", root: "Movies")
+        let url = source.playableURL(for: SMBEntry.file("Movie.mkv"), in: "")
+        #expect(url.absoluteString == "smb://192.168.1.10/Media/Movies/Movie.mkv")
     }
 
-    @Test("playableURL does not embed credentials in the URL string")
-    func playableURLNoCredentials() {
-        let entry = SMBDirectoryEntry(name: "Film.mp4", isDirectory: false, size: 1, modifiedAt: nil)
-        let source = SMBFileSource(lister: FakeSMBLister(entries: []), host: "nas-host", share: "Videos", root: "")
-        let url = source.playableURL(for: entry, in: "")
-        let raw = url?.absoluteString ?? ""
-        #expect(!raw.contains("@"), "URL must not contain credential separator '@'")
-        #expect(!raw.contains("password"), "URL must not contain any password token")
+    @Test("playableURL prefers the browsed path over the configured root")
+    func playableURLUsesTheBrowsedPath() {
+        let source = makeFileSource([], root: "Movies")
+        let url = source.playableURL(for: SMBEntry.file("Ep.mkv"), in: "TV/Show/Season 1")
+        #expect(url.absoluteString == "smb://nas/Media/TV/Show/Season%201/Ep.mkv")
     }
 
-    @Test("playableURL percent-encodes '#' and '?' so the filename isn't truncated")
-    func playableURLEncodesStructuralDelimiters() {
-        let source = SMBFileSource(lister: FakeSMBLister(entries: []), host: "nas", share: "Media", root: "Movies")
+    @Test("playableURL percent-encodes '#' and '?' so the filename isn't truncated",
+          arguments: [("Episode#1.mkv", "%23"), ("Show?.mkv", "%3F")])
+    func playableURLEncodesStructuralDelimiters(_ name: String, _ encoding: String) {
+        let source = makeFileSource([], root: "Movies")
+        let url = source.playableURL(for: SMBEntry.file(name), in: "")
 
-        let hashEntry = SMBDirectoryEntry(name: "Episode#1.mkv", isDirectory: false, size: 1, modifiedAt: nil)
-        let hashURL = source.playableURL(for: hashEntry, in: "")
-        // '#' must be encoded, NOT parsed as a fragment that truncates the path.
-        #expect(hashURL?.fragment == nil)
-        #expect(hashURL?.absoluteString.contains("%23") == true)
-        // libVLC decodes %23 back to '#', so the last path component is the real filename.
-        #expect(hashURL?.lastPathComponent == "Episode#1.mkv")
-
-        let queryEntry = SMBDirectoryEntry(name: "Show?.mkv", isDirectory: false, size: 1, modifiedAt: nil)
-        let queryURL = source.playableURL(for: queryEntry, in: "")
-        #expect(queryURL?.query == nil)
-        #expect(queryURL?.lastPathComponent == "Show?.mkv")
+        #expect(url.absoluteString.contains(encoding))
+        #expect(url.fragment == nil, "'#' must not be parsed as a fragment")
+        #expect(url.query == nil, "'?' must not be parsed as a query")
+        // libVLC decodes the escape back, so the last component is the real filename.
+        #expect(url.lastPathComponent == name)
     }
 
     // MARK: - disconnect
@@ -144,187 +110,216 @@ struct SMBFileSourceTests {
     @Test("disconnect forwards to the underlying lister")
     func disconnectForwards() async {
         let lister = FakeSMBLister(entries: [])
-        let source = SMBFileSource(lister: lister, host: "nas", share: "Media", root: "")
-        await source.disconnect()
+        await SMBFileSource(lister: lister, host: "nas", share: "Media", root: "").disconnect()
         #expect(lister.disconnectCalled)
-    }
-
-    // MARK: - listShares
-
-    @Test("FakeSMBLister.listShares returns the canned shares")
-    func listSharesReturnsCanned() async throws {
-        let lister = FakeSMBLister(entries: [], shares: [
-            SMBShare(name: "Media", comment: "Movies & TV"),
-            SMBShare(name: "Backups", comment: ""),
-        ])
-        let shares = try await lister.listShares()
-        #expect(shares.map(\.name) == ["Media", "Backups"])
     }
 
     // MARK: - ItemID codec
 
-    @Test("decodeItemID round-trips itemID(share:path:)")
-    func itemIDRoundTrips() {
-        let id = SMBFileSource.itemID(share: "Media", path: "Movies/Film.mkv")
-        let decoded = SMBFileSource.decodeItemID(id)
-        #expect(decoded?.share == "Media")
-        #expect(decoded?.path == "Movies/Film.mkv")
+    @Test("decodeItemID round-trips itemID(share:path:)",
+          arguments: ["Movies/Film.mkv", "Film.mkv", "A/B/C/Deep Film.mkv", "Show?/Ep#1.mkv"])
+    func itemIDRoundTrips(_ path: String) throws {
+        let decoded = try #require(SMBFileSource.decodeItemID(SMBFileSource.itemID(share: "Media", path: path)))
+        #expect(decoded.share == "Media")
+        #expect(decoded.path == path)
     }
 
-    @Test("decodeItemID returns nil for an id with no share prefix")
-    func decodeItemIDNoColon() {
-        #expect(SMBFileSource.decodeItemID(ItemID(rawValue: "nocolon")) == nil)
+    /// None of these is playable: there is no share to anchor an `smb://` URL on, or no file to open.
+    @Test("decodeItemID rejects ids that can't address a file",
+          arguments: ["nocolon", "Media:", ":Movies/Film.mkv", ":"])
+    func decodeItemIDRejectsUnaddressable(_ raw: String) {
+        #expect(SMBFileSource.decodeItemID(ItemID(rawValue: raw)) == nil)
     }
 
-    @Test("item(from:in:) encodes the full share-relative path in the ItemID")
-    func itemEncodesPath() {
-        let entry = SMBDirectoryEntry(name: "Film.mkv", isDirectory: false, size: 10, modifiedAt: nil)
-        let item = SMBFileSource.item(from: entry, share: "Media", in: "Movies")
-        #expect(item.id == ItemID(rawValue: "Media:Movies/Film.mkv"))
-        if case .movie(let m) = item {
-            #expect(m.title == "Film")   // name minus extension
-            #expect(m.size == 10)        // entry.size carried through
-        } else { Issue.record("expected .movie") }
-    }
+    @Test("item(from:in:) encodes the share-relative path, title and size",
+          arguments: [("Movies", "Media:Movies/Film.mkv"), ("", "Media:Film.mkv")])
+    func itemEncodesPath(_ dirPath: String, _ expectedID: String) throws {
+        let item = SMBFileSource.item(from: SMBEntry.file("Film.mkv", size: 10), share: "Media", in: dirPath)
 
-    @Test("item(from:in:) at root (empty dirPath) encodes name without a leading slash")
-    func itemEncodesPathAtRoot() {
-        let entry = SMBDirectoryEntry(name: "Film.mkv", isDirectory: false, size: 10, modifiedAt: nil)
-        let item = SMBFileSource.item(from: entry, share: "Media", in: "")
-        #expect(item.id == ItemID(rawValue: "Media:Film.mkv"))
-    }
-
-    @Test("decodeItemID returns nil for a trailing-colon id (empty path)")
-    func decodeItemIDEmptyPath() {
-        #expect(SMBFileSource.decodeItemID(ItemID(rawValue: "Media:")) == nil)
-    }
-
-    @Test("decodeItemID returns nil for a leading-colon id (empty share)")
-    func decodeItemIDEmptyShare() {
-        // No share to anchor an smb:// URL on — must reject rather than yield share == "".
-        #expect(SMBFileSource.decodeItemID(ItemID(rawValue: ":Movies/Film.mkv")) == nil)
+        #expect(item.id == ItemID(rawValue: expectedID))
+        guard case .movie(let movie) = item else {
+            Issue.record("expected .movie")
+            return
+        }
+        #expect(movie.title == "Film", "the title is the name minus its extension")
+        #expect(movie.size == 10)
     }
 
     @Test("withUserData preserves Movie.size — the SMB thumbnail cache key depends on it")
-    func withUserDataPreservesSize() {
+    func withUserDataPreservesSize() throws {
         // Toggling favorite/played rebuilds the Movie; if size isn't echoed, the thumbnail cache key
         // (serverID+share+path+size+mtime) shifts and every frame-grab regenerates after a user-data
         // change. Guards the Item.withUserData invariant the SMB grid leans on.
-        let item = SMBFileSource.item(
-            from: SMBDirectoryEntry(name: "Film.mkv", isDirectory: false, size: 1_234_567, modifiedAt: nil),
-            share: "Media", in: ""
-        )
+        let item = SMBFileSource.item(from: SMBEntry.file("Film.mkv", size: 1_234_567), share: "Media", in: "")
         let toggled = item.withFavorite(true)
-        guard case .movie(let rebuilt) = toggled else { Issue.record("expected .movie"); return }
+
+        guard case .movie(let rebuilt) = toggled else {
+            Issue.record("expected .movie")
+            return
+        }
         #expect(rebuilt.size == 1_234_567, "withUserData must echo Movie.size (cache-key stability)")
         #expect(rebuilt.userData.isFavorite, "the favorite toggle must take effect")
     }
 
     // MARK: - Error mapping
 
-    @Test("mapListError maps EACCES to permissionDenied")
-    func mapListErrorPermissionDenied() {
-        let error = NSError(domain: NSPOSIXErrorDomain, code: Int(POSIXErrorCode.EACCES.rawValue))
-        guard case .source(.permissionDenied) = SMBFileSource.mapListError(error, share: "Media", path: "x") else {
-            Issue.record("EACCES must map to .source(.permissionDenied)")
-            return
-        }
-    }
+    /// How the failure reaches the mapper. AMSMB2 usually surfaces the `NSPOSIXErrorDomain` bridge,
+    /// but a thrown Swift `POSIXError` value has to classify identically.
+    enum ErrorShape: Sendable {
+        case bridgedPOSIX(POSIXErrorCode)
+        case posixValue(POSIXErrorCode)
+        case foreignDomain
 
-    @Test("mapListError maps EPERM (server rejected the session) to invalidCredentials, not an ACL denial")
-    func mapListErrorEPERMToInvalidCredentials() {
-        // Proven against a live server (nas.example.lan, 2026-07-21): every credential failure shape
-        // (guest, empty password, wrong password, unknown user) surfaces from libsmb2 as EPERM —
-        // its only EPERM source is the NT-status→errno table, so the TCP connect succeeded and the
-        // SERVER refused the sign-in. A genuine share ACL denial arrives as EACCES instead. They
-        // must not share a bucket: "You don't have access to that item." hides that the fix is
-        // re-entering credentials.
-        let error = NSError(domain: NSPOSIXErrorDomain, code: Int(POSIXErrorCode.EPERM.rawValue))
-        guard case .auth(.invalidCredentials) = SMBFileSource.mapListError(error, share: "Media", path: "") else {
-            Issue.record("EPERM must map to .auth(.invalidCredentials)")
-            return
-        }
-    }
-
-    @Test("mapShareListError classifies EPERM/EACCES/generic like the listing path")
-    func mapShareListErrorSharesClassification() {
-        let eperm = NSError(domain: NSPOSIXErrorDomain, code: Int(POSIXErrorCode.EPERM.rawValue))
-        guard case .auth(.invalidCredentials) = SMBFileSource.mapShareListError(eperm, host: "nas") else {
-            Issue.record("EPERM must map to .auth(.invalidCredentials)")
-            return
-        }
-        let eacces = NSError(domain: NSPOSIXErrorDomain, code: Int(POSIXErrorCode.EACCES.rawValue))
-        guard case .source(.permissionDenied) = SMBFileSource.mapShareListError(eacces, host: "nas") else {
-            Issue.record("EACCES must map to .source(.permissionDenied)")
-            return
-        }
-        let generic = NSError(domain: "SomeOtherDomain", code: 42)
-        guard case .source(.connectionLost) = SMBFileSource.mapShareListError(generic, host: "nas") else {
-            Issue.record("a non-POSIX error must fall through to .source(.connectionLost)")
-            return
-        }
-    }
-
-    @Test("mapListError maps ENOENT/ENOTDIR/ENODEV to notFound")
-    func mapListErrorNotFound() {
-        for code in [POSIXErrorCode.ENOENT, .ENOTDIR, .ENODEV] {
-            let error = NSError(domain: NSPOSIXErrorDomain, code: Int(code.rawValue))
-            guard case .source(.notFound) = SMBFileSource.mapListError(error, share: "Media", path: "x") else {
-                Issue.record("\(code) must map to .source(.notFound)")
-                continue
+        var error: any Error {
+            switch self {
+            case .bridgedPOSIX(let code): NSError(domain: NSPOSIXErrorDomain, code: Int(code.rawValue))
+            case .posixValue(let code): POSIXError(code)
+            case .foreignDomain: NSError(domain: "SomeOtherDomain", code: 42)
             }
         }
     }
 
-    @Test("mapListError maps an unrecognised error to connectionLost")
-    func mapListErrorGenericToConnectionLost() {
-        let generic = NSError(domain: "SomeOtherDomain", code: 42)
-        guard case .source(.connectionLost) = SMBFileSource.mapListError(generic, share: "Media", path: "x") else {
-            Issue.record("a non-POSIX error must fall through to .source(.connectionLost)")
-            return
+    /// A comparable projection of the classifications this mapper can produce. `AppError` is not
+    /// Equatable (some cases carry non-Equatable payloads), so the table compares tags rather than
+    /// repeating `guard case` boilerplate per errno.
+    enum Classification: Sendable, Equatable {
+        case invalidCredentials
+        case permissionDenied
+        case notFound
+        case connectionLost
+        case other(String)
+
+        init(_ error: AppError) {
+            switch error {
+            case .auth(.invalidCredentials): self = .invalidCredentials
+            case .source(.permissionDenied): self = .permissionDenied
+            case .source(.notFound): self = .notFound
+            case .source(.connectionLost): self = .connectionLost
+            default: self = .other(String(describing: error))
+            }
         }
     }
 
-    @Test("mapListError reads a POSIXError value, not just an NSPOSIXErrorDomain bridge")
-    func mapListErrorReadsPOSIXErrorValue() {
-        guard case .source(.permissionDenied) = SMBFileSource.mapListError(POSIXError(.EACCES), share: "Media", path: "x") else {
-            Issue.record("a thrown POSIXError(.EACCES) must map to .source(.permissionDenied)")
-            return
-        }
+    struct ErrorCase: Sendable, CustomTestStringConvertible {
+        let name: String
+        let shape: ErrorShape
+        let expected: Classification
+        var testDescription: String { name }
+    }
+
+    /// EPERM is deliberately NOT bucketed with EACCES: libsmb2's only EPERM source is its
+    /// NT-status→errno table, so the TCP connect succeeded and the SERVER refused the sign-in (the
+    /// fix is re-entering credentials). A genuine share ACL denial arrives as EACCES instead.
+    static let errorCases: [ErrorCase] = [
+        .init(name: "EPERM → invalid credentials", shape: .bridgedPOSIX(.EPERM), expected: .invalidCredentials),
+        .init(name: "EACCES → permission denied", shape: .bridgedPOSIX(.EACCES), expected: .permissionDenied),
+        .init(name: "ENOENT → not found", shape: .bridgedPOSIX(.ENOENT), expected: .notFound),
+        .init(name: "ENOTDIR → not found", shape: .bridgedPOSIX(.ENOTDIR), expected: .notFound),
+        .init(name: "ENODEV → not found", shape: .bridgedPOSIX(.ENODEV), expected: .notFound),
+        .init(name: "ETIMEDOUT → connection lost", shape: .bridgedPOSIX(.ETIMEDOUT), expected: .connectionLost),
+        .init(name: "non-POSIX domain → connection lost", shape: .foreignDomain, expected: .connectionLost),
+        .init(name: "thrown POSIXError value → permission denied",
+              shape: .posixValue(.EACCES), expected: .permissionDenied),
+    ]
+
+    @Test("mapListError classifies the failure", arguments: errorCases)
+    func mapListErrorClassifies(_ testCase: ErrorCase) {
+        let classified = Classification(SMBFileSource.mapListError(testCase.shape.error, share: "Media", path: "x"))
+        #expect(classified == testCase.expected)
+    }
+
+    @Test("mapShareListError classifies identically — only the log context differs", arguments: errorCases)
+    func mapShareListErrorClassifies(_ testCase: ErrorCase) {
+        let classified = Classification(SMBFileSource.mapShareListError(testCase.shape.error, host: "nas"))
+        #expect(classified == testCase.expected)
     }
 
     // MARK: - browse
 
-    @Test("browse partitions into name-sorted folders and media, excluding non-media and zero-byte")
+    @Test("browse partitions into folders and media, excluding non-media and zero-byte files")
     func browsePartitions() async throws {
-        let lister = FakeSMBLister(entries: [
-            SMBDirectoryEntry(name: "TV", isDirectory: true, size: 0, modifiedAt: nil),
-            SMBDirectoryEntry(name: "Movies", isDirectory: true, size: 0, modifiedAt: nil),
-            SMBDirectoryEntry(name: "B.mkv", isDirectory: false, size: 5, modifiedAt: nil),
-            SMBDirectoryEntry(name: "A.mp4", isDirectory: false, size: 5, modifiedAt: nil),
-            SMBDirectoryEntry(name: "readme.txt", isDirectory: false, size: 5, modifiedAt: nil),
-            SMBDirectoryEntry(name: "stub.mkv", isDirectory: false, size: 0, modifiedAt: nil),
+        let source = makeFileSource([
+            SMBEntry.dir("TV"), SMBEntry.dir("Movies"),
+            SMBEntry.file("B.mkv", size: 5), SMBEntry.file("A.mp4", size: 5),
+            SMBEntry.file("readme.txt"), SMBEntry.file("stub.mkv", size: 0),
         ])
-        let source = SMBFileSource(lister: lister, host: "nas", share: "Media", root: "")
-        let listing = try await source.browse(in: "")
 
-        #expect(listing.folders.map(\.name) == ["Movies", "TV"])      // name-sorted dirs
-        #expect(listing.media.count == 2)                              // txt + zero-byte excluded
-        #expect(listing.media.first?.id == ItemID(rawValue: "Media:A.mp4")) // name-sorted, path-encoded
+        let listing = try await source.browse(in: "", sort: .init(field: .name, direction: .ascending))
+
+        #expect(listing.folders.map(\.name) == ["Movies", "TV"])
+        #expect(listing.media.map(\.id) == [ItemID(rawValue: "Media:A.mp4"), ItemID(rawValue: "Media:B.mkv")])
+    }
+
+    /// Folders live in their own array precisely so the grid can render them above media whatever
+    /// the sort says — a newer file must never leapfrog an older folder.
+    @Test("a media file newer than a folder still sorts below it")
+    func browseKeepsFoldersAboveMedia() async throws {
+        let source = makeFileSource([
+            SMBEntry.dir("Old Folder", modified: Date(timeIntervalSince1970: 1)),
+            SMBEntry.file("brand-new.mkv", size: 5, modified: Date(timeIntervalSince1970: 9_999)),
+        ])
+
+        let listing = try await source.browse(in: "", sort: .init(field: .dateModified, direction: .descending))
+
+        #expect(listing.folders.map(\.name) == ["Old Folder"])
+        #expect(listing.media.map(\.displayTitle) == ["brand-new"])
+    }
+
+    /// browse applies the requested sort to BOTH groups. The per-field comparator semantics are
+    /// pinned in `SMBBrowseSortTests`; this is the wiring.
+    @Test("browse applies the sort to folders and media alike",
+          arguments: [(SMBBrowseSort(field: .name, direction: .ascending), ["Alpha", "Zelda"], ["a", "z"]),
+                      (SMBBrowseSort(field: .name, direction: .descending), ["Zelda", "Alpha"], ["z", "a"])])
+    func browseAppliesTheSortToBothGroups(
+        _ sort: SMBBrowseSort,
+        _ expectedFolders: [String],
+        _ expectedMedia: [String]
+    ) async throws {
+        let source = makeFileSource([
+            SMBEntry.dir("Zelda"), SMBEntry.dir("Alpha"),
+            SMBEntry.file("z.mkv", size: 5), SMBEntry.file("a.mkv", size: 5),
+        ])
+
+        let listing = try await source.browse(in: "", sort: sort)
+
+        #expect(listing.folders.map(\.name) == expectedFolders)
+        #expect(listing.media.map(\.displayTitle) == expectedMedia)
+    }
+
+    @Test("browse defaults to newest-created first, falling back to name A→Z with no btime")
+    func browseDefaultsToNewestCreated() async throws {
+        let dated = makeFileSource([
+            SMBEntry.dir("Old", created: Date(timeIntervalSince1970: 100)),
+            SMBEntry.dir("New", created: Date(timeIntervalSince1970: 900)),
+            SMBEntry.file("old.mkv", size: 5, created: Date(timeIntervalSince1970: 100)),
+            SMBEntry.file("new.mkv", size: 5, created: Date(timeIntervalSince1970: 900)),
+        ])
+        let datedListing = try await dated.browse(in: "")
+        #expect(datedListing.folders.map(\.name) == ["New", "Old"])
+        #expect(datedListing.media.map(\.displayTitle) == ["new", "old"])
+
+        // A server that omits btime degrades to name A→Z, never to a random order.
+        let undated = makeFileSource([
+            SMBEntry.dir("Zelda"), SMBEntry.dir("Alpha"),
+            SMBEntry.file("z.mkv", size: 5), SMBEntry.file("a.mkv", size: 5),
+        ])
+        let undatedListing = try await undated.browse(in: "")
+        #expect(undatedListing.folders.map(\.name) == ["Alpha", "Zelda"])
+        #expect(undatedListing.media.map(\.displayTitle) == ["a", "z"])
     }
 
     @Test("browse strictly matches sidecar artwork per media item, ignoring folder art")
     func browseMatchesSidecarArtwork() async throws {
-        let lister = FakeSMBLister(entries: [
-            SMBDirectoryEntry(name: "Film.mkv", isDirectory: false, size: 5, modifiedAt: nil),
-            SMBDirectoryEntry(name: "Film-thumb.jpg", isDirectory: false, size: 900, modifiedAt: nil),
-            SMBDirectoryEntry(name: "Other.mkv", isDirectory: false, size: 5, modifiedAt: nil),
-            SMBDirectoryEntry(name: "Other.png", isDirectory: false, size: 800, modifiedAt: nil),
-            SMBDirectoryEntry(name: "Lonely.mkv", isDirectory: false, size: 5, modifiedAt: nil),
+        let source = makeFileSource([
+            SMBEntry.file("Film.mkv", size: 5),
+            SMBEntry.file("Film-thumb.jpg", size: 900),
+            SMBEntry.file("Other.mkv", size: 5),
+            SMBEntry.file("Other.png", size: 800),
+            SMBEntry.file("Lonely.mkv", size: 5),
             // Folder-level art with no same-stemmed video: must NOT attach to any tile.
-            SMBDirectoryEntry(name: "folder.jpg", isDirectory: false, size: 700, modifiedAt: nil),
+            SMBEntry.file("folder.jpg", size: 700),
         ])
-        let source = SMBFileSource(lister: lister, host: "nas", share: "Media", root: "")
+
         let listing = try await source.browse(in: "Movies")
 
         // Film → its explicit -thumb; Other → its bare same-stem png; Lonely → no sidecar (falls
@@ -333,105 +328,28 @@ struct SMBFileSourceTests {
         #expect(listing.artwork[ItemID(rawValue: "Media:Movies/Other.mkv")]?.name == "Other.png")
         #expect(listing.artwork[ItemID(rawValue: "Media:Movies/Lonely.mkv")] == nil)
         #expect(listing.artwork.count == 2, "only the two strictly-matched items carry artwork")
-        // The matched entry carries size (the provider gates on it) — the image, not the video.
+        // The matched entry carries the IMAGE's size — the provider gates thumbnail work on it.
         #expect(listing.artwork[ItemID(rawValue: "Media:Movies/Film.mkv")]?.size == 900)
     }
 
-    @Test("default sort is Date Created, newest first")
-    func defaultSortIsNewestCreated() {
-        #expect(SMBBrowseSort.default == SMBBrowseSort(field: .dateCreated, direction: .descending))
+    @Test("browse skips sidecar matching entirely when the listing holds no images")
+    func browseWithoutImagesCarriesNoArtwork() async throws {
+        let listing = try await makeFileSource([SMBEntry.file("Film.mkv", size: 5)]).browse(in: "")
+        #expect(listing.artwork.isEmpty)
+    }
+}
+
+/// Records the path each `list` call actually resolved to — the only way to observe root-vs-path
+/// resolution, which produces identical entries either way.
+private final class RecordingPathLister: SMBLister, @unchecked Sendable {
+    private(set) var listedPaths: [String] = []
+
+    func listShares() async throws -> [SMBShare] { [] }
+
+    func list(share: String, path: String) async throws -> [SMBDirectoryEntry] {
+        listedPaths.append(path)
+        return []
     }
 
-    @Test("browse default sort lists newest-created first, name A→Z when no creation date")
-    func browseDefaultsToNewestCreated() async throws {
-        // With creation dates, the default (Date Created, newest first) surfaces the freshest at top.
-        let dated = FakeSMBLister(entries: [
-            SMBDirectoryEntry(name: "Old", isDirectory: true, size: 0, modifiedAt: nil, createdAt: Date(timeIntervalSince1970: 100)),
-            SMBDirectoryEntry(name: "New", isDirectory: true, size: 0, modifiedAt: nil, createdAt: Date(timeIntervalSince1970: 900)),
-            SMBDirectoryEntry(name: "old.mkv", isDirectory: false, size: 5, modifiedAt: nil, createdAt: Date(timeIntervalSince1970: 100)),
-            SMBDirectoryEntry(name: "new.mkv", isDirectory: false, size: 5, modifiedAt: nil, createdAt: Date(timeIntervalSince1970: 900)),
-        ])
-        let datedListing = try await SMBFileSource(lister: dated, host: "nas", share: "Media", root: "").browse(in: "")
-        #expect(datedListing.folders.map(\.name) == ["New", "Old"])
-        #expect(datedListing.media.map(\.displayTitle) == ["new", "old"])
-
-        // No creation dates (server omits btime) → graceful fallback to name A→Z, never random.
-        let undated = FakeSMBLister(entries: [
-            SMBDirectoryEntry(name: "Zelda", isDirectory: true, size: 0, modifiedAt: nil),
-            SMBDirectoryEntry(name: "Alpha", isDirectory: true, size: 0, modifiedAt: nil),
-            SMBDirectoryEntry(name: "z.mkv", isDirectory: false, size: 5, modifiedAt: nil),
-            SMBDirectoryEntry(name: "a.mkv", isDirectory: false, size: 5, modifiedAt: nil),
-        ])
-        let undatedListing = try await SMBFileSource(lister: undated, host: "nas", share: "Media", root: "").browse(in: "")
-        #expect(undatedListing.folders.map(\.name) == ["Alpha", "Zelda"])
-        #expect(undatedListing.media.map(\.displayTitle) == ["a", "z"])
-    }
-
-    @Test("browse name descending reverses both folders and media")
-    func browseNameDescending() async throws {
-        let lister = FakeSMBLister(entries: [
-            SMBDirectoryEntry(name: "Alpha", isDirectory: true, size: 0, modifiedAt: nil),
-            SMBDirectoryEntry(name: "Zelda", isDirectory: true, size: 0, modifiedAt: nil),
-            SMBDirectoryEntry(name: "a.mkv", isDirectory: false, size: 5, modifiedAt: nil),
-            SMBDirectoryEntry(name: "z.mkv", isDirectory: false, size: 5, modifiedAt: nil),
-        ])
-        let source = SMBFileSource(lister: lister, host: "nas", share: "Media", root: "")
-        let listing = try await source.browse(in: "", sort: .init(field: .name, direction: .descending))
-        #expect(listing.folders.map(\.name) == ["Zelda", "Alpha"])
-        #expect(listing.media.map(\.displayTitle) == ["z", "a"])
-    }
-
-    @Test("browse date-modified descending lists newest first")
-    func browseDateModifiedNewestFirst() async throws {
-        let old = Date(timeIntervalSince1970: 1_000)
-        let new = Date(timeIntervalSince1970: 9_000)
-        let lister = FakeSMBLister(entries: [
-            SMBDirectoryEntry(name: "old.mkv", isDirectory: false, size: 5, modifiedAt: old),
-            SMBDirectoryEntry(name: "new.mkv", isDirectory: false, size: 5, modifiedAt: new),
-        ])
-        let source = SMBFileSource(lister: lister, host: "nas", share: "Media", root: "")
-        let listing = try await source.browse(in: "", sort: .init(field: .dateModified, direction: .descending))
-        #expect(listing.media.map(\.displayTitle) == ["new", "old"])
-    }
-
-    @Test("browse date-created ascending lists oldest first, using btime not mtime")
-    func browseDateCreatedOldestFirst() async throws {
-        // createdAt order is the REVERSE of modifiedAt order — proves the comparator reads btime.
-        let lister = FakeSMBLister(entries: [
-            SMBDirectoryEntry(name: "first.mkv", isDirectory: false, size: 5,
-                              modifiedAt: Date(timeIntervalSince1970: 9_000), createdAt: Date(timeIntervalSince1970: 100)),
-            SMBDirectoryEntry(name: "second.mkv", isDirectory: false, size: 5,
-                              modifiedAt: Date(timeIntervalSince1970: 1_000), createdAt: Date(timeIntervalSince1970: 200)),
-        ])
-        let source = SMBFileSource(lister: lister, host: "nas", share: "Media", root: "")
-        let listing = try await source.browse(in: "", sort: .init(field: .dateCreated, direction: .ascending))
-        #expect(listing.media.map(\.displayTitle) == ["first", "second"])
-    }
-
-    @Test("browse date sort puts entries with a missing date last in both directions")
-    func browseDateSortMissingLast() async throws {
-        let dated = Date(timeIntervalSince1970: 5_000)
-        let lister = FakeSMBLister(entries: [
-            SMBDirectoryEntry(name: "nodate.mkv", isDirectory: false, size: 5, modifiedAt: nil),
-            SMBDirectoryEntry(name: "dated.mkv", isDirectory: false, size: 5, modifiedAt: dated),
-        ])
-        let source = SMBFileSource(lister: lister, host: "nas", share: "Media", root: "")
-        for direction in [SMBBrowseSort.Direction.ascending, .descending] {
-            let listing = try await source.browse(in: "", sort: .init(field: .dateModified, direction: direction))
-            #expect(listing.media.map(\.displayTitle) == ["dated", "nodate"], "missing date sorts last (\(direction))")
-        }
-    }
-
-    @Test("a media file newer than a folder still sorts below it — folders are always on top")
-    func browseFoldersAlwaysAboveMedia() async throws {
-        let lister = FakeSMBLister(entries: [
-            SMBDirectoryEntry(name: "Old Folder", isDirectory: true, size: 0, modifiedAt: Date(timeIntervalSince1970: 1)),
-            SMBDirectoryEntry(name: "brand-new.mkv", isDirectory: false, size: 5, modifiedAt: Date(timeIntervalSince1970: 9_999)),
-        ])
-        let source = SMBFileSource(lister: lister, host: "nas", share: "Media", root: "")
-        let listing = try await source.browse(in: "", sort: .init(field: .dateModified, direction: .descending))
-        // The grid renders folders then media, so the (newer) file never leapfrogs the (older) folder.
-        #expect(listing.folders.map(\.name) == ["Old Folder"])
-        #expect(listing.media.map(\.displayTitle) == ["brand-new"])
-    }
+    func disconnect() async {}
 }

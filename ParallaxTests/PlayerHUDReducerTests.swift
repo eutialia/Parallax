@@ -1,14 +1,72 @@
 import Testing
 @testable import Parallax
 
+/// A reference duration whose click step lands on a binary-exact fraction, so the
+/// state enum's `Double` equality stays reliable in the click-seek assertions.
+private let referenceDuration: Double = 100
+/// What ONE left/right click moves, as a fraction of `referenceDuration` — derived
+/// from the reducer's own step constant, never re-typed as 0.1.
+private let clickStep = PlayerHUDTuning.clickStepSeconds / referenceDuration
+
+private let playingCtx = ReduceContext(liveProgress: 0.5, durationSeconds: referenceDuration, isPlaying: true)
+private let pausedCtx = ReduceContext(liveProgress: 0.5, durationSeconds: referenceDuration, isPlaying: false)
+
+/// One cell of the state × event transition table.
+private struct Transition: Sendable, CustomTestStringConvertible {
+    let state: PlayerHUDState
+    let event: RemoteEvent
+    let ctx: ReduceContext
+    let expected: PlayerHUDState
+    let effects: [PlayerEffect]
+
+    var testDescription: String {
+        "\(state) + \(event)\(ctx.isPlaying ? "" : " (paused)") → \(expected) \(effects)"
+    }
+}
+
+/// The deterministic cells: one row per (state, event) whose outcome is a plain
+/// transition, including the paused-context variants. The scrub/click-seek cells with
+/// their own rationale keep dedicated tests below.
+private let transitionTable: [Transition] = [
+    // floor — select/play-pause toggle in place, menu exits the player.
+    .init(state: .floor, event: .select, ctx: playingCtx, expected: .floor, effects: [.togglePlayPause]),
+    .init(state: .floor, event: .playPause, ctx: playingCtx, expected: .floor, effects: [.togglePlayPause]),
+    .init(state: .floor, event: .playPause, ctx: pausedCtx, expected: .floor, effects: [.togglePlayPause]),
+    .init(state: .floor, event: .menu, ctx: playingCtx, expected: .floor, effects: [.exit]),
+    .init(state: .floor, event: .idle, ctx: playingCtx, expected: .floor, effects: []),
+    // clickSeek — select commits to floor via a toggle; menu/idle just hide the bar.
+    .init(state: .clickSeek(targetProgress: 0.4), event: .select, ctx: playingCtx, expected: .floor, effects: [.togglePlayPause]),
+    .init(state: .clickSeek(targetProgress: 0.4), event: .menu, ctx: playingCtx, expected: .floor, effects: []),
+    .init(state: .clickSeek(targetProgress: 0.4), event: .idle, ctx: playingCtx, expected: .floor, effects: []),
+    // swipeScrub — play/pause commits the preview seek AND forwards the toggle
+    // (an untested cell before this table existed).
+    .init(state: .swipeScrub(progress: 0.3, wasPlaying: true), event: .playPause, ctx: playingCtx,
+          expected: .floor, effects: [.seek(progress: 0.3), .togglePlayPause]),
+    .init(state: .swipeScrub(progress: 0.3, wasPlaying: false), event: .playPause, ctx: pausedCtx,
+          expected: .floor, effects: [.seek(progress: 0.3), .togglePlayPause]),
+    // fullHUD — menu/idle hide to floor (never exit); play/pause stays in chrome.
+    .init(state: .fullHUD, event: .menu, ctx: playingCtx, expected: .floor, effects: []),
+    .init(state: .fullHUD, event: .menu, ctx: pausedCtx, expected: .floor, effects: []),
+    .init(state: .fullHUD, event: .idle, ctx: playingCtx, expected: .floor, effects: []),
+    .init(state: .fullHUD, event: .idle, ctx: pausedCtx, expected: .floor, effects: []),
+    .init(state: .fullHUD, event: .playPause, ctx: playingCtx, expected: .fullHUD, effects: [.togglePlayPause]),
+    .init(state: .fullHUD, event: .playPause, ctx: pausedCtx, expected: .fullHUD, effects: [.togglePlayPause]),
+]
+
 struct PlayerHUDReducerTests {
-    // duration 100s → a 10s click step is exactly 0.1 of progress, so click maths land
-    // on binary-exact values and the enum's Double equality stays reliable.
-    private let playing = ReduceContext(liveProgress: 0.5, durationSeconds: 100, isPlaying: true)
-    private let paused = ReduceContext(liveProgress: 0.5, durationSeconds: 100, isPlaying: false)
+    private let playing = playingCtx
+    private let paused = pausedCtx
     // Incomplete media whose runtime never resolved: `CMTimeGetSeconds(.indefinite)` is NaN, so
     // `durationSeconds > 0` is false and there's no scrubbable timeline.
     private let indeterminate = ReduceContext(liveProgress: 0, durationSeconds: .nan, isPlaying: true)
+
+    @Test("every deterministic (state, event) cell lands where the table says",
+          arguments: transitionTable)
+    fileprivate func transitions(_ row: Transition) {
+        let (state, effects) = reduce(row.state, row.event, row.ctx)
+        #expect(state == row.expected)
+        #expect(effects == row.effects)
+    }
 
     // MARK: indeterminate duration (incomplete media)
 
@@ -63,43 +121,29 @@ struct PlayerHUDReducerTests {
         #expect(reduce(.floor, .click(.up), playing).1.isEmpty)
     }
 
-    @Test("floor: left/right click enters clickSeek at an absolute target, no immediate seek")
+    @Test("floor: left/right click enters clickSeek one step from live progress, no immediate seek")
     func floorClickSeeks() {
         // The seek itself is debounced by the view, so the reducer emits no effect.
         let (rightState, rightFx) = reduce(.floor, .click(.right), playing)
-        #expect(rightState == .clickSeek(targetProgress: 0.6))
+        #expect(rightState == .clickSeek(targetProgress: playing.liveProgress + clickStep))
         #expect(rightFx.isEmpty)
 
         let (leftState, leftFx) = reduce(.floor, .click(.left), playing)
-        #expect(leftState == .clickSeek(targetProgress: 0.4))
+        #expect(leftState == .clickSeek(targetProgress: playing.liveProgress - clickStep))
         #expect(leftFx.isEmpty)
-    }
-
-    @Test("floor: select (center) toggles play/pause, stays on floor")
-    func floorSelectTogglesPlayPause() {
-        #expect(reduce(.floor, .select, playing) == (PlayerHUDState.floor, [PlayerEffect.togglePlayPause]))
-    }
-
-    @Test("floor: menu exits the player")
-    func floorMenuExits() {
-        #expect(reduce(.floor, .menu, playing) == (PlayerHUDState.floor, [PlayerEffect.exit]))
-    }
-
-    @Test("floor: play/pause toggles, stays on floor")
-    func floorPlayPauseToggles() {
-        #expect(reduce(.floor, .playPause, playing) == (PlayerHUDState.floor, [PlayerEffect.togglePlayPause]))
     }
 
     // MARK: clickSeek
 
     @Test("clickSeek: consecutive clicks accumulate the target deterministically, no per-click seek")
     func clickSeekAccumulates() {
+        // Accumulation is off the CURRENT target, not off live progress.
         let (state, fx) = reduce(.clickSeek(targetProgress: 0.6), .click(.right), playing)
-        #expect(state == .clickSeek(targetProgress: 0.7))
+        #expect(state == .clickSeek(targetProgress: 0.6 + clickStep))
         #expect(fx.isEmpty)
 
         let (back, backFx) = reduce(.clickSeek(targetProgress: 0.2), .click(.left), playing)
-        #expect(back == .clickSeek(targetProgress: 0.1))
+        #expect(back == .clickSeek(targetProgress: 0.2 - clickStep))
         #expect(backFx.isEmpty)
     }
 
@@ -120,17 +164,6 @@ struct PlayerHUDReducerTests {
     func clickSeekToHUD() {
         #expect(reduce(.clickSeek(targetProgress: 0.4), .swipeVertical, playing).0 == .fullHUD)
         #expect(reduce(.clickSeek(targetProgress: 0.4), .click(.up), playing).0 == .fullHUD)
-    }
-
-    @Test("clickSeek: select toggles play/pause and returns to floor")
-    func clickSeekSelectToggles() {
-        #expect(reduce(.clickSeek(targetProgress: 0.4), .select, playing) == (PlayerHUDState.floor, [PlayerEffect.togglePlayPause]))
-    }
-
-    @Test("clickSeek: menu and idle hide the bar back to floor")
-    func clickSeekDismisses() {
-        #expect(reduce(.clickSeek(targetProgress: 0.4), .menu, playing) == (PlayerHUDState.floor, []))
-        #expect(reduce(.clickSeek(targetProgress: 0.4), .idle, playing) == (PlayerHUDState.floor, []))
     }
 
     // MARK: swipeScrub
@@ -178,21 +211,6 @@ struct PlayerHUDReducerTests {
     }
 
     // MARK: fullHUD
-
-    @Test("fullHUD: menu hides to floor (does not exit)")
-    func hudMenuHides() {
-        #expect(reduce(.fullHUD, .menu, playing) == (PlayerHUDState.floor, []))
-    }
-
-    @Test("fullHUD: idle auto-hides to floor")
-    func hudIdleHides() {
-        #expect(reduce(.fullHUD, .idle, playing) == (PlayerHUDState.floor, []))
-    }
-
-    @Test("fullHUD: play/pause toggles, stays in HUD")
-    func hudPlayPause() {
-        #expect(reduce(.fullHUD, .playPause, playing) == (PlayerHUDState.fullHUD, [PlayerEffect.togglePlayPause]))
-    }
 
     @Test("fullHUD: horizontal swipe (view-gated to scrubber focus) drops into analog scrub and pauses")
     func hudSwipeEntersScrub() {

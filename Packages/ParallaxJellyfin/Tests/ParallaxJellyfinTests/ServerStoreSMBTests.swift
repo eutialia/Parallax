@@ -9,33 +9,27 @@ struct ServerStoreSMBTests {
     // MARK: - Helpers
 
     private func freshStore() -> (ServerStore, SettingsStore, FakeKeychain) {
-        let suiteName = "ServerStoreSMBTests-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        let settings = SettingsStore(defaults: defaults)
-        let keychain = FakeKeychain()
-        let store = ServerStore(settings: settings, keychain: keychain)
-        return (store, settings, keychain)
+        let harness = JellyfinFixtures.serverStore("ServerStoreSMBTests")
+        return (harness.store, harness.settings, harness.keychain)
     }
 
-    private func smbData(
-        host: String = "nas.local",
-        shares: [String] = ["Media", "Backups"]
-    ) -> SMBServerData {
-        SMBServerData(host: host, username: "alice", domain: "WORKGROUP", shares: shares)
+    private func smbData(host: String = "nas.local", shares: [String] = ["Media", "Backups"]) -> SMBServerData {
+        JellyfinFixtures.smbData(host: host, shares: shares)
     }
 
     private func sampleSession(id: String = "jf-1", token: String = "tok-jf") -> Session {
-        let data = JellyfinServerData(
-            serverURL: URL(string: "https://\(id).example.com")!,
-            serverName: "Server \(id)",
-            user: UserSnapshot(id: "u-\(id)", name: "alice", serverLastUpdatedAt: nil)
-        )
-        return Session(id: ServerID(rawValue: id), data: data, accessToken: token)
+        JellyfinFixtures.session(id: id, token: token)
     }
 
     private func tokenKey(for id: ServerID) -> KeychainKey<String> {
-        KeychainKey<String>(account: "token-\(id.rawValue)")
+        JellyfinFixtures.tokenKey(for: id)
+    }
+
+    /// Readable kind predicate — the alternative (an immediately-applied closure inside
+    /// `contains {}`) obscured what was being asserted.
+    private func isJellyfin(_ server: PersistedServer) -> Bool {
+        if case .jellyfin = server.kind { return true }
+        return false
     }
 
     // MARK: - Tests
@@ -47,7 +41,8 @@ struct ServerStoreSMBTests {
 
         let id = try await store.addSMBServer(data, password: "s3cr3t")
 
-        // ID scheme: "smb-<host>"
+        // ID scheme: "smb-<host>" — deterministic so a re-add heals the row in place instead of
+        // duplicating it, and prefixed so it can never collide with a Jellyfin server id.
         #expect(id.rawValue == "smb-nas.local")
 
         let servers = await store.servers
@@ -116,8 +111,8 @@ struct ServerStoreSMBTests {
         let storedPassword: String? = try await keychain.read(tokenKey(for: id))
         #expect(storedPassword == nil)
 
-        // FakeKeychain records the delete call
-        #expect(keychain.deleteCalls.contains("token-\(id.rawValue)"))
+        // FakeKeychain records the delete call, keyed through the production slot helper.
+        #expect(keychain.deleteCalls.contains(ServerStore.tokenAccount(for: id)))
     }
 
     @Test("hasSMBServers reflects SMB presence and ignores Jellyfin-only configs")
@@ -173,12 +168,7 @@ struct ServerStoreSMBTests {
 
         let servers = await store.servers
         #expect(servers.count == 2)
-        #expect(servers.contains {
-            $0.id == ServerID(rawValue: "jf-1") && {
-                if case .jellyfin = $0.kind { return true }
-                return false
-            }($0)
-        })
+        #expect(servers.contains { $0.id == ServerID(rawValue: "jf-1") && isJellyfin($0) })
         guard let smb = servers.first(where: { $0.id == smbID }),
               case .smb(let d) = smb.kind else {
             Issue.record("smb server missing or wrong kind"); return

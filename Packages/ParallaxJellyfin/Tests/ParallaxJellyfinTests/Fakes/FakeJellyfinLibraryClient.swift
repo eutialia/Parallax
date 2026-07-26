@@ -16,14 +16,14 @@ final class FakeJellyfinLibraryClient: JellyfinLibraryClient, @unchecked Sendabl
     // call the same method multiple times in one test).
     var collectionsResult: Result<[BaseItemDto], Error> = .success([])
     var itemsResult: Result<(items: [BaseItemDto], total: Int), Error> = .success(([], 0))
-    var itemsPagedResults: [Result<(items: [BaseItemDto], total: Int), Error>] = []  // consumed in order
     var detailResult: Result<BaseItemDto, Error> = .failure(FakeError.notConfigured)
     var itemsByIDsResult: Result<[BaseItemDto], Error> = .success([])
     var seasonsResult: Result<[BaseItemDto], Error> = .success([])
     var episodesResult: Result<[BaseItemDto], Error> = .success([])
     var continueWatchingResult: Result<[BaseItemDto], Error> = .success([])
     var nextUpResult: Result<[BaseItemDto], Error> = .success([])
-    var recentlyAddedResult: Result<[BaseItemDto], Error> = .success([])
+    /// Keyed by requested type — the repository always asks for exactly one kind per call so it
+    /// can over-fetch episodes independently of movies. Unmapped kinds answer empty.
     var recentlyAddedResultsByTypes: [BaseItemKind: Result<[BaseItemDto], Error>] = [:]
     var searchResult: Result<[BaseItemDto], Error> = .success([])
     // Per-scope override — used by tests that need to verify the repository
@@ -71,10 +71,6 @@ final class FakeJellyfinLibraryClient: JellyfinLibraryClient, @unchecked Sendabl
     func getItems(scope: LibraryScope, filter: ParallaxCore.ItemFilter, sort: ParallaxCore.ItemSort, startIndex: Int, limit: Int) async throws -> (items: [BaseItemDto], total: Int) {
         try lock.withLock {
             itemsCalls.append((scope, filter, sort, startIndex, limit))
-            if !itemsPagedResults.isEmpty {
-                let result = itemsPagedResults.removeFirst()
-                return try result.get()
-            }
             return try itemsResult.get()
         }
     }
@@ -124,11 +120,10 @@ final class FakeJellyfinLibraryClient: JellyfinLibraryClient, @unchecked Sendabl
     func getRecentlyAdded(limit: Int, includeItemTypes: [BaseItemKind]) async throws -> [BaseItemDto] {
         try lock.withLock {
             recentlyAddedCalls.append((limit, includeItemTypes))
-            if includeItemTypes.count == 1, let type = includeItemTypes.first,
-               let perType = recentlyAddedResultsByTypes[type] {
-                return try perType.get()
-            }
-            return try recentlyAddedResult.get()
+            guard includeItemTypes.count == 1,
+                  let type = includeItemTypes.first,
+                  let perType = recentlyAddedResultsByTypes[type] else { return [] }
+            return try perType.get()
         }
     }
 
@@ -145,13 +140,10 @@ final class FakeJellyfinLibraryClient: JellyfinLibraryClient, @unchecked Sendabl
     func setFavorite(itemID: String, isFavorite: Bool) async throws -> UserItemData {
         try lock.withLock {
             setFavoriteCalls.append((itemID: itemID, isFavorite: isFavorite))
-            let resolved = try setFavoriteResult.get()
-            return UserItemData(
-                played: resolved.played,
-                playbackPositionTicks: resolved.playbackPositionTicks,
-                playCount: resolved.playCount,
-                isFavorite: isFavorite
-            )
+            // Returned VERBATIM. Folding the passed flag into the result would make every
+            // repository assertion about the returned data tautological — the fake, not the
+            // repository, would be guaranteeing it.
+            return try setFavoriteResult.get()
         }
     }
 

@@ -9,6 +9,31 @@ import ParallaxJellyfin
 /// demo server's `demo` user is exactly that, and it's the account an App Store reviewer signs in
 /// with. The gate used to require a filled password, which locked every such account out of the app
 /// with a permanently disabled button and no error to explain it.
+/// One state of the three Connect fields and whether the button is live.
+struct ConnectGateCase: Sendable, CustomTestStringConvertible {
+    let name: String
+    let server: String
+    let username: String
+    let password: String
+    let canSubmit: Bool
+    var testDescription: String { name }
+}
+
+private let demoServer = "demo.jellyfin.org/stable"
+
+private let connectGateCases: [ConnectGateCase] = [
+    // THE case this suite exists for: the official demo account has no password, and it's the
+    // account an App Store reviewer signs in with.
+    ConnectGateCase(name: "passwordless account", server: demoServer, username: "demo", password: "", canSubmit: true),
+    ConnectGateCase(name: "everything filled", server: demoServer, username: "demo", password: "hunter2", canSubmit: true),
+    // Whitespace-only, not merely empty: the field is trimmed before the gate reads it.
+    ConnectGateCase(name: "whitespace username", server: demoServer, username: "   ", password: "hunter2", canSubmit: false),
+    ConnectGateCase(name: "empty username", server: demoServer, username: "", password: "hunter2", canSubmit: false),
+    ConnectGateCase(name: "no server", server: "", username: "demo", password: "hunter2", canSubmit: false),
+    ConnectGateCase(name: "whitespace server", server: "  ", username: "demo", password: "hunter2", canSubmit: false),
+    ConnectGateCase(name: "nothing at all", server: "", username: "", password: "", canSubmit: false),
+]
+
 @Suite("Login view model · Connect gate")
 @MainActor
 struct LoginViewModelTests {
@@ -21,30 +46,13 @@ struct LoginViewModelTests {
         )
     }
 
-    @Test("A passwordless account can submit — server + username is enough")
-    func blankPasswordSubmits() {
+    @Test("the Connect gate requires a server and a username — and nothing else", arguments: connectGateCases)
+    func canSubmitPassword(_ gate: ConnectGateCase) {
         let vm = makeViewModel()
-        vm.serverURLInput = "demo.jellyfin.org/stable"
-        vm.username = "demo"
-        vm.password = ""
-        #expect(vm.canSubmitPassword)
-    }
-
-    @Test("A whitespace-only username does not submit")
-    func blankUsernameBlocked() {
-        let vm = makeViewModel()
-        vm.serverURLInput = "demo.jellyfin.org/stable"
-        vm.username = "   "
-        vm.password = "hunter2"
-        #expect(!vm.canSubmitPassword)
-    }
-
-    @Test("A missing server does not submit")
-    func blankServerBlocked() {
-        let vm = makeViewModel()
-        vm.username = "demo"
-        vm.password = "hunter2"
-        #expect(!vm.canSubmitPassword)
+        vm.serverURLInput = gate.server
+        vm.username = gate.username
+        vm.password = gate.password
+        #expect(vm.canSubmitPassword == gate.canSubmit)
     }
 
     /// Reverse-proxied servers live under a path prefix, and the demo server is one

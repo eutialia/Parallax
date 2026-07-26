@@ -6,20 +6,6 @@ import ParallaxJellyfin
 
 @Suite("Library source identity")
 struct LibraryRefTests {
-    /// A Jellyfin session whose server id is `id`, so `.jellyfin(session).sourceID`
-    /// is `.jellyfin(ServerID(id))` — what `LibraryEntry.id` derives its ref from.
-    private func session(id: String) -> Session {
-        Session(
-            id: ServerID(rawValue: id),
-            data: JellyfinServerData(
-                serverURL: URL(string: "https://\(id).example.test")!,
-                serverName: id,
-                user: UserSnapshot(id: "u1", name: "U", serverLastUpdatedAt: nil)
-            ),
-            accessToken: "t"
-        )
-    }
-
     @Test("Same collection id under different sources is not equal")
     func sourceDisambiguates() {
         let a = LibraryRef(source: .jellyfin(ServerID(rawValue: "A")), collection: CollectionID(rawValue: "shared"))
@@ -34,9 +20,11 @@ struct LibraryRefTests {
     }
     @Test("LibraryEntry.id is its LibraryRef, derived via source.sourceID")
     func entryIdentity() {
+        // A Jellyfin session whose server id is "A", so `.jellyfin(session).sourceID`
+        // is `.jellyfin(ServerID("A"))` — what `LibraryEntry.id` derives its ref from.
         let entry = LibraryEntry(
-            source: .jellyfin(session(id: "A")),
-            collection: MediaCollection(id: CollectionID(rawValue: "c1"), name: "Movies", collectionType: .movies, primaryTag: nil)
+            source: makeJellyfinSource("A"),
+            collection: makeCollection("c1", "Movies")
         )
         #expect(entry.id == LibraryRef(source: .jellyfin(ServerID(rawValue: "A")), collection: CollectionID(rawValue: "c1")))
     }

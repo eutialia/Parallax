@@ -11,6 +11,11 @@ import ParallaxCore
 struct JellyfinResponseValidatorTests {
     private let serverID = ServerID(rawValue: "server-1")
 
+    /// An ephemeral session, never `URLSession.shared`: the `task` argument only exists to satisfy
+    /// the `Get` hook's signature (the validator never touches it), and reaching into the shared
+    /// session would couple every case here to global URL-loading state.
+    private static let session = URLSession(configuration: .ephemeral)
+
     private func validate(
         status: Int,
         headers: [String: String]? = nil,
@@ -23,46 +28,43 @@ struct JellyfinResponseValidatorTests {
             APIClient(baseURL: url),
             validateResponse: response,
             data: Data(),
-            task: URLSession.shared.dataTask(with: url)
+            task: Self.session.dataTask(with: url)
         )
     }
 
     @Test("A 2xx response passes without reporting anything", arguments: [200, 204, 299])
     func successPasses(status: Int) throws {
-        let reported = Reported()
+        let reported = ReportedServerIDs()
         try validate(status: status) { reported.record($0) }
         #expect(reported.ids.isEmpty)
     }
 
     @Test("A 401 reports the server and surfaces as an expired session")
     func unauthorizedReportsAndNames() {
-        let reported = Reported()
-        #expect(throws: AppError.self) {
-            try validate(status: 401) { reported.record($0) }
-        }
-        #expect(reported.ids == [serverID])
-
-        // The message the user actually reads has to say what to DO. "Your server returned an
-        // error" (the old generic 401 mapping) sends them nowhere.
+        let reported = ReportedServerIDs()
         do {
-            try validate(status: 401)
+            try validate(status: 401) { reported.record($0) }
             Issue.record("expected a throw")
         } catch let error as AppError {
             guard case .auth(.tokenInvalidated) = error else {
                 Issue.record("expected .auth(.tokenInvalidated), got \(error)")
                 return
             }
-            #expect(error.userMessage == "Your session expired. Sign in again.")
+            // The message the user actually reads has to say what to DO; the generic 401 mapping
+            // ("your server returned an error") sends them nowhere. Compared against the copy the
+            // failure itself owns, not a duplicate of it.
+            #expect(error.userMessage == AuthFailure.tokenInvalidated.userMessage)
         } catch {
             Issue.record("expected AppError, got \(error)")
         }
+        #expect(reported.ids == [serverID])
     }
 
     /// The one that must not over-fire. A 500 or a 404 is transient or item-specific; signing the
     /// user out over it would take down a perfectly good server on a single bad request.
     @Test("Other failures throw a plain server error and never report a rejection", arguments: [403, 404, 500, 503])
     func otherFailuresDoNotSignOut(status: Int) {
-        let reported = Reported()
+        let reported = ReportedServerIDs()
         do {
             try validate(status: status) { reported.record($0) }
             Issue.record("expected a throw for HTTP \(status)")
@@ -78,20 +80,23 @@ struct JellyfinResponseValidatorTests {
         #expect(reported.ids.isEmpty)
     }
 
-    /// The destructive false positive: a Jellyfin behind an auth gateway (Authelia, a reverse proxy
-    /// with basic auth) answers 401 for ITS OWN missing credential while the Jellyfin token is
-    /// perfectly good. Signing out there would delete a working token and route the user to a
-    /// sign-in that 401s too. RFC 7235 §3.1 makes `WWW-Authenticate` mandatory on a real challenge,
-    /// and Jellyfin's own token rejection sends none — so its presence is the discriminator.
+    /// The destructive false positive: a Jellyfin behind an auth gateway (Authelia, Authentik, a
+    /// reverse proxy with basic auth) answers 401 for ITS OWN missing credential while the Jellyfin
+    /// token is perfectly good. Signing out there would delete a working token and route the user
+    /// to a sign-in that 401s too. RFC 7235 §3.1 makes `WWW-Authenticate` mandatory on a real
+    /// challenge, and Jellyfin's own token rejection sends none — so its presence is the
+    /// discriminator. The header NAME is matched case-insensitively because HTTP field names are,
+    /// and `HTTPURLResponse` preserves whatever casing the server sent.
     @Test(
         "A 401 carrying an auth challenge is an upstream gateway — never a rejected token",
-        arguments: ["Basic realm=\"proxy\"", "Bearer", "Digest realm=\"gw\", nonce=\"abc\""]
+        arguments: ["WWW-Authenticate", "www-authenticate", "Www-Authenticate"],
+        ["Basic realm=\"proxy\"", "Bearer", "Digest realm=\"gw\", nonce=\"abc\""]
     )
-    func gatewayChallengeDoesNotSignOut(challenge: String) {
-        let reported = Reported()
+    func gatewayChallengeDoesNotSignOut(headerName: String, challenge: String) {
+        let reported = ReportedServerIDs()
         do {
-            try validate(status: 401, headers: ["WWW-Authenticate": challenge]) { reported.record($0) }
-            Issue.record("expected a throw")
+            try validate(status: 401, headers: [headerName: challenge]) { reported.record($0) }
+            Issue.record("expected a throw — a gateway 401 is still a failed request")
         } catch let error as AppError {
             guard case .server(let code, _) = error else {
                 Issue.record("expected .server(401), got \(error)")
@@ -104,22 +109,5 @@ struct JellyfinResponseValidatorTests {
         // The load-bearing assertion: nothing was reported, so no session is dropped and no
         // Keychain token is deleted.
         #expect(reported.ids.isEmpty)
-    }
-
-    /// Header matching must be case-insensitive — HTTP field names are, and `HTTPURLResponse`
-    /// preserves whatever casing the server sent.
-    @Test("The challenge check doesn't depend on header casing")
-    func challengeMatchIsCaseInsensitive() {
-        let reported = Reported()
-        try? validate(status: 401, headers: ["www-authenticate": "Basic realm=\"proxy\""]) { reported.record($0) }
-        #expect(reported.ids.isEmpty)
-    }
-
-    /// Collects reported ids across the validator's `@Sendable` callback boundary.
-    private final class Reported: @unchecked Sendable {
-        private let lock = NSLock()
-        private var storage: [ServerID] = []
-        var ids: [ServerID] { lock.lock(); defer { lock.unlock() }; return storage }
-        func record(_ id: ServerID) { lock.lock(); storage.append(id); lock.unlock() }
     }
 }

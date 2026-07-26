@@ -4,17 +4,14 @@ import Testing
 @Suite("VLCPlayerHosting")
 struct VLCPlayerHostingTests {
 
-    @Test("VLCPlayerHosting protocol exists and is importable")
-    func protocolExists() {
-        // Compile-time check. The existential type itself is the assertion.
-        let _: (any VLCPlayerHosting).Type = (any VLCPlayerHosting).self
-        #expect(Bool(true))
-    }
-
-    @Test("VLCKitEngine conforms to VLCPlayerHosting")
+    /// The app target casts `any PlaybackEngine` to `any VLCPlayerHosting` at the
+    /// `VLCVideoHost` boundary and sets `vlcPlayer.drawable`. A failed cast — or a
+    /// hosting property handing back a *different* player than the engine drives —
+    /// would render into a surface nothing decodes to.
+    @Test("VLCKitEngine conforms to VLCPlayerHosting and vends the player it drives")
     @MainActor func engineConforms() {
         let engine = VLCKitEngine()
-        let hosting = engine as? any VLCPlayerHosting
-        #expect(hosting != nil)
+        let hosting: any VLCPlayerHosting = engine
+        #expect(hosting.vlcPlayer === engine.vlcPlayer)
     }
 }

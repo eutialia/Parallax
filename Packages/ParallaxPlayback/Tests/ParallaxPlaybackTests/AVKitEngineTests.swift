@@ -7,26 +7,48 @@ import Testing
 @Suite("AVKitEngine")
 @MainActor
 struct AVKitEngineTests {
+
     @Test("Declares the AVKit id and all-true capabilities")
     func identityAndCapabilities() {
         let engine = AVKitEngine()
         #expect(engine.id == .avKit)
-        #expect(engine.capabilities.supportsPiP)
-        #expect(engine.capabilities.supportsVideoAirPlay)
-        #expect(engine.capabilities.supportsNowPlayingIntegration)
+        #expect(engine.capabilities == PlaybackEngineCapabilities(
+            supportsPiP: true, supportsVideoAirPlay: true, supportsNowPlayingIntegration: true
+        ))
     }
 
-    @Test("Conforms to AVPlayerHosting and exposes a live AVPlayer")
+    /// The app sets `AVPlayerViewController.player` through this seam, so the hosting
+    /// property must vend the very instance the engine drives — not a fresh one.
+    @Test("Conforms to AVPlayerHosting and vends the AVPlayer it drives")
     func hostsAnAVPlayer() {
         let engine = AVKitEngine()
-        let hosting = engine as? AVPlayerHosting
-        #expect(hosting != nil)
-        #expect(hosting?.avPlayer === engine.avPlayer)
+        let hosting: any AVPlayerHosting = engine
+        #expect(hosting.avPlayer === engine.avPlayer)
+    }
+}
+
+/// The engine-agnostic half of the `PlaybackEngine` stream contract, run against both
+/// concrete engines. Previously duplicated verbatim in `AVKitEngineTests` and
+/// `VLCKitEngineTests`.
+@Suite("PlaybackEngine stream contract")
+@MainActor
+struct PlaybackEngineStreamContractTests {
+
+    enum EngineKind: String, CaseIterable, CustomTestStringConvertible {
+        case avKit, vlcKit
+        var testDescription: String { rawValue }
+
+        @MainActor func make() -> any PlaybackEngine {
+            switch self {
+            case .avKit: AVKitEngine()
+            case .vlcKit: VLCKitEngine()
+            }
+        }
     }
 
-    @Test("state stream emits .idle before any load")
-    func emitsIdleFirst() async {
-        let engine = AVKitEngine()
+    @Test("the state stream is pre-seeded with .idle", arguments: EngineKind.allCases)
+    func emitsIdleFirst(kind: EngineKind) async {
+        let engine = kind.make()
         var iterator = engine.state.makeAsyncIterator()
         let first = await iterator.next()
         guard case .idle = first else {
@@ -35,12 +57,14 @@ struct AVKitEngineTests {
         }
     }
 
-    @Test("teardown finishes the state stream")
-    func teardownFinishesStream() async {
-        let engine = AVKitEngine()
-        await engine.teardown()
+    @Test("teardown finishes the state stream so consumers' for-await loops end",
+          arguments: EngineKind.allCases)
+    func teardownFinishesStream(kind: EngineKind) async {
+        let engine = kind.make()
         var iterator = engine.state.makeAsyncIterator()
-        // Drain any buffered .idle; the stream must then terminate.
+        _ = await iterator.next()          // drain the buffered .idle
+        await engine.teardown()
+        // Any further buffered beats are allowed; the stream MUST terminate.
         while let value = await iterator.next() {
             if case .idle = value { continue }
             break
@@ -49,17 +73,37 @@ struct AVKitEngineTests {
         #expect(terminal == nil)
     }
 
-    @Test("trackInventory maps AVPlayerItem media options to AudioTrack/SubtitleTrack")
-    func trackInventoryMapsOptions() async {
-        // AVPlayerItem over a real asset isn't feasible in a unit test; verify the
-        // TrackInventory shape round-trips (real mapping is device-verified in 5f).
-        let inv = TrackInventory(
-            audio: [AudioTrack(id: .avKitOption(0), displayName: "English", languageCode: "en")],
-            subtitles: [SubtitleTrack(id: .avKitOption(1), displayName: "French SDH", languageCode: "fr", isForced: false)]
-        )
-        #expect(inv.audio.count == 1)
-        #expect(inv.audio[0].id == .avKitOption(0))
-        #expect(inv.subtitles.count == 1)
-        #expect(inv.subtitles[0].id == .avKitOption(1))
+    @Test("the engine id matches the kind that built it", arguments: EngineKind.allCases)
+    func reportsItsOwnID(kind: EngineKind) {
+        let expected: PlaybackEngineID = kind == .avKit ? .avKit : .vlcKit
+        #expect(kind.make().id == expected)
+    }
+}
+
+/// `redactedTail` is the only thing that ever writes an HLS resource URI into a log,
+/// and the api_key rides in that URI's query — so dropping the query is a security
+/// contract, not cosmetics.
+@Suite("AVKitEngine — HLS error-log redaction")
+@MainActor
+struct AVKitLogRedactionTests {
+
+    @Test("keeps the trailing two path components and drops the query", arguments: [
+        ("https://jf.example.com/Videos/abc/main.m3u8?api_key=SECRET", "abc/main.m3u8"),
+        ("https://jf.example.com/Videos/abc/hls1/main/123.mp4?api_key=SECRET&x=1", "main/123.mp4"),
+        ("https://jf.example.com/master.m3u8", "master.m3u8"),
+    ])
+    func redactsTail(uri: String, expected: String) {
+        let tail = AVKitEngine.redactedTail(of: uri)
+        #expect(tail == expected)
+        #expect(tail?.contains("SECRET") == false)
+        #expect(tail?.contains("?") == false)
+    }
+
+    @Test("returns nil when there is no path to report", arguments: [
+        "https://jf.example.com",
+        "https://jf.example.com/",
+    ])
+    func nilWithoutPath(uri: String) {
+        #expect(AVKitEngine.redactedTail(of: uri) == nil)
     }
 }

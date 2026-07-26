@@ -7,6 +7,12 @@ import ParallaxPlaybackTestSupport
 @testable import ParallaxJellyfin
 @testable import ParallaxCore
 
+/// Whether the playing episode has a successor — the axis the outro prompt gates on.
+private enum OutroAdjacency: String, CaseIterable, CustomTestStringConvertible {
+    case hasNextEpisode, isFinale
+    var testDescription: String { rawValue }
+}
+
 /// Layer 2 of the skip-intro / next-episode feature: the view model's segment
 /// detection (Skip Intro / Next Episode prompt), the skip seek, and episode
 /// succession (manual prev/next + end-of-video auto-advance). The data layer is
@@ -14,13 +20,26 @@ import ParallaxPlaybackTestSupport
 @Suite("PlayerViewModel segments & succession", .serialized)
 @MainActor
 struct PlayerViewModelSegmentTests {
-    private let builder = DeviceProfileBuilder(probe: FakeCapabilityProbe(hdr: .none, audioOutput: .stereo))
-
     private func playing(_ seconds: Double) -> PlaybackState {
         .playing(
             position: CMTime(seconds: seconds, preferredTimescale: 600),
             duration: CMTime(seconds: 1800, preferredTimescale: 600),
             buffered: nil
+        )
+    }
+
+    /// An episode VM whose resolve echoes a direct-play fixture for whatever id it's
+    /// handed — the shape every test in this suite starts from.
+    private func episodeVM(
+        engine: FakePlaybackEngine,
+        segments: [MediaSegment] = [],
+        adjacent: @escaping @Sendable (ItemID, ItemID) async -> AdjacentEpisodes = { _, _ in .none }
+    ) -> PlayerViewModel {
+        makePlayerVM(
+            resolve: { id, _, _, _, _ in PlayerFixtures.resolvedEpisode(id: id.rawValue) },
+            engine: engine,
+            fetchSegments: { _ in segments },
+            fetchAdjacent: adjacent
         )
     }
 
@@ -30,19 +49,12 @@ struct PlayerViewModelSegmentTests {
     func skipIntroSeeksToEnd() async throws {
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         let intro = MediaSegment(id: "intro", kind: .intro, start: .seconds(0), end: .seconds(90))
-        let vm = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: StubPlaybackReporting(),
-            resolve: { id, _, _, _, _ in PlayerFixtures.resolvedEpisode(id: id.rawValue) },
-            engineFactory: { _ in engine },
-            audioSession: NoopAudioSession(),
-            fetchSegments: { _ in [intro] }
-        )
+        let vm = episodeVM(engine: engine, segments: [intro])
 
         await vm.start(item: PlayerFixtures.episodeDetail(id: "ep-1"))
-        try await Task.sleep(for: .milliseconds(50))   // let the segments task land
+        await vm.debugAwaitSegmentsLoad()
         engine.push(playing(30))                        // playhead inside the intro
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
 
         #expect(vm.activeSegment?.kind == .intro)
         #expect(vm.segmentPrompt == .skip(intro))
@@ -55,67 +67,48 @@ struct PlayerViewModelSegmentTests {
     func promptClearsAfterSegment() async throws {
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         let intro = MediaSegment(id: "intro", kind: .intro, start: .seconds(0), end: .seconds(90))
-        let vm = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: StubPlaybackReporting(),
-            resolve: { id, _, _, _, _ in PlayerFixtures.resolvedEpisode(id: id.rawValue) },
-            engineFactory: { _ in engine },
-            audioSession: NoopAudioSession(),
-            fetchSegments: { _ in [intro] }
-        )
+        let vm = episodeVM(engine: engine, segments: [intro])
         await vm.start(item: PlayerFixtures.episodeDetail(id: "ep-1"))
-        try await Task.sleep(for: .milliseconds(50))
+        await vm.debugAwaitSegmentsLoad()
 
         engine.push(playing(30))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
         #expect(vm.segmentPrompt != nil)
 
         engine.push(playing(120))                       // past the intro's end (exclusive)
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
         #expect(vm.segmentPrompt == nil)
         #expect(vm.activeSegment == nil)
     }
 
     // MARK: Outro → Next Episode gating
 
-    @Test("an outro surfaces Next Episode only when a next episode exists")
-    func outroPromptGatesOnNextEpisode() async throws {
+    @Test("an outro surfaces Next Episode only when a next episode exists",
+          arguments: OutroAdjacency.allCases)
+    fileprivate func outroPromptGatesOnNextEpisode(adjacency: OutroAdjacency) async throws {
         let outro = MediaSegment(id: "outro", kind: .outro, start: .seconds(1700), end: .seconds(1800))
-
-        // With a next episode → Next Episode prompt.
-        let engineA = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let vmA = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: StubPlaybackReporting(),
-            resolve: { id, _, _, _, _ in PlayerFixtures.resolvedEpisode(id: id.rawValue) },
-            engineFactory: { _ in engineA },
-            audioSession: NoopAudioSession(),
-            fetchSegments: { _ in [outro] },
-            fetchAdjacent: { _, _ in AdjacentEpisodes(previous: nil, next: PlayerFixtures.episode(id: "ep-2", number: 2)) }
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let vm = episodeVM(
+            engine: engine,
+            segments: [outro],
+            adjacent: { _, _ in
+                switch adjacency {
+                case .hasNextEpisode:
+                    AdjacentEpisodes(previous: nil, next: PlayerFixtures.episode(id: "ep-2", number: 2))
+                case .isFinale:
+                    .none
+                }
+            }
         )
-        await vmA.start(item: PlayerFixtures.episodeDetail(id: "ep-1"))
-        try await Task.sleep(for: .milliseconds(50))
-        engineA.push(playing(1750))
-        try await Task.sleep(for: .milliseconds(50))
-        #expect(vmA.segmentPrompt == .nextEpisode(outro))
+        await vm.start(item: PlayerFixtures.episodeDetail(id: "ep-1"))
+        await vm.debugAwaitSegmentsLoad()
+        engine.push(playing(1750))
+        try await engine.settle()
 
-        // No next episode (finale) → the outro is active but shows no prompt.
-        let engineB = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let vmB = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: StubPlaybackReporting(),
-            resolve: { id, _, _, _, _ in PlayerFixtures.resolvedEpisode(id: id.rawValue) },
-            engineFactory: { _ in engineB },
-            audioSession: NoopAudioSession(),
-            fetchSegments: { _ in [outro] },
-            fetchAdjacent: { _, _ in .none }
-        )
-        await vmB.start(item: PlayerFixtures.episodeDetail(id: "ep-9"))
-        try await Task.sleep(for: .milliseconds(50))
-        engineB.push(playing(1750))
-        try await Task.sleep(for: .milliseconds(50))
-        #expect(vmB.activeSegment?.kind == .outro)
-        #expect(vmB.segmentPrompt == nil)
+        // The outro is active either way; only the prompt is gated — a finale must
+        // not offer a next episode that doesn't exist.
+        #expect(vm.activeSegment?.kind == .outro)
+        #expect(vm.segmentPrompt == (adjacency == .hasNextEpisode ? .nextEpisode(outro) : nil))
     }
 
     // MARK: Succession (auto-advance + manual)
@@ -127,12 +120,9 @@ struct PlayerViewModelSegmentTests {
         engines: FakeEngineSink,
         adjacent: @escaping @Sendable (ItemID, ItemID) async -> AdjacentEpisodes
     ) -> PlayerViewModel {
-        PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: StubPlaybackReporting(),
+        makePlayerVM(
             resolve: { id, _, _, _, _ in resolvedIDs(id); return PlayerFixtures.resolvedEpisode(id: id.rawValue) },
             engineFactory: { _ in engines.make() },
-            audioSession: NoopAudioSession(),
             fetchDetail: { id in PlayerFixtures.episodeDetail(id: id.rawValue) },
             fetchAdjacent: adjacent
         )
@@ -152,7 +142,7 @@ struct PlayerViewModelSegmentTests {
             }
         )
         await vm.start(item: PlayerFixtures.episodeDetail(id: "ep-1"))
-        try await Task.sleep(for: .milliseconds(50))
+        await vm.debugAwaitSegmentsLoad()
 
         engines.first?.push(playing(1790))
         engines.first?.push(.ended)
@@ -160,7 +150,7 @@ struct PlayerViewModelSegmentTests {
 
         #expect(ids.values.contains(ItemID(rawValue: "ep-2")))
         #expect(engines.count == 2)                     // a fresh engine for ep-2
-        #expect(!vm.playbackDidComplete)                // it advanced, didn't finish
+        #expect(vm.playbackDidComplete == false)        // it advanced, didn't finish
         #expect(vm.supportsEpisodeNavigation)           // episodic → prev/next transport
     }
 
@@ -170,7 +160,7 @@ struct PlayerViewModelSegmentTests {
         let engines = FakeEngineSink()
         let vm = successionVM(resolvedIDs: { ids.append($0) }, engines: engines, adjacent: { _, _ in .none })
         await vm.start(item: PlayerFixtures.episodeDetail(id: "ep-9"))
-        try await Task.sleep(for: .milliseconds(50))
+        await vm.debugAwaitSegmentsLoad()
 
         engines.first?.push(playing(1790))
         engines.first?.push(.ended)
@@ -195,7 +185,7 @@ struct PlayerViewModelSegmentTests {
             }
         )
         await vm.start(item: PlayerFixtures.episodeDetail(id: "ep-2", number: 2))
-        try await Task.sleep(for: .milliseconds(50))
+        await vm.debugAwaitSegmentsLoad()
 
         await vm.playPreviousEpisode()
         try await Task.sleep(for: .milliseconds(150))

@@ -7,18 +7,7 @@ import ParallaxCore
 
 @Suite("PlaybackInfoService — resolve")
 struct PlaybackInfoServiceResolveTests {
-    private func caps() -> DeviceCapabilities {
-        DeviceCapabilities(
-            supportedVideoCodecs: [.h264, .hevc],
-            supportedAudioCodecs: [.aac, .ac3, .eac3, .mp3],
-            supportedContainers: [.mp4, .mov, .hls],
-            hdr: .none,
-            maxResolution: .uhd4K,
-            maxBitrate: .megabits(120),
-            audioOutput: .stereo,
-            preferredSubtitleFormats: [.vtt, .srt]
-        )
-    }
+    private func caps() -> DeviceCapabilities { JellyfinFixtures.caps() }
 
     private func directPlaySource() -> MediaSourceInfo {
         var source = MediaSourceInfo()
@@ -118,8 +107,13 @@ struct PlaybackInfoServiceResolveTests {
         #expect(resolved.container == .mp4)
         #expect(resolved.videoCodec == .h264)
         #expect(resolved.audioCodec == .aac)
-        #expect(resolved.url.query?.contains("api_key=") == true)
+        // Wiring, not URL shape: the resolved URL IS what the stream-URL builder returned. The
+        // api_key/`/Videos/{id}/stream.{container}` shape is proven where the real builder runs
+        // (`DefaultJellyfinPlaybackClientTests`); asserting it here would only re-read a canned
+        // string this fake wrote.
+        #expect(resolved.url == fake.streamURLValue)
         #expect(fake.streamURLRequests.first?.mediaSourceID == "ms-1")
+        #expect(fake.streamURLRequests.first?.container == "mp4")
         #expect(fake.transcodePaths.isEmpty)
     }
 
@@ -132,38 +126,30 @@ struct PlaybackInfoServiceResolveTests {
             startTime: nil
         )
         #expect(resolved.method == .transcode)
-        #expect(resolved.url.query?.contains("api_key=") == true)
-        #expect(resolved.url.absoluteString.contains("master.m3u8"))
-        // It resolved the server-provided transcodingURL, not a stream URL.
-        #expect(fake.transcodePaths.first == "/videos/item-1/master.m3u8?api_key=tok-1&PlaySessionId=ps-1")
+        // It resolved the SERVER-provided transcodingURL verbatim, and returned exactly what the
+        // transcode-URL builder handed back — no stream URL was built at all.
+        #expect(fake.transcodePaths == ["/videos/item-1/master.m3u8?api_key=tok-1&PlaySessionId=ps-1"])
+        #expect(resolved.url == fake.transcodeURLValue)
         #expect(fake.streamURLRequests.isEmpty)
     }
 
-    @Test("Explicit audio/subtitle stream indices are forwarded to the PlaybackInfo request")
-    func streamIndicesForwarded() async throws {
+    /// An explicit pick forces the server to build the transcode around that source track; nil
+    /// hands the choice back to the server's own language preferences.
+    @Test(
+        "Track indices reach the PlaybackInfo request exactly as given",
+        arguments: [(4, 7) as (Int?, Int?), (nil, nil)]
+    )
+    func streamIndicesForwarded(audio: Int?, subtitle: Int?) async throws {
         let (service, fake) = makeService(source: transcodeSource())
         _ = try await service.resolve(
             item: ItemID(rawValue: "item-1"),
             capabilities: caps(),
-            startTime: CMTime(seconds: 600, preferredTimescale: 600),
-            audioStreamIndex: 4,
-            subtitleStreamIndex: 7
+            startTime: nil,
+            audioStreamIndex: audio,
+            subtitleStreamIndex: subtitle
         )
-        #expect(fake.playbackInfoCalls.first?.audioStreamIndex == 4)
-        #expect(fake.playbackInfoCalls.first?.subtitleStreamIndex == 7)
-        #expect(fake.playbackInfoCalls.first?.startTimeTicks == 6_000_000_000)
-    }
-
-    @Test("Omitted stream indices default to nil (server picks)")
-    func streamIndicesDefaultNil() async throws {
-        let (service, fake) = makeService(source: directPlaySource())
-        _ = try await service.resolve(
-            item: ItemID(rawValue: "item-1"),
-            capabilities: caps(),
-            startTime: nil
-        )
-        #expect(fake.playbackInfoCalls.first?.audioStreamIndex == nil)
-        #expect(fake.playbackInfoCalls.first?.subtitleStreamIndex == nil)
+        #expect(fake.playbackInfoCalls.first?.audioStreamIndex == audio)
+        #expect(fake.playbackInfoCalls.first?.subtitleStreamIndex == subtitle)
     }
 
     @Test("Source media streams + default indices are mapped to ResolvedPlayback")
@@ -193,7 +179,9 @@ struct PlaybackInfoServiceResolveTests {
         #expect(subtitle?.subtitleDeliveryMethod == "Hls")
     }
 
-    @Test("Sidecar VTT URLs are built for text subtitles (copyTimestamps + api_key) and exclude image subs")
+    /// Image subs (PGS/VobSub) are burned in server-side, so they have no sidecar to fetch — but
+    /// they must still stay in `mediaStreams` so the transcode menu can offer them.
+    @Test("Sidecar URLs are requested for text subtitles only, in vtt")
     func subtitleSidecarURLsBuilt() async throws {
         var source = transcodeSource()          // text sub: index 1, subrip
         var pgs = MediaStream()                  // image sub: index 2, pgssub
@@ -201,7 +189,7 @@ struct PlaybackInfoServiceResolveTests {
         pgs.index = 2
         pgs.codec = "pgssub"
         source.mediaStreams?.append(pgs)
-        let (service, _) = makeService(source: source)
+        let (service, fake) = makeService(source: source)
 
         let resolved = try await service.resolve(
             item: ItemID(rawValue: "item-1"),
@@ -210,11 +198,14 @@ struct PlaybackInfoServiceResolveTests {
         )
 
         #expect(resolved.subtitleStreamURLs.count == 1)
-        #expect(resolved.subtitleStreamURLs[2] == nil)          // image sub excluded
-        let url = try #require(resolved.subtitleStreamURLs[1]?.absoluteString)
-        #expect(url.contains("/Subtitles/1/Stream.vtt"))
-        #expect(url.contains("copyTimestamps=true"))
-        #expect(url.contains("api_key="))
+        #expect(resolved.subtitleStreamURLs[2] == nil, "an image sub has no sidecar to fetch")
+        #expect(resolved.mediaStreams.contains { $0.index == 2 }, "but it stays selectable for burn-in")
+        // One request, for the text stream, in vtt — the URL's own shape is pinned in
+        // `DefaultJellyfinPlaybackClientTests`, not against a string this fake made up.
+        #expect(fake.subtitleStreamURLRequests.map(\.streamIndex) == [1])
+        #expect(fake.subtitleStreamURLRequests.first?.format == "vtt")
+        #expect(fake.subtitleStreamURLRequests.first?.mediaSourceID == "ms-2")
+        #expect(resolved.subtitleStreamURLs[1] == fake.subtitleURLForIndex(1))
     }
 
     @Test("Video stream's HDR / resolution / bit-depth debug fields are mapped")
@@ -237,26 +228,34 @@ struct PlaybackInfoServiceResolveTests {
         #expect(video?.frameRate == 23.976)
     }
 
-    @Test("TranscodeReasons in the transcoding URL are parsed onto ResolvedPlayback")
-    func transcodeReasonsParsed() async throws {
-        let (service, _) = makeService(source: transcodeSourceWithReasons())
+    /// Reasons are read out of the SERVER's transcodingURL query, so direct play (no such URL)
+    /// necessarily has none.
+    @Test(
+        "TranscodeReasons come from the transcoding URL, in order",
+        arguments: [
+            (ResolveSource.transcodeWithReasons, ["ContainerNotSupported", "AudioCodecNotSupported"]),
+            (.transcode, []),
+            (.directPlay, []),
+        ]
+    )
+    func transcodeReasonsParsed(source: ResolveSource, expected: [String]) async throws {
+        let (service, _) = makeService(source: mediaSource(for: source))
         let resolved = try await service.resolve(
             item: ItemID(rawValue: "item-1"),
             capabilities: caps(),
             startTime: nil
         )
-        #expect(resolved.transcodeReasons == ["ContainerNotSupported", "AudioCodecNotSupported"])
+        #expect(resolved.transcodeReasons == expected)
     }
 
-    @Test("Direct-play has no transcode reasons")
-    func directPlayNoTranscodeReasons() async throws {
-        let (service, _) = makeService(source: directPlaySource())
-        let resolved = try await service.resolve(
-            item: ItemID(rawValue: "item-1"),
-            capabilities: caps(),
-            startTime: nil
-        )
-        #expect(resolved.transcodeReasons.isEmpty)
+    enum ResolveSource: Sendable { case directPlay, transcode, transcodeWithReasons }
+
+    private func mediaSource(for kind: ResolveSource) -> MediaSourceInfo {
+        switch kind {
+        case .directPlay: directPlaySource()
+        case .transcode: transcodeSource()
+        case .transcodeWithReasons: transcodeSourceWithReasons()
+        }
     }
 
     @Test("startTime is converted to ticks (seconds * 10_000_000) for the POST and echoed back")
@@ -308,6 +307,61 @@ struct PlaybackInfoServiceResolveTests {
         #expect(sdh.isHearingImpaired == true)
         let normal = try #require(resolved.mediaStreams.first { $0.index == 6 })
         #expect(normal.isHearingImpaired == false)
+    }
+
+    /// A source whose stream URL can't be built is unplayable — better a named failure than an
+    /// engine handed a nil URL.
+    @Test("An unbuildable stream URL throws instead of resolving something unplayable")
+    func unbuildableStreamURLThrows() async {
+        let (service, fake) = makeService(source: directPlaySource())
+        fake.streamURLValue = nil
+        await #expect(throws: AppError.self) {
+            _ = try await service.resolve(
+                item: ItemID(rawValue: "item-1"),
+                capabilities: caps(),
+                startTime: nil
+            )
+        }
+    }
+
+    /// An index is a stream's only stable identity AND the value the server selects by, so an
+    /// index-less stream can never be chosen — it's dropped rather than shown in the track menu.
+    @Test("Streams without an index are dropped, and unknown types fold to .other")
+    func streamsWithoutIndexAreDropped() async throws {
+        var source = directPlaySource()
+        var indexless = MediaStream()
+        indexless.type = .audio
+        indexless.codec = "aac"
+        var embeddedImage = MediaStream()
+        embeddedImage.type = .embeddedImage
+        embeddedImage.index = 9
+        source.mediaStreams = [indexless, embeddedImage]
+        let (service, _) = makeService(source: source)
+
+        let resolved = try await service.resolve(
+            item: ItemID(rawValue: "item-1"),
+            capabilities: caps(),
+            startTime: nil
+        )
+
+        #expect(resolved.mediaStreams.map(\.index) == [9])
+        #expect(resolved.mediaStreams.first?.kind == .other)
+    }
+
+    /// A missing item is a 404 from the client; the service maps it into the domain error type
+    /// rather than letting a raw SDK error reach the player.
+    @Test("A failed PlaybackInfo request maps to AppError")
+    func playbackInfoFailureMaps() async {
+        let fake = FakeJellyfinPlaybackClient()
+        fake.playbackInfoResult = .failure(URLError(.timedOut))
+        let service = PlaybackInfoService(client: fake)
+        await #expect(throws: AppError.self) {
+            _ = try await service.resolve(
+                item: ItemID(rawValue: "item-1"),
+                capabilities: caps(),
+                startTime: nil
+            )
+        }
     }
 
     @Test("Empty media sources throws an AppError")

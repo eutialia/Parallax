@@ -11,22 +11,11 @@ import ParallaxCoreTestSupport
 @Suite("ServerStore source snapshot")
 struct ServerStoreSourceSnapshotTests {
     private func freshStore() -> ServerStore {
-        let suiteName = "ServerStoreSourceSnapshotTests-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        return ServerStore(settings: SettingsStore(defaults: defaults), keychain: FakeKeychain())
+        JellyfinFixtures.serverStore("ServerStoreSourceSnapshotTests").store
     }
 
     private func session(_ id: String) -> Session {
-        Session(
-            id: ServerID(rawValue: id),
-            data: JellyfinServerData(
-                serverURL: URL(string: "https://\(id).example.com")!,
-                serverName: "Server \(id)",
-                user: UserSnapshot(id: "u-\(id)", name: "alice", serverLastUpdatedAt: nil)
-            ),
-            accessToken: "tok-\(id)"
-        )
+        JellyfinFixtures.session(id: id, token: "tok-\(id)")
     }
 
     @Test("An empty store reports the empty identity, distinguishable from any configured set")
@@ -38,6 +27,23 @@ struct ServerStoreSourceSnapshotTests {
         #expect(snapshot.activeSessionID == nil)
         #expect(snapshot.hasAuxiliarySources == false)
         #expect(snapshot.hasAnySource == false)
+    }
+
+    /// The anchor for every inequality assertion below: without ONE test pinning the composition,
+    /// a degenerate implementation (a fresh UUID per mutation) would satisfy all of them.
+    @Test("setIdentity composes id + live marker per row, in persisted order")
+    func identityComposition() async throws {
+        let store = freshStore()
+        try await store.add(session("alpha"))
+        _ = try await store.addSMBServer(
+            JellyfinFixtures.smbData(host: "nas.local", shares: ["Media"]),
+            password: "pw"
+        )
+        try await store.add(session("beta"))
+
+        // A live Jellyfin row is `id+`; a row with no live session is `id-`, which is what an SMB
+        // server always is (it has no Session at all).
+        #expect(await store.sourceSnapshot.setIdentity == "alpha+,smb-nas.local-,beta+")
     }
 
     @Test("Adding a SECOND Jellyfin server changes setIdentity while the active session stays put")
@@ -75,18 +81,16 @@ struct ServerStoreSourceSnapshotTests {
     func liveMarkerDistinguishesSignedOutRows() async throws {
         // A row whose Keychain token is unreadable rebuilds as signed-out on load: same persisted
         // id, but it contributes no libraries, so the roots must rebuild when it heals.
-        let suiteName = "ServerStoreSourceSnapshotTests-heal-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        let keychain = FakeKeychain()
-        let settings = SettingsStore(defaults: defaults)
+        let harness = JellyfinFixtures.serverStore("ServerStoreSourceSnapshotTests-heal")
+        let keychain = harness.keychain
+        let settings = harness.settings
 
-        let seeding = ServerStore(settings: settings, keychain: keychain)
+        let seeding = harness.store
         try await seeding.add(session("alpha"))
         try await seeding.add(session("beta"))
 
         // Drop beta's token, then reload: its row survives as signed-out.
-        try await keychain.delete(KeychainKey<String>(account: ServerStore.tokenAccount(for: ServerID(rawValue: "beta"))))
+        try await keychain.delete(JellyfinFixtures.tokenKey(forRawID: "beta"))
         let reloaded = ServerStore(settings: settings, keychain: keychain)
         try await reloaded.load()
 

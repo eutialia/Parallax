@@ -3,10 +3,10 @@ import Foundation
 import CoreMedia
 @testable import ParallaxPlayback
 
+/// WebVTT-specific parsing. The cross-parser behaviours (sorting, garbage tolerance,
+/// the `Data` overload) live in `SubtitleParserContractTests`.
 @Suite("WebVTTParser")
 struct WebVTTParserTests {
-
-    private func seconds(_ t: CMTime) -> Double { CMTimeGetSeconds(t) }
 
     @Test("parses multiple cues in order with correct start/end")
     func multipleCues() {
@@ -23,66 +23,52 @@ struct WebVTTParserTests {
         """
         let cues = WebVTTParser.parse(vtt)
         #expect(cues.count == 2)
-        #expect(seconds(cues[0].start) == 1.0)
-        #expect(seconds(cues[0].end) == 4.0)
+        #expect(cueSeconds(cues[0].start) == 1.0)
+        #expect(cueSeconds(cues[0].end) == 4.0)
         #expect(cues[0].text == "First line")
-        #expect(seconds(cues[1].start) == 65.5)
-        #expect(seconds(cues[1].end) == 68.0)
+        #expect(cueSeconds(cues[1].start) == 65.5)
+        #expect(cueSeconds(cues[1].end) == 68.0)
         #expect(cues[1].text == "Second line")
     }
 
-    @Test("accepts MM:SS.mmm short timestamps")
+    @Test("accepts MM:SS.mmm short timestamps (05:02.250 → 302.25s)")
     func shortTimestamps() {
-        let vtt = """
-        WEBVTT
-
-        05:02.250 --> 05:04.000
-        Hi
-        """
-        let cues = WebVTTParser.parse(vtt)
+        let cues = WebVTTParser.parse("WEBVTT\n\n05:02.250 --> 05:04.000\nHi")
         #expect(cues.count == 1)
-        #expect(seconds(cues[0].start) == 302.25)
-        #expect(seconds(cues[0].end) == 304.0)
+        #expect(cueSeconds(cues[0].start) == 302.25)
+        #expect(cueSeconds(cues[0].end) == 304.0)
     }
 
-    @Test("joins multi-line cue text with newlines")
-    func multilineText() {
-        let vtt = """
-        WEBVTT
-
-        00:00:01.000 --> 00:00:02.000
-        Line one
-        Line two
-        """
-        let cues = WebVTTParser.parse(vtt)
-        #expect(cues.first?.text == "Line one\nLine two")
+    /// One cue body per row; only the payload varies. The literals ARE the spec — this
+    /// is a parser and its input format is the contract.
+    @Test("cue payload handling", arguments: [
+        ("multi-line text joins with newlines", "Line one\nLine two", "Line one\nLine two"),
+        ("inline v/i/c/timestamp tags are stripped",
+         "<v Bob><i>Hello</i> <c.yellow>there</c><00:00:01.500> world", "Hello there world"),
+        ("core entities decode, literal punctuation survives",
+         "Tom &amp; Jerry &lt;3 &gt;_&gt;", "Tom & Jerry <3 >_>"),
+    ] as [(String, String, String)])
+    func cuePayload(label: String, body: String, expected: String) {
+        let cues = WebVTTParser.parse("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n\(body)")
+        #expect(cues.count == 1, "\(label): expected exactly one cue")
+        #expect(cues.first?.text == expected, "\(label)")
     }
 
-    @Test("strips inline tags (i/b/c/v/timestamp)")
-    func stripsTags() {
-        let vtt = """
-        WEBVTT
-
-        00:00:01.000 --> 00:00:02.000
-        <v Bob><i>Hello</i> <c.yellow>there</c><00:00:01.500> world
-        """
-        let cues = WebVTTParser.parse(vtt)
-        #expect(cues.first?.text == "Hello there world")
+    @Test("non-payload lines never leak into the cue", arguments: [
+        ("optional cue identifier", "WEBVTT\n\nintro-cue\n00:00:01.000 --> 00:00:02.000\nBody", "Body", 1.0),
+        ("comma decimal separator", "WEBVTT\n\n00:00:01,500 --> 00:00:02,000\nComma", "Comma", 1.5),
+        ("cue settings after the end timestamp",
+         "WEBVTT\n\n00:00:01.000 --> 00:00:04.000 align:start position:50% line:90%\nPositioned",
+         "Positioned", 1.0),
+    ] as [(String, String, String, Double)])
+    func nonPayloadLinesIgnored(label: String, source: String, text: String, start: Double) {
+        let cues = WebVTTParser.parse(source)
+        #expect(cues.count == 1, "\(label): expected exactly one cue")
+        #expect(cues.first?.text == text, "\(label)")
+        #expect(cues.first.map { cueSeconds($0.start) } == start, "\(label)")
     }
 
-    @Test("decodes core entities and preserves literal punctuation")
-    func decodesEntities() {
-        let vtt = """
-        WEBVTT
-
-        00:00:01.000 --> 00:00:02.000
-        Tom &amp; Jerry &lt;3 &gt;_&gt;
-        """
-        let cues = WebVTTParser.parse(vtt)
-        #expect(cues.first?.text == "Tom & Jerry <3 >_>")
-    }
-
-    @Test("ignores WEBVTT header, NOTE, STYLE and REGION blocks")
+    @Test("skips WEBVTT header, NOTE, STYLE and REGION blocks")
     func ignoresNonCueBlocks() {
         let vtt = """
         WEBVTT - Some Title
@@ -104,7 +90,9 @@ struct WebVTTParserTests {
         #expect(cues.first?.text == "Only cue")
     }
 
-    @Test("ignores X-TIMESTAMP-MAP so timestamps stay absolute (guards jellyfin#16647)")
+    /// Jellyfin ships an `X-TIMESTAMP-MAP` whose MPEGTS offset must NOT be applied —
+    /// its cue times are already absolute (jellyfin#16647).
+    @Test("ignores X-TIMESTAMP-MAP so cue times stay absolute")
     func ignoresTimestampMap() {
         let vtt = """
         WEBVTT
@@ -115,75 +103,13 @@ struct WebVTTParserTests {
         """
         let cues = WebVTTParser.parse(vtt)
         #expect(cues.count == 1)
-        // 30s stays 30s — the MPEGTS offset (900000/90000 = 10s) is NOT applied.
-        #expect(seconds(cues[0].start) == 30.0)
+        // 30s stays 30s — the 900000/90000 = 10s offset is NOT applied.
+        #expect(cueSeconds(cues[0].start) == 30.0)
     }
 
-    @Test("drops cue-setting tokens after the end timestamp")
-    func cueSettingsNotInTextOrTiming() {
-        let vtt = """
-        WEBVTT
-
-        00:00:01.000 --> 00:00:04.000 align:start position:50% line:90%
-        Positioned
-        """
-        let cues = WebVTTParser.parse(vtt)
-        #expect(cues.count == 1)
-        #expect(seconds(cues[0].end) == 4.0)
-        #expect(cues[0].text == "Positioned")
-    }
-
-    @Test("ignores an optional cue identifier line before the timing line")
-    func cueIdentifierIgnored() {
-        let vtt = """
-        WEBVTT
-
-        intro-cue
-        00:00:01.000 --> 00:00:02.000
-        Body
-        """
-        let cues = WebVTTParser.parse(vtt)
-        #expect(cues.count == 1)
-        #expect(cues.first?.text == "Body")
-    }
-
-    @Test("tolerates comma as the decimal separator")
-    func commaDecimal() {
-        let vtt = """
-        WEBVTT
-
-        00:00:01,500 --> 00:00:02,000
-        Comma
-        """
-        let cues = WebVTTParser.parse(vtt)
-        #expect(seconds(cues.first?.start ?? .invalid) == 1.5)
-    }
-
-    @Test("empty and garbage input yield no cues")
-    func emptyAndGarbage() {
-        #expect(WebVTTParser.parse("").isEmpty)
-        #expect(WebVTTParser.parse("not a subtitle file at all").isEmpty)
-        #expect(WebVTTParser.parse("WEBVTT\n\n").isEmpty)
-    }
-
-    @Test("re-sorts out-of-order cues by start time")
-    func sortsByStart() {
-        let vtt = """
-        WEBVTT
-
-        00:00:10.000 --> 00:00:12.000
-        Later
-
-        00:00:01.000 --> 00:00:02.000
-        Earlier
-        """
-        let cues = WebVTTParser.parse(vtt)
-        #expect(cues.map(\.text) == ["Earlier", "Later"])
-    }
-
-    @Test("parses via Data convenience")
-    func parsesData() {
-        let data = Data("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHi".utf8)
-        #expect(WebVTTParser.parse(data: data).first?.text == "Hi")
+    @Test("cue settings are dropped from the timing as well as the text")
+    func cueSettingsNotInTiming() {
+        let vtt = "WEBVTT\n\n00:00:01.000 --> 00:00:04.000 align:start position:50%\nPositioned"
+        #expect(WebVTTParser.parse(vtt).first.map { cueSeconds($0.end) } == 4.0)
     }
 }

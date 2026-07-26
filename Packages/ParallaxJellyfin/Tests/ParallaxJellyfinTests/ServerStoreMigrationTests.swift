@@ -22,8 +22,6 @@ struct ServerStoreMigrationTests {
         let user: UserSnapshot
     }
 
-    private static let persistedSessionsKeyName = "ParallaxJellyfin.persistedSessions"
-
     /// Captures the real legacy wire bytes by round-tripping a live value
     /// through the same encoder `SettingsStore` uses — never hand-authored JSON.
     private func legacyWireBytes(_ sessions: [LegacyPersistedSession]) throws -> Data {
@@ -31,26 +29,23 @@ struct ServerStoreMigrationTests {
     }
 
     private func seedLegacy(_ data: Data, suiteName: String) {
-        let seeder = UserDefaults(suiteName: suiteName)!
-        seeder.removePersistentDomain(forName: suiteName)
-        seeder.set(data, forKey: Self.persistedSessionsKeyName)
-        seeder.synchronize()
+        JellyfinFixtures.seedPersistedBytes(data, suiteName: suiteName)
     }
 
     private func tokenKey(for id: ServerID) -> KeychainKey<String> {
-        KeychainKey<String>(account: "token-\(id.rawValue)")
+        JellyfinFixtures.tokenKey(for: id)
     }
 
     // MARK: - Pure persisted-shape migration
 
-    /// THE high-risk assertion: an existing v1 user's stored blob must MIGRATE,
-    /// not throw `decodeFailed` (which crashes them to the login screen). The
-    /// `FakeKeychain` returns the bearer token for the migrated server, so the
-    /// migrated record resolves and is RETAINED — deterministic on every
-    /// runtime, including the unentitled package-test host (no `-34018`).
-    @Test("Legacy PersistedSession blob migrates to a .jellyfin PersistedServer (no decodeFailed, no data loss)")
+    /// THE high-risk assertion, both halves at once: an existing v1 user's stored blob must
+    /// MIGRATE rather than throw `decodeFailed` (which crashes them to the login screen), the
+    /// migrated row must resolve its bearer token so they stay signed in, and the upgraded shape
+    /// must be written back so no second migration happens. Splitting these across two tests
+    /// duplicated the identical seed just to assert a different side of one outcome.
+    @Test("A legacy PersistedSession blob migrates in place, keeps the user signed in, and is written back")
     func migratesLegacyShape() async throws {
-        let suiteName = "ServerStoreMigrationTests-shape-\(UUID().uuidString)"
+        let (settings, suiteName) = JellyfinFixtures.settingsStore("ServerStoreMigrationTests-shape")
         let serverID = ServerID(rawValue: "legacy-server-1")
         let legacy = LegacyPersistedSession(
             id: serverID,
@@ -60,8 +55,6 @@ struct ServerStoreMigrationTests {
         )
         seedLegacy(try legacyWireBytes([legacy]), suiteName: suiteName)
 
-        let defaults = UserDefaults(suiteName: suiteName)!
-        let settings = SettingsStore(defaults: defaults)
         // Token present → the migrated server resolves and is kept.
         let keychain = FakeKeychain()
         try keychain.setValue("bearer-token-xyz", for: tokenKey(for: serverID))
@@ -82,14 +75,15 @@ struct ServerStoreMigrationTests {
         #expect(j.user.id == "user-42")
         #expect(j.user.name == "alice")
 
-        // The upgraded shape was written back: the same key now re-reads cleanly
-        // as the NEW type, so no second migration happens next launch.
-        let reread = SettingsStore(defaults: UserDefaults(suiteName: suiteName)!)
-        let upgradedKey = SettingKey<[PersistedServer]>(
-            name: Self.persistedSessionsKeyName,
-            defaultValue: []
-        )
-        let upgraded = try await reread.tryValue(for: upgradedKey)
+        // ...and the session rebuilt from the migrated row, so the user is still signed in.
+        let sessions = await store.sessions
+        #expect(sessions.count == 1)
+        #expect(sessions.first?.accessToken == "bearer-token-xyz")
+        #expect(await store.active?.id == serverID)
+
+        // The upgraded shape was written back: the same key now re-reads cleanly as the NEW type,
+        // so no second migration happens next launch.
+        let upgraded = try await JellyfinFixtures.rereadPersistedServers(suiteName: suiteName)
         #expect(upgraded?.count == 1)
         if case .jellyfin(let j2)? = upgraded?.first?.kind {
             #expect(j2.serverURL.absoluteString == "https://example.test")
@@ -100,7 +94,7 @@ struct ServerStoreMigrationTests {
 
     @Test("Already-migrated PersistedServer blob loads unchanged (no re-migration)")
     func newShapeLoadsWithoutMigration() async throws {
-        let suiteName = "ServerStoreMigrationTests-new-\(UUID().uuidString)"
+        let (settings, suiteName) = JellyfinFixtures.settingsStore("ServerStoreMigrationTests-new")
         let serverID = ServerID(rawValue: "srv-new")
         let server = PersistedServer(
             id: serverID,
@@ -110,14 +104,8 @@ struct ServerStoreMigrationTests {
                 user: UserSnapshot(id: "u", name: "bob", serverLastUpdatedAt: nil)
             ))
         )
-        do {
-            let seeder = UserDefaults(suiteName: suiteName)!
-            seeder.removePersistentDomain(forName: suiteName)
-            seeder.set(try JSONEncoder().encode([server]), forKey: Self.persistedSessionsKeyName)
-            seeder.synchronize()
-        }
+        try JellyfinFixtures.seedPersistedServers([server], suiteName: suiteName)
 
-        let settings = SettingsStore(defaults: UserDefaults(suiteName: suiteName)!)
         let keychain = FakeKeychain()
         try keychain.setValue("tok", for: tokenKey(for: serverID))
         let store = ServerStore(settings: settings, keychain: keychain)
@@ -128,41 +116,6 @@ struct ServerStoreMigrationTests {
         #expect(servers.first == server)
     }
 
-    // MARK: - End-to-end no-logout (now deterministic via the fake)
-
-    /// Proves the FULL no-logout guarantee: after migration the bearer token
-    /// still resolves and the session rebuilds. With `FakeKeychain` the token
-    /// read is deterministic, so this PASSES IN THE SIM — it is no longer part
-    /// of the `errSecMissingEntitlement -34018` baseline.
-    @Test("Old PersistedSession JSON migrates to .jellyfin PersistedServer, user stays logged in")
-    func migratesLegacyJellyfinSession() async throws {
-        let suiteName = "ServerStoreMigrationTests-token-\(UUID().uuidString)"
-        let serverID = ServerID(rawValue: "legacy-server-1")
-        let legacy = LegacyPersistedSession(
-            id: serverID,
-            serverURL: URL(string: "https://example.test")!,
-            serverName: "Living Room",
-            user: UserSnapshot(id: "user-42", name: "alice", serverLastUpdatedAt: nil)
-        )
-        seedLegacy(try legacyWireBytes([legacy]), suiteName: suiteName)
-
-        let keychain = FakeKeychain()
-        try keychain.setValue("bearer-token-xyz", for: tokenKey(for: serverID))
-
-        let settings = SettingsStore(defaults: UserDefaults(suiteName: suiteName)!)
-        let store = ServerStore(settings: settings, keychain: keychain)
-        try await store.load()
-
-        let sessions = await store.sessions
-        #expect(sessions.count == 1)
-        #expect(sessions.first?.accessToken == "bearer-token-xyz")
-        #expect(sessions.first?.serverURL.absoluteString == "https://example.test")
-        #expect(sessions.first?.user.id == "user-42")
-        // active session present → user NOT logged out.
-        let active = await store.active
-        #expect(active?.id == serverID)
-    }
-
     // MARK: - load() token-resolution contracts
 
     /// A CONFIRMED-nil token read keeps the persisted Jellyfin server as signed-out —
@@ -171,7 +124,7 @@ struct ServerStoreMigrationTests {
     /// would destroy the user's server list over a recoverable fault.
     @Test("Confirmed-nil Keychain token keeps the persisted Jellyfin server as signed-out")
     func keepsServerOnConfirmedNilToken() async throws {
-        let suiteName = "ServerStoreMigrationTests-prune-\(UUID().uuidString)"
+        let (settings, suiteName) = JellyfinFixtures.settingsStore("ServerStoreMigrationTests-prune")
         let serverID = ServerID(rawValue: "srv-prune")
         let server = PersistedServer(
             id: serverID,
@@ -181,14 +134,8 @@ struct ServerStoreMigrationTests {
                 user: UserSnapshot(id: "u", name: "carol", serverLastUpdatedAt: nil)
             ))
         )
-        do {
-            let seeder = UserDefaults(suiteName: suiteName)!
-            seeder.removePersistentDomain(forName: suiteName)
-            seeder.set(try JSONEncoder().encode([server]), forKey: Self.persistedSessionsKeyName)
-            seeder.synchronize()
-        }
+        try JellyfinFixtures.seedPersistedServers([server], suiteName: suiteName)
 
-        let settings = SettingsStore(defaults: UserDefaults(suiteName: suiteName)!)
         let keychain = FakeKeychain()
         keychain.setAbsent(account: tokenKey(for: serverID).account)
         let store = ServerStore(settings: settings, keychain: keychain)
@@ -202,9 +149,7 @@ struct ServerStoreMigrationTests {
         #expect(signedOut.map(\.id) == [serverID])
 
         // Nothing was written back — the persisted blob still holds the row.
-        let reread = SettingsStore(defaults: UserDefaults(suiteName: suiteName)!)
-        let key = SettingKey<[PersistedServer]>(name: Self.persistedSessionsKeyName, defaultValue: [])
-        let persisted = try await reread.tryValue(for: key)
+        let persisted = try await JellyfinFixtures.rereadPersistedServers(suiteName: suiteName)
         #expect(persisted?.map(\.id) == [serverID])
     }
 
@@ -222,7 +167,7 @@ struct ServerStoreMigrationTests {
     /// incompatible old `.smb` half is hand-authored.
     @Test("load drops an old-shape SMB entry but keeps a valid Jellyfin entry")
     func tolerantDecodeDropsOldSMB() async throws {
-        let suiteName = "ServerStoreMigrationTests-tolerant-\(UUID().uuidString)"
+        let (settings, suiteName) = JellyfinFixtures.settingsStore("ServerStoreMigrationTests-tolerant")
         let jellyfinID = ServerID(rawValue: "jf-1")
         let validJellyfin = PersistedServer(
             id: jellyfinID,
@@ -244,14 +189,8 @@ struct ServerStoreMigrationTests {
         // `_0`) for the wrong reason, undermining the test's fidelity.
         let oldSMB = #"{"id":"smb-old","kind":{"smb":{"_0":{"host":"nas","share":"Media","root":"/Movies","username":"a","domain":"W"}}}}"#
         let json = "[\(validString),\(oldSMB)]"
-        do {
-            let seeder = UserDefaults(suiteName: suiteName)!
-            seeder.removePersistentDomain(forName: suiteName)
-            seeder.set(json.data(using: .utf8)!, forKey: Self.persistedSessionsKeyName)
-            seeder.synchronize()
-        }
+        JellyfinFixtures.seedPersistedBytes(json.data(using: .utf8)!, suiteName: suiteName)
 
-        let settings = SettingsStore(defaults: UserDefaults(suiteName: suiteName)!)
         let keychain = FakeKeychain()
         // Token present → the surviving Jellyfin server resolves and is kept.
         try keychain.setValue("bearer", for: tokenKey(for: jellyfinID))
@@ -267,9 +206,7 @@ struct ServerStoreMigrationTests {
 
         // The cleaned array was written back: the same key now re-reads as the
         // NEW type with the bad row already gone — no repeated salvage next launch.
-        let reread = SettingsStore(defaults: UserDefaults(suiteName: suiteName)!)
-        let key = SettingKey<[PersistedServer]>(name: Self.persistedSessionsKeyName, defaultValue: [])
-        let persisted = try await reread.tryValue(for: key)
+        let persisted = try await JellyfinFixtures.rereadPersistedServers(suiteName: suiteName)
         #expect(persisted?.count == 1)
         #expect(persisted?.first?.id == jellyfinID)
     }
@@ -284,18 +221,12 @@ struct ServerStoreMigrationTests {
     /// remain unchanged after the throw — no silent wipe.
     @Test("all-incompatible array throws (retain-over-wipe) and leaves the blob intact")
     func allOldSMBThrowsAndRetains() async throws {
-        let suiteName = "ServerStoreMigrationTests-retain-\(UUID().uuidString)"
+        let (settings, suiteName) = JellyfinFixtures.settingsStore("ServerStoreMigrationTests-retain")
         // One element: old-shape SMB with the REAL `_0` envelope (verified above).
         let oldSMBOnly = #"[{"id":"smb-old","kind":{"smb":{"_0":{"host":"nas","share":"Media","root":"/Movies","username":"a","domain":"W"}}}}]"#
         let seededBytes = oldSMBOnly.data(using: .utf8)!
-        do {
-            let seeder = UserDefaults(suiteName: suiteName)!
-            seeder.removePersistentDomain(forName: suiteName)
-            seeder.set(seededBytes, forKey: Self.persistedSessionsKeyName)
-            seeder.synchronize()
-        }
+        JellyfinFixtures.seedPersistedBytes(seededBytes, suiteName: suiteName)
 
-        let settings = SettingsStore(defaults: UserDefaults(suiteName: suiteName)!)
         let keychain = FakeKeychain()
         let store = ServerStore(settings: settings, keychain: keychain)
 
@@ -305,7 +236,7 @@ struct ServerStoreMigrationTests {
         }
 
         // Re-read the raw bytes — must equal the seeded data (not wiped or emptied).
-        let rawAfter = UserDefaults(suiteName: suiteName)!.data(forKey: Self.persistedSessionsKeyName)
+        let rawAfter = JellyfinFixtures.rawPersistedBytes(suiteName: suiteName)
         #expect(rawAfter == seededBytes)
     }
 
@@ -316,21 +247,16 @@ struct ServerStoreMigrationTests {
     /// the same `SettingsStore`+`FakeKeychain` and asserts the reload.
     @Test("SMB server reloads on a fresh store with its shares intact")
     func smbServerColdReloadKeepsShares() async throws {
-        let suiteName = "ServerStoreMigrationTests-smb-reload-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        let settings = SettingsStore(defaults: defaults)
-        let keychain = FakeKeychain()
+        let harness = JellyfinFixtures.serverStore("ServerStoreMigrationTests-smb-reload")
 
         // First store: add an SMB server with multiple shares.
-        let writer = ServerStore(settings: settings, keychain: keychain)
-        let id = try await writer.addSMBServer(
-            SMBServerData(host: "nas", username: "alice", domain: "WORKGROUP", shares: ["Media", "TV"]),
+        let id = try await harness.store.addSMBServer(
+            JellyfinFixtures.smbData(host: "nas", shares: ["Media", "TV"]),
             password: "pw"
         )
 
         // Second store on the SAME settings + keychain → cold reload.
-        let reloaded = ServerStore(settings: settings, keychain: keychain)
+        let reloaded = ServerStore(settings: harness.settings, keychain: harness.keychain)
         try await reloaded.load()
 
         let servers = await reloaded.servers
@@ -351,7 +277,7 @@ struct ServerStoreMigrationTests {
     /// session is skipped this launch. Locks the keep-on-error safety contract.
     @Test("Keychain read ERROR keeps the persisted server (only the session is skipped)")
     func keepsServerOnKeychainReadError() async throws {
-        let suiteName = "ServerStoreMigrationTests-keep-\(UUID().uuidString)"
+        let (settings, suiteName) = JellyfinFixtures.settingsStore("ServerStoreMigrationTests-keep")
         let serverID = ServerID(rawValue: "srv-keep")
         let server = PersistedServer(
             id: serverID,
@@ -361,14 +287,8 @@ struct ServerStoreMigrationTests {
                 user: UserSnapshot(id: "u", name: "dave", serverLastUpdatedAt: nil)
             ))
         )
-        do {
-            let seeder = UserDefaults(suiteName: suiteName)!
-            seeder.removePersistentDomain(forName: suiteName)
-            seeder.set(try JSONEncoder().encode([server]), forKey: Self.persistedSessionsKeyName)
-            seeder.synchronize()
-        }
+        try JellyfinFixtures.seedPersistedServers([server], suiteName: suiteName)
 
-        let settings = SettingsStore(defaults: UserDefaults(suiteName: suiteName)!)
         let keychain = FakeKeychain()
         // A non-notFound fault — exactly the -34018 class of error load() guards.
         keychain.setReadError(
@@ -386,9 +306,7 @@ struct ServerStoreMigrationTests {
         #expect(sessions.isEmpty)
 
         // The persisted blob is untouched — the keep was not a silent prune.
-        let reread = SettingsStore(defaults: UserDefaults(suiteName: suiteName)!)
-        let key = SettingKey<[PersistedServer]>(name: Self.persistedSessionsKeyName, defaultValue: [])
-        let persisted = try await reread.tryValue(for: key)
+        let persisted = try await JellyfinFixtures.rereadPersistedServers(suiteName: suiteName)
         #expect(persisted?.count == 1)
         #expect(persisted?.first?.id == serverID)
     }

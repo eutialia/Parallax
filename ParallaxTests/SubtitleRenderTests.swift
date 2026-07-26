@@ -61,14 +61,13 @@ struct SubtitleRenderTests {
         try dump(view, width: 900, height: 720, name: "subtitle_cue_legibility")
     }
 
-    @Test("Stage lights over menu — iPhone portrait → /tmp/subtitle_lights_portrait.png")
-    func renderLightsPortrait() throws {
-        try renderLights(width: 393, height: 852, scheme: .light, name: "subtitle_lights_portrait")
-    }
-
-    @Test("Stage lights over menu — iPhone landscape (dark) → /tmp/subtitle_lights_landscape.png")
-    func renderLightsLandscape() throws {
-        try renderLights(width: 852, height: 393, scheme: .dark, name: "subtitle_lights_landscape")
+    @Test("Stage lights over menu — iPhone portrait + landscape → /tmp/subtitle_lights_*.png",
+          arguments: [
+            (width: CGFloat(393), height: CGFloat(852), scheme: ColorScheme.light, name: "subtitle_lights_portrait"),
+            (width: CGFloat(852), height: CGFloat(393), scheme: ColorScheme.dark, name: "subtitle_lights_landscape"),
+          ])
+    func renderLightsOverMenu(_ c: (width: CGFloat, height: CGFloat, scheme: ColorScheme, name: String)) throws {
+        try renderLights(width: c.width, height: c.height, scheme: c.scheme, name: c.name)
     }
 
     /// Composites the floating `SubtitleStageLights` over a SHORT menu stand-in (a couple of groups,
@@ -175,12 +174,22 @@ struct SubtitleRenderTests {
         try dump(view, width: 1320, height: 380, name: "subtitle_cjk_serif")
     }
 
+    /// Renders at 2× and writes the PNG to the host `/tmp` for the eyes-on pass. The
+    /// assertions pin what a headless render CAN prove: the renderer produced an image
+    /// at exactly the requested frame × scale (a layout that collapses to zero, or a
+    /// frame the content overflows out of, fails here) and it encodes to a real PNG.
     private func dump(_ view: some View, width: CGFloat, height: CGFloat, name: String) throws {
+        let scale: CGFloat = 2
         let renderer = ImageRenderer(content: view.frame(width: width, height: height))
-        renderer.scale = 2
+        renderer.scale = scale
         let image = try #require(renderer.uiImage, "ImageRenderer produced no image")
+        #expect(image.size.width == width)
+        #expect(image.size.height == height)
+        #expect(image.scale == scale)
+        let cg = try #require(image.cgImage, "no backing bitmap")
+        #expect(cg.width == Int(width * scale))
+        #expect(cg.height == Int(height * scale))
         let png = try #require(image.pngData())
-        #expect(png.count > 1_000, "render suspiciously small")
         try? png.write(to: URL(fileURLWithPath: "/tmp/\(name).png"))
     }
 }

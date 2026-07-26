@@ -3,37 +3,72 @@ import Foundation
 import ParallaxJellyfin
 @testable import Parallax
 
+/// A snapshot the way `ServerStore.sourceSnapshot` builds one: the active session's id, whether any
+/// auxiliary source exists, and an order-sensitive fingerprint of every configured source marked
+/// live (`+`) or signed-out (`-`). File scope (not a member) so the parameterized reload-token table
+/// below can be built outside the suite's MainActor isolation.
+private func sourceSnapshot(
+    active: String?,
+    jellyfin: [String] = [],
+    smb: [String] = [],
+    signedOutJellyfin: [String] = []
+) -> SourceSnapshot {
+    let live = jellyfin.map { "\($0)+" } + smb.map { "\($0)+" }
+    let dead = signedOutJellyfin.map { "\($0)-" }
+    return SourceSnapshot(
+        activeSessionID: active.map { ServerID(rawValue: $0) },
+        hasAuxiliarySources: !smb.isEmpty,
+        setIdentity: (live + dead).joined(separator: ",")
+    )
+}
+
+/// One `before → after` source-set transition the roots' `.task(id:)` must notice. Named so a
+/// failure reads as the scenario rather than as two fingerprint strings.
+struct TokenMove: Sendable, CustomTestStringConvertible {
+    let name: String
+    let before: SourceSnapshot
+    let after: SourceSnapshot
+    var testDescription: String { name }
+}
+
+private let tokenMoves: [TokenMove] = [
+    // Regression: the roots render during `.bootstrapping` and their library `.task` fires once
+    // BEFORE the store resolves — with no source it caches empty entries. For an SMB-only config the
+    // active id stays nil and the revision stays 0 across bootstrap→home, so the token MUST still
+    // change (via the fingerprint) or that empty result sticks (empty-sidebar bug).
+    TokenMove(
+        name: "SMB-only sources arrive after bootstrap",
+        before: .empty,
+        after: sourceSnapshot(active: nil, smb: ["smb-nas"])
+    ),
+    // THE multi-server bug (found on device): adding a SECOND Jellyfin server left the first one
+    // active and involved no SMB source, so neither `activeServerID` nor the auxiliary flag moved and
+    // the roots' `.task(id:)` never re-fired — the new server's libraries were missing from the
+    // sidebar until relaunch. The source-set fingerprint is what makes it visible.
+    TokenMove(
+        name: "a second Jellyfin server is added, active server unchanged",
+        before: sourceSnapshot(active: "alpha", jellyfin: ["alpha"]),
+        after: sourceSnapshot(active: "alpha", jellyfin: ["alpha", "beta"])
+    ),
+    // The mirror-image case: signing out a NON-active Jellyfin server also leaves the active id
+    // alone, so without the fingerprint its section would linger in the sidebar.
+    TokenMove(
+        name: "a non-active Jellyfin server is signed out",
+        before: sourceSnapshot(active: "alpha", jellyfin: ["alpha", "beta"]),
+        after: sourceSnapshot(active: "alpha", jellyfin: ["alpha"])
+    ),
+    // Re-signing into a server whose Keychain token was lost keeps the SAME persisted id, so only the
+    // live/signed-out marker changes — but the roots must still rebuild, because that row goes from
+    // contributing no libraries to contributing its collections.
+    TokenMove(
+        name: "a signed-out server heals into a live session",
+        before: sourceSnapshot(active: "alpha", jellyfin: ["alpha"], signedOutJellyfin: ["beta"]),
+        after: sourceSnapshot(active: "alpha", jellyfin: ["alpha", "beta"])
+    ),
+]
+
 @MainActor
 struct AppRouterTests {
-    private func session(_ rawID: String) -> Session {
-        Session(
-            id: ServerID(rawValue: rawID),
-            data: JellyfinServerData(
-                serverURL: URL(string: "https://\(rawID).example.test")!,
-                serverName: "Server \(rawID)",
-                user: UserSnapshot(id: "user-\(rawID)", name: "User", serverLastUpdatedAt: nil)
-            ),
-            accessToken: "token-\(rawID)"
-        )
-    }
-
-    /// A snapshot the way `ServerStore.sourceSnapshot` builds one: the active session's id, whether
-    /// any auxiliary source exists, and an order-sensitive fingerprint of every configured source
-    /// marked live (`+`) or signed-out (`-`).
-    private func snapshot(
-        active: String?,
-        jellyfin: [String] = [],
-        smb: [String] = [],
-        signedOutJellyfin: [String] = []
-    ) -> SourceSnapshot {
-        let live = jellyfin.map { "\($0)+" } + smb.map { "\($0)+" }
-        let dead = signedOutJellyfin.map { "\($0)-" }
-        return SourceSnapshot(
-            activeSessionID: active.map { ServerID(rawValue: $0) },
-            hasAuxiliarySources: !smb.isEmpty,
-            setIdentity: (live + dead).joined(separator: ",")
-        )
-    }
 
     @Test("initial destination is bootstrapping until sources are loaded")
     func startsBootstrapping() {
@@ -44,7 +79,7 @@ struct AppRouterTests {
     @Test("a Jellyfin session routes to home and tracks the active server id")
     func tracksActiveServer() {
         let router = AppRouter()
-        router.updateForSources(snapshot(active: "alpha", jellyfin: ["alpha"]))
+        router.updateForSources(sourceSnapshot(active: "alpha", jellyfin: ["alpha"]))
         #expect(router.destination == .home)
         #expect(router.activeServerID == ServerID(rawValue: "alpha"))
     }
@@ -55,16 +90,16 @@ struct AppRouterTests {
     @Test("a server switch changes activeServerID")
     func switchChangesActiveID() {
         let router = AppRouter()
-        router.updateForSources(snapshot(active: "alpha", jellyfin: ["alpha", "beta"]))
-        router.updateForSources(snapshot(active: "beta", jellyfin: ["alpha", "beta"]))
+        router.updateForSources(sourceSnapshot(active: "alpha", jellyfin: ["alpha", "beta"]))
+        router.updateForSources(sourceSnapshot(active: "beta", jellyfin: ["alpha", "beta"]))
         #expect(router.activeServerID == ServerID(rawValue: "beta"))
     }
 
     @Test("no source at all routes to login and clears activeServerID")
     func emptyConfigRoutesToLogin() {
         let router = AppRouter()
-        router.updateForSources(snapshot(active: "alpha", jellyfin: ["alpha"]))
-        router.updateForSources(snapshot(active: nil))
+        router.updateForSources(sourceSnapshot(active: "alpha", jellyfin: ["alpha"]))
+        router.updateForSources(sourceSnapshot(active: nil))
         #expect(router.destination == .login)
         #expect(router.activeServerID == nil)
     }
@@ -74,7 +109,7 @@ struct AppRouterTests {
     @Test("an SMB-only config routes to home with a nil activeServerID")
     func smbOnlyRoutesToHome() {
         let router = AppRouter()
-        router.updateForSources(snapshot(active: nil, smb: ["smb-nas"]))
+        router.updateForSources(sourceSnapshot(active: nil, smb: ["smb-nas"]))
         #expect(router.destination == .home)
         #expect(router.activeServerID == nil)
         #expect(router.hasAnySource)
@@ -85,70 +120,42 @@ struct AppRouterTests {
     @Test("losing the Jellyfin session with an SMB source remaining stays on home")
     func jellyfinSignOutFallsBackToSMBHome() {
         let router = AppRouter()
-        router.updateForSources(snapshot(active: "alpha", jellyfin: ["alpha"], smb: ["smb-nas"]))
-        router.updateForSources(snapshot(active: nil, smb: ["smb-nas"]))
+        router.updateForSources(sourceSnapshot(active: "alpha", jellyfin: ["alpha"], smb: ["smb-nas"]))
+        router.updateForSources(sourceSnapshot(active: nil, smb: ["smb-nas"]))
         #expect(router.destination == .home)
         #expect(router.activeServerID == nil)
     }
 
     // MARK: - Library reload token
 
-    // Regression: the roots render during `.bootstrapping` and their library `.task` fires once
-    // BEFORE the store resolves — with no source it caches empty entries. For an SMB-only config the
-    // active id stays nil and the revision stays 0 across bootstrap→home, so the reload token MUST
-    // still change (via the source-set fingerprint) or that empty result sticks (empty-sidebar bug).
-    @Test("the library reload token moves when SMB-only sources arrive")
-    func libraryTokenMovesForSMBOnly() {
+    @Test("every change to the source SET moves the library reload token", arguments: tokenMoves)
+    func libraryTokenMovesOnSourceSetChange(move: TokenMove) {
         let router = AppRouter()
-        let bootToken = router.libraryReloadToken
-        router.updateForSources(snapshot(active: nil, smb: ["smb-nas"]))
-        #expect(router.libraryReloadToken != bootToken)
+        router.updateForSources(move.before)
+        let before = router.libraryReloadToken
+
+        router.updateForSources(move.after)
+
+        #expect(router.libraryReloadToken != before, "\(move.name) left the roots' reload key put")
+        // The active id is deliberately NOT part of what these transitions change (only the SMB-only
+        // arrival moves it, and only from nil to nil) — which is exactly why the old
+        // activeServerID-only token couldn't see any of them.
+        #expect(router.activeServerID == move.after.activeSessionID)
     }
 
-    // THE multi-server bug (found on device): adding a SECOND Jellyfin server left the first one
-    // active and involved no SMB source, so neither `activeServerID` nor the auxiliary flag moved
-    // and the roots' `.task(id:)` never re-fired — the new server's libraries were missing from the
-    // sidebar until the app was relaunched. The source-set fingerprint is what makes it visible.
-    @Test("adding a second Jellyfin server moves the reload token even though the active server doesn't")
-    func libraryTokenMovesWhenSecondJellyfinServerAdded() {
+    /// The other half of the contract, and the one no inequality assertion can catch: re-applying an
+    /// IDENTICAL snapshot must leave the token PUT. A token that moved on every call would satisfy
+    /// every "moves when…" test above while re-firing the roots' `.task(id:)` on every store read —
+    /// an endless sidebar reload loop.
+    @Test("re-applying the same source set does NOT move the token", arguments: tokenMoves)
+    func libraryTokenIsStableForAnUnchangedSourceSet(move: TokenMove) {
         let router = AppRouter()
-        router.updateForSources(snapshot(active: "alpha", jellyfin: ["alpha"]))
-        let oneServer = router.libraryReloadToken
+        router.updateForSources(move.after)
+        let settled = router.libraryReloadToken
 
-        router.updateForSources(snapshot(active: "alpha", jellyfin: ["alpha", "beta"]))
+        router.updateForSources(move.after)
 
-        #expect(router.libraryReloadToken != oneServer)
-        // ...and the active server is deliberately unchanged, which is exactly why the old
-        // activeServerID-only token couldn't see this.
-        #expect(router.activeServerID == ServerID(rawValue: "alpha"))
-    }
-
-    // The mirror-image case: signing out a NON-active Jellyfin server also leaves the active id
-    // alone, so without the fingerprint its section would linger in the sidebar.
-    @Test("signing out a non-active Jellyfin server moves the reload token")
-    func libraryTokenMovesWhenNonActiveServerSignedOut() {
-        let router = AppRouter()
-        router.updateForSources(snapshot(active: "alpha", jellyfin: ["alpha", "beta"]))
-        let twoServers = router.libraryReloadToken
-
-        router.updateForSources(snapshot(active: "alpha", jellyfin: ["alpha"]))
-
-        #expect(router.libraryReloadToken != twoServers)
-        #expect(router.activeServerID == ServerID(rawValue: "alpha"))
-    }
-
-    // Re-signing into a server whose Keychain token was lost keeps the SAME persisted id, so only
-    // the live/signed-out marker changes — but the roots must still rebuild, because that row goes
-    // from contributing no libraries to contributing its collections.
-    @Test("re-signing into a signed-out server moves the reload token")
-    func libraryTokenMovesWhenSignedOutServerHeals() {
-        let router = AppRouter()
-        router.updateForSources(snapshot(active: "alpha", jellyfin: ["alpha"], signedOutJellyfin: ["beta"]))
-        let withSignedOutRow = router.libraryReloadToken
-
-        router.updateForSources(snapshot(active: "alpha", jellyfin: ["alpha", "beta"]))
-
-        #expect(router.libraryReloadToken != withSignedOutRow)
+        #expect(router.libraryReloadToken == settled)
     }
 
     // `libraryRevision` still covers what no source fingerprint can see: a change to the CONTENTS
@@ -156,7 +163,7 @@ struct AppRouterTests {
     @Test("a revision bump moves the token with the source set unchanged")
     func libraryTokenMovesOnRevisionBump() {
         let router = AppRouter()
-        router.updateForSources(snapshot(active: "alpha", jellyfin: ["alpha"]))
+        router.updateForSources(sourceSnapshot(active: "alpha", jellyfin: ["alpha"]))
         let before = router.libraryReloadToken
 
         router.bumpLibraryRevision()
@@ -171,9 +178,9 @@ struct AppRouterTests {
     @Test("dropping to login dismisses the settings panel")
     func loginDismissesSettings() {
         let router = AppRouter()
-        router.updateForSources(snapshot(active: "alpha", jellyfin: ["alpha"]))
+        router.updateForSources(sourceSnapshot(active: "alpha", jellyfin: ["alpha"]))
         router.presentingSettings = true
-        router.updateForSources(snapshot(active: nil))
+        router.updateForSources(sourceSnapshot(active: nil))
         #expect(router.presentingSettings == false)
     }
 
@@ -182,9 +189,9 @@ struct AppRouterTests {
     @Test("falling back to SMB-only home keeps the settings panel")
     func smbOnlyKeepsSettingsPanel() {
         let router = AppRouter()
-        router.updateForSources(snapshot(active: "alpha", jellyfin: ["alpha"], smb: ["smb-nas"]))
+        router.updateForSources(sourceSnapshot(active: "alpha", jellyfin: ["alpha"], smb: ["smb-nas"]))
         router.presentingSettings = true
-        router.updateForSources(snapshot(active: nil, smb: ["smb-nas"]))
+        router.updateForSources(sourceSnapshot(active: nil, smb: ["smb-nas"]))
         #expect(router.presentingSettings == true)
     }
 }

@@ -7,46 +7,34 @@ import ParallaxCore
 @Suite("LibraryRepository — drill-in + home + search")
 struct LibraryRepositoryDrillInTests {
     private func make() -> (LibraryRepository, FakeJellyfinLibraryClient) {
-        let session = Session(
-            id: ServerID(rawValue: "s1"),
-            data: JellyfinServerData(
-                serverURL: URL(string: "https://j.example.com")!,
-                serverName: "Home",
-                user: UserSnapshot(id: "u1", name: "alice", serverLastUpdatedAt: nil)
-            ),
-            accessToken: "tok-1"
-        )
         let client = FakeJellyfinLibraryClient()
-        return (LibraryRepository(session: session, client: client), client)
+        return (LibraryRepository(session: JellyfinFixtures.session(), client: client), client)
     }
 
-    private func dtoSeason(_ id: String, seriesID: String) -> BaseItemDto {
-        var d = BaseItemDto()
-        d.id = id; d.name = "Season \(id)"; d.type = .season
-        d.seriesID = seriesID
-        d.indexNumber = 1
-        return d
+    private func dtoSeason(_ id: String, seriesID: String, primaryTag: String? = nil) -> BaseItemDto {
+        JellyfinFixtures.seasonDto(
+            id: id,
+            seriesID: seriesID,
+            imageTags: primaryTag.map { ["Primary": $0] }
+        )
     }
 
     private func dtoEpisode(_ id: String, seriesID: String, seasonID: String) -> BaseItemDto {
-        var d = BaseItemDto()
-        d.id = id; d.name = "Episode \(id)"; d.type = .episode
-        d.seriesID = seriesID; d.seasonID = seasonID
-        d.indexNumber = 1; d.parentIndexNumber = 1
-        return d
+        JellyfinFixtures.episodeDto(
+            id: id,
+            seriesID: seriesID,
+            seasonID: seasonID,
+            indexNumber: 1,
+            parentIndexNumber: 1
+        )
     }
 
     private func dtoMovie(_ id: String) -> BaseItemDto {
-        var d = BaseItemDto()
-        d.id = id; d.name = "Movie \(id)"; d.type = .movie
-        return d
+        JellyfinFixtures.movieDto(id: id)
     }
 
     private func dtoSeries(_ id: String) -> BaseItemDto {
-        var d = BaseItemDto()
-        d.id = id; d.name = "Series \(id)"; d.type = .series
-        d.imageTags = ["Primary": "series-poster"]
-        return d
+        JellyfinFixtures.seriesDto(id: id, imageTags: ["Primary": "series-poster"])
     }
 
     @Test("seasons(of:) translates and forwards seriesID")
@@ -81,9 +69,7 @@ struct LibraryRepositoryDrillInTests {
             dtoMovie("m1"),
             dtoEpisode("e1", seriesID: "ser1", seasonID: "se1"),
         ])
-        var season = dtoSeason("se1", seriesID: "ser1")
-        season.imageTags = ["Primary": "season-folder-art"]
-        client.itemsByIDsResult = .success([season])
+        client.itemsByIDsResult = .success([dtoSeason("se1", seriesID: "ser1", primaryTag: "season-folder-art")])
         let items = try await repo.continueWatching()
         #expect(items.count == 2)
         if case .movie = items.first { } else { Issue.record("first should be .movie") }
@@ -123,9 +109,7 @@ struct LibraryRepositoryDrillInTests {
         client.nextUpResult = .success([
             dtoEpisode("e1", seriesID: "ser1", seasonID: "se1"),
         ])
-        var season = dtoSeason("se1", seriesID: "ser1")
-        season.imageTags = ["Primary": "season-folder-art"]
-        client.itemsByIDsResult = .success([season])
+        client.itemsByIDsResult = .success([dtoSeason("se1", seriesID: "ser1", primaryTag: "season-folder-art")])
         let items = try await repo.nextUp()
         #expect(items.count == 1)
         guard case .episode(let ep) = items.first else {
@@ -135,6 +119,49 @@ struct LibraryRepositoryDrillInTests {
         #expect(ep.seasonImageRef?.tag.rawValue == "season-folder-art")
         #expect(Set(client.itemsByIDsCalls.last ?? []) == Set(["se1", "ser1"]))
     }
+
+    /// The enrichment fetch exists to fill MISSING parent art. A shelf of movies (or of episodes
+    /// that already carry their season ref) must not pay a batch lookup at all.
+    @Test("A shelf needing no parent art costs no batch lookup")
+    func homeShelfWithoutMissingArtSkipsTheFetch() async throws {
+        let (repo, client) = make()
+        client.continueWatchingResult = .success([dtoMovie("m1")])
+
+        let items = try await repo.continueWatching()
+
+        #expect(items.count == 1)
+        #expect(client.itemsByIDsCalls.isEmpty, "movies have no parent art to resolve")
+    }
+
+    /// Each drill-in and shelf call maps its transport failure into the domain error type, so no
+    /// screen ever has to interpret a raw SDK error.
+    @Test(
+        "Every drill-in and shelf call maps a transport failure to AppError",
+        arguments: [DrillInCall.seasons, .episodes, .continueWatching, .nextUp, .search]
+    )
+    func transportFailuresMapToAppError(call: DrillInCall) async throws {
+        let (repo, client) = make()
+        let failure = URLError(.notConnectedToInternet)
+        switch call {
+        case .seasons: client.seasonsResult = .failure(failure)
+        case .episodes: client.episodesResult = .failure(failure)
+        case .continueWatching: client.continueWatchingResult = .failure(failure)
+        case .nextUp: client.nextUpResult = .failure(failure)
+        case .search: client.searchResult = .failure(failure)
+        }
+
+        await #expect(throws: AppError.self) {
+            switch call {
+            case .seasons: _ = try await repo.seasons(of: ItemID(rawValue: "ser1"))
+            case .episodes: _ = try await repo.episodes(of: ItemID(rawValue: "se1"))
+            case .continueWatching: _ = try await repo.continueWatching()
+            case .nextUp: _ = try await repo.nextUp()
+            case .search: _ = try await repo.search("bad", scope: .all)
+            }
+        }
+    }
+
+    enum DrillInCall: Sendable { case seasons, episodes, continueWatching, nextUp, search }
 
     @Test("search(.all) fans out to three per-type calls and merges results")
     func searchAllFansOut() async throws {

@@ -8,6 +8,49 @@ import ParallaxPlaybackTestSupport
 @testable import ParallaxJellyfin
 @testable import ParallaxCore
 
+/// One engine-routing case: what the server resolved, and the delivered hints + engine
+/// the selector must derive from it. A plain enum rather than prebuilt fixtures so the
+/// `arguments:` table stays evaluable outside the suite's MainActor isolation.
+private enum RoutingCase: String, CaseIterable, CustomTestStringConvertible {
+    /// Source is MKV/AV1/DTS but the server DELIVERS an HLS transcode: the selector
+    /// must gate on the delivery (AVKit-playable), not the source container.
+    case transcodedMKVDeliversHLS
+    /// VC-1 sits outside EngineSelector's avKit video-codec set → .vlcKit.
+    case vc1MKVDirectPlay
+    /// Same source with an AVKit-playable AAC track — the video codec still decides.
+    case vc1MKVWithAACAudio
+    /// Container AND codec both outside the avKit whitelist → .vlcKit.
+    case vp9WebMDirectPlay
+
+    var testDescription: String { rawValue }
+
+    /// The delivered hints (`PlayerViewModel.deliveredHints`) and the engine id the
+    /// factory must be asked for. A transcode's hints carry NO codecs — the HLS
+    /// rendition targets the device profile, so the source codecs are irrelevant.
+    var expected: (container: Container, videoCodec: VideoCodec?, engine: PlaybackEngineID) {
+        switch self {
+        case .transcodedMKVDeliversHLS: (.hls, nil, .avKit)
+        case .vc1MKVDirectPlay: (.mkv, .vc1, .vlcKit)
+        case .vc1MKVWithAACAudio: (.mkv, .vc1, .vlcKit)
+        case .vp9WebMDirectPlay: (.webm, .vp9, .vlcKit)
+        }
+    }
+}
+
+/// The two live-job shapes the seek gate must treat IDENTICALLY: a stream-copied video
+/// (remux) and a re-encoded one. One argument table so a delivery-based exemption can
+/// never sneak back in for only one of them.
+private let deliveryShapes = [
+    // Video stream-COPIED (remux) — audio is the only re-encode.
+    TranscodeDelivery(isVideoDirect: true, isAudioDirect: false,
+                      videoCodec: "hevc", audioCodec: "aac",
+                      transcodeReasons: ["AudioCodecNotSupported"]),
+    // Video RE-ENCODED — the #15845 accurate-seek drift failure mode.
+    TranscodeDelivery(isVideoDirect: false, isAudioDirect: true,
+                      videoCodec: "h264", audioCodec: "ac3",
+                      transcodeReasons: ["VideoCodecNotSupported"]),
+]
+
 // .serialized is required because several tests write to MPNowPlayingInfoCenter.default(),
 // which is a process-wide singleton. Parallel async tests interleave at `await` points
 // and clobber each other's nowPlayingInfo state even when the NowPlaying sub-suite itself
@@ -16,30 +59,6 @@ import ParallaxPlaybackTestSupport
 @Suite("PlayerViewModel integration", .serialized)
 @MainActor
 struct PlayerViewModelTests {
-    /// Builds a VM wired to a FakePlaybackEngine + recording reporting stub +
-    /// a resolve closure that captures the item id and returns a canned
-    /// ResolvedPlayback.
-    private func makeVM(
-        reporting: StubPlaybackReporting,
-        engine: FakePlaybackEngine,
-        resolved: ResolvedPlayback,
-        audioSession: any AudioSessionControlling = NoopAudioSession(),
-        capturedItem: @escaping @Sendable (ItemID) -> Void
-    ) -> PlayerViewModel {
-        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
-        let builder = DeviceProfileBuilder(probe: probe)
-        return PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: reporting,
-            resolve: { id, _, _, _, _ in
-                capturedItem(id)
-                return resolved
-            },
-            engineFactory: { _ in engine },
-            audioSession: audioSession
-        )
-    }
-
     @Test("resolves, selects .avKit, loads + plays, maps states, emits beats in order")
     func happyPath() async throws {
         let reporting = StubPlaybackReporting()
@@ -47,7 +66,7 @@ struct PlayerViewModelTests {
         let resolved = PlayerFixtures.resolved()
         var resolvedItemID: ItemID?
 
-        let vm = makeVM(
+        let vm = makePlayerVM(
             reporting: reporting,
             engine: engine,
             resolved: resolved,
@@ -92,7 +111,7 @@ struct PlayerViewModelTests {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         let resolved = PlayerFixtures.resolved()
-        let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
+        let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
 
         #expect(vm.startupMillis == nil)
 
@@ -100,7 +119,7 @@ struct PlayerViewModelTests {
         #expect(vm.startupMillis == nil)   // not yet — no .playing beat landed
 
         engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
 
         let first = try #require(vm.startupMillis)
         #expect(first >= 0)
@@ -109,7 +128,7 @@ struct PlayerViewModelTests {
         // it belongs to the session's FIRST beat only.
         engine.push(.paused(position: CMTime(seconds: 15, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
         engine.push(.playing(position: CMTime(seconds: 16, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
 
         #expect(vm.startupMillis == first)
     }
@@ -117,21 +136,17 @@ struct PlayerViewModelTests {
     @Test("startupMillis resets across a transcode track-switch reload and is recaptured by the new session's first .playing beat")
     func startupMillisResetsOnReload() async throws {
         let reporting = StubPlaybackReporting()
-        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
-        let builder = DeviceProfileBuilder(probe: probe)
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
 
         nonisolated(unsafe) var createdEngines: [FakePlaybackEngine] = []
-        let vm = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: reporting,
+        let vm = makePlayerVM(
+            reporting: reporting,
             resolve: { _, _, _, _, _ in resolved },
             engineFactory: { _ in
                 let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
                 createdEngines.append(engine)
                 return engine
-            },
-            audioSession: NoopAudioSession()
+            }
         )
         await vm.start(item: PlayerFixtures.movieDetail())
         let engine = try #require(vm.engine as? FakePlaybackEngine)
@@ -141,7 +156,7 @@ struct PlayerViewModelTests {
             duration: CMTime(seconds: 7200, preferredTimescale: 600),
             buffered: nil
         ))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
         #expect(vm.startupMillis != nil)
 
         // Switch audio → the engine is RELOADED in place (same instance, same stream —
@@ -156,7 +171,7 @@ struct PlayerViewModelTests {
             duration: CMTime(seconds: 7200, preferredTimescale: 600),
             buffered: nil
         ))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
         #expect(vm.startupMillis != nil)
     }
 
@@ -165,7 +180,7 @@ struct PlayerViewModelTests {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
         let resolved = PlayerFixtures.resolved()
-        let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
+        let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
 
         await vm.start(item: PlayerFixtures.movieDetail())
 
@@ -175,7 +190,7 @@ struct PlayerViewModelTests {
         // report itself non-seekable — there's no scrubbable timeline without a known length.
         engine.push(.playing(position: CMTime(seconds: 5, preferredTimescale: 1), duration: .indefinite, buffered: nil))
         engine.finish()
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
 
         #expect(vm.phase == .playing)
         #expect(vm.hasKnownDuration == false)
@@ -186,12 +201,12 @@ struct PlayerViewModelTests {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
         let resolved = PlayerFixtures.resolved()
-        let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
+        let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
 
         await vm.start(item: PlayerFixtures.movieDetail())
         engine.push(.playing(position: CMTime(seconds: 5, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
         engine.finish()
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
 
         #expect(vm.phase == .playing)
         #expect(vm.hasKnownDuration == true)
@@ -203,7 +218,7 @@ struct PlayerViewModelTests {
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         var didResolve = false
 
-        let vm = makeVM(
+        let vm = makePlayerVM(
             reporting: reporting,
             engine: engine,
             resolved: PlayerFixtures.resolved(),
@@ -222,24 +237,33 @@ struct PlayerViewModelTests {
         #expect(engine.loadedAssets.isEmpty)
     }
 
-    @Test("transcoded MKV plays via AVKit — selector gates on the delivered HLS, not the source container")
-    func transcodedMKVSelectsAVKit() async {
-        let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-
-        let vm = makeVM(
-            reporting: reporting,
-            engine: engine,
-            resolved: PlayerFixtures.resolvedTranscodedMKV(),
-            capturedItem: { _ in }
+    @Test("engine routing follows the DELIVERED hints and asks the factory for the matching engine",
+          arguments: RoutingCase.allCases)
+    fileprivate func engineRoutingFollowsDeliveredHints(routing: RoutingCase) async {
+        let resolved: ResolvedPlayback = switch routing {
+        case .transcodedMKVDeliversHLS: PlayerFixtures.resolvedTranscodedMKV()
+        case .vc1MKVDirectPlay: PlayerFixtures.resolvedVC1MKV()
+        case .vc1MKVWithAACAudio: PlayerFixtures.resolvedVC1MKV(audioCodec: .aac)
+        case .vp9WebMDirectPlay: PlayerFixtures.resolvedVP9WebM()
+        }
+        let expected = routing.expected
+        // The factory hands back the fake regardless of the id it's asked for, so the
+        // captured id — not the fake's own — is the routing evidence.
+        let engine = FakePlaybackEngine(id: expected.engine, capabilities: .avKit)
+        nonisolated(unsafe) var requestedEngineID: PlaybackEngineID?
+        let vm = makePlayerVM(
+            resolve: { _, _, _, _, _ in resolved },
+            engineFactory: { id in requestedEngineID = id; return engine }
         )
 
         await vm.start(item: PlayerFixtures.movieDetail())
 
-        // Source is MKV/AV1/DTS, but the transcode delivery is HLS → AVKit.
+        #expect(requestedEngineID == expected.engine)
         #expect(vm.phase != .failed(.playback(.unsupportedFormat)))
-        #expect(!engine.loadedAssets.isEmpty)
-        #expect(engine.loadedAssets.first?.hints.container == .hls)
+        let asset = engine.loadedAssets.first
+        #expect(asset != nil)
+        #expect(asset?.hints.container == expected.container)
+        #expect(asset?.hints.videoCodec == expected.videoCodec)
         #expect(engine.calls.contains("play"))
     }
 
@@ -249,10 +273,10 @@ struct PlayerViewModelTests {
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         let resolved = PlayerFixtures.resolved()
 
-        let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
+        let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
         engine.push(.playing(position: CMTime(seconds: 30, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
 
         await vm.stop()
         #expect(engine.calls.contains("teardown"))
@@ -266,7 +290,7 @@ struct PlayerViewModelTests {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
 
-        let vm = makeVM(reporting: reporting, engine: engine, resolved: PlayerFixtures.resolved(), capturedItem: { _ in })
+        let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: PlayerFixtures.resolved())
         // Chapters at 0 / 600 / 1200s; the duration arrives only with the engine beat.
         await vm.start(item: PlayerFixtures.movieDetailWithChapters(startsSeconds: [0, 600, 1200],
                                                                     runtime: .seconds(1200)))
@@ -276,14 +300,14 @@ struct PlayerViewModelTests {
 
         engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1),
                              duration: CMTime(seconds: 1200, preferredTimescale: 1), buffered: nil))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
 
         #expect(vm.chapterFractions == [0, 0.5, 1.0])
 
         // A repeat duration beat must NOT disturb the cached value (the memoization gate).
         engine.push(.playing(position: CMTime(seconds: 20, preferredTimescale: 1),
                              duration: CMTime(seconds: 1200, preferredTimescale: 1), buffered: nil))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
         #expect(vm.chapterFractions == [0, 0.5, 1.0])
     }
 
@@ -292,46 +316,22 @@ struct PlayerViewModelTests {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
 
-        let vm = makeVM(reporting: reporting, engine: engine, resolved: PlayerFixtures.resolved(), capturedItem: { _ in })
+        let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: PlayerFixtures.resolved())
         await vm.start(item: PlayerFixtures.movieDetailWithChapters(startsSeconds: [0, 300], runtime: .seconds(600)))
         engine.push(.playing(position: CMTime(seconds: 5, preferredTimescale: 1),
                              duration: CMTime(seconds: 600, preferredTimescale: 1), buffered: nil))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
         #expect(vm.chapterFractions == [0, 0.5])
 
         await vm.stop()
         #expect(vm.chapterFractions.isEmpty)
     }
 
-    @Test("VC-1 MKV direct-play routes to .vlcKit — no unsupportedFormat error")
-    func vc1MKVDirectPlaySelectsVLCKit() async {
-        let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
-
-        let vm = makeVM(
-            reporting: reporting,
-            engine: engine,
-            resolved: PlayerFixtures.resolvedVC1MKV(),
-            capturedItem: { _ in }
-        )
-
-        await vm.start(item: PlayerFixtures.movieDetail())
-
-        // The guard is gone; .vlcKit is now a valid path. The factory closure
-        // { _ in engine } returns the fake regardless of id — the point is that
-        // start() does NOT short-circuit with unsupportedFormat.
-        #expect(vm.phase != .failed(.playback(.unsupportedFormat)))
-        #expect(engine.loadedAssets.first != nil)
-        #expect(engine.loadedAssets.first?.hints.container == .mkv)
-        #expect(engine.loadedAssets.first?.hints.videoCodec == .vc1)
-        #expect(engine.calls.contains("play"))
-    }
-
     @Test("availableAudio/SubtitleTracks start empty and populate on .ready")
     func trackStatePopulatesOnReady() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let vm = makeVM(reporting: reporting, engine: engine, resolved: PlayerFixtures.resolved(), capturedItem: { _ in })
+        let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: PlayerFixtures.resolved())
         await vm.start(item: PlayerFixtures.movieDetail())
 
         #expect(vm.availableAudioTracks.isEmpty)
@@ -349,7 +349,7 @@ struct PlayerViewModelTests {
             ]
         )
         engine.push(.ready(duration: CMTime(seconds: 7200, preferredTimescale: 600), tracks: inventory))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
 
         #expect(vm.availableAudioTracks.count == 2)
         #expect(vm.availableSubtitleTracks.count == 1)
@@ -361,7 +361,7 @@ struct PlayerViewModelTests {
     func readySeedsDefaultSelection() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let vm = makeVM(reporting: reporting, engine: engine, resolved: PlayerFixtures.resolved(), capturedItem: { _ in })
+        let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: PlayerFixtures.resolved())
         await vm.start(item: PlayerFixtures.movieDetail())
 
         let inventory = TrackInventory(
@@ -376,7 +376,7 @@ struct PlayerViewModelTests {
             selectedSubtitleID: nil
         )
         engine.push(.ready(duration: CMTime(seconds: 3600, preferredTimescale: 600), tracks: inventory))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
 
         #expect(vm.selectedAudioTrack?.id == .avKitOption(1))     // reflects engine default, not just first
         #expect(vm.selectedSubtitleTrack == nil)      // nil subtitle id == "Off"
@@ -387,13 +387,13 @@ struct PlayerViewModelTests {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
         let resolved = PlayerFixtures.resolvedDirectPlayExternalSub()
-        let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
+        let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
 
         // Engine inventory with NO subtitle pre-selected: the external default is the
         // server's choice, rendered client-side — not one of the engine's own tracks.
         engine.push(.ready(duration: resolved.runtime!, tracks: .empty))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
 
         // The external sidecar is the active selection…
         #expect(vm.selectedSubtitleTrack?.id == .jellyfinStream(2))
@@ -408,7 +408,7 @@ struct PlayerViewModelTests {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
         let resolved = PlayerFixtures.resolvedDirectPlayExternalSub()
-        let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
+        let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
 
         // The race the prior fix left open: by the time .ready lands, VLC has ALREADY
@@ -423,7 +423,7 @@ struct PlayerViewModelTests {
             selectedSubtitleID: .vlc("s1")
         )
         engine.push(.ready(duration: resolved.runtime!, tracks: inventory))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
 
         // The external sidecar is the active selection (it overrode the engine's embedded pick)…
         #expect(vm.selectedSubtitleTrack?.id == .jellyfinStream(2))
@@ -435,20 +435,16 @@ struct PlayerViewModelTests {
     func transcodeAudioSwitch() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
-        let builder = DeviceProfileBuilder(probe: probe)
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
 
         nonisolated(unsafe) var resolveCalls: [(audio: Int?, sub: Int?, start: CMTime?)] = []
-        let vm = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: reporting,
+        let vm = makePlayerVM(
+            reporting: reporting,
             resolve: { _, _, start, audioIdx, subIdx in
                 resolveCalls.append((audioIdx, subIdx, start))
                 return resolved
             },
-            engineFactory: { _ in engine },
-            audioSession: NoopAudioSession()
+            engine: engine
         )
 
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -477,7 +473,7 @@ struct PlayerViewModelTests {
             duration: CMTime(seconds: 7200, preferredTimescale: 600),
             buffered: nil
         ))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
 
         // Switch to audio index 4 → re-resolve at the current position with that index.
         let track = try #require(vm.availableAudioTracks.first { $0.id == .jellyfinStream(4) })
@@ -495,18 +491,14 @@ struct PlayerViewModelTests {
     func transcodeMenuIncludesBurnInImageSubtitle() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
-        let builder = DeviceProfileBuilder(probe: probe)
         // Point the server's own default AT the image sub — opt-in means this must
         // NOT auto-apply (a surprise re-encode on first play with no user action).
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode(defaultSubtitleStreamIndex: 7)
 
-        let vm = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: reporting,
+        let vm = makePlayerVM(
+            reporting: reporting,
             resolve: { _, _, _, _, _ in resolved },
-            engineFactory: { _ in engine },
-            audioSession: NoopAudioSession()
+            engine: engine
         )
         await vm.start(item: PlayerFixtures.movieDetail())
 
@@ -529,22 +521,18 @@ struct PlayerViewModelTests {
     func selectingBurnInSubtitleReResolves() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
-        let builder = DeviceProfileBuilder(probe: probe)
         // No server default sub — isolates the explicit pick.
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode(defaultSubtitleStreamIndex: nil)
 
         nonisolated(unsafe) var resolveCalls: [(audio: Int?, sub: Int?)] = []
         nonisolated(unsafe) var fetchedURLs: [URL] = []
-        let vm = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: reporting,
+        let vm = makePlayerVM(
+            reporting: reporting,
             resolve: { _, _, _, audioIdx, subIdx in
                 resolveCalls.append((audioIdx, subIdx))
                 return resolved
             },
-            engineFactory: { _ in engine },
-            audioSession: NoopAudioSession(),
+            engine: engine,
             subtitleFetch: { url in fetchedURLs.append(url); return Data() }
         )
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -553,7 +541,7 @@ struct PlayerViewModelTests {
             duration: CMTime(seconds: 7200, preferredTimescale: 600),
             buffered: nil
         ))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
 
         let pgs = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(7) })
         await vm.selectSubtitleTrack(pgs)
@@ -573,20 +561,16 @@ struct PlayerViewModelTests {
     func leavingBurnInForOffReResolves() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
-        let builder = DeviceProfileBuilder(probe: probe)
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode(defaultSubtitleStreamIndex: nil)
 
         nonisolated(unsafe) var resolveCalls: [(audio: Int?, sub: Int?)] = []
-        let vm = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: reporting,
+        let vm = makePlayerVM(
+            reporting: reporting,
             resolve: { _, _, _, audioIdx, subIdx in
                 resolveCalls.append((audioIdx, subIdx))
                 return resolved
             },
-            engineFactory: { _ in engine },
-            audioSession: NoopAudioSession()
+            engine: engine
         )
         await vm.start(item: PlayerFixtures.movieDetail())
         engine.push(.playing(
@@ -594,7 +578,7 @@ struct PlayerViewModelTests {
             duration: CMTime(seconds: 7200, preferredTimescale: 600),
             buffered: nil
         ))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
 
         // Activate the burn-in first.
         let pgs = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(7) })
@@ -619,21 +603,17 @@ struct PlayerViewModelTests {
     func leavingBurnInForTextSubReResolvesThenActivatesSidecar() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
-        let builder = DeviceProfileBuilder(probe: probe)
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode(defaultSubtitleStreamIndex: nil)
 
         nonisolated(unsafe) var resolveCalls: [(audio: Int?, sub: Int?)] = []
         nonisolated(unsafe) var fetchedURLs: [URL] = []
-        let vm = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: reporting,
+        let vm = makePlayerVM(
+            reporting: reporting,
             resolve: { _, _, _, audioIdx, subIdx in
                 resolveCalls.append((audioIdx, subIdx))
                 return resolved
             },
-            engineFactory: { _ in engine },
-            audioSession: NoopAudioSession(),
+            engine: engine,
             subtitleFetch: { url in fetchedURLs.append(url); return Data() }
         )
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -642,7 +622,7 @@ struct PlayerViewModelTests {
             duration: CMTime(seconds: 7200, preferredTimescale: 600),
             buffered: nil
         ))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
 
         // Activate the burn-in first.
         let pgs = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(7) })
@@ -654,7 +634,7 @@ struct PlayerViewModelTests {
         // sidecar (fetch must not race the still-burning-in outgoing session).
         let text = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(1) })
         await vm.selectSubtitleTrack(text)
-        try await Task.sleep(for: .milliseconds(50))   // let the sidecar fetch Task land
+        await vm.debugAwaitSubtitleFetch()
 
         #expect(resolveCalls.count == 3)
         #expect(resolveCalls.last?.sub == 1)
@@ -668,17 +648,13 @@ struct PlayerViewModelTests {
     func offFromTextSubStaysNoReload() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
-        let builder = DeviceProfileBuilder(probe: probe)
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode(defaultSubtitleStreamIndex: nil)
 
         nonisolated(unsafe) var resolveCalls = 0
-        let vm = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: reporting,
+        let vm = makePlayerVM(
+            reporting: reporting,
             resolve: { _, _, _, _, _ in resolveCalls += 1; return resolved },
-            engineFactory: { _ in engine },
-            audioSession: NoopAudioSession(),
+            engine: engine,
             subtitleFetch: { _ in Data() }
         )
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -687,7 +663,7 @@ struct PlayerViewModelTests {
             duration: CMTime(seconds: 7200, preferredTimescale: 600),
             buffered: nil
         ))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
         #expect(resolveCalls == 1)
 
         // Activate a TEXT sidecar — the cheap path, no reload.
@@ -709,22 +685,18 @@ struct PlayerViewModelTests {
     func burnInSwitchFailureRestoresSidecarSubtitle() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
-        let builder = DeviceProfileBuilder(probe: probe)
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode(defaultSubtitleStreamIndex: nil)
 
         nonisolated(unsafe) var resolveCalls = 0
         nonisolated(unsafe) var fetchedURLs: [URL] = []
-        let vm = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: reporting,
+        let vm = makePlayerVM(
+            reporting: reporting,
             resolve: { _, _, _, _, _ in
                 resolveCalls += 1
                 if resolveCalls == 2 { throw AppError.playback(.resourceUnavailable) }  // the burn-in switch fails
                 return resolved
             },
-            engineFactory: { _ in engine },
-            audioSession: NoopAudioSession(),
+            engine: engine,
             subtitleFetch: { url in fetchedURLs.append(url); return Data() }
         )
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -733,12 +705,12 @@ struct PlayerViewModelTests {
             duration: CMTime(seconds: 7200, preferredTimescale: 600),
             buffered: nil
         ))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
 
         // Activate the text sidecar first — the cheap path, no reload.
         let text = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(1) })
         await vm.selectSubtitleTrack(text)
-        try await Task.sleep(for: .milliseconds(50))
+        await vm.debugAwaitSubtitleFetch()
         #expect(resolveCalls == 1)
         #expect(fetchedURLs.count == 1)
 
@@ -760,8 +732,6 @@ struct PlayerViewModelTests {
     func transcodeSeekGateIsSidecarAware() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
-        let builder = DeviceProfileBuilder(probe: probe)
         // No server-default subtitle: the point is a session with NO sidecar up, and the
         // default fixture's `defaultSubtitleStreamIndex` would auto-arm the overlay on
         // first play (`applyTranscodeDefaultSubtitle`), silently flipping the gate.
@@ -769,15 +739,13 @@ struct PlayerViewModelTests {
 
         nonisolated(unsafe) var resolveCalls: [(start: CMTime?, audio: Int?, sub: Int?)] = []
         nonisolated(unsafe) var fetchedURLs: [URL] = []
-        let vm = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: reporting,
+        let vm = makePlayerVM(
+            reporting: reporting,
             resolve: { _, _, start, audio, sub in
                 resolveCalls.append((start, audio, sub))
                 return resolved
             },
-            engineFactory: { _ in engine },
-            audioSession: NoopAudioSession(),
+            engine: engine,
             subtitleFetch: { url in fetchedURLs.append(url); return Data() }
         )
 
@@ -786,7 +754,7 @@ struct PlayerViewModelTests {
         let loadsAfterStart = engine.loadedAssets.count
         engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
                              duration: CMTime(seconds: 7200, preferredTimescale: 600), buffered: nil))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
 
         // Buffer covers 0…120s: a seek to 60s is IN buffer → in-stream seek, no reload,
         // no fresh transcode — the segments are already aligned.
@@ -809,7 +777,7 @@ struct PlayerViewModelTests {
         // fresh item lands (absolute cues must never draw against a shifted mapping).
         let text = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(1) })
         await vm.selectSubtitleTrack(text)
-        try await Task.sleep(for: .milliseconds(50))   // cue fetch runs on its own task
+        await vm.debugAwaitSubtitleFetch()
         #expect(resolveCalls.count == 2)
         #expect(resolveCalls.last?.sub == 1)
         #expect(engine.loadedAssets.count == loadsAfterStart + 1)
@@ -819,7 +787,7 @@ struct PlayerViewModelTests {
         // off and back on now takes the cheap no-reload path.
         await vm.selectSubtitleTrack(nil)
         await vm.selectSubtitleTrack(text)
-        try await Task.sleep(for: .milliseconds(50))
+        await vm.debugAwaitSubtitleFetch()
         #expect(resolveCalls.count == 2)
         #expect(fetchedURLs.count == 2)
 
@@ -837,28 +805,21 @@ struct PlayerViewModelTests {
         #expect(!engine.calls.contains("seek(5000.0)"))
     }
 
-    @Test("remux transcode (proven video copy): in-buffer stays in-stream, out-of-buffer re-anchors — a mid-session ffmpeg restart shifts AVPlayer's established timeline even when the copy lands on a true keyframe")
-    func remuxOutOfBufferSeekReanchors() async throws {
-        let reporting = StubPlaybackReporting()
+    @Test("""
+          transcode seek with a sidecar up: in-buffer stays in-stream, out-of-buffer re-anchors — \
+          for a re-encode (#15845 drift) AND for a proven video copy (a mid-session ffmpeg restart \
+          shifts AVPlayer's established timeline even when the copy lands on a true keyframe)
+          """,
+          arguments: deliveryShapes)
+    func outOfBufferSeekReanchorsForEveryDelivery(delivery: TranscodeDelivery) async throws {
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let builder = DeviceProfileBuilder(probe: FakeCapabilityProbe(hdr: .none, audioOutput: .stereo))
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
-        // The live job stream-COPIES the video (remux) — audio is the only re-encode.
-        let remux = TranscodeDelivery(
-            isVideoDirect: true, isAudioDirect: false,
-            videoCodec: "hevc", audioCodec: "aac",
-            transcodeReasons: ["AudioCodecNotSupported"]
-        )
 
         nonisolated(unsafe) var resolveCalls: [CMTime?] = []
-        let vm = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: reporting,
+        let vm = makePlayerVM(
             resolve: { _, _, start, _, _ in resolveCalls.append(start); return resolved },
-            engineFactory: { _ in engine },
-            audioSession: NoopAudioSession(),
-            subtitleFetch: { _ in Data() },
-            fetchDelivery: { _ in remux },
+            engine: engine,
+            fetchDelivery: { _ in delivery },
             deliveryProbeSchedule: [.milliseconds(10)]
         )
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -869,7 +830,7 @@ struct PlayerViewModelTests {
         engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
                              duration: CMTime(seconds: 7200, preferredTimescale: 600), buffered: nil))
         try await Task.sleep(for: .milliseconds(80))
-        #expect(vm.transcodeDelivery?.isVideoDirect == true)
+        #expect(vm.transcodeDelivery == delivery)
 
         // The sidecar overlay is UP (a clean-session pick — no reload), so the
         // subs-aware gate is armed: only the overlay reads the clock absolutely.
@@ -884,13 +845,12 @@ struct PlayerViewModelTests {
         #expect(engine.calls.contains("seek(60.0)"))
         #expect(resolveCalls.count == 1)
 
-        // Out-of-buffer seek re-anchors EVEN on a proven video copy. The keyframe-true
-        // playlist makes the server's restart land accurately, but the restarted
-        // segments join an AVPlayerItem whose timeline mapping was established by the
-        // ORIGINAL segments — any miss (pad overshoot, keyframe gap) shifts the clock
-        // under absolute sidecar cues, intermittently and by up to a keyframe interval
-        // (device-confirmed 2026-07-17). A fresh item re-derives the mapping, so only
-        // the re-anchor is safe; delivery no longer exempts anything.
+        // Out-of-buffer seek re-anchors, delivery notwithstanding. Even on a proven
+        // video copy the restarted segments join an AVPlayerItem whose timeline mapping
+        // was established by the ORIGINAL segments — any miss (pad overshoot, keyframe
+        // gap) shifts the clock under absolute sidecar cues, intermittently and by up to
+        // a keyframe interval (device-confirmed 2026-07-17). A fresh item re-derives the
+        // mapping, so only the re-anchor is safe.
         await vm.seek(to: CMTime(seconds: 3000, preferredTimescale: 600))
         #expect(resolveCalls.count == 2)
         #expect(CMTimeGetSeconds((resolveCalls.last ?? nil) ?? .zero) == 3000)
@@ -898,66 +858,15 @@ struct PlayerViewModelTests {
         #expect(!engine.calls.contains("seek(3000.0)"))             // no in-stream drift seek
     }
 
-    @Test("re-encode transcode (video re-encoded): an out-of-buffer seek still re-anchors — dodging #15845 accurate-seek drift")
-    func reEncodeOutOfBufferSeekReanchors() async throws {
-        let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let builder = DeviceProfileBuilder(probe: FakeCapabilityProbe(hdr: .none, audioOutput: .stereo))
-        let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
-        // The live job RE-ENCODES the video — the seek-drift failure mode applies.
-        let reencode = TranscodeDelivery(
-            isVideoDirect: false, isAudioDirect: true,
-            videoCodec: "h264", audioCodec: "ac3",
-            transcodeReasons: ["VideoCodecNotSupported"]
-        )
-
-        nonisolated(unsafe) var resolveCalls: [CMTime?] = []
-        let vm = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: reporting,
-            resolve: { _, _, start, _, _ in resolveCalls.append(start); return resolved },
-            engineFactory: { _ in engine },
-            audioSession: NoopAudioSession(),
-            subtitleFetch: { _ in Data() },
-            fetchDelivery: { _ in reencode },
-            deliveryProbeSchedule: [.milliseconds(10)]
-        )
-        await vm.start(item: PlayerFixtures.movieDetail())
-        #expect(resolveCalls.count == 1)
-        let loadsAfterStart = engine.loadedAssets.count
-
-        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
-                             duration: CMTime(seconds: 7200, preferredTimescale: 600), buffered: nil))
-        try await Task.sleep(for: .milliseconds(80))
-        #expect(vm.transcodeDelivery?.isVideoDirect == false)
-
-        // Sidecar overlay up (cheap clean-session pick) — the gate protects its cues.
-        let text = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(1) })
-        await vm.selectSubtitleTrack(text)
-        #expect(resolveCalls.count == 1)
-
-        // Out-of-buffer seek on a re-encode → re-resolve a fresh transcode AT the target,
-        // exactly as the unknown-delivery path does. An in-stream seek would drift #15845.
-        engine.bufferedRange = 0...120
-        await vm.seek(to: CMTime(seconds: 3000, preferredTimescale: 600))
-        #expect(resolveCalls.count == 2)
-        #expect(CMTimeGetSeconds((resolveCalls.last ?? nil) ?? .zero) == 3000)
-        #expect(engine.loadedAssets.count == loadsAfterStart + 1)
-        #expect(!engine.calls.contains("seek(3000.0)"))
-    }
-
     @Test("delivery probe schedule exhausted with no result: transcodeDelivery stays nil and the exhausted flag flips")
     func deliveryProbeScheduleExhaustedStaysNil() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let builder = DeviceProfileBuilder(probe: FakeCapabilityProbe(hdr: .none, audioOutput: .stereo))
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
-        let vm = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: reporting,
+        let vm = makePlayerVM(
+            reporting: reporting,
             resolve: { _, _, _, _, _ in resolved },
-            engineFactory: { _ in engine },
-            audioSession: NoopAudioSession(),
+            engine: engine,
             fetchDelivery: { _ in nil },
             deliveryProbeSchedule: [.milliseconds(5), .milliseconds(5)]
         )
@@ -980,14 +889,11 @@ struct PlayerViewModelTests {
     func commitScrubSeekDirectPlayInStream() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let builder = DeviceProfileBuilder(probe: FakeCapabilityProbe(hdr: .none, audioOutput: .stereo))
         nonisolated(unsafe) var resolveCalls = 0
-        let vm = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: reporting,
+        let vm = makePlayerVM(
+            reporting: reporting,
             resolve: { _, _, _, _, _ in resolveCalls += 1; return PlayerFixtures.resolved() },
-            engineFactory: { _ in engine },
-            audioSession: NoopAudioSession()
+            engine: engine
         )
         await vm.start(item: PlayerFixtures.movieDetail())
         let loadsAfterStart = engine.loadedAssets.count
@@ -1005,13 +911,10 @@ struct PlayerViewModelTests {
     func commitScrubSeekDirectPlayPausedStaysPaused() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let builder = DeviceProfileBuilder(probe: FakeCapabilityProbe(hdr: .none, audioOutput: .stereo))
-        let vm = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: reporting,
+        let vm = makePlayerVM(
+            reporting: reporting,
             resolve: { _, _, _, _, _ in PlayerFixtures.resolved() },
-            engineFactory: { _ in engine },
-            audioSession: NoopAudioSession()
+            engine: engine
         )
         await vm.start(item: PlayerFixtures.movieDetail())
 
@@ -1020,67 +923,19 @@ struct PlayerViewModelTests {
         #expect(engine.calls == ["load", "play", "seek(3000.0)"])
     }
 
-    @Test("scrub commit on a remux transcode (proven video copy) out of buffer: re-anchors like a re-encode — no delivery exemption")
-    func commitScrubSeekRemuxReanchors() async throws {
-        let reporting = StubPlaybackReporting()
+    @Test("""
+          scrub commit out of buffer re-anchors on EVERY delivery — the #15845 drift fix for a \
+          re-encode, and no exemption for a proven video copy
+          """,
+          arguments: deliveryShapes)
+    func commitScrubSeekReanchorsForEveryDelivery(delivery: TranscodeDelivery) async throws {
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let builder = DeviceProfileBuilder(probe: FakeCapabilityProbe(hdr: .none, audioOutput: .stereo))
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
-        let remux = TranscodeDelivery(
-            isVideoDirect: true, isAudioDirect: false,
-            videoCodec: "hevc", audioCodec: "aac",
-            transcodeReasons: ["AudioCodecNotSupported"]
-        )
-        nonisolated(unsafe) var resolveCalls = 0
-        let vm = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: reporting,
-            resolve: { _, _, _, _, _ in resolveCalls += 1; return resolved },
-            engineFactory: { _ in engine },
-            audioSession: NoopAudioSession(),
-            subtitleFetch: { _ in Data() },
-            fetchDelivery: { _ in remux },
-            deliveryProbeSchedule: [.milliseconds(10)]
-        )
-        await vm.start(item: PlayerFixtures.movieDetail())
-        let loadsAfterStart = engine.loadedAssets.count
-        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
-                             duration: CMTime(seconds: 7200, preferredTimescale: 600), buffered: nil))
-        try await Task.sleep(for: .milliseconds(80))
-        #expect(vm.transcodeDelivery?.isVideoDirect == true)
-
-        // Sidecar overlay up — the subs-aware gate re-anchors for its cues.
-        let text = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(1) })
-        await vm.selectSubtitleTrack(text)
-        #expect(resolveCalls == 1)
-
-        engine.bufferedRange = 0...120
-        await vm.commitScrubSeek(to: CMTime(seconds: 3000, preferredTimescale: 600), resume: true)
-        #expect(!engine.calls.contains("seek(3000.0)"))             // no in-stream drift seek
-        #expect(resolveCalls == 2)                                  // fresh transcode at target
-        #expect(engine.loadedAssets.count == loadsAfterStart + 1)   // engine reloaded
-    }
-
-    @Test("scrub commit on a re-encode transcode out of buffer: re-anchors (the #15845 drift fix) instead of an in-stream seek")
-    func commitScrubSeekReEncodeReanchors() async throws {
-        let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let builder = DeviceProfileBuilder(probe: FakeCapabilityProbe(hdr: .none, audioOutput: .stereo))
-        let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
-        let reencode = TranscodeDelivery(
-            isVideoDirect: false, isAudioDirect: true,
-            videoCodec: "h264", audioCodec: "ac3",
-            transcodeReasons: ["VideoCodecNotSupported"]
-        )
         nonisolated(unsafe) var resolveCalls: [CMTime?] = []
-        let vm = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: reporting,
+        let vm = makePlayerVM(
             resolve: { _, _, start, _, _ in resolveCalls.append(start); return resolved },
-            engineFactory: { _ in engine },
-            audioSession: NoopAudioSession(),
-            subtitleFetch: { _ in Data() },
-            fetchDelivery: { _ in reencode },
+            engine: engine,
+            fetchDelivery: { _ in delivery },
             deliveryProbeSchedule: [.milliseconds(10)]
         )
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -1088,7 +943,7 @@ struct PlayerViewModelTests {
         engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
                              duration: CMTime(seconds: 7200, preferredTimescale: 600), buffered: nil))
         try await Task.sleep(for: .milliseconds(80))
-        #expect(vm.transcodeDelivery?.isVideoDirect == false)
+        #expect(vm.transcodeDelivery == delivery)
 
         // Sidecar overlay up — the subs-aware gate re-anchors for its cues.
         let text = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(1) })
@@ -1108,19 +963,16 @@ struct PlayerViewModelTests {
     func commitScrubSeekReEncodePausedRepauses() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let builder = DeviceProfileBuilder(probe: FakeCapabilityProbe(hdr: .none, audioOutput: .stereo))
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
         let reencode = TranscodeDelivery(
             isVideoDirect: false, isAudioDirect: true,
             videoCodec: "h264", audioCodec: "ac3",
             transcodeReasons: ["VideoCodecNotSupported"]
         )
-        let vm = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: reporting,
+        let vm = makePlayerVM(
+            reporting: reporting,
             resolve: { _, _, _, _, _ in resolved },
-            engineFactory: { _ in engine },
-            audioSession: NoopAudioSession(),
+            engine: engine,
             subtitleFetch: { _ in Data() },
             fetchDelivery: { _ in reencode },
             deliveryProbeSchedule: [.milliseconds(10)]
@@ -1148,7 +1000,6 @@ struct PlayerViewModelTests {
     func commitScrubSeekReanchorSupersedesNewestWins() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let builder = DeviceProfileBuilder(probe: FakeCapabilityProbe(hdr: .none, audioOutput: .stereo))
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
         let reencode = TranscodeDelivery(
             isVideoDirect: false, isAudioDirect: true,
@@ -1163,9 +1014,8 @@ struct PlayerViewModelTests {
         let firstReanchorEntered = AsyncStream<Void>.makeStream()
         let releaseFirstReanchor = AsyncStream<Void>.makeStream()
         nonisolated(unsafe) var resolveStarts: [CMTime?] = []
-        let vm = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: reporting,
+        let vm = makePlayerVM(
+            reporting: reporting,
             resolve: { _, _, start, _, _ in
                 resolveStarts.append(start)
                 // Only the target-A re-anchor parks; the initial start (nil) and the
@@ -1177,8 +1027,7 @@ struct PlayerViewModelTests {
                 }
                 return resolved
             },
-            engineFactory: { _ in engine },
-            audioSession: NoopAudioSession(),
+            engine: engine,
             subtitleFetch: { _ in Data() },
             fetchDelivery: { _ in reencode },
             deliveryProbeSchedule: [.milliseconds(10)]
@@ -1233,13 +1082,11 @@ struct PlayerViewModelTests {
     func reanchorResolveDeadlineFallsBack() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let builder = DeviceProfileBuilder(probe: FakeCapabilityProbe(hdr: .none, audioOutput: .stereo))
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
 
         nonisolated(unsafe) var resolveCalls = 0
-        let vm = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: reporting,
+        let vm = makePlayerVM(
+            reporting: reporting,
             resolve: { _, _, _, _, _ in
                 resolveCalls += 1
                 // The re-anchor's negotiation wedges (dead server mid-session). The
@@ -1248,8 +1095,7 @@ struct PlayerViewModelTests {
                 if resolveCalls >= 2 { try await Task.sleep(for: .seconds(60)) }
                 return resolved
             },
-            engineFactory: { _ in engine },
-            audioSession: NoopAudioSession(),
+            engine: engine,
             subtitleFetch: { _ in Data() },
             reloadResolveDeadline: .milliseconds(80)
         )
@@ -1257,7 +1103,7 @@ struct PlayerViewModelTests {
         let loadsAfterStart = engine.loadedAssets.count
         engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
                              duration: CMTime(seconds: 7200, preferredTimescale: 600), buffered: nil))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
 
         // Sidecar overlay up so the out-of-buffer commit takes the re-anchor branch.
         let text = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(1) })
@@ -1281,14 +1127,11 @@ struct PlayerViewModelTests {
     func reloadFreezesSurfaceUntilFirstLiveBeat() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let builder = DeviceProfileBuilder(probe: FakeCapabilityProbe(hdr: .none, audioOutput: .stereo))
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
-        let vm = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: reporting,
+        let vm = makePlayerVM(
+            reporting: reporting,
             resolve: { _, _, _, _, _ in resolved },
-            engineFactory: { _ in engine },
-            audioSession: NoopAudioSession(),
+            engine: engine,
             subtitleFetch: { _ in Data() }
         )
         nonisolated(unsafe) var freezeCalls = 0
@@ -1299,7 +1142,7 @@ struct PlayerViewModelTests {
         await vm.start(item: PlayerFixtures.movieDetail())
         engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
                              duration: CMTime(seconds: 7200, preferredTimescale: 600), buffered: nil))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
         // Ordinary beats never touch the host (`surfaceFrozen` gates the unfreeze side).
         #expect(freezeCalls == 0)
         #expect(unfreezeCalls == 0)
@@ -1314,11 +1157,11 @@ struct PlayerViewModelTests {
         // First live beat of the swapped-in session releases the frame — once.
         engine.push(.playing(position: CMTime(seconds: 3000, preferredTimescale: 600),
                              duration: CMTime(seconds: 7200, preferredTimescale: 600), buffered: nil))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
         #expect(unfreezeCalls == 1)
         engine.push(.playing(position: CMTime(seconds: 3001, preferredTimescale: 600),
                              duration: CMTime(seconds: 7200, preferredTimescale: 600), buffered: nil))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
         #expect(unfreezeCalls == 1)
     }
 
@@ -1326,14 +1169,11 @@ struct PlayerViewModelTests {
     func pausedReanchorReleasesFrozenFrameOnPausedBeat() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let builder = DeviceProfileBuilder(probe: FakeCapabilityProbe(hdr: .none, audioOutput: .stereo))
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
-        let vm = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: reporting,
+        let vm = makePlayerVM(
+            reporting: reporting,
             resolve: { _, _, _, _, _ in resolved },
-            engineFactory: { _ in engine },
-            audioSession: NoopAudioSession(),
+            engine: engine,
             subtitleFetch: { _ in Data() }
         )
         nonisolated(unsafe) var freezeCalls = 0
@@ -1344,7 +1184,7 @@ struct PlayerViewModelTests {
         await vm.start(item: PlayerFixtures.movieDetail())
         engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
                              duration: CMTime(seconds: 7200, preferredTimescale: 600), buffered: nil))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
 
         engine.bufferedRange = 0...120
         await vm.commitScrubSeek(to: CMTime(seconds: 3000, preferredTimescale: 600), resume: false)
@@ -1355,7 +1195,7 @@ struct PlayerViewModelTests {
         // the .paused beat is the "surface is live again" signal here.
         engine.push(.paused(position: CMTime(seconds: 3000, preferredTimescale: 600),
                             duration: CMTime(seconds: 7200, preferredTimescale: 600), buffered: nil))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
         #expect(unfreezeCalls == 1)
     }
 
@@ -1363,7 +1203,6 @@ struct PlayerViewModelTests {
     func deliveryRefetchesOnTrackSwitch() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let builder = DeviceProfileBuilder(probe: FakeCapabilityProbe(hdr: .none, audioOutput: .stereo))
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
         // First session remuxes (video copy); the post-switch session re-encodes it.
         let deliveries = [
@@ -1374,12 +1213,10 @@ struct PlayerViewModelTests {
                               transcodeReasons: ["SubtitleCodecNotSupported"]),
         ]
         nonisolated(unsafe) var deliveryCalls = 0
-        let vm = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: reporting,
+        let vm = makePlayerVM(
+            reporting: reporting,
             resolve: { _, _, _, _, _ in resolved },
-            engineFactory: { _ in engine },
-            audioSession: NoopAudioSession(),
+            engine: engine,
             fetchDelivery: { _ in
                 defer { deliveryCalls += 1 }
                 return deliveries[min(deliveryCalls, deliveries.count - 1)]
@@ -1411,8 +1248,6 @@ struct PlayerViewModelTests {
     func transcodeResumeSeeksClientSide() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
-        let builder = DeviceProfileBuilder(probe: probe)
         // Resolve resuming at 600s. Jellyfin's transcode is a full-timeline playlist
         // that ignores StartTimeTicks for the offset, so the engine must SEEK there.
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode(
@@ -1420,12 +1255,10 @@ struct PlayerViewModelTests {
         )
 
         nonisolated(unsafe) var resolveStarts: [CMTime?] = []
-        let vm = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: reporting,
+        let vm = makePlayerVM(
+            reporting: reporting,
             resolve: { _, _, start, _, _ in resolveStarts.append(start); return resolved },
-            engineFactory: { _ in engine },
-            audioSession: NoopAudioSession()
+            engine: engine
         )
         await vm.start(item: PlayerFixtures.movieDetail())
 
@@ -1440,7 +1273,7 @@ struct PlayerViewModelTests {
             duration: CMTime(seconds: 7200, preferredTimescale: 600),
             buffered: nil
         ))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
 
         let audio4 = try #require(vm.availableAudioTracks.first { $0.id == .jellyfinStream(4) })
         await vm.selectAudioTrack(audio4)
@@ -1453,23 +1286,19 @@ struct PlayerViewModelTests {
     @Test("transcode audio switch reuses the engine instance — the video surface isn't torn down to black")
     func transcodeSwitchReusesEngine() async throws {
         let reporting = StubPlaybackReporting()
-        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
-        let builder = DeviceProfileBuilder(probe: probe)
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
 
         // A factory that builds a DISTINCT engine per call, so a re-creation would
         // bump the count and break identity — the assertions below prove reuse.
         nonisolated(unsafe) var createdEngines: [FakePlaybackEngine] = []
-        let vm = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: reporting,
+        let vm = makePlayerVM(
+            reporting: reporting,
             resolve: { _, _, _, _, _ in resolved },
             engineFactory: { _ in
                 let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
                 createdEngines.append(engine)
                 return engine
-            },
-            audioSession: NoopAudioSession()
+            }
         )
         await vm.start(item: PlayerFixtures.movieDetail())
         let engineAfterStart = try #require(vm.engine as? FakePlaybackEngine)
@@ -1480,7 +1309,7 @@ struct PlayerViewModelTests {
             duration: CMTime(seconds: 7200, preferredTimescale: 600),
             buffered: nil
         ))
-        try await Task.sleep(for: .milliseconds(50))
+        try await createdEngines[0].settle()
 
         // Switch audio → the engine is RELOADED in place, not recreated, so its
         // AVPlayer layer stays mounted (no black teardown between old + new streams).
@@ -1498,22 +1327,18 @@ struct PlayerViewModelTests {
     func transcodeSubtitleIsolation() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
-        let builder = DeviceProfileBuilder(probe: probe)
         // No server default subtitle: this test is about EXPLICIT selection
         // isolation, so nothing may be auto-applied at start.
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode(defaultSubtitleStreamIndex: nil)
 
         nonisolated(unsafe) var resolveCalls: [(audio: Int?, sub: Int?)] = []
-        let vm = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: reporting,
+        let vm = makePlayerVM(
+            reporting: reporting,
             resolve: { _, _, _, audioIdx, subIdx in
                 resolveCalls.append((audioIdx, subIdx))
                 return resolved
             },
-            engineFactory: { _ in engine },
-            audioSession: NoopAudioSession()
+            engine: engine
         )
         await vm.start(item: PlayerFixtures.movieDetail())
         engine.push(.playing(
@@ -1521,7 +1346,7 @@ struct PlayerViewModelTests {
             duration: CMTime(seconds: 7200, preferredTimescale: 600),
             buffered: nil
         ))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
 
         // Nothing auto-selected at start (the server surfaced no default sub).
         #expect(vm.selectedSubtitleTrack == nil)
@@ -1547,19 +1372,15 @@ struct PlayerViewModelTests {
     func transcodeSidecarSubtitle() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
-        let builder = DeviceProfileBuilder(probe: probe)
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
         let vtt = Data("WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nNi hao".utf8)
 
         nonisolated(unsafe) var resolveCount = 0
         nonisolated(unsafe) var fetchedURLs: [URL] = []
-        let vm = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: reporting,
+        let vm = makePlayerVM(
+            reporting: reporting,
             resolve: { _, _, _, _, _ in resolveCount += 1; return resolved },
-            engineFactory: { _ in engine },
-            audioSession: NoopAudioSession(),
+            engine: engine,
             subtitleFetch: { url in fetchedURLs.append(url); return vtt }
         )
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -1568,7 +1389,7 @@ struct PlayerViewModelTests {
         // Pick the Chinese text sub → fetch + parse the sidecar; no re-transcode.
         let chinese = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(1) })
         await vm.selectSubtitleTrack(chinese)
-        try await Task.sleep(for: .milliseconds(50))   // let the fetch Task land
+        await vm.debugAwaitSubtitleFetch()
 
         #expect(resolveCount == resolvesAfterStart)                                   // no re-resolve
         #expect(fetchedURLs.first?.absoluteString.contains("/Subtitles/1/Stream.vtt") == true)
@@ -1593,27 +1414,23 @@ struct PlayerViewModelTests {
         // the lookup misses and activeSubtitleCues stays empty.
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
-        let builder = DeviceProfileBuilder(probe: probe)
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
         // The expected subtitle URL lives at resolved.subtitleStreamURLs[1].
         let expectedURL = try #require(resolved.subtitleStreamURLs[1])
         let vtt = Data("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nSubtitle text".utf8)
 
         nonisolated(unsafe) var fetchedURL: URL?
-        let vm = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: reporting,
+        let vm = makePlayerVM(
+            reporting: reporting,
             resolve: { _, _, _, _, _ in resolved },
-            engineFactory: { _ in engine },
-            audioSession: NoopAudioSession(),
+            engine: engine,
             subtitleFetch: { url in fetchedURL = url; return vtt }
         )
         await vm.start(item: PlayerFixtures.movieDetail())
 
         let chineseSub = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(1) })
         await vm.selectSubtitleTrack(chineseSub)
-        try await Task.sleep(for: .milliseconds(50))   // let the fetch Task land
+        await vm.debugAwaitSubtitleFetch()
 
         // The VM used the URL from resolved.subtitleStreamURLs — not a nil lookup.
         #expect(fetchedURL == expectedURL)
@@ -1624,13 +1441,10 @@ struct PlayerViewModelTests {
     func subtitleDelayForwardsToEngine() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let builder = DeviceProfileBuilder(probe: FakeCapabilityProbe(hdr: .none, audioOutput: .stereo))
-        let vm = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: reporting,
+        let vm = makePlayerVM(
+            reporting: reporting,
             resolve: { _, _, _, _, _ in PlayerFixtures.resolved() },
-            engineFactory: { _ in engine },
-            audioSession: NoopAudioSession()
+            engine: engine
         )
         await vm.start(item: PlayerFixtures.movieDetail())
 
@@ -1643,17 +1457,17 @@ struct PlayerViewModelTests {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         let resolved = PlayerFixtures.resolved()
-        let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
+        let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
 
         engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
         #expect(vm.isPlaying == true)
 
         // The bug this guards: phase stays .playing while paused, so a phase-derived
         // button stayed "pause" forever. isPlaying must flip so resume is reachable.
         engine.push(.paused(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
         #expect(vm.isPlaying == false)
         #expect(vm.phase == .playing)   // video surface stays up; only isPlaying flips
     }
@@ -1663,10 +1477,10 @@ struct PlayerViewModelTests {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         let resolved = PlayerFixtures.resolved()
-        let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
+        let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
         engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
         #expect(vm.isPlaying == true)
 
         // FakePlaybackEngine's play()/pause() push NO state beat, so the only
@@ -1688,10 +1502,10 @@ struct PlayerViewModelTests {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         let resolved = PlayerFixtures.resolved()
-        let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
+        let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
         engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
         #expect(vm.isPlaying == true)
 
         // Three rapid presses from playing: pause → play → pause. The glyph
@@ -1713,10 +1527,10 @@ struct PlayerViewModelTests {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         let resolved = PlayerFixtures.resolved()
-        let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
+        let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
         engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
         #expect(vm.isPlaying == true)
 
         // Drag-scrub from playing arms the latch with the pre-scrub state. The drag pauses the
@@ -1724,13 +1538,13 @@ struct PlayerViewModelTests {
         // glyph while the latch holds (the flicker the latch exists to kill).
         vm.beginScrubLatch(resumePlaying: true)
         engine.push(.paused(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
         #expect(vm.isPlaying == true)   // pinned, not flashed to pause
 
         // Commit settled → latch released → the next beat drives isPlaying directly again.
         vm.endScrubLatch()
         engine.push(.paused(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
         #expect(vm.isPlaying == false)  // honored once unlatched
     }
 
@@ -1739,10 +1553,10 @@ struct PlayerViewModelTests {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         let resolved = PlayerFixtures.resolved()
-        let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
+        let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
         engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
 
         // Scrub commit in flight: the latch is armed to the playing pre-scrub state.
         vm.beginScrubLatch(resumePlaying: true)
@@ -1759,7 +1573,7 @@ struct PlayerViewModelTests {
         // Latch cleared: AVKit's single transient .paused beat is now honored (before the fix it
         // was swallowed and isPlaying stayed pinned to the stale `true`, with no self-heal beat).
         engine.push(.paused(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
         #expect(vm.isPlaying == false)
     }
 
@@ -1768,20 +1582,20 @@ struct PlayerViewModelTests {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         let resolved = PlayerFixtures.resolved()
-        let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
+        let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
 
         // runtime fixture is the duration; buffer extends to its midpoint.
         let duration = resolved.runtime!
         let half = CMTime(seconds: CMTimeGetSeconds(duration) / 2, preferredTimescale: 600)
         engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: duration, buffered: half))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
         let fraction = try #require(vm.bufferedFraction)
         #expect(abs(fraction - 0.5) < 0.001)
 
         // A nil buffered beat (VLC path) must hide the layer, not freeze the last value.
         engine.push(.paused(position: CMTime(seconds: 10, preferredTimescale: 1), duration: duration, buffered: nil))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
         #expect(vm.bufferedFraction == nil)
 
         await vm.stop()
@@ -1793,15 +1607,15 @@ struct PlayerViewModelTests {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         let resolved = PlayerFixtures.resolved()
-        let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
+        let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
 
         engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
 
         // A short blip (healthy in-buffer seek) never shows the scrim.
         engine.push(.buffering(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
         #expect(vm.isStalled == false)
         engine.push(.playing(position: CMTime(seconds: 11, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
         try await Task.sleep(for: .milliseconds(500))
@@ -1812,13 +1626,15 @@ struct PlayerViewModelTests {
         try await Task.sleep(for: .milliseconds(600))
         #expect(vm.isStalled == true)
         #expect(vm.showsStallScrim == true)
-        #expect(vm.loaderTitle == "Buffering")
+        // The scrim reads the mid-stream caption, NOT the cold-start "Loading video"
+        // one — same surface, different flavor.
+        #expect(vm.loaderTitle == PlayerViewModel.LoaderCaption.buffering)
         #expect(vm.phase == .playing)
         #expect(vm.isPlaying == true)
 
         // Recovery clears it immediately.
         engine.push(.playing(position: CMTime(seconds: 12, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
         #expect(vm.isStalled == false)
         #expect(vm.showsStallScrim == false)
 
@@ -1828,10 +1644,10 @@ struct PlayerViewModelTests {
         // construction); the completion's .paused beat clears it, no .playing
         // required.
         engine.push(.buffering(position: CMTime(seconds: 300, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
         #expect(vm.isStalled == true)
         engine.push(.paused(position: CMTime(seconds: 300, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
         #expect(vm.isStalled == false)
         #expect(vm.isPlaying == false)
     }
@@ -1840,15 +1656,11 @@ struct PlayerViewModelTests {
     func transcodeSwitchClosesOldSession() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
-        let builder = DeviceProfileBuilder(probe: probe)
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
-        let vm = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: reporting,
+        let vm = makePlayerVM(
+            reporting: reporting,
             resolve: { _, _, _, _, _ in resolved },
-            engineFactory: { _ in engine },
-            audioSession: NoopAudioSession()
+            engine: engine
         )
         await vm.start(item: PlayerFixtures.movieDetail())
         engine.push(.playing(
@@ -1856,7 +1668,7 @@ struct PlayerViewModelTests {
             duration: CMTime(seconds: 7200, preferredTimescale: 600),
             buffered: nil
         ))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
 
         let track = try #require(vm.availableAudioTracks.first { $0.id == .jellyfinStream(4) })
         await vm.selectAudioTrack(track)
@@ -1878,14 +1690,11 @@ struct PlayerViewModelTests {
     func transcodeKeepalive() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let builder = DeviceProfileBuilder(probe: FakeCapabilityProbe(hdr: .none, audioOutput: .stereo))
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
-        let vm = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: reporting,
+        let vm = makePlayerVM(
+            reporting: reporting,
             resolve: { _, _, _, _, _ in resolved },
-            engineFactory: { _ in engine },
-            audioSession: NoopAudioSession(),
+            engine: engine,
             keepaliveInterval: .milliseconds(20)
         )
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -1904,12 +1713,10 @@ struct PlayerViewModelTests {
 
         // Direct play has no transcode job — no keepalive is armed.
         let directReporting = StubPlaybackReporting()
-        let directVM = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: directReporting,
+        let directVM = makePlayerVM(
+            reporting: directReporting,
             resolve: { _, _, _, _, _ in PlayerFixtures.resolved() },
             engineFactory: { _ in FakePlaybackEngine(id: .avKit, capabilities: .avKit) },
-            audioSession: NoopAudioSession(),
             keepaliveInterval: .milliseconds(20)
         )
         await directVM.start(item: PlayerFixtures.movieDetail())
@@ -1923,14 +1730,11 @@ struct PlayerViewModelTests {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         engine.loadError = AppError.playback(.unsupportedFormat)
-        let builder = DeviceProfileBuilder(probe: FakeCapabilityProbe(hdr: .none, audioOutput: .stereo))
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
-        let vm = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: reporting,
+        let vm = makePlayerVM(
+            reporting: reporting,
             resolve: { _, _, _, _, _ in resolved },
-            engineFactory: { _ in engine },
-            audioSession: NoopAudioSession(),
+            engine: engine,
             keepaliveInterval: .milliseconds(20)
         )
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -1948,12 +1752,12 @@ struct PlayerViewModelTests {
     func audioTrackSelectionForwardsToEngine() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let vm = makeVM(reporting: reporting, engine: engine, resolved: PlayerFixtures.resolved(), capturedItem: { _ in })
+        let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: PlayerFixtures.resolved())
         await vm.start(item: PlayerFixtures.movieDetail())
 
         let track = AudioTrack(id: .avKitOption(1), displayName: "English", languageCode: "en")
         engine.push(.ready(duration: CMTime(seconds: 7200, preferredTimescale: 600), tracks: TrackInventory(audio: [track], subtitles: [])))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
 
         await vm.selectAudioTrack(track)
         #expect(vm.selectedAudioTrack?.id == .avKitOption(1))
@@ -1964,12 +1768,12 @@ struct PlayerViewModelTests {
     func subtitleTrackDeselect() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let vm = makeVM(reporting: reporting, engine: engine, resolved: PlayerFixtures.resolved(), capturedItem: { _ in })
+        let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: PlayerFixtures.resolved())
         await vm.start(item: PlayerFixtures.movieDetail())
 
         let sub = SubtitleTrack(id: .avKitOption(1), displayName: "English", languageCode: "en", isForced: false)
         engine.push(.ready(duration: CMTime(seconds: 7200, preferredTimescale: 600), tracks: TrackInventory(audio: [], subtitles: [sub])))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
 
         await vm.selectSubtitleTrack(sub)
         #expect(vm.selectedSubtitleTrack?.id == .avKitOption(1))
@@ -1979,25 +1783,10 @@ struct PlayerViewModelTests {
         #expect(engine.selectedSubtitleTrackID == nil)
     }
 
-    @Test("VP9/WebM direct-play routes to .vlcKit engine and loads the asset")
-    func vp9WebMSelectsVLC() async {
-        let reporting = StubPlaybackReporting()
-        let vlcEngine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
-        let vm = makeVM(reporting: reporting, engine: vlcEngine, resolved: PlayerFixtures.resolvedVP9WebM(), capturedItem: { _ in })
-        await vm.start(item: PlayerFixtures.movieDetail())
-
-        #expect(vlcEngine.loadedAssets.first != nil)
-        #expect(vlcEngine.loadedAssets.first?.hints.container == .webm)
-        #expect(vlcEngine.loadedAssets.first?.hints.videoCodec == .vp9)
-        #expect(vlcEngine.calls.contains("play"))
-        #expect(vm.phase != .failed(.playback(.unsupportedFormat)))
-    }
-
     @Test(".vlcKit engine tracks populate on .ready state")
     func vlcEngineTrackStatePopulates() async throws {
-        let reporting = StubPlaybackReporting()
         let vlcEngine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
-        let vm = makeVM(reporting: reporting, engine: vlcEngine, resolved: PlayerFixtures.resolvedVP9WebM(), capturedItem: { _ in })
+        let vm = makePlayerVM(engine: vlcEngine, resolved: PlayerFixtures.resolvedVP9WebM())
         await vm.start(item: PlayerFixtures.movieDetail())
 
         let inventory = TrackInventory(
@@ -2005,60 +1794,22 @@ struct PlayerViewModelTests {
             subtitles: [SubtitleTrack(id: .vlc("vlc-s1"), displayName: "ASS Sub", languageCode: "en", isForced: false)]
         )
         vlcEngine.push(.ready(duration: CMTime(seconds: 3600, preferredTimescale: 600), tracks: inventory))
-        try await Task.sleep(for: .milliseconds(50))
+        try await vlcEngine.settle()
 
         #expect(vm.availableAudioTracks.count == 1)
         #expect(vm.availableAudioTracks[0].id == .vlc("vlc-a1"))
         #expect(vm.availableSubtitleTracks.count == 1)
     }
 
-    @Test("VC-1 MKV direct-play calls engineFactory with .vlcKit (5d routing contract)")
-    func vc1MKVRoutesToVLCKitFactory() async {
-        let reporting = StubPlaybackReporting()
-        let fakeEngine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
-        var capturedEngineID: PlaybackEngineID?
-        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
-        let builder = DeviceProfileBuilder(probe: probe)
-        let vm = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: reporting,
-            resolve: { _, _, _, _, _ in PlayerFixtures.resolvedVLCDirectPlayMKV() },
-            engineFactory: { id in capturedEngineID = id; return fakeEngine },
-            audioSession: NoopAudioSession()
-        )
+    @Test("isPiPAvailable / isVideoAirPlayAvailable mirror the engine's capabilities")
+    func routeAvailabilityMirrorsCapabilities() async {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let vm = makePlayerVM(engine: engine, resolved: PlayerFixtures.resolved())
         await vm.start(item: PlayerFixtures.movieDetail())
-        #expect(capturedEngineID == .vlcKit, "Expected engineFactory called with .vlcKit, got \(String(describing: capturedEngineID))")
-        #expect(fakeEngine.loadedAssets.first != nil)
-        #expect(fakeEngine.loadedAssets.first?.hints.container == .mkv)
-        #expect(fakeEngine.loadedAssets.first?.hints.videoCodec == .vc1)
-    }
-
-    @Test("isPiPAvailable mirrors engine.capabilities.supportsPiP")
-    func pipAvailabilityMirrorsCapabilities() async {
-        let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)  // supportsPiP == true
-        let vm = makeVM(reporting: reporting, engine: engine, resolved: PlayerFixtures.resolved(), capturedItem: { _ in })
-        await vm.start(item: PlayerFixtures.movieDetailNamed("Fixture Movie"))
+        #expect(vm.isPiPAvailable == engine.capabilities.supportsPiP)
+        #expect(vm.isVideoAirPlayAvailable == engine.capabilities.supportsVideoAirPlay)
+        // …and the fake's caps are the AVKit ones, so both flags read true here.
         #expect(vm.isPiPAvailable == true)
-    }
-
-    @Test("startPiP/stopPiP are safe no-ops; isPiPAvailable true when engine supports PiP")
-    func pipActionsAreSafeWhenSupported() async {
-        let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)  // supportsPiP == true
-        let vm = makeVM(reporting: reporting, engine: engine, resolved: PlayerFixtures.resolved(), capturedItem: { _ in })
-        await vm.start(item: PlayerFixtures.movieDetailNamed("Fixture Movie"))
-        #expect(vm.isPiPAvailable == true)
-        vm.startPiP()   // no action mounted in tests → safe no-op
-        vm.stopPiP()
-    }
-
-    @Test("isVideoAirPlayAvailable mirrors engine.capabilities.supportsVideoAirPlay")
-    func airPlayAvailabilityMirrorsCapabilities() async {
-        let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)  // supportsVideoAirPlay == true
-        let vm = makeVM(reporting: reporting, engine: engine, resolved: PlayerFixtures.resolved(), capturedItem: { _ in })
-        await vm.start(item: PlayerFixtures.movieDetailNamed("Fixture Movie"))
         #expect(vm.isVideoAirPlayAvailable == true)
     }
 
@@ -2068,11 +1819,11 @@ struct PlayerViewModelTests {
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         let resolved = PlayerFixtures.resolved()
 
-        let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
+        let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
         engine.push(.playing(position: CMTime(seconds: 40, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
         engine.push(.ended)
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
 
         // PlayerView.onDisappear always calls stop(); after a natural .ended that
         // already reported stopped, stop() must NOT emit a second stopped beat.
@@ -2087,21 +1838,17 @@ struct PlayerViewModelTests {
     func transcodeSwitchResolveFailureReportsStoppedOnce() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
-        let builder = DeviceProfileBuilder(probe: probe)
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
 
         nonisolated(unsafe) var callCount = 0
-        let vm = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: reporting,
+        let vm = makePlayerVM(
+            reporting: reporting,
             resolve: { _, _, _, _, _ in
                 callCount += 1
                 if callCount >= 2 { throw AppError.playback(.resourceUnavailable) }  // the switch re-resolve fails
                 return resolved
             },
-            engineFactory: { _ in engine },
-            audioSession: NoopAudioSession()
+            engine: engine
         )
         await vm.start(item: PlayerFixtures.movieDetail())
         engine.push(.playing(
@@ -2109,7 +1856,7 @@ struct PlayerViewModelTests {
             duration: CMTime(seconds: 7200, preferredTimescale: 600),
             buffered: nil
         ))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
 
         // Switch audio → the re-resolve throws → silent fallback (playback resumes).
         let track = try #require(vm.availableAudioTracks.first { $0.id == .jellyfinStream(4) })
@@ -2127,21 +1874,17 @@ struct PlayerViewModelTests {
     func transcodeSwitchFailureFallsBackSilently() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
-        let builder = DeviceProfileBuilder(probe: probe)
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
 
         nonisolated(unsafe) var callCount = 0
-        let vm = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: reporting,
+        let vm = makePlayerVM(
+            reporting: reporting,
             resolve: { _, _, _, _, _ in
                 callCount += 1
                 if callCount == 2 { throw AppError.playback(.resourceUnavailable) }  // the switch re-resolve fails
                 return resolved
             },
-            engineFactory: { _ in engine },
-            audioSession: NoopAudioSession()
+            engine: engine
         )
         await vm.start(item: PlayerFixtures.movieDetail())
         engine.push(.playing(
@@ -2149,7 +1892,7 @@ struct PlayerViewModelTests {
             duration: CMTime(seconds: 7200, preferredTimescale: 600),
             buffered: nil
         ))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
 
         let track = try #require(vm.availableAudioTracks.first { $0.id == .jellyfinStream(4) })
         await vm.selectAudioTrack(track)
@@ -2175,8 +1918,6 @@ struct PlayerViewModelTests {
     func transcodeSwitchFailureDuringExitAbandons() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
-        let builder = DeviceProfileBuilder(probe: probe)
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
 
         // The switch's re-resolve is where exit can race in: beginExit() lands while
@@ -2184,9 +1925,8 @@ struct PlayerViewModelTests {
         // checkStillActive (those only catch CancellationError paths).
         nonisolated(unsafe) var callCount = 0
         nonisolated(unsafe) var triggerExit: (@MainActor () -> Void)? = nil
-        let vm = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: reporting,
+        let vm = makePlayerVM(
+            reporting: reporting,
             resolve: { _, _, _, _, _ in
                 callCount += 1
                 if callCount == 2 {
@@ -2195,8 +1935,7 @@ struct PlayerViewModelTests {
                 }
                 return resolved
             },
-            engineFactory: { _ in engine },
-            audioSession: NoopAudioSession()
+            engine: engine
         )
         triggerExit = { vm.beginExit() }
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -2205,7 +1944,7 @@ struct PlayerViewModelTests {
             duration: CMTime(seconds: 7200, preferredTimescale: 600),
             buffered: nil
         ))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
 
         let track = try #require(vm.availableAudioTracks.first { $0.id == .jellyfinStream(4) })
         await vm.selectAudioTrack(track)
@@ -2227,21 +1966,17 @@ struct PlayerViewModelTests {
     func retryFailedTrackSwitchReattempts() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
-        let builder = DeviceProfileBuilder(probe: probe)
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
 
         nonisolated(unsafe) var resolveCalls: [Int?] = []
-        let vm = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: reporting,
+        let vm = makePlayerVM(
+            reporting: reporting,
             resolve: { _, _, _, audioIdx, _ in
                 resolveCalls.append(audioIdx)
                 if resolveCalls.count == 2 { throw AppError.playback(.resourceUnavailable) }  // first switch fails
                 return resolved                                                               // retry succeeds
             },
-            engineFactory: { _ in engine },
-            audioSession: NoopAudioSession()
+            engine: engine
         )
         await vm.start(item: PlayerFixtures.movieDetail())
         engine.push(.playing(
@@ -2249,7 +1984,7 @@ struct PlayerViewModelTests {
             duration: CMTime(seconds: 7200, preferredTimescale: 600),
             buffered: nil
         ))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
 
         let track = try #require(vm.availableAudioTracks.first { $0.id == .jellyfinStream(4) })
         await vm.selectAudioTrack(track)
@@ -2268,7 +2003,7 @@ struct PlayerViewModelTests {
             duration: CMTime(seconds: 7200, preferredTimescale: 600),
             buffered: nil
         ))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
         #expect(vm.phase == .playing)
     }
 
@@ -2276,21 +2011,17 @@ struct PlayerViewModelTests {
     func stopClearsTrackSwitchFailure() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
-        let builder = DeviceProfileBuilder(probe: probe)
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
 
         nonisolated(unsafe) var callCount = 0
-        let vm = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: reporting,
+        let vm = makePlayerVM(
+            reporting: reporting,
             resolve: { _, _, _, _, _ in
                 callCount += 1
                 if callCount >= 2 { throw AppError.playback(.resourceUnavailable) }
                 return resolved
             },
-            engineFactory: { _ in engine },
-            audioSession: NoopAudioSession()
+            engine: engine
         )
         await vm.start(item: PlayerFixtures.movieDetail())
         engine.push(.playing(
@@ -2298,7 +2029,7 @@ struct PlayerViewModelTests {
             duration: CMTime(seconds: 7200, preferredTimescale: 600),
             buffered: nil
         ))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
 
         let track = try #require(vm.availableAudioTracks.first { $0.id == .jellyfinStream(4) })
         await vm.selectAudioTrack(track)
@@ -2313,15 +2044,15 @@ struct PlayerViewModelTests {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         let resolved = PlayerFixtures.resolved()
-        let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
+        let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
 
         engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
         #expect(vm.isPlaying == true)
 
         engine.push(.failed(.assetNotPlayable))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
         #expect(vm.isPlaying == false)
         #expect(vm.phase == .failed(.playback(.decodeFailed)))
     }
@@ -2330,15 +2061,11 @@ struct PlayerViewModelTests {
     func startByItemIDFetchesThenPlays() async {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
-        let builder = DeviceProfileBuilder(probe: probe)
         nonisolated(unsafe) var fetchedID: ItemID?
-        let vm = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: reporting,
+        let vm = makePlayerVM(
+            reporting: reporting,
             resolve: { _, _, _, _, _ in PlayerFixtures.resolved() },
-            engineFactory: { _ in engine },
-            audioSession: NoopAudioSession(),
+            engine: engine,
             fetchDetail: { id in fetchedID = id; return PlayerFixtures.movieDetail() }
         )
         await vm.start(itemID: ItemID(rawValue: "movie-1"))
@@ -2350,15 +2077,11 @@ struct PlayerViewModelTests {
     func startByItemIDFetchFailure() async {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
-        let builder = DeviceProfileBuilder(probe: probe)
         nonisolated(unsafe) var didResolve = false
-        let vm = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: reporting,
+        let vm = makePlayerVM(
+            reporting: reporting,
             resolve: { _, _, _, _, _ in didResolve = true; return PlayerFixtures.resolved() },
-            engineFactory: { _ in engine },
-            audioSession: NoopAudioSession(),
+            engine: engine,
             fetchDetail: { _ in throw AppError.playback(.resourceUnavailable) }
         )
         await vm.start(itemID: ItemID(rawValue: "ep-1"))
@@ -2371,22 +2094,18 @@ struct PlayerViewModelTests {
     func exitDuringResolveNeverStartsPlayback() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
-        let builder = DeviceProfileBuilder(probe: probe)
 
         // A resolve that parks until the test releases it — the exit lands mid-resolve,
         // exactly like dismissing the player while the PlaybackInfo call is in flight.
         let (gate, gateContinuation) = AsyncStream<Void>.makeStream()
         nonisolated(unsafe) var engineBuilt = false
-        let vm = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: reporting,
+        let vm = makePlayerVM(
+            reporting: reporting,
             resolve: { _, _, _, _, _ in
                 for await _ in gate { break }
                 return PlayerFixtures.resolved()
             },
-            engineFactory: { _ in engineBuilt = true; return engine },
-            audioSession: NoopAudioSession()
+            engineFactory: { _ in engineBuilt = true; return engine }
         )
 
         let startTask = Task { await vm.start(item: PlayerFixtures.movieDetail()) }
@@ -2408,10 +2127,10 @@ struct PlayerViewModelTests {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         let resolved = PlayerFixtures.resolved()
-        let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
+        let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
         engine.push(.playing(position: CMTime(seconds: 30, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
-        try await Task.sleep(for: .milliseconds(50))
+        try await engine.settle()
 
         // exitPlayer() fires stop() immediately; onDisappear fires it again as the
         // backstop. The second call must be a no-op.
@@ -2427,20 +2146,16 @@ struct PlayerViewModelTests {
     func retryDisarmsExitFence() async {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
-        let builder = DeviceProfileBuilder(probe: probe)
 
         nonisolated(unsafe) var resolveCalls = 0
-        let vm = PlayerViewModel(
-            deviceProfileBuilder: builder,
-            playbackInfo: reporting,
+        let vm = makePlayerVM(
+            reporting: reporting,
             resolve: { _, _, _, _, _ in
                 resolveCalls += 1
                 if resolveCalls == 1 { throw AppError.playback(.resourceUnavailable) }
                 return PlayerFixtures.resolved()
             },
-            engineFactory: { _ in engine },
-            audioSession: NoopAudioSession()
+            engine: engine
         )
 
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -2462,36 +2177,15 @@ struct PlayerViewModelTests {
     @Suite("NowPlaying", .serialized)
     @MainActor
     struct NowPlayingTests {
-        private func makeVM(
-            reporting: StubPlaybackReporting,
-            engine: FakePlaybackEngine,
-            resolved: ResolvedPlayback,
-            audioSession: any AudioSessionControlling = NoopAudioSession(),
-            capturedItem: @escaping @Sendable (ItemID) -> Void
-        ) -> PlayerViewModel {
-            let probe = FakeCapabilityProbe(hdr: .none, audioOutput: .stereo)
-            let builder = DeviceProfileBuilder(probe: probe)
-            return PlayerViewModel(
-                deviceProfileBuilder: builder,
-                playbackInfo: reporting,
-                resolve: { id, _, _, _, _ in
-                    capturedItem(id)
-                    return resolved
-                },
-                engineFactory: { _ in engine },
-                audioSession: audioSession
-            )
-        }
-
         @Test("PlayerViewModel populates MPNowPlayingInfoCenter on .playing")
         func vmPopulatesNowPlayingOnPlaying() async throws {
             let reporting = StubPlaybackReporting()
             let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
             let resolved = PlayerFixtures.resolved()
-            let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
-            await vm.start(item: PlayerFixtures.movieDetailNamed("Fixture Movie"))
+            let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
+            await vm.start(item: PlayerFixtures.movieDetail(title: "Fixture Movie"))
             engine.push(.playing(position: CMTime(seconds: 30, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
-            try await Task.sleep(for: .milliseconds(50))
+            try await engine.settle()
             let info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
             #expect((info[MPMediaItemPropertyTitle] as? String) == "Fixture Movie")
             #expect(((info[MPNowPlayingInfoPropertyElapsedPlaybackTime] as? Double) ?? 0.0) > 0.0)
@@ -2504,11 +2198,11 @@ struct PlayerViewModelTests {
             let reporting = StubPlaybackReporting()
             let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
             let resolved = PlayerFixtures.resolved()
-            let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
-            await vm.start(item: PlayerFixtures.movieDetailNamed("Fixture Movie"))
+            let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
+            await vm.start(item: PlayerFixtures.movieDetail(title: "Fixture Movie"))
             engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
             engine.push(.paused(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
-            try await Task.sleep(for: .milliseconds(50))
+            try await engine.settle()
             let info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
             #expect((info[MPNowPlayingInfoPropertyPlaybackRate] as? Double) == 0.0)
             await vm.stop()
@@ -2519,10 +2213,10 @@ struct PlayerViewModelTests {
             let reporting = StubPlaybackReporting()
             let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
             let resolved = PlayerFixtures.resolved()
-            let vm = makeVM(reporting: reporting, engine: engine, resolved: resolved, capturedItem: { _ in })
-            await vm.start(item: PlayerFixtures.movieDetailNamed("Fixture Movie"))
+            let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
+            await vm.start(item: PlayerFixtures.movieDetail(title: "Fixture Movie"))
             engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
-            try await Task.sleep(for: .milliseconds(50))
+            try await engine.settle()
             await vm.stop()
             #expect(MPNowPlayingInfoCenter.default().nowPlayingInfo == nil)
         }

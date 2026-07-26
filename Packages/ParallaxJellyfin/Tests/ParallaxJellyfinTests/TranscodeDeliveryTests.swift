@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import JellyfinAPI
+import ParallaxCore
 @testable import ParallaxJellyfin
 
 /// Mapping tests for the `GET /Sessions` copy-vs-reencode probe. The mapping
@@ -48,35 +49,41 @@ struct TranscodeDeliveryMappingTests {
             isAudioDirect: false,
             videoCodec: "hevc",
             audioCodec: "aac",
-            transcodeReasons: ["AudioCodecNotSupported", "ContainerNotSupported"]
+            transcodeReasons: [
+                TranscodeReason.audioCodecNotSupported.rawValue,
+                TranscodeReason.containerNotSupported.rawValue,
+            ]
         ))
     }
 
-    @Test("A full re-encode session maps both direct flags false")
-    func reencodeSessionMaps() {
+    /// The nil arm is the load-bearing one: a server that simply didn't report a flag must never be
+    /// read as "it copied the bitstream", or the debug overlay would claim a remux that isn't
+    /// happening.
+    @Test(
+        "Server direct flags map through, and an unreported flag reads as false",
+        arguments: [
+            (true as Bool?, false as Bool?, true, false),
+            (false, false, false, false),
+            (nil, nil, false, false),
+            (nil, true, false, true),
+        ] as [(Bool?, Bool?, Bool, Bool)]
+    )
+    func directFlagMapping(
+        reportedVideo: Bool?,
+        reportedAudio: Bool?,
+        expectedVideo: Bool,
+        expectedAudio: Bool
+    ) {
         let sessions = [
             session(
                 deviceID: "dev-1",
-                transcodingInfo: transcodingInfo(isVideoDirect: false, isAudioDirect: false)
+                transcodingInfo: transcodingInfo(isVideoDirect: reportedVideo, isAudioDirect: reportedAudio)
             )
         ]
         let delivery = DefaultJellyfinPlaybackClient.delivery(fromSessions: sessions, deviceID: "dev-1")
-        #expect(delivery?.isVideoDirect == false)
-        #expect(delivery?.isAudioDirect == false)
+        #expect(delivery?.isVideoDirect == expectedVideo)
+        #expect(delivery?.isAudioDirect == expectedAudio)
         #expect(delivery?.transcodeReasons == [])
-    }
-
-    @Test("Nil direct flags map to false — never claim a copy the server didn't assert")
-    func nilDirectFlagsMapFalse() {
-        let sessions = [
-            session(
-                deviceID: "dev-1",
-                transcodingInfo: transcodingInfo(isVideoDirect: nil, isAudioDirect: nil)
-            )
-        ]
-        let delivery = DefaultJellyfinPlaybackClient.delivery(fromSessions: sessions, deviceID: "dev-1")
-        #expect(delivery?.isVideoDirect == false)
-        #expect(delivery?.isAudioDirect == false)
     }
 
     @Test("A session without transcodingInfo yields nil (ffmpeg not started / direct play)")
@@ -137,25 +144,28 @@ struct PlaybackInfoServiceTranscodingDeliveryTests {
         #expect(client.transcodingDeliveryCalls == ["ps-1"])
     }
 
-    @Test("A nil delivery (no session yet) passes through as nil, not an error")
-    func nilPassesThrough() async throws {
+    /// Unlike the fire-and-forget reports this call THROWS, because the caller has to tell
+    /// "no session yet — ask again later" (nil) apart from "the probe itself failed" (throw).
+    /// Collapsing those would make the debug overlay retry forever on a dead connection.
+    @Test("nil means 'not started yet'; a transport failure is a mapped AppError")
+    func nilAndFailureAreDistinct() async throws {
         let client = FakeJellyfinPlaybackClient()
         client.transcodingDeliveryResult = .success(nil)
         let service = PlaybackInfoService(client: client)
 
-        let delivery = try await service.transcodingDelivery(playSessionID: "ps-1")
+        #expect(try await service.transcodingDelivery(playSessionID: "ps-1") == nil)
+        #expect(client.transcodingDeliveryCalls == ["ps-1"])
 
-        #expect(delivery == nil)
-    }
-
-    @Test("A transport error surfaces as a thrown AppError")
-    func transportErrorThrows() async {
-        let client = FakeJellyfinPlaybackClient()
         client.transcodingDeliveryResult = .failure(URLError(.notConnectedToInternet))
-        let service = PlaybackInfoService(client: client)
-
-        await #expect(throws: (any Error).self) {
-            _ = try await service.transcodingDelivery(playSessionID: "ps-1")
+        do {
+            _ = try await service.transcodingDelivery(playSessionID: "ps-2")
+            Issue.record("a transport failure must throw, not read as 'not started yet'")
+        } catch let error as AppError {
+            guard case .network = error else {
+                Issue.record("expected .network, got \(error)")
+                return
+            }
         }
+        #expect(client.transcodingDeliveryCalls == ["ps-1", "ps-2"])
     }
 }

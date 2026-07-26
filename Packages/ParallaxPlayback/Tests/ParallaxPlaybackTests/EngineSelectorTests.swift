@@ -2,236 +2,107 @@ import Foundation
 import Testing
 import ParallaxCore
 import ParallaxPlayback
+import ParallaxPlaybackTestSupport
 
-// Helpers to build PlaybackHints concisely in matrix tests.
-private extension PlaybackHints {
-    static func avKitHappy(
-        scheme: String = "https",
-        container: Container = .mp4,
-        video: VideoCodec = .h264,
-        audio: AudioCodec = .aac
-    ) -> PlaybackHints {
-        PlaybackHints(scheme: scheme, container: container, videoCodec: video, audioCodec: audio, subtitleFormats: [])
-    }
-
-    static func with(
-        scheme: String? = "https",
-        container: Container? = .mp4,
-        video: VideoCodec? = .h264,
-        audio: AudioCodec? = .aac,
-        subtitles: [SubtitleFormat] = []
-    ) -> PlaybackHints {
-        PlaybackHints(scheme: scheme, container: container, videoCodec: video, audioCodec: audio, subtitleFormats: subtitles)
-    }
-}
-
-@Suite("EngineSelector matrix")
+/// The selector is a pure routing function over five axes, so the suite is written as
+/// the routing matrix it is. The per-axis tests are *exhaustive over the enum* — a new
+/// `Container`/`VideoCodec`/`AudioCodec`/`SubtitleFormat` case added to ParallaxCore
+/// without a matrix entry fails here instead of silently routing to AVKit and failing
+/// on a device.
+@Suite("EngineSelector routing matrix")
 struct EngineSelectorTests {
 
-    // MARK: — AVKit happy paths
-
-    @Test("mp4/h264/aac over https → .avKit")
-    func mp4H264AAC() {
-        let hints = PlaybackHints.avKitHappy()
-        #expect(EngineSelector.select(hints: hints) == .avKit)
+    private func expected(_ isAVKitPlayable: Bool) -> PlaybackEngineID {
+        isAVKitPlayable ? .avKit : .vlcKit
     }
 
-    @Test("mp4/hevc/eac3 → .avKit (HEVC + Dolby Digital Plus are AVPlayer-playable)")
-    func mp4HevcEAC3() {
-        let hints = PlaybackHints.avKitHappy(video: .hevc, audio: .eac3)
-        #expect(EngineSelector.select(hints: hints) == .avKit)
+    // MARK: — Per-axis, exhaustive over every case ParallaxCore declares
+
+    @Test("container routing agrees with the AVKit whitelist for every container",
+          arguments: Container.allCases)
+    func containerRouting(container: Container) {
+        let hints = PlaybackHints.fixture(container: container, video: .h264, audio: .aac)
+        #expect(EngineSelector.select(hints: hints)
+                == expected(PlaybackCapabilityMatrix.avKitContainers.contains(container)))
     }
 
-    @Test("mov/h264/ac3 → .avKit")
-    func movH264AC3() {
-        let hints = PlaybackHints.avKitHappy(container: .mov, audio: .ac3)
-        #expect(EngineSelector.select(hints: hints) == .avKit)
+    @Test("video-codec routing agrees with the AVKit whitelist for every codec",
+          arguments: VideoCodec.allCases)
+    func videoCodecRouting(codec: VideoCodec) {
+        let hints = PlaybackHints.fixture(container: .mp4, video: codec, audio: .aac)
+        #expect(EngineSelector.select(hints: hints)
+                == expected(PlaybackCapabilityMatrix.avKitVideoCodecs.contains(codec)))
     }
 
-    @Test("hls/h264/aac → .avKit (HLS is AVPlayer's native format)")
-    func hlsH264AAC() {
-        let hints = PlaybackHints.avKitHappy(container: .hls)
-        #expect(EngineSelector.select(hints: hints) == .avKit)
+    @Test("audio-codec routing agrees with the AVKit whitelist for every codec",
+          arguments: AudioCodec.allCases)
+    func audioCodecRouting(codec: AudioCodec) {
+        let hints = PlaybackHints.fixture(container: .mp4, video: .h264, audio: codec)
+        #expect(EngineSelector.select(hints: hints)
+                == expected(PlaybackCapabilityMatrix.avKitAudioCodecs.contains(codec)))
     }
 
-    @Test("mp4/h264/mp3 → .avKit")
-    func mp4H264MP3() {
-        let hints = PlaybackHints.avKitHappy(audio: .mp3)
-        #expect(EngineSelector.select(hints: hints) == .avKit)
+    @Test("subtitle routing agrees with the AVKit whitelist for every format",
+          arguments: SubtitleFormat.allCases)
+    func subtitleRouting(format: SubtitleFormat) {
+        let hints = PlaybackHints.fixture(subtitles: [format])
+        #expect(EngineSelector.select(hints: hints)
+                == expected(PlaybackCapabilityMatrix.avKitSubtitleFormats.contains(format)))
     }
 
-    @Test("all-nil hints → .avKit (no disqualifying signal; transcode produces HLS)")
+    /// One disqualifying format in a mixed list is enough — the manifest can't be split
+    /// across engines.
+    @Test("a single non-AVPlayer subtitle format in a mixed list still forces VLC",
+          arguments: [[SubtitleFormat.vtt, .ass], [.srt, .pgs], [.vtt, .srt, .vobsub]])
+    func mixedSubtitleListsFollowTheWorstCase(formats: [SubtitleFormat]) {
+        #expect(EngineSelector.select(hints: .fixture(subtitles: formats)) == .vlcKit)
+    }
+
+    // MARK: — Absent hints
+
+    /// Nothing known is not a reason to reach for VLC: the transcode path delivers HLS,
+    /// which is AVPlayer's native format.
+    @Test("hints with no signal at all default to AVKit")
     func allNilHints() {
-        let hints = PlaybackHints(scheme: nil, container: nil, videoCodec: nil, audioCodec: nil, subtitleFormats: [])
-        #expect(EngineSelector.select(hints: hints) == .avKit)
+        #expect(EngineSelector.select(hints: .unknown) == .avKit)
     }
 
-    @Test("nil container with AVKit-playable codec → .avKit")
-    func nilContainerAVKitCodec() {
-        let hints = PlaybackHints.with(container: nil, video: .h264, audio: .aac)
-        #expect(EngineSelector.select(hints: hints) == .avKit)
+    @Test("an unknown axis never disqualifies on its own", arguments: [
+        ("no container", PlaybackHints.fixture(container: nil)),
+        ("no video codec", PlaybackHints.fixture(video: nil)),
+        ("no audio codec", PlaybackHints.fixture(audio: nil)),
+        ("no scheme", PlaybackHints.fixture(scheme: nil)),
+    ])
+    func nilAxisDoesNotForceVLC(label: String, hints: PlaybackHints) {
+        #expect(EngineSelector.select(hints: hints) == .avKit, "\(label) should stay on AVKit")
     }
 
-    @Test("vtt subtitles alone do not trigger .vlcKit")
-    func vttSubtitleAVKit() {
-        let hints = PlaybackHints.with(subtitles: [.vtt])
-        #expect(EngineSelector.select(hints: hints) == .avKit)
-    }
+    // MARK: — Priority: the scheme check outranks every format check
 
-    @Test("srt subtitles alone do not trigger .vlcKit")
-    func srtSubtitleAVKit() {
-        let hints = PlaybackHints.with(subtitles: [.srt])
-        #expect(EngineSelector.select(hints: hints) == .avKit)
-    }
-
-    // MARK: — VLCKit routing: smb scheme
-
-    @Test("smb scheme → .vlcKit regardless of codec/container")
-    func smbSchemeVLC() {
-        let hints = PlaybackHints.with(scheme: "smb", container: .mp4, video: .h264, audio: .aac)
+    /// The discriminating case: every *other* axis says AVKit (mp4 / h264 / aac / vtt),
+    /// so a `.vlcKit` result can only come from the scheme rule. AVPlayer cannot open
+    /// `smb://` at all, which is why this rule has to win.
+    @Test("smb wins over hints that would otherwise route to AVKit")
+    func smbSchemeOutranksAVKitFriendlyHints() {
+        let hints = PlaybackHints.fixture(
+            scheme: "smb", container: .mp4, video: .h264, audio: .aac, subtitles: [.vtt]
+        )
         #expect(EngineSelector.select(hints: hints) == .vlcKit)
     }
 
-    @Test("smb scheme + mkv/hevc still → .vlcKit (scheme wins)")
-    func smbSchemeWithMKV() {
-        let hints = PlaybackHints.with(scheme: "smb", container: .mkv, video: .hevc, audio: .dts)
-        #expect(EngineSelector.select(hints: hints) == .vlcKit)
+    @Test("only the smb scheme routes on scheme alone",
+          arguments: ["http", "https", "file", "SMB", "smbx", ""])
+    func otherSchemesDoNotForceVLC(scheme: String) {
+        #expect(EngineSelector.select(hints: .fixture(scheme: scheme)) == .avKit)
     }
 
-    // MARK: — VLCKit routing: ASS subtitles
+    // MARK: — 5d regression guard
 
-    @Test("ASS subtitle format → .vlcKit")
-    func assSubtitleVLC() {
-        let hints = PlaybackHints.with(subtitles: [.ass])
-        #expect(EngineSelector.select(hints: hints) == .vlcKit)
-    }
-
-    @Test("ASS + VTT mix → .vlcKit (ASS is disqualifying)")
-    func assAndVTTSubtitleVLC() {
-        let hints = PlaybackHints.with(subtitles: [.vtt, .ass])
-        #expect(EngineSelector.select(hints: hints) == .vlcKit)
-    }
-
-    @Test("PGS subtitle → .vlcKit (image-based, not AVPlayer-renderable)")
-    func pgsSubtitleVLC() {
-        let hints = PlaybackHints.with(subtitles: [.pgs])
-        #expect(EngineSelector.select(hints: hints) == .vlcKit)
-    }
-
-    @Test("VobSub subtitle → .vlcKit (image-based, not AVPlayer-renderable)")
-    func vobSubSubtitleVLC() {
-        let hints = PlaybackHints.with(subtitles: [.vobsub])
-        #expect(EngineSelector.select(hints: hints) == .vlcKit)
-    }
-
-    // MARK: — VLCKit routing: non-AVPlayer container
-
-    @Test("mkv container → .vlcKit")
-    func mkvContainerVLC() {
-        let hints = PlaybackHints.with(container: .mkv, video: .h264, audio: .aac)
-        #expect(EngineSelector.select(hints: hints) == .vlcKit)
-    }
-
-    @Test("webm container → .vlcKit")
-    func webmContainerVLC() {
-        let hints = PlaybackHints.with(container: .webm, video: .vp9, audio: .opus)
-        #expect(EngineSelector.select(hints: hints) == .vlcKit)
-    }
-
-    @Test("ts container → .vlcKit (raw MPEG-TS without HLS envelope)")
-    func tsContainerVLC() {
-        let hints = PlaybackHints.with(container: .ts, video: .h264, audio: .aac)
-        #expect(EngineSelector.select(hints: hints) == .vlcKit)
-    }
-
-    @Test("flac container → .vlcKit")
-    func flacContainerVLC() {
-        let hints = PlaybackHints.with(container: .flac, video: nil, audio: .flac)
-        #expect(EngineSelector.select(hints: hints) == .vlcKit)
-    }
-
-    // MARK: — VLCKit routing: non-AVPlayer video codec
-
-    @Test("AV1 video codec → .vlcKit")
-    func av1VideoCodecVLC() {
-        let hints = PlaybackHints.with(container: .mp4, video: .av1, audio: .aac)
-        #expect(EngineSelector.select(hints: hints) == .vlcKit)
-    }
-
-    @Test("VP9 video codec → .vlcKit")
-    func vp9VideoCodecVLC() {
-        let hints = PlaybackHints.with(container: .mp4, video: .vp9, audio: .aac)
-        #expect(EngineSelector.select(hints: hints) == .vlcKit)
-    }
-
-    // MARK: — VLCKit routing: non-AVPlayer audio codec
-
-    @Test("DTS audio codec → .vlcKit")
-    func dtsAudioCodecVLC() {
-        let hints = PlaybackHints.with(container: .mp4, video: .h264, audio: .dts)
-        #expect(EngineSelector.select(hints: hints) == .vlcKit)
-    }
-
-    @Test("TrueHD audio codec → .vlcKit")
-    func trueHDAudioCodecVLC() {
-        let hints = PlaybackHints.with(container: .mp4, video: .h264, audio: .trueHD)
-        #expect(EngineSelector.select(hints: hints) == .vlcKit)
-    }
-
-    @Test("FLAC audio codec → .vlcKit")
-    func flacAudioCodecVLC() {
-        let hints = PlaybackHints.with(container: .mp4, video: .h264, audio: .flac)
-        #expect(EngineSelector.select(hints: hints) == .vlcKit)
-    }
-
-    @Test("Opus audio codec → .vlcKit")
-    func opusAudioCodecVLC() {
-        let hints = PlaybackHints.with(container: .mp4, video: .h264, audio: .opus)
-        #expect(EngineSelector.select(hints: hints) == .vlcKit)
-    }
-
-    // MARK: — Priority order verification
-
-    @Test("smb scheme is checked before subtitle format (scheme wins)")
-    func smbBeforeSubtitle() {
-        // Even with only VTT (normally avKit), smb still routes to vlcKit
-        let hints = PlaybackHints(scheme: "smb", container: .mp4, videoCodec: .h264, audioCodec: .aac, subtitleFormats: [.vtt])
-        #expect(EngineSelector.select(hints: hints) == .vlcKit)
-    }
-
-    @Test("Scheme-check fires before container-check")
-    func smbBeforeContainerCheck() {
-        // smb + non-AVKit container: scheme is checked first, result is same (.vlcKit)
-        let hints = PlaybackHints(scheme: "smb", container: .mkv, videoCodec: .h264, audioCodec: .aac, subtitleFormats: [])
-        #expect(EngineSelector.select(hints: hints) == .vlcKit)
-    }
-
-    // MARK: — 5d tiered-profile routing contract
-
-    @Test("mkv+vc1 → .vlcKit (VLC direct-play entry matches; vc1 ∉ AVKit video codecs)")
-    func mkvVC1DirectPlayVLC() {
-        let hints = PlaybackHints.with(container: .mkv, video: .vc1, audio: .aac)
-        #expect(EngineSelector.select(hints: hints) == .vlcKit)
-    }
-
-    @Test("mkv+mpeg2video → .vlcKit (VLC direct-play entry matches)")
-    func mkvMpeg2VideoDirectPlayVLC() {
-        let hints = PlaybackHints.with(container: .mkv, video: .mpeg2video, audio: .aac)
-        #expect(EngineSelector.select(hints: hints) == .vlcKit)
-    }
-
-    @Test("hls (transcode delivery) → .avKit regardless of source codec")
+    /// After the server remuxes mkv+hevc it *delivers* HLS; the selector sees the
+    /// delivered stream, never the source. Routing this to VLC was the 5d bug.
+    @Test("an HLS transcode delivery routes to AVKit even with no codec hints")
     func hlsTranscodeDeliveryAVKit() {
-        // After server remuxes mkv+hevc, it delivers HLS; the selector sees the
-        // delivered stream, not the source — this is the regression guard for 5d.
-        let hints = PlaybackHints(scheme: "https", container: .hls,
-                                  videoCodec: nil, audioCodec: nil, subtitleFormats: [])
+        let hints = PlaybackHints.fixture(container: .hls, video: nil, audio: nil)
         #expect(EngineSelector.select(hints: hints) == .avKit)
-    }
-
-    @Test("avi+mpeg2video → .vlcKit")
-    func aviMpeg2VLC() {
-        let hints = PlaybackHints.with(container: .avi, video: .mpeg2video, audio: .mp3)
-        #expect(EngineSelector.select(hints: hints) == .vlcKit)
     }
 }

@@ -5,89 +5,87 @@ import Foundation
 @Suite("StallDetector")
 struct StallDetectorTests {
 
-    /// Feed `count` identical (frozen) samples after an initial baseline, returning whether any
-    /// observe tripped and how many samples it took.
-    private func feedFrozen(_ count: Int, timeMs: Int32 = 100, readBytes: Int = 5000) -> Bool {
+    private let threshold = StallDetector.tripThreshold
+
+    /// Feed `count` identical samples into a fresh detector; returns whether any tripped.
+    private func feedFrozen(_ count: Int) -> Bool {
         var d = StallDetector()
         var tripped = false
         for _ in 0..<count {
-            tripped = d.observe(timeMs: timeMs, readBytes: readBytes) || tripped
+            tripped = d.observe(timeMs: 100, readBytes: 5000) || tripped
         }
         return tripped
     }
 
-    @Test("both frozen: trips exactly at the 6th frozen poll, not before")
+    /// Loop bounds are driven off `tripThreshold` so a deliberate retune can't leave a
+    /// silently-wrong "trips at 6" assertion behind.
+    @Test("both axes frozen: trips on exactly the tripThreshold-th frozen comparison")
     func bothFrozenTripsAtThreshold() {
         var d = StallDetector()
-        // Sample 1 sets the baseline (no comparison) → false.
+        // The first sample only establishes the baseline — nothing to compare against.
         #expect(d.observe(timeMs: 100, readBytes: 5000) == false)
-        // Frozen comparisons 1…5 accumulate but don't trip.
-        for _ in 0..<5 {
-            #expect(d.observe(timeMs: 100, readBytes: 5000) == false)
+        for i in 1..<threshold {
+            #expect(d.observe(timeMs: 100, readBytes: 5000) == false,
+                    "frozen comparison \(i) must not trip yet")
         }
-        // The 6th frozen comparison reaches tripThreshold.
         #expect(d.observe(timeMs: 100, readBytes: 5000) == true)
     }
 
-    @Test("tripThreshold is 6 (3s at the 500ms poll)")
-    func thresholdIsSix() {
-        #expect(StallDetector.tripThreshold == 6)
-        // 7 identical samples = baseline + 6 frozen comparisons → trips.
-        #expect(feedFrozen(7))
-        // 6 identical samples = baseline + 5 frozen comparisons → not yet.
-        #expect(feedFrozen(6) == false)
+    /// 6 polls × the 500ms VLC progress poll = 3s frozen: long enough to ride out a
+    /// keyframe hitch, far short of the 45s `StallWatchdog` failure.
+    @Test("the baseline sample never counts toward the threshold")
+    func baselineIsFree() {
+        #expect(threshold == 6)
+        #expect(feedFrozen(threshold + 1))          // baseline + threshold comparisons
+        #expect(feedFrozen(threshold) == false)     // one comparison short
     }
 
-    @Test("bytes advancing while time is frozen: NOT a stall (network alive, buffer refilling)")
-    func bytesAdvancingIsNotStalled() {
+    @Test("progress on either axis alone is not a stall", arguments: [
+        ("bytes climbing, clock frozen (buffer refilling)", true),
+        ("clock advancing, bytes frozen (playing out of buffer)", false),
+    ])
+    func oneAxisAdvancingIsNotStalled(label: String, bytesAdvance: Bool) {
         var d = StallDetector()
-        _ = d.observe(timeMs: 100, readBytes: 5000)   // baseline
-        // Time pinned (decoder starving) but the demux counter climbs every poll → the network is
-        // still feeding the buffer; let it recover, never trip.
-        for i in 1...20 {
-            #expect(d.observe(timeMs: 100, readBytes: 5000 + i * 1000) == false)
+        _ = d.observe(timeMs: 100, readBytes: 5000)
+        for i in 1...(threshold * 3) {
+            let stalled = bytesAdvance
+                ? d.observe(timeMs: 100, readBytes: 5000 + i * 1000)
+                : d.observe(timeMs: 100 + Int32(i) * 500, readBytes: 5000)
+            #expect(stalled == false, "\(label): tripped on poll \(i)")
         }
     }
 
-    @Test("time advancing while bytes are frozen: NOT a stall (playing out of buffer / EOF tail)")
-    func timeAdvancingIsNotStalled() {
-        var d = StallDetector()
-        _ = d.observe(timeMs: 100, readBytes: 5000)   // baseline
-        // The clock advances (frames rendering from the buffer) while the demux counter is static —
-        // draining an already-read tail. Never a stall.
-        for i in 1...20 {
-            #expect(d.observe(timeMs: 100 + Int32(i) * 500, readBytes: 5000) == false)
-        }
-    }
-
-    @Test("a single advance resets the frozen run")
+    @Test("a single advance clears the frozen run")
     func advanceResetsCounter() {
         var d = StallDetector()
-        _ = d.observe(timeMs: 100, readBytes: 5000)   // baseline
-        for _ in 0..<5 { _ = d.observe(timeMs: 100, readBytes: 5000) }   // 5 frozen, one short
-        // Progress on either axis clears the run.
-        #expect(d.observe(timeMs: 600, readBytes: 9000) == false)
-        // Must now take a fresh full run of 6 to trip.
-        for _ in 0..<5 { #expect(d.observe(timeMs: 600, readBytes: 9000) == false) }
+        _ = d.observe(timeMs: 100, readBytes: 5000)
+        for _ in 0..<(threshold - 1) { _ = d.observe(timeMs: 100, readBytes: 5000) }
+        #expect(d.observe(timeMs: 600, readBytes: 9000) == false)   // progress on both axes
+        for _ in 0..<(threshold - 1) {
+            #expect(d.observe(timeMs: 600, readBytes: 9000) == false)
+        }
         #expect(d.observe(timeMs: 600, readBytes: 9000) == true)
     }
 
     @Test("stays tripped while the freeze persists")
     func staysTrippedWhileFrozen() {
         var d = StallDetector()
-        for _ in 0..<7 { _ = d.observe(timeMs: 100, readBytes: 5000) }   // now tripped
+        for _ in 0...threshold { _ = d.observe(timeMs: 100, readBytes: 5000) }
         #expect(d.observe(timeMs: 100, readBytes: 5000) == true)
         #expect(d.observe(timeMs: 100, readBytes: 5000) == true)
     }
 
-    @Test("reset() drops the baseline and counter so a fresh window starts clean")
+    /// Called on pause/seek/load, where the next sample must not be compared against a
+    /// pre-seek baseline that would read as frozen.
+    @Test("reset() drops the baseline and the counter")
     func resetClearsState() {
         var d = StallDetector()
-        for _ in 0..<5 { _ = d.observe(timeMs: 100, readBytes: 5000) }   // 4 frozen accumulated
+        for _ in 0..<threshold { _ = d.observe(timeMs: 100, readBytes: 5000) }
         d.reset()
-        // Post-reset the next sample is a fresh baseline; it takes a full run of 6 again.
-        #expect(d.observe(timeMs: 100, readBytes: 5000) == false)   // new baseline
-        for _ in 0..<5 { #expect(d.observe(timeMs: 100, readBytes: 5000) == false) }
+        #expect(d.observe(timeMs: 100, readBytes: 5000) == false)   // fresh baseline
+        for _ in 0..<(threshold - 1) {
+            #expect(d.observe(timeMs: 100, readBytes: 5000) == false)
+        }
         #expect(d.observe(timeMs: 100, readBytes: 5000) == true)
     }
 }

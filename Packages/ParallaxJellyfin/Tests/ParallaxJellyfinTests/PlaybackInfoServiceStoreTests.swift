@@ -4,45 +4,26 @@ import Testing
 
 @Suite("PlaybackInfoServiceStore — per-server memoization")
 struct PlaybackInfoServiceStoreTests {
-    private func session(id: String, token: String) -> Session {
-        Session(
-            id: ServerID(rawValue: id),
-            data: JellyfinServerData(
-                serverURL: URL(string: "https://j.example.com")!,
-                serverName: "Home",
-                user: UserSnapshot(id: "u-\(id)", name: "alice", serverLastUpdatedAt: nil)
-            ),
-            accessToken: token
-        )
-    }
-
-    @Test("Same server + token returns the same service instance")
-    func memoizedPerServer() async {
+    @Test("Playback services are memoized per server and rebuilt on a rotated token")
+    func memoizationContract() async {
         let factory = FakeJellyfinPlaybackClientFactory()
         let store = PlaybackInfoServiceStore(clientFactory: factory)
-        let s = session(id: "s1", token: "tok-1")
-        let a = await store.service(for: s)
-        let b = await store.service(for: s)
-        #expect(a === b)
+        await verifyMemoization { await store.service(for: $0) }
+    }
+
+    /// A rotated token must reach the network: a reused client would keep sending the dead one and
+    /// every playback start would 401.
+    @Test("Only a cache miss builds a client")
+    func clientConstructionFollowsTheCache() async {
+        let factory = FakeJellyfinPlaybackClientFactory()
+        let store = PlaybackInfoServiceStore(clientFactory: factory)
+
+        _ = await store.service(for: JellyfinFixtures.session(id: "s1", token: "tok-1"))
+        _ = await store.service(for: JellyfinFixtures.session(id: "s1", token: "tok-1"))
         #expect(factory.makeCalls == [ServerID(rawValue: "s1")])
-    }
 
-    @Test("A rotated token rebuilds the service with a fresh client")
-    func rotatedTokenRebuilds() async {
-        let factory = FakeJellyfinPlaybackClientFactory()
-        let store = PlaybackInfoServiceStore(clientFactory: factory)
-        let first = await store.service(for: session(id: "s1", token: "tok-1"))
-        let second = await store.service(for: session(id: "s1", token: "tok-2"))
-        #expect(first !== second)
-        #expect(factory.makeCalls.count == 2)
-    }
-
-    @Test("Different servers get different services")
-    func distinctServers() async {
-        let factory = FakeJellyfinPlaybackClientFactory()
-        let store = PlaybackInfoServiceStore(clientFactory: factory)
-        let a = await store.service(for: session(id: "s1", token: "tok-1"))
-        let b = await store.service(for: session(id: "s2", token: "tok-1"))
-        #expect(a !== b)
+        _ = await store.service(for: JellyfinFixtures.session(id: "s1", token: "tok-2"))
+        _ = await store.service(for: JellyfinFixtures.session(id: "s2", token: "tok-1"))
+        #expect(factory.makeCalls.count == 3)
     }
 }

@@ -2,10 +2,15 @@ import Foundation
 import JellyfinAPI
 @testable import ParallaxJellyfin
 
+/// Every method body runs under `lock`: Quick Connect yields from a detached Task, so the stream
+/// consumer and a test reading the call records can overlap.
 final class FakeJellyfinAuthClient: JellyfinAuthClient, @unchecked Sendable {
+    private let lock = NSLock()
+
     let serverURL: URL
 
-    // Programmable hooks. Each Result is consumed once per call.
+    // Programmable hooks. Each Result is REPLAYED on every call, not consumed — a test can drive
+    // the same method twice and get the same answer.
     var passwordSignInResult: Result<AuthenticationResult, Error> = .failure(FakeError.notConfigured)
     var quickConnectSignInResult: Result<AuthenticationResult, Error> = .failure(FakeError.notConfigured)
     var signOutResult: Result<Void, Error> = .success(())
@@ -13,11 +18,13 @@ final class FakeJellyfinAuthClient: JellyfinAuthClient, @unchecked Sendable {
     var quickConnectEventsToYield: [Result<QuickConnect.Event, Error>] = []
 
     // Call records for assertions.
-    private(set) var passwordSignInCalls: [(username: String, password: String)] = []
-    private(set) var quickConnectSignInCalls: [String] = []
-    private(set) var signOutCalls: [String] = []
-    private(set) var publicSystemInfoCallCount = 0
-    private(set) var quickConnectEventStreamCount = 0
+    private var recordedPasswordSignInCalls: [(username: String, password: String)] = []
+    private var recordedQuickConnectSignInCalls: [String] = []
+    private var recordedSignOutCalls: [String] = []
+
+    var passwordSignInCalls: [(username: String, password: String)] { lock.withLock { recordedPasswordSignInCalls } }
+    var quickConnectSignInCalls: [String] { lock.withLock { recordedQuickConnectSignInCalls } }
+    var signOutCalls: [String] { lock.withLock { recordedSignOutCalls } }
 
     enum FakeError: Error { case notConfigured }
 
@@ -26,28 +33,32 @@ final class FakeJellyfinAuthClient: JellyfinAuthClient, @unchecked Sendable {
     }
 
     func signIn(username: String, password: String) async throws -> AuthenticationResult {
-        passwordSignInCalls.append((username, password))
-        return try passwordSignInResult.get()
+        try lock.withLock {
+            recordedPasswordSignInCalls.append((username, password))
+            return try passwordSignInResult.get()
+        }
     }
 
     func signIn(quickConnectSecret: String) async throws -> AuthenticationResult {
-        quickConnectSignInCalls.append(quickConnectSecret)
-        return try quickConnectSignInResult.get()
+        try lock.withLock {
+            recordedQuickConnectSignInCalls.append(quickConnectSecret)
+            return try quickConnectSignInResult.get()
+        }
     }
 
     func signOut(accessToken: String) async throws {
-        signOutCalls.append(accessToken)
-        try signOutResult.get()
+        try lock.withLock {
+            recordedSignOutCalls.append(accessToken)
+            try signOutResult.get()
+        }
     }
 
     func fetchPublicSystemInfo() async throws -> PublicSystemInfo {
-        publicSystemInfoCallCount += 1
-        return try publicSystemInfoResult.get()
+        try lock.withLock { try publicSystemInfoResult.get() }
     }
 
     func quickConnectEvents() -> AsyncThrowingStream<QuickConnect.Event, Error> {
-        quickConnectEventStreamCount += 1
-        let events = quickConnectEventsToYield
+        let events = lock.withLock { quickConnectEventsToYield }
         return AsyncThrowingStream { continuation in
             Task {
                 for event in events {
@@ -66,18 +77,20 @@ final class FakeJellyfinAuthClient: JellyfinAuthClient, @unchecked Sendable {
 }
 
 final class FakeJellyfinClientFactory: JellyfinClientFactory, @unchecked Sendable {
+    private let lock = NSLock()
     private var clientsByURL: [URL: FakeJellyfinAuthClient] = [:]
-    private(set) var makeCalls: [URL] = []
 
+    /// One client per server URL, so a test programs the same instance the manager will use.
     func client(for url: URL) -> FakeJellyfinAuthClient {
-        if let existing = clientsByURL[url] { return existing }
-        let new = FakeJellyfinAuthClient(serverURL: url)
-        clientsByURL[url] = new
-        return new
+        lock.withLock {
+            if let existing = clientsByURL[url] { return existing }
+            let new = FakeJellyfinAuthClient(serverURL: url)
+            clientsByURL[url] = new
+            return new
+        }
     }
 
     func make(serverURL: URL) async -> JellyfinAuthClient {
-        makeCalls.append(serverURL)
-        return client(for: serverURL)
+        client(for: serverURL)
     }
 }
