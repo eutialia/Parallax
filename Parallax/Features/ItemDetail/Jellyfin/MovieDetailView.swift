@@ -129,7 +129,7 @@ struct MovieDetailView: View {
         .task {
             if viewModel == nil {
                 let repo = await deps.jellyfinLibraryRepoFactory(session)
-                viewModel = MovieDetailViewModel(repo: repo, itemID: itemID, userDataActions: userDataActions)
+                viewModel = MovieDetailViewModel(repo: repo, itemID: itemID, source: .jellyfin(session.id), userDataActions: userDataActions)
                 await viewModel?.load()
             }
         }

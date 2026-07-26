@@ -4,7 +4,7 @@ import ParallaxCore
 import ParallaxJellyfin
 @testable import Parallax
 
-@Suite("Merged library list")
+@Suite("Grouped library list")
 @MainActor
 struct MergedLibraryTests {
     // MARK: - Fixtures
@@ -28,63 +28,106 @@ struct MergedLibraryTests {
         )
     }
 
-    private func collection(_ id: String, _ name: String) -> MediaCollection {
-        MediaCollection(id: CollectionID(rawValue: id), name: name, collectionType: .movies, primaryTag: nil)
+    private func collection(
+        _ id: String,
+        _ name: String,
+        type: CollectionType = .movies
+    ) -> MediaCollection {
+        MediaCollection(id: CollectionID(rawValue: id), name: name, collectionType: type, primaryTag: nil)
     }
 
-    /// A Jellyfin repo factory keyed by session id, so the merge order + Jellyfin tagging are
-    /// observable. Only Jellyfin collections flow through a repo — SMB libraries are the configured
-    /// shares themselves (one `LibraryEntry` per share, network-free), so they're not faked here.
+    /// A Jellyfin repo factory keyed by session id, so per-server grouping is observable. Only
+    /// Jellyfin collections flow through a repo — SMB libraries are the configured shares themselves
+    /// (one `LibraryEntry` per share, network-free), so they're not faked here. A session id absent
+    /// from `failing` succeeds with its collections; a present one throws.
     private func jellyfinRepo(
-        _ bySession: [ServerID: [MediaCollection]]
+        _ bySession: [ServerID: [MediaCollection]],
+        failing: Set<ServerID> = []
     ) -> @Sendable (Session) async -> any MediaRepository {
         { session in
             let repo = FakeMediaRepository()
-            repo.collectionsResult = .success(bySession[session.id] ?? [])
+            if failing.contains(session.id) {
+                repo.collectionsResult = .failure(AppError.network(URLError(.notConnectedToInternet)))
+            } else {
+                repo.collectionsResult = .success(bySession[session.id] ?? [])
+            }
             return repo
         }
     }
 
-    /// A Jellyfin repo factory whose `collections()` always throws — the offline / server-down case
-    /// that drives `jellyfinCollectionsFailed`.
-    private func failingJellyfinRepo() -> @Sendable (Session) async -> any MediaRepository {
-        { _ in
-            let repo = FakeMediaRepository()
-            repo.collectionsResult = .failure(AppError.network(URLError(.notConnectedToInternet)))
-            return repo
-        }
-    }
+    // MARK: - Section order
 
-    // MARK: - Tests
-
-    @Test("Jellyfin + one SMB server: Jellyfin collections first, then one entry per SMB share")
-    func mergesBothSources() async {
+    @Test("Jellyfin sections rank above SMB even when an SMB server was added FIRST")
+    func jellyfinOutranksSMBRegardlessOfAddOrder() async {
+        // The real config that exposed this: the NAS was added before the Jellyfin server, so pure
+        // add order put a metadata-less file wall above the app's primary source.
         let jSession = session("jelly")
-        let smb = smbServer("nas-1", host: "nas.local", shares: ["Films", "Series"])
-        let repo = jellyfinRepo([jSession.id: [collection("c1", "Movies"), collection("c2", "Shows")]])
+        let nas1 = smbServer("nas-1", host: "nas1.local", shares: ["Films"])
+        let nas2 = smbServer("nas-2", host: "nas2.local", shares: ["Archive"])
+        let repo = jellyfinRepo([jSession.id: [collection("c1", "Movies")]])
 
         let outcome = await MergedLibrary.resolve(
-            jellyfinSession: jSession,
-            smbServers: [smb],
+            sessions: [jSession],
+            servers: [nas1, jSession.persisted, nas2],
             jellyfinRepo: repo
         )
-        let entries = outcome.entries
 
-        #expect(entries.count == 4)
-        // Order: Jellyfin collections first, then the SMB shares in configured order.
-        #expect(entries.map(\.collection.name) == ["Movies", "Shows", "Films", "Series"])
+        #expect(outcome.groups.map(\.id) == [
+            .jellyfin(jSession.id), .smb(nas1.id), .smb(nas2.id),
+        ])
+        #expect(outcome.groups.map(\.title) == ["Server jelly", "nas1.local", "nas2.local"])
+        // The flattened view (stale-tab snapping reads it) follows the same order.
+        #expect(outcome.entries.map(\.collection.name) == ["Movies", "Films", "Archive"])
+        #expect(outcome.hasFailures == false)
+    }
 
-        // First two are Jellyfin-sourced, last two SMB-sourced.
-        let sources = entries.map(\.source.sourceID)
-        #expect(sources == [
-            .jellyfin(jSession.id), .jellyfin(jSession.id),
-            .smb(smb.id), .smb(smb.id),
+    @Test("Within a kind, sections keep the order the user added them")
+    func addOrderIsTheTieBreakWithinAKind() async {
+        // Two Jellyfin servers and two NAS boxes, added interleaved. Ranking by kind must not
+        // scramble each kind's internal add order — nor let the concurrent fan-out decide it.
+        let first = session("first")
+        let second = session("second")
+        let nasA = smbServer("nas-a", host: "a.local", shares: ["A"])
+        let nasB = smbServer("nas-b", host: "b.local", shares: ["B"])
+        let repo = jellyfinRepo([
+            first.id: [collection("c1", "Movies")],
+            second.id: [collection("c2", "Shows")],
         ])
 
-        // No two entries collide on a LibraryRef (the source disambiguates).
-        #expect(Set(entries.map(\.id)).count == entries.count)
-        // A successful fetch is never a stall.
-        #expect(outcome.jellyfinCollectionsFailed == false)
+        let outcome = await MergedLibrary.resolve(
+            sessions: [first, second],
+            servers: [nasA, second.persisted, nasB, first.persisted],
+            jellyfinRepo: repo
+        )
+
+        // Jellyfin band in add order (second was added before first), then the SMB band likewise.
+        #expect(outcome.groups.map(\.id) == [
+            .jellyfin(second.id), .jellyfin(first.id), .smb(nasA.id), .smb(nasB.id),
+        ])
+    }
+
+    // MARK: - No cross-server merging
+
+    @Test("Two servers with identically named libraries stay SEPARATE groups with distinct refs")
+    func sameNamedLibrariesAreNeverMerged() async {
+        let a = session("a")
+        let b = session("b")
+        let repo = jellyfinRepo([
+            a.id: [collection("c1", "Movies"), collection("c2", "Shows")],
+            b.id: [collection("c1", "Movies")],
+        ])
+
+        let outcome = await MergedLibrary.resolve(
+            sessions: [a, b],
+            servers: [a.persisted, b.persisted],
+            jellyfinRepo: repo
+        )
+
+        #expect(outcome.groups.count == 2)
+        // "Movies" appears twice — once per server — rather than being unioned into one library.
+        #expect(outcome.entries.filter { $0.collection.name == "Movies" }.count == 2)
+        // Even sharing a raw CollectionID, the source tag keeps their tab identities distinct.
+        #expect(Set(outcome.entries.map(\.id)).count == outcome.entries.count)
     }
 
     @Test("A Jellyfin collection and an SMB share sharing a raw id still get distinct ids")
@@ -96,79 +139,172 @@ struct MergedLibraryTests {
         let repo = jellyfinRepo([jSession.id: [collection("shared", "J Movies")]])
 
         let entries = await MergedLibrary.resolve(
-            jellyfinSession: jSession,
-            smbServers: [smb],
+            sessions: [jSession],
+            servers: [jSession.persisted, smb],
             jellyfinRepo: repo
         ).entries
 
         #expect(entries.count == 2)
-        #expect(entries[0].id != entries[1].id)
         #expect(Set(entries.map(\.id)).count == 2)
     }
 
-    @Test("Jellyfin-only (no SMB servers): only Jellyfin entries")
-    func jellyfinOnly() async {
-        let jSession = session("jelly")
-        let repo = jellyfinRepo([jSession.id: [collection("c1", "Movies"), collection("c2", "Shows")]])
+    // MARK: - Filtering
 
-        let entries = await MergedLibrary.resolve(
-            jellyfinSession: jSession,
-            smbServers: [],
-            jellyfinRepo: repo
-        ).entries
-
-        #expect(entries.count == 2)
-        #expect(entries.allSatisfy { $0.source.sourceID == .jellyfin(jSession.id) })
-    }
-
-    @Test("nil session + one SMB server: only the SMB share entries — the helper is source-symmetric")
-    func smbOnly() async {
-        let smb = smbServer("nas-1", host: "nas.local", shares: ["Films"])
+    @Test("Hidden collections are filtered PER SERVER — hiding on one server spares the other's namesake")
+    func hiddenIsPerServer() async {
+        let a = session("a")
+        let b = session("b")
+        let repo = jellyfinRepo([
+            a.id: [collection("shared-id", "Movies"), collection("a2", "Shows")],
+            b.id: [collection("shared-id", "Movies")],
+        ])
 
         let outcome = await MergedLibrary.resolve(
-            jellyfinSession: nil,
-            smbServers: [smb],
+            sessions: [a, b],
+            servers: [a.persisted, b.persisted],
+            // Same raw collection id on both servers; only server A's is hidden.
+            hiddenCollectionIDs: [a.id: ["shared-id"]],
+            jellyfinRepo: repo
+        )
+
+        #expect(outcome.groups.count == 2)
+        #expect(outcome.groups[0].entries.map(\.collection.name) == ["Shows"])
+        #expect(outcome.groups[1].entries.map(\.collection.name) == ["Movies"])
+    }
+
+    @Test("Collections this app can't browse (music/photos) are dropped for every root")
+    func unbrowsableCollectionsDropped() async {
+        let jSession = session("jelly")
+        let repo = jellyfinRepo([jSession.id: [
+            collection("c1", "Movies"),
+            collection("c2", "Music", type: .other("music")),
+            collection("c3", "Shows", type: .tvShows),
+        ]])
+
+        let outcome = await MergedLibrary.resolve(
+            sessions: [jSession],
+            servers: [jSession.persisted],
+            jellyfinRepo: repo
+        )
+
+        #expect(outcome.entries.map(\.collection.name) == ["Movies", "Shows"])
+    }
+
+    @Test("A server whose every library is hidden contributes NO group — not an empty titled section")
+    func fullyHiddenServerContributesNoGroup() async {
+        let a = session("a")
+        let b = session("b")
+        let repo = jellyfinRepo([
+            a.id: [collection("a1", "Movies")],
+            b.id: [collection("b1", "Shows")],
+        ])
+
+        let outcome = await MergedLibrary.resolve(
+            sessions: [a, b],
+            servers: [a.persisted, b.persisted],
+            hiddenCollectionIDs: [b.id: ["b1"]],
+            jellyfinRepo: repo
+        )
+
+        #expect(outcome.groups.map(\.id) == [.jellyfin(a.id)])
+        // Hiding everything is a deliberate user choice, never a stall.
+        #expect(outcome.hasFailures == false)
+    }
+
+    @Test("An SMB server with no selected shares contributes no group")
+    func smbWithNoSharesContributesNoGroup() async {
+        let smb = smbServer("nas-1", host: "nas.local", shares: [])
+
+        let outcome = await MergedLibrary.resolve(
+            sessions: [],
+            servers: [smb],
             jellyfinRepo: jellyfinRepo([:])
         )
 
-        #expect(outcome.entries.count == 1)
+        #expect(outcome.groups.isEmpty)
+        #expect(outcome.hasFailures == false)
+    }
+
+    // MARK: - Partial failure
+
+    @Test("One server down: its group drops out and only ITS id is flagged — the rest survive")
+    func perServerFailureIsIsolated() async {
+        let up = session("up")
+        let down = session("down")
+        let smb = smbServer("nas-1", host: "nas.local", shares: ["Films"])
+        let repo = jellyfinRepo(
+            [up.id: [collection("c1", "Movies")], down.id: [collection("c2", "Shows")]],
+            failing: [down.id]
+        )
+
+        let outcome = await MergedLibrary.resolve(
+            sessions: [up, down],
+            servers: [up.persisted, down.persisted, smb],
+            jellyfinRepo: repo
+        )
+
+        // The healthy Jellyfin server and the local shares are untouched by the dead one.
+        #expect(outcome.groups.map(\.id) == [.jellyfin(up.id), .smb(smb.id)])
+        // Only the failed source is flagged, so recovery re-pulls just that one.
+        #expect(outcome.failedSourceIDs == [.jellyfin(down.id)])
+        #expect(outcome.hasFailures)
+    }
+
+    @Test("SMB-only: no Jellyfin fetch, so never a stall")
+    func smbOnlyIsNeverStalled() async {
+        let smb = smbServer("nas-1", host: "nas.local", shares: ["Films"])
+
+        let outcome = await MergedLibrary.resolve(
+            sessions: [],
+            servers: [smb],
+            jellyfinRepo: jellyfinRepo([:])
+        )
+
+        #expect(outcome.entries.map(\.collection.name) == ["Films"])
         #expect(outcome.entries[0].source.sourceID == .smb(smb.id))
-        #expect(outcome.entries[0].collection.name == "Films")
-        // No Jellyfin session means no Jellyfin fetch — never a stall (an SMB-only config must not
-        // trigger offline recovery on a network it doesn't need).
-        #expect(outcome.jellyfinCollectionsFailed == false)
+        // An SMB-only config must not trigger offline recovery on a network it doesn't need.
+        #expect(outcome.hasFailures == false)
     }
 
-    @Test("Jellyfin collections() throws: flags the failure but keeps the SMB shares")
-    func jellyfinFetchFailureFlaggedSMBPreserved() async {
-        let jSession = session("jelly")
-        let smb = smbServer("nas-1", host: "nas.local", shares: ["Films", "Series"])
+    @Test("A persisted Jellyfin row with no live session is skipped silently, NOT flagged as failed")
+    func signedOutJellyfinRowIsSkippedNotFailed() async {
+        // Its Keychain token was lost, so `ServerStore` rebuilt no session for it. Settings surfaces
+        // that state; the library list must not report it as an offline failure and spin recovery.
+        let live = session("live")
+        let signedOut = session("signed-out")
+        let repo = jellyfinRepo([live.id: [collection("c1", "Movies")]])
 
         let outcome = await MergedLibrary.resolve(
-            jellyfinSession: jSession,
-            smbServers: [smb],
-            jellyfinRepo: failingJellyfinRepo()
+            sessions: [live],
+            servers: [live.persisted, signedOut.persisted],
+            jellyfinRepo: repo
         )
 
-        // The Jellyfin half drops out, but the local SMB shares survive — a down server can't blank
-        // the configured shares.
-        #expect(outcome.entries.map(\.collection.name) == ["Films", "Series"])
-        #expect(outcome.entries.allSatisfy { $0.source.sourceID == .smb(smb.id) })
-        // ...and the failure is reported so the nav roots auto-recover on reconnect.
-        #expect(outcome.jellyfinCollectionsFailed)
+        #expect(outcome.groups.map(\.id) == [.jellyfin(live.id)])
+        #expect(outcome.hasFailures == false)
     }
 
-    @Test("Jellyfin-only fetch failure: empty entries AND flagged stalled")
-    func jellyfinOnlyFetchFailureStalled() async {
-        let jSession = session("jelly")
+    // MARK: - Section titles
 
-        let outcome = await MergedLibrary.resolve(
-            jellyfinSession: jSession,
-            smbServers: [],
-            jellyfinRepo: failingJellyfinRepo()
-        )
+    @Test("A single source keeps the plain \"Libraries\" title; two or more title each by server")
+    func sectionTitlesDependOnSourceCount() async {
+        let a = session("a")
+        let b = session("b")
+        let repo = jellyfinRepo([
+            a.id: [collection("a1", "Movies")],
+            b.id: [collection("b1", "Shows")],
+        ])
 
-        #expect(outcome.entries.isEmpty)
-        #expect(outcome.jellyfinCollectionsFailed)
+        let single = await MergedLibrary.resolve(
+            sessions: [a], servers: [a.persisted], jellyfinRepo: repo
+        ).groups
+        #expect(single.needsPerSourceTitles == false)
+        #expect(single.sectionTitle(for: single[0]) == "Libraries")
+
+        let both = await MergedLibrary.resolve(
+            sessions: [a, b], servers: [a.persisted, b.persisted], jellyfinRepo: repo
+        ).groups
+        #expect(both.needsPerSourceTitles)
+        #expect(both.map { both.sectionTitle(for: $0) } == ["Server a", "Server b"])
     }
 }

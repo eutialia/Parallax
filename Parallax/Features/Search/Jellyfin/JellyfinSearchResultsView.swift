@@ -12,16 +12,15 @@ import ParallaxCore
 /// `==` skip would serve a stale snapshot (dispatch goes through `ItemNavigator`, which
 /// owns its own playback/navigation environment).
 struct JellyfinSearchResultsView: View, Equatable {
-    let results: SearchResults
-    let session: Session
+    /// Source-tagged: results mix servers, so each tile resolves ITS OWN session for artwork and
+    /// playback rather than sharing one screen-level session.
+    let results: AggregatedSearchResults
     /// Passed as a plain value from the parent (not an `@Environment` read)
     /// to keep the `==` skip honest; every layout metric derives from it.
     let idiom: AppIdiom
 
     static func == (lhs: JellyfinSearchResultsView, rhs: JellyfinSearchResultsView) -> Bool {
-        lhs.results == rhs.results
-            && lhs.session == rhs.session
-            && lhs.idiom == rhs.idiom
+        lhs.results == rhs.results && lhs.idiom == rhs.idiom
     }
 
     private var posterCols: Int { AppLayout.searchPosterColumns(idiom: idiom) }
@@ -33,35 +32,41 @@ struct JellyfinSearchResultsView: View, Equatable {
             VStack(alignment: .leading, spacing: Space.s26) {
                 if !results.series.isEmpty {
                     gridSection("Shows", count: results.series.count, cols: posterCols) {
-                        ForEach(results.series) { s in
-                            ItemNavigator(item: .series(s), session: session) {
-                                MediaTile(title: s.title, imageRef: s.imageRef(.primary), session: session, watched: .init(.series(s)), aspectRatio: MediaImage.poster, maxImageWidth: 400)
+                        ForEach(results.series) { sourced in
+                            if let session = sourced.jellyfinSession, case .series(let s) = sourced.item {
+                                ItemNavigator(item: sourced.item, session: session) {
+                                    MediaTile(title: s.title, imageRef: s.imageRef(.primary), session: session, watched: .init(sourced.item), aspectRatio: MediaImage.poster, maxImageWidth: 400)
+                                }
                             }
                         }
                     }
                 }
                 if !results.movies.isEmpty {
                     gridSection("Movies", count: results.movies.count, cols: posterCols) {
-                        ForEach(results.movies) { m in
-                            ItemNavigator(item: .movie(m), session: session) {
-                                MediaTile(title: m.title, imageRef: m.imageRef(.primary), session: session, watched: .init(.movie(m)), aspectRatio: MediaImage.poster, maxImageWidth: 400)
+                        ForEach(results.movies) { sourced in
+                            if let session = sourced.jellyfinSession, case .movie(let m) = sourced.item {
+                                ItemNavigator(item: sourced.item, session: session) {
+                                    MediaTile(title: m.title, imageRef: m.imageRef(.primary), session: session, watched: .init(sourced.item), aspectRatio: MediaImage.poster, maxImageWidth: 400)
+                                }
                             }
                         }
                     }
                 }
                 if !results.episodes.isEmpty {
                     gridSection("Episodes", count: results.episodes.count, cols: landscapeCols) {
-                        ForEach(results.episodes) { e in
-                            ItemNavigator(item: .episode(e), session: session) {
-                                // Episodes need the detail row a poster doesn't: neither the still
-                                // nor the episode name says which show this is. `.lockup()` so the
-                                // tvOS focus lift nudges that row aside instead of landing on it.
-                                MediaTile(
-                                    title: e.name, imageRef: e.stillFirstImageRef, session: session,
-                                    watched: .init(.episode(e)), aspectRatio: MediaImage.landscape, maxImageWidth: 500,
-                                    metadata: .init(leading: e.seriesContextCaption, trailing: e.timeCaption())
-                                )
-                                .lockup()
+                        ForEach(results.episodes) { sourced in
+                            if let session = sourced.jellyfinSession, case .episode(let e) = sourced.item {
+                                ItemNavigator(item: sourced.item, session: session) {
+                                    // Episodes need the detail row a poster doesn't: neither the still
+                                    // nor the episode name says which show this is. `.lockup()` so the
+                                    // tvOS focus lift nudges that row aside instead of landing on it.
+                                    MediaTile(
+                                        title: e.name, imageRef: e.stillFirstImageRef, session: session,
+                                        watched: .init(sourced.item), aspectRatio: MediaImage.landscape, maxImageWidth: 500,
+                                        metadata: .init(leading: e.seriesContextCaption, trailing: e.timeCaption())
+                                    )
+                                    .lockup()
+                                }
                             }
                         }
                     }
@@ -70,7 +75,7 @@ struct JellyfinSearchResultsView: View, Equatable {
             .padding(.horizontal, hMargin)
             .padding(.vertical, Space.s18)
         }
-        // Don't clip a focused tile's lift at the scroll bounds (the `SMBLibraryListView` precedent):
+        // Don't clip a focused tile's lift at the scroll bounds (the `LibraryListView` precedent):
         // on tvOS the system search layout butts the results against the keyboard column, and the
         // first column's focus shadow was sliced flat at this ScrollView's leading edge.
         .tvScrollClipDisabled()
@@ -78,15 +83,7 @@ struct JellyfinSearchResultsView: View, Equatable {
 
     @ViewBuilder
     private func gridSection<Content: View>(_ title: String, count: Int, cols: Int, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: Space.s12) {
-            HStack(spacing: 6) {
-                Text(title).font(.cardHeaderTitle)
-                Text("\(count)").font(.subheadline).foregroundStyle(Color.secondaryLabel)
-            }
-            // One header stop: VoiceOver reads "Shows, 5 results" instead of "Shows" then a stray "5".
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("\(title), \(count) result\(count == 1 ? "" : "s")")
-            .accessibilityAddTraits(.isHeader)
+        GridSection(title: title, count: count, countNoun: "result") {
             // Shared idiom-aware gaps (40pt on tvOS) so a focused tile's lift
             // clears its neighbours — the same fix `libraryListSpacing` records.
             LazyVGrid(
@@ -137,9 +134,11 @@ private let previewSearchEpisodes = [
 /// The episode detail row across its data shapes (see `previewSearchEpisodes`). The placeholder
 /// artwork stands in for stills — the row under the thumbnail is what's under test.
 #Preview("Episode metadata rows") {
-    let results = SearchResults(movies: [], series: [], episodes: previewSearchEpisodes)
+    let results = AggregatedSearchResults(
+        episodes: previewSearchEpisodes.map { SourcedItem(item: .episode($0), source: .jellyfin(.preview)) }
+    )
     NavigationStack {
-        JellyfinSearchResultsView(results: results, session: .preview, idiom: .compact)
+        JellyfinSearchResultsView(results: results, idiom: .compact)
     }
     .environment(PlaybackPresenter())
     .background(Color.background)
@@ -158,9 +157,12 @@ private let previewSearchEpisodes = [
             userData: UserItemData(played: false, playbackPositionTicks: 0, playCount: 0, isFavorite: false)
         )
     }
-    let results = SearchResults(movies: movies, series: [], episodes: Array(previewSearchEpisodes.prefix(3)))
+    let results = AggregatedSearchResults(
+        movies: movies.map { SourcedItem(item: .movie($0), source: .jellyfin(.preview)) },
+        episodes: previewSearchEpisodes.prefix(3).map { SourcedItem(item: .episode($0), source: .jellyfin(.preview)) }
+    )
     NavigationStack {
-        JellyfinSearchResultsView(results: results, session: .preview, idiom: .tv)
+        JellyfinSearchResultsView(results: results, idiom: .tv)
     }
     .environment(PlaybackPresenter())
     .background(Color.background)

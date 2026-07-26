@@ -2,17 +2,6 @@ import SwiftUI
 import ParallaxJellyfin
 import ParallaxCore
 
-/// Skeleton capsule metrics for the tvOS in-content header's loading state — shared by
-/// the live `headerControls` (the `isLoadingGenres` capsule) and the first-load
-/// `LibraryGridLoadingPlaceholder` so the skeleton→real-controls swap is shift-free. The
-/// real Genre/Sort chips are native `.glass` Menus that size themselves from their labels,
-/// so these approximate that footprint; the height reuses the app-wide control height.
-private enum LibraryHeaderChip {
-    static let height: CGFloat = AppLayout.tvControlHeight
-    static let genreWidth: CGFloat = 140
-    static let sortWidth: CGFloat = 110
-}
-
 /// `LibraryGridView.body`'s branch discriminator — see `crossfadeStateSwap`. Covers both the
 /// pre-view-model placeholder and `gridContent`'s own initial-load placeholder under one
 /// `.skeleton` case (they render identically), so the crossfade fires once, at the outer swap
@@ -24,6 +13,9 @@ private enum LibraryContentPhase: Hashable {
     case loaded
 }
 
+/// One server collection's poster grid. Always SINGLE-server: the sidebar tab and the Library-list
+/// drill-down both open exactly one library. The cross-server Favorites wall is `FavoritesView`,
+/// which stacks one `LibraryGridViewModel` per server under its own header rather than merging them.
 struct LibraryGridView: View {
     let scope: LibraryScope
     let title: String
@@ -32,17 +24,9 @@ struct LibraryGridView: View {
     /// (`mediaRepoFactory(session)`) and per-tile detail pushes (via `ItemNavigator`).
     let session: Session
 
-    /// A server collection (the common case — sidebar tab or Library-list drill-down).
     init(collection: MediaCollection, session: Session) {
         self.scope = .collection(collection.id)
         self.title = collection.name
-        self.session = session
-    }
-
-    /// The cross-library Favorites grid (movies + shows merged) — a cross-Jellyfin-library grid.
-    init(scope: LibraryScope, title: String, session: Session) {
-        self.scope = scope
-        self.title = title
         self.session = session
     }
 
@@ -114,7 +98,7 @@ struct LibraryGridView: View {
     private func loadViewModel() async {
         guard viewModel == nil else { return }
         let repo = await deps.mediaRepoFactory(session)
-        let vm = LibraryGridViewModel(repo: repo, scope: scope, userDataActions: userDataActions)
+        let vm = LibraryGridViewModel(repo: repo, source: .jellyfin(session.id), scope: scope, userDataActions: userDataActions)
         viewModel = vm
         await vm.load()
     }
@@ -161,27 +145,17 @@ struct LibraryGridView: View {
         }
     }
 
-    /// Loaded but nothing to show. Matters most for Favorites, which legitimately
-    /// starts empty; a filtered-out collection gets the same treatment.
+    /// Loaded but nothing to show — a collection filtered down to nothing by the genre picker.
     private func showsEmptyState(_ vm: LibraryGridViewModel) -> Bool {
         vm.items.isEmpty && vm.state == .loaded && !vm.isRefreshing
     }
 
-    @ViewBuilder
     private var emptyState: some View {
-        if case .favorites = scope {
-            StatusStateView(
-                title: "No Favorites",
-                systemImage: "heart",
-                message: "Movies and shows you favorite will show up here."
-            )
-        } else {
-            StatusStateView(
-                title: "No Items",
-                systemImage: "rectangle.stack",
-                message: "Nothing in \(title) matches the current genre."
-            )
-        }
+        StatusStateView(
+            title: "No Items",
+            systemImage: "rectangle.stack",
+            message: "Nothing in \(title) matches the current genre."
+        )
     }
 
     /// Full-screen placeholder only on the very first load — while genres are still
@@ -231,52 +205,19 @@ struct LibraryGridView: View {
     }
 
     /// Centered Genre + Sort control row — tvOS only, living INSIDE the scroll content (see
-    /// `gridContent`) so the focus engine can scroll back up to it. Holds a stable height across
-    /// loading → loaded so the grid below never shifts; Genre collapses out when the library has no
-    /// genres. Horizontal inset comes from the scroll view's `contentMargins`, not local padding.
-    @ViewBuilder
+    /// `gridContent`) so the focus engine can scroll back up to it. Shared with the Favorites wall,
+    /// which drives the identical controls from its own coordinator.
     private func headerControls(vm: LibraryGridViewModel) -> some View {
-        // No `GlassEffectContainer` here: this row only renders on tvOS (iOS puts the
-        // controls in the nav bar), and on tvOS the container re-renders the native button
-        // glass in its own layer — glyphs drift off the discs and the glass desyncs from
-        // the system focus lift (pixel-measured in the "Action row parity" preview).
-        let hasGenreSlot = vm.isLoadingGenres || !vm.availableGenres.isEmpty
-        // Split the row into two equal halves so the pair is symmetric about the screen's
-        // center axis: Genre hugs the trailing edge of the left half, Sort the leading edge of
-        // the right half, so the gap between them stays centered however their content-sized
-        // widths differ. With no genres the left half collapses to zero width and Sort centers
-        // across the full row — a lone control reads best centered, not pinned off-axis.
-        HStack(spacing: hasGenreSlot ? Space.s12 : 0) {
-            genreHeaderSlot(vm: vm)
-                .frame(maxWidth: hasGenreSlot ? .infinity : 0, alignment: .trailing)
-            sortMenu(vm: vm)
-                .frame(maxWidth: .infinity, alignment: hasGenreSlot ? .leading : .center)
-        }
-        .padding(.top, Space.s8)
-        // Clear the first poster row at 10-foot distance: 8pt crowded the chips against the grid
-        // and let their focus lift collide with row 1's. iOS carries these controls in the nav bar,
-        // never in-content, so this gap is tvOS-only by construction. Keep in sync with the
-        // loading placeholder's header padding so the skeleton→real swap stays shift-free.
-        .padding(.bottom, Space.s30)
-        // The two chips sit just inside the center axis, so they only cover the middle columns. The tvOS focus
-        // engine searches straight UP from the focused poster, so from the outer columns there's no
-        // chip in line and pressing Up does nothing. `focusSection()` turns the row's full width
-        // into one focus target that diverts to the nearest chip — Up from ANY column now reaches
-        // Genre/Sort. (Apple's tvOS catalog sample applies it for this exact above-the-fold case.)
-        .tvFocusSection()
-        .animation(reduceMotion ? nil : .smooth, value: vm.isLoadingGenres)
-    }
-
-    /// The header's left slot: the Genre menu once genres load, a skeleton capsule while
-    /// they're still in flight, or nothing when the library has no genres (its equal-width
-    /// half then collapses and Sort centers — see `headerControls`).
-    @ViewBuilder
-    private func genreHeaderSlot(vm: LibraryGridViewModel) -> some View {
-        if vm.isLoadingGenres {
-            Capsule().fill(Color.fill).frame(width: LibraryHeaderChip.genreWidth, height: LibraryHeaderChip.height)
-        } else if !vm.availableGenres.isEmpty {
-            genreMenu(vm: vm)
-        }
+        LibraryHeaderControls(
+            sortField: vm.sortField,
+            sortDirection: vm.sortDirection,
+            selectedGenre: vm.selectedGenre,
+            availableGenres: vm.availableGenres,
+            isLoadingGenres: vm.isLoadingGenres,
+            onSelectField: { vm.sortField = $0 },
+            onSelectDirection: { vm.sortDirection = $0 },
+            onSelectGenre: { vm.selectedGenre = $0 }
+        )
     }
 
     #if !os(tvOS)
@@ -301,70 +242,6 @@ struct LibraryGridView: View {
     }
     #endif
 
-    /// Inline-header Genre menu — only reachable on tvOS (`headerControls` is gated on
-    /// `idiom == .tv`; iPhone/iPad fold the same `genrePicker` into the combined sort
-    /// menu). Shares `libraryHeaderMenu` with Sort so the two chips are styled identically;
-    /// a selected genre flips the resting monochrome tint to the filled `chipSelectedFill`.
-    private func genreMenu(vm: LibraryGridViewModel) -> some View {
-        libraryHeaderMenu(
-            title: vm.selectedGenre ?? "Genre",
-            systemImage: "theatermasks",
-            activeTint: vm.selectedGenre != nil ? Color.chipSelectedFill : nil,
-            accessibilityLabel: "Genre"
-        ) {
-            genrePicker(vm: vm)
-        }
-    }
-
-    /// Single-select genre filter, collapsed from a scrolling chip bar into one menu: the inline
-    /// `Picker` gives each genre the system's leading checkmark, with "All Genres" to clear.
-    /// Shared by the tvOS chip and the combined sort menu's submenu (iPhone/iPad).
-    @ViewBuilder
-    private func genrePicker(vm: LibraryGridViewModel) -> some View {
-        @Bindable var vm = vm
-        Picker("Genre", selection: $vm.selectedGenre) {
-            Text("All Genres").tag(String?.none)
-            ForEach(vm.availableGenres, id: \.self) { genre in
-                Text(genre).tag(String?.some(genre))
-            }
-        }
-        .pickerStyle(.inline)
-    }
-
-    /// Inline-header Sort menu — tvOS-only like `genreMenu` (Genre stays its own chip
-    /// there, so this menu is sort-only). No `activeTint`: Sort has no selected state, so
-    /// it rests on the same monochrome `Color.label` tint as an unselected Genre.
-    private func sortMenu(vm: LibraryGridViewModel) -> some View {
-        libraryHeaderMenu(
-            title: "Sort",
-            systemImage: "arrow.up.arrow.down",
-            accessibilityLabel: "Sort"
-        ) {
-            sortPicker(vm: vm)
-        }
-    }
-
-    /// The tvOS sort menu body: same human-language direction labels as the iOS
-    /// bridged menu (one vocabulary — `LibrarySortVocabulary`), but as an inline
-    /// picker — the tile row is a touch-menu affordance the tvOS focus engine
-    /// doesn't render. Genre stays its own header chip there.
-    @ViewBuilder
-    private func sortPicker(vm: LibraryGridViewModel) -> some View {
-        @Bindable var vm = vm
-        Picker("Order", selection: $vm.sortDirection) {
-            ForEach(LibrarySortVocabulary.directionOptions(for: vm.sortField), id: \.direction) { option in
-                Label(option.title, systemImage: option.icon).tag(option.direction)
-            }
-        }
-        .pickerStyle(.inline)
-        Picker("Sort By", selection: $vm.sortField) {
-            ForEach(ItemSort.Field.allCases, id: \.self) { f in
-                Text(LibrarySortVocabulary.label(for: f)).tag(f)
-            }
-        }
-        .pickerStyle(.inline)
-    }
-
     @ViewBuilder
     private func jellyfinTile(for item: Item, session: Session) -> some View {
         MediaTile(
@@ -387,49 +264,6 @@ struct LibraryGridView: View {
 
 }
 
-/// Shared label for the tvOS header menus (Genre, Sort) so the two read identically.
-/// Bare — the enclosing Menu wears the native `.glass` style, which owns the capsule,
-/// metrics, and label color: the label rests as `Color.label` over translucent glass
-/// (legible), and the focused platter brightens without recoloring it. A forced
-/// `foregroundStyle` would fight that, so leave it off. Selection shows via the menu's tint.
-private func libraryHeaderChipLabel(_ title: String, systemImage: String) -> some View {
-    Label(title, systemImage: systemImage)
-        .labelStyle(.titleAndIcon)
-        .font(.subheadline.weight(.medium))
-}
-
-/// Shared builder for the tvOS in-content header menus (Genre + Sort) so the pair is styled
-/// identically. Both wear the native `.glass` style — translucent Liquid Glass at rest,
-/// brightening on focus — with a `Color.label` resting tint (the value `RootView` pins
-/// app-wide), so the label reads legibly over the frosted capsule. A header passes a non-nil
-/// `activeTint` (Genre's `chipSelectedFill`) only to flip to the filled "active filter" look.
-///
-/// NOT `.bordered`: on tvOS its resting platter takes the tint AND it draws the label in that
-/// same tint, so under our monochrome `Color.label` the two collapse to one color and the
-/// label is invisible until focus inverts it. `.glass` keeps the label and capsule distinct.
-///
-/// The resting tint is set EXPLICITLY, not left to inherit: Genre used to clear it with
-/// `.tint(nil)`, which reset to the system accent and rendered a visibly different color
-/// from Sort (which inherited `Color.label`) — the asymmetry this fixes. Passing the tint
-/// unconditionally also keeps the modifier identity stable, so toggling a genre never tears
-/// down the Menu and drops tvOS focus.
-private func libraryHeaderMenu<Content: View>(
-    title: String,
-    systemImage: String,
-    activeTint: Color? = nil,
-    accessibilityLabel: String,
-    @ViewBuilder content: () -> Content
-) -> some View {
-    Menu {
-        content()
-    } label: {
-        libraryHeaderChipLabel(title, systemImage: systemImage)
-    }
-    .buttonStyle(.glass)
-    .tint(activeTint ?? Color.label)
-    .accessibilityLabel(accessibilityLabel)
-}
-
 /// Full-screen first-load placeholder: genre-pill row above a poster-grid skeleton,
 /// laid out to match the loaded grid so content doesn't shift in when it arrives. A
 /// standalone view (not a `@ViewBuilder` on the grid) so it owns its own body
@@ -449,18 +283,7 @@ private struct LibraryGridLoadingPlaceholder: View {
                 // the nav bar, not the content, so they skip the placeholder capsules. Horizontal
                 // inset comes from `contentMargins`, like the header itself.
                 if idiom == .tv {
-                    // Equal halves matching `headerControls`' loading state (both slots present)
-                    // so the skeleton→real-controls swap stays symmetric and shift-free.
-                    HStack(spacing: Space.s12) {
-                        Capsule().fill(Color.fill).frame(width: LibraryHeaderChip.genreWidth, height: LibraryHeaderChip.height)
-                            .frame(maxWidth: .infinity, alignment: .trailing)
-                        Capsule().fill(Color.fill).frame(width: LibraryHeaderChip.sortWidth, height: LibraryHeaderChip.height)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    // Matches `headerControls`' padding so the skeleton→real-controls swap doesn't
-                    // shift the grid down (8pt top + 30pt bottom gap to the first poster row).
-                    .padding(.top, Space.s8)
-                    .padding(.bottom, Space.s30)
+                    LibraryHeaderControlsSkeleton()
                 }
                 AdaptivePosterGridLoadingSkeleton(tileCount: columns * 3, fixedColumns: columns)
             }
@@ -472,37 +295,3 @@ private struct LibraryGridLoadingPlaceholder: View {
         .contentMargins(.vertical, idiom == .tv ? Space.s40 : 0, for: .scrollContent)
     }
 }
-
-#if DEBUG
-/// Genre ⇄ Sort header parity + center-axis symmetry. The row splits into two equal halves —
-/// Genre trailing-aligned in the left, Sort leading-aligned in the right — so the gap between
-/// the pair stays centered on the axis (red hairline) however their content widths differ.
-/// Both share the monochrome `Color.label` resting tint; Genre flips to `chipSelectedFill`
-/// when a genre is active (second row). The third row is the no-genre case: Sort centers
-/// alone on the same axis. Wrapped in `.tint(Color.label)` to mirror RootView's global tint.
-#Preview("Header parity + axis", traits: .fixedLayout(width: 900, height: 470)) {
-    VStack(spacing: Space.s40) {
-        HStack(spacing: Space.s12) {
-            libraryHeaderMenu(title: "Genre", systemImage: "theatermasks", accessibilityLabel: "Genre") { Text("Genres") }
-                .frame(maxWidth: .infinity, alignment: .trailing)
-            libraryHeaderMenu(title: "Sort", systemImage: "arrow.up.arrow.down", accessibilityLabel: "Sort") { Text("Sort") }
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        HStack(spacing: Space.s12) {
-            libraryHeaderMenu(title: "Action", systemImage: "theatermasks", activeTint: Color.chipSelectedFill, accessibilityLabel: "Genre") { Text("Genres") }
-                .frame(maxWidth: .infinity, alignment: .trailing)
-            libraryHeaderMenu(title: "Sort", systemImage: "arrow.up.arrow.down", accessibilityLabel: "Sort") { Text("Sort") }
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        libraryHeaderMenu(title: "Sort", systemImage: "arrow.up.arrow.down", accessibilityLabel: "Sort") { Text("Sort") }
-            .frame(maxWidth: .infinity, alignment: .center)
-    }
-    .padding(.horizontal, 48)
-    .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .overlay(alignment: .center) {
-        Rectangle().fill(Color.red.opacity(0.55)).frame(width: 1)
-    }
-    .background(Color.background)
-    .tint(Color.label)
-}
-#endif

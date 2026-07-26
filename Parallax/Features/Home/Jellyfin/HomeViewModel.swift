@@ -11,10 +11,40 @@ final class HomeViewModel {
         case idle, loading, loaded, failed(String)
     }
 
+    /// One Jellyfin server's feed surface, paired with the source tag its items get. The view model
+    /// holds several of these rather than a single repo: Home aggregates every signed-in server.
+    struct Feed: Sendable {
+        let source: LibrarySource
+        let repo: LibraryRepository
+
+        init(session: Session, repo: LibraryRepository) {
+            self.source = .jellyfin(session)
+            self.repo = repo
+        }
+
+        /// One feed per signed-in Jellyfin server, in the store's order. Shared by both navigation
+        /// roots (iOS `HomeView` self-loads; tvOS `FocusRootView` preloads behind the launch gate)
+        /// so the two can't drift on which servers Home aggregates. Repos are built concurrently —
+        /// the factory hops an actor per session.
+        static func all(
+            for sessions: [Session],
+            repoFactory: @Sendable @escaping (Session) async -> LibraryRepository
+        ) async -> [Feed] {
+            await withTaskGroup(of: (Int, Feed).self) { group in
+                for (index, session) in sessions.enumerated() {
+                    group.addTask { (index, Feed(session: session, repo: await repoFactory(session))) }
+                }
+                var out: [(Int, Feed)] = []
+                for await result in group { out.append(result) }
+                return out.sorted { $0.0 < $1.0 }.map(\.1)
+            }
+        }
+    }
+
     private(set) var state: LoadState = .idle
-    private(set) var heroFeed: [HomeHeroFeedEntry] = []
-    private(set) var continueWatching: [Item] = []
-    private(set) var nextUp: [Item] = []
+    private(set) var heroFeed: [SourcedHeroEntry] = []
+    private(set) var continueWatching: [SourcedItem] = []
+    private(set) var nextUp: [SourcedItem] = []
     /// True while `refresh()` re-pulls the progress-driven shelves in the background.
     /// The view dims + crossfades them (the library grid's stale-while-revalidate recipe)
     /// instead of dropping back to a skeleton.
@@ -36,12 +66,18 @@ final class HomeViewModel {
     /// recovery should re-`load()`. Drives `.recoversFromOffline`.
     var isStalled: Bool { if case .failed = state { true } else { false } }
 
-    private let repo: LibraryRepository
+    private let feeds: [Feed]
     private let userDataActions: UserDataActions
     private var changesTask: Task<Void, Never>?
 
-    init(repo: LibraryRepository, userDataActions: UserDataActions) {
-        self.repo = repo
+    /// The servers this model aggregates, in order. `feeds` is fixed at init, so a change here
+    /// means the model is answering for the wrong set of servers and must be rebuilt — the view
+    /// compares against it rather than assuming one model lasts the whole session (adding a
+    /// second server left the first model in place, so Home stayed single-server until relaunch).
+    var sourceIDs: [MediaSourceID] { feeds.map(\.source.sourceID) }
+
+    init(feeds: [Feed], userDataActions: UserDataActions) {
+        self.feeds = feeds
         self.userDataActions = userDataActions
         // Own the iterating Task; cancelled in `isolated deinit` (needed to touch this
         // MainActor-isolated property). Self-notification is expected — this VM's own
@@ -65,7 +101,7 @@ final class HomeViewModel {
     /// ever appearing in Home's local state, so the refresh can't be gated on a local match.
     /// A pure favorite change never refetches.
     private func apply(_ change: UserDataActions.Change) async {
-        mutate(change.itemID) { $0.withUserData(change.merged(into: $0.userData)) }
+        mutate(change.itemID, source: change.source) { $0.withUserData(change.merged(into: $0.userData)) }
         if change.operation == .played {
             await refresh()
         }
@@ -73,28 +109,41 @@ final class HomeViewModel {
 
     func load() async {
         state = .loading
-        do {
-            async let heroTask = repo.homeHeroFeed(limit: 12)
-            async let cwTask = repo.continueWatching()
-            async let nuTask = repo.nextUp()
-            let (hero, cw, nu) = try await (heroTask, cwTask, nuTask)
-            try Task.checkCancellation()
-            self.heroFeed = hero
-            self.continueWatching = cw
-            self.nextUp = nu
-            self.state = .loaded
-        } catch is CancellationError {
-            return
-        } catch let error as AppError {
-            if case .network(let urlError) = error, urlError.code == .cancelled {
-                return
+        // Every server's three feeds, fanned out concurrently and merged. Each server's slice
+        // fails INDEPENDENTLY: a dead or slow server contributes empty lists instead of taking the
+        // whole screen down with it, which is the difference between "one of my servers is
+        // unreachable" and "Home is broken". `state` only goes `.failed` when EVERY server failed.
+        let results = await withTaskGroup(of: (Int, FeedSlice?).self) { group in
+            for (index, feed) in feeds.enumerated() {
+                group.addTask { (index, await Self.loadSlice(feed)) }
             }
-            Log.ui.error("HomeViewModel load failed: \(error.userMessage) (\(error.networkDiagnostic))")
-            state = .failed(error.userMessage)
-        } catch {
-            Log.ui.error("HomeViewModel load unexpected: \(String(describing: type(of: error)))")
-            state = .failed("Something went wrong.")
+            var out: [(Int, FeedSlice?)] = []
+            for await result in group { out.append(result) }
+            return out.sorted { $0.0 < $1.0 }.map(\.1)
         }
+
+        // Cancellation is NOT a server failure. `loadSlice` catches every error, so a cancelled
+        // load (the enclosing `.task(id:)` re-firing) arrives here as "every server threw" and
+        // would otherwise commit `.failed` — a permanent "couldn't reach your servers" whenever
+        // the reload token moves mid-load without the server set changing (a Visible Libraries
+        // edit). Back out to `.idle` instead; the view re-runs `load()` for an unsettled model.
+        guard !Task.isCancelled else {
+            state = .idle
+            return
+        }
+
+        let slices = results.compactMap { $0 }
+        guard !slices.isEmpty else {
+            // Nothing came back at all. With no configured feeds that's an empty Home, not a
+            // failure; with feeds present it means every one of them threw.
+            state = feeds.isEmpty ? .loaded : .failed("Parallax couldn't reach your servers.")
+            return
+        }
+        commit(slices)
+        if slices.count < feeds.count {
+            Log.ui.error("Home: \(self.feeds.count - slices.count) of \(self.feeds.count) server(s) failed; showing the rest")
+        }
+        state = .loaded
     }
 
     /// Re-pull ONLY the progress-driven shelves (Continue Watching + Next Up) without a
@@ -118,52 +167,124 @@ final class HomeViewModel {
         defer { isRefreshing = false }
         repeat {
             refreshQueued = false
-            do {
-                async let cwTask = repo.continueWatching()
-                async let nuTask = repo.nextUp()
-                let (cw, nu) = try await (cwTask, nuTask)
-                try Task.checkCancellation()
-                continueWatching = cw
-                nextUp = nu
-            } catch is CancellationError {
-                return
-            } catch let error as AppError {
-                if case .network(let urlError) = error, urlError.code == .cancelled { return }
-                // Non-fatal: keep the stale shelves rather than blanking a working screen.
-                Log.ui.error("HomeViewModel refresh failed: \(error.userMessage) (\(error.networkDiagnostic))")
-            } catch {
-                Log.ui.error("HomeViewModel refresh unexpected: \(String(describing: type(of: error)))")
+            let results = await withTaskGroup(of: (Int, ProgressSlice?).self) { group in
+                for (index, feed) in feeds.enumerated() {
+                    group.addTask { (index, await Self.loadProgressSlice(feed)) }
+                }
+                var out: [(Int, ProgressSlice?)] = []
+                for await result in group { out.append(result) }
+                return out.sorted { $0.0 < $1.0 }.map(\.1)
             }
+            if Task.isCancelled { return }
+            let slices = results.compactMap { $0 }
+            // Every server failed → keep the stale shelves rather than blanking a working screen.
+            guard !slices.isEmpty || feeds.isEmpty else { continue }
+            continueWatching = .mergedByLastPlayed(slices.map(\.continueWatching))
+            nextUp = .interleaved(slices.map(\.nextUp))
         } while refreshQueued
     }
 
-    func toggleFavorite(for itemID: ItemID) async {
-        guard let original = currentItem(itemID)?.userData.isFavorite else { return }
+    func toggleFavorite(for itemID: ItemID, source: MediaSourceID) async {
+        guard let current = currentItem(itemID, source: source),
+              let repo = repo(for: source) else { return }
+        let original = current.userData.isFavorite
 
-        mutate(itemID) { $0.withFavorite(!original) }     // optimistic
+        mutate(itemID, source: source) { $0.withFavorite(!original) }     // optimistic
         favoriteErrorMessage = nil
 
-        switch await userDataActions.toggleFavorite(itemID: itemID, currentlyFavorite: original, via: repo) {
+        switch await userDataActions.toggleFavorite(
+            itemID: itemID,
+            source: source,
+            currentlyFavorite: original,
+            via: repo
+        ) {
         case .success(let serverUserData):
             // Merge-scoped like every other patch site: a favorite response's played/position
             // fields are DTO-boundary defaults, not real state — never adopt them wholesale.
-            mutate(itemID) { $0.withUserData(UserDataActions.merge(.favorite, payload: serverUserData, into: $0.userData)) }
+            mutate(itemID, source: source) {
+                $0.withUserData(UserDataActions.merge(.favorite, payload: serverUserData, into: $0.userData))
+            }
         case .skipped:
-            mutate(itemID) { $0.withFavorite(original) }
+            mutate(itemID, source: source) { $0.withFavorite(original) }
         case .failure(let error):
-            mutate(itemID) { $0.withFavorite(original) }
+            mutate(itemID, source: source) { $0.withFavorite(original) }
             favoriteErrorMessage = error.userMessage
             Log.ui.error("Home toggleFavorite failed: \(error.userMessage) (\(error.networkDiagnostic))")
         }
     }
 
-    private func currentItem(_ itemID: ItemID) -> Item? {
-        for entry in heroFeed {
-            if entry.presentation.id == itemID { return entry.presentation }
-            if entry.playTarget.id == itemID { return entry.playTarget }
+    // MARK: - Fan-out
+
+    /// One server's full Home contribution.
+    private struct FeedSlice {
+        let hero: [SourcedHeroEntry]
+        let continueWatching: [SourcedItem]
+        let nextUp: [SourcedItem]
+    }
+
+    /// One server's progress-shelf contribution (the `refresh()` subset).
+    private struct ProgressSlice {
+        let continueWatching: [SourcedItem]
+        let nextUp: [SourcedItem]
+    }
+
+    /// nil when this server's feed failed — the caller drops it and keeps the others.
+    private static func loadSlice(_ feed: Feed) async -> FeedSlice? {
+        do {
+            async let heroTask = feed.repo.homeHeroFeed(limit: 12)
+            async let cwTask = feed.repo.continueWatching()
+            async let nuTask = feed.repo.nextUp()
+            let (hero, cw, nu) = try await (heroTask, cwTask, nuTask)
+            return FeedSlice(
+                hero: hero.map { SourcedHeroEntry(entry: $0, source: feed.source) },
+                continueWatching: cw.map { SourcedItem(item: $0, source: feed.source) },
+                nextUp: nu.map { SourcedItem(item: $0, source: feed.source) }
+            )
+        } catch {
+            Log.ui.error("Home feed failed for \(feed.source.displayName): \(error.networkDiagnostic)")
+            return nil
         }
-        return continueWatching.first { $0.id == itemID }
-            ?? nextUp.first { $0.id == itemID }
+    }
+
+    private static func loadProgressSlice(_ feed: Feed) async -> ProgressSlice? {
+        do {
+            async let cwTask = feed.repo.continueWatching()
+            async let nuTask = feed.repo.nextUp()
+            let (cw, nu) = try await (cwTask, nuTask)
+            return ProgressSlice(
+                continueWatching: cw.map { SourcedItem(item: $0, source: feed.source) },
+                nextUp: nu.map { SourcedItem(item: $0, source: feed.source) }
+            )
+        } catch {
+            Log.ui.error("Home refresh failed for \(feed.source.displayName): \(error.networkDiagnostic)")
+            return nil
+        }
+    }
+
+    private func commit(_ slices: [FeedSlice]) {
+        // Continue Watching merges on `lastPlayedDate` — the one key both servers express — so the
+        // shelf reads as a single timeline. Hero and Next Up have no comparable cross-server key
+        // (hero is a curated recency mix, Next Up is server-ranked), so they interleave round-robin,
+        // which keeps every server visible near the front instead of burying the second server
+        // behind the whole of the first.
+        continueWatching = .mergedByLastPlayed(slices.map(\.continueWatching))
+        nextUp = .interleaved(slices.map(\.nextUp))
+        heroFeed = .interleaved(slices.map(\.hero))
+    }
+
+    private func repo(for source: MediaSourceID) -> LibraryRepository? {
+        feeds.first { $0.source.sourceID == source }?.repo
+    }
+
+    // MARK: - Local patching
+
+    private func currentItem(_ itemID: ItemID, source: MediaSourceID) -> Item? {
+        for entry in heroFeed where entry.source.sourceID == source {
+            if entry.entry.presentation.id == itemID { return entry.entry.presentation }
+            if entry.entry.playTarget.id == itemID { return entry.entry.playTarget }
+        }
+        return continueWatching.first { $0.item.id == itemID && $0.source.sourceID == source }?.item
+            ?? nextUp.first { $0.item.id == itemID && $0.source.sourceID == source }?.item
     }
 
     /// Apply `transform` to the matching item wherever it lives (hero, continue-watching,
@@ -171,15 +292,35 @@ final class HomeViewModel {
     /// so a reload that lands mid-toggle keeps its fresh metadata — only the favorite flag
     /// (or the server's `UserItemData`) is swapped. Skips all three rebuilds outright when
     /// Home doesn't currently hold `itemID` anywhere.
-    private func mutate(_ itemID: ItemID, _ transform: (Item) -> Item) {
-        guard currentItem(itemID) != nil else { return }
-        heroFeed = heroFeed.map { entry in
+    ///
+    /// Matches on (source, itemID), never `itemID` alone: Jellyfin derives item GUIDs
+    /// deterministically from the media path, so two servers over the same library layout can mint
+    /// the SAME id — and even without a collision, a favorite toggled on server A must not repaint
+    /// a different server's tile.
+    private func mutate(_ itemID: ItemID, source: MediaSourceID, _ transform: (Item) -> Item) {
+        guard currentItem(itemID, source: source) != nil else { return }
+        heroFeed = heroFeed.map { sourced in
+            guard sourced.source.sourceID == source else { return sourced }
+            let entry = sourced.entry
             let presentation = entry.presentation.id == itemID ? transform(entry.presentation) : entry.presentation
             let playTarget = entry.playTarget.id == itemID ? transform(entry.playTarget) : entry.playTarget
-            guard presentation != entry.presentation || playTarget != entry.playTarget else { return entry }
-            return HomeHeroFeedEntry(presentation: presentation, playTarget: playTarget, eyebrow: entry.eyebrow)
+            guard presentation != entry.presentation || playTarget != entry.playTarget else { return sourced }
+            return SourcedHeroEntry(
+                entry: HomeHeroFeedEntry(presentation: presentation, playTarget: playTarget, eyebrow: entry.eyebrow),
+                source: sourced.source
+            )
         }
-        continueWatching = continueWatching.map { $0.id == itemID ? transform($0) : $0 }
-        nextUp = nextUp.map { $0.id == itemID ? transform($0) : $0 }
+        continueWatching = continueWatching.map { patched($0, itemID: itemID, source: source, transform) }
+        nextUp = nextUp.map { patched($0, itemID: itemID, source: source, transform) }
+    }
+
+    private func patched(
+        _ sourced: SourcedItem,
+        itemID: ItemID,
+        source: MediaSourceID,
+        _ transform: (Item) -> Item
+    ) -> SourcedItem {
+        guard sourced.item.id == itemID, sourced.source.sourceID == source else { return sourced }
+        return SourcedItem(item: transform(sourced.item), source: sourced.source)
     }
 }

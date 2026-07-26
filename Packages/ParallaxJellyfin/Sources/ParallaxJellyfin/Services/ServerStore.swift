@@ -87,6 +87,29 @@ public actor ServerStore {
         persistedServers.contains { if case .smb = $0.kind { return true }; return false }
     }
 
+    /// Everything the app's router needs to describe the current source configuration, read in ONE
+    /// actor hop. Exists so the router can never be handed a partial picture: it used to be told
+    /// only "the active session + a Bool for SMB presence", which is blind to a change in the SET of
+    /// sources that leaves both alone — adding a SECOND Jellyfin server (the first stays active, no
+    /// SMB involved) moved neither, so the navigation roots' reload key never changed and the new
+    /// server's libraries didn't appear until the next launch. Signing out a NON-active Jellyfin
+    /// server had the mirror-image bug.
+    public var sourceSnapshot: SourceSnapshot {
+        SourceSnapshot(
+            activeSessionID: active?.id,
+            hasAuxiliarySources: hasSMBServers,
+            // Order-sensitive, and includes whether each row has a LIVE session: re-signing into a
+            // signed-out row keeps its persisted id but must still re-fire the roots, because that
+            // row goes from contributing no libraries to contributing its collections.
+            setIdentity: persistedServers
+                .map { server in
+                    let isLive = loadedSessions.contains { $0.id == server.id }
+                    return "\(server.id.rawValue)\(isLive ? "+" : "-")"
+                }
+                .joined(separator: ",")
+        )
+    }
+
     public var active: Session? {
         guard let activeID else { return loadedSessions.first }
         return loadedSessions.first(where: { $0.id == activeID })
@@ -96,6 +119,13 @@ public actor ServerStore {
     /// roots to filter the merged library and by the "Visible Libraries" screen to seed its toggles.
     public func hiddenCollectionIDs(for id: ServerID) -> Set<String> {
         hiddenCollections[id.rawValue] ?? []
+    }
+
+    /// Every server's hidden-collections set, keyed by `ServerID`. The navigation roots resolve
+    /// all servers' libraries in one pass, so they read the whole map once instead of awaiting
+    /// this actor once per server.
+    public var allHiddenCollectionIDs: [ServerID: Set<String>] {
+        Dictionary(uniqueKeysWithValues: hiddenCollections.map { (ServerID(rawValue: $0.key), $0.value) })
     }
 
     /// Replace a server's hidden-collections set and persist it. An empty set drops the server's entry

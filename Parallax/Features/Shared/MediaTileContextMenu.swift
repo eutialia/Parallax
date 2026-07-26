@@ -195,14 +195,26 @@ private struct MediaTileMenuContent: View {
     /// alert), the dominant idiom and the one covering the played toggles the menu introduces.
     private func toggleFavorite(id: ItemID, currentlyFavorite: Bool) async {
         let repo = await deps.jellyfinLibraryRepoFactory(session)
-        if case .failure(let error) = await userDataActions.toggleFavorite(itemID: id, currentlyFavorite: currentlyFavorite, via: repo) {
+        let outcome = await userDataActions.toggleFavorite(
+            itemID: id,
+            source: .jellyfin(session.id),
+            currentlyFavorite: currentlyFavorite,
+            via: repo
+        )
+        if case .failure(let error) = outcome {
             Log.ui.error("menu toggleFavorite failed: \(error.userMessage) (\(error.networkDiagnostic))")
         }
     }
 
     private func togglePlayed(id: ItemID, currentlyPlayed: Bool) async {
         let repo = await deps.jellyfinLibraryRepoFactory(session)
-        if case .failure(let error) = await userDataActions.togglePlayed(itemID: id, currentlyPlayed: currentlyPlayed, via: repo) {
+        let outcome = await userDataActions.togglePlayed(
+            itemID: id,
+            source: .jellyfin(session.id),
+            currentlyPlayed: currentlyPlayed,
+            via: repo
+        )
+        if case .failure(let error) = outcome {
             Log.ui.error("menu togglePlayed failed: \(error.userMessage) (\(error.networkDiagnostic))")
         }
     }

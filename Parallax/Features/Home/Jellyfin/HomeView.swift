@@ -21,7 +21,11 @@ struct HomeView: View {
     /// skips its own fetch. iOS leaves this nil and self-loads in `.task` as before.
     private let preloaded: (session: Session, viewModel: HomeViewModel)?
     @State private var viewModel: HomeViewModel?
-    @State private var session: Session?
+    /// Whether Home has at least one Jellyfin server feeding it. Home aggregates every signed-in
+    /// server now, so there is no single "the session" for this screen — the per-item source rides
+    /// on each `SourcedItem` instead. This flag only distinguishes "a feed exists" from the
+    /// SMB-only placeholder.
+    @State private var hasFeed = false
     // Reference-type scroll channel: the per-frame scroll value lives on an @Observable so a
     // scroll write invalidates ONLY `HeroBand`'s artwork-transform wrappers that read it,
     // not HomeView's body or the whole carousel (title, actions, dots). When this was a plain
@@ -107,7 +111,7 @@ struct HomeView: View {
         // redundant load. No gate release here: FocusRootView is the
         // authoritative tvOS release site (it already fired before this mounts).
         if let preloaded {
-            session = preloaded.session
+            hasFeed = true
             viewModel = preloaded.viewModel
             return
         }
@@ -119,26 +123,37 @@ struct HomeView: View {
             if router.destination == .home { launchGate.markContentReady() }
             return
         }
-        if session == nil {
-            session = await deps.serverStore.active
-        }
+        // Build one feed per signed-in server — Home aggregates them all.
+        let feeds = await HomeViewModel.Feed.all(
+            for: await deps.serverStore.sessions,
+            repoFactory: deps.jellyfinLibraryRepoFactory
+        )
         // The router cached an active server the store can no longer produce a session for — a
-        // desync (session cleared elsewhere, or a failed credential/keychain rebuild). `active` is
-        // never transiently nil here (it's stable actor state and `load()` is already done), so a
-        // nil means the cached id is genuinely stale. Re-sync the router to the store's truth
+        // desync (session cleared elsewhere, or a failed credential/keychain rebuild). Sessions are
+        // never transiently empty here (stable actor state, `load()` is already done), so an empty
+        // list means the cached id is genuinely stale. Re-sync the router to the store's truth
         // instead of releasing the launch reveal onto an endless skeleton: with no Jellyfin session
         // it falls to SMB-only home if an SMB source remains, else to `.login` (which finishes the
         // launch stage), where the user can re-authenticate.
-        guard let session else {
-            router.updateForSources(
-                activeSession: nil,
-                hasAuxiliarySources: await deps.serverStore.hasSMBServers
-            )
+        guard !feeds.isEmpty else {
+            router.updateForSources(await deps.serverStore.sourceSnapshot)
             return
         }
-        if viewModel == nil {
-            let repo = await deps.jellyfinLibraryRepoFactory(session)
-            viewModel = HomeViewModel(repo: repo, userDataActions: userDataActions)
+        hasFeed = true
+        // Rebuild when the SET of servers changed, not just when there's no model yet. A model's
+        // feeds are fixed at init, so signing into a second server left the existing single-server
+        // model in place and Home kept aggregating one server until the next launch — the sidebar
+        // updated (it re-resolves from scratch) which made it look like a Home-only fault.
+        // Comparing source ids rather than rebuilding unconditionally keeps the loaded shelves on
+        // screen when the token moved for an unrelated reason (a visible-libraries edit, an SMB
+        // share re-selection), which would otherwise flash the skeleton for no new content.
+        if viewModel?.sourceIDs != feeds.map(\.source.sourceID) {
+            viewModel = HomeViewModel(feeds: feeds, userDataActions: userDataActions)
+            await viewModel?.load()
+        } else if viewModel?.state == .idle {
+            // Same servers, but the model never settled — its previous `load()` was cancelled by
+            // this very task re-firing (a token move that didn't change the source set). Without
+            // this the skeleton would stick, since nothing else re-loads an existing model.
             await viewModel?.load()
         }
         // Releases the cold-launch sync-hold: `load()` has returned (loaded
@@ -152,7 +167,7 @@ struct HomeView: View {
     /// branches (the pre-session bootstrap skeleton and `vm.state`'s own `.idle`/`.loading`)
     /// collapse to the same `.skeleton` case, since they render the identical placeholder.
     private var contentPhase: HomeContentPhase {
-        if let vm = viewModel, session != nil {
+        if let vm = viewModel, hasFeed {
             switch vm.state {
             case .idle, .loading: return .skeleton
             case .loaded: return .loaded
@@ -167,7 +182,7 @@ struct HomeView: View {
 
     @ViewBuilder
     private var content: some View {
-        if let vm = viewModel, let session {
+        if let vm = viewModel, hasFeed {
             @Bindable var vm = vm
             Group {
             switch vm.state {
@@ -185,12 +200,11 @@ struct HomeView: View {
                     if !vm.heroFeed.isEmpty {
                         HomeHeroCarousel(
                             entries: vm.heroFeed,
-                            session: session,
                             viewModel: vm,
                             scroll: heroScroll
                         )
                     }
-                    HomeShelves(viewModel: vm, session: session)
+                    HomeShelves(viewModel: vm)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.bottom, Space.s30)
@@ -226,7 +240,6 @@ struct HomeView: View {
 /// needs them, and rebuilding these shelves on every scroll frame is wasted work.
 private struct HomeShelves: View {
     let viewModel: HomeViewModel
-    let session: Session
 
     @Environment(\.appIdiom) private var idiom
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -239,16 +252,16 @@ private struct HomeShelves: View {
         // overscan. No-op on iOS.
         VStack(alignment: .leading, spacing: Space.s30) {
             if !vm.continueWatching.isEmpty {
-                MetadataRow(title: "Continue Watching", items: vm.continueWatching, tileWidth: AppLayout.shelfTileWidth(idiom: idiom)) { item in
-                    homeShelfTile(item: item, showProgress: true)
+                MetadataRow(title: "Continue Watching", items: vm.continueWatching, tileWidth: AppLayout.shelfTileWidth(idiom: idiom)) { sourced in
+                    homeShelfTile(sourced, showProgress: true)
                 }
-                .prefetchArtwork(shelfArtworkURLs(vm.continueWatching), session: session)
+                .prefetchArtwork(groups: shelfArtworkGroups(vm.continueWatching))
             }
             if !vm.nextUp.isEmpty {
-                MetadataRow(title: "Next Up", items: vm.nextUp, tileWidth: AppLayout.shelfTileWidth(idiom: idiom)) { item in
-                    homeShelfTile(item: item, showProgress: false)
+                MetadataRow(title: "Next Up", items: vm.nextUp, tileWidth: AppLayout.shelfTileWidth(idiom: idiom)) { sourced in
+                    homeShelfTile(sourced, showProgress: false)
                 }
-                .prefetchArtwork(shelfArtworkURLs(vm.nextUp), session: session)
+                .prefetchArtwork(groups: shelfArtworkGroups(vm.nextUp))
             }
             if vm.heroFeed.isEmpty && vm.continueWatching.isEmpty && vm.nextUp.isEmpty {
                 StatusStateView(
@@ -267,14 +280,15 @@ private struct HomeShelves: View {
 
     // MARK: - Item rendering helpers
 
-    /// The exact artwork URLs the shelf tiles will request — the same ref (`homeShelfImageRef`),
-    /// ceiling, render width, scale, and aspect as the tile, via the shared `ArtworkPrefetch.urls`
-    /// so the warm-up hits the SAME cache key the tiles read (any drift = a wasted double-download).
-    private func shelfArtworkURLs(_ items: [Item]) -> [URL] {
-        ArtworkPrefetch.urls(
+    /// The exact artwork URLs the shelf tiles will request, bucketed per server — the same ref
+    /// (`homeShelfImageRef`), ceiling, render width, scale, and aspect as the tile, via the shared
+    /// `ArtworkPrefetch` so the warm-up hits the SAME cache key the tiles read (any drift = a wasted
+    /// double-download). Bucketed because a mixed-server shelf has no single host or pipeline.
+    private func shelfArtworkGroups(_ items: [SourcedItem]) -> [ArtworkPrefetchGroup] {
+        ArtworkPrefetch.groups(
             for: items,
-            imageRef: { $0.homeShelfImageRef },
-            serverURL: session.serverURL,
+            session: \.jellyfinSession,
+            imageRef: { $0.item.homeShelfImageRef },
             ceiling: HomeShelf.imageMaxWidth,
             renderPointWidth: AppLayout.shelfTileWidth(idiom: idiom),
             displayScale: displayScale,
@@ -283,27 +297,36 @@ private struct HomeShelves: View {
     }
 
     @ViewBuilder
-    private func homeShelfTile(item: Item, showProgress: Bool) -> some View {
-        // Home is play-first: a movie tile plays (and resumes) immediately instead of opening
-        // detail. Episodes already play; series still need detail to pick an episode.
-        ItemNavigator(item: item, session: session, movieTap: .plays) {
-            // The footer-only tile (metadata nil ⇒ thumbnail alone): a Home poster carries its
-            // caption + progress ON the image, no below-tile text (the one-text-region law).
-            MediaTile(
-                title: item.displayTitle,
-                imageRef: item.homeShelfImageRef,
-                session: session,
-                aspectRatio: MediaImage.poster,
-                maxImageWidth: HomeShelf.imageMaxWidth,
-                // Trim the request to the tile's actual point width × display scale (capped at the
-                // @3x ceiling), so a 2x panel doesn't decode the full @3x thumb. No visual change.
-                maxImageRenderWidth: AppLayout.shelfTileWidth(idiom: idiom),
-                footer: MediaThumbnail.Footer.make(
-                    caption: homeShelfCaption(item, showProgress: showProgress),
-                    progress: showProgress ? tileProgress(item) : nil
-                ),
-                metadata: nil
-            )
+    private func homeShelfTile(_ sourced: SourcedItem, showProgress: Bool) -> some View {
+        // Every tile resolves ITS OWN server: Home mixes servers now, so a screen-level session
+        // would build server B's poster URL against server A's host and bearer token.
+        // `jellyfinSession` is non-nil for everything Home can hold today — SMB has no
+        // watch-progress feed to contribute — so the missing branch drops nothing; it exists
+        // because the shelves are typed on the source-agnostic `SourcedItem` that Search will also
+        // carry file-source hits in.
+        if let session = sourced.jellyfinSession {
+            let item = sourced.item
+            // Home is play-first: a movie tile plays (and resumes) immediately instead of opening
+            // detail. Episodes already play; series still need detail to pick an episode.
+            ItemNavigator(item: item, session: session, movieTap: .plays) {
+                // The footer-only tile (metadata nil ⇒ thumbnail alone): a Home poster carries its
+                // caption + progress ON the image, no below-tile text (the one-text-region law).
+                MediaTile(
+                    title: item.displayTitle,
+                    imageRef: item.homeShelfImageRef,
+                    session: session,
+                    aspectRatio: MediaImage.poster,
+                    maxImageWidth: HomeShelf.imageMaxWidth,
+                    // Trim the request to the tile's actual point width × display scale (capped at
+                    // the @3x ceiling), so a 2x panel doesn't decode the full @3x thumb.
+                    maxImageRenderWidth: AppLayout.shelfTileWidth(idiom: idiom),
+                    footer: MediaThumbnail.Footer.make(
+                        caption: homeShelfCaption(item, showProgress: showProgress),
+                        progress: showProgress ? tileProgress(item) : nil
+                    ),
+                    metadata: nil
+                )
+            }
         }
     }
 

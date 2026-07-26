@@ -8,7 +8,8 @@ extension UserItemDataDto {
             played: isPlayed ?? false,
             playbackPositionTicks: Int64(playbackPositionTicks ?? 0),
             playCount: playCount ?? 0,
-            isFavorite: isFavorite ?? false
+            isFavorite: isFavorite ?? false,
+            lastPlayedDate: lastPlayedDate
         )
     }
 }

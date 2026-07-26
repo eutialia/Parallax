@@ -73,12 +73,35 @@ final class LibraryGridViewModel {
     /// Monotonic token so only the latest reset fetch may mutate refresh UI state.
     private var fetchGeneration: UInt = 0
     private let repo: any MediaRepository
+    /// Which source this grid is browsing. A grid is always single-server, so it ignores user-data
+    /// broadcasts from any other source — matching on `itemID` alone would let a favorite toggled on
+    /// one server repaint (or, in a Favorites scope, REMOVE) a same-id row from another. Jellyfin
+    /// derives item GUIDs deterministically from the media path, so that id collision is real.
+    private let source: MediaSourceID
     private let scope: LibraryScope
     private var changesTask: Task<Void, Never>?
 
-    init(repo: any MediaRepository, scope: LibraryScope, userDataActions: UserDataActions) {
+    /// - Parameters:
+    ///   - sort: the grid's starting order, and `filter` its starting filter. Passed in rather than
+    ///     assigned after construction because assigning fires the `didSet` reload — which races
+    ///     the caller's own `load()` and can make it bail on `guard state != .loading`, skipping
+    ///     `loadGenres()` and leaving the genre picker permanently empty. A coordinator that opens
+    ///     several grids on an already-chosen sort (the Favorites wall) hits that every time.
+    init(
+        repo: any MediaRepository,
+        source: MediaSourceID,
+        scope: LibraryScope,
+        userDataActions: UserDataActions,
+        sort: ItemSort = .defaultForLibrary,
+        filter: ItemFilter = ItemFilter()
+    ) {
         self.repo = repo
+        self.source = source
         self.scope = scope
+        // Set in `init`, so the observers above don't fire (Swift skips property observers during
+        // initialization) — exactly the point.
+        self.sort = sort
+        self.filter = filter
         // Own the iterating Task; cancelled below alongside the grid's other in-flight work.
         changesTask = userDataActions.subscribe { [weak self] change in
             self?.apply(change)
@@ -109,6 +132,7 @@ final class LibraryGridViewModel {
     /// — no re-skeleton. Early-outs when the grid doesn't hold `itemID` at all, skipping the
     /// array rebuild.
     private func apply(_ change: UserDataActions.Change) {
+        guard change.source == source else { return }
         if case .favorites = scope, change.unfavorited {
             items.removeAll { $0.id == change.itemID }
             return

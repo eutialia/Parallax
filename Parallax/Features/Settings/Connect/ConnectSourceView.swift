@@ -54,10 +54,7 @@ struct ConnectSourceView: View {
     /// but no active session.
     private func routeAfterSMBAdd() {
         Task {
-            router.updateForSources(
-                activeSession: await deps.serverStore.active,
-                hasAuxiliarySources: await deps.serverStore.hasSMBServers
-            )
+            router.updateForSources(await deps.serverStore.sourceSnapshot)
         }
     }
 }
