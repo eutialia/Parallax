@@ -1,4 +1,5 @@
 import Foundation
+import Get
 import JellyfinAPI
 import ParallaxCore
 
@@ -31,32 +32,18 @@ public enum ErrorMapping {
             }
         }
 
-        // kean/Get APIError: unacceptableStatusCode(Int) is the common HTTP
-        // non-2xx case. Detected by description because the case isn't
-        // imported at this layer.
-        let description = String(describing: error)
-        if description.contains("unacceptableStatusCode") {
-            let statusCode = extractStatusCode(from: description)
+        // kean/Get's HTTP failure. Sessions built through the client factories never reach here
+        // for a non-2xx — `JellyfinResponseValidator` already threw a typed `AppError` — so this
+        // covers the clients with no validator installed: sign-in and Quick Connect.
+        if let apiError = error as? APIError,
+           case .unacceptableStatusCode(let statusCode) = apiError {
+            // A 401 while authenticating is a rejected credential, not a dead session — the
+            // caller is standing at the login form, and telling them to "sign in again" there
+            // would be nonsense. The validator owns the dead-token reading.
+            if statusCode == 401 { return .auth(.invalidCredentials) }
             return .server(statusCode: statusCode, message: nil)
         }
 
         return .unexpected("Jellyfin SDK: \(typeName)", underlying: AnySendableError(error))
-    }
-
-    private static func extractStatusCode(from description: String) -> Int {
-        // Match `unacceptableStatusCode(NNN)` specifically so a stray digit
-        // sequence elsewhere in the description (port number, request ID,
-        // byte count) can't corrupt the result.
-        guard let match = description.range(
-            of: #"unacceptableStatusCode\((\d+)\)"#,
-            options: .regularExpression
-        ) else {
-            return 0
-        }
-        let chunk = description[match]
-        let prefix = "unacceptableStatusCode("
-        guard chunk.hasPrefix(prefix), chunk.hasSuffix(")") else { return 0 }
-        let digits = chunk.dropFirst(prefix.count).dropLast()
-        return Int(digits) ?? 0
     }
 }

@@ -9,10 +9,18 @@ import ParallaxCore
 public final class DefaultJellyfinPlaybackClient: JellyfinPlaybackClient, Sendable {
     private let session: Session
     private let identity: DeviceIdentity
+    /// Called when this server rejects the session's access token (HTTP 401) — see
+    /// `JellyfinResponseValidator`. nil in tests and previews, where nothing acts on it.
+    private let onTokenRejected: (@Sendable (ServerID) -> Void)?
 
-    public init(session: Session, identity: DeviceIdentity) {
+    public init(
+        session: Session,
+        identity: DeviceIdentity,
+        onTokenRejected: (@Sendable (ServerID) -> Void)? = nil
+    ) {
         self.session = session
         self.identity = identity
+        self.onTokenRejected = onTokenRejected
     }
 
     private func client() -> JellyfinClient {
@@ -24,7 +32,15 @@ public final class DefaultJellyfinPlaybackClient: JellyfinPlaybackClient, Sendab
             deviceID: identity.deviceID,
             version: identity.version
         )
-        return JellyfinClient(configuration: config)
+        // Playback shares the browse chokepoint on purpose: a token revoked mid-session kills
+        // the stream too, and reporting it here turns "the server returned an error" into the
+        // accurate "your session expired" — plus the same sign-in-again route out.
+        return JellyfinClient(
+            configuration: config,
+            delegate: onTokenRejected.map {
+                JellyfinResponseValidator(serverID: session.id, onTokenRejected: $0)
+            }
+        )
     }
 
     private var userID: String { session.user.id }
