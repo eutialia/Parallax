@@ -11,7 +11,9 @@ extension BaseItemDto {
         switch collectionType?.rawValue.lowercased() {
         case "movies": domainType = .movies
         case "tvshows": domainType = .tvShows
-        case .none: domainType = .other("unknown")
+        // No declared type = Jellyfin's mixed-content library. Browsable, so it gets its own case
+        // rather than an `.other("unknown")` that the browsable check would (and did) drop.
+        case .none: domainType = .mixed
         case .some(let other): domainType = .other(other)
         }
         let primary = imageTags?["Primary"].map(ImageTag.init(rawValue:))

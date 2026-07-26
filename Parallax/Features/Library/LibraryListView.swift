@@ -19,11 +19,20 @@ struct LibraryListView: View {
     /// a Jellyfin concept). `FavoritesView` resolves its own servers, so no session is threaded
     /// through — a single one would have been the wrong shape anyway now that the wall spans them all.
     var showsFavorites: Bool = false
+    /// Servers whose libraries couldn't be listed this pass. Named above the grid rather than
+    /// dropped silently: the full-screen failure state only covers "every source failed", so
+    /// without this a partial outage is indistinguishable from having fewer libraries.
+    var unreachableServers: [String] = []
 
     @Environment(\.appIdiom) private var idiom
 
     var body: some View {
         ScrollView {
+            if !unreachableServers.isEmpty {
+                UnreachableServersNotice(names: unreachableServers)
+                    .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
+                    .padding(.bottom, Space.s12)
+            }
             // Jellyfin renders library art at 16:9 with the name baked in, so these are wide
             // banners: three-up on tvOS, two-up on iPad, one-up on iPhone.
             let cols = AppLayout.libraryListColumns(idiom: idiom)
@@ -65,6 +74,31 @@ struct LibraryListView: View {
         .navigationDestination(for: FavoritesRoute.self) { _ in
             FavoritesView()
         }
+    }
+}
+
+/// Names the servers missing from the list this pass. Deliberately a quiet inline notice, not an
+/// alert or a full-screen state: the libraries that DID load are right below it and stay usable, so
+/// this is information, not an interruption. Recovery is automatic (`.recoversFromOffline` on the
+/// host), which is why there's no retry button to press.
+private struct UnreachableServersNotice: View {
+    let names: [String]
+
+    var body: some View {
+        Label(message, systemImage: "exclamationmark.triangle")
+            .font(.subheadline)
+            .foregroundStyle(Color.secondaryLabel)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .combine)
+    }
+
+    private var message: String {
+        // Named while the list is short enough to read; past that a count carries the same meaning
+        // without turning the notice into a paragraph.
+        if names.count <= 2 {
+            return "Couldn't reach \(names.joined(separator: " and ")). Its libraries are missing."
+        }
+        return "Couldn't reach \(names.count) servers. Their libraries are missing."
     }
 }
 

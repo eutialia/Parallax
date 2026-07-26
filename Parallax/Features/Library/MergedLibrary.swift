@@ -22,6 +22,11 @@ enum MergedLibrary {
         /// dead server can't put the healthy ones into a retry loop (nor stay gone once it's back).
         /// A successful-but-empty fetch and an SMB source are never in here — neither is a stall.
         var failedSourceIDs: Set<MediaSourceID>
+        /// Display names of the sources in `failedSourceIDs`, in `servers` order. Carried alongside
+        /// the ids because the failed sources contribute no group, so there is nothing left in
+        /// `groups` to read a name from — and a partial failure that can't NAME the missing server
+        /// just reads as "I have fewer libraries than I remember".
+        var failedSourceNames: [String] = []
 
         /// Every entry across every group, flattened in group order — for stale-tab snapping.
         var entries: [LibraryEntry] { groups.allEntries }
@@ -81,10 +86,12 @@ enum MergedLibrary {
                             )
                         }
                     case .smb(let data):
-                        let id = server.id
-                        taskGroup.addTask {
-                            (index, smbGroup(id: id, data: data), nil)
-                        }
+                        // Built here, not in a child task: an SMB group is a pure mapping over the
+                        // user's saved share list with no I/O, so there's nothing to overlap — and
+                        // `smbGroup` is a synchronous MainActor-isolated call, which a child task
+                        // can't make.
+                        let group = smbGroup(id: server.id, data: data)
+                        taskGroup.addTask { (index, group, nil) }
                     }
                 }
                 var out: [(index: Int, group: LibraryGroup?, failed: MediaSourceID?)] = []
@@ -105,7 +112,16 @@ enum MergedLibrary {
                 return lRank == rRank ? lhs.index < rhs.index : lRank < rRank
             }
             .map(\.group)
-        return Outcome(groups: groups, failedSourceIDs: Set(resolved.compactMap(\.failed)))
+
+        // Only Jellyfin sources can fail (SMB resolves offline from the saved share list), so the
+        // names come from the sessions — walked in `servers` order so the list reads in the same
+        // order as the sidebar rather than in whatever order the fan-out finished.
+        let failedIDs = Set(resolved.compactMap(\.failed))
+        let failedNames = servers.compactMap { server -> String? in
+            guard failedIDs.contains(.jellyfin(server.id)) else { return nil }
+            return sessions.first { $0.id == server.id }?.serverName
+        }
+        return Outcome(groups: groups, failedSourceIDs: failedIDs, failedSourceNames: failedNames)
     }
 
     /// One Jellyfin server's group. Returns a nil group (and a non-nil failed id) when the listing

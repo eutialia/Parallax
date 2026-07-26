@@ -13,11 +13,12 @@ struct JellyfinResponseValidatorTests {
 
     private func validate(
         status: Int,
+        headers: [String: String]? = nil,
         onTokenRejected: @escaping @Sendable (ServerID) -> Void = { _ in }
     ) throws {
         let validator = JellyfinResponseValidator(serverID: serverID, onTokenRejected: onTokenRejected)
         let url = URL(string: "https://jellyfin.example.test/Users/Views")!
-        let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: nil)!
+        let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: headers)!
         try validator.client(
             APIClient(baseURL: url),
             validateResponse: response,
@@ -74,6 +75,43 @@ struct JellyfinResponseValidatorTests {
         } catch {
             Issue.record("expected AppError, got \(error)")
         }
+        #expect(reported.ids.isEmpty)
+    }
+
+    /// The destructive false positive: a Jellyfin behind an auth gateway (Authelia, a reverse proxy
+    /// with basic auth) answers 401 for ITS OWN missing credential while the Jellyfin token is
+    /// perfectly good. Signing out there would delete a working token and route the user to a
+    /// sign-in that 401s too. RFC 7235 §3.1 makes `WWW-Authenticate` mandatory on a real challenge,
+    /// and Jellyfin's own token rejection sends none — so its presence is the discriminator.
+    @Test(
+        "A 401 carrying an auth challenge is an upstream gateway — never a rejected token",
+        arguments: ["Basic realm=\"proxy\"", "Bearer", "Digest realm=\"gw\", nonce=\"abc\""]
+    )
+    func gatewayChallengeDoesNotSignOut(challenge: String) {
+        let reported = Reported()
+        do {
+            try validate(status: 401, headers: ["WWW-Authenticate": challenge]) { reported.record($0) }
+            Issue.record("expected a throw")
+        } catch let error as AppError {
+            guard case .server(let code, _) = error else {
+                Issue.record("expected .server(401), got \(error)")
+                return
+            }
+            #expect(code == 401)
+        } catch {
+            Issue.record("expected AppError, got \(error)")
+        }
+        // The load-bearing assertion: nothing was reported, so no session is dropped and no
+        // Keychain token is deleted.
+        #expect(reported.ids.isEmpty)
+    }
+
+    /// Header matching must be case-insensitive — HTTP field names are, and `HTTPURLResponse`
+    /// preserves whatever casing the server sent.
+    @Test("The challenge check doesn't depend on header casing")
+    func challengeMatchIsCaseInsensitive() {
+        let reported = Reported()
+        try? validate(status: 401, headers: ["www-authenticate": "Basic realm=\"proxy\""]) { reported.record($0) }
         #expect(reported.ids.isEmpty)
     }
 
