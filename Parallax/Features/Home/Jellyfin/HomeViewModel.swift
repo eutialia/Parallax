@@ -30,13 +30,16 @@ final class HomeViewModel {
             for sessions: [Session],
             repoFactory: @Sendable @escaping (Session) async -> LibraryRepository
         ) async -> [Feed] {
-            await withTaskGroup(of: (Int, Feed).self) { group in
+            // Only the repo build runs off-actor; the `Feed` itself is assembled back here.
+            // `Feed.init` is MainActor-isolated (nested in a `@MainActor` type), so constructing it
+            // inside the child task is an isolation violation the compiler already warns about.
+            await withTaskGroup(of: (Int, Session, LibraryRepository).self) { group in
                 for (index, session) in sessions.enumerated() {
-                    group.addTask { (index, Feed(session: session, repo: await repoFactory(session))) }
+                    group.addTask { (index, session, await repoFactory(session)) }
                 }
-                var out: [(Int, Feed)] = []
+                var out: [(Int, Session, LibraryRepository)] = []
                 for await result in group { out.append(result) }
-                return out.sorted { $0.0 < $1.0 }.map(\.1)
+                return out.sorted { $0.0 < $1.0 }.map { Feed(session: $0.1, repo: $0.2) }
             }
         }
     }
@@ -65,6 +68,17 @@ final class HomeViewModel {
     /// Showing the blocking full-screen failure with no content — the state an offline→online
     /// recovery should re-`load()`. Drives `.recoversFromOffline`.
     var isStalled: Bool { if case .failed = state { true } else { false } }
+
+    /// Servers whose slice failed the last `load()` while at least one other server answered.
+    /// Home stays `.loaded` in that case (one dead server must not blank a working screen), so
+    /// `isStalled` is false and nothing would ever re-pull them — the sidebar repairs itself per
+    /// source, and Home has to as well or a server that was down at launch stays missing from the
+    /// shelves until the app is relaunched.
+    private(set) var failedSourceIDs: Set<MediaSourceID> = []
+
+    /// Whether an offline→online recovery has anything to do: the whole screen failed, or some
+    /// servers did. Drives `.recoversFromOffline`; the view picks `load()` vs `reloadFailedFeeds()`.
+    var needsOfflineRepair: Bool { isStalled || !failedSourceIDs.isEmpty }
 
     private let feeds: [Feed]
     private let userDataActions: UserDataActions
@@ -136,14 +150,62 @@ final class HomeViewModel {
         guard !slices.isEmpty else {
             // Nothing came back at all. With no configured feeds that's an empty Home, not a
             // failure; with feeds present it means every one of them threw.
+            failedSourceIDs = Set(feeds.map(\.source.sourceID))
             state = feeds.isEmpty ? .loaded : .failed("Parallax couldn't reach your servers.")
             return
         }
         commit(slices)
+        failedSourceIDs = Set(zip(feeds, results).compactMap { $1 == nil ? $0.source.sourceID : nil })
         if slices.count < feeds.count {
             Log.ui.error("Home: \(self.feeds.count - slices.count) of \(self.feeds.count) server(s) failed; showing the rest")
         }
         state = .loaded
+    }
+
+    /// Re-pull ONLY the servers that failed the last `load()`, keeping everything already on
+    /// screen. Drives `.recoversFromOffline` for the PARTIAL-failure case, which `load()` can't
+    /// serve: it would drop back to `.loading` and flash the skeleton over content that never
+    /// stopped working. Mirrors `FavoritesViewModel.reloadFailedSections`.
+    func reloadFailedFeeds() async {
+        let failed = feeds.filter { failedSourceIDs.contains($0.source.sourceID) }
+        guard !failed.isEmpty else { return }
+        let repaired = await withTaskGroup(of: (MediaSourceID, FeedSlice?).self) { group in
+            for feed in failed {
+                // Resolved out here: `sourceID` is a synchronous MainActor-isolated read, so
+                // touching it inside the child task is an isolation violation.
+                let id = feed.source.sourceID
+                group.addTask { (id, await Self.loadSlice(feed)) }
+            }
+            var out: [MediaSourceID: FeedSlice] = [:]
+            for await (id, slice) in group {
+                if let slice { out[id] = slice }
+            }
+            return out
+        }
+        guard !Task.isCancelled, !repaired.isEmpty else { return }
+        // Re-merge in feed order: the repaired slice for a server that came back, what's already
+        // on screen for the ones that were fine, nothing for a server still unreachable.
+        var merged: [FeedSlice] = []
+        for feed in feeds {
+            let id = feed.source.sourceID
+            if let slice = repaired[id] {
+                merged.append(slice)
+                failedSourceIDs.remove(id)
+            } else if !failedSourceIDs.contains(id) {
+                merged.append(onScreenSlice(for: id))
+            }
+        }
+        commit(merged)
+    }
+
+    /// What this server currently contributes to the shelves — used to carry a healthy server's
+    /// items across a merge that only re-fetched some servers.
+    private func onScreenSlice(for source: MediaSourceID) -> FeedSlice {
+        FeedSlice(
+            hero: heroFeed.filter { $0.source.sourceID == source },
+            continueWatching: continueWatching.filter { $0.source.sourceID == source },
+            nextUp: nextUp.filter { $0.source.sourceID == source }
+        )
     }
 
     /// Re-pull ONLY the progress-driven shelves (Continue Watching + Next Up) without a
@@ -179,8 +241,19 @@ final class HomeViewModel {
             let slices = results.compactMap { $0 }
             // Every server failed → keep the stale shelves rather than blanking a working screen.
             guard !slices.isEmpty || feeds.isEmpty else { continue }
-            continueWatching = .mergedByLastPlayed(slices.map(\.continueWatching))
-            nextUp = .interleaved(slices.map(\.nextUp))
+            // PARTIAL failure carries the missing server's items forward instead of dropping them:
+            // re-merging only the answered servers would silently delete a momentarily-unreachable
+            // server's Continue Watching rows from a screen that is otherwise fine — the
+            // single-server code this replaced kept its stale shelves for exactly that reason.
+            var cw: [[SourcedItem]] = []
+            var nu: [[SourcedItem]] = []
+            for (feed, slice) in zip(feeds, results) {
+                let id = feed.source.sourceID
+                cw.append(slice?.continueWatching ?? continueWatching.filter { $0.source.sourceID == id })
+                nu.append(slice?.nextUp ?? nextUp.filter { $0.source.sourceID == id })
+            }
+            continueWatching = .mergedByLastPlayed(cw)
+            nextUp = .interleaved(nu)
         } while refreshQueued
     }
 

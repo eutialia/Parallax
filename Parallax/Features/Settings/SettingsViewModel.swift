@@ -38,15 +38,17 @@ final class SettingsViewModel {
         signedOutServers = await serverStore.signedOutJellyfinServers
     }
 
-    /// Discards a signed-out Jellyfin row. No router sync needed: a signed-out server had no
-    /// session, so removing it can't move the active session or cross the login/home boundary.
+    /// Discards a signed-out Jellyfin row. The active session and the login/home boundary can't
+    /// move (the row had no session), but the router still has to be re-pointed: its
+    /// `sourceSetIdentity` fingerprints EVERY persisted row, signed-out ones included, so skipping
+    /// this leaves the roots' reload token describing a server that no longer exists.
     func removeSignedOutServer(_ id: ServerID) async {
         do {
             try await serverStore.remove(id)
         } catch {
             Log.persistence.error("Settings removeSignedOutServer failed for \(id.rawValue): \(error.localizedDescription)")
         }
-        await refresh()
+        await syncRouterToSources()
     }
 
     func removeSMBServer(_ id: ServerID) async {

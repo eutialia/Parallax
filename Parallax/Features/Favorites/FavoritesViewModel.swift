@@ -119,14 +119,30 @@ final class FavoritesViewModel {
         !sections.isEmpty && sections.allSatisfy(\.grid.isStalled)
     }
 
+    /// The servers this wall currently answers for, in order — the rebuild test, mirroring
+    /// `HomeViewModel.sourceIDs` / `JellyfinSearchViewModel.matches`.
+    var sourceIDs: [ServerID] { sections.map(\.session.id) }
+
     /// Build one section per signed-in server, in the store's order (Jellyfin add order), and load
     /// them concurrently. Sections are created before loading so the wall can render its headers and
     /// per-section skeletons while the fetches are in flight.
+    ///
+    /// A no-op when the SET of servers is unchanged: the view keys this on the router's reload
+    /// token, which also moves for things that have nothing to do with the server set (a "Visible
+    /// Libraries" edit, an SMB share re-selection). Rebuilding then would throw away every section's
+    /// loaded items, pagination, and the user's scroll position to refetch identical content.
     func load(
         sessions: [Session],
         repoFactory: @Sendable (Session) async -> any MediaRepository,
         userDataActions: UserDataActions
     ) async {
+        guard sourceIDs != sessions.map(\.id) else {
+            // Same servers — but a section may never have settled, because the pass that was
+            // loading it got cancelled by this very re-fire. Nothing else re-loads an existing
+            // grid, so without this the skeleton would stick.
+            await loadUnsettledSections()
+            return
+        }
         var built: [Section] = []
         for session in sessions {
             // The current sort/filter go in through `init`, not assigned afterwards: assigning
@@ -143,6 +159,11 @@ final class FavoritesViewModel {
             )
             built.append(Section(session: session, grid: grid))
         }
+        // Each `repoFactory` call above is an actor hop, so a superseded pass can still be sitting
+        // here when a newer one has already committed. Commit only if we're still the live pass —
+        // otherwise the stale server list clobbers the fresh one (the roots guard their resolves
+        // the same way).
+        guard !Task.isCancelled else { return }
         sections = built
 
         // Concurrent, and each section commits its own state as it lands: a slow server delays only
@@ -150,6 +171,16 @@ final class FavoritesViewModel {
         // rather than running in parallel — the win is the overlapped network time, not CPU.
         await withTaskGroup(of: Void.self) { group in
             for section in built {
+                group.addTask { @MainActor in await section.grid.load() }
+            }
+        }
+    }
+
+    /// Load any section still sitting at `.idle` — a grid whose first `load()` was cancelled
+    /// mid-flight. Never touches a loaded, loading, or failed section.
+    private func loadUnsettledSections() async {
+        await withTaskGroup(of: Void.self) { group in
+            for section in sections where section.grid.state == .idle {
                 group.addTask { @MainActor in await section.grid.load() }
             }
         }

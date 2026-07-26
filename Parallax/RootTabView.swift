@@ -189,7 +189,9 @@ struct RootTabView: View {
             // Favorites card) and Jellyfin-only — favorites are a Jellyfin concept, so an SMB-only
             // config (nil session) omits it. Hidden from the collapsed bar unless it's the
             // last-opened library, sharing the dynamic slot with the real libraries.
-            if isSidebarLayout, let session {
+            // `session != nil`, not `let session`: `FavoritesView` resolves every server itself, so
+            // the session is only a presence test here — binding it left an unused value.
+            if isSidebarLayout, session != nil {
                 Tab("Favorites", systemImage: "heart", value: AppTab.favorites) {
                     NavigationStack {
                         FavoritesView()

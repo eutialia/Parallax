@@ -176,7 +176,9 @@ struct FocusRootView: View {
             // Favorites is a cross-SERVER virtual library, so it sits at top level rather than
             // inside a server's section (which would claim it belongs to that server). Jellyfin
             // concept — omitted SMB-only. Mirrors RootTabView's placement.
-            if let session {
+            // `session != nil`, not `let session`: `FavoritesView` resolves every server itself, so
+            // the session is only a presence test here — binding it left an unused value.
+            if session != nil {
                 Tab("Favorites", systemImage: "heart", value: AppTab.favorites) {
                     NavigationStack {
                         FavoritesView()

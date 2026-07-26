@@ -152,7 +152,14 @@ private struct SourcedArtworkPrefetchModifier: ViewModifier {
             // Keyed on the whole group set so a refresh that swaps items in place still re-warms,
             // and a server appearing/disappearing from the shelf restarts cleanly.
             .task(id: groups) {
-                guard !groups.isEmpty else { return }
+                guard !groups.isEmpty else {
+                    // Stop, don't just bail: the shelf emptying (or its last server leaving) is
+                    // exactly when the previous pass's prefetchers must be torn down — returning
+                    // early left them churning a dead URL set until the view disappeared.
+                    stop()
+                    prefetchers = []
+                    return
+                }
                 var resolved: [(pipeline: ImagePipeline, urls: [URL])] = []
                 for group in groups {
                     let pipeline = await deps.imagePipelineFactory.pipeline(for: group.session)
