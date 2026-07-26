@@ -96,10 +96,19 @@ struct HomeView: View {
                 Task { await viewModel?.refresh() }
             }
         }
-        // Auto-recover the error screen when the network returns (or the app foregrounds online)
-        // instead of stranding the user on a stale "Couldn't load Home". Gated on `isStalled`, so a
-        // loaded feed is never re-pulled. Event-based — no pull-to-refresh.
-        .recoversFromOffline(isStalled: viewModel?.isStalled ?? false) { await viewModel?.load() }
+        // Auto-recover when the network returns (or the app foregrounds online) instead of
+        // stranding the user on a stale "Couldn't load Home" — or, with several servers, on a Home
+        // permanently missing the one server that was down at launch. A fully failed screen
+        // re-`load()`s; a PARTIAL failure repairs only the dead servers, so the shelves that never
+        // stopped working don't flash back to a skeleton. A healthy feed is never re-pulled.
+        // Event-based — no pull-to-refresh.
+        .recoversFromOffline(isStalled: viewModel?.needsOfflineRepair ?? false) {
+            if viewModel?.isStalled == true {
+                await viewModel?.load()
+            } else {
+                await viewModel?.reloadFailedFeeds()
+            }
+        }
     }
 
     /// Per-source feed load for the `.task(id: libraryReloadToken)`. tvOS adopts the launch gate's

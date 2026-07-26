@@ -40,13 +40,16 @@ struct JellyfinSearchProvider: SearchProviding {
         for sessions: [Session],
         repoFactory: @Sendable @escaping (Session) async -> LibraryRepository
     ) async -> [JellyfinSearchProvider] {
-        await withTaskGroup(of: (Int, JellyfinSearchProvider).self) { group in
+        // Only the repo build runs off-actor; the provider is assembled back here, because its
+        // `init` is MainActor-isolated (the target's default isolation) and constructing it inside
+        // the child task is an isolation violation the compiler warns about.
+        await withTaskGroup(of: (Int, Session, LibraryRepository).self) { group in
             for (index, session) in sessions.enumerated() {
-                group.addTask { (index, JellyfinSearchProvider(session: session, repo: await repoFactory(session))) }
+                group.addTask { (index, session, await repoFactory(session)) }
             }
-            var out: [(Int, JellyfinSearchProvider)] = []
+            var out: [(Int, Session, LibraryRepository)] = []
             for await result in group { out.append(result) }
-            return out.sorted { $0.0 < $1.0 }.map(\.1)
+            return out.sorted { $0.0 < $1.0 }.map { JellyfinSearchProvider(session: $0.1, repo: $0.2) }
         }
     }
 }

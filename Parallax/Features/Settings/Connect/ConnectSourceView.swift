@@ -103,15 +103,18 @@ struct ConnectSourceView: View {
         signedOutServers = await deps.serverStore.signedOutJellyfinServers.compactMap(SignedOutServerRow.init)
     }
 
-    /// Discards a signed-out row from here. No router sync: a signed-out server contributes no
-    /// source, so removing it can't cross the login/home boundary — we're already on the far side
-    /// of it. Re-reads the list so the group empties (and disappears) once the last row goes.
+    /// Discards a signed-out row from here. The login/home boundary can't move (a signed-out server
+    /// contributes no source, and we're already on the far side of it), but the router is still
+    /// re-pointed: `sourceSetIdentity` fingerprints every persisted row, signed-out ones included,
+    /// so skipping it would leave the roots' reload token naming a server that no longer exists.
+    /// Re-reads the list so the group empties (and disappears) once the last row goes.
     private func removeSignedOutServer(_ id: ServerID) async {
         do {
             try await deps.serverStore.remove(id)
         } catch {
             Log.persistence.error("Connect removeSignedOutServer failed for \(id.rawValue): \(error.localizedDescription)")
         }
+        router.updateForSources(await deps.serverStore.sourceSnapshot)
         await loadSignedOutServers()
     }
 }

@@ -148,11 +148,15 @@ final class JellyfinSearchViewModel {
             of: (Int, (source: LibrarySource, results: SearchResults)?).self
         ) { group in
             for (index, provider) in providers.enumerated() {
+                // Read out here: `source` (and its `displayName`) are synchronous MainActor-isolated
+                // reads, so touching them inside the child task is an isolation violation.
+                let source = provider.source
+                let name = source.displayName
                 group.addTask {
                     do {
-                        return (index, (provider.source, try await provider.search(trimmed, scope: currentScope)))
+                        return (index, (source, try await provider.search(trimmed, scope: currentScope)))
                     } catch {
-                        Log.ui.error("Search failed for \(provider.source.displayName): \(error.networkDiagnostic)")
+                        Log.ui.error("Search failed for \(name): \(error.networkDiagnostic)")
                         return (index, nil)
                     }
                 }
