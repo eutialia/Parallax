@@ -74,6 +74,10 @@ public final class LANServerDiscovery {
         isDiscovering = false
     }
 
+    /// The in-flight discovery run. Internal purely as a test seam: suites await this instead of
+    /// busy-polling `isDiscovering`, which made the retry coverage timing-dependent.
+    var runningTask: Task<Void, Never>? { task }
+
     private func ingest(_ responses: [Data]) {
         let before = discovered.count
         for data in responses {

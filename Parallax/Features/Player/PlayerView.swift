@@ -457,7 +457,7 @@ struct PlayerView: View {
         GeometryReader { geo in
             PlayerLoadingScrim(
                 mode: scrimFlavor,
-                label: viewModel?.loaderTitle ?? "Loading video",
+                label: viewModel?.loaderTitle ?? PlayerViewModel.LoaderCaption.loadingVideo,
                 sublabel: viewModel?.loaderSubtitle,
                 metrics: .forSurface(geo.size)
             )

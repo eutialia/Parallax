@@ -12,15 +12,20 @@ public final class DefaultJellyfinPlaybackClient: JellyfinPlaybackClient, Sendab
     /// Called when this server rejects the session's access token (HTTP 401) — see
     /// `JellyfinResponseValidator`. nil in tests and previews, where nothing acts on it.
     private let onTokenRejected: (@Sendable (ServerID) -> Void)?
+    /// See `DefaultJellyfinLibraryClient.sessionConfiguration` — the injected transport that lets
+    /// tests drive the real request path against a stub `URLProtocol`.
+    private let sessionConfiguration: URLSessionConfiguration
 
     public init(
         session: Session,
         identity: DeviceIdentity,
-        onTokenRejected: (@Sendable (ServerID) -> Void)? = nil
+        onTokenRejected: (@Sendable (ServerID) -> Void)? = nil,
+        sessionConfiguration: URLSessionConfiguration = .default
     ) {
         self.session = session
         self.identity = identity
         self.onTokenRejected = onTokenRejected
+        self.sessionConfiguration = sessionConfiguration
     }
 
     private func client() -> JellyfinClient {
@@ -39,7 +44,8 @@ public final class DefaultJellyfinPlaybackClient: JellyfinPlaybackClient, Sendab
             configuration: config,
             delegate: onTokenRejected.map {
                 JellyfinResponseValidator(serverID: session.id, onTokenRejected: $0)
-            }
+            },
+            sessionConfiguration: sessionConfiguration
         )
     }
 

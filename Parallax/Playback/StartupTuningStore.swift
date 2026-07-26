@@ -39,7 +39,10 @@ enum StartupProfile: String, CaseIterable, Sendable {
 /// The type + read path are release-clean (a chosen profile could ship later as a
 /// real setting) — only the picker UI that writes it is `#if DEBUG`.
 struct StartupTuningStore: Sendable {
-    private static let key = "debug.startupTuning.v1"
+    /// Internal rather than private so the migration tests can seed a legacy value under the SAME
+    /// key the store reads, instead of re-typing the string (a drift there would leave them
+    /// silently green against a key nothing writes).
+    static let key = "debug.startupTuning.v1"
 
     private let defaults: UserDefaults
 

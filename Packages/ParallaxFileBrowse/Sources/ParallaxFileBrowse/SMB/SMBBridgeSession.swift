@@ -1,4 +1,16 @@
 import Foundation
+import ParallaxCore
+
+/// What a bridge session needs from its byte source: random access for the bridge to serve, plus
+/// the bounded drain-then-release teardown `stop()` performs. `SMBRandomAccessReader` is the only
+/// production conformer; naming the requirement instead of the concrete type keeps the session's
+/// teardown ORDER testable with a fake (and keeps the session non-generic for its call sites).
+public protocol SMBBridgeReading: RandomAccessReading {
+    /// Teardown that waits (bounded) for in-flight reads before deciding checkin-vs-disconnect.
+    func drainAndDisconnect() async
+}
+
+extension SMBRandomAccessReader: SMBBridgeReading {}
 
 /// One SMB-backed HTTP bridge serving session: the `(reader, bridge)` pair plus the
 /// ORDER-SENSITIVE teardown both call sites (thumbnail generation, AVKit playback) must
@@ -15,10 +27,10 @@ import Foundation
 /// it inline at the end of each fetch; the playback path stashes `stop` in the item's
 /// cleanup closure and calls it when the player closes.
 public struct SMBBridgeSession: Sendable {
-    public let reader: SMBRandomAccessReader
+    public let reader: any SMBBridgeReading
     public let bridge: SMBHTTPBridge
 
-    public init(reader: SMBRandomAccessReader, fileName: String, contentType: String) {
+    public init(reader: any SMBBridgeReading, fileName: String, contentType: String) {
         self.reader = reader
         self.bridge = SMBHTTPBridge(reader: reader, fileName: fileName, contentType: contentType)
     }

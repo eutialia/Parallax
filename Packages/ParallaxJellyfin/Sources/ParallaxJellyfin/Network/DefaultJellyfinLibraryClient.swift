@@ -8,15 +8,21 @@ public final class DefaultJellyfinLibraryClient: JellyfinLibraryClient, Sendable
     /// Called when this server rejects the session's access token (HTTP 401) — see
     /// `JellyfinResponseValidator`. nil in tests and previews, where nothing acts on it.
     private let onTokenRejected: (@Sendable (ServerID) -> Void)?
+    /// The transport every request runs on. Defaulted to `.default` so production is unchanged;
+    /// tests hand in a configuration carrying a stub `URLProtocol` so the real request/response
+    /// path is exercised without a live server.
+    private let sessionConfiguration: URLSessionConfiguration
 
     public init(
         session: Session,
         identity: DeviceIdentity,
-        onTokenRejected: (@Sendable (ServerID) -> Void)? = nil
+        onTokenRejected: (@Sendable (ServerID) -> Void)? = nil,
+        sessionConfiguration: URLSessionConfiguration = .default
     ) {
         self.session = session
         self.identity = identity
         self.onTokenRejected = onTokenRejected
+        self.sessionConfiguration = sessionConfiguration
     }
 
     private func client() -> JellyfinClient {
@@ -34,7 +40,8 @@ public final class DefaultJellyfinLibraryClient: JellyfinLibraryClient, Sendable
             configuration: config,
             delegate: onTokenRejected.map {
                 JellyfinResponseValidator(serverID: session.id, onTokenRejected: $0)
-            }
+            },
+            sessionConfiguration: sessionConfiguration
         )
     }
 
@@ -67,7 +74,9 @@ public final class DefaultJellyfinLibraryClient: JellyfinLibraryClient, Sendable
         params.fields = [.primaryImageAspectRatio, .mediaSourceCount]
         params.imageTypeLimit = 1
         params.enableImageTypes = [.primary, .backdrop, .logo, .thumb]
-        params.genres = filter.genres.isEmpty ? nil : filter.genres
+        // The SDK's URLQueryEncoder (explode: true) emits zero query items for both nil and an
+        // empty array, so an empty `genres` is already indistinguishable from omitting it on the wire.
+        params.genres = filter.genres
         params.includeItemTypes = [.movie, .series]
         switch scope {
         case .collection(let id):

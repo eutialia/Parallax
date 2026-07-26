@@ -117,8 +117,8 @@ public actor SessionManager {
             return
         }
 
-        // The SDK's QuickConnect.connect() swallows CancellationError and just
-        // finish()es the stream — so a cancelled run reaches here with the
+        // The auth client swallows CancellationError and just finish()es the
+        // Quick Connect stream — so a cancelled run reaches here with the
         // for-await loop having exited cleanly and `secret == nil`. Check the
         // cancellation flag before treating that as a real failure.
         if Task.isCancelled {

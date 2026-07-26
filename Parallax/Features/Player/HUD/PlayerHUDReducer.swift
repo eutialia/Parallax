@@ -51,12 +51,19 @@ nonisolated struct ReduceContext: Equatable {
     let isPlaying: Bool
 }
 
+nonisolated enum PlayerHUDTuning {
+    /// How far one left/right remote click steps the playhead. Matches the in-HUD
+    /// skip buttons. Named so the reducer and its tests share ONE source instead of
+    /// each re-typing 10.
+    static let clickStepSeconds: Double = 10
+}
+
 nonisolated func reduce(_ state: PlayerHUDState, _ event: RemoteEvent, _ ctx: ReduceContext)
     -> (PlayerHUDState, [PlayerEffect]) {
     func clamp(_ x: Double) -> Double { min(max(x, 0), 1) }
-    /// The ±10s a left/right click steps, as a fraction of the duration. Matches the
-    /// in-HUD skip buttons. Zero when the duration is unknown so a click is a no-op seek.
-    let clickStep = ctx.durationSeconds > 0 ? 10.0 / ctx.durationSeconds : 0
+    /// The click step as a fraction of the duration. Zero when the duration is
+    /// unknown so a click is a no-op seek.
+    let clickStep = ctx.durationSeconds > 0 ? PlayerHUDTuning.clickStepSeconds / ctx.durationSeconds : 0
 
     // Incomplete media whose runtime never resolved plays with an indefinite duration
     // (`durationSeconds` is NaN → `> 0` is false): there's no scrubbable timeline. Analog swipe +

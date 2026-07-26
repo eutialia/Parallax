@@ -31,7 +31,9 @@ public actor ServerStore {
         }
     }
 
-    private static let persistedServersKey = SettingKey<[PersistedServer]>(
+    /// Internal (not private) so tests seed and re-read the persisted blob through the SAME key
+    /// the store writes, instead of mirroring the `"ParallaxJellyfin.persistedSessions"` literal.
+    static let persistedServersKey = SettingKey<[PersistedServer]>(
         name: "ParallaxJellyfin.persistedSessions",
         defaultValue: []
     )

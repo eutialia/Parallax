@@ -17,8 +17,16 @@ struct HardTimeoutError: Error {}
 /// callers already accept when they abandon an in-flight connect); the losing TIMER, by
 /// contrast, is always cancelled so a fast success doesn't leave a sleeper holding the race
 /// state for the full ceiling.
+///
+/// - Parameters:
+///   - seconds: the ceiling handed to `sleep`.
+///   - sleep: how the ceiling is waited out. Defaults to `Task.sleep`; injectable so a test can
+///     fire the ceiling on demand instead of racing a real clock. Behaviour is unchanged for
+///     every production caller, which all take the default.
+///   - operation: the work being raced.
 public func withHardTimeout<T: Sendable>(
     seconds: TimeInterval,
+    sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { try await Task.sleep(for: .seconds($0)) },
     operation: @escaping @Sendable () async throws -> T
 ) async throws -> T {
     // Everything the three settlers (completion, timeout, caller cancellation) touch lives
@@ -52,7 +60,7 @@ public func withHardTimeout<T: Sendable>(
                 catch { settle(.failure(error)) }
             }
             let timer = Task {
-                try? await Task.sleep(for: .seconds(seconds))
+                try? await sleep(seconds)
                 guard !Task.isCancelled else { return }
                 settle(.failure(HardTimeoutError()))
             }

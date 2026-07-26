@@ -18,19 +18,10 @@ public enum ErrorMapping {
             }
         }
 
-        // Quick Connect errors are internal to the SDK's QuickConnect helper.
-        // The cases aren't public, so match on the type description.
-        // Only `maxPollingHit` has a stable user-facing meaning ("the code
-        // expired"). `retrievingCodeFailed` is a server/transport problem
-        // that should fall through to .unexpected so the upper layer can
-        // render an accurate reason instead of a misleading "rejected".
-        let typeName = String(describing: type(of: error))
-        if typeName.contains("QuickConnectError") {
-            let description = String(describing: error)
-            if description.contains("maxPollingHit") {
-                return .auth(.quickConnectExpired)
-            }
-        }
+        // Quick Connect needs no case here: `DefaultJellyfinAuthClient` owns that handshake's
+        // polling budget and throws `AppError.auth(.quickConnectExpired)` itself, which the
+        // passthrough above already carries. (It used to be classified by stringifying the SDK's
+        // internal `QuickConnectError` — see `QuickConnectPolling` for why that had to go.)
 
         // kean/Get's HTTP failure. Sessions built through the client factories never reach here
         // for a non-2xx — `JellyfinResponseValidator` already threw a typed `AppError` — so this
@@ -44,6 +35,9 @@ public enum ErrorMapping {
             return .server(statusCode: statusCode, message: nil)
         }
 
-        return .unexpected("Jellyfin SDK: \(typeName)", underlying: AnySendableError(error))
+        return .unexpected(
+            "Jellyfin SDK: \(String(describing: type(of: error)))",
+            underlying: AnySendableError(error)
+        )
     }
 }

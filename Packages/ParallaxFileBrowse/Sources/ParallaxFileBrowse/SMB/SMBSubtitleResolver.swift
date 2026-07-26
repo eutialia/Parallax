@@ -64,9 +64,9 @@ public struct SMBSubtitleResolver: Sendable {
             guard let label = SubtitleMatcher.label(forSub: sub, video: video, lonelyVideo: lonelyVideo) else { continue }
 
             // playableURL percent-encodes path components (SMBURL), so '#'/'?' siblings no
-            // longer truncate; nil here means the components still couldn't form a URL. Drop
-            // the one entry rather than aborting the whole scan.
-            guard let url = fileSource.playableURL(for: entry, in: path) else { continue }
+            // longer truncate — and the encoding makes the construction total, so no sibling
+            // can fail to produce a URL.
+            let url = fileSource.playableURL(for: entry, in: path)
             matches.append(SMBSubtitleMatch(label: label, url: url))
         }
         return matches
