@@ -21,14 +21,14 @@ struct ParallaxApp: App {
     @UIApplicationDelegateAdaptor(OrientationAppDelegate.self) private var orientationDelegate
     #endif
 
-    @State private var dependencies: AppDependencies = .live()
+    @State private var dependencies: AppDependencies
     @State private var router: AppRouter = .init()
     @State private var playback: PlaybackPresenter = .init()
     /// App-wide favorite/played mutations + change broadcast. Injected here so any surface
     /// (detail pages, and — next wave — long-press menus) mutates through one guarded service
     /// and every screen showing the item can reflect the result. See `UserDataActions`.
     @State private var userDataActions: UserDataActions = .init()
-    @State private var launchGate: LaunchGate = .init()
+    @State private var launchGate: LaunchGate
     /// App-wide network reachability. Views stuck on an error subscribe via
     /// `.recoversFromOffline` and auto-reload when this flips back online.
     @State private var connectivity: ConnectivityMonitor = .init()
@@ -44,6 +44,32 @@ struct ParallaxApp: App {
     /// Boot into the lockup text-nudge spike (same file) — does the `.borderless` style's
     /// move-text-out-of-the-way work with our label shapes?
     private let lockupTextSpike = false
+
+    /// The dependencies have to exist before the launch gate can be built — the gate's
+    /// mode is decided from what's on disk — so both are constructed here rather than in
+    /// their property initializers.
+    init() {
+        let dependencies = AppDependencies.live()
+        _dependencies = State(initialValue: dependencies)
+        _launchGate = State(initialValue: LaunchGate(playsStory: Self.playsLaunchStory(for: dependencies)))
+    }
+
+    /// Whether this process plays the launch story at all. The story exists to cover
+    /// a boot the user would otherwise sit through; when there's nothing to cover it
+    /// becomes a toll, so these launches show content immediately with no stage:
+    ///
+    /// - a cached Home feed means launch opens onto real content, and
+    /// - an SMB-only setup has no server bootstrap at all — shares are browsed on demand.
+    ///
+    /// Both probes are synchronous (a directory listing and a `UserDefaults` decode — no
+    /// Keychain, no network, no actor hop), which is what lets the decision happen before
+    /// the first frame. Anything else — first run, a fresh install, a setup whose cache was
+    /// dropped — plays the story, as does a post-sign-in `rearm()`.
+    private static func playsLaunchStory(for dependencies: AppDependencies) -> Bool {
+        if dependencies.snapshots.hasCachedHomeFeed { return false }
+        if ServerStore.persistedSetupIsSMBOnly() { return false }
+        return true
+    }
 
     var body: some Scene {
         WindowGroup {

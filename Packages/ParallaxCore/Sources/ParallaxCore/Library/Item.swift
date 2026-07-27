@@ -1,6 +1,6 @@
 import Foundation
 
-public enum Item: Sendable, Hashable, Identifiable {
+public enum Item: Sendable, Hashable, Codable, Identifiable {
     case movie(Movie)
     case series(Series)
     case episode(Episode)

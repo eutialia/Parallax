@@ -6,6 +6,15 @@ import ParallaxJellyfin
 enum MediaSourceID: Hashable {
     case jellyfin(ServerID)
     case smb(ServerID)
+
+    /// The `ServerStore` row this source belongs to. Server ids are unique across kinds (SMB ids
+    /// are minted as `smb-<host>`), so this is the key everything server-scoped and persisted —
+    /// hidden libraries, Keychain slots, snapshot files — is filed under.
+    var serverID: ServerID {
+        switch self {
+        case .jellyfin(let id), .smb(let id): id
+        }
+    }
 }
 
 extension LibrarySource {

@@ -9,6 +9,10 @@ import ParallaxPlayback
 @MainActor
 final class AppDependencies {
     let serverStore: ServerStore
+    /// Last-known Home feed + library lists on disk, so a launch opens on real content and
+    /// revalidates behind it instead of staring at a skeleton. Shared by every cached surface —
+    /// one generic store, one directory, one schema version.
+    let snapshots: SnapshotStore
     let sessionManager: SessionManager
     let deviceIdentityProvider: DeviceIdentityProvider
     let lanDiscovery: LANServerDiscovery
@@ -45,6 +49,7 @@ final class AppDependencies {
 
     init(
         serverStore: ServerStore,
+        snapshots: SnapshotStore,
         sessionManager: SessionManager,
         deviceIdentityProvider: DeviceIdentityProvider,
         lanDiscovery: LANServerDiscovery,
@@ -62,6 +67,7 @@ final class AppDependencies {
         tokenRejections: AsyncStream<ServerID> = .init { $0.finish() }
     ) {
         self.serverStore = serverStore
+        self.snapshots = snapshots
         self.sessionManager = sessionManager
         self.deviceIdentityProvider = deviceIdentityProvider
         self.lanDiscovery = lanDiscovery
@@ -82,7 +88,10 @@ final class AppDependencies {
     static func live() -> AppDependencies {
         let settings = SettingsStore()
         let keychain = Keychain(service: "com.lhdev.parallax")
-        let store = ServerStore(settings: settings, keychain: keychain)
+        // The store is handed to `ServerStore` too: removing or invalidating a server is where its
+        // cached payloads must be dropped, and that's the one actor both paths go through.
+        let snapshots = SnapshotStore()
+        let store = ServerStore(settings: settings, keychain: keychain, snapshots: snapshots)
         let identity = DeviceIdentityProvider(
             client: "Parallax",
             deviceName: "iOS Device",
@@ -185,6 +194,7 @@ final class AppDependencies {
 
         return AppDependencies(
             serverStore: store,
+            snapshots: snapshots,
             sessionManager: manager,
             deviceIdentityProvider: identity,
             lanDiscovery: LANServerDiscovery(),

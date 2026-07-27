@@ -1,6 +1,6 @@
 import Foundation
 
-public struct Movie: Sendable, Hashable, Identifiable {
+public struct Movie: Sendable, Hashable, Codable, Identifiable {
     public let id: ItemID
     public let title: String
     public let overview: String?

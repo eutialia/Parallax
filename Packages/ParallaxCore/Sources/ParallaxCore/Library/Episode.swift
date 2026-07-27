@@ -1,6 +1,6 @@
 import Foundation
 
-public struct Episode: Sendable, Hashable, Identifiable {
+public struct Episode: Sendable, Hashable, Codable, Identifiable {
     public let id: ItemID
     public let seriesID: ItemID
     public let seasonID: ItemID

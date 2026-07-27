@@ -56,6 +56,31 @@ struct LaunchStageView: View {
             field.fill(fieldRect, with: fieldShading)
         }
 
+        // Feathered rim. The cut above is binary — field or app, one pixel apart —
+        // which reads as a stencil punched through the screen (and aliases as it
+        // grows). This paints the field back over the outermost `irisFeather` band
+        // of the hole through an alpha ramp: transparent at `clipRadius − feather`,
+        // opaque where the hard cut resumes at `clipRadius`. Total field alpha is
+        // therefore continuous across the edge — 0 in the clear middle, ramping
+        // through the band, 1 outside — so the aperture dissolves open instead of
+        // slicing. Deliberately below the halo/flash: those are light, not field,
+        // and stay crisp.
+        if let holePath, clipRadius > 0 {
+            let feather = min(LaunchStageMetrics.irisFeather * unit, clipRadius)
+            context.drawLayer { rim in
+                rim.clipToLayer { mask in
+                    mask.fill(holePath, with: .radialGradient(
+                        Gradient(stops: [
+                            .init(color: .black.opacity(0), location: (clipRadius - feather) / clipRadius),
+                            .init(color: .black, location: 1),
+                        ]),
+                        center: center, startRadius: 0, endRadius: clipRadius
+                    ))
+                }
+                rim.fill(fieldRect, with: fieldShading)
+            }
+        }
+
         // Soft open: the handoff fades its home layer in (`homeOp`) under the
         // growing hole. Our home is the real app BENEATH the canvas, so the
         // same crossfade is drawn the other way around — a lid of field
@@ -217,6 +242,12 @@ struct LaunchStageView: View {
     LaunchStageView(storyTime: 0.15, holdPhase: nil)
 }
 
+// Mid focus-pull: the blur track's single continuous 8 → 0 ramp, sampled where
+// it's still visibly soft (≈3.6). It must reach EXACTLY 0 by the hold below.
+#Preview("Focus pull — t 0.45") {
+    LaunchStageView(storyTime: 0.45, holdPhase: nil)
+}
+
 #Preview("Chromatic crossfade — t 0.80") {
     LaunchStageView(storyTime: 0.80, holdPhase: nil)
 }
@@ -229,16 +260,19 @@ struct LaunchStageView: View {
     LaunchStageView(storyTime: 2.06, holdPhase: nil)
 }
 
-#Preview("Iris soft-open — t 2.64 (lid half-faded over green)") {
+// Moved 2.64 → 2.61: with the iris starting at 2.42 the lid's true half-fade
+// (homeOp ≈ 0.5) lands here, and the hole beneath it is already open.
+#Preview("Iris soft-open — t 2.61 (lid half-faded over green)") {
     ZStack {
         Color.green.ignoresSafeArea()
-        LaunchStageView(storyTime: 2.64, holdPhase: nil)
+        LaunchStageView(storyTime: 2.61, holdPhase: nil)
     }
 }
 
 #Preview("Iris opening — t 2.85 (checker reveals hole)") {
     ZStack {
-        // High-contrast underlay so the reveal hole is unmistakable.
+        // High-contrast underlay so the reveal hole — and the feathered rim
+        // ramping into it — is unmistakable.
         Color.green.ignoresSafeArea()
         LaunchStageView(storyTime: 2.85, holdPhase: nil)
     }

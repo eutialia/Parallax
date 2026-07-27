@@ -157,12 +157,20 @@ struct HomeView: View {
         // screen when the token moved for an unrelated reason (a visible-libraries edit, an SMB
         // share re-selection), which would otherwise flash the skeleton for no new content.
         if viewModel?.sourceIDs != feeds.map(\.source.sourceID) {
-            viewModel = HomeViewModel(feeds: feeds, userDataActions: userDataActions)
-            await viewModel?.load()
-        } else if viewModel?.state == .idle {
-            // Same servers, but the model never settled — its previous `load()` was cancelled by
-            // this very task re-firing (a token move that didn't change the source set). Without
-            // this the skeleton would stick, since nothing else re-loads an existing model.
+            let model = HomeViewModel(feeds: feeds, userDataActions: userDataActions, snapshots: deps.snapshots)
+            viewModel = model
+            // Stale-while-revalidate: the last feed these servers returned is on disk, so put it
+            // up as loaded content and release the launch hold on it — the reveal then opens onto
+            // real shelves instead of a skeleton, and `load()` below replaces them in place. A
+            // cache miss falls through to exactly the previous behavior (skeleton until the
+            // network answers, gate released at the bottom).
+            if await model.hydrateFromCache() { launchGate.markContentReady() }
+            await model.load()
+        } else if viewModel?.needsNetworkLoad == true {
+            // Same servers, but the model never settled — it was hydrated from the cache and not
+            // yet revalidated, or its previous `load()` was cancelled by this very task re-firing
+            // (a token move that didn't change the source set). Without this nothing else would
+            // re-load an existing model, so the shelves would stay unverified indefinitely.
             await viewModel?.load()
         }
         // Releases the cold-launch sync-hold: `load()` has returned (loaded

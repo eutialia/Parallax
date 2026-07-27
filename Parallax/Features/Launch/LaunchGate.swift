@@ -16,10 +16,16 @@ import ParallaxCore
 @Observable
 @MainActor
 final class LaunchGate {
-    /// The story clock's zero — the moment the stage (re)armed. A `var` (not the
-    /// process-start constant it looks like) so `rearm()` can replay the reveal
-    /// from frame 0 when the first Home is reached after a logged-out start.
+
+    /// The stage clock's zero — the overlay's FIRST RENDERED FRAME, not process
+    /// start. Boot (init → first frame) costs hundreds of ms; anchoring at init
+    /// silently consumed that much of the animation, so the user only ever saw
+    /// its tail — on a 0.4s micro-reveal, most of it. The launch screen's field
+    /// color covers the gap, so a first-frame zero is seamless.
     private(set) var startDate = Date()
+
+    /// Whether the overlay has anchored the clock since the last (re)arm.
+    private(set) var stageBegan = false
 
     /// Raw story time when launch work finished (`LaunchClock` quantizes the
     /// hold up to a whole breath from this). Nil while work is pending.
@@ -29,9 +35,35 @@ final class LaunchGate {
     /// plain content from then on (until a `rearm()`).
     private(set) var isFinished = false
 
+    /// The story is a first-impression piece — it earns its ~2.6s by covering a
+    /// boot the user would otherwise watch. A launch with cached content to show
+    /// (or an SMB-only setup with no bootstrap at all) has nothing to cover, so
+    /// it's born finished: content appears immediately, no stage, no reveal.
+    /// `rearm()` still revives the full story for the post-sign-in moment.
+    init(playsStory: Bool = true) {
+        isFinished = !playsStory
+    }
+
+    /// Anchors the clock at the overlay's first appearance. Idempotent per arm:
+    /// only the first frame after an (re)arm moves the zero.
+    func beginStage() {
+        guard !stageBegan else { return }
+        stageBegan = true
+        startDate = Date()
+    }
+
+    /// Releases the sync-hold. A no-op on a launch born finished (nothing is
+    /// holding), but the call sites stay unconditional: "content is ready" is a
+    /// fact about the app, not about whether a stage is up.
     func markContentReady() {
         guard releasedAtRawTime == nil, !isFinished else { return }
-        releasedAtRawTime = LaunchClock.rawTime(elapsed: Date().timeIntervalSince(startDate))
+        // Ready before the stage even rendered (cache hydration beating the
+        // first frame): that's a release at raw time 0 — pre-intro, so the
+        // hold is skipped. Computing against `startDate` here would pin the
+        // release to a zero that `beginStage()` is still going to move.
+        releasedAtRawTime = stageBegan
+            ? LaunchClock.rawTime(elapsed: Date().timeIntervalSince(startDate))
+            : 0
     }
 
     func finish() {
@@ -44,9 +76,15 @@ final class LaunchGate {
     /// Home. No-op unless a prior story already finished (so it can't restart a
     /// reveal that's mid-play, and a server switch — which never finished — stays
     /// skeleton-only).
+    ///
+    /// Always the FULL story, whatever this process launched with — reaching Home
+    /// for the first time after a sign-in IS a first run: there was no cached
+    /// content when the process started, and the Home behind this reveal is
+    /// genuinely booting from nothing.
     func rearm() {
         guard isFinished else { return }
         startDate = Date()
+        stageBegan = false
         releasedAtRawTime = nil
         isFinished = false
     }

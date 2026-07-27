@@ -62,6 +62,12 @@ public enum LaunchStageMetrics {
     public static let ringRadius = 172.0
     /// Inner radius of the merged ring's hole — the iris reveal clip.
     public static let irisInnerRadius = 158.0
+    /// How far INWARD from `clipRadius` the field's alpha ramps to nothing. A hard
+    /// clip cuts the field against the app with an aliased, mechanical edge; over
+    /// this band the field instead dissolves, so the aperture reads as a lens
+    /// opening rather than a stencil. Renderer-side (`LaunchStageView`) but a
+    /// length in reference units, so it belongs with the rest of the geometry.
+    public static let irisFeather = 24.0
     /// Main + merged line weight, measured off the shipped icon (20.9 px at
     /// R 256.5 in the 1024 asset → ratio 0.0816). The handoff's 15 was ~7%
     /// heavier than the mark it cites.
@@ -108,6 +114,13 @@ public enum LaunchStageMetrics {
     public static func irisTargetScale(width: Double, height: Double) -> Double {
         let corner = (width * width + height * height).squareRoot() / 2
         return irisCoverMargin * corner / (irisInnerRadius * unit(width: width, height: height))
+    }
+
+    /// Reveal-hole radius for an iris group scale. Sealed (exactly 0) until the
+    /// aperture has meaningfully opened, so a sub-pixel scale on the first frame
+    /// of the ramp can't punch a speck of a hole through the field.
+    static func clipRadius(forIrisScale scale: Double) -> Double {
+        scale > 1.001 ? irisInnerRadius * scale : 0
     }
 }
 
@@ -179,8 +192,15 @@ public struct LaunchFrame: Equatable, Sendable {
             .init(t: 0, v: 1.06), .init(t: 0.78, v: 1.06),
             .init(t: 1.9, v: 1.0, ease: .out), .init(t: end, v: 1.0),
         ])
+        // Focus IS the sync story: two viewpoints that haven't agreed yet render
+        // soft, and the image only locks sharp at t = 1.9 — the instant the pair
+        // registers into one line (sep → 0), just before the merge flash pays
+        // the moment off as a focus SNAP. One continuous fade from the open,
+        // still visibly soft at the hold (the working loop is out of focus on
+        // purpose; the hold branch below breathes it), sharp from registration
+        // until the motion-blur exit tail.
         let blur = launchTrack(t, [
-            .init(t: 0, v: 7), .init(t: 0.42, v: 0.8, ease: .out), .init(t: 0.72, v: 0),
+            .init(t: 0, v: 8), .init(t: 0.9, v: 4.5, ease: .inOut), .init(t: 1.9, v: 0, ease: .out),
             .init(t: 2.55, v: 0), .init(t: 3.2, v: 7, ease: .in), .init(t: end, v: 12),
         ])
         let rot = launchTrack(t, [
@@ -191,8 +211,11 @@ public struct LaunchFrame: Equatable, Sendable {
             .init(t: 0, v: 0.92), .init(t: 0.5, v: 1.0, ease: .out), .init(t: 1.84, v: 1.0),
             .init(t: 1.98, v: 1.05, ease: .out), .init(t: 2.14, v: 1.0), .init(t: end, v: 1.0),
         ])
+        // The aperture opens on a distributed in-out, starting early enough to
+        // overlap the lid's fade. `.inExpo` sat still for 60% of the segment and
+        // then detonated — mechanically precise, and it read as a whip.
         let irisScale = launchTrack(t, [
-            .init(t: 2.5, v: 1.0), .init(t: 3.2, v: irisTargetScale, ease: .inExpo),
+            .init(t: 2.42, v: 1.0), .init(t: 3.2, v: irisTargetScale, ease: .inOut),
             .init(t: end, v: irisTargetScale
                 * (LaunchStageMetrics.specIrisEndScale / LaunchStageMetrics.specIrisTargetScale)),
         ])
@@ -236,6 +259,7 @@ public struct LaunchFrame: Equatable, Sendable {
         var scale = coreScale * irisScale
         var wobble = wob
         var flowPhase = 0.0
+        var holdBlur = blur
         if let holdPhase {
             let ph = holdPhase * 2 * .pi
             let pulse = 0.5 - 0.5 * cos(ph)
@@ -244,6 +268,10 @@ public struct LaunchFrame: Equatable, Sendable {
             twist = 1.6 * k * sin(ph)
             scale = coreScale * (1 + 0.012 * pulse) * irisScale
             wobble = LaunchStageMetrics.baseWobble + 0.014 * k * pulse
+            // Focus hunts with the breath — a lens trying, not a frozen smudge.
+            // Identity at the cycle boundary like every other term (pulse = 0
+            // there), so breaths loop seamlessly from the t = 0.9 track value.
+            holdBlur = blur * (1 + 0.14 * k * pulse)
             flowPhase = ph
             colorT = 1  // fully chromatic for the whole hold
         }
@@ -251,7 +279,7 @@ public struct LaunchFrame: Equatable, Sendable {
         return LaunchFrame(
             storyTime: t,
             ringScale: scale,
-            ringBlur: blur,
+            ringBlur: holdBlur,
             pairOffset: offset,
             twistDegrees: twist,
             turns: turns,
@@ -264,7 +292,7 @@ public struct LaunchFrame: Equatable, Sendable {
             haloOpacity: haloOp,
             flashOpacity: flashOp,
             flashScale: flashScale,
-            clipRadius: irisScale > 1.001 ? LaunchStageMetrics.irisInnerRadius * irisScale : 0,
+            clipRadius: LaunchStageMetrics.clipRadius(forIrisScale: irisScale),
             homeOpacity: homeOp
         )
     }

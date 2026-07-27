@@ -14,17 +14,23 @@ struct LaunchRevealHost<Content: View>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ViewBuilder let content: Content
 
-    /// The handoff's `homeScale` settle (1.09 → 1.0), driven by a SwiftUI
-    /// animation that the overlay kicks off at the settle keyframe — not by
-    /// per-frame writes, which would need the content inside a TimelineView.
-    @State private var settleScale = LaunchStageMetrics.homeSettleScale
+    /// How much of the entrance lift is left: 1 = fully lifted, 0 = settled at
+    /// identity. Driven by a SwiftUI animation that the overlay kicks off at the
+    /// settle keyframe — not by per-frame writes, which would need the content
+    /// inside a TimelineView.
+    @State private var settleProgress = 1.0
 
     private var stageActive: Bool { !gate.isFinished && !reduceMotion }
+
+    /// The handoff's `homeScale` settle — 1.09 → 1.0 over the story's own window.
+    private var settleScale: Double {
+        1 + (LaunchStageMetrics.homeSettleScale - 1) * settleProgress
+    }
 
     var body: some View {
         content
             // Identity scale the moment the stage is gone (or never ran):
-            // Reduce Motion must not render even one frame at 1.09, and a
+            // Reduce Motion must not render even one frame lifted, and a
             // story that completed while backgrounded must not replay the
             // settle zoom over the already-revealed UI.
             .scaleEffect(stageActive ? settleScale : 1.0)
@@ -33,7 +39,7 @@ struct LaunchRevealHost<Content: View>: View {
                     LaunchStageOverlay(gate: gate) {
                         // ≈ the spec's cubic ease-out for the homeScale settle.
                         withAnimation(.timingCurve(0.33, 1, 0.68, 1, duration: LaunchClock.settleRealDuration)) {
-                            settleScale = 1.0
+                            settleProgress = 0
                         }
                     }
                 }
@@ -49,10 +55,10 @@ struct LaunchRevealHost<Content: View>: View {
             // overlay — mounted only while `stageActive` — means nothing emits a status-bar
             // preference once the stage is gone, so the player's preference stands alone.
             // A `rearm()` (logged-out launch → first Home after sign-in) brings the
-            // stage back. Reset the settle zoom to its 1.09 start so the replay lifts
+            // stage back. Reset the settle zoom to its lifted start so the replay lifts
             // into place again instead of resting at the identity it settled to.
             .onChange(of: stageActive) { _, active in
-                if active { settleScale = LaunchStageMetrics.homeSettleScale }
+                if active { settleProgress = 1 }
             }
             .onChange(of: gate.isFinished) { _, finished in
                 // A rearm() under Reduce Motion brings the gate back to not-finished, but
@@ -67,13 +73,13 @@ struct LaunchRevealHost<Content: View>: View {
     }
 }
 
-/// The active story: the full-screen stage canvas, driven by one
+/// The active launch: the full-screen stage canvas, driven by one
 /// display-link clock. Sits over the (settling) content and blocks input
 /// until the gate finishes.
 private struct LaunchStageOverlay: View {
     let gate: LaunchGate
-    /// Fired when the story reaches the settle keyframe (skipped when the
-    /// story is already complete — nothing left to settle into).
+    /// Fired when the launch reaches the settle keyframe (skipped when it's
+    /// already complete — nothing left to settle into).
     let onSettleStart: () -> Void
 
     /// Failsafe: the hold is designed to loop until `markContentReady()`,
@@ -84,23 +90,14 @@ private struct LaunchStageOverlay: View {
 
     var body: some View {
         TimelineView(.animation) { timeline in
-            let elapsed = timeline.date.timeIntervalSince(gate.startDate)
-            let position = LaunchClock.position(
-                elapsed: elapsed, releasedAtRawTime: gate.releasedAtRawTime
-            )
-            let complete = LaunchClock.isComplete(
-                elapsed: elapsed, releasedAtRawTime: gate.releasedAtRawTime
-            )
-            LaunchStageView(storyTime: position.storyTime, holdPhase: position.holdPhase)
-                // `initial: true` on both: a crossing that happened while the
-                // scene wasn't rendering (backgrounded mid-launch) must still
-                // fire on the first frame back.
-                .onChange(of: position.storyTime >= LaunchClock.settleStart, initial: true) { _, crossed in
-                    if crossed && !complete { onSettleStart() }
-                }
-                .onChange(of: complete, initial: true) { _, done in
-                    if done { gate.finish() }
-                }
+            // The clock zero is the first frame the user can SEE — `beginStage()`
+            // below — not process init. Boot costs hundreds of ms; counting it
+            // would silently eat the animation's opening and leave only the
+            // slow tail on screen. Until the anchor lands, render frame 0.
+            let elapsed = gate.stageBegan
+                ? timeline.date.timeIntervalSince(gate.startDate)
+                : 0
+            story(elapsed: elapsed)
         }
         .ignoresSafeArea()
         // The stage hides the status bar + system overlays while it's up — and ONLY while
@@ -112,9 +109,33 @@ private struct LaunchStageOverlay: View {
         #if !os(tvOS)
         .statusBarHidden(true)
         #endif
+        .onAppear { gate.beginStage() }
         .task {
             try? await Task.sleep(for: Self.watchdogTimeout)
             gate.markContentReady()
         }
     }
+
+    /// The full story: intro → sync-hold (looping until the gate releases) →
+    /// resolve → merge → iris.
+    @ViewBuilder
+    private func story(elapsed: Double) -> some View {
+        let position = LaunchClock.position(
+            elapsed: elapsed, releasedAtRawTime: gate.releasedAtRawTime
+        )
+        let complete = LaunchClock.isComplete(
+            elapsed: elapsed, releasedAtRawTime: gate.releasedAtRawTime
+        )
+        LaunchStageView(storyTime: position.storyTime, holdPhase: position.holdPhase)
+            // `initial: true` on both: a crossing that happened while the
+            // scene wasn't rendering (backgrounded mid-launch) must still
+            // fire on the first frame back.
+            .onChange(of: position.storyTime >= LaunchClock.settleStart, initial: true) { _, crossed in
+                if crossed && !complete { onSettleStart() }
+            }
+            .onChange(of: complete, initial: true) { _, done in
+                if done { gate.finish() }
+            }
+    }
+
 }

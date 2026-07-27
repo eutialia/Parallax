@@ -1,6 +1,6 @@
 import Foundation
 
-public enum CollectionType: Sendable, Hashable {
+public enum CollectionType: Sendable, Hashable, Codable {
     case movies
     case tvShows
     /// A library the server declares NO type for — Jellyfin's "mixed content", holding movies and
