@@ -113,7 +113,9 @@ struct PlayerProgressBar: View {
 
                     if !indeterminate, mode == .scrub, let bubbleTime {
                         bubble(bubbleTime)
-                            .position(x: w * p, y: -(bubbleHeight / 2 + 14 * metrics.u))
+                            .modifier(ClampedBubblePosition(
+                                barWidth: w, playheadX: w * p,
+                                y: -(bubbleHeight / 2 + 14 * metrics.u)))
                     }
                 }
                 .frame(height: rowHeight, alignment: .center)
@@ -200,6 +202,29 @@ struct PlayerProgressBar: View {
             }
         }
         .fixedSize()
+    }
+}
+
+/// Positions the floating bubble on the playhead, clamped so it never leaves the bar's
+/// span: near either end the bubble parks at the edge while the handle keeps travelling
+/// (the system players' behavior). Unclamped, the playhead-centred bubble ran past the
+/// screen on portrait iPhone — the 26pt `phonePadX` inset can't absorb half a time
+/// label. A bubble wider than the bar itself (degenerate multitask window) centres.
+/// Owns the measured width so `PlayerProgressBar` keeps its value-only memberwise init
+/// (a private `@State` on the struct would make that init private to its file).
+private struct ClampedBubblePosition: ViewModifier {
+    let barWidth: CGFloat
+    let playheadX: CGFloat
+    let y: CGFloat
+    @State private var width: CGFloat = 0
+
+    func body(content: Content) -> some View {
+        content
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
+            .position(x: barWidth > width
+                          ? min(max(playheadX, width / 2), barWidth - width / 2)
+                          : barWidth / 2,
+                      y: y)
     }
 }
 
@@ -341,5 +366,28 @@ private struct OptionalDigitRoll: ViewModifier {
         .padding(60)
     }
     .frame(width: 1200, height: 700)
+    .environment(\.colorScheme, .dark)
+}
+
+// The clamp regression: scrubbed to the extremes at portrait-phone width (the case that
+// put the playhead-centred bubble past the screen edges). The bubble must park inside
+// the bar's span while the handle sits at the very end.
+#Preview("scrub bubble edge clamp (phone portrait)") {
+    ZStack {
+        LinearGradient(colors: [.purple, .black], startPoint: .topLeading, endPoint: .bottomTrailing)
+            .ignoresSafeArea()
+        VStack(spacing: 120) {
+            PlayerProgressBar(metrics: .phone, mode: .scrub, played: 0.003, buffered: 0.1,
+                              elapsed: "0:00:21", remaining: "-1:47:52",
+                              elapsedSeconds: 21, remainingSeconds: 6472,
+                              bubbleTime: "0:00:21", bubbleChapter: "Chapter 1 · Arrival")
+            PlayerProgressBar(metrics: .phone, mode: .scrub, played: 0.997, buffered: 1.0,
+                              elapsed: "1:47:52", remaining: "-0:00:21",
+                              elapsedSeconds: 6472, remainingSeconds: 21,
+                              bubbleTime: "1:47:52", bubbleChapter: "Chapter 12 · Credits")
+        }
+        .padding(.horizontal, PlayerMetrics.phonePadX)
+    }
+    .frame(width: 393, height: 600)
     .environment(\.colorScheme, .dark)
 }
