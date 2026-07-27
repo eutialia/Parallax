@@ -107,8 +107,18 @@ struct PlayerMetrics: Equatable {
     var handleDiameter: CGFloat { 22 * u }
     var handleDiameterFocused: CGFloat { 26 * u }
     var scrubHandleWidth: CGFloat { 7 * u }
-    /// 44 at u=1.0 — under 2× the 24u end labels; the old 54 dwarfed them.
-    var scrubBubbleSize: CGFloat { 44 * u }
+    /// The couch-tuned tvOS ratio (44 vs the 24u labels, under 2× — the old 54 dwarfed
+    /// them) read oversized at handheld distance: riding `44u`, the phone's fixed 0.7
+    /// put the bubble at 30.8 — louder than the 26.6 title. Same fork the chips took
+    /// from `72u`: phone fixed at 24 (~1.4× its 16.8 labels), iPad eased to 36u
+    /// (~22–26 full screen), tv keeps 44.
+    var scrubBubbleSize: CGFloat {
+        switch deviceClass {
+        case .phone: 24
+        case .pad: 36 * u
+        case .tv: 44
+        }
+    }
     var scrubChapterSize: CGFloat { 22 * u }
 
     // Centre transport (big screens; iPhone uses its fixed `phoneTransport*` statics
