@@ -1,6 +1,6 @@
 import Foundation
 
-public enum ImageKind: Sendable, Hashable {
+public enum ImageKind: Sendable, Hashable, Codable {
     case primary
     case backdrop(index: Int)
     case logo

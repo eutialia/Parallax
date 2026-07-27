@@ -1,6 +1,6 @@
 import Foundation
 
-public struct ImageRef: Sendable, Hashable {
+public struct ImageRef: Sendable, Hashable, Codable {
     public let itemID: ItemID
     public let kind: ImageKind
     public let tag: ImageTag

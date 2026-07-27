@@ -1,6 +1,6 @@
 import Foundation
 
-public struct HomeHeroFeedEntry: Sendable, Hashable, Identifiable {
+public struct HomeHeroFeedEntry: Sendable, Hashable, Codable, Identifiable {
     public var id: ItemID { presentation.id }
     public let presentation: Item
     public let playTarget: Item

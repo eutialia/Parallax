@@ -1,6 +1,6 @@
 import Foundation
 
-public struct MediaCollection: Sendable, Hashable, Identifiable {
+public struct MediaCollection: Sendable, Hashable, Codable, Identifiable {
     public let id: CollectionID
     public let name: String
     public let collectionType: CollectionType

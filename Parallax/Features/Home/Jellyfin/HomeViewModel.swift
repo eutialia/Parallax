@@ -56,6 +56,13 @@ final class HomeViewModel {
     /// have started before the change that requested this call, so rather than dropping the
     /// request, `refresh()` re-runs itself once more after the current pass completes.
     private var refreshQueued = false
+    /// True while a `load()` pass is in flight. With cached content on screen `state` stays
+    /// `.loaded` through the pass, so this — not `.loading` — is what keeps `refresh()` from
+    /// interleaving and losing its fresher progress data to the pass's older fan-out.
+    private var isLoading = false
+    /// Set when `refresh()` arrived mid-`load()`; drained after the pass so the re-pull runs
+    /// against the data that pass committed instead of racing it.
+    private var refreshPendingAfterLoad = false
     private(set) var favoriteErrorMessage: String?
 
     /// Drives the favorite-failure alert. The view binds `$vm.isShowingFavoriteError`;
@@ -80,8 +87,20 @@ final class HomeViewModel {
     /// servers did. Drives `.recoversFromOffline`; the view picks `load()` vs `reloadFailedFeeds()`.
     var needsOfflineRepair: Bool { isStalled || !failedSourceIDs.isEmpty }
 
+    /// Whether a network pass still owes this model a result. False only once `load()` has run to
+    /// completion — so it stays true after a cache hydrate (content is on screen, but unverified)
+    /// and after a pass the enclosing `.task(id:)` cancelled mid-flight. The view re-entry path
+    /// keys on this rather than on `state == .idle`: a cancelled load used to have to blank the
+    /// shelves back to `.idle` to be noticed, which with cached content on screen would mean
+    /// flashing a skeleton over data the user is already reading.
+    var needsNetworkLoad: Bool { !hasLoadedFromNetwork }
+    private var hasLoadedFromNetwork = false
+
     private let feeds: [Feed]
     private let userDataActions: UserDataActions
+    /// The stale-while-revalidate cache: hydrated from at launch, written back after every
+    /// successful pull. Optional so a preview or a test can run the model without touching disk.
+    private let snapshots: SnapshotStore?
     private var changesTask: Task<Void, Never>?
 
     /// The servers this model aggregates, in order. `feeds` is fixed at init, so a change here
@@ -90,9 +109,10 @@ final class HomeViewModel {
     /// second server left the first model in place, so Home stayed single-server until relaunch).
     var sourceIDs: [MediaSourceID] { feeds.map(\.source.sourceID) }
 
-    init(feeds: [Feed], userDataActions: UserDataActions) {
+    init(feeds: [Feed], userDataActions: UserDataActions, snapshots: SnapshotStore? = nil) {
         self.feeds = feeds
         self.userDataActions = userDataActions
+        self.snapshots = snapshots
         // Own the iterating Task; cancelled in `isolated deinit` (needed to touch this
         // MainActor-isolated property). Self-notification is expected — this VM's own
         // toggleFavorite also lands here, re-applying the same server data it already set
@@ -121,8 +141,52 @@ final class HomeViewModel {
         }
     }
 
+    /// Present the last-known feed from disk as loaded content, before a single request goes out.
+    /// The network `load()` below then replaces it wholesale — this only decides what the user
+    /// looks at while that happens.
+    ///
+    /// Only commits when the cache actually holds something: an all-empty snapshot would reveal
+    /// the "Nothing here yet" empty state (nothing focusable on tvOS) over a feed that is about to
+    /// arrive, and `load()` reads "content is on screen" to decide whether it may fall back to the
+    /// skeleton — so a contentless hydrate must not claim to be one.
+    ///
+    /// - Returns: whether hydrated content is now on screen. The callers gate the launch reveal on
+    ///   it, releasing the launch hold on a cache hit instead of waiting for the network.
+    func hydrateFromCache() async -> Bool {
+        guard let snapshots, state == .idle else { return false }
+        var slices: [FeedSlice] = []
+        for feed in feeds {
+            guard let snapshot = await snapshots.homeFeed(forServerID: feed.source.sourceID.serverID.rawValue),
+                  !snapshot.isEmpty else { continue }
+            slices.append(FeedSlice(snapshot, source: feed.source))
+        }
+        guard !slices.isEmpty else { return false }
+        commit(slices)
+        state = .loaded
+        return true
+    }
+
     func load() async {
-        state = .loading
+        // Mutual exclusion with `refresh()`: `state = .loading` used to be the lock, but with
+        // cached content on screen `state` now stays `.loaded` for the whole pass, so a
+        // `.played` refresh could interleave and have its fresher progress shelves overwritten
+        // by this pass's older fan-out. Queue it instead, and drain it once this pass lands —
+        // the re-pull then runs against the fresh data.
+        isLoading = true
+        await performLoad()
+        isLoading = false
+        if refreshPendingAfterLoad {
+            refreshPendingAfterLoad = false
+            if !Task.isCancelled { await refresh() }
+        }
+    }
+
+    private func performLoad() async {
+        // Content already on screen — hydrated from the cache, or a previous pass that landed —
+        // stays up through this one: dropping to `.loading` over good stale data is the skeleton
+        // flash this whole cache exists to remove. Read before anything mutates the shelves.
+        let showsContent = state == .loaded && hasContent
+        if !showsContent { state = .loading }
         // Every server's three feeds, fanned out concurrently and merged. Each server's slice
         // fails INDEPENDENTLY: a dead or slow server contributes empty lists instead of taking the
         // whole screen down with it, which is the difference between "one of my servers is
@@ -142,24 +206,40 @@ final class HomeViewModel {
         // the reload token moves mid-load without the server set changing (a Visible Libraries
         // edit). Back out to `.idle` instead; the view re-runs `load()` for an unsettled model.
         guard !Task.isCancelled else {
-            state = .idle
+            // Hydrated (or previously loaded) shelves stay up — blanking them here would flash a
+            // skeleton over content the user is reading. `hasLoadedFromNetwork` is still false, so
+            // the view's re-entry path re-runs this pass.
+            state = showsContent ? .loaded : .idle
             return
         }
 
         let slices = results.compactMap { $0 }
         guard !slices.isEmpty else {
             // Nothing came back at all. With no configured feeds that's an empty Home, not a
-            // failure; with feeds present it means every one of them threw.
+            // failure; with feeds present it means every one of them threw — but a failed
+            // revalidation must never blank content the user is already looking at, so cached
+            // shelves stay up and only `failedSourceIDs` records the damage (offline recovery
+            // then repairs them per server).
             failedSourceIDs = Set(feeds.map(\.source.sourceID))
-            state = feeds.isEmpty ? .loaded : .failed("Parallax couldn't reach your servers.")
+            state = feeds.isEmpty || showsContent ? .loaded : .failed("Parallax couldn't reach your servers.")
+            hasLoadedFromNetwork = true
             return
         }
-        commit(slices)
+        // A server that failed keeps whatever it currently contributes (its cached slice, or what
+        // an earlier pass left) rather than silently vanishing from the shelves — same rule
+        // `reloadFailedFeeds` and `refresh` follow. `onScreenSlice` reads pre-commit state, so it
+        // has to be resolved before `commit`.
+        let merged = zip(feeds, results).map { feed, slice in
+            slice ?? (showsContent ? onScreenSlice(for: feed.source.sourceID) : FeedSlice(hero: [], continueWatching: [], nextUp: []))
+        }
+        commit(merged)
         failedSourceIDs = Set(zip(feeds, results).compactMap { $1 == nil ? $0.source.sourceID : nil })
         if slices.count < feeds.count {
             Log.ui.error("Home: \(self.feeds.count - slices.count) of \(self.feeds.count) server(s) failed; showing the rest")
         }
         state = .loaded
+        hasLoadedFromNetwork = true
+        await persistSnapshots()
     }
 
     /// Re-pull ONLY the servers that failed the last `load()`, keeping everything already on
@@ -183,19 +263,52 @@ final class HomeViewModel {
             return out
         }
         guard !Task.isCancelled, !repaired.isEmpty else { return }
-        // Re-merge in feed order: the repaired slice for a server that came back, what's already
-        // on screen for the ones that were fine, nothing for a server still unreachable.
+        // Re-merge in feed order: the repaired slice for a server that came back, and what's
+        // already on screen for everyone else — including a server still unreachable, whose
+        // cached (or previously loaded) rows must survive a recovery pass that only repaired
+        // its siblings. Same carry rule `load()` follows; empty for a server that never
+        // contributed anything, which commits as nothing.
         var merged: [FeedSlice] = []
         for feed in feeds {
             let id = feed.source.sourceID
             if let slice = repaired[id] {
                 merged.append(slice)
                 failedSourceIDs.remove(id)
-            } else if !failedSourceIDs.contains(id) {
+            } else {
                 merged.append(onScreenSlice(for: id))
             }
         }
         commit(merged)
+        await persistSnapshots()
+    }
+
+    /// Whether the shelves are showing anything at all. Distinguishes "loaded, with content" from
+    /// "loaded, genuinely empty" — a failed revalidation may keep the former on screen but must
+    /// still be free to report the latter as a failure.
+    private var hasContent: Bool {
+        !heroFeed.isEmpty || !continueWatching.isEmpty || !nextUp.isEmpty
+    }
+
+    /// Write what's on screen back to disk, one file per server that answered. Called after every
+    /// pass that commits new shelves (`load`, `reloadFailedFeeds`, `refresh`) so the cache always
+    /// mirrors the last screen the user actually saw — including the progress a finished playback
+    /// session just moved. Servers in `failedSourceIDs` are skipped: their on-screen slice IS the
+    /// cache, so rewriting it is pointless, and their absence must never be persisted as truth.
+    ///
+    /// An all-empty slice is never written: the launch-story probe (`hasCachedHomeFeed`) is a
+    /// file-existence check, so an empty file would skip the story while `hydrateFromCache` —
+    /// which rejects empty snapshots — has nothing to put up, leaving the boot uncovered by
+    /// story *and* content.
+    private func persistSnapshots() async {
+        guard let snapshots else { return }
+        for feed in feeds where !failedSourceIDs.contains(feed.source.sourceID) {
+            let slice = onScreenSlice(for: feed.source.sourceID)
+            guard !slice.isEmpty else { continue }
+            await snapshots.setHomeFeed(
+                slice.snapshot,
+                forServerID: feed.source.sourceID.serverID.rawValue
+            )
+        }
     }
 
     /// What this server currently contributes to the shelves — used to carry a healthy server's
@@ -214,6 +327,13 @@ final class HomeViewModel {
     /// screen (dimmed) through the round-trip, then the fresh lists crossfade in.
     /// No-op until the first `load()` has landed, and re-entrancy-guarded.
     func refresh() async {
+        // A `load()` pass owns the shelves while it's in flight — running now could commit
+        // fresh progress data only to have the pass's older fan-out overwrite it (and persist
+        // the stale result). Queue one re-pull for after the pass instead of dropping it.
+        guard !isLoading else {
+            refreshPendingAfterLoad = true
+            return
+        }
         guard state == .loaded else { return }
         // A refresh requested while one is already in flight can't just drop through: the
         // in-flight fetch may have started before the change that requested THIS call, so it
@@ -254,6 +374,7 @@ final class HomeViewModel {
             }
             continueWatching = .mergedByLastPlayed(cw)
             nextUp = .interleaved(nu)
+            await persistSnapshots()
         } while refreshQueued
     }
 
@@ -293,6 +414,30 @@ final class HomeViewModel {
         let hero: [SourcedHeroEntry]
         let continueWatching: [SourcedItem]
         let nextUp: [SourcedItem]
+
+        var isEmpty: Bool { hero.isEmpty && continueWatching.isEmpty && nextUp.isEmpty }
+
+        /// Re-tag a cached slice with its live source. Snapshots hold the source-agnostic models
+        /// only — the tag carries a `Session`, which is never written to disk.
+        init(_ snapshot: HomeFeedSnapshot, source: LibrarySource) {
+            self.hero = snapshot.hero.map { SourcedHeroEntry(entry: $0, source: source) }
+            self.continueWatching = snapshot.continueWatching.map { SourcedItem(item: $0, source: source) }
+            self.nextUp = snapshot.nextUp.map { SourcedItem(item: $0, source: source) }
+        }
+
+        init(hero: [SourcedHeroEntry], continueWatching: [SourcedItem], nextUp: [SourcedItem]) {
+            self.hero = hero
+            self.continueWatching = continueWatching
+            self.nextUp = nextUp
+        }
+
+        var snapshot: HomeFeedSnapshot {
+            HomeFeedSnapshot(
+                hero: hero.map(\.entry),
+                continueWatching: continueWatching.map(\.item),
+                nextUp: nextUp.map(\.item)
+            )
+        }
     }
 
     /// One server's progress-shelf contribution (the `refresh()` subset).

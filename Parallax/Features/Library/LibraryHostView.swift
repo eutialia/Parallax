@@ -84,13 +84,19 @@ struct LibraryHostView: View {
             groups = []; hasJellyfinSource = false; failedSourceIDs = []; failedSourceNames = []; isResolvingSource = false
             return
         }
-        // One read of the sessions, shared by the resolve and the Favorites gate — two reads are
-        // two actor hops that can also disagree with each other.
-        let sessions = await deps.serverStore.sessions
-        let outcome = await MergedLibrary.resolve(
-            sessions: sessions,
-            servers: await deps.serverStore.servers,
-            hiddenCollectionIDs: await deps.serverStore.allHiddenCollectionIDs,
+        // One read of the store's shape drives both stages (see `MergedLibrary.SourceState`) —
+        // and the Favorites gate reads the same `sessions`, so the two can't disagree.
+        let sources = await MergedLibrary.SourceState.read(from: deps.serverStore)
+        // Stale-while-revalidate: the last known listing goes up before the network pass, so the
+        // list opens on real cards instead of the placeholder.
+        if let cached = await sources.hydratedGroups(ifColdGiven: groups, snapshots: deps.snapshots) {
+            groups = cached
+            hasJellyfinSource = !sources.sessions.isEmpty
+            isResolvingSource = false
+        }
+        let outcome = await sources.resolve(
+            retaining: groups,
+            snapshots: deps.snapshots,
             jellyfinRepo: deps.mediaRepoFactory
         )
         // NOT a `defer`: on the cancelled path the placeholder must stay up. Clearing it there
@@ -98,7 +104,7 @@ struct LibraryHostView: View {
         // empty) for the whole of the superseding pass.
         guard !Task.isCancelled else { return }
         groups = outcome.groups
-        hasJellyfinSource = !sessions.isEmpty
+        hasJellyfinSource = !sources.sessions.isEmpty
         failedSourceIDs = outcome.failedSourceIDs
         failedSourceNames = outcome.failedSourceNames
         isResolvingSource = false

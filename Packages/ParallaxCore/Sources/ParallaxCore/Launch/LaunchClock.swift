@@ -8,20 +8,23 @@ import Foundation
 ///   cycles until released.
 /// - On release the CURRENT breath completes before the clock resumes — the
 ///   hold length is the elapsed hold quantized UP to whole cycles.
-/// - A fast launch (released before the clock even reaches the hold) still
-///   plays exactly one breath, so the chromatic "working" moment reads.
+/// - A fast launch (released before the clock even reaches the hold) skips the
+///   hold entirely — no breath plays at all, so launch time tracks real
+///   loading time rather than paying a fixed toll for the "working" beat.
 public enum LaunchClock {
     // ── Timing knobs ─────────────────────────────────────────────────────
     // THE place to set the animation's pace. Keyframes live in story-seconds
     // (LaunchTimeline) and never change; these two rates map them to real time.
 
     /// Story-seconds per real second for the icon-open and the sync-hold —
-    /// the handoff's locked half speed (intro = 1.8s real, breath = 3s real).
-    public static let speed = 0.5
+    /// full story speed (intro = 0.9s real, breath = 1.5s real).
+    public static let speed = 1.0
     /// Story-seconds per real second once the hold releases: the resolve →
-    /// merge → iris stretch. 1.0 plays it at full story speed (~2.55s real
-    /// from release to full reveal) — twice the handoff preview's pace.
-    public static let revealSpeed = 1.0
+    /// merge → iris stretch, run HOT (1.5×) because by then the app is ready
+    /// and the reveal is the only thing between the user and it — 1.7s real
+    /// from release to full reveal.
+    public static let revealSpeed = 1.5
+
 
     /// Story time where the sync-hold loop pins — rings still sketched, before the merge.
     public static let holdStart = 0.9
@@ -37,7 +40,7 @@ public enum LaunchClock {
     /// transform animation and the timeline can't drift apart.
     public static let settleStart = 2.6
     public static let settleEnd = 3.32
-    /// The settle's real-seconds duration at the reveal pace.
+    /// The settle's real-seconds duration at the reveal pace (0.48s).
     public static var settleRealDuration: Double { (settleEnd - settleStart) / revealSpeed }
 
     /// Real seconds of intro before the clock reaches the hold point.

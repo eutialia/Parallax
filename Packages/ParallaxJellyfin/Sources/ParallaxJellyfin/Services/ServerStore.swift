@@ -55,14 +55,37 @@ public actor ServerStore {
 
     private let settings: SettingsStore
     private let keychain: any KeychainStoring
+    /// The stale-while-revalidate payload cache. Owned here because this actor is where a server
+    /// stops existing — `remove` and `invalidateSession` are the only two paths out, and a cached
+    /// Home feed for a server the user just signed out of must not survive to the next launch.
+    /// Optional so tests (and any no-cache configuration) can leave it unwired.
+    private let snapshots: SnapshotStore?
     private var persistedServers: [PersistedServer] = []
     private var loadedSessions: [Session] = []
     private var activeID: ServerID?
     private var hiddenCollections: [String: Set<String>] = [:]
 
-    public init(settings: SettingsStore, keychain: any KeychainStoring) {
+    public init(settings: SettingsStore, keychain: any KeychainStoring, snapshots: SnapshotStore? = nil) {
         self.settings = settings
         self.keychain = keychain
+        self.snapshots = snapshots
+    }
+
+    /// Whether the persisted setup is SMB-only: at least one server configured, and
+    /// every one of them SMB. Reads the same `UserDefaults` blob `load()` does, without
+    /// rebuilding sessions or touching the Keychain — so it answers synchronously at app
+    /// init, before any actor hop. The launch gate uses it to pick the warm-launch
+    /// micro-reveal: an SMB-only setup has no server bootstrap to cover, so the full
+    /// "working" story would be describing work that never happens.
+    ///
+    /// Conservative by construction: bytes that don't decode as the current shape
+    /// (a legacy v1 blob, a partial migration) answer `false` and get the full story.
+    public nonisolated static func persistedSetupIsSMBOnly(defaults: UserDefaults = .standard) -> Bool {
+        guard let data = defaults.data(forKey: persistedServersKey.name),
+              let servers = try? JSONDecoder().decode([PersistedServer].self, from: data),
+              !servers.isEmpty
+        else { return false }
+        return servers.allSatisfy { if case .smb = $0.kind { return true }; return false }
     }
 
     /// Every persisted server, regardless of kind (Jellyfin sessions + SMB
@@ -379,6 +402,10 @@ public actor ServerStore {
             }
         }
 
+        // The removed server's cached Home feed / library list goes with it — otherwise the next
+        // launch would hydrate a sidebar and shelves for a server that is no longer configured.
+        await snapshots?.removeSnapshots(forServerID: id.rawValue)
+
         // Drop any per-server hidden-collections set so a later re-add of the same id can't inherit
         // stale visibility (a Jellyfin re-add reuses the deterministic id). Best-effort: the server is
         // already gone; a lingering entry only wastes a little storage until the next successful write.
@@ -512,6 +539,11 @@ public actor ServerStore {
                 Log.persistence.error("ServerStore.invalidateSession: activeID persist failed — \(error.localizedDescription)")
             }
         }
+
+        // The token is dead, so the cached payloads it produced can no longer be revalidated —
+        // hydrating them next launch would show a signed-out server's shelves as live content.
+        await snapshots?.removeSnapshots(forServerID: id.rawValue)
+
         Log.persistence.info("ServerStore.invalidateSession: \(id.rawValue) signed out after a rejected token")
         return true
     }

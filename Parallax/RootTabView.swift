@@ -78,10 +78,17 @@ struct RootTabView: View {
     /// clobber the newer state (or snap selection off a tab that's still valid in the latest entries).
     private func loadLibraries() async {
         guard router.hasAnySource else { groups = []; session = nil; failedSourceIDs = []; return }
-        let outcome = await MergedLibrary.resolve(
-            sessions: await deps.serverStore.sessions,
-            servers: await deps.serverStore.servers,
-            hiddenCollectionIDs: await deps.serverStore.allHiddenCollectionIDs,
+        // One read of the store's shape drives both stages (see `MergedLibrary.SourceState`).
+        let sources = await MergedLibrary.SourceState.read(from: deps.serverStore)
+        // Stale-while-revalidate: put each server's last known listing up immediately, then
+        // replace it below.
+        if let cached = await sources.hydratedGroups(ifColdGiven: groups, snapshots: deps.snapshots) {
+            groups = cached
+            session = await deps.serverStore.active
+        }
+        let outcome = await sources.resolve(
+            retaining: groups,
+            snapshots: deps.snapshots,
             jellyfinRepo: deps.mediaRepoFactory
         )
         let active = await deps.serverStore.active
