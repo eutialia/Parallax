@@ -2,6 +2,7 @@ import Testing
 import Foundation
 import CoreGraphics
 import ImageIO
+import ParallaxCoreTestSupport
 @testable import ParallaxPlayback
 
 /// Decode the encoded thumbnail `Data` (HEIC, or JPEG on a host with no HEVC encoder)
@@ -75,21 +76,24 @@ struct VLCThumbnailerFailureTests {
         } catch {
             Issue.record("unexpected error type: \(error)")
         }
-        // The ceiling is the contract; a generous margin absorbs simulator scheduling.
-        #expect(start.duration(to: clock.now) < .seconds(20))
+        // The ceiling is the contract; a generous margin absorbs simulator scheduling,
+        // CITimeScale'd on CI (a loaded runner measured 26s against the unscaled 20).
+        #expect(start.duration(to: clock.now) < CITimeScale.seconds(20))
     }
 
     /// Cancelling the enclosing task must resolve through the `onCancel` path — the one
     /// resolver the other tests don't exercise. The 30s `timeout` makes the point: if
     /// `onCancel` didn't resolve, this would sit for 30s; a prompt `VLCThumbnailError`
-    /// proves cancellation resolved it, not the hard timeout.
+    /// proves cancellation resolved it, not the hard timeout. Ceiling AND hard timeout
+    /// are CITimeScale'd TOGETHER: the assertion's meaning is `ceiling < timeout`, so
+    /// scaling one without the other would let the hard timeout pass the test.
     @Test("cancelling the task resolves promptly via onCancel, never hangs")
     func cancellationResolves() async {
         let thumbnailer = VLCThumbnailer()
         let clock = ContinuousClock()
         let start = clock.now
         let task = Task {
-            try await thumbnailer.thumbnailData(for: unreachable, timeout: .seconds(30))
+            try await thumbnailer.thumbnailData(for: unreachable, timeout: CITimeScale.seconds(30))
         }
         task.cancel()
         switch await task.result {
@@ -98,8 +102,8 @@ struct VLCThumbnailerFailureTests {
         case .failure(let error):
             #expect(error is VLCThumbnailError, "unexpected error type: \(error)")
         }
-        #expect(start.duration(to: clock.now) < .seconds(25),
-                "resolved by the 30s hard timeout instead of onCancel")
+        #expect(start.duration(to: clock.now) < CITimeScale.seconds(25),
+                "resolved by the hard timeout instead of onCancel")
     }
 
     /// An empty-path URL is the one libvlc reliably rejects at `VLCMedia(url:)`. The

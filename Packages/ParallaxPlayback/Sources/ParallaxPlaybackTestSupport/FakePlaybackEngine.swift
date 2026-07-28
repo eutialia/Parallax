@@ -1,6 +1,7 @@
 import Foundation
 import CoreMedia
 import Synchronization
+import ParallaxCoreTestSupport
 import ParallaxPlayback
 
 // MARK: — PlaybackEngineCapabilities convenience stubs
@@ -121,9 +122,13 @@ public final class FakePlaybackEngine: PlaybackEngine {
     ///
     /// `timeout` is a safety net for the pathological "nobody will pull again" cases
     /// (nothing subscribed, the consumer parked forever inside its body, or a consumer
-    /// that `break`s out of its loop); it never fires on the happy path, so it adds no
-    /// flakiness.
+    /// that `break`s out of its loop). The happy path still needs the consumer task
+    /// SCHEDULED, which is the runtime's call, not ours — a loaded CI runner was
+    /// measured taking 33s to run a just-spawned consumer, tripping the unscaled 5s
+    /// net — so the value is `CITimeScale`d like every anti-hang ceiling. The
+    /// deliberately-tiny timeouts in the negative-path tests scale too and still fire.
     public func settle(timeout: Duration = .seconds(5)) async throws {
+        let timeout = CITimeScale.seconds(timeout / .seconds(1))
         let target = barrier.pushCount()
         guard try await barrier.waitForDrain(upTo: target, timeout: timeout) else {
             throw SettleTimeout(pushed: target, processed: barrier.processedCount())
