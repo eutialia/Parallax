@@ -34,7 +34,11 @@ let package = Package(
         ),
         .testTarget(
             name: "ParallaxPlaybackTests",
-            dependencies: ["ParallaxPlayback", "ParallaxPlaybackTestSupport"],
+            dependencies: [
+                "ParallaxPlayback",
+                "ParallaxPlaybackTestSupport",
+                .product(name: "ParallaxCoreTestSupport", package: "ParallaxCore"),
+            ],
             resources: [
                 .copy("Fixtures"),
             ],

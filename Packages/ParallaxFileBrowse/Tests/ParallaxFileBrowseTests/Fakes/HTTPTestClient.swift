@@ -1,11 +1,17 @@
 import Foundation
 import Network
+import ParallaxCoreTestSupport
 
 /// A fresh ephemeral `URLSession` per call. The bridge suites must NOT share
 /// `URLSession.shared`: its process-wide cache and connection pool leak state between tests that
 /// bind and tear down a socket each, and it has no request timeout, so one wedged bridge would hang
 /// the whole run instead of failing its own test.
+///
+/// `timeout` is a dev-hardware anti-hang ceiling, `CITimeScale`d on CI: loaded runners have been
+/// measured taking 83s on loopback round-trips the bridge served correctly, and the untripped
+/// ceiling fired `URLError -1001` on them.
 func ephemeralHTTPSession(timeout: TimeInterval = 10) -> URLSession {
+    let timeout = CITimeScale.interval(timeout)
     let configuration = URLSessionConfiguration.ephemeral
     configuration.timeoutIntervalForRequest = timeout
     configuration.timeoutIntervalForResource = timeout
@@ -21,14 +27,15 @@ func ephemeralHTTPSession(timeout: TimeInterval = 10) -> URLSession {
 /// - Parameters:
 ///   - halfCloseAfterSend: signal EOF after writing, which is how the "client vanished mid-head"
 ///     case is expressed on the wire.
-///   - timeout: hard bound on the whole exchange. A bug that leaves the bridge holding the socket
-///     open must fail its own test, not wedge the run.
+///   - timeout: hard bound on the whole exchange, `CITimeScale`d on CI like the session's. A bug
+///     that leaves the bridge holding the socket open must fail its own test, not wedge the run.
 func rawHTTPExchange(
     with url: URL,
     sending bytes: Data,
     halfCloseAfterSend: Bool = false,
     timeout: Duration = .seconds(5)
 ) async throws -> Data {
+    let timeout = CITimeScale.seconds(timeout / .seconds(1))
     guard let host = url.host, let rawPort = url.port, let port = NWEndpoint.Port(rawValue: UInt16(rawPort)) else {
         throw RawClientError.missingURLComponent
     }
