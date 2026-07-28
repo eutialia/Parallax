@@ -187,6 +187,13 @@ struct PlayerProgressBar: View {
         metrics.scrubBubbleSize + (bubbleChapter == nil ? 0 : metrics.scrubChapterSize + 10 * metrics.u)
     }
 
+    /// No `.fixedSize()` on the stack: `.position` forwards the bar's width as the
+    /// proposal (render-proven — a `frame(maxWidth:)` here filled to it), so the chapter
+    /// title truncates with an ellipsis at the bar's span instead of driving the whole
+    /// (`ClampedBubblePosition`-measured) bubble wider than the bar, where the clamp's
+    /// centring fallback would overhang BOTH screen edges (device-caught on iPad). The
+    /// stack still sizes to content, so the clamp's edge-parking keeps working. The time
+    /// keeps its own `.fixedSize()` — a timestamp must never truncate or wrap.
     private func bubble(_ time: String) -> some View {
         VStack(spacing: 10 * metrics.u) {
             Text(time)
@@ -195,13 +202,14 @@ struct PlayerProgressBar: View {
                 .modifier(OptionalDigitRoll(animation: scrubDigitRoll, value: elapsedSeconds))
                 .foregroundStyle(.white)
                 .shadow(color: .black.opacity(0.6), radius: 20 * metrics.u, y: 2)
+                .fixedSize()
             if let bubbleChapter {
                 Text(bubbleChapter)
                     .font(.system(size: metrics.scrubChapterSize, weight: .medium))
                     .foregroundStyle(.white.opacity(0.74))
+                    .lineLimit(1)
             }
         }
-        .fixedSize()
     }
 }
 
@@ -369,9 +377,12 @@ private struct OptionalDigitRoll: ViewModifier {
     .environment(\.colorScheme, .dark)
 }
 
-// The clamp regression: scrubbed to the extremes at portrait-phone width (the case that
-// put the playhead-centred bubble past the screen edges). The bubble must park inside
-// the bar's span while the handle sits at the very end.
+// The clamp regressions: scrubbed to the extremes at portrait-phone width (the case
+// that put the playhead-centred bubble past the screen edges), plus a chapter title
+// longer than the bar (the case that drove the bubble wider than the bar and made the
+// centring fallback overhang BOTH edges — device-caught on iPad). The bubble must park
+// inside the bar's span while the handle sits at the very end; the long title must
+// ellipsize at the bar's width, never run past it.
 #Preview("scrub bubble edge clamp (phone portrait)") {
     ZStack {
         LinearGradient(colors: [.purple, .black], startPoint: .topLeading, endPoint: .bottomTrailing)
@@ -385,9 +396,14 @@ private struct OptionalDigitRoll: ViewModifier {
                               elapsed: "1:47:52", remaining: "-0:00:21",
                               elapsedSeconds: 6472, remainingSeconds: 21,
                               bubbleTime: "1:47:52", bubbleChapter: "Chapter 12 · Credits")
+            PlayerProgressBar(metrics: .phone, mode: .scrub, played: 0.45, buffered: 0.6,
+                              elapsed: "0:48:32", remaining: "-0:59:20",
+                              elapsedSeconds: 2912, remainingSeconds: 3560,
+                              bubbleTime: "0:48:32",
+                              bubbleChapter: "Chapter 5 · The Improbably Long Chapter Title That Ran Past Both Screen Edges")
         }
         .padding(.horizontal, PlayerMetrics.phonePadX)
     }
-    .frame(width: 393, height: 600)
+    .frame(width: 393, height: 760)
     .environment(\.colorScheme, .dark)
 }
