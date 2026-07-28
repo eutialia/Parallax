@@ -29,12 +29,20 @@ let package = Package(
         ),
         .target(
             name: "ParallaxPlaybackTestSupport",
-            dependencies: ["ParallaxPlayback", "ParallaxCore"],
+            dependencies: [
+                "ParallaxPlayback",
+                "ParallaxCore",
+                .product(name: "ParallaxCoreTestSupport", package: "ParallaxCore"),
+            ],
             swiftSettings: [ .swiftLanguageMode(.v6) ]
         ),
         .testTarget(
             name: "ParallaxPlaybackTests",
-            dependencies: ["ParallaxPlayback", "ParallaxPlaybackTestSupport"],
+            dependencies: [
+                "ParallaxPlayback",
+                "ParallaxPlaybackTestSupport",
+                .product(name: "ParallaxCoreTestSupport", package: "ParallaxCore"),
+            ],
             resources: [
                 .copy("Fixtures"),
             ],

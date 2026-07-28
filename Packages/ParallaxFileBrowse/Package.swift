@@ -26,7 +26,10 @@ let package = Package(
         ),
         .testTarget(
             name: "ParallaxFileBrowseTests",
-            dependencies: ["ParallaxFileBrowse"],
+            dependencies: [
+                "ParallaxFileBrowse",
+                .product(name: "ParallaxCoreTestSupport", package: "ParallaxCore"),
+            ],
             swiftSettings: [
                 .swiftLanguageMode(.v6),
             ]
