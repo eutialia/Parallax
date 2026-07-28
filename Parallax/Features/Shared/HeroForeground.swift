@@ -47,8 +47,15 @@ struct HeroForeground<Subtitle: View, Actions: View>: View {
             // close enough to want the blend anyway.
             .fixedSize(horizontal: false, vertical: true)
             .padding(.top, Space.s8)
-            // One focus group so the focus engine prefers the action row as a unit (Play/Resume
-            // default) over scattered geometry hits.
+            // One focus group so the row is a single traversal unit instead of scattered geometry
+            // hits. On Home this section nests INSIDE a full-width band-level section
+            // (`HomeHeroCarousel`'s `.tvFocusSection()`) that catches Up presses from shelf columns
+            // past this row's intrinsic width and diverts them into this section — but
+            // `focusSection()` has no landing preference of its own, so entry is geometric-nearest
+            // and the diverted press likely lands the chevron (the rightmost control), not Play.
+            // Pinning Play would take `prefersDefaultFocus` scoped through a `@Namespace` on this
+            // row; that lever stays UNBUILT because the chevron landing was evaluated on device and
+            // accepted — build it only if the landing starts to annoy in practice.
             .tvFocusSection()
         }
         // Cap the column so the title/actions never climb arbitrarily up the band; the fixed rows

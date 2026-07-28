@@ -93,7 +93,9 @@ struct FavoritesView: View {
 
     private var wall: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: Space.s26) {
+            // tvOS: the last row of section N carries the same focus lift as GridSection's own
+            // header gap (see `AppLayout.focusSafeHeaderGap`'s doc comment for the lift arithmetic).
+            VStack(alignment: .leading, spacing: AppLayout.focusSafeSectionGap(idiom: idiom)) {
                 // tvOS: Genre + Sort scroll WITH the wall (in-content) so the focus engine can climb
                 // back up to them. iPhone/iPad carry the controls in the nav bar instead.
                 if idiom == .tv {
@@ -218,9 +220,13 @@ private struct SectionFailureRow: View {
 /// second starting a fresh sort run below the first. Poster skeletons stand in for tiles — this
 /// preview is about the section rhythm (header placement, the gap between sections, column
 /// alignment across them), which is the only thing sectioning changes.
+///
+/// The gap reads the SAME token the wall does (`AppLayout.focusSafeSectionGap`) rather than a
+/// hardcoded copy — a preview whose whole subject is the inter-section rhythm has to move when the
+/// wall's rhythm moves, or it starts certifying a layout the app no longer ships.
 #Preview("Favorites · two servers", traits: .fixedLayout(width: 540, height: 980)) {
     ScrollView {
-        VStack(alignment: .leading, spacing: Space.s26) {
+        VStack(alignment: .leading, spacing: AppLayout.focusSafeSectionGap(idiom: .compact)) {
             GridSection(title: "Living Room", count: 6) {
                 AdaptivePosterGridLoadingSkeleton(tileCount: 6, fixedColumns: 3)
             }

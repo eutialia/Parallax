@@ -22,7 +22,10 @@ struct SMBServerSettingsView: View {
 
     // MARK: - Share list state
 
-    enum LoadState {
+    /// `Equatable` (auto-synthesized: `[SMBShare]` is `Equatable` via `SMBShare: Hashable`, `String`
+    /// already is) so `.onChange(of:)` below can key off it directly — no derived discriminator
+    /// needed, the payload-carrying cases are cheap and correct to compare as-is.
+    enum LoadState: Equatable {
         case loading
         case loaded([SMBShare])
         case failed(String)
@@ -36,6 +39,16 @@ struct SMBServerSettingsView: View {
     /// Serialises share-toggle writes so rapid taps persist in tap order — an unordered `Task` per
     /// tap can let a stale snapshot land last, desyncing the store from the on-screen circles.
     @State private var saveTask: Task<Void, Never>?
+
+    // MARK: - tvOS focus
+
+    /// Which share row holds focus, keyed by share name. Driven PROGRAMMATICALLY when the load
+    /// settles (see `relocateFocus`) — while shares load, "Remove Server" is the screen's ONLY
+    /// focusable row, so focus parks at the bottom and the rows that appear above it get nothing.
+    /// Unused on iOS: the rows bind through `tvFocused`, which is a no-op there.
+    @FocusState private var focusedShare: String?
+    /// The failure state's Retry button, same relocation contract as `focusedShare`.
+    @FocusState private var retryFocused: Bool
 
     // MARK: - Derived
 
@@ -120,12 +133,33 @@ struct SMBServerSettingsView: View {
                     .frame(maxWidth: .infinity, minHeight: 80)
 
             case .failed(let message):
-                SettingsRetryError(message: message) { Task { await loadShares() } }
+                SettingsRetryError(message: message, retryFocus: $retryFocused) {
+                    Task { await loadShares() }
+                }
 
             case .loaded(let shares):
                 loadedShares(shares)
             }
         }
+        // One traversal unit, so a vertical walk crosses the share rows in order and leaves the group
+        // at its edges instead of the focus engine picking a geometric neighbour mid-list.
+        .tvFocusSection()
+        #if os(tvOS)
+        // RENDERED side, not the load path: `loadShares()` used to call `relocateFocus` itself, in
+        // the same main-actor turn that assigns `loadState` — before SwiftUI has committed the rows
+        // that the write targets, so a `@FocusState` write with no matching bound view is dropped
+        // silently. `.onChange` fires off the state SwiftUI itself just applied to this rendered
+        // subtree, so the target rows are guaranteed to exist by the time it runs. (A `.task(id:)`
+        // here would work too, but it's the wrong tool: this isn't async work keyed to an identity,
+        // it's a plain "state changed, react once" hook — `.onChange` is what `HomeHeroCarousel` uses
+        // for the same shape, e.g. its `entries.map(\.id)` reset.) tvOS-ONLY, and compiled out
+        // everywhere else: unlike `focusedShare`/`retryFocused`'s bindings (already no-ops off tvOS
+        // via `tvFocused`), this block is the thing that WRITES them — iPhone/iPad never run the
+        // write at all, since there's no reason to fire an inert relocation on every load.
+        .onChange(of: loadState) { _, newValue in
+            relocateFocus(to: Self.focusTarget(for: newValue, enabled: enabledShares))
+        }
+        #endif
     }
 
     /// Group footer — gains a recovery hint only while at least one unavailable row is on screen, so
@@ -155,6 +189,7 @@ struct SMBServerSettingsView: View {
                     share: share,
                     isSelected: enabledShares.contains(share.name)
                 ) { toggle(share.name) }
+                    .tvFocused($focusedShare, equals: share.name)
             }
             ForEach(unavailable, id: \.self) { name in
                 ShareSelectionRow(
@@ -162,6 +197,7 @@ struct SMBServerSettingsView: View {
                     isSelected: true,
                     isUnavailable: true
                 ) { toggle(name) }
+                    .tvFocused($focusedShare, equals: name)
             }
         }
     }
@@ -196,6 +232,24 @@ struct SMBServerSettingsView: View {
                 loadState = .failed("\(host) rejected the sign-in. Remove this server and add it again to update the password.")
             default:
                 loadState = .failed("Couldn't load shares from \(host).")
+            }
+        }
+    }
+
+    /// Move focus into the shares group once its rows exist. Required, not decorative: while the load
+    /// runs the screen's only focusable view is the bottom "Remove Server" row, so focus parks there
+    /// and the rows that appear ABOVE it inherit nothing — DOWN is a dead press and the list is only
+    /// reachable by pressing UP. A declarative `prefersDefaultFocus`/`resetFocus` can't fix that (both
+    /// only re-resolve WITHIN a scope that already holds focus), so the move is explicit. Deferred a
+    /// runloop for the same reason as `HomeHeroCarousel`'s hero grab: even triggered from `.onChange`
+    /// (the rendered side — see `sharesSection`), the write still needs to land AFTER SwiftUI finishes
+    /// committing this transaction's view updates, not synchronously inside the callback.
+    private func relocateFocus(to target: ShareFocusTarget?) {
+        guard let target else { return }
+        Task { @MainActor in
+            switch target {
+            case .row(let name): focusedShare = name
+            case .retry: retryFocused = true
             }
         }
     }
@@ -242,9 +296,39 @@ struct SMBServerSettingsView: View {
     }
 }
 
-// MARK: - Share reconciliation
+// MARK: - Share reconciliation + focus targeting
 
 extension SMBServerSettingsView {
+    /// Where focus should land once the shares group settles. `Equatable` so the decision below can
+    /// be asserted directly.
+    enum ShareFocusTarget: Equatable {
+        case row(String)
+        case retry
+    }
+
+    /// Where focus should land for a given `loadState` — the single source `.onChange(of: loadState)`
+    /// (on `sharesSection`) and any future caller derive from, so exactly one place maps state to a
+    /// focus target.
+    ///
+    /// Static and fully parameterised rather than reading `@State` in place: the enabled set is the
+    /// only other input, so passing it makes the whole mapping a pure function the tests can drive
+    /// through every branch without standing up a view.
+    static func focusTarget(for state: LoadState, enabled: Set<String>) -> ShareFocusTarget? {
+        switch state {
+        case .loading: return nil
+        case .loaded(let shares): return firstShareRow(live: shares, enabled: enabled)
+        case .failed: return .retry
+        }
+    }
+
+    /// The group's first focusable row after a successful load: a live share, else the leading
+    /// unavailable row. Nil when the group renders only the "No shares found" footer — nothing to
+    /// focus, so focus stays where the engine left it rather than being yanked somewhere arbitrary.
+    static func firstShareRow(live shares: [SMBShare], enabled: Set<String>) -> ShareFocusTarget? {
+        let name = shares.first?.name ?? unavailableShares(enabled: enabled, live: shares).first
+        return name.map(ShareFocusTarget.row)
+    }
+
     /// The enabled-but-absent share names: persisted/enabled shares the live `listShares()` no longer
     /// returns (removed or renamed server-side). Sorted for a stable row order. Rendered as
     /// "unavailable" rows so the user can switch them off and drop the dead library — without this they

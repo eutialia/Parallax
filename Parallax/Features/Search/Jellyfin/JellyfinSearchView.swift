@@ -43,33 +43,34 @@ struct JellyfinSearchView: View {
             }
             #endif
 
-            Group {
-                if let vm = viewModel {
-                    content(vm: vm)
-                } else {
-                    searchLoadingPlaceholder
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         // iOS only: coordinates the scope row's slide with the content swap it rides on.
-        // tvOS has no in-content row (scopes live in the system search chrome), so it
-        // keeps its un-animated swaps instead of inheriting a purposeless transaction.
+        // tvOS draws its own scope row (`SearchScopeChips`) in-content now, inside the
+        // persistent `TVSearchScopeSurface` (see `content` below) — not the system search
+        // chrome — but that row doesn't slide in/out with a transition, so it has nothing
+        // for this transaction to coordinate.
         #if !os(tvOS)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: scopesVisible)
         #endif
-        // The SYSTEM search field on every platform — no custom in-content field. tvOS
-        // renders the HIG search screen (system keyboard on top, results beneath) with
-        // the native scope control. iPhone/iPad use the DRAWER placement: the wide bar
-        // stacked below the nav bar (SwiftUI's analog of UIKit's `.stacked` — the Apple
-        // TV app's search-tab layout), NOT the default iPadOS 26 trailing-corner field.
-        // Being chrome-hosted keeps the field out of the keyboard-avoidance path that
-        // shoved the old in-content bar off-screen.
+        // The SYSTEM search FIELD on every platform — no custom in-content field. tvOS renders
+        // the HIG search screen (system keyboard on top, results beneath). iPhone/iPad use the
+        // DRAWER placement: the wide bar stacked below the nav bar (SwiftUI's analog of UIKit's
+        // `.stacked` — the Apple TV app's search-tab layout), NOT the default iPadOS 26
+        // trailing-corner field. Being chrome-hosted keeps the field out of the keyboard-avoidance
+        // path that shoved the old in-content bar off-screen.
+        //
+        // The scope selector is OURS on BOTH platforms — deliberately no `.searchScopes` in any
+        // production path. (The one exception is `SearchScopeBandPreview`, a `#if !os(tvOS) && DEBUG`
+        // A/B harness that renders the system control on purpose, to keep the comparison this
+        // decision rests on reproducible.)
+        // tvOS used to use it and the bar rendered in the search PRESENTATION layer: chrome outside
+        // this view tree, so it could never scroll away with the results (it read as "always
+        // centered" on device) and the focus engine treated it as system chrome. tvOS now draws
+        // `SearchScopeChips` inside the scrolling content; iOS keeps the segmented Picker above it.
         #if os(tvOS)
         .searchable(text: $query, prompt: Self.searchPrompt)
-        .searchScopes($scope) {
-            scopeOptions
-        }
         #else
         .searchable(
             text: $query,
@@ -148,37 +149,106 @@ struct JellyfinSearchView: View {
         .recoversFromOffline(isStalled: viewModel?.isStalled ?? false) { await viewModel?.retry() }
     }
 
+    /// The screen's content, in ONE of two shells.
+    ///
+    /// tvOS mounts a SINGLE `TVSearchScopeSurface` for every state — including the pre-view-model
+    /// placeholder — so the scope-chip row lives at one fixed position in the view tree while the
+    /// body under it swaps. That is load-bearing, not tidiness: the row used to be rebuilt inside
+    /// each branch, so narrowing the scope to zero results tore the FOCUSED chip out of the tree
+    /// and the focus engine handed focus back to the system keyboard.
+    ///
+    /// iPhone/iPad keep the shape they always had: a scroll shell for the states that scroll, and
+    /// the status states BARE — `StatusStateView` sizes itself to the whole viewport, so putting it
+    /// inside a scroll view alongside other content is exactly what it's built not to do.
     @ViewBuilder
-    private func content(vm: JellyfinSearchViewModel) -> some View {
-        switch vm.state {
-        case .idle:
-            StatusStateView(
-                title: "Find something to watch",
-                systemImage: "magnifyingglass",
-                message: "Movies, shows, and episodes from your library."
-            )
-        case .loading:
-            searchLoadingPlaceholder
-        case .loaded(let results):
-            if results.isEmpty {
-                StatusStateView.searchNoResults
-            } else {
-                // The grid is an `.equatable()` child so a per-keystroke `query` change
-                // can't re-render the tiles (see JellyfinSearchResultsView). The refine
-                // overlay stays out here, in the reactive parent.
-                JellyfinSearchResultsView(results: results, idiom: idiom)
-                .equatable()
-                // Floating indicator while refining — an overlay (not an inline row)
-                // so the results don't shift down/up on every debounced keystroke.
-                .overlay(alignment: .top) {
-                    if vm.isSearching {
-                        SearchRefiningSkeleton()
-                    }
-                }
+    private var content: some View {
+        if idiom == .tv {
+            TVSearchScopeSurface(
+                scope: scope,
+                showsScopes: scopesVisible,
+                isShowingSkeleton: isShowingSkeleton,
+                onSelectScope: { scope = $0 }
+            ) {
+                stateBody
             }
-        case .failed(let message):
-            StatusStateView.failure("Couldn't search your library", message: message)
+            .overlay(alignment: .top) { refiningIndicator }
+        } else if scrollsStateBody {
+            ScrollView {
+                stateBody
+            }
+            // Only the skeleton locks scrolling; a loaded grid scrolls normally.
+            .scrollDisabled(isShowingSkeleton)
+            .contentMargins(.horizontal, AppLayout.contentHMargin(idiom: idiom), for: .scrollContent)
+            .contentMargins(.vertical, AppLayout.searchContentVMargin(idiom: idiom), for: .scrollContent)
+            .overlay(alignment: .top) { refiningIndicator }
+        } else {
+            stateBody
         }
+    }
+
+    /// What the current state draws, with no shell around it — shared by both branches above so the
+    /// state vocabulary exists once.
+    @ViewBuilder
+    private var stateBody: some View {
+        if let vm = viewModel {
+            switch vm.state {
+            case .idle:
+                // No scope row here: `hasActiveSearch` is false at idle, so iOS hides its Picker too.
+                StatusStateView(
+                    title: "Find something to watch",
+                    systemImage: "magnifyingglass",
+                    message: "Movies, shows, and episodes from your library."
+                )
+            case .loading:
+                PosterGridLoadingSkeleton(columns: posterCols, rows: 2)
+            case .loaded(let results):
+                if results.isEmpty {
+                    StatusStateView.searchNoResults
+                } else {
+                    // `.equatable()` so a per-keystroke `query` change can't re-render the tiles
+                    // (see JellyfinSearchResultsView). The refine overlay stays out in the shell,
+                    // in the reactive parent.
+                    JellyfinSearchResultsView(results: results).equatable()
+                }
+            case .failed(let message):
+                StatusStateView.failure("Couldn't search your library", message: message)
+            }
+        } else {
+            // The view model is still building — same skeleton, and `scopesVisible` is false, so
+            // tvOS shows no chips yet either.
+            PosterGridLoadingSkeleton(columns: posterCols, rows: 2)
+        }
+    }
+
+    /// Floating indicator while refining an on-screen result set — an overlay on the scroll shell
+    /// (not an inline row) so the results don't shift down/up on every debounced keystroke. Only
+    /// over a NON-EMPTY loaded grid: the loading skeleton is already its own progress signal.
+    @ViewBuilder
+    private var refiningIndicator: some View {
+        if let vm = viewModel, vm.isSearching, case .loaded(let results) = vm.state, !results.isEmpty {
+            SearchRefiningSkeleton()
+                // Passive status capsule, not a control — on tvOS it overlays the chip row
+                // region, and without this it would swallow focus/select from underneath.
+                .allowsHitTesting(false)
+        }
+    }
+
+    /// The states that render scrolling content on iPhone/iPad: the skeleton and a non-empty grid.
+    /// The status states own the whole viewport and stay out of a scroll (see `content`).
+    private var scrollsStateBody: Bool {
+        guard let vm = viewModel else { return true }
+        switch vm.state {
+        case .loading: return true
+        case .loaded(let results): return !results.isEmpty
+        case .idle, .failed: return false
+        }
+    }
+
+    /// True while the skeleton is what's on screen — the pre-view-model placeholder and `.loading`
+    /// render the same thing and both lock scrolling.
+    private var isShowingSkeleton: Bool {
+        guard let vm = viewModel else { return true }
+        return vm.state == .loading
     }
 
     /// The scope row rides the VM's session flag so its show/hide is one motion with the
@@ -187,23 +257,19 @@ struct JellyfinSearchView: View {
         viewModel?.hasActiveSearch ?? false
     }
 
-    /// Single source for the scope options — feeds BOTH the iOS in-content Picker and
-    /// the tvOS `.searchScopes` builder, so the two platforms' scope lists can't drift.
+    #if !os(tvOS)
+    /// The iOS Picker's rows, rendered from `SearchScopeOption.allOptions` — the ONE scope
+    /// vocabulary, shared with the tvOS chip row so the two platforms' lists can't drift. The
+    /// vocabulary is a value list rather than this `@ViewBuilder` because the chips need
+    /// focusable Buttons, not `Text().tag()` rows.
     @ViewBuilder private var scopeOptions: some View {
-        Text("All").tag(SearchScope.all)
-        Text("Movies").tag(SearchScope.movies)
-        Text("Shows").tag(SearchScope.series)
-        Text("Episodes").tag(SearchScope.episodes)
+        ForEach(SearchScopeOption.allOptions) { option in
+            Text(option.title).tag(option.scope)
+        }
     }
+    #endif
 
     private static let searchPrompt = "Search your library"
-
-    private var searchLoadingPlaceholder: some View {
-        ScrollView {
-            PosterGridLoadingSkeleton(columns: posterCols, rows: 2)
-        }
-        .scrollDisabled(true)
-    }
 
     private var posterCols: Int { AppLayout.searchPosterColumns(idiom: idiom) }
 }

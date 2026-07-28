@@ -174,6 +174,33 @@ extension View {
         #endif
     }
 
+    /// Boolean counterpart for a lone focusable control (`.focused(_:)`). Not expressible as
+    /// `tvFocused(_:equals: true)`: on a NON-optional `FocusState<Bool>` the match form has no `nil`
+    /// to write back when focus leaves, so the Boolean overload is the documented API for this shape.
+    /// The parameter is OPTIONAL and no-ops on `nil` inside the modifier: a shared atom
+    /// (`SettingsRetryError`) is only sometimes handed a focus handle by its caller, and folding the
+    /// nil-check in here lets that atom apply the modifier unconditionally instead of branching into
+    /// `_ConditionalContent` at the call site. A non-optional binding still passes through fine —
+    /// Swift promotes it to the `Optional` parameter automatically.
+    ///
+    /// The optional MUST be a compile-time constant per call site: whether it's `nil` or non-`nil`
+    /// can't flip across a re-render. The `if let`/`else` below runs inside a `@ViewBuilder`, so
+    /// nil↔non-nil toggles which branch of `_ConditionalContent` is built — that re-identifies the
+    /// modified view and drops its focus/state, exactly like swapping `buttonStyle`s mid-selection
+    /// (see `tvPosterButton()`'s identity-stability warning above).
+    @ViewBuilder
+    func tvFocused(_ binding: FocusState<Bool>.Binding?) -> some View {
+        #if os(tvOS)
+        if let binding {
+            self.focused(binding)
+        } else {
+            self
+        }
+        #else
+        self
+        #endif
+    }
+
     /// tvOS focus affordance for action controls that use a custom or `.plain` ButtonStyle —
     /// those carry NO system focus effect, so the focus engine lands on them invisibly. Apply to
     /// a Button's LABEL (a descendant of the focusable Button) so it reads the Button's focus via

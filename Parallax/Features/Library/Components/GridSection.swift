@@ -21,8 +21,12 @@ struct GridSection<Content: View>: View {
     var countNoun: String = "item"
     @ViewBuilder let content: Content
 
+    @Environment(\.appIdiom) private var idiom
+
     var body: some View {
-        VStack(alignment: .leading, spacing: Space.s12) {
+        // tvOS: leave focus-safe headroom under the title (see `AppLayout.focusSafeHeaderGap`,
+        // same idiom as `MetadataRow`'s shelf header, tuned separately for this grid's taller tiles).
+        VStack(alignment: .leading, spacing: AppLayout.focusSafeHeaderGap(idiom: idiom)) {
             HStack(spacing: 6) {
                 Text(title).font(.cardHeaderTitle)
                 if let count {

@@ -121,7 +121,12 @@ struct SettingsGroup<Content: View>: View {
     private var card: some View {
         Group(subviews: content) { subviews in
             VStack(spacing: 0) {
-                ForEach(Array(subviews.enumerated()), id: \.offset) { index, subview in
+                // Keyed by `Subview.id` (persists across updates and reorders), NOT the enumeration
+                // offset: an offset key re-identifies every row below a removed one — dropping the
+                // toggled-off "unavailable" share in the SMB server detail restated the whole tail,
+                // which strands tvOS focus and resets any row-local state. The offset is still read,
+                // but only to decide whether a row needs a leading hairline.
+                ForEach(Array(subviews.enumerated()), id: \.element.id) { index, subview in
                     if index > 0 {
                         Hairline(leadingInset: separatorInset)
                     }

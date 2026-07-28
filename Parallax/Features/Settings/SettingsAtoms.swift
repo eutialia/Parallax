@@ -224,6 +224,11 @@ struct FormIntroHeader: View {
 /// Libraries picker and the SMB folder picker so their identical error states can't drift apart.
 struct SettingsRetryError: View {
     let message: String
+    /// tvOS focus handle for the Retry button. A failure that lands ASYNCHRONOUSLY replaces whatever
+    /// row held focus while the load ran, so the owning screen needs a way to pull focus onto Retry
+    /// instead of leaving it stranded on an unrelated row. Only screens with that shape pass it; the
+    /// rest leave it nil and the focus engine's own placement stands.
+    var retryFocus: FocusState<Bool>.Binding? = nil
     let onRetry: () -> Void
 
     var body: some View {
@@ -234,6 +239,7 @@ struct SettingsRetryError: View {
                 .multilineTextAlignment(.center)
             Button("Retry", action: onRetry)
                 .buttonStyle(.glass)
+                .tvFocused(retryFocus)
         }
         .frame(maxWidth: .infinity)
         .padding(Space.s30)

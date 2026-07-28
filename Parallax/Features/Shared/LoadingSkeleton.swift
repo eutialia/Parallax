@@ -158,6 +158,11 @@ struct HomeLoadingSkeleton: View {
     }
 }
 
+/// The search screen's first-load grid skeleton. Draws the tiles ONLY — its enclosing ScrollView
+/// (`JellyfinSearchView.content` on iOS/iPadOS, `TVSearchScopeSurface` on tvOS) owns the insets via
+/// `contentMargins`, exactly as the loaded `JellyfinSearchResultsView` does, so the two surfaces
+/// can't inset differently and the swap stays shift-free. (It used to apply its own `.padding`,
+/// which had to be kept in sync by hand with the loaded grid's.)
 struct PosterGridLoadingSkeleton: View {
     let columns: Int
     let rows: Int
@@ -179,10 +184,6 @@ struct PosterGridLoadingSkeleton: View {
                 MediaTileSkeleton()
             }
         }
-        // Horizontal = the shared content margin so the swap to the loaded
-        // search grid (which insets by the same knob) is shift-free.
-        .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
-        .padding(.vertical, Space.s18)
         .skeletonShimmer()
     }
 }

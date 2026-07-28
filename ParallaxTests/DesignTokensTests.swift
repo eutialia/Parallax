@@ -72,4 +72,31 @@ struct DesignTokensTests {
             #expect(a <= 0.9 && a >= 0.6)
         }
     }
+
+    /// The scope chips signal selection with fill alone (`SearchScopeChips`), so the resting fill
+    /// has to stay clearly quieter than the selected one on BOTH faces — otherwise four chips read
+    /// as four selections. Asserted as the ordering, not as the tuned alphas: the light value is a
+    /// render-tuned number that will move again, the ordering never does.
+    @Test("chipRestFill stays clearly quieter than chipSelectedFill on both faces")
+    func restFillIsQuieterThanSelected() {
+        for dark in [true, false] {
+            let rest = rgba(.chipRestFill, dark: dark).a
+            let selected = rgba(.chipSelectedFill, dark: dark).a
+            #expect(rest < selected - 0.2)
+        }
+    }
+
+    /// The chips' DARK face was approved as-is; the light-face fix moved only the light alpha, and
+    /// `chipRestFill`'s dark value is deliberately the same white-0.15 the chips tinted with when
+    /// they still used `selectionFill`. Pin that one equality so a future retune of either token
+    /// can't silently repaint the dark chip row.
+    @Test("chipRestFill's dark face still matches selectionFill's")
+    func restFillDarkFaceMatchesSelectionFill() {
+        let rest = rgba(.chipRestFill, dark: true)
+        let selection = rgba(.selectionFill, dark: true)
+        #expect(abs(rest.r - selection.r) < 0.01)
+        #expect(abs(rest.g - selection.g) < 0.01)
+        #expect(abs(rest.b - selection.b) < 0.01)
+        #expect(abs(rest.a - selection.a) < 0.01)
+    }
 }

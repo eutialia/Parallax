@@ -100,7 +100,35 @@ extension Color {
     /// so the "glass" chip read as flat paint — and on tvOS a solid white chip is the
     /// system's FOCUSED look, which made selection ambiguous. The native `.glass` style
     /// owns the label color against it.
+    ///
+    /// Second consumer, different assumption: the search scope chips (`SearchScopeChips`) use it as
+    /// a `.glassProminent` tint, and THAT style does NOT own a legible label color against it — it
+    /// keeps drawing white whatever the tint is — so that call site paints BOTH its states' labels
+    /// explicitly (`buttonLabel` here, `label` on `chipRestFill`, `playerInk` on focus). Retune the
+    /// alpha and check both consumers, plus `chipRestFill`, which has to stay clearly quieter.
     static let chipSelectedFill   = Color(light: 0x22222A, lightAlpha: 0.88, dark: 0xFFFFFF, darkAlpha: 0.78)
+    /// UNSELECTED scope-chip fill — `chipSelectedFill`'s resting counterpart under the same
+    /// `.glassProminent` style (`SearchScopeChips`).
+    ///
+    /// Deliberately ASYMMETRIC, and not a reuse of `fill`, because the two faces sit on opposite
+    /// substrates: prominent glass composites the tint over a near-WHITE backing on the light face,
+    /// so a graphite wash at the resting-control alphas is swallowed whole. Render-proven on the
+    /// daylight floor (`#EBEBF0`): `selectionFill`'s 0.09 landed the capsule at `#ECECED` (1.01:1 —
+    /// invisible) and `fill`'s 0.10 at `#EBEBEC` (1.00:1 — literally the floor). The dark face has
+    /// no such backing and reads correctly at 0.15.
+    /// - dark `0xFFFFFF @ 0.15` — byte-identical to `selectionFill`'s dark face, which is what the
+    ///   chips tinted with before this token existed, so the dark rendering is unchanged by
+    ///   construction (verified: the "Search scope chips" snapshot diffs to zero pixels).
+    /// - light `0x282837 @ 0.33` — tuned by render (2026-07-27, "Search scope chips · light"
+    ///   preview) against the DARK face's approved presence: unselected-fill-vs-floor is 1.78:1
+    ///   there, and the 0.14 → 0.28 → 0.38 → 0.33 sweep measured 1.10 / 1.48 / 1.88 / 1.66:1. 0.33
+    ///   is the closest step to face parity that still reads as translucent glass rather than the
+    ///   flat gray paint 0.38 turned into — and at 1.66:1 against the floor versus the selected
+    ///   chip's 9.07:1, "quieter" is unambiguous.
+    static let chipRestFill       = Color(light: 0x282837, lightAlpha: 0.33, dark: 0xFFFFFF, darkAlpha: 0.15)
+    /// Focus ring behind `FocusableScrollText`'s scrollable body — its ONLY consumer since the
+    /// search scope chips moved to `chipRestFill` (their light face needed ~3.5× this alpha to
+    /// survive prominent glass; this ring paints straight onto the floor and is tuned for that).
     static let selectionFill      = Color(light: 0x282837, lightAlpha: 0.09, dark: 0xFFFFFF, darkAlpha: 0.15)
 
     /// Status "active" green — the server LED (`--ok #3DA45A`). The one sanctioned non-mono color
