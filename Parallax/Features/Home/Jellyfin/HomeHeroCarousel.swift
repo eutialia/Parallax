@@ -62,6 +62,21 @@ struct HomeHeroCarousel: View {
             content(size: proxy.size)
         }
         .heroBandFrame(regularWidth: regularWidth)
+        // HeroForeground's action-row section (Play/Favorite/chevron) only spans its intrinsic
+        // width, ending well short of the full 1920pt canvas — so pressing Up from a Continue
+        // Watching tile at column index ≥ 2 (0-based) finds no focusable candidate in line above
+        // it, a dead press. Wrapping this node — the `GeometryReader` this `.heroBandFrame` just
+        // stretched to `.infinity` — gives the focus engine a full-width target that diverts Up
+        // from ANY column into the nearest inner focusable. Nesting is legal, but `focusSection()`
+        // has no "landing preference" — entry into a section is purely geometric-nearest, so which
+        // control actually catches the diverted Up depends on the focused tile's column: it likely
+        // lands the chevron (the rightmost control) rather than Play for shelf columns nearer the
+        // trailing edge. Forcing Play as the target would take `prefersDefaultFocus` scoped through
+        // a `@Namespace` on the action row; that lever stays UNBUILT because the chevron landing was
+        // evaluated on device and accepted — build it only if the landing starts to annoy in
+        // practice. Same structural fix, same reasoning as `LibraryHeaderControls`'s full-width
+        // section (device-verified there) — only the "lands on Play" claim was wrong.
+        .tvFocusSection()
         #if os(tvOS)
         // The carousel only mounts once the feed has loaded, so this fires after the menu's
         // cold-launch focus claim — moving focus onto the hero's Play button (collapsing the

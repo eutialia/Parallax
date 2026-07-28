@@ -54,11 +54,11 @@ struct LibraryHeaderControls: View {
             sortMenu
                 .frame(maxWidth: .infinity, alignment: hasGenreSlot ? .leading : .center)
         }
-        .padding(.top, Space.s8)
-        // Clear the first poster row at 10-foot distance: 8pt crowded the chips against the grid
-        // and let their focus lift collide with row 1's. Keep in sync with the loading placeholders'
-        // header padding so the skeleton→real swap stays shift-free.
-        .padding(.bottom, Space.s30)
+        .padding(.top, AppLayout.chipRowTopPadding)
+        // Clear the first poster row at 10-foot distance: 8pt crowded the chips against the grid and
+        // let their focus lift collide with row 1's. The token is what the loading skeleton below
+        // and the search screen's chip row read too, so the skeleton→real swap stays shift-free.
+        .padding(.bottom, AppLayout.chipRowBottomClearance)
         // The two chips sit just inside the center axis, so they only cover the middle columns. The
         // tvOS focus engine searches straight UP from the focused poster, so from the outer columns
         // there's no chip in line and pressing Up does nothing. `focusSection()` turns the row's
@@ -139,8 +139,8 @@ struct LibraryHeaderControlsSkeleton: View {
             Capsule().fill(Color.fill).frame(width: LibraryHeaderChip.sortWidth, height: LibraryHeaderChip.height)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.top, Space.s8)
-        .padding(.bottom, Space.s30)
+        .padding(.top, AppLayout.chipRowTopPadding)
+        .padding(.bottom, AppLayout.chipRowBottomClearance)
     }
 }
 

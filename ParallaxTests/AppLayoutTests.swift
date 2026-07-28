@@ -14,6 +14,9 @@ struct IdiomMetrics: Sendable, CustomTestStringConvertible {
     let landscapeColumns: Int
     let shelfTileWidth: CGFloat
     let libraryListColumns: Int
+    let focusSafeHeaderGap: CGFloat
+    let focusSafeSectionGap: CGFloat
+    let searchContentVMargin: CGFloat
     var testDescription: String { "\(idiom)" }
 }
 
@@ -26,17 +29,22 @@ private let idiomMetrics: [IdiomMetrics] = [
     IdiomMetrics(
         idiom: .compact, contentHMargin: 16, posterColumns: 3,
         posterColumnSpacing: Space.s12, posterRowSpacing: Space.s16,
-        landscapeColumns: 2, shelfTileWidth: HomeShelf.tileWidth, libraryListColumns: 1
+        landscapeColumns: 2, shelfTileWidth: HomeShelf.tileWidth, libraryListColumns: 1,
+        focusSafeHeaderGap: Space.s12, focusSafeSectionGap: Space.s26,
+        searchContentVMargin: Space.s18
     ),
     IdiomMetrics(
         idiom: .regular, contentHMargin: 20, posterColumns: 5,
         posterColumnSpacing: Space.s12, posterRowSpacing: Space.s16,
-        landscapeColumns: 4, shelfTileWidth: HomeShelf.tileWidth, libraryListColumns: 2
+        landscapeColumns: 4, shelfTileWidth: HomeShelf.tileWidth, libraryListColumns: 2,
+        focusSafeHeaderGap: Space.s12, focusSafeSectionGap: Space.s26,
+        searchContentVMargin: Space.s18
     ),
     IdiomMetrics(
         idiom: .tv, contentHMargin: 40, posterColumns: 6,
         posterColumnSpacing: 40, posterRowSpacing: 40,
-        landscapeColumns: 5, shelfTileWidth: 220, libraryListColumns: 3
+        landscapeColumns: 5, shelfTileWidth: 220, libraryListColumns: 3,
+        focusSafeHeaderGap: 40, focusSafeSectionGap: 40, searchContentVMargin: 40
     ),
 ]
 
@@ -54,6 +62,25 @@ struct AppLayoutTests {
         #expect(AppLayout.landscapeGridColumns(idiom: idiom) == expected.landscapeColumns)
         #expect(AppLayout.shelfTileWidth(idiom: idiom) == expected.shelfTileWidth)
         #expect(AppLayout.libraryListColumns(idiom: idiom) == expected.libraryListColumns)
+        // Lift arithmetic: see `AppLayout.focusSafeHeaderGap`'s doc comment.
+        #expect(AppLayout.focusSafeHeaderGap(idiom: idiom) == expected.focusSafeHeaderGap)
+        #expect(AppLayout.focusSafeSectionGap(idiom: idiom) == expected.focusSafeSectionGap)
+        // The search screen's scroll surfaces all inset by this one value — see its doc comment.
+        #expect(AppLayout.searchContentVMargin(idiom: idiom) == expected.searchContentVMargin)
+    }
+
+    /// The tvOS in-content chip rows — the library header's Genre/Sort pair, its loading skeleton,
+    /// and the search screen's scope chips — carry ONE pair of vertical measures. They're constants
+    /// rather than idiom rows (the rows only ever render on tvOS), so they sit here instead of in
+    /// the table above. The bottom clearance is the load-bearing one: it was widened from 8pt to 30
+    /// so the chips stop crowding the first poster row at 10-foot distance and their focus lift has
+    /// room (commit 1e8f165). The skeleton reads the same token, which is what keeps the
+    /// skeleton→real-controls swap shift-free.
+    @Test("the tvOS chip row's vertical measures")
+    func chipRowPadding() {
+        #expect(AppLayout.chipRowTopPadding == Space.s8)
+        #expect(AppLayout.chipRowBottomClearance == Space.s30)
+        #expect(AppLayout.chipRowBottomClearance > AppLayout.chipRowTopPadding)
     }
 
     /// A 16:9 tile is far wider than a 2:3 poster at the same column width, so a landscape grid must

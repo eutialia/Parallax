@@ -95,37 +95,67 @@ struct AboutView: View {
 
 /// One component's attribution + full license text, pushed from an About row. The header carries the
 /// per-entry facts the row can't fit (role, © line, upstream address) — for the CC-BY-SA glyph that
-/// header IS the required attribution. The text is focusable on tvOS so the remote can scroll it (a
-/// ScrollView with nothing focusable inside doesn't move on tvOS).
+/// header IS the required attribution.
+///
+/// On tvOS the body is NOT plain `Text` inside the scaffold's `ScrollView` — a single focus stop
+/// taller than the screen (a bare `.focusable()`) has exactly one valid scroll offset, so tvOS
+/// (which scrolls only by moving focus) can never scroll it. Instead the body is a
+/// `FocusableScrollText` (bridged, focusable `UITextView`), and the scaffold itself is told
+/// `scrolls: false` so the region gets a bounded height straight from the screen instead of an
+/// infinite proposal from a nested `ScrollView` — see `SettingsScaffold.tvColumn`.
 struct LicenseTextView: View {
     let entry: Acknowledgement
 
     var body: some View {
-        SettingsScaffold(showsBrand: false) {
-            VStack(alignment: .leading, spacing: Space.s8) {
-                Text("\(entry.name) · \(entry.role)")
-                    .font(.rowTitle)
-                    .foregroundStyle(Color.label)
-                Text("\(entry.url) · \(entry.license?.displayName ?? entry.licenseName)")
-                    .font(.rowSubtitle)
-                    .foregroundStyle(Color.secondaryLabel)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, SettingsMetrics.headerInset)
-            if let license = entry.license {
-                Text(license.text)
-                    .font(.footnote.monospaced())
-                    .foregroundStyle(Color.secondaryLabel)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, SettingsMetrics.headerInset)
-                    #if os(tvOS)
-                    .focusable()
-                    #endif
-            }
+        SettingsScaffold(showsBrand: false, scrolls: scaffoldScrolls) {
+            header
+            licenseBody
         }
         .navigationTitle(entry.name)
         #if !os(tvOS)
         .navigationBarTitleDisplayMode(.inline)
+        #endif
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: Space.s8) {
+            Text("\(entry.name) · \(entry.role)")
+                .font(.rowTitle)
+                .foregroundStyle(Color.label)
+            Text("\(entry.url) · \(entry.license?.displayName ?? entry.licenseName)")
+                .font(.rowSubtitle)
+                .foregroundStyle(Color.secondaryLabel)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, SettingsMetrics.headerInset)
+    }
+
+    @ViewBuilder
+    private var licenseBody: some View {
+        if let license = entry.license {
+            #if os(tvOS)
+            // Full-contrast `.label` here (not iOS's `.secondaryLabel` below) is a deliberate
+            // divergence for 10-foot legibility, not an oversight.
+            FocusableScrollText(text: license.text, textStyle: .footnote, design: .monospaced, textColor: .label)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                .padding(.horizontal, SettingsMetrics.headerInset)
+            #else
+            Text(license.text)
+                .font(.footnote.monospaced())
+                .foregroundStyle(Color.secondaryLabel)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, SettingsMetrics.headerInset)
+            #endif
+        }
+    }
+
+    /// tvOS only — see the type doc comment. iOS keeps the scaffold's normal (default `true`)
+    /// ScrollView; touch scrolling already works there and this flag is a no-op on that branch.
+    private var scaffoldScrolls: Bool {
+        #if os(tvOS)
+        false
+        #else
+        true
         #endif
     }
 }
@@ -141,7 +171,14 @@ struct LicenseTextView: View {
 }
 #endif
 
-#Preview("License text · GPLv3") {
+#if os(tvOS)
+#Preview("License text · GPLv3 (tvOS)", traits: .fixedLayout(width: 1920, height: 1080)) {
+    NavigationStack { LicenseTextView(entry: .parallax) }.screenFloor()
+        .frame(width: 1920, height: 1080)
+}
+#else
+#Preview("License text · GPLv3 (iOS)", traits: .fixedLayout(width: 540, height: 980)) {
     NavigationStack { LicenseTextView(entry: .parallax) }.screenFloor()
 }
+#endif
 #endif

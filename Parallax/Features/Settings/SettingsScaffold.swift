@@ -22,36 +22,27 @@ struct SettingsScaffold<Content: View>: View {
     /// Settings and the detail/form screens suppress it: the native pill / subject hero / `FormIntroHeader`
     /// own their identity instead, so the app brand doesn't sit redundantly above them.
     var showsBrand: Bool = true
+    /// Whether the tvOS column wraps in a `ScrollView`. Defaults true — every ordinary settings
+    /// screen (grouped rows) wants the scaffold to scroll as normal. Set false for a screen that
+    /// owns its OWN height-bounded, internally-scrollable focus region — e.g. `LicenseTextView`'s
+    /// `FocusableScrollText`. Nesting that kind of region inside this scaffold's unbounded
+    /// `ScrollView` proposes infinite height, so the inner view grows to fit all its content
+    /// instead of clipping to the screen, and has nothing left to scroll (the exact bug
+    /// `FocusableScrollText` exists to fix). iOS always scrolls via native `UIScrollView` touch and
+    /// ignores this flag — its branch below is unaffected.
+    var scrolls: Bool = true
     @ViewBuilder var content: Content
 
     var body: some View {
         #if os(tvOS)
-        ScrollView {
-            // The bleed lives INSIDE the scroll clip: the pills stay `tvSettingsColumnWidth`, and the
-            // horizontal padding is slack the focus lift (`scaleEffect(1.03)` + shadow) grows into. The
-            // ScrollView frame is column + bleed×2, so its clip never shaves the focused capsule's
-            // rounded ends flat. (Padding OUTSIDE the ScrollView would inset the whole scroll, not give
-            // the pills room — that clipped the focus platter.)
-            VStack(alignment: .leading, spacing: Space.s26) {
-                // First-run Connect sets `showsBrand` — and on tvOS it's logged out, so there's NO
-                // collapsed-sidebar pill to name the screen; the brand lockup is its only identity.
-                // Signed-in Settings + the detail/form screens pass `showsBrand: false` (native pill /
-                // hero / FormIntroHeader own their identity), so this stays first-run-only.
-                if showsBrand {
-                    brand
-                        .frame(maxWidth: .infinity)
-                        .padding(.bottom, Space.s8)
+        Group {
+            if scrolls {
+                ScrollView {
+                    tvColumn
                 }
-                content
+            } else {
+                tvColumn
             }
-                // Bound focus traversal to the column. Without this an up/left press past the edge rows
-                // can escape to the tvOS tab bar (signed-in Settings is a TabView tab); the section keeps
-                // focus contained until the user deliberately steps out to the collapsed sidebar.
-                .tvFocusSection()
-                .frame(width: AppLayout.tvSettingsColumnWidth, alignment: .leading)
-                .padding(.horizontal, AppLayout.tvSettingsColumnBleed)
-                .padding(.top, AppLayout.tvSettingsColumnTopInset)
-                .padding(.bottom, AppLayout.tvSettingsColumnBottomInset)
         }
         .frame(width: AppLayout.tvSettingsColumnWidth + AppLayout.tvSettingsColumnBleed * 2)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -84,6 +75,38 @@ struct SettingsScaffold<Content: View>: View {
         .background(BackgroundField.style.ignoresSafeArea())
         #endif
     }
+
+    #if os(tvOS)
+    // The bleed lives INSIDE the scroll clip: the pills stay `tvSettingsColumnWidth`, and the
+    // horizontal padding is slack the focus lift (`scaleEffect(1.03)` + shadow) grows into. The
+    // ScrollView frame is column + bleed×2, so its clip never shaves the focused capsule's
+    // rounded ends flat. (Padding OUTSIDE the ScrollView would inset the whole scroll, not give
+    // the pills room — that clipped the focus platter.) When `scrolls` is false this column sits
+    // directly under the bounded outer frame instead — its `content` gets the screen's real height
+    // proposal, so a flexible child (`.frame(maxHeight: .infinity)`) can claim the remaining space.
+    private var tvColumn: some View {
+        VStack(alignment: .leading, spacing: Space.s26) {
+            // First-run Connect sets `showsBrand` — and on tvOS it's logged out, so there's NO
+            // collapsed-sidebar pill to name the screen; the brand lockup is its only identity.
+            // Signed-in Settings + the detail/form screens pass `showsBrand: false` (native pill /
+            // hero / FormIntroHeader own their identity), so this stays first-run-only.
+            if showsBrand {
+                brand
+                    .frame(maxWidth: .infinity)
+                    .padding(.bottom, Space.s8)
+            }
+            content
+        }
+            // Bound focus traversal to the column. Without this an up/left press past the edge rows
+            // can escape to the tvOS tab bar (signed-in Settings is a TabView tab); the section keeps
+            // focus contained until the user deliberately steps out to the collapsed sidebar.
+            .tvFocusSection()
+            .frame(width: AppLayout.tvSettingsColumnWidth, alignment: .leading)
+            .padding(.horizontal, AppLayout.tvSettingsColumnBleed)
+            .padding(.top, AppLayout.tvSettingsColumnTopInset)
+            .padding(.bottom, AppLayout.tvSettingsColumnBottomInset)
+    }
+    #endif
 
     private var brand: some View {
         VStack(spacing: Space.s14) {

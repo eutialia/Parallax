@@ -114,6 +114,54 @@ enum AppLayout {
         }
     }
 
+    /// Header→content gap for a sectioned grid (`GridSection`). A native focus lift raises a 2:3
+    /// grid tile's top edge ≈ height × 0.05 + shadow; 40 is the project's focus-safe floor (see
+    /// `AppLayout` spacing rationale / DESIGN.md). iPhone/iPad have no focus lift, so they keep the
+    /// tight gap.
+    static func focusSafeHeaderGap(idiom: AppIdiom) -> CGFloat {
+        switch idiom {
+        case .compact, .regular: Space.s12
+        case .tv: Space.s40
+        }
+    }
+
+    /// Inter-section gap for a wall of stacked `GridSection`s — the Favorites wall and the search
+    /// results wall (`JellyfinSearchResultsView`'s Movies/Shows/Episodes sections). Same focus-lift
+    /// constraint as `focusSafeHeaderGap` — a section's last row carries the identical lift, so it
+    /// needs the identical floor before the next section's header.
+    static func focusSafeSectionGap(idiom: AppIdiom) -> CGFloat {
+        switch idiom {
+        case .compact, .regular: Space.s26
+        case .tv: Space.s40
+        }
+    }
+
+    /// Vertical `contentMargins` for the SEARCH screen's scroll surfaces — the loaded results, the
+    /// loading skeleton, and (on tvOS) the persistent scope-chip row all ride one shell, and they
+    /// have to inset identically or the skeleton→results swap visibly jumps. It was hand-synced at
+    /// three call sites before this existed. tvOS gets the 40pt focus-lift clearance INSIDE the clip
+    /// (the title-safe-margin approach `LibraryGridView` uses instead of disabling the scroll clip);
+    /// iPhone/iPad have no lift and keep the tighter measure the grid always used.
+    static func searchContentVMargin(idiom: AppIdiom) -> CGFloat {
+        switch idiom {
+        case .compact, .regular: Space.s18
+        case .tv: Space.s40
+        }
+    }
+
+    /// Headroom above a tvOS in-content CHIP ROW — the library grid's Genre/Sort header
+    /// (`LibraryHeaderControls`, plus the `LibraryHeaderControlsSkeleton` that stands in for it on
+    /// first load) and the search screen's scope chips (`SearchScopeChips`). Both rows are the first
+    /// thing inside their scroll, directly above a poster grid, so they inset identically; the pair
+    /// was hand-synced across three call sites before this existed.
+    static let chipRowTopPadding: CGFloat = Space.s8
+
+    /// Clearance BELOW a tvOS in-content chip row, before the first poster row. The load-bearing
+    /// half of the pair: at the original 8pt the chips crowded row 1 at 10-foot distance and their
+    /// focus lift collided with the tiles' (commit 1e8f165). The skeleton carries the identical
+    /// value, which is what keeps the skeleton→real-controls swap shift-free.
+    static let chipRowBottomClearance: CGFloat = Space.s30
+
     static func posterGridColumns(idiom: AppIdiom) -> Int {
         switch idiom {
         case .compact: 3

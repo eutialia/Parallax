@@ -8,6 +8,10 @@ import ParallaxCore
 /// fields. The fact line (year · runtime · rating · quality) lives in the hero only — it is not
 /// repeated here.
 struct DetailInfo: Equatable {
+    /// The item's name. Not rendered on the page (the hero already carries it) — it heads the tvOS
+    /// overview reading panel, which covers the hero and would otherwise be an unattributed wall
+    /// of prose.
+    var title: String
     var tagline: String?
     var overview: String?
     var genres: [String]
@@ -49,6 +53,7 @@ struct DetailInfoField: Identifiable, Equatable {
 extension DetailInfo {
     init(movie md: MovieDetail) {
         self.init(
+            title: md.movie.title,
             tagline: md.tagline,
             overview: md.movie.overview,
             genres: md.movie.genres,
@@ -62,6 +67,7 @@ extension DetailInfo {
 
     init(series sd: SeriesDetail) {
         self.init(
+            title: sd.series.title,
             tagline: sd.tagline,
             overview: sd.series.overview,
             genres: sd.series.genres,
@@ -77,6 +83,7 @@ extension DetailInfo {
 extension DetailInfo {
     /// Shared sample for `DetailMetadataSection` previews.
     static let preview = DetailInfo(
+        title: "Blade Runner 2049",
         tagline: "The key to the future is finally unearthed.",
         // Two paragraphs on purpose: the detail overview must render Jellyfin's `\n` breaks in
         // BOTH clamp states (the collapsed text is no longer flattened).
