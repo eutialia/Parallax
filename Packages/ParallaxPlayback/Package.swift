@@ -29,7 +29,11 @@ let package = Package(
         ),
         .target(
             name: "ParallaxPlaybackTestSupport",
-            dependencies: ["ParallaxPlayback", "ParallaxCore"],
+            dependencies: [
+                "ParallaxPlayback",
+                "ParallaxCore",
+                .product(name: "ParallaxCoreTestSupport", package: "ParallaxCore"),
+            ],
             swiftSettings: [ .swiftLanguageMode(.v6) ]
         ),
         .testTarget(
