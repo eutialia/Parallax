@@ -6,8 +6,7 @@ import SwiftUI
 /// - **tvOS:** a single CENTERED column of grouped rows (`SettingsGroup`/`SettingsListRow`) at
 ///   `AppLayout.tvSettingsColumnWidth`. Signed-in, the "Settings" identity comes from the native
 ///   collapsed-sidebar pill the `.sidebarAdaptable` tab parks in the top-left gutter — this scaffold
-///   draws no pill of its own (`TVSettingsRail` adds only the build tag in the right gutter). Focus
-///   lands straight on the first row.
+///   draws no pill of its own. Focus lands straight on the first row.
 /// - **iPhone / iPad:** a single centered column, brand on top then the groups (`AppLayout.settingsContentWidth`).
 ///
 /// `#if os(tvOS)` is permitted here: this is the app target, and only the LAYOUT differs per platform
@@ -70,8 +69,9 @@ struct SettingsScaffold<Content: View>: View {
         // them all from a single place. `SettingsView`'s `.presentationBackground` backs only the iPad
         // SHEET container; embedded as a plain tab on iPhone there's no presentation to back, so without
         // this the transparent scroll fell through to the system's pure-black `systemBackground`.
-        // (tvOS is the exception: there `TVSettingsRail` wraps both the rail and this column, so it owns
-        // the surface and the tvOS branch above paints none.)
+        // (tvOS is the exception: signed-in, `RootView` paints the single floor behind the whole
+        // tab host, and logged-out Connect paints via `tvSettingsFloor()` — so the tvOS branch
+        // above paints none.)
         .background(BackgroundField.style.ignoresSafeArea())
         #endif
     }

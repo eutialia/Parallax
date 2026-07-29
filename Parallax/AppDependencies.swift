@@ -95,7 +95,7 @@ final class AppDependencies {
         let identity = DeviceIdentityProvider(
             client: "Parallax",
             deviceName: "iOS Device",
-            version: appVersion(),
+            version: AppInfo.shortVersion,
             settings: settings
         )
         let authFactory = DefaultJellyfinClientFactory(identityProvider: identity)
@@ -214,11 +214,5 @@ final class AppDependencies {
             mediaArtworkProvider: mediaArtworkProvider,
             tokenRejections: tokenRejections
         )
-    }
-
-    private static func appVersion() -> String {
-        let info = Bundle.main.infoDictionary
-        let short = info?["CFBundleShortVersionString"] as? String ?? "0.0.0"
-        return short
     }
 }

@@ -82,11 +82,9 @@ struct ConnectSourceView: View {
             }
         }
         .task { await loadSignedOutServers() }
-        // tvOS: pin the app icon to the left, outside the stack, so it stays put while pushing into
-        // the Jellyfin / SMB add flows. No-op on iOS. The surface color is owned by whoever wraps this
-        // per platform — `TVSettingsRail` on tvOS, the `SettingsScaffold` it hosts on iOS — so this view
-        // paints none of its own.
-        .tvSettingsBrandRail()
+        // The surface color is owned by whoever wraps this per platform — `tvSettingsFloor()` on
+        // tvOS, the hosted `SettingsScaffold` on iOS — so this view paints none of its own.
+        .tvSettingsFloor()
     }
 
     /// A first SMB source was saved while logged out: route to SMB-only home (no Jellyfin session),

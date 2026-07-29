@@ -79,9 +79,9 @@ struct SettingsView: View {
                 }
                 #endif
         }
-        // tvOS: pin the big app icon to the left, outside the stack, so it stays put across pushes.
-        // No-op on iOS, where the brand rides each page.
-        .tvSettingsBrandRail()
+        // No floor here: signed-in tvOS rides the single screen floor `RootView` paints behind the
+        // whole tab host, and on iOS the scaffold paints per page. Only the logged-out Connect
+        // stack, mounted outside the tab host, carries `tvSettingsFloor()`.
         // Presentation modifiers only take effect when Settings is shown as a SHEET (iPad). On
         // iPhone/tvOS it's an embedded tab with no presentation to size or back, so both are inert there.
         #if !os(tvOS)
@@ -298,9 +298,9 @@ struct SettingsSMBServerRow: Identifiable {
     var meta: String { "SMB · \(subtitle)" }
 }
 
-/// Pure, previewable presentation of the settings root: the Servers, Playback, and Storage sections,
-/// then the build line. Holds no view model — the parent maps VM state into plain row data + callbacks,
-/// so this renders in a `#Preview` with mock data (the real screen, minus the network).
+/// Pure, previewable presentation of the settings root: the Servers, Playback, and Storage sections.
+/// Holds no view model — the parent maps VM state into plain row data + callbacks, so this renders
+/// in a `#Preview` with mock data (the real screen, minus the network).
 struct SettingsContentView<Storage: View>: View {
     let jellyfinServers: [SettingsJellyfinRow]
     let smbServers: [SettingsSMBServerRow]
@@ -323,11 +323,6 @@ struct SettingsContentView<Storage: View>: View {
             playbackSection
             storage
             aboutSection
-            // iOS/iPadOS show the build line at the end of the list; tvOS relocates it to the top-right
-            // tag in the chrome (handoff `.tv-build`) — see `RootBuildTag` below.
-            #if !os(tvOS)
-            SettingsBuildLine()
-            #endif
             if let signOutError {
                 Text(signOutError)
                     .font(.footnote)
@@ -336,7 +331,6 @@ struct SettingsContentView<Storage: View>: View {
                     .padding(.horizontal, SettingsMetrics.headerInset)
             }
         }
-        .modifier(RootBuildTag())
     }
 
     private var serversSection: some View {
@@ -395,39 +389,6 @@ struct SettingsContentView<Storage: View>: View {
             SettingsListRow(systemImage: "info.circle", title: "About Parallax",
                             accessory: .chevron, action: onSelectAbout)
         }
-    }
-}
-
-/// The version line under the settings root (handoff `.verfoot` / `.buildline` / `.tv-build`): present
-/// on every platform per the parity rules. Reads the app's short version + build from the bundle.
-struct SettingsBuildLine: View {
-    var body: some View {
-        Text(Self.versionText)
-            .font(.rowSubtitle)
-            .foregroundStyle(Color.tertiaryLabel)
-            .frame(maxWidth: .infinity, alignment: .center)
-            .padding(.top, Space.s8)
-            .accessibilityLabel("App version \(Self.versionText)")
-    }
-
-    static var versionText: String {
-        let info = Bundle.main.infoDictionary
-        let short = info?["CFBundleShortVersionString"] as? String ?? "1.0"
-        let build = info?["CFBundleVersion"] as? String ?? "1"
-        return "Parallax \(short) (\(build))"
-    }
-}
-
-/// Routes the settings root's version text to the tvOS top-right chrome tag (`SettingsBuildTagKey`):
-/// only the root sets it, so it shows on the root and clears on pushed sub-screens. No-op on iOS, where
-/// the build line renders inline at the end of the list instead.
-private struct RootBuildTag: ViewModifier {
-    func body(content: Content) -> some View {
-        #if os(tvOS)
-        content.preference(key: SettingsBuildTagKey.self, value: SettingsBuildLine.versionText)
-        #else
-        content
-        #endif
     }
 }
 
