@@ -124,6 +124,7 @@ struct SMBLoginView: View {
                     shares: discoveredShares,
                     onAdded: onAdded
                 )
+                .tvHidesTabSidebar()
             }
         }
     }

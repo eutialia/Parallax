@@ -102,6 +102,12 @@ struct SettingsView: View {
 
     @ViewBuilder
     private func destination(for route: Route) -> some View {
+        routeContent(for: route)
+            .tvHidesTabSidebar()
+    }
+
+    @ViewBuilder
+    private func routeContent(for route: Route) -> some View {
         switch route {
         case .server(let session):
             if let vm = viewModel {

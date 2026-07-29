@@ -54,6 +54,7 @@ struct ServerSettingsView: View {
         )
         .navigationDestination(isPresented: $showingVisibleLibraries) {
             VisibleLibrariesView(session: session)
+                .tvHidesTabSidebar()
         }
         .task { await probeServer() }
         // Keyed on the library revision so a visibility change (which bumps it) refreshes the "N of M".

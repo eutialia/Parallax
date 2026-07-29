@@ -72,6 +72,12 @@ private struct ItemDetailNavigationModifier: ViewModifier {
 
     @ViewBuilder
     private func itemDetailDestination(_ nav: ItemNavigation) -> some View {
+        detailContent(nav)
+            .tvHidesTabSidebar()
+    }
+
+    @ViewBuilder
+    private func detailContent(_ nav: ItemNavigation) -> some View {
         switch nav {
         case .movie(let id, let source):
             switch source {
