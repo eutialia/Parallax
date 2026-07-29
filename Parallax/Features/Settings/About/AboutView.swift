@@ -29,7 +29,7 @@ struct AboutView: View {
             SettingsRowLabel(
                 systemImage: "app.badge.checkmark",
                 title: "Version",
-                value: SettingsBuildLine.versionText
+                value: AppInfo.versionText
             )
             NavigationLink(value: SettingsView.Route.license(.parallax)) {
                 SettingsRowLabel(

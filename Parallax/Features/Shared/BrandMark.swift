@@ -87,9 +87,8 @@ struct BrandTile: View, Equatable {
 }
 
 /// The app's brand mark: the rounded `BrandTile` over the large "Parallax" title. Shared identity for
-/// the iOS settings/connect surfaces (brand-on-top). tvOS no longer uses this — it pins an icon-only
-/// `BrandTile` rail (`TVSettingsRail`) so the icon stays put across nav pushes while the wordmark is
-/// dropped for a bigger glyph.
+/// the iOS settings/connect surfaces (brand-on-top). tvOS no longer uses this — signed-in identity is
+/// the native collapsed-sidebar pill, and logged-out Connect draws its lockup via `SettingsScaffold`.
 struct BrandMark: View {
     let glyph: BrandTile.Glyph
     let title: String
