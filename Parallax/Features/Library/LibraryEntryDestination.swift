@@ -24,6 +24,10 @@ extension View {
     /// (the iPhone card list). A distinct value type from the Jellyfin `MediaCollection` destination
     /// used inside the grids, so the two never collide.
     func smbLibraryDestination() -> some View {
-        navigationDestination(for: LibraryEntry.self) { libraryEntryDestination(for: $0) }
+        // Wrapped HERE, not in `libraryEntryDestination` — that builder also serves the tvOS tab
+        // ROOTS, where hiding the sidebar would kill the tab chrome at rest. Every PUSHED entry
+        // must drop it (see `tvHidesTabSidebar()`); today this path is iPhone/iPad-only, so the
+        // wrap is inert future-proofing for a tvOS list.
+        navigationDestination(for: LibraryEntry.self) { libraryEntryDestination(for: $0).tvHidesTabSidebar() }
     }
 }

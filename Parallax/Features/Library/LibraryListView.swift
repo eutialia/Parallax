@@ -73,6 +73,7 @@ struct LibraryListView: View {
         .smbLibraryDestination()
         .navigationDestination(for: FavoritesRoute.self) { _ in
             FavoritesView()
+                .tvHidesTabSidebar()
         }
     }
 }

@@ -33,6 +33,27 @@ struct TVFocusReader<Content: View>: View {
 }
 
 extension View {
+    /// Apply to every tvOS screen PUSHED onto a tab's `NavigationStack` (details, settings
+    /// sub-screens, SMB folders): hides the `.sidebarAdaptable` tab chrome so the sidebar can't be
+    /// summoned over a pushed page. Two reasons, one load-bearing: (1) it matches the system TV
+    /// app, where tab chrome is a root-level affordance and detail pages drop it; (2) tvOS 26's
+    /// sidebar is BROKEN over a pushed page — it renders focused, but directional/select presses
+    /// fall through to the content behind it (activating Play buttons and rows under the overlay)
+    /// and tab selection never fires. Focus-trace-verified in-sim over movie detail AND the
+    /// Add-Server push; the active tab at its ROOT works fine, which is what this modifier
+    /// guarantees is the only sidebar state. Related public reports: Apple forums 760888 / 769884
+    /// (sidebarAdaptable focus breakage; Destination Video reproduces). If Apple fixes the
+    /// fall-through, this can be reconsidered — the TV-app-parity rationale still stands.
+    /// No-op on iOS/iPadOS, where pushed screens keep the tab bar by design.
+    @ViewBuilder
+    func tvHidesTabSidebar() -> some View {
+        #if os(tvOS)
+        self.toolbar(.hidden, for: .tabBar)
+        #else
+        self
+        #endif
+    }
+
     /// Poster/artwork button style: NATIVE `.borderless` on tvOS — the system content
     /// lockup (lift + drop shadow + specular sheen + parallax tilt, all engine-driven and
     /// floated above grid siblings, none of which a custom style can fake). Pairs with

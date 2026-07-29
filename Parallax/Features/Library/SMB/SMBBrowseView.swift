@@ -72,17 +72,19 @@ struct SMBBrowseView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        // tvOS deliberately carries NO in-content title, matching `LibraryGridView`: the collapsed
-        // sidebar's top-left pill already names the surface, and a tvOS navigation title renders as
-        // in-content text that clips against the grid when the wall scrolls. iOS keeps the inline
-        // bar title (the current folder name) for drill-down orientation.
+        // tvOS deliberately carries NO in-content title, matching `LibraryGridView` (a tvOS
+        // navigation title renders as in-content text that clips against the grid when the wall
+        // scrolls). At the share ROOT the collapsed sidebar's pill names the surface; pushed folder
+        // levels run unlabeled — `tvHidesTabSidebar()` drops that pill with the rest of the tab
+        // chrome, a known trade against the broken-sidebar-over-push bug it exists to avoid. iOS
+        // keeps the inline bar title (the current folder name) for drill-down orientation.
         #if !os(tvOS)
         .navigationTitle(levelTitle)
         .navigationBarTitleDisplayMode(.inline)
         #endif
         // Recurse: drilling into a folder pushes a child `SMBBrowsePath`, which lands back here a
         // level deeper. Registered on every level so the stack can keep descending.
-        .navigationDestination(for: SMBBrowsePath.self) { SMBBrowseView(path: $0) }
+        .navigationDestination(for: SMBBrowsePath.self) { SMBBrowseView(path: $0).tvHidesTabSidebar() }
         #if !os(tvOS)
         // iPhone/iPad carry the sort control in the nav bar's trailing edge. (tvOS instead rides it
         // in-content above the grid — toolbar items can't join the tvOS focus engine; see `sortHeader`.)
