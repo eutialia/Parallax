@@ -10,8 +10,7 @@ extension EnvironmentValues {
     /// hatch for controls that carry no `NavigationLink`/`matchedTransitionSource` to zoom from (the
     /// context menu's "Go to Series" / "View Details"). Wired by `itemDetailNavigation()` at each
     /// content stack's root (a plain push there — see `ItemDetailNavigationModifier`); the default
-    /// no-op covers any view mounted outside such a stack. iOS/iPadOS-only in practice (tvOS attaches
-    /// no context menus), but the key stays cross-platform so the shared menu builder needs no `#if os`.
+    /// no-op covers any view mounted outside such a stack.
     @Entry var pushItemDetail: (ItemNavigation) -> Void = { _ in }
 }
 
@@ -34,25 +33,19 @@ struct MediaTileMenuContext {
 extension View {
     /// Attaches the system context menu (long-press) for a Jellyfin media tile, built per the item's
     /// arm (episode / play-first movie / detail-first movie / series) and wired to the shared
-    /// `UserDataActions` service + the `PlaybackPresenter`. iOS/iPadOS only: tvOS is a bare passthrough
-    /// (context menus are out of scope this wave and the focus engine owns long-press there), following
-    /// the `pressableTileButton()` dispatcher precedent. Apply on the SAME view that wears
-    /// `pressableTileButton()`, so the platter lifts the tile itself.
-    @ViewBuilder
+    /// `UserDataActions` service + the `PlaybackPresenter`. All platforms: touch long-press lifts the
+    /// preview platter on iOS/iPadOS; holding select on the focused tile anchors the system menu
+    /// beside the lifted tile on tvOS. Apply on the SAME view that wears `pressableTileButton()`,
+    /// so the platter lifts the tile itself.
     func mediaTileContextMenu(
         item: Item,
         session: Session,
         context: MediaTileMenuContext = .init()
     ) -> some View {
-        #if os(tvOS)
-        self
-        #else
         modifier(MediaTileContextMenuModifier(item: item, session: session, context: context))
-        #endif
     }
 }
 
-#if !os(tvOS)
 private struct MediaTileContextMenuModifier: ViewModifier {
     let item: Item
     let session: Session
@@ -60,10 +53,13 @@ private struct MediaTileContextMenuModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content
+            #if !os(tvOS)
             // Lift the tile's own rounded silhouette, not a sharp-cornered snapshot, when the platter
             // raises the default preview — only the preview's corner shape is tuned (Radius.tile is the
-            // clip MediaThumbnail draws with).
+            // clip MediaThumbnail draws with). tvOS needs no shaping: the focus lift already carries
+            // the tile's silhouette, and `.contextMenuPreview` isn't in its SDK.
             .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: Radius.tile, style: .continuous))
+            #endif
             // The menu's own View (not an inline builder) so its `@Environment(AppDependencies/…)`
             // reads resolve only when the menu is presented — a tile #Preview that never long-presses
             // needn't carry the whole dependency graph (the modifier itself reads no environment).
@@ -219,4 +215,3 @@ private struct MediaTileMenuContent: View {
         }
     }
 }
-#endif

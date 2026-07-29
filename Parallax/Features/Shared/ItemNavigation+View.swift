@@ -145,9 +145,9 @@ struct ItemNavigator<Label: View>: View {
 
     var body: some View {
         arm
-            // The per-arm long-press menu (iOS/iPadOS; tvOS passthrough). Attached once here, off the
-            // tile's ARM — the menu spec is a function of tap behavior, not the screen. `showsGoToSeries`
-            // stays true: ItemNavigator is never a series' own detail page (that shelf attaches A′ itself).
+            // The per-arm long-press menu. Attached once here, off the tile's ARM — the menu spec is a
+            // function of tap behavior, not the screen. `showsGoToSeries` stays true: ItemNavigator is
+            // never a series' own detail page (that shelf attaches A′ itself).
             .mediaTileContextMenu(
                 item: item,
                 session: session,
