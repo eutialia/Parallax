@@ -138,6 +138,28 @@ struct ParallaxApp: App {
                 }
                 router.updateForSources(await dependencies.serverStore.sourceSnapshot)
 
+                #if DEBUG
+                // Scripted sign-in for simulator screenshot runs (same family as
+                // `-openSettingsTab`): `-uiSignIn <serverURL> <username> [password]`
+                // drives the exact SessionManager path the Connect button uses,
+                // then re-routes onto the signed-in tabs.
+                let args = CommandLine.arguments
+                if let i = args.firstIndex(of: "-uiSignIn"),
+                   args.indices.contains(i + 2),
+                   let serverURL = URL(string: args[i + 1]) {
+                    let password = args.indices.contains(i + 3) && !args[i + 3].hasPrefix("-")
+                        ? args[i + 3] : ""
+                    do {
+                        _ = try await dependencies.sessionManager.signIn(
+                            server: serverURL, username: args[i + 2], password: password
+                        )
+                        router.updateForSources(await dependencies.serverStore.sourceSnapshot)
+                    } catch {
+                        ParallaxCore.Log.persistence.error("uiSignIn failed: \(error.localizedDescription)")
+                    }
+                }
+                #endif
+
                 // Rebuild the device profile on the next resolve whenever
                 // the audio route changes (e.g. AirPlay connects). Per the
                 // spec, in-flight playback is intentionally NOT interrupted.
