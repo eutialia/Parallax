@@ -385,8 +385,11 @@ struct SettingsContentView<Storage: View>: View {
         SettingsGroup(title: "Playback") {
             SettingsListRow(systemImage: "captions.bubble", title: "Subtitles",
                             accessory: .chevron, action: onSelectSubtitles)
+            // Unreleased menus: Debug builds only until the features ship.
+            #if DEBUG
             SettingsListRow(systemImage: "film", title: "Video", accessory: .soon)
             SettingsListRow(systemImage: "waveform", title: "Audio", accessory: .soon)
+            #endif
         }
     }
 
