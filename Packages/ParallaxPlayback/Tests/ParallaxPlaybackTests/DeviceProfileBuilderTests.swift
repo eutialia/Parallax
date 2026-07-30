@@ -28,14 +28,17 @@ struct DeviceProfileBuilderTests {
         #expect(Set(caps.preferredSubtitleFormats) == PlaybackCapabilityMatrix.avKitSubtitleFormats)
     }
 
-    /// Wiring check for the VLC direct-play tier `DeviceProfileTranslator` reads
-    /// downstream — the *values* are pinned by `PlaybackCapabilityMatrixTests`.
-    @Test("build() wires the software tier straight from the matrix")
-    func softwareTierComesFromTheMatrix() async {
+    /// Release gate: while `advertisesVLCDirectPlay` is off, the wire profile
+    /// must carry no VLC tier — `DeviceProfileTranslator` omits the tier when
+    /// `softwareVideoCodecs` is empty, so servers transcode VLC-only sources
+    /// instead of delivering them raw to the unhardened backend.
+    @Test("build() withholds the VLC software tier while the gate is closed")
+    func softwareTierWithheldWhileGateClosed() async {
         let caps = await defaultCaps()
-        #expect(Set(caps.softwareVideoCodecs) == PlaybackCapabilityMatrix.softwareVideoCodecs)
-        #expect(Set(caps.softwareAudioCodecs) == PlaybackCapabilityMatrix.softwareAudioCodecs)
-        #expect(Set(caps.softwareContainers) == PlaybackCapabilityMatrix.softwareContainers)
+        #expect(!DeviceProfileBuilder.advertisesVLCDirectPlay)
+        #expect(caps.softwareVideoCodecs.isEmpty)
+        #expect(caps.softwareAudioCodecs.isEmpty)
+        #expect(caps.softwareContainers.isEmpty)
     }
 
     @Test("build() declares a 4K UHD ceiling")
