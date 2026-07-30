@@ -24,6 +24,19 @@ public actor DeviceProfileBuilder {
     /// good 1080p transcode.
     public static let lowDataBitrateCeiling: Bitrate = .megabits(8)
 
+    /// Gate on advertising the VLC direct-play tier to Jellyfin servers.
+    ///
+    /// The VLC backend is not yet hardened for unattended use (player-teardown
+    /// crash, resume starting at 0:00), so the wire profile must not invite
+    /// servers to deliver raw VLC-only sources (VC-1, AVI, …); with the tier
+    /// withheld they transcode to HLS and play via AVKit instead. Flip when the
+    /// VLC bring-up lands.
+    ///
+    /// Deliberately scoped to the Jellyfin advertisement: `EngineSelector`'s
+    /// SMB routing stays untouched because VLC is the only engine that can open
+    /// non-AVKit SMB files and there is no server there to transcode them.
+    public static let advertisesVLCDirectPlay = false
+
     private let probe: any CapabilityProbe
     private var cached: DeviceCapabilities?
     /// `true` when the OS last reported a constrained path (Low Data Mode).
@@ -60,12 +73,18 @@ public actor DeviceProfileBuilder {
             audioOutput: audioOutput,
             preferredSubtitleFormats: PlaybackCapabilityMatrix.avKitSubtitleFormats
                 .sorted(by: { $0.rawValue < $1.rawValue }),
-            softwareVideoCodecs: PlaybackCapabilityMatrix.softwareVideoCodecs
-                .sorted(by: { $0.rawValue < $1.rawValue }),
-            softwareAudioCodecs: PlaybackCapabilityMatrix.softwareAudioCodecs
-                .sorted(by: { $0.rawValue < $1.rawValue }),
-            softwareContainers: PlaybackCapabilityMatrix.softwareContainers
-                .sorted(by: { $0.rawValue < $1.rawValue })
+            softwareVideoCodecs: Self.advertisesVLCDirectPlay
+                ? PlaybackCapabilityMatrix.softwareVideoCodecs
+                    .sorted(by: { $0.rawValue < $1.rawValue })
+                : [],
+            softwareAudioCodecs: Self.advertisesVLCDirectPlay
+                ? PlaybackCapabilityMatrix.softwareAudioCodecs
+                    .sorted(by: { $0.rawValue < $1.rawValue })
+                : [],
+            softwareContainers: Self.advertisesVLCDirectPlay
+                ? PlaybackCapabilityMatrix.softwareContainers
+                    .sorted(by: { $0.rawValue < $1.rawValue })
+                : []
         )
         cached = caps
         return caps
