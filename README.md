@@ -4,10 +4,15 @@ A native media player for iPhone, iPad, and Apple TV, built for [Jellyfin](https
 
 ## Screenshots
 
-<!-- screenshots: drop 4-6 images into docs/screenshots/ and reference them here -->
-| Home | Library | Player |
+Captured against Jellyfin's public demo server.
+
+| Home | Library | Detail |
 |------|---------|--------|
-| _coming soon_ | _coming soon_ | _coming soon_ |
+| ![Home](docs/screenshots/iphone-home.jpg) | ![Library](docs/screenshots/iphone-library.jpg) | ![Detail](docs/screenshots/iphone-detail.jpg) |
+
+![iPad](docs/screenshots/ipad-home.jpg)
+
+![Apple TV](docs/screenshots/tv-home.jpg)
 
 ## Features
 
