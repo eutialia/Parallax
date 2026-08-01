@@ -1,0 +1,16 @@
+{
+  "file": "hevc-ac3.mkv",
+  "timeline": [
+    {"cmd": "waitPlaying", "timeoutSeconds": 60},
+    {"cmd": "wait", "seconds": 15},
+    {"cmd": "skip", "bySeconds": 60},
+    {"cmd": "wait", "seconds": 15},
+    {"cmd": "scrub", "toSeconds": 30},
+    {"cmd": "wait", "seconds": 15},
+    {"cmd": "pause"},
+    {"cmd": "wait", "seconds": 3},
+    {"cmd": "play"},
+    {"cmd": "wait", "seconds": 10},
+    {"cmd": "finish"}
+  ]
+}

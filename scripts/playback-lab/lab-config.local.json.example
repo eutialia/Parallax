@@ -1,0 +1,10 @@
+{
+  "server": {
+    "host": "nas.local",
+    "username": "user",
+    "password": "CHANGE_ME",
+    "domain": "",
+    "share": "Media"
+  },
+  "path": "Debug"
+}

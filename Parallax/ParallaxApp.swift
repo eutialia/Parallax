@@ -158,6 +158,17 @@ struct ParallaxApp: App {
                         ParallaxCore.Log.persistence.error("uiSignIn failed: \(error.localizedDescription)")
                     }
                 }
+
+                // Playback Lab: `-playbackLab <config.json path>` runs a scripted,
+                // UI-free SMB playback session for autonomous debugging — see
+                // PlaybackLabRunner. Detached from this task on purpose: the
+                // route-change loop below never returns, and the lab run must
+                // not block it (or be blocked by it).
+                if let labRunner = PlaybackLabRunner.makeIfRequested(
+                    dependencies: dependencies, playback: playback
+                ) {
+                    Task { await labRunner.run() }
+                }
                 #endif
 
                 // Rebuild the device profile on the next resolve whenever

@@ -26,3 +26,8 @@ Packages/*/.swiftpm/
 
 # Per-developer signing (see Config/Signing.xcconfig)
 Config/Signing.local.xcconfig
+
+# Playback Lab
+scripts/playback-lab/*.local.json
+scripts/playback-lab/results/
+__pycache__/

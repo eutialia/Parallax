@@ -1,0 +1,12 @@
+{
+  "file": "hevc-truehd-ac3.mkv",
+  "timeline": [
+    {"cmd": "waitPlaying", "timeoutSeconds": 60},
+    {"cmd": "wait", "seconds": 20},
+    {"cmd": "scrub", "toSeconds": 120},
+    {"cmd": "wait", "seconds": 20},
+    {"cmd": "skip", "bySeconds": 30},
+    {"cmd": "wait", "seconds": 20},
+    {"cmd": "finish"}
+  ]
+}
