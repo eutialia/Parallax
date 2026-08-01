@@ -70,9 +70,9 @@ struct VLCThumbnailerFailureTests {
             _ = try await thumbnailer.thumbnailData(for: unreachable, timeout: .seconds(3))
             Issue.record("expected a throw, got data")
         } catch let error as VLCThumbnailError {
-            // .parseTimedOut is the expected outcome; .mediaRejected is acceptable if
-            // libvlc refuses the URL at construction. Anything else is a regression.
-            #expect(error == .parseTimedOut || error == .mediaRejected)
+            // The pre-parse can never resolve for an unreachable host, so the loss is
+            // attributed to the demux/probe phase. Anything else is a regression.
+            #expect(error == .parseTimedOut)
         } catch {
             Issue.record("unexpected error type: \(error)")
         }
@@ -106,11 +106,10 @@ struct VLCThumbnailerFailureTests {
                 "resolved by the hard timeout instead of onCancel")
     }
 
-    /// An empty-path URL is the one libvlc reliably rejects at `VLCMedia(url:)`. The
-    /// timeout cases stay tolerated: a build may accept the URL and fail in either phase
-    /// — libvlc has been observed resolving the parse of a nonexistent path as `.done`
-    /// under load, pushing the failure into the fetch. The invariant is "throws within
-    /// the ceiling, never hangs, never returns data".
+    /// 3.x's `VLCMedia(url:)` never rejects a URL (it is non-failable), so an empty path
+    /// has to fail later — in the parse, or in the fetch if libvlc resolves the parse of a
+    /// nonexistent path as `.done` (observed under load). Either phase is accepted; the
+    /// invariant is "throws within the ceiling, never hangs, never returns data".
     @Test("an empty-path file URL throws rather than returning data")
     func emptyPathRejected() async {
         let thumbnailer = VLCThumbnailer()
@@ -118,7 +117,7 @@ struct VLCThumbnailerFailureTests {
             _ = try await thumbnailer.thumbnailData(for: URL(fileURLWithPath: ""), timeout: .seconds(3))
             Issue.record("expected a throw, got data")
         } catch let error as VLCThumbnailError {
-            #expect(error == .mediaRejected || error == .parseTimedOut || error == .timedOut)
+            #expect(error == .parseTimedOut || error == .timedOut)
         } catch {
             Issue.record("unexpected error type: \(error)")
         }

@@ -13,14 +13,25 @@ This file mirrors the in-app screen at Settings → About Parallax
 | [Nuke](https://github.com/kean/Nuke) | MIT | Image loading & caching |
 | [AMSMB2](https://github.com/amosavian/AMSMB2) | LGPL-2.1 | SMB2/3 client (wraps libsmb2) |
 | [SwiftNIO](https://github.com/apple/swift-nio) (+ swift-atomics, swift-collections, swift-system, swift-nio-transport-services) | Apache-2.0 | Local HTTP bridge for SMB playback |
-| [VLCKit](https://code.videolan.org/videolan/VLCKit) (via [vlckit-spm](https://github.com/virtualox/vlckit-spm)) | LGPL-2.1 | Alternate playback engine (© VideoLAN) |
 
 ¹ The official Jellyfin Swift SDK currently publishes no license file. The Jellyfin
 project distributes it for building clients, so the practical risk is small.
 
-LGPL note (AMSMB2/libsmb2, VLCKit): Parallax meets the LGPL relink requirement because
-the whole app is open source. Anyone can modify these libraries and rebuild the app from
-this repository with standard SwiftPM tooling.
+## Vendored binary framework
+
+| Component | License | Role |
+|-----------|---------|------|
+| [MobileVLCKit](https://code.videolan.org/videolan/VLCKit) 3.7.3 | LGPL-2.1 | Alternate playback engine (© VideoLAN) |
+
+MobileVLCKit is not resolved through SwiftPM. VideoLAN's official prebuilt
+`MobileVLCKit.xcframework` is fetched by `scripts/fetch-mobilevlckit.sh` and linked as a
+local binary target; the artifact is ~1 GB unpacked, so it is git-ignored rather than
+committed.
+
+LGPL note (AMSMB2/libsmb2, MobileVLCKit): Parallax meets the LGPL relink requirement.
+The whole app is open source, so anyone can modify these libraries and rebuild it from
+this repository — and MobileVLCKit specifically ships as a **dynamic** framework, so a
+user-built replacement can be swapped in without rebuilding the app at all.
 
 ## Jellyfin icon (`JellyfinGlyph`)
 

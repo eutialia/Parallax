@@ -5,7 +5,8 @@ import Foundation
 /// Three different subsystems hand out track ids that are all "just integers or
 /// strings", and they are NOT interchangeable:
 /// - `avKitOption` — an index into an `AVMediaSelectionGroup.options` array.
-/// - `vlc` — a `VLCMediaPlayer.Track.trackId` string.
+/// - `vlc` — a libvlc elementary-stream id, stringified (the value
+///   `VLCMediaPlayer.currentAudioTrackIndex` / `.currentVideoSubTitleIndex` take).
 /// - `jellyfinStream` — a source-media stream index the Jellyfin server uses for
 ///   `AudioStreamIndex` / `SubtitleStreamIndex` (the transcode re-resolve path).
 ///
@@ -33,7 +34,7 @@ public extension TrackID {
         return nil
     }
 
-    /// The VLC `trackId`, if this id is in that namespace.
+    /// The libvlc elementary-stream id, if this id is in that namespace.
     var vlcTrackID: String? {
         if case let .vlc(value) = self { return value }
         return nil

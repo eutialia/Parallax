@@ -1,7 +1,7 @@
 import Testing
 import Foundation
 import CoreMedia
-import VLCKitSPM
+import MobileVLCKit
 import ParallaxCore
 import ParallaxPlaybackTestSupport
 @testable import ParallaxPlayback
@@ -10,25 +10,14 @@ import ParallaxPlaybackTestSupport
 @MainActor
 struct VLCKitEngineTests {
 
-    @Test("capabilities: PiP and Now Playing yes, video AirPlay no (VLC renders offscreen)")
+    /// PiP is OFF on this engine: MobileVLCKit 3.x ships no Picture-in-Picture API at all
+    /// (the `VLCPictureInPicture*` protocols are 4.x-only), and this flag is what hides the
+    /// button. AVKit still reports `supportsPiP: true`, so the two engines must differ here.
+    @Test("capabilities: Now Playing yes, PiP and video AirPlay no")
     func capabilities() {
         #expect(VLCKitEngine().capabilities == PlaybackEngineCapabilities(
-            supportsPiP: true, supportsVideoAirPlay: false, supportsNowPlayingIntegration: true
+            supportsPiP: false, supportsVideoAirPlay: false, supportsNowPlayingIntegration: true
         ))
-    }
-
-    /// VLC defaults `timeChangeUpdateInterval` to 1.0s, quantizing `player.time`: the
-    /// polled position refreshed once a second, so the scrubber counter skip-jumped +2/s
-    /// at 2× instead of +1 twice a second. `minimalTimePeriod` (the 0.5s floor) has to
-    /// drop below the finer interval or it re-gates it.
-    @Test("init tightens the time-update cadence so player.time isn't quantized to 1s")
-    func fineGrainedTimeUpdates() {
-        let engine = VLCKitEngine()
-        #expect(engine.vlcPlayer.timeChangeUpdateInterval == 0.25)
-        #expect(engine.vlcPlayer.minimalTimePeriod == 100_000)
-        #expect(Double(engine.vlcPlayer.minimalTimePeriod) / 1_000_000
-                < engine.vlcPlayer.timeChangeUpdateInterval,
-                "the µs floor must sit below the update interval or it re-gates it")
     }
 
     /// A non-finite target must be dropped before it can be turned into a millisecond
@@ -214,7 +203,8 @@ struct VLCKitPollGateTests {
     /// The scrub-commit wedge: the user wants playback, the input reports paused, and the
     /// input is alive. `.opening` is excluded (the initial `play()` is still landing) and
     /// the terminals are excluded so a finished/failed input can't be restarted into a
-    /// ghost session.
+    /// ghost session. `.esAdded` — 3.x's "an elementary stream announced itself", which the
+    /// player caches as a state — lands during the open, so it sits with `.opening`.
     @Test("shouldReassertPlay fires only inside the live-but-not-playing wedge", arguments: [
         (true, false, VLCMediaPlayerState.paused, true),
         (true, false, .buffering, true),
@@ -222,9 +212,10 @@ struct VLCKitPollGateTests {
         (true, true, .playing, false),      // already playing
         (false, false, .paused, false),     // paused by intent
         (true, false, .stopped, false),
-        (true, false, .stopping, false),
+        (true, false, .ended, false),
         (true, false, .error, false),
         (true, false, .opening, false),
+        (true, false, .esAdded, false),
     ] as [(Bool, Bool, VLCMediaPlayerState, Bool)])
     func shouldReassertPlay(desiredPlaying: Bool, isPlaying: Bool, state: VLCMediaPlayerState, expected: Bool) {
         #expect(VLCKitEngine.shouldReassertPlay(
@@ -282,6 +273,133 @@ struct VLCKitDurationEstimateTests {
         #expect(VLCKitEngine.estimateDurationMs(
             fileSizeBytes: .max, playedMs: 60_000, demuxReadBytes: 1
         ) == nil)
+    }
+}
+
+/// 3.x has no `Track` object: the player vends parallel `*TrackIndexes` / `*TrackNames`
+/// arrays, prepends a "Disabled" pseudo-track at id -1, and carries no language at all.
+/// These are the seams that turn that into the engine's `TrackInventory`.
+@Suite("VLCKitEngine — 3.x track array decoding")
+struct VLCKitTrackArrayTests {
+
+    /// The "Disabled" entry is a UI affordance for VLC's own menus, not a stream — leaking
+    /// it would put a phantom "Disable" row in the app's track menu and let `setAudioTrack`
+    /// write -1 (= turn audio off) as if it were a real selection.
+    @Test("trackDescriptors drops the Disabled pseudo-track and pairs id with name")
+    func dropsDisabledPseudoTrack() {
+        let descriptors = VLCKitEngine.trackDescriptors(
+            indexes: [NSNumber(value: -1), NSNumber(value: 3), NSNumber(value: 7)],
+            names: ["Disable", "English", "Commentary"]
+        )
+        #expect(descriptors == [
+            .init(id: 3, name: "English"),
+            .init(id: 7, name: "Commentary"),
+        ])
+    }
+
+    /// The arrays come back untyped (`[Any]`), so a slot that isn't the documented
+    /// NSNumber/NSString pair is skipped rather than crashing the whole inventory.
+    @Test("trackDescriptors skips malformed slots instead of trapping")
+    func skipsMalformedSlots() {
+        let descriptors = VLCKitEngine.trackDescriptors(
+            indexes: [NSNumber(value: 1), "not a number", NSNumber(value: 5)],
+            names: ["English", "French", NSNull()]
+        )
+        #expect(descriptors == [.init(id: 1, name: "English")])
+    }
+
+    /// Ragged arrays (a name array that hasn't caught up with a just-discovered index)
+    /// must truncate to the shorter one, never index out of bounds.
+    @Test("trackDescriptors truncates to the shorter array")
+    func truncatesRaggedArrays() {
+        let descriptors = VLCKitEngine.trackDescriptors(
+            indexes: [NSNumber(value: 1), NSNumber(value: 2)],
+            names: ["English"]
+        )
+        #expect(descriptors == [.init(id: 1, name: "English")])
+    }
+
+    /// The player-side arrays carry no language, so it is joined in from the parsed
+    /// container by libvlc track id — that shared id is what makes the join valid.
+    @Test("trackLanguages joins language onto the libvlc track id")
+    func parsesTrackLanguages() {
+        let languages = VLCKitEngine.trackLanguages(from: [
+            [VLCMediaTracksInformationId: NSNumber(value: 3),
+             VLCMediaTracksInformationLanguage: "eng"],
+            [VLCMediaTracksInformationId: NSNumber(value: 7),
+             VLCMediaTracksInformationLanguage: "fre"],
+        ])
+        #expect(languages == [3: "eng", 7: "fre"])
+    }
+
+    /// An untagged stream, a missing id, and an empty language tag all mean "no language"
+    /// — never an empty-string language the app's preference matching would try to match.
+    @Test("trackLanguages skips entries with no usable language")
+    func skipsUntaggedTracks() {
+        let languages = VLCKitEngine.trackLanguages(from: [
+            [VLCMediaTracksInformationId: NSNumber(value: 1)],                  // no language key
+            [VLCMediaTracksInformationId: NSNumber(value: 2),
+             VLCMediaTracksInformationLanguage: ""],                            // empty tag
+            [VLCMediaTracksInformationLanguage: "eng"],                         // no id
+            "not a dictionary",
+        ])
+        #expect(languages.isEmpty)
+    }
+
+    /// Selection round-trips through the public `TrackID`: the inventory stringifies the
+    /// libvlc id and `setAudioTrack` parses it back. Ids from the other two namespaces must
+    /// not resolve, or an AVKit option index could be written onto VLC's track selector.
+    @Test("trackIndex round-trips the VLC namespace and rejects the others", arguments: [
+        (TrackID.vlc("3"), Int32(3)),
+        (.vlc("-1"), -1),
+        (.vlc("notanumber"), nil),
+        (.avKitOption(2), nil),
+        (.jellyfinStream(2), nil),
+    ] as [(TrackID, Int32?)])
+    func trackIndexRoundTrip(id: TrackID, expected: Int32?) {
+        #expect(VLCKitEngine.trackIndex(from: id) == expected)
+    }
+}
+
+/// The 3.x clock trap: `VLCTime.nullTime.intValue` is **0**, not -1. Reading `intValue`
+/// alone would turn "libvlc has no clock yet" into a real 0:00 beat — snapping the
+/// scrubber and risking a 0:00 progress report that loses the resume point. Only the
+/// nullable `value` separates the two, which is what `validClockMs` reads.
+@Suite("VLCKitEngine — VLCTime null handling")
+struct VLCKitTimeNullTests {
+
+    @Test("nullTime reads 0 through intValue — the reason validClockMs exists")
+    func nullTimeIntValueIsZero() {
+        #expect(VLCTime.null().intValue == 0)
+        #expect(VLCTime.null().value == nil)
+    }
+
+    /// The distinction is only useful if the player's live clock reports a genuine 0:00 as
+    /// a real value. It does: `VLCMediaPlayer` seeds `_cachedTime` with `nullTime` and
+    /// refreshes it through `timeWithNumber:`, which keeps a zero as `NSNumber(0)`.
+    /// `VLCTime(int:)` is the odd one out — it drops a zero and yields a null time — so a
+    /// 0:00 built that way is indistinguishable from "no clock" and must never be used as
+    /// a stand-in for a live position sample.
+    @Test("timeWithNumber keeps a zero; the int initializer discards it")
+    func zeroSurvivesOnlyThroughTheNumberInitializer() {
+        #expect(VLCTime(number: NSNumber(value: 0)).value == 0)
+        #expect(VLCTime(int: 0).value == nil)
+    }
+
+    /// Not parameterized: `VLCTime` isn't `Sendable`, so it can't cross into a Swift
+    /// Testing `arguments:` list — the instances have to be built inside the test body.
+    @Test("validClockMs is nil only when libvlc has no value")
+    func validClockMs() {
+        #expect(VLCKitEngine.validClockMs(.null()) == nil)
+        #expect(VLCKitEngine.validClockMs(VLCTime(number: NSNumber(value: 0))) == 0)
+        #expect(VLCKitEngine.validClockMs(VLCTime(int: 1_500)) == 1_500)
+    }
+
+    /// An out-of-range millisecond value saturates rather than trapping the whole poll.
+    @Test("validClockMs clamps an out-of-range value instead of trapping")
+    func clampsOutOfRange() {
+        let huge = VLCTime(number: NSNumber(value: Int64(Int32.max) + 5_000))
+        #expect(VLCKitEngine.validClockMs(huge) == Int32.max)
     }
 }
 

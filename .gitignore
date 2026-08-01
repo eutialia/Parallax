@@ -31,3 +31,6 @@ Config/Signing.local.xcconfig
 scripts/playback-lab/*.local.json
 scripts/playback-lab/results/
 __pycache__/
+
+# Vendored MobileVLCKit binary (spike/mobilevlckit-3x) — fetched by scripts/fetch-mobilevlckit.sh
+Packages/ParallaxPlayback/Vendor/

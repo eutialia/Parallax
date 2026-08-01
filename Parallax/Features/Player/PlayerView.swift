@@ -509,11 +509,10 @@ struct PlayerView: View {
                 })
                 .ignoresSafeArea()
             case .vlcKit:
-                VLCVideoHost(engine: engine, onPiPReady: { start, stop in
-                    vm.startPiPAction = start
-                    vm.stopPiPAction = stop
-                })
-                .ignoresSafeArea()
+                // No PiP wiring: MobileVLCKit 3.x ships no PiP API, and the engine
+                // reports `supportsPiP: false` so the button never appears.
+                VLCVideoHost(engine: engine)
+                    .ignoresSafeArea()
             }
         }
     }
