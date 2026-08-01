@@ -74,29 +74,45 @@ struct SMBPlaybackResolver {
 
         let (hints, useBridge) = Self.route(probe: probeResult, sizeBytes: item.sizeBytes)
 
+        // Diagnostic lever: `-smbBridgeVLC` serves VLC-routed files through the local
+        // HTTP bridge instead of libvlc's own smb2 input. Hints keep the smb scheme so
+        // engine selection and cache sizing are unchanged — the transport is the only
+        // variable, which is what makes an A/B against the smb2 input meaningful.
+        #if DEBUG
+        let forceBridge = !useBridge && ProcessInfo.processInfo.arguments.contains("-smbBridgeVLC")
+        #else
+        let forceBridge = false
+        #endif
+
         // Local resume: SMB has no server-side progress store, so the offset comes from
         // the on-device store (nil = fresh start). Same key the VM saves beats under.
         let startTime = await resumeStore.resumeTime(for: item.id)
 
-        if useBridge {
+        if useBridge || forceBridge {
             // The reader is handed to the session and owned by it from here — the cleanup
             // closure is the only site that tears it down. `session.start()` self-tears-down
             // on a start failure (no SMBPlaybackItem, no cleanup closure would ever run).
             let fileName = (ctx.path as NSString).lastPathComponent
-            let contentType = hints.container == .mov ? "video/quicktime" : "video/mp4"
+            let contentType: String
+            switch hints.container {
+            case .mov: contentType = "video/quicktime"
+            case .mkv: contentType = "video/x-matroska"   // forced-bridge only; mkv never bridge-qualifies
+            default:   contentType = "video/mp4"
+            }
             let session = SMBBridgeSession(reader: reader, fileName: fileName, contentType: contentType)
             let url = try await session.start()
             return SMBPlaybackItem(
                 itemID: item.id,
                 url: url,
                 title: item.displayTitle,
-                vlcOptions: [],                        // AVKit path: no VLC credentials in play
+                vlcOptions: [],                        // bridged http: no VLC credentials in play
                 startTime: startTime,
                 subtitleURLs: subtitleURLs,
                 subtitleLabels: subtitleLabels,
                 // Bridge route requires a probe-proven complete file (route(probe:sizeBytes:)'s
                 // bridgeEligible gate) — AVKit reads the container's own duration atom, no estimate.
-                hasTrustworthyDuration: true,
+                // The forced-bridge lever skips that gate, so it keeps the VLC route's rule.
+                hasTrustworthyDuration: forceBridge ? probeResult?.isComplete == true : true,
                 hints: hints,
                 // The borrow's LIFETIME disqualifies it from pool reuse: an hours-long playback
                 // socket may be silently degraded (stalls surface as short reads, never a thrown
@@ -175,7 +191,10 @@ struct SMBPlaybackResolver {
     /// outcome (`nil` = probe failed/timed out) and the file size, decides whether an
     /// AVKit-decodable file may ride the HTTP bridge and builds the matching `PlaybackHints`.
     ///
-    /// Bridge ONLY when: the probe ran, the file is complete (an incomplete download needs
+    /// Bridge ONLY when: the probe ran, it positively IDENTIFIED the container (`nil` means
+    /// "magic bytes matched nothing" — ASF/OGM/FLV land here, and the selector's AVKit verdict
+    /// on container-less hints is a default, not proof, so they'd bridge straight into
+    /// AVFoundation's "Cannot Open"), the file is complete (an incomplete download needs
     /// VLC + the read-rate duration estimate), no track was codec-`.unknown` (unknown → VLC
     /// keeps it decodable), and the selector's verdict on the `http` candidate hints is AVKit.
     static func route(probe: MediaProbeResult?, sizeBytes: Int64?) -> (hints: PlaybackHints, useBridge: Bool) {
@@ -189,6 +208,7 @@ struct SMBPlaybackResolver {
         )
         let bridgeEligible = probe.map {
             $0.isComplete
+                && $0.container != nil
                 && $0.videoCodec != .unknown && $0.audioCodec != .unknown
                 && EngineSelector.select(hints: candidateHints) == .avKit
         } ?? false

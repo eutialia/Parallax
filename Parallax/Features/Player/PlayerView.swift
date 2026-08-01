@@ -250,6 +250,12 @@ struct PlayerView: View {
                 subtitleFetch: subtitleFetch
             )
             viewModel = vm
+            #if DEBUG
+            // Playback Lab seam: hand the live view model to a scripted lab run
+            // (no-op when no lab is active). Before start(), so the lab observes
+            // the loading phase from its first beat.
+            PlaybackLabRunner.active?.attach(vm)
+            #endif
             // The resolver — and its Keychain — is reached through the environment
             // here, not captured at init, so the view value never holds it.
             await vm.start(resolvingSMB: { try await deps.smbPlaybackResolver.resolve(item, ref: ref) })

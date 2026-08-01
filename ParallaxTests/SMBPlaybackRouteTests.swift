@@ -51,6 +51,17 @@ private let routeCases: [RouteCase] = [
         sizeBytes: nil, usesBridge: false, scheme: "smb",
         container: .mp4, videoCodec: .h264, audioCodec: nil
     ),
+    // An UNRECOGNIZED container (ASF/OGM/FLV — magic bytes matched nothing): the probe
+    // reports `container: nil, codecs: .none, isComplete: true`, the exact shape that used
+    // to bridge-qualify (`.none` passes the `.unknown` gate, and the selector defaults to
+    // AVKit with no container signal) and die in AVFoundation with "Cannot Open" — the
+    // WMV decode-failed-error-page bug. An unidentified container must stay on VLC.
+    RouteCase(
+        name: "unrecognized container (wmv/asf) never bridges",
+        probe: MediaProbeResult(container: nil, videoCodec: .none, audioCodec: .none, isComplete: true),
+        sizeBytes: 9_876, usesBridge: false, scheme: "smb",
+        container: nil, videoCodec: nil, audioCodec: nil
+    ),
     // A failed/timed-out probe: no codec knowledge at all, but the size still rides along.
     RouteCase(
         name: "nil probe (timeout/failure)",

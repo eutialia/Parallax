@@ -1,0 +1,14 @@
+{
+  "file": "longseek-hevc-ac3.mkv",
+  "timeline": [
+    {"cmd": "waitPlaying", "timeoutSeconds": 60},
+    {"cmd": "wait", "seconds": 10},
+    {"cmd": "scrub", "toSeconds": 600},
+    {"cmd": "wait", "seconds": 30},
+    {"cmd": "scrub", "toSeconds": 2400},
+    {"cmd": "wait", "seconds": 45},
+    {"cmd": "scrub", "toSeconds": 300},
+    {"cmd": "wait", "seconds": 20},
+    {"cmd": "finish"}
+  ]
+}
