@@ -661,7 +661,8 @@ def cmd_run(args) -> int:
         telemetry_path.unlink(missing_ok=True)
 
         print(f"[run] launching {bundle_id} -playbackLab {tmp_scenario_path}", flush=True)
-        subprocess.run(["xcrun", "simctl", "launch", udid, bundle_id, "-playbackLab", str(tmp_scenario_path)], check=True)
+        subprocess.run(["xcrun", "simctl", "launch", udid, bundle_id, "-playbackLab", str(tmp_scenario_path)]
+                       + args.app_arg, check=True)
 
         timeout_s = args.timeout if args.timeout else default_timeout(merged.get("timeline", []))
         print(f"[run] polling telemetry (timeout {timeout_s:.0f}s)…", flush=True)
@@ -709,6 +710,8 @@ def main() -> int:
     parser.add_argument("--no-build", action="store_true", help="reuse the last build in the isolated DerivedData")
     parser.add_argument("--config", default=DEFAULT_CONFIG, help="lab config JSON (relative to this script unless absolute)")
     parser.add_argument("--timeout", type=float, help="override the computed run timeout, in seconds")
+    parser.add_argument("--app-arg", action="append", default=[],
+                        help="extra launch argument for the app (repeatable), e.g. --app-arg -smbBridgeVLC")
     parser.add_argument("--analyze", metavar="RESULTS_DIR", help="re-run the analyzer on a saved results dir")
     parser.add_argument("--selftest", action="store_true", help="run the analyzer self-test and exit")
     args = parser.parse_args()
