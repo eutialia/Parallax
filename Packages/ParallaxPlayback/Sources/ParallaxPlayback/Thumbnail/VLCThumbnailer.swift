@@ -1,7 +1,7 @@
 import Foundation
 import CoreGraphics
 import ParallaxCore
-import VLCKitSPM
+import MobileVLCKit
 
 /// Source-agnostic still-frame thumbnailer backed by VLCKit's `VLCMediaThumbnailer`.
 /// Decodes one frame from a video `URL` (local file or `smb://`) and returns it as
@@ -25,21 +25,18 @@ import VLCKitSPM
 /// NEVER logged — neither are they, nor the URL, written anywhere. The thumbnailer is
 /// option-agnostic; it does not know some options carry credentials (`:smb-user=…`).
 ///
-/// **Pre-parse (crash guard):** the media is parsed HERE, under this API's own deadline,
-/// and `fetchThumbnail()` is only ever called with `parsedStatus == .done`. VLCKit
-/// 4.0.0-alpha.19's `VLCMediaThumbnailer` schedules a 10s `_parsingTimeoutTimer` when handed
-/// an unparsed media, and its `mediaParsingTimedOut` path — the one a slow remote share
-/// (e.g. SMB over VPN) always hits — never nils the timer ivar, so the thumbnailer's
-/// `dealloc` later dies on `NSAssert(!_parsingTimeoutTimer, @"Timer not released")`
-/// (`NSInternalInconsistencyException` on a background thread). Upstream rewrote the
-/// thumbnailer in alpha.20 (no timers), but vlckit-spm ships nothing newer than alpha.19.
-/// A `.done` media skips that entire branch, making the assert unreachable.
+/// **Pre-parse:** the media is parsed HERE, under this API's own deadline, and
+/// `fetchThumbnail()` is only ever called with `parsedStatus == .done`. 3.x's
+/// `VLCMediaThumbnailer` also schedules a parsing-timeout timer when handed an unparsed
+/// media; a `.done` media skips that branch entirely, so the fetch spends its whole budget
+/// on the frame decode instead of racing two independent deadlines. Parsing first is also
+/// what makes the duration below readable without a second parse.
 ///
-/// **Aspect behavior (observed on vlckit-spm 4.0.0-alpha.19):** `width: 0, height: 320`
-/// makes libvlc derive the width from the source aspect ratio rather than stretching to
-/// a fixed box — a 160×90 (16:9) source yields a 569×320 thumbnail (1.778, exactly 16:9),
-/// NOT a 320×240 4:3 frame. `width: 0` is honored, so the API defaults to it. (Downstream
-/// `MediaImage` fill+crop would absorb a minor mismatch regardless.)
+/// **Aspect behavior:** `width: 0, height: 320` makes libvlc derive the width from the
+/// source aspect ratio rather than stretching to a fixed box — a 160×90 (16:9) source
+/// yields a 569×320 thumbnail (1.778, exactly 16:9), NOT a 320×240 4:3 frame. `width: 0`
+/// is honored, so the API defaults to it. (Downstream `MediaImage` fill+crop would absorb
+/// a minor mismatch regardless.)
 /// A generated still frame plus the source's duration, read off the same `VLCMedia` the
 /// thumbnailer already had to parse. `Sendable` so it crosses the package→app boundary cleanly
 /// (a raw `CGImage`/`VLCMedia` would not). `duration` is nil when libvlc couldn't determine the
@@ -94,9 +91,10 @@ public final class VLCThumbnailer {
         // affect thumbnailer callback threading — see the type doc.
         VLCKitEngine.configureVLCEvents()
 
-        guard let media = VLCMedia(url: url) else {
-            throw VLCThumbnailError.mediaRejected
-        }
+        // 3.x's `VLCMedia(url:)` is non-failable (4.x's was optional) — libvlc accepts any
+        // URL here and only reports an unusable input during the parse below, which the
+        // `.done` check turns into `.parseTimedOut`.
+        let media = VLCMedia(url: url)
         // Deliberately NOT the engine's 3000ms: that value sizes a smooth-playback
         // read-ahead, and the input pre-fills it before decode starts, so a frame grab
         // would pay ~3s of stream bytes up front — the dominant per-fetch cost on a
@@ -124,19 +122,19 @@ public final class VLCThumbnailer {
         // offset instead of opening at 0:00 and seeking: the pre-parse just resolved the
         // duration, so the fraction converts to `:start-time=` and the open's first reads
         // are already the target bytes — one less mid-file seek over the share. The nudge
-        // past 0.05 dodges a19's `position <= 0.05 → re-seek to 30%` broken-file heuristic
-        // (`didFetchThumbnail`), which would otherwise turn a shallow ask into exactly the
-        // deep Matroska seek it exists to avoid. The 0.3 default is excluded because a19
-        // sets its own start-time for it (duplicate options); unknown duration falls back
-        // to the prior open-at-zero behavior.
+        // past 0.05 dodges the thumbnailer's `position <= 0.05 → re-seek to 30%`
+        // broken-file heuristic (`didFetchThumbnail`; verified present in 3.7.3), which
+        // would otherwise turn a shallow ask into exactly the deep Matroska seek it exists
+        // to avoid. The 0.3 default is excluded because the thumbnailer seeks there itself;
+        // unknown duration falls back to the prior open-at-zero behavior.
         //
-        // snapshotPosition MUST get the same nudged fraction: a19 keys BOTH of its seeks on
-        // it — an early frame reporting position≈0 (network open, before start-time settles)
-        // is re-seeked to `snapshotPosition`, and a frame landing exactly at 0.05 then
-        // satisfies `position <= 0.05` → the deep 30% re-seek. A raw 0.05 snapshot target
-        // sits precisely on that boundary and re-arms the heuristic the start-time nudge
-        // exists to dodge (observed on-device as webms hunting Matroska clusters backward
-        // then timing out).
+        // snapshotPosition MUST get the same nudged fraction: the thumbnailer keys BOTH of
+        // its seeks on it — an early frame reporting position < snapshotPosition (network
+        // open, before start-time settles) is re-seeked to `snapshotPosition`, and a frame
+        // landing at exactly 0.05 then satisfies `position <= 0.05` → the deep 30% re-seek.
+        // A raw 0.05 snapshot target sits precisely on that boundary and re-arms the
+        // heuristic the start-time nudge exists to dodge (observed on-device as webms
+        // hunting Matroska clusters backward then timing out).
         var snapshotFraction = Double(position)
         if position < 0.3, let duration = Self.duration(of: media) {
             let fraction = position <= 0.05 ? Double(position) + 0.01 : Double(position)
@@ -227,7 +225,6 @@ public final class VLCThumbnailer {
 }
 
 public enum VLCThumbnailError: Error, Sendable {
-    case mediaRejected   // VLCMedia(url:) returned nil
     /// The pre-parse resolved anything but `.done` (libvlc parse timeout/failure, our safety
     /// net, or task cancellation), or consumed the whole call budget by itself. Distinct from
     /// `.timedOut` so a caller's failure log attributes the loss to the demux/probe phase
@@ -278,7 +275,10 @@ final class MediaParseAwaiter: NSObject, VLCMediaDelegate {
                 self.continuation = continuation
                 // libvlc enforces the deadline itself (milliseconds; 0 means INFINITE,
                 // hence the ≥1 clamp) and reports `.timeout` through the delegate.
-                guard media.parse(options: [.parseLocal, .parseNetwork], timeout: Self.milliseconds(timeout)) == 0 else {
+                // `.parseLocal` is 3.x's zero option — the baseline every parse already does,
+                // which Swift surfaces as unavailable — so `.parseNetwork` alone is the
+                // "parse local files AND network ones" request the 4.x pair spelled out.
+                guard media.parse(options: [.parseNetwork], timeout: Self.milliseconds(timeout)) == 0 else {
                     // Per the header doc, no callback ever comes after a -1 return.
                     finish(.failed)
                     return

@@ -13,17 +13,19 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "../ParallaxCore"),
-        .package(
-            url: "https://github.com/virtualox/vlckit-spm",
-            exact: "4.0.0-alpha.19"
-        ),
     ],
     targets: [
+        // VideoLAN's official 3.7.3 build, fetched by scripts/fetch-mobilevlckit.sh
+        // (~1 GB unpacked, so it is git-ignored rather than committed).
+        .binaryTarget(
+            name: "MobileVLCKit",
+            path: "Vendor/MobileVLCKit.xcframework"
+        ),
         .target(
             name: "ParallaxPlayback",
             dependencies: [
                 "ParallaxCore",
-                .product(name: "VLCKitSPM", package: "vlckit-spm"),
+                "MobileVLCKit",
             ],
             swiftSettings: [ .swiftLanguageMode(.v6) ]
         ),

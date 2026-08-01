@@ -2,7 +2,7 @@ import Foundation
 import CoreMedia
 import OSLog
 import ParallaxCore
-import VLCKitSPM
+import MobileVLCKit
 
 /// VLC-backed `PlaybackEngine`. Handles the long tail of formats AVKit cannot
 /// decode: MKV/WebM containers, VC-1/MPEG-2/VP9 video, DTS/TrueHD audio,
@@ -16,8 +16,7 @@ import VLCKitSPM
 /// declared `nonisolated` and assert main isolation via `MainActor.assumeIsolated`.
 ///
 /// **Teardown order (critical):** detach drawable → nil delegate → stop → finish.
-/// `player.media` is deliberately NOT nil'd — see `teardown()` (nil'ing it aborts in
-/// `libvlc_media_retain` when PiP polls the media off-thread).
+/// `player.media` is deliberately NOT nil'd — see `teardown()`.
 @MainActor
 public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
 
@@ -25,8 +24,13 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
 
     public nonisolated let id: PlaybackEngineID = .vlcKit
 
+    /// MobileVLCKit 3.x ships no Picture-in-Picture surface at all — the
+    /// `VLCPictureInPictureDrawable` / `VLCPictureInPictureMediaControlling` protocols
+    /// that drove it are 4.x-only. The app reads `supportsPiP` to show or hide the PiP
+    /// button, so reporting `false` here is what removes the affordance on this engine;
+    /// AVKit still offers it.
     public nonisolated let capabilities = PlaybackEngineCapabilities(
-        supportsPiP: true,
+        supportsPiP: false,
         supportsVideoAirPlay: false,
         supportsNowPlayingIntegration: true
     )
@@ -54,35 +58,49 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// drawable handle, not a control surface.
     public nonisolated var vlcPlayer: VLCMediaPlayer { player }
 
-    /// Live playback clock for the client-side subtitle overlay. Reads `player.time` (the
-    /// same read-only, off-actor query the PiP media-controller already makes). Returns
-    /// `.invalid` for the VLC_TICK_INVALID sentinel (`player.time` is -1 during
-    /// buffering/seek) so the overlay skips rather than flashing the 0:00 cue.
+    /// Live playback clock for the client-side subtitle overlay. Returns `.invalid` while
+    /// libvlc has no clock (before the first frame, during a seek) so the overlay skips
+    /// rather than flashing the 0:00 cue. See `clockMs` for why `intValue` alone can't
+    /// tell "no clock" from 0:00 on 3.x.
     public nonisolated var currentTime: CMTime {
-        let ms = player.time.intValue
+        let ms = clockMs
         return ms >= 0 ? Self.vlcTimeToCMTime(ms: ms) : .invalid
+    }
+
+    /// The live playback position in milliseconds, or -1 when libvlc has no clock yet.
+    ///
+    /// 3.x's `VLCTime.nullTime` reads `intValue == 0`, NOT -1 — so the 4.x habit of
+    /// treating `player.time.intValue` as a signed sentinel would silently turn "no
+    /// clock" into a real 0:00 beat, snapping the scrubber (and the saved resume point)
+    /// to the start of the media. The honest signal is `VLCTime.value`, which is nil
+    /// exactly when there is no clock; -1 is re-synthesized here so every downstream
+    /// gate (`liveBeat`, `emitBuffering`) keeps its existing "negative = skip" contract.
+    private nonisolated var clockMs: Int32 {
+        Self.validClockMs(player.time) ?? -1
     }
 
     // MARK: - Playback state tracking
 
     private var currentMedia: VLCMedia?
 
-    /// Drives the progress beats. VLC 4.x sticks in `.buffering` during normal
-    /// playback and almost never emits `.playing` (VideoLAN VLCKit#578/#128/#80),
-    /// and its `mediaPlayerTimeChanged` delegate is throttled to the point of not
-    /// firing here at all — so position never advanced off the delegate path. Mirror
-    /// `AVKitEngine`'s periodic time observer: poll the live clock on a timer and
-    /// publish beats ourselves. `player.isPlaying` is the reliable play/pause signal
-    /// (it reads `true` while the bogus `.buffering` state lies), so beats derive
-    /// playing-vs-paused from it, never from `player.state`.
+    /// Drives the progress beats. VLC drops into `.buffering` freely during normal
+    /// playback and its state transitions are not a trustworthy play/pause signal
+    /// (VideoLAN VLCKit#578/#128/#80). Mirror `AVKitEngine`'s periodic time observer:
+    /// poll the live clock on a timer and publish beats ourselves. `player.isPlaying`
+    /// is the reliable play/pause signal (it reads `true` while the state says
+    /// `.buffering`), so beats derive playing-vs-paused from it, never from
+    /// `player.state`.
     private var progressTask: Task<Void, Never>?
 
-    /// VLC resolves the default track *selection* a beat or two after playback
-    /// begins — after the first `.ready` already shipped with nothing selected (so
-    /// the audio chip showed the generic "Audio" label, not the playing track). The
-    /// poll re-emits the inventory once the selection appears; this guards that to a
-    /// single re-emit per load.
-    private var didEmitSettledInventory = false
+    /// Last inventory the poll published, so it can re-emit `.ready` when the picture
+    /// changes. 3.x has no per-track delegate (4.x's `mediaPlayerTrackAdded` /
+    /// `mediaPlayerTrackSelected` / `mediaPlayerLengthChanged` do not exist), so the poll
+    /// is the only place that can notice a late-discovered embedded text track, VLC
+    /// settling its default selection (the first `.ready` ships with nothing selected, so
+    /// the audio chip would keep the generic "Audio" label), or the container length
+    /// finally resolving. Diffing rather than re-emitting every tick keeps it flood-free.
+    /// Reset to a fresh empty snapshot on every `load` so the first real change re-emits.
+    private var lastInventory = InventorySnapshot()
 
     /// Resume offset (ms) to seek to once the demux is seekable, or nil. Resume is done
     /// by seeking — NOT the `:start-time` media option, which truncates the input so the
@@ -189,24 +207,18 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         self.player = VLCMediaPlayer()
         super.init()
         player.delegate = self
-        // VLC quantizes `player.time` to its time-changed cadence, which DEFAULTS TO 1.0s
-        // (`timeChangeUpdateInterval`, VLCMediaPlayer.h). So the polled position refreshes
-        // only once a second and the scrubber counter steps a whole tick per refresh:
-        // invisible at 1× (+1/s) but a +2/s skip-jump at 2× (every other second never shown).
-        // Tighten it — plus `minimalTimePeriod` (the floor, default 0.5s, which would re-gate
-        // a finer interval) — so `player.time` is fine-grained and the counter advances
-        // smoothly at the playback rate. `timeChangeUpdateInterval` is only read at `play()`,
-        // so set it here, before the first play. Cheap: we poll `player.time` rather than
-        // consume the notification, so a finer cadence is just a fresher read (no flood).
-        player.minimalTimePeriod = 100_000      // µs (0.1s) — below the interval so it can't gate it
-        player.timeChangeUpdateInterval = 0.25  // s — 4×/s, finer than the 500ms poll
+        // NOTE: 3.x exposes no time-update cadence knobs (`minimalTimePeriod` /
+        // `timeChangeUpdateInterval` are 4.x-only). `player.time` here is the cached value
+        // libvlc's own time-changed event refreshes, which fires as the input advances
+        // rather than on a coarse 1s quantum — so the counter is fine-grained by default
+        // and there is nothing to tighten.
     }
 
     // MARK: - PlaybackEngine
 
     public func load(_ asset: PlayableAsset) async throws {
         continuation.yield(.loading)
-        didEmitSettledInventory = false
+        lastInventory = InventorySnapshot()
         subtitlesDisabled = false
         pendingStartMs = Self.startMs(from: asset.startTime)
         pendingSeekMs = nil
@@ -217,12 +229,10 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
                                   // carry the previous item's read-rate runtime estimate)
         fileSizeBytes = asset.hints.fileSizeBytes
         estimateAnchoredAtZero = pendingStartMs == nil   // a resume offset invalidates the read-rate estimate
-        // VLCMedia(url:) returns optional; a nil result means the URL was rejected
-        // by libvlc at construction time (e.g. empty path). Treat as unplayable.
-        guard let media = VLCMedia(url: asset.url) else {
-            continuation.yield(.failed(.assetNotPlayable))
-            throw PlaybackError.assetNotPlayable
-        }
+        // 3.x's `VLCMedia(url:)` is non-failable (4.x's was optional): libvlc accepts any
+        // URL here and only reports an unplayable input later, through the `.error` player
+        // state, which `handleStateChanged` already turns into `.failed(.assetNotPlayable)`.
+        let media = VLCMedia(url: asset.url)
         applyOptions(to: media, asset: asset)
         currentMedia = media
         player.media = media
@@ -309,7 +319,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         // Emit the paused beat immediately rather than waiting for the next poll (which
         // stays silent while paused) so the transport button flips at once. `player.isPlaying`
         // can lag a frame after pause(), so force isPlaying: false.
-        emitPosition(isPlaying: false, positionMs: player.time.intValue)
+        emitPosition(isPlaying: false, positionMs: clockMs)
     }
 
     public func setRate(_ rate: Float) async {
@@ -335,7 +345,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         // Skip during initial load / resume (would seek off the resume point before it applies)
         // and while a user seek is still settling (that seek already re-filled at this rate).
         guard player.isPlaying, pendingStartMs == nil, pendingSeekMs == nil else { return }
-        let pos = player.time.intValue
+        let pos = clockMs
         guard pos > 0 else { return }
         rateFlushAnchorMs = pos
         rateFlushTicks = 0
@@ -379,6 +389,10 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         isStalled = false
         stallWatchdog.disarm()
         let ms = Self.clampSeekMs(seconds: seconds)
+        // `VLCTime(int: 0)` builds a NULL time (the initializer drops a zero), but the
+        // `time` setter reads it as `[[value value] longLongValue]` — nil messages to 0 —
+        // so a rewind-to-start still seeks to 0. Only reads have to distinguish the two;
+        // see `clockMs`.
         player.time = VLCTime(int: ms)
         // Gate the poll until VLC's clock settles on this target so its transient
         // post-seek reads can't surface as an overshoot (see pendingSeekMs).
@@ -390,26 +404,27 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         emitPosition(isPlaying: wasPlaying, positionMs: ms)
     }
 
+    /// 3.x selects by writing the libvlc track id onto `currentAudioTrackIndex` (the id
+    /// comes straight back out of `audioTrackIndexes`, so no lookup is needed) — there is
+    /// no 4.x-style Track object to flip `isSelectedExclusively` on. The id is still
+    /// validated against the live inventory so a stale menu selection from a previous
+    /// item can't write a bogus index onto the current input.
     public func setAudioTrack(_ track: AudioTrack) async {
-        guard let vlcID = track.id.vlcTrackID else { return }
-        for t in player.audioTracks where t.trackId == vlcID {
-            t.isSelectedExclusively = true
-            return
-        }
+        guard let vlcID = Self.trackIndex(from: track.id),
+              audioDescriptors().contains(where: { $0.id == vlcID }) else { return }
+        player.currentAudioTrackIndex = vlcID
     }
 
     public func setSubtitleTrack(_ track: SubtitleTrack?) async {
         guard let track else {
             subtitlesDisabled = true
-            player.deselectAllTextTracks()
+            player.currentVideoSubTitleIndex = Self.disabledTrackIndex
             return
         }
-        guard let vlcID = track.id.vlcTrackID else { return }
+        guard let vlcID = Self.trackIndex(from: track.id),
+              subtitleDescriptors().contains(where: { $0.id == vlcID }) else { return }
         subtitlesDisabled = false
-        for t in player.textTracks where t.trackId == vlcID {
-            t.isSelectedExclusively = true
-            return
-        }
+        player.currentVideoSubTitleIndex = vlcID
     }
 
     public func debugSnapshot() async -> PlaybackDebugInfo {
@@ -421,10 +436,12 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
             info.presentationHeight = Int(size.height)
         }
 
-        info.audibleOptions = player.audioTracks.map(\.trackName)
-        info.selectedAudible = player.audioTracks.first(where: { $0.isSelected })?.trackName
-        info.legibleOptions = player.textTracks.map(\.trackName)
-        info.selectedLegible = player.textTracks.first(where: { $0.isSelected })?.trackName
+        let audio = audioDescriptors()
+        let subtitles = subtitleDescriptors()
+        info.audibleOptions = audio.map(\.name)
+        info.selectedAudible = audio.first(where: { $0.id == player.currentAudioTrackIndex })?.name
+        info.legibleOptions = subtitles.map(\.name)
+        info.selectedLegible = subtitles.first(where: { $0.id == player.currentVideoSubTitleIndex })?.name
 
         // VLC stores the subtitle delay in microseconds; surface it in ms (and
         // a non-nil value is how the HUD knows to offer the ± nudge control).
@@ -442,17 +459,13 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
 
     /// Teardown order: detach drawable → nil delegate → stop → finish.
     ///
-    /// **`player.media` is deliberately NOT nil'd.** VLCKit 4.x's `media` getter wraps
-    /// `libvlc_media_player_get_media()` and calls `libvlc_media_retain` on the result
-    /// *without a null check*. VLC's PiP controller polls the drawable's media-controller
-    /// (`mediaLength()` reads `player.media`) off the main thread, and that poll can fire
-    /// during teardown — if the media were nil'd here, the getter would retain NULL and
-    /// abort (`Assertion failed: (p_md)`, media.c). Leaving the media set keeps the getter
-    /// valid; the player releases it on dealloc once the engine and the video host's
-    /// coordinator both drop their references. Detaching the drawable first also stops the
-    /// vout. AVKit never hits this — it owns its PiP internally and reads no VLC media
-    /// off-thread. (Host-side: `VLCVideoHost.Coordinator.mediaLength()` additionally gates
-    /// the getter on `hasVideoOut`.)
+    /// **`player.media` is deliberately NOT nil'd.** Clearing the media while libvlc is
+    /// still winding the input down is the shape that aborted on device with
+    /// `Assertion failed: (p_md)` (media.c) — libvlc's own teardown path retains the
+    /// media without a null check, so a race between our nil-write and its release
+    /// crashes rather than no-ops. Leaving the media set keeps every getter valid; the
+    /// player releases it on dealloc once the engine and the video host's coordinator
+    /// both drop their references. Detaching the drawable first also stops the vout.
     public func teardown() async {
         desiredPlaying = false
         loadWatchdog.disarm()
@@ -539,16 +552,22 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
                 try? await Task.sleep(for: .milliseconds(500))
                 guard let self else { return }
                 // Re-assert the no-engine-subtitle latch every tick. VLC can SELECT a
-                // late-discovered embedded text track at any point during the demux — a selection
-                // change the add-time `mediaPlayerTrackAdded` hook never sees. If the app is drawing
-                // its own sidecar (or subs are Off), force the engine subtitle back off so it can't
-                // render THROUGH the overlay. Guaranteed self-healing within one tick; the
-                // `mediaPlayerTrackSelected` delegate below is the instant path. Runs FIRST so the
-                // rate-flush bridge's `continue` can't starve it for the hold (a re-decode can
-                // silently re-select an embedded track during that window).
-                if self.subtitlesDisabled, self.player.textTracks.contains(where: { $0.isSelected }) {
-                    self.player.deselectAllTextTracks()
+                // late-discovered embedded text track at any point during the demux. If the app is
+                // drawing its own sidecar (or subs are Off), force the engine subtitle back off so
+                // it can't render THROUGH the overlay. 3.x has no track-selection delegate at all,
+                // so this tick IS the only enforcement path (4.x had `mediaPlayerTrackSelected` as
+                // an instant one) — self-healing within one tick. Runs FIRST so the rate-flush
+                // bridge's `continue` can't starve it for the hold (a re-decode can silently
+                // re-select an embedded track during that window).
+                if self.subtitlesDisabled, self.player.currentVideoSubTitleIndex != Self.disabledTrackIndex {
+                    self.player.currentVideoSubTitleIndex = Self.disabledTrackIndex
                 }
+                // Re-emit `.ready` when the track picture or the container length changes.
+                // 3.x reports neither through a delegate, so the poll is where a late embedded
+                // text track, VLC's settled default selection, and a length that only resolves
+                // once the demux has run all become visible. Also runs before the gates below,
+                // so a still-settling seek can't defer the menus.
+                self.publishInventoryIfChanged()
                 // Rate-change flush bridge: while VLC re-decodes at the new rate its clock holds at
                 // the flush point and it transiently reports not-playing. Surface that as buffering
                 // (the app debounces it — invisible if quick, a spinner only if it runs long)
@@ -558,7 +577,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
                 if let anchor = self.rateFlushAnchorMs {
                     self.rateFlushTicks += 1
                     self.reassertRateIfNeeded()
-                    if Self.flushBridgeShouldResume(now: self.player.time.intValue, anchor: anchor, ticks: self.rateFlushTicks) {
+                    if Self.flushBridgeShouldResume(now: self.clockMs, anchor: anchor, ticks: self.rateFlushTicks) {
                         self.rateFlushAnchorMs = nil
                     } else {
                         self.emitBuffering(positionMs: anchor)
@@ -609,7 +628,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
                 // landing); a ~5s fallback resumes live tracking if it never lands exactly.
                 if let target = self.pendingSeekMs {
                     self.pendingSeekPolls += 1
-                    if Self.seekHasSettled(now: self.player.time.intValue, target: target, polls: self.pendingSeekPolls) {
+                    if Self.seekHasSettled(now: self.clockMs, target: target, polls: self.pendingSeekPolls) {
                         self.pendingSeekMs = nil
                     } else {
                         // A seek still filling after ~1s (2 polls) is a real network wait —
@@ -631,8 +650,8 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
                 // (VLCKit#578), so without this the poll emits `.playing` over a dead stream forever.
                 // Bytes advancing = network alive (buffer refilling) and time advancing = playing, both
                 // → not stalled; only BOTH frozen for 6 polls (3s) trips. See `StallDetector`.
-                let nowMs = self.player.time.intValue
-                let readBytes = Int(UInt32(bitPattern: self.currentMedia?.statistics.demuxReadBytes ?? 0))
+                let nowMs = self.clockMs
+                let readBytes = Self.demuxReadBytes(self.currentMedia)
                 if self.stallDetector.observe(timeMs: nowMs, readBytes: readBytes) {
                     if !self.isStalled {
                         self.isStalled = true
@@ -647,13 +666,6 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
                     self.stallWatchdog.disarm()
                 }
                 self.emitPosition(isPlaying: true, positionMs: nowMs)
-                // Re-emit the inventory once VLC settles the default selection, so the
-                // menus check the playing track and the chip shows its name.
-                if !self.didEmitSettledInventory,
-                   self.player.audioTracks.contains(where: { $0.isSelected }) {
-                    self.didEmitSettledInventory = true
-                    self.emitReady()
-                }
             }
         }
     }
@@ -663,7 +675,10 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// `.indefinite`). See `estimateDurationMs` / `lastEstimateMs`.
     private func effectiveDurationMs() -> Int32 {
         guard let media = currentMedia else { return 0 }
-        let real = media.length.intValue
+        // `media.length` is nullTime until libvlc resolves it, and nullTime's `intValue`
+        // is 0 on 3.x — which the `> 0` test below already rejects, so reading through
+        // `validClockMs` here is about honesty, not a different outcome.
+        let real = Self.validClockMs(media.length) ?? 0
         if real > 0 { return real }
         // No container length (incomplete/truncated media). Capture the read-rate estimate ONCE,
         // while settled (no pending seek/resume/flush — a seek re-reads bytes and skews the demux
@@ -679,8 +694,8 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
            pendingSeekMs == nil, pendingStartMs == nil, rateFlushAnchorMs == nil,
            let est = Self.estimateDurationMs(
                fileSizeBytes: size,
-               playedMs: player.time.intValue,
-               demuxReadBytes: Int(UInt32(bitPattern: media.statistics.demuxReadBytes))
+               playedMs: clockMs,
+               demuxReadBytes: Self.demuxReadBytes(media)
            ) {
             lastEstimateMs = est
         }
@@ -719,12 +734,11 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         ))
     }
 
-    /// Emit `.ready` with the current duration + track inventory. Called at
-    /// `mediaPlayerLengthChanged`, when a text track appears, and from the poll after VLC settles
-    /// the default track selection (so the menus reflect the playing track). Not gated on a known
-    /// length: the app's `.ready` handler only adopts the track inventory (duration rides the
-    /// position beats), so publishing tracks while the length is still unknown is correct — the
-    /// duration carried here is `.indefinite` until `mediaPlayerLengthChanged` resolves it.
+    /// Emit `.ready` with the current duration + track inventory. Driven from the poll's
+    /// inventory diff (`publishInventoryIfChanged`) — 3.x has no length or track delegate.
+    /// Not gated on a known length: the app's `.ready` handler only adopts the track inventory
+    /// (duration rides the position beats), so publishing tracks while the length is still
+    /// unknown is correct — the duration carried here is `.indefinite` until it resolves.
     private func emitReady() {
         guard currentMedia != nil else { return }
         loadWatchdog.disarm()   // tracks/length resolved = the demux is progressing, the load is alive
@@ -735,23 +749,62 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     }
 
     private func buildTrackInventory() -> TrackInventory {
-        let audioTracks = player.audioTracks.map { t in
-            Self.buildAudioTrack(id: t.trackId, name: t.trackName, language: t.language)
+        let audio = audioDescriptors()
+        let subtitles = subtitleDescriptors()
+        // 3.x's track arrays carry no language, so it is recovered from the parsed
+        // container's `tracksInformation` (keyed by the same libvlc track id). Nil when
+        // the media hasn't been parsed or the stream is untagged — the app's
+        // language-preference matching simply finds nothing then, exactly as it does for
+        // an untagged track on the 4.x API.
+        let languages = Self.trackLanguages(from: currentMedia?.tracksInformation ?? [])
+        let audioTracks = audio.map {
+            Self.buildAudioTrack(id: String($0.id), name: $0.name, language: languages[$0.id])
         }
-        let subtitleTracks = player.textTracks.map { t in
-            Self.buildSubtitleTrack(id: t.trackId, name: t.trackName, language: t.language)
+        let subtitleTracks = subtitles.map {
+            Self.buildSubtitleTrack(id: String($0.id), name: $0.name, language: languages[$0.id])
         }
         // Surface VLC's own default selection so the menus check the active track
         // at start (AVKit's inventory already does this; without it the VLC path
         // opened with every track unchecked). A subtitle is often unselected → nil.
-        let selectedAudioID = player.audioTracks.first(where: { $0.isSelected }).map { TrackID.vlc($0.trackId) }
-        let selectedSubtitleID = player.textTracks.first(where: { $0.isSelected }).map { TrackID.vlc($0.trackId) }
+        let selectedAudioID = audio.first(where: { $0.id == player.currentAudioTrackIndex })
+            .map { TrackID.vlc(String($0.id)) }
+        let selectedSubtitleID = subtitles.first(where: { $0.id == player.currentVideoSubTitleIndex })
+            .map { TrackID.vlc(String($0.id)) }
         return TrackInventory(
             audio: audioTracks,
             subtitles: subtitleTracks,
             selectedAudioID: selectedAudioID,
             selectedSubtitleID: selectedSubtitleID
         )
+    }
+
+    /// The audio elementary streams VLC currently offers, "Disabled" pseudo-track removed.
+    private func audioDescriptors() -> [VLCTrackDescriptor] {
+        Self.trackDescriptors(indexes: player.audioTrackIndexes, names: player.audioTrackNames)
+    }
+
+    /// The text elementary streams VLC currently offers, "Disabled" pseudo-track removed.
+    private func subtitleDescriptors() -> [VLCTrackDescriptor] {
+        Self.trackDescriptors(indexes: player.videoSubTitlesIndexes, names: player.videoSubTitlesNames)
+    }
+
+    /// Re-emit `.ready` when the inventory the app would see has actually changed. Cheap
+    /// enough to run every 500ms tick (four small array reads), and the diff is what keeps
+    /// it from re-publishing an identical inventory forever. Replaces 4.x's
+    /// `mediaPlayerLengthChanged` / `mediaPlayerTrackAdded` / `mediaPlayerTrackSelected`
+    /// delegates, none of which exist on 3.x.
+    private func publishInventoryIfChanged() {
+        guard let media = currentMedia else { return }
+        let snapshot = InventorySnapshot(
+            audioIDs: audioDescriptors().map(\.id),
+            subtitleIDs: subtitleDescriptors().map(\.id),
+            selectedAudioID: player.currentAudioTrackIndex,
+            selectedSubtitleID: player.currentVideoSubTitleIndex,
+            hasResolvedLength: (Self.validClockMs(media.length) ?? 0) > 0
+        )
+        guard snapshot != lastInventory else { return }
+        lastInventory = snapshot
+        emitReady()
     }
 
     /// Idempotent one-time setter for VLC's events configuration. The first access
@@ -761,6 +814,11 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// `VLCMediaPlayer` is created — which the `assumeIsolated` delegate hops require.
     private static let _eventsConfigured: Void = {
         VLCLibrary.sharedEventsConfiguration = VLCEventsLegacyConfiguration()
+        #if DEBUG
+        // Mirror libvlc's audio/clock log lines into the unified log so an audio dropout
+        // can be traced to starvation vs a decoder failure.
+        VLCLibrary.shared().loggers = [VLCAudioDiagnosticsLogger()]
+        #endif
     }()
 
     /// Ensures VLC delivers delegate callbacks on the main queue. Idempotent and
@@ -771,6 +829,75 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     }
 
     // MARK: - Pure static helpers (testable without a live VLC decode)
+
+    /// The index 3.x uses for "no track selected" on `currentAudioTrackIndex` /
+    /// `currentVideoSubTitleIndex`, and the id of the "Disabled" pseudo-track VLC prepends
+    /// to every `*TrackIndexes` array.
+    nonisolated static let disabledTrackIndex: Int32 = -1
+
+    /// One selectable elementary stream as 3.x vends it: the libvlc track id (the value
+    /// `currentAudioTrackIndex` / `currentVideoSubTitleIndex` take) and its display name.
+    /// 4.x's `VLCMediaPlayer.Track` object — with `isSelected`, `language`, and
+    /// `isSelectedExclusively` — has no 3.x counterpart; the parallel index/name arrays are
+    /// the whole API.
+    struct VLCTrackDescriptor: Equatable, Sendable {
+        let id: Int32
+        let name: String
+    }
+
+    /// Zip 3.x's parallel `*TrackIndexes` / `*TrackNames` arrays into descriptors, dropping
+    /// the "Disabled" pseudo-track VLC prepends (id -1). Untyped `NSArray`s come back as
+    /// `[Any]`, so both element casts are defensive: a slot that isn't the documented
+    /// `NSNumber`/`NSString` pair is skipped rather than crashing the inventory. Pure so the
+    /// filtering can be tested without a live decode.
+    nonisolated static func trackDescriptors(indexes: [Any], names: [Any]) -> [VLCTrackDescriptor] {
+        zip(indexes, names).compactMap { rawID, rawName in
+            guard let id = (rawID as? NSNumber)?.int32Value, id != disabledTrackIndex,
+                  let name = rawName as? String
+            else { return nil }
+            return VLCTrackDescriptor(id: id, name: name)
+        }
+    }
+
+    /// libvlc track id → language tag, read off the parsed container's `tracksInformation`.
+    /// 3.x's player-side track arrays carry only a display name, so this is the only place a
+    /// language can come from; `VLCMediaTracksInformationId` is the same id the player's
+    /// index arrays vend, which is what makes the join valid. Empty for unparsed media.
+    /// Pure so the parsing can be tested without a live decode.
+    nonisolated static func trackLanguages(from tracksInformation: [Any]) -> [Int32: String] {
+        var languages: [Int32: String] = [:]
+        for case let info as [String: Any] in tracksInformation {
+            guard let id = (info[VLCMediaTracksInformationId] as? NSNumber)?.int32Value,
+                  let language = info[VLCMediaTracksInformationLanguage] as? String,
+                  !language.isEmpty
+            else { continue }
+            languages[id] = language
+        }
+        return languages
+    }
+
+    /// The `Int32` libvlc track id behind a `TrackID`, or nil if the id isn't in the VLC
+    /// namespace (an AVKit option index or a Jellyfin stream index) or isn't a number.
+    nonisolated static func trackIndex(from id: TrackID) -> Int32? {
+        id.vlcTrackID.flatMap(Int32.init)
+    }
+
+    /// A `VLCTime`'s milliseconds, or nil when libvlc has no value for it.
+    ///
+    /// `VLCTime.nullTime.intValue` is **0** on 3.x, so `intValue` alone cannot tell "no
+    /// clock / unresolved length" from a genuine 0:00 — only the nullable `value` can.
+    /// Widened through `int64Value` and clamped so an out-of-range NSNumber saturates
+    /// instead of trapping.
+    nonisolated static func validClockMs(_ time: VLCTime) -> Int32? {
+        time.value.map { Int32(clamping: $0.int64Value) }
+    }
+
+    /// The demux byte counter, widened UNSIGNED. libvlc's counter is a C `int` that wraps
+    /// negative past ~2 GB, which the `> 0` guard in `estimateDurationMs` would otherwise
+    /// reject outright. 0 for a nil media.
+    nonisolated static func demuxReadBytes(_ media: VLCMedia?) -> Int {
+        Int(UInt32(bitPattern: media?.statistics.demuxReadBytes ?? 0))
+    }
 
     /// Clamp a resume `CMTime` to a positive VLC millisecond offset, or nil if there's
     /// nothing to resume to (no time, non-finite, or ≤ 0). The reject-if-≤0 policy is the only
@@ -869,9 +996,11 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// (`desiredPlaying`), the input reports paused (`!isPlaying`), and the input is in a
     /// live state where a resume is meaningful. `.opening` is excluded (initial play() is
     /// still taking effect — reasserting there would just race the open), and the
-    /// stopped/stopping/error terminals are excluded so a finished or failed input can
-    /// never be restarted into a ghost session. Pure so the gate is testable without a
-    /// live decode; mirrors `shouldReassertRate`.
+    /// stopped/ended/error terminals are excluded so a finished or failed input can never
+    /// be restarted into a ghost session. `.esAdded` is excluded too: 3.x caches it as the
+    /// player state, and it lands *during* the open (each elementary stream announces
+    /// itself), so it belongs with `.opening` rather than with the live states. Pure so the
+    /// gate is testable without a live decode; mirrors `shouldReassertRate`.
     nonisolated static func shouldReassertPlay(desiredPlaying: Bool, isPlaying: Bool, state: VLCMediaPlayerState) -> Bool {
         guard desiredPlaying, !isPlaying else { return false }
         switch state {
@@ -912,58 +1041,35 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     }
 }
 
+// MARK: - Inventory snapshot
+
+private extension VLCKitEngine {
+    /// Everything about the track picture the app can observe, so the poll can tell a real
+    /// change from an identical re-read. An empty value is the "nothing discovered yet"
+    /// baseline `load` resets to.
+    struct InventorySnapshot: Equatable {
+        var audioIDs: [Int32] = []
+        var subtitleIDs: [Int32] = []
+        var selectedAudioID: Int32 = VLCKitEngine.disabledTrackIndex
+        var selectedSubtitleID: Int32 = VLCKitEngine.disabledTrackIndex
+        var hasResolvedLength = false
+    }
+}
+
 // MARK: - VLCMediaPlayerDelegate
 
 extension VLCKitEngine: VLCMediaPlayerDelegate {
 
     // MARK: — State changes
 
-    /// VLC 4.x delivers state directly as `VLCMediaPlayerState` (NOT a Notification).
-    /// In 4.x the legacy events config routes this callback to the main queue.
-    /// Swift cannot prove that, so we assert isolation via `assumeIsolated`.
-    public nonisolated func mediaPlayerStateChanged(_ newState: VLCMediaPlayerState) {
+    /// 3.x delivers state as a `Notification` (4.x passed the `VLCMediaPlayerState`
+    /// directly). The notification carries no state in its payload — the current value is
+    /// read off `player.state`, which VLCKit caches from the same event before notifying.
+    /// The legacy events config routes this callback to the main queue; Swift cannot prove
+    /// that, so isolation is asserted via `assumeIsolated`.
+    public nonisolated func mediaPlayerStateChanged(_ aNotification: Notification) {
         MainActor.assumeIsolated {
-            handleStateChanged(newState)
-        }
-    }
-
-    // MARK: — Duration / track availability
-
-    /// Delivered as Int64 ms directly (not a Notification). Used to emit
-    /// `.ready` once duration is known.
-    public nonisolated func mediaPlayerLengthChanged(_ length: Int64) {
-        MainActor.assumeIsolated {
-            handleLengthChanged(length)
-        }
-    }
-
-    /// A new track became available for selection. Embedded tracks can surface *after* the
-    /// initial `.ready` inventory (VLC discovers them as the demux progresses), so re-emit
-    /// when a text track appears and the subtitle chip picks it up. (External sidecar subs
-    /// are rendered client-side, not slaved to the player — see `PlayerViewModel.makeAsset`.)
-    /// Audio/video adds are ignored: the inventory already carries them and the audio-chip
-    /// default is handled by the progress poll's settle re-emit.
-    public nonisolated func mediaPlayerTrackAdded(_ trackId: String, with trackType: VLCMedia.TrackType) {
-        guard trackType == .text else { return }
-        MainActor.assumeIsolated {
-            // VLC auto-selects a newly-discovered default/forced embedded sub. If the app
-            // asked for NO engine subtitle (it's drawing an external sidecar, or subs are
-            // Off), re-assert that here so the late track can't render through the overlay.
-            if subtitlesDisabled { player.deselectAllTextTracks() }
-            emitReady()
-        }
-    }
-
-    /// VLC selected (or deselected) a track. `mediaPlayerTrackAdded` only fires when a track first
-    /// appears — VLC can auto-SELECT an already-discovered embedded text track *later* (default/
-    /// forced flags resolved as the demux settles), which that hook never sees and which would
-    /// render through the client sidecar overlay. When the app wants no engine subtitle, re-assert
-    /// the deselect the instant a text track is selected. Our own `deselectAllTextTracks()` fires
-    /// this again with a nil `selectedId`, so gating on `selectedId != nil` avoids a feedback loop.
-    public nonisolated func mediaPlayerTrackSelected(_ trackType: VLCMedia.TrackType, selectedId: String?, unselectedId: String?) {
-        guard trackType == .text, selectedId != nil else { return }
-        MainActor.assumeIsolated {
-            if subtitlesDisabled { player.deselectAllTextTracks() }
+            handleStateChanged(player.state)
         }
     }
 
@@ -973,7 +1079,7 @@ extension VLCKitEngine: VLCMediaPlayerDelegate {
         switch state {
         case .opening:
             continuation.yield(.loading)
-        case .stopped, .stopping:
+        case .stopped, .ended:
             // Natural end-of-stream. During teardown the delegate is nilled BEFORE
             // player.stop(), so this branch is never reached from teardown — no
             // spurious .ended beat.
@@ -986,24 +1092,21 @@ extension VLCKitEngine: VLCMediaPlayerDelegate {
             desiredPlaying = false
             loadWatchdog.disarm()   // libvlc surfaced the failure itself; don't also time out
             continuation.yield(.failed(.assetNotPlayable))
-        case .buffering, .playing, .paused:
-            // Deliberately ignored for BEATS. VLC 4.x sticks in `.buffering` during normal
-            // playback and rarely emits `.playing`/`.paused` correctly
-            // (VideoLAN VLCKit#578/#128/#80). Progress and play/pause state come
-            // from `startProgressPolling()` reading `player.isPlaying`, not from
-            // these unreliable transitions.
+        case .buffering, .playing, .paused, .esAdded:
+            // Deliberately ignored for BEATS. VLC drops into `.buffering` freely during
+            // normal playback and its `.playing`/`.paused` transitions are not reliable
+            // (VideoLAN VLCKit#578/#128/#80). Progress and play/pause state come from
+            // `startProgressPolling()` reading `player.isPlaying`, not from these
+            // transitions. `.esAdded` is purely informational (an elementary stream
+            // announced itself); the poll's inventory diff is what turns that into a
+            // `.ready` re-emit.
             // BUT they're the "input opened, data is flowing" signal, so they disarm the load
             // watchdog — the deadline only guards "stuck opening a dead mount". Without this, a
-            // remote pause landing before the first frame (pause() emits nothing: player.time is
-            // the -1 sentinel) or a slow first frame would let the deadline fire on healthy media.
+            // remote pause landing before the first frame (pause() emits nothing: there is no
+            // clock yet) or a slow first frame would let the deadline fire on healthy media.
             loadWatchdog.disarm()
         @unknown default:
             break
         }
-    }
-
-    private func handleLengthChanged(_ lengthMs: Int64) {
-        guard lengthMs > 0 else { return }
-        emitReady()
     }
 }

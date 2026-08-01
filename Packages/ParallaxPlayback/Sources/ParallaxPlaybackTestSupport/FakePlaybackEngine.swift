@@ -14,9 +14,11 @@ extension PlaybackEngineCapabilities {
         supportsNowPlayingIntegration: true
     )
 
-    /// VLC preset: PiP + Now Playing; no video AirPlay.
+    /// VLC preset: Now Playing only. MobileVLCKit ships no Picture-in-Picture API and
+    /// renders offscreen, so neither PiP nor video AirPlay is available — mirrors
+    /// `VLCKitEngine.capabilities`.
     public static let vlcKit = PlaybackEngineCapabilities(
-        supportsPiP: true,
+        supportsPiP: false,
         supportsVideoAirPlay: false,
         supportsNowPlayingIntegration: true
     )

@@ -39,7 +39,7 @@ public enum PlaybackCapabilityMatrix {
     /// or SRT sidecar). ASS/PGS/VobSub require libass/libavcodec → VLC.
     public static let avKitSubtitleFormats: Set<SubtitleFormat> = [.vtt, .srt]
 
-    // MARK: — VLC (VLCKit 4.x) capability set
+    // MARK: — VLC (libvlc) capability set
 
     /// Containers VLC's libavformat demuxer supports. Broad; covers the long
     /// tail that AVKit cannot open.

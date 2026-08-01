@@ -113,7 +113,9 @@ struct Acknowledgement: Identifiable, Hashable {
         ),
         Acknowledgement(
             name: "VLCKit",
-            packageIdentities: ["vlckit-spm"],
+            // Vendored as a prebuilt binary framework rather than resolved through SPM, so
+            // it has no Package.resolved identity — the credit is unconditional.
+            packageIdentities: [],
             role: "Alternate playback engine, © VideoLAN",
             licenseName: "LGPL-2.1",
             license: .lgpl21,
