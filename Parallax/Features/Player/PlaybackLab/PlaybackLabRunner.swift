@@ -169,6 +169,8 @@ final class PlaybackLabRunner {
             }
         case "scrub":
             await scrub(to: step.toSeconds ?? 0)
+        case "audioTrack":
+            await selectAudioTrack(matching: step.name ?? "")
         case "finish":
             playback.dismiss()
             try await Task.sleep(for: .seconds(1))
@@ -212,6 +214,28 @@ final class PlaybackLabRunner {
         vm.endScrubLatch()
     }
 
+    /// Selects an audio track by name substring through the HUD's exact path,
+    /// recording the full inventory first — that record is the ground truth
+    /// for "which tracks did the engine even see".
+    private func selectAudioTrack(matching fragment: String) async {
+        guard let vm else { return }
+        let tracks = vm.availableAudioTracks
+        await telemetry.record("audioTracks", [
+            "available": tracks.map { "\($0.displayName) [\($0.detailLabel ?? "-")]" },
+            "selected": vm.selectedAudioTrack?.displayName ?? "none",
+        ])
+        let lowered = fragment.lowercased()
+        guard let match = tracks.first(where: {
+            $0.displayName.lowercased().contains(lowered)
+                || ($0.detailLabel?.lowercased().contains(lowered) ?? false)
+        }) else {
+            await telemetry.record("audioTrackMiss", ["wanted": fragment])
+            return
+        }
+        await vm.selectAudioTrack(match)
+        await telemetry.record("audioTrackSelected", ["name": match.displayName])
+    }
+
     private func labTime(_ seconds: Double) -> CMTime {
         CMTime(seconds: max(0, seconds), preferredTimescale: 600)
     }
@@ -244,6 +268,7 @@ final class PlaybackLabRunner {
                     "durationMs": milliseconds(vm.currentDuration),
                     "isPlaying": vm.isPlaying,
                     "phase": phase,
+                    "stallScrim": vm.showsStallScrim,
                 ])
             }
             try? await Task.sleep(for: .milliseconds(500))

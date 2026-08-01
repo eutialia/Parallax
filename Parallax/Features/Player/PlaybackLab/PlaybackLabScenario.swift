@@ -31,6 +31,9 @@ struct PlaybackLabScenario: Codable, Sendable {
     /// - `scrub` (`toSeconds`): full UI-fidelity drag sandwich — scrub latch,
     ///   engine pause, commit seek, latch release — because the pause→seek→play
     ///   shape reproduces bugs a plain seek does not.
+    /// - `audioTrack` (`name`): select the first audio track whose display
+    ///   name or detail label contains `name` (case-insensitive), through the
+    ///   same path as the HUD's track menu. Records the full inventory either way.
     /// - `finish`: dismiss the player and end the run.
     struct Step: Codable, Sendable {
         let cmd: String
@@ -38,6 +41,7 @@ struct PlaybackLabScenario: Codable, Sendable {
         let toSeconds: Double?
         let bySeconds: Double?
         let timeoutSeconds: Double?
+        let name: String?
     }
 
     let server: Server
