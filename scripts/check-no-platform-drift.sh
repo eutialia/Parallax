@@ -34,6 +34,13 @@ else
     MATCHES=$(grep -rnE "$PATTERN" --include='*.swift' "$PACKAGES_DIR" || true)
 fi
 
+# The one sanctioned exception: VideoLAN ships the same VLCKit under two module
+# names (MobileVLCKit on iOS, TVVLCKit on tvOS), so the import line has to pick
+# one. That renames a module — no logic branches on it — which is why this exact
+# form is allowed and every other conditional still fails the check.
+ALLOWED='#if[[:space:]]+canImport\(MobileVLCKit\)[[:space:]]*$'
+MATCHES=$(printf '%s' "$MATCHES" | grep -vE "$ALLOWED" || true)
+
 if [ -n "$MATCHES" ]; then
     echo ""
     echo "ERROR: Platform conditional found in $PACKAGES_DIR/."

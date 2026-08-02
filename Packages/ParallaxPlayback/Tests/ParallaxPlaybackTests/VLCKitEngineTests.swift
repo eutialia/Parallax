@@ -1,7 +1,11 @@
 import Testing
 import Foundation
 import CoreMedia
+#if canImport(MobileVLCKit)
 import MobileVLCKit
+#else
+import TVVLCKit
+#endif
 import ParallaxCore
 import ParallaxPlaybackTestSupport
 @testable import ParallaxPlayback
