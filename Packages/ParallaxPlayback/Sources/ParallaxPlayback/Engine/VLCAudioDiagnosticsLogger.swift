@@ -1,6 +1,7 @@
 #if DEBUG
 import Foundation
 import OSLog
+import ParallaxCore
 #if canImport(MobileVLCKit)
 import MobileVLCKit
 #else
@@ -24,7 +25,9 @@ import TVVLCKit
 /// immutable after setup and `Logger` is thread-safe, hence `@unchecked Sendable`.
 final class VLCAudioDiagnosticsLogger: NSObject, VLCLogging, @unchecked Sendable {
 
-    private static let log = Logger(subsystem: "com.lhdev.parallax", category: "vlc-audio")
+    // Through the shared factory so the subsystem can never drift from the canonical
+    // `subsystem == "com.lhdev.parallax"` filter the lab's log capture keys on.
+    private static let log = Log.custom(category: "vlc-audio")
 
     /// VLCKit applies this as its own filter before invoking the handler —
     /// receive everything and let `handleMessage` do the narrowing.
@@ -48,10 +51,14 @@ final class VLCAudioDiagnosticsLogger: NSObject, VLCLogging, @unchecked Sendable
         // Errors and warnings pass unfiltered — a decoder/aout open failure is
         // the "no audio at all" case. Info/debug only when audio-related.
         if level == .debug || level == .info {
+            // The lowercased copy is deferred behind the module check: libvlc invokes this
+            // for EVERY log line on its own input/decode threads, and a per-message String
+            // allocation there is exactly the overhead an audio-timing investigation must
+            // not add to the pipeline it measures.
             let isAudioModule = Self.audioModules.contains { module.contains($0) }
-            let lowered = message.lowercased()
-            guard isAudioModule || Self.keywords.contains(where: { lowered.contains($0) }) else {
-                return
+            if !isAudioModule {
+                let lowered = message.lowercased()
+                guard Self.keywords.contains(where: { lowered.contains($0) }) else { return }
             }
         }
         switch level {

@@ -209,7 +209,7 @@ final class PlaybackLabRunner {
     /// UI-fidelity scrub: the same latch → drag-pause → commit → release
     /// sandwich `PlayerControlsView`'s scrubber performs. The pause→seek→play
     /// shape is load-bearing — it reproduces bugs a plain in-stream seek does
-    /// not (the a22 flush-loop dropout engages on exactly this shape).
+    /// not (the VLCKit 4 alpha flush-loop audio dropout engages on exactly this shape).
     private func scrub(to seconds: Double) async {
         guard let vm else { return }
         let wasPlaying = vm.isPlaying

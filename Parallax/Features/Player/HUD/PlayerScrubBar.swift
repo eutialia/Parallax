@@ -31,8 +31,13 @@ struct PlayerScrubBar: View {
         // The timestamp keeps rolling on its OWN transaction (scrubDigitRoll) even when
         // the head is pinned 1:1 below — the digit roll is the position-free half of the
         // "aliveness" the old single spring bundled with the (accuracy-killing) glide.
+        // `reportsPullExclusion: false` is load-bearing: this bar is `allowsHitTesting(false)`
+        // (nothing can start a drag on it) and rides `TimelineView(.animation)` subtrees, so
+        // reporting the exclusion zone would re-declare the preference on every animation
+        // tick — see `PullExclusionReporter`.
         PlayerProgressBar(scrubbingTo: progress, vm: vm, metrics: metrics,
-                          mode: .scrub, showsBubble: true, scrubDigitRoll: Self.scrubSpring)
+                          mode: .scrub, showsBubble: true, scrubDigitRoll: Self.scrubSpring,
+                          reportsPullExclusion: false)
             // Position: a discrete ±step glides to its target; analog swipe tracks the head
             // 1:1 so the displayed position == the value Select commits. A follow spring
             // desyncs them — worst on the 23.976/24Hz panel Match-Frame-Rate pins for 24p
