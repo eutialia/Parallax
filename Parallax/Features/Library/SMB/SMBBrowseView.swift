@@ -6,11 +6,11 @@ import ParallaxJellyfin
 import ParallaxPlayback  // preview-only: builds a real MediaArtworkProvider for the stub grid
 #endif
 
-/// Navigation value for one level of an SMB share browse. Drives the recursive
-/// `.navigationDestination`, so drilling into a folder just pushes a new value with the child's
-/// path. The lister/`SMBFileSource` is deliberately NOT carried here — an `AMSMB2Lister` is an
-/// actor (not `Hashable`), so each `SMBBrowseView` rebuilds its own from `ref` in `.task` and
-/// disconnects it on disappear.
+/// Navigation value for one level of an SMB share browse. Drilling into a folder just pushes a new
+/// value with the child's path; `smbBrowseDestination()` below resolves it recursively. The
+/// lister/`SMBFileSource` is deliberately NOT carried here — an `AMSMB2Lister` is an actor (not
+/// `Hashable`), so each `SMBBrowseView` rebuilds its own from `ref` in `.task` and disconnects it
+/// on disappear.
 struct SMBBrowsePath: Hashable {
     /// The owning server — supplies the host + credentials to build a lister for this level.
     let ref: SMBServerRef
@@ -18,6 +18,18 @@ struct SMBBrowsePath: Hashable {
     let share: String
     /// Share-relative path of this level; empty = share root.
     let path: String
+}
+
+extension View {
+    /// The single `SMBBrowsePath` navigation-destination registration for a stack: drilling into a
+    /// folder pushes a child `SMBBrowsePath`, and this one declaration resolves it no matter how
+    /// many levels deep the push happens. Apply it ONCE, wrapping the share-root `SMBBrowseView` —
+    /// never inside `SMBBrowseView` itself (see the comment on its `body`) or a second registration
+    /// lands on the stack as soon as a folder is one level deep. Every PUSHED level drops the tab
+    /// sidebar (`tvHidesTabSidebar()`); the root keeps it, since this call's own site is the root.
+    func smbBrowseDestination() -> some View {
+        navigationDestination(for: SMBBrowsePath.self) { SMBBrowseView(path: $0).tvHidesTabSidebar() }
+    }
 }
 
 /// One level of an SMB share's folder browse: a grid of subfolders (drill in) above the level's
@@ -82,9 +94,14 @@ struct SMBBrowseView: View {
         .navigationTitle(levelTitle)
         .navigationBarTitleDisplayMode(.inline)
         #endif
-        // Recurse: drilling into a folder pushes a child `SMBBrowsePath`, which lands back here a
-        // level deeper. Registered on every level so the stack can keep descending.
-        .navigationDestination(for: SMBBrowsePath.self) { SMBBrowseView(path: $0).tvHidesTabSidebar() }
+        // Recursion: drilling into a folder pushes a child `SMBBrowsePath`, which lands back here a
+        // level deeper. NOT registered here — a `navigationDestination(for:)` only needs declaring
+        // ONCE per `NavigationStack`, at any ancestor of the pushes; a deeper push still resolves
+        // through that single ancestor declaration. Redeclaring it on every level (as this used to)
+        // put a second `SMBBrowsePath` registration on the stack the moment a folder was one level
+        // deep, which is exactly SwiftUI's "A navigationDestination... was declared earlier on the
+        // stack" warning. The one declaration lives where the share root is first pushed —
+        // `smbBrowseDestination()` below, applied at `libraryEntryDestination(for:)`'s `.smb` case.
         #if !os(tvOS)
         // iPhone/iPad carry the sort control in the nav bar's trailing edge. (tvOS instead rides it
         // in-content above the grid — toolbar items can't join the tvOS focus engine; see `sortHeader`.)

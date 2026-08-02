@@ -52,6 +52,14 @@ struct PlayerProgressBar: View {
     /// position spring used to bundle together with the accuracy-killing glide. Nil =
     /// ambient behavior (iOS drag, the full-HUD scrubber), so those paths are untouched.
     var scrubDigitRoll: Animation? = nil
+    /// Whether this instance reports itself to `PlayerPullToDismiss`'s no-pull exclusion zone
+    /// (iOS only — see `pullToDismissExclusion` below). True for the interactive HUD bar, the
+    /// only one a finger can actually grab. `PlayerScrubBar`'s read-only, `allowsHitTesting(false)`
+    /// dome-riding bar sets this false: nothing can start a drag there, so a zone was always inert,
+    /// and that bar rides `PlayerControlsView.seekScrubBar`'s `TimelineView(.animation)` — reporting
+    /// from inside it re-declared the preference on every seek-flash tick and tripped SwiftUI's
+    /// "PullExclusionZonesKey tried to update multiple times per frame".
+    var reportsPullExclusion: Bool = true
 
     private var trackH: CGFloat { metrics.trackHeight }
     private var labelSize: CGFloat { metrics.timeLabelSize }
@@ -134,7 +142,10 @@ struct PlayerProgressBar: View {
                     topExtension: max(28 * metrics.u, 44 - rowHeight)))
                 // Same reach as the hit shape above: a drag that starts where a
                 // scrub CAN start must never become a pull-to-dismiss.
-                .pullToDismissExclusion(extendingTop: max(28 * metrics.u, 44 - rowHeight))
+                .pullToDismissExclusion(
+                    extendingTop: max(28 * metrics.u, 44 - rowHeight),
+                    active: reportsPullExclusion
+                )
                 #endif
                 .modifier(ScrubGesture(width: w, played: p,
                                        onChanged: onScrubChanged, onEnded: onScrubEnded))

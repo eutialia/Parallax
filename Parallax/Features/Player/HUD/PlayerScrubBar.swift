@@ -64,7 +64,8 @@ extension PlayerProgressBar {
          mode: Mode, showsBubble: Bool,
          scrubDigitRoll: Animation? = nil,
          onScrubChanged: ((Double) -> Void)? = nil,
-         onScrubEnded: ((Double) -> Void)? = nil) {
+         onScrubEnded: ((Double) -> Void)? = nil,
+         reportsPullExclusion: Bool = true) {
         // Incomplete media plays with an `.indefinite` duration that never resolves (`dur` is NaN).
         // Without a known runtime there's no scrubbable timeline: show the LIVE elapsed position
         // only (no fraction, no total/remaining, no bubble, no scrub handlers), and let the bar
@@ -86,7 +87,8 @@ extension PlayerProgressBar {
             bubbleChapter: showsBubble && known ? vm.chapterTitle(atSeconds: shown) : nil,
             onScrubChanged: known ? onScrubChanged : nil,
             onScrubEnded: known ? onScrubEnded : nil,
-            scrubDigitRoll: scrubDigitRoll
+            scrubDigitRoll: scrubDigitRoll,
+            reportsPullExclusion: reportsPullExclusion
         )
     }
 }
