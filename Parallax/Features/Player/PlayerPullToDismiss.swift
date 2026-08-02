@@ -200,19 +200,33 @@ private struct PullExclusionReporter: ViewModifier {
     /// shape (the scrub bar's `TopExtendedRectangle`) so the exclusion covers
     /// exactly what the finger can grab, not just what's drawn.
     let extendingTop: CGFloat
+    /// False for a bar nothing can touch (`allowsHitTesting(false)`) — skips tracking
+    /// entirely rather than just reporting an empty zone. Load-bearing beyond the no-op:
+    /// `PlayerScrubBar`'s dome-riding readout rides `PlayerControlsView.seekScrubBar`'s
+    /// `TimelineView(.animation)`, which re-renders this subtree on every seek-flash tick.
+    /// Left tracking, `onGeometryChange`'s `action` re-sets `zone` (even to the SAME value)
+    /// and `.preference` re-declares on every one of those ticks — several landing inside a
+    /// single SwiftUI commit trips "Bound preference PullExclusionZonesKey tried to update
+    /// multiple times per frame". Gating the whole geometry/preference chain out here (not
+    /// just narrowing what it reports) is what stops the tick-driven redeclaration.
+    var active: Bool = true
     @State private var zone: CGRect = .null
 
     func body(content: Content) -> some View {
-        content
-            .onGeometryChange(for: CGRect.self) {
-                $0.frame(in: .named(PlayerPullToDismiss.coordinateSpace))
-            } action: { frame in
-                zone = CGRect(
-                    x: frame.minX, y: frame.minY - extendingTop,
-                    width: frame.width, height: frame.height + extendingTop
-                )
-            }
-            .preference(key: PullExclusionZonesKey.self, value: zone.isNull ? [] : [zone])
+        if active {
+            content
+                .onGeometryChange(for: CGRect.self) {
+                    $0.frame(in: .named(PlayerPullToDismiss.coordinateSpace))
+                } action: { frame in
+                    zone = CGRect(
+                        x: frame.minX, y: frame.minY - extendingTop,
+                        width: frame.width, height: frame.height + extendingTop
+                    )
+                }
+                .preference(key: PullExclusionZonesKey.self, value: zone.isNull ? [] : [zone])
+        } else {
+            content
+        }
     }
 }
 
@@ -229,8 +243,10 @@ extension View {
     }
 
     /// Mark this view's touch target as no-pull territory (see `PlayerPullToDismiss`).
-    func pullToDismissExclusion(extendingTop: CGFloat = 0) -> some View {
-        modifier(PullExclusionReporter(extendingTop: extendingTop))
+    /// `active: false` for a bar that's `allowsHitTesting(false)` — nothing can start a
+    /// drag there, so it has no exclusion to report; see `PullExclusionReporter`.
+    func pullToDismissExclusion(extendingTop: CGFloat = 0, active: Bool = true) -> some View {
+        modifier(PullExclusionReporter(extendingTop: extendingTop, active: active))
     }
 }
 #endif

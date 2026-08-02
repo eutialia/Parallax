@@ -11,7 +11,11 @@ import ParallaxCore
 func libraryEntryDestination(for entry: LibraryEntry) -> some View {
     switch entry.source {
     case .smb(let ref):
+        // `.smbBrowseDestination()`: the ONE `SMBBrowsePath` registration for whichever stack this
+        // share root lands in (RootTabView/FocusRootView's per-library tab, or here again as a
+        // pushed `LibraryEntry` destination for the iPhone card list) — see its doc comment.
         SMBBrowseView(path: SMBBrowsePath(ref: ref, share: entry.collection.name, path: ""))
+            .smbBrowseDestination()
     case .jellyfin(let session):
         // Title is owned by the grid (from the collection) so the iPhone card-list drill-down and
         // the direct sidebar tab show it identically.
