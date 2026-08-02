@@ -2,7 +2,15 @@ import Foundation
 import CoreMedia
 import OSLog
 import ParallaxCore
+// VideoLAN ships the same VLCKit under two module names — MobileVLCKit on iOS,
+// TVVLCKit on tvOS — so every VLC file in this package selects one this way. It is
+// the one sanctioned exception to the no-platform-conditionals-in-Packages rule:
+// it renames a module, no logic differs between the two branches.
+#if canImport(MobileVLCKit)
 import MobileVLCKit
+#else
+import TVVLCKit
+#endif
 
 /// VLC-backed `PlaybackEngine`. Handles the long tail of formats AVKit cannot
 /// decode: MKV/WebM containers, VC-1/MPEG-2/VP9 video, DTS/TrueHD audio,
@@ -116,6 +124,9 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// live tracking instead of freezing the bar.
     private var pendingSeekMs: Int32?
     private var pendingSeekPolls = 0
+    /// Consecutive poll ticks spent in the play-intent reassert branch (input paused
+    /// against play intent). Drives the escalation nudge — see the reassert branch.
+    private var reassertTicks = 0
 
     /// Read-rate duration estimate (ms) for media whose container length never resolves — see
     /// `estimateDurationMs`. CAPTURED ONCE (the first settled sample past the floor) and HELD: the
@@ -222,6 +233,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         subtitlesDisabled = false
         pendingStartMs = Self.startMs(from: asset.startTime)
         pendingSeekMs = nil
+        reassertTicks = 0
         rateFlushAnchorMs = nil   // a reused engine (track switch) must not bridge a stale flush
         stallDetector.reset()     // new media → fresh stall window (a reused engine must not carry a run)
         isStalled = false
@@ -316,6 +328,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         stallDetector.reset()
         isStalled = false
         stallWatchdog.disarm()
+        reassertTicks = 0
         // Emit the paused beat immediately rather than waiting for the next poll (which
         // stays silent while paused) so the transport button flips at once. `player.isPlaying`
         // can lag a frame after pause(), so force isPlaying: false.
@@ -388,6 +401,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         stallDetector.reset()
         isStalled = false
         stallWatchdog.disarm()
+        reassertTicks = 0
         let ms = Self.clampSeekMs(seconds: seconds)
         // `VLCTime(int: 0)` builds a NULL time (the initializer drops a zero), but the
         // `time` setter reads it as `[[value value] longLongValue]` — nil messages to 0 —
@@ -607,6 +621,22 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
                         Self.log.info("play-intent reassert: input paused against play intent, re-issuing play()")
                     }
                     self.player.play()
+                    // Escalation: on device a post-scrub input can wedge with VideoToolbox
+                    // refusing post-seek timestamps ("Could not convert timestamp" +
+                    // pic_holder_wait timeouts) — play() alone never unwedges it, but a fresh
+                    // seek does (the manual scrub "nudge" users discovered). After ~3s of
+                    // futile reasserts, re-anchor the input at the held position: setTime
+                    // flushes the pipeline and restarts the decoder exactly like a user seek.
+                    // Periodic (every 6 ticks), not one-shot — a still-wedged input keeps
+                    // getting nudged until the stall watchdog bounds the session.
+                    self.reassertTicks += 1
+                    if self.reassertTicks % 6 == 0 {
+                        let anchor = self.pendingSeekMs ?? max(0, self.clockMs)
+                        Self.log.warning("play-intent reassert escalation: re-anchoring input at \(anchor)ms")
+                        self.player.time = VLCTime(int: anchor)
+                        self.pendingSeekMs = anchor
+                        self.pendingSeekPolls = 0
+                    }
                     // A wedged post-seek resume IS a stall at the target: surface it as
                     // (VM-debounced) buffering there instead of a frozen frame under a
                     // playing glyph. Only when a user seek is in flight — a wedge with no
@@ -614,6 +644,8 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
                     if let target = self.pendingSeekMs {
                         self.emitBuffering(positionMs: target)
                     }
+                } else {
+                    self.reassertTicks = 0
                 }
                 guard self.player.isPlaying else { continue }
                 // Re-assert the playback rate now the input is live. libvlc applies `rate` to
