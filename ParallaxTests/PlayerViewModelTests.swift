@@ -1764,6 +1764,33 @@ struct PlayerViewModelTests {
         #expect(engine.selectedAudioTrackID == .avKitOption(1))
     }
 
+    /// Nothing we ship decodes TrueHD, so the engine marks those tracks and the menu greys
+    /// them — but the menu isn't the only caller (remote commands, the playback lab), so the
+    /// view model is where the rule has to hold. Picking one must leave BOTH the engine and
+    /// the checkmark on the track that is actually playing, or the user gets silence plus a
+    /// menu that claims otherwise.
+    @Test("selectAudioTrack ignores a track the engine cannot decode")
+    func unsupportedAudioTrackIsNotSelectable() async throws {
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let vm = makePlayerVM(engine: engine, resolved: PlayerFixtures.resolvedVP9WebM())
+        await vm.start(item: PlayerFixtures.movieDetail())
+
+        let compatibility = AudioTrack(id: .vlc("1"), displayName: "English", languageCode: "en")
+        let trueHD = AudioTrack(id: .vlc("2"), displayName: "English", languageCode: "en",
+                                detailLabel: "TrueHD · 7.1", isUnsupported: true)
+        engine.push(.ready(
+            duration: CMTime(seconds: 3600, preferredTimescale: 600),
+            tracks: TrackInventory(audio: [compatibility, trueHD], subtitles: [])
+        ))
+        try await engine.settle()
+
+        await vm.selectAudioTrack(compatibility)
+        await vm.selectAudioTrack(trueHD)
+
+        #expect(vm.selectedAudioTrack?.id == .vlc("1"))
+        #expect(engine.selectedAudioTrackID == .vlc("1"))
+    }
+
     @Test("selectSubtitleTrack nil deselects and forwards nil to engine")
     func subtitleTrackDeselect() async throws {
         let reporting = StubPlaybackReporting()

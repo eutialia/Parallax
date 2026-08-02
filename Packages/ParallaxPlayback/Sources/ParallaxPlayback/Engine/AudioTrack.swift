@@ -13,6 +13,12 @@ public struct AudioTrack: Sendable, Hashable {
     public let isTranscode: Bool
     /// The delivered codec when transcoding, e.g. "AAC". Nil when not transcoding.
     public let transcodeTarget: String?
+    /// True when the engine knows the shipped decoder binary cannot decode this
+    /// track's codec — picking it would play silence, not audio. The engine sets it
+    /// while building the inventory (see `VLCKitEngine.undecodableAudioFourccs`);
+    /// the UI must show such a track as unavailable and never offer it for
+    /// selection, and automatic language matching must skip it.
+    public let isUnsupported: Bool
 
     public init(
         id: TrackID,
@@ -20,7 +26,8 @@ public struct AudioTrack: Sendable, Hashable {
         languageCode: String?,
         detailLabel: String? = nil,
         isTranscode: Bool = false,
-        transcodeTarget: String? = nil
+        transcodeTarget: String? = nil,
+        isUnsupported: Bool = false
     ) {
         self.id = id
         self.displayName = displayName
@@ -28,6 +35,7 @@ public struct AudioTrack: Sendable, Hashable {
         self.detailLabel = detailLabel
         self.isTranscode = isTranscode
         self.transcodeTarget = transcodeTarget
+        self.isUnsupported = isUnsupported
     }
 
     /// Channel layout only ("7.1"), pulled from `detailLabel`'s "codec · channels" so

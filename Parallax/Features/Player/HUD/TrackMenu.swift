@@ -47,6 +47,9 @@ private enum MenuMetrics {
     /// panel's rounded corner, so its corner has to curve parallel to the panel's — a smaller radius
     /// balls up a wider gap at the diagonal (the corners look mismatched).
     static let platterRadius = Radius.panel - Space.s8
+    /// Dim for a row that can't be picked (a codec the engine has no decoder for). The
+    /// `.plain`/quiet button styles don't dim their own label, so the row draws it.
+    static let unavailableOpacity: Double = 0.4
     #if os(tvOS)
     static let checkColumn: CGFloat = 34
     static let badgeRadius: CGFloat = 9
@@ -145,6 +148,9 @@ private struct MenuRow<Trailing: View>: View {
     /// first focus here, and what `defaultFocus` re-targets on later evaluations.
     let focusKey: AnyHashable
     let isSelected: Bool
+    /// The row is shown but can't be picked. On tvOS this also drops it out of the focus
+    /// order, which is the honest 10-foot equivalent of a greyed-out row.
+    var isUnavailable: Bool = false
     let action: () -> Void
     @ViewBuilder let content: () -> Trailing
 
@@ -173,10 +179,12 @@ private struct MenuRow<Trailing: View>: View {
                     )
                     .environment(\.colorScheme, focused ? .light : .dark)
                     .contentShape(.rect)
+                    .opacity(isUnavailable ? MenuMetrics.unavailableOpacity : 1)
                     .animation(.tvFocusChrome, value: focused)
             }
         }
         .tvMenuRowButton()
+        .disabled(isUnavailable)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .modifier(TrackMenuRowFocus(key: focusKey))
     }
@@ -190,20 +198,36 @@ struct AudioTrackMenu: View {
     let onSelect: (AudioTrack) -> Void
 
     private var anyTranscode: Bool { tracks.contains { $0.isTranscode } }
+    private var anyUnsupported: Bool { tracks.contains(where: \.isUnsupported) }
 
     /// First-focus row key for the presenting panel (tvOS): the selected track,
-    /// falling back to the first row.
+    /// falling back to the first row. Unsupported tracks aren't focusable, so they
+    /// can't be the landing row either.
     static func defaultFocusKey(tracks: [AudioTrack], selectedID: TrackID?) -> AnyHashable? {
-        (tracks.first { $0.id == selectedID } ?? tracks.first)?.id
+        let selectable = tracks.filter { !$0.isUnsupported }
+        return (selectable.first { $0.id == selectedID } ?? selectable.first)?.id
+    }
+
+    /// The detail line says what the track is made of; for a codec the engine can't
+    /// decode it also has to say so, because the row's dimming alone doesn't explain why.
+    ///
+    /// The marker leads: the line is one truncating row, and on the narrow phone panel
+    /// "TrueHD · 7.1 · Not supported" loses exactly the words that carry the meaning.
+    /// Codec detail is the safer thing to drop off the end.
+    static func detail(for track: AudioTrack) -> String? {
+        guard track.isUnsupported else { return track.detailLabel }
+        guard let detail = track.detailLabel else { return "Not supported" }
+        return "Not supported · \(detail)"
     }
 
     var body: some View {
         ForEach(tracks, id: \.id) { track in
             MenuRow(focusKey: track.id, isSelected: track.id == selectedID,
+                    isUnavailable: track.isUnsupported,
                     action: { onSelect(track) }) {
                 HStack(spacing: Space.s12) {
                     MenuCheckColumn(isSelected: track.id == selectedID)
-                    MenuRowTitle(name: track.displayName, detail: track.detailLabel)
+                    MenuRowTitle(name: track.displayName, detail: Self.detail(for: track))
                     Spacer(minLength: Space.s8)
                     // Direct-play rows stay quiet — the badge marks the
                     // exceptional pick, the one that costs a re-encode.
@@ -215,6 +239,9 @@ struct AudioTrackMenu: View {
         }
         if anyTranscode {
             MenuFootnote(text: "Lossless and surround tracks are transcoded to AAC on this device.")
+        }
+        if anyUnsupported {
+            MenuFootnote(text: "Some tracks use a format this device can't decode.")
         }
     }
 }
@@ -380,6 +407,14 @@ struct SpeedMenu: View {
                     detailLabel: "Dolby Digital · 5.1",
                     isTranscode: false,
                     transcodeTarget: nil
+                ),
+                // The undecodable case: shown, dimmed, unpickable, and it says why.
+                AudioTrack(
+                    id: .vlc("4"),
+                    displayName: "Japanese",
+                    languageCode: "jpn",
+                    detailLabel: "TrueHD · 7.1",
+                    isUnsupported: true
                 ),
             ],
             selectedID: .jellyfinStream(1),
