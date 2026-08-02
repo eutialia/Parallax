@@ -74,21 +74,25 @@ struct SMBPlaybackResolver {
 
         let (hints, useBridge) = Self.route(probe: probeResult, sizeBytes: item.sizeBytes)
 
-        // Diagnostic lever: `-smbBridgeVLC` serves VLC-routed files through the local
-        // HTTP bridge instead of libvlc's own smb2 input. Hints keep the smb scheme so
-        // engine selection and cache sizing are unchanged — the transport is the only
-        // variable, which is what makes an A/B against the smb2 input meaningful.
+        // VLC-routed files ride the local HTTP bridge too, by default: libvlc's own
+        // smb2 access has a fatal teardown race (poll failure → freed context →
+        // smb2_get_fds SIGSEGV) plus cancellation churn on every close, while the
+        // bridge reuses the same AMSMB2 stack the browse wall, thumbnails, and AVKit
+        // playback already trust. Hints keep the smb scheme so engine selection and
+        // cache sizing are unchanged — only the transport differs. Gated on a
+        // completed probe: a timed-out probe means the reader may be wedged, and a
+        // wedged reader would wedge the bridge — that rare case keeps the native
+        // smb2 input. DEBUG `-smbNativeVLC` restores the native input for A/B runs.
+        var vlcOverBridge = !useBridge && probeResult != nil
         #if DEBUG
-        let forceBridge = !useBridge && ProcessInfo.processInfo.arguments.contains("-smbBridgeVLC")
-        #else
-        let forceBridge = false
+        if ProcessInfo.processInfo.arguments.contains("-smbNativeVLC") { vlcOverBridge = false }
         #endif
 
         // Local resume: SMB has no server-side progress store, so the offset comes from
         // the on-device store (nil = fresh start). Same key the VM saves beats under.
         let startTime = await resumeStore.resumeTime(for: item.id)
 
-        if useBridge || forceBridge {
+        if useBridge || vlcOverBridge {
             // The reader is handed to the session and owned by it from here — the cleanup
             // closure is the only site that tears it down. `session.start()` self-tears-down
             // on a start failure (no SMBPlaybackItem, no cleanup closure would ever run).
@@ -96,7 +100,7 @@ struct SMBPlaybackResolver {
             let contentType: String
             switch hints.container {
             case .mov: contentType = "video/quicktime"
-            case .mkv: contentType = "video/x-matroska"   // forced-bridge only; mkv never bridge-qualifies
+            case .mkv: contentType = "video/x-matroska"   // VLC-over-bridge only; mkv never bridge-qualifies
             default:   contentType = "video/mp4"
             }
             let session = SMBBridgeSession(reader: reader, fileName: fileName, contentType: contentType)
@@ -111,8 +115,8 @@ struct SMBPlaybackResolver {
                 subtitleLabels: subtitleLabels,
                 // Bridge route requires a probe-proven complete file (route(probe:sizeBytes:)'s
                 // bridgeEligible gate) — AVKit reads the container's own duration atom, no estimate.
-                // The forced-bridge lever skips that gate, so it keeps the VLC route's rule.
-                hasTrustworthyDuration: forceBridge ? probeResult?.isComplete == true : true,
+                // VLC-over-bridge skips that gate, so it keeps the VLC route's rule.
+                hasTrustworthyDuration: vlcOverBridge ? probeResult?.isComplete == true : true,
                 hints: hints,
                 // The borrow's LIFETIME disqualifies it from pool reuse: an hours-long playback
                 // socket may be silently degraded (stalls surface as short reads, never a thrown
