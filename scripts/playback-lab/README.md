@@ -35,7 +35,11 @@ default — headless builds poison its module cache).
 ## Scenario command vocabulary
 
 `waitPlaying` (timeoutSeconds), `wait` (seconds), `play`, `pause`,
-`seek`/`scrub` (toSeconds), `skip` (bySeconds), `finish`.
+`seek`/`scrub` (toSeconds), `skip` (bySeconds), `audioTrack` (name — case-insensitive
+substring; refused tracks are recorded, not selected), `subtitle` (name), `finish`.
+
+A scenario may also set top-level `"resume": true` to honor the target's saved
+resume position; by default runs clear it so measurements start deterministic.
 
 ## Results
 

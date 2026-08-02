@@ -99,6 +99,9 @@ final class PlaybackLabRunner {
             await telemetry.record("failed", ["error": detail])
         }
         sampler.cancel()
+        // Drain before closing: cancellation is only a request, and a beat mid-record
+        // when the handle closes would be silently dropped from the tail of the run.
+        _ = await sampler.value
         await telemetry.close()
     }
 
