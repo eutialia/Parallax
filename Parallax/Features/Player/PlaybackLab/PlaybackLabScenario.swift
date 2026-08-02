@@ -50,6 +50,10 @@ struct PlaybackLabScenario: Codable, Sendable {
     let path: String
     /// File name inside `path` to play.
     let file: String
+    /// When true, the target's saved resume position is honored. Default (absent/
+    /// false) clears it before playing — repeated lab runs otherwise inherit the
+    /// previous run's position and silently shift what every scenario measures.
+    let resume: Bool?
     let timeline: [Step]
 }
 #endif
