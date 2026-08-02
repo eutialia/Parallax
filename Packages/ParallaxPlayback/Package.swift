@@ -15,17 +15,24 @@ let package = Package(
         .package(path: "../ParallaxCore"),
     ],
     targets: [
-        // VideoLAN's official 3.7.3 build, fetched by scripts/fetch-mobilevlckit.sh
-        // (~1 GB unpacked, so it is git-ignored rather than committed).
+        // VideoLAN's official 3.7.3 builds, fetched by scripts/fetch-mobilevlckit.sh
+        // (~1.7 GB unpacked for the pair, so they are git-ignored rather than
+        // committed). VideoLAN ships iOS and tvOS as two separately named modules
+        // built from the same source, so the package picks one per platform.
         .binaryTarget(
             name: "MobileVLCKit",
             path: "Vendor/MobileVLCKit.xcframework"
+        ),
+        .binaryTarget(
+            name: "TVVLCKit",
+            path: "Vendor/TVVLCKit.xcframework"
         ),
         .target(
             name: "ParallaxPlayback",
             dependencies: [
                 "ParallaxCore",
-                "MobileVLCKit",
+                .target(name: "MobileVLCKit", condition: .when(platforms: [.iOS])),
+                .target(name: "TVVLCKit", condition: .when(platforms: [.tvOS])),
             ],
             swiftSettings: [ .swiftLanguageMode(.v6) ]
         ),

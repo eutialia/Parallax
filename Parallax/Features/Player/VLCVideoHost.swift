@@ -1,6 +1,10 @@
 import SwiftUI
 import UIKit
+#if canImport(MobileVLCKit)
 import MobileVLCKit
+#else
+import TVVLCKit
+#endif
 import ParallaxPlayback
 
 /// Hosts VLC's render surface inside a SwiftUI view hierarchy.

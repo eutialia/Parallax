@@ -1,7 +1,11 @@
 #if DEBUG
 import Foundation
 import OSLog
+#if canImport(MobileVLCKit)
 import MobileVLCKit
+#else
+import TVVLCKit
+#endif
 
 /// DEBUG-only tap on libvlc's log stream that mirrors audio-pipeline messages
 /// into the unified log (subsystem `com.lhdev.parallax`, category `vlc-audio`).

@@ -1,7 +1,11 @@
 import Foundation
 import CoreGraphics
 import ParallaxCore
+#if canImport(MobileVLCKit)
 import MobileVLCKit
+#else
+import TVVLCKit
+#endif
 
 /// Source-agnostic still-frame thumbnailer backed by VLCKit's `VLCMediaThumbnailer`.
 /// Decodes one frame from a video `URL` (local file or `smb://`) and returns it as
