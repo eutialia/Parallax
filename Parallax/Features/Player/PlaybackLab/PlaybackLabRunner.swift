@@ -240,7 +240,12 @@ final class PlaybackLabRunner {
             return
         }
         await vm.selectAudioTrack(match)
-        await telemetry.record("audioTrackSelected", ["name": match.displayName])
+        // Re-read rather than assume: the VM refuses undecodable tracks, and the
+        // telemetry must reflect what actually happened, not what was requested.
+        await telemetry.record("audioTrackSelected", [
+            "requested": match.displayName,
+            "selected": vm.selectedAudioTrack?.displayName ?? "none",
+        ])
     }
 
     /// Selects a subtitle track by name substring through the HUD's exact path
