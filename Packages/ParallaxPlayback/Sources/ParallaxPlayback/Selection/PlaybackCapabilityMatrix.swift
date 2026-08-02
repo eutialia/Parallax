@@ -59,9 +59,14 @@ public enum PlaybackCapabilityMatrix {
     ]
 
     /// Audio codecs VLC decodes. Superset of the AVKit set.
+    ///
+    /// `trueHD` is deliberately ABSENT: no shippable libvlc build carries a TrueHD/MLP
+    /// decoder (VideoLAN leaves it out of the build-config allowlist — proven on
+    /// MobileVLCKit 3.7.3 and every VLCKit 4.0 alpha), so advertising it would invite a
+    /// server to hand us a stream that decodes to silence.
     public static let vlcAudioCodecs: Set<AudioCodec> = [
         .aac, .ac3, .eac3, .mp3,   // AVKit set
-        .dts, .trueHD, .flac, .opus,
+        .dts, .flac, .opus,
     ]
 
     /// Subtitle formats VLC renders. Superset of the AVKit set.
@@ -79,8 +84,8 @@ public enum PlaybackCapabilityMatrix {
     public static let softwareVideoCodecs: Set<VideoCodec> =
         vlcVideoCodecs.subtracting(avKitVideoCodecs)
 
-    /// Audio codecs that VLC handles beyond AVKit's set (DTS, TrueHD, FLAC,
-    /// Opus). Used when authoring the VLC direct-play tier in the device profile.
+    /// Audio codecs that VLC handles beyond AVKit's set (DTS, FLAC, Opus). Used when
+    /// authoring the VLC direct-play tier in the device profile.
     public static let softwareAudioCodecs: Set<AudioCodec> =
         vlcAudioCodecs.subtracting(avKitAudioCodecs)
 

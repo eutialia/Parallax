@@ -350,6 +350,50 @@ struct VLCKitTrackArrayTests {
         #expect(languages.isEmpty)
     }
 
+    /// libvlc packs a fourcc least-significant-byte first, so the raw NSNumber the codec key
+    /// carries reads BACKWARDS from the obvious big-endian reading. Getting this wrong would
+    /// silently match nothing (or the wrong codec), so the byte order is pinned here with the
+    /// two values documented by VideoLAN: 0x34363268 is "h264", 0x64687274 is "trhd".
+    @Test("fourccString decodes libvlc's little-endian packing", arguments: [
+        (UInt32(0x3436_3268), "h264"),
+        (UInt32(0x6468_7274), "trhd"),
+        (UInt32(0x2070_6C6D), "mlp "),
+        (UInt32(0), ""),                    // not printable → matches nothing
+        (UInt32(0xFFFF_FFFF), ""),
+    ] as [(UInt32, String)])
+    func decodesFourcc(value: UInt32, expected: String) {
+        #expect(VLCKitEngine.fourccString(from: value) == expected)
+    }
+
+    /// The undecodable set is what keeps the menu honest, so both spellings of Dolby's
+    /// lossless codec have to be caught — and nothing else may be.
+    @Test("undecodableTrackIDs flags the TrueHD/MLP tracks and only those")
+    func flagsUndecodableTracks() {
+        let ids = VLCKitEngine.undecodableTrackIDs(from: [
+            [VLCMediaTracksInformationId: NSNumber(value: 1),
+             VLCMediaTracksInformationCodec: NSNumber(value: UInt32(0x6468_7274))],   // trhd
+            [VLCMediaTracksInformationId: NSNumber(value: 2),
+             VLCMediaTracksInformationCodec: NSNumber(value: UInt32(0x2070_6C6D))],   // mlp
+            [VLCMediaTracksInformationId: NSNumber(value: 3),
+             VLCMediaTracksInformationCodec: NSNumber(value: UInt32(0x2032_3561))],   // "a52 " (AC3)
+        ])
+        #expect(ids == [1, 2])
+    }
+
+    /// Unparsed media, a missing codec key, and a malformed entry all mean "we don't know
+    /// the codec" — which must never disable a track the engine could actually play.
+    @Test("undecodableTrackIDs flags nothing when the codec is unknown")
+    func unknownCodecFlagsNothing() {
+        let ids = VLCKitEngine.undecodableTrackIDs(from: [
+            [VLCMediaTracksInformationId: NSNumber(value: 1)],                        // no codec key
+            [VLCMediaTracksInformationCodec: NSNumber(value: UInt32(0x6468_7274))],   // no id
+            [VLCMediaTracksInformationId: NSNumber(value: 2),
+             VLCMediaTracksInformationCodec: "trhd"],                                 // not a number
+            "not a dictionary",
+        ])
+        #expect(ids.isEmpty)
+    }
+
     /// Selection round-trips through the public `TrackID`: the inventory stringifies the
     /// libvlc id and `setAudioTrack` parses it back. Ids from the other two namespaces must
     /// not resolve, or an AVKit option index could be written onto VLC's track selector.
@@ -421,6 +465,16 @@ struct VLCKitEngineTrackMappingTests {
         #expect(track.id.avKitOptionIndex == nil)
         #expect(track.displayName == name)
         #expect(track.languageCode == language)
+        #expect(track.isUnsupported == false)   // the default: only a known-bad codec flips it
+    }
+
+    /// The inventory carries the undecodable flag through to the app, which is what lets the
+    /// menu grey the row instead of offering a pick that plays silence.
+    @Test("buildAudioTrack carries the unsupported marking through")
+    func audioTrackCarriesUnsupportedFlag() {
+        let track = VLCKitEngine.buildAudioTrack(id: "4", name: "Japanese", language: "jpn",
+                                                 isUnsupported: true)
+        #expect(track.isUnsupported)
     }
 
     /// VLC's track API exposes no forced flag, so every subtitle it vends is unforced —

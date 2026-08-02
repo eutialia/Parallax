@@ -26,7 +26,7 @@ struct DeviceProfileTranslatorTests {
             hdr: hdr,
             maxResolution: maxResolution,
             softwareVideoCodecs: [.vc1, .mpeg2video, .vp9, .av1],
-            softwareAudioCodecs: [.dts, .trueHD, .flac, .opus],
+            softwareAudioCodecs: [.dts, .flac, .opus],
             softwareContainers: [.mkv, .webm, .avi, .ts, .mp3, .flac]
         )
     }

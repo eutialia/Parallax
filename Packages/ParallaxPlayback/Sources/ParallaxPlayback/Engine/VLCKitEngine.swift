@@ -788,9 +788,19 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         // the media hasn't been parsed or the stream is untagged — the app's
         // language-preference matching simply finds nothing then, exactly as it does for
         // an untagged track on the 4.x API.
-        let languages = Self.trackLanguages(from: currentMedia?.tracksInformation ?? [])
+        let tracksInformation = currentMedia?.tracksInformation ?? []
+        let languages = Self.trackLanguages(from: tracksInformation)
+        // Same join, second fact: the codec fourcc tells us which tracks this libvlc
+        // binary has no decoder for, so the menu can show them as unavailable instead
+        // of offering a pick that plays silence.
+        let undecodable = Self.undecodableTrackIDs(from: tracksInformation)
         let audioTracks = audio.map {
-            Self.buildAudioTrack(id: String($0.id), name: $0.name, language: languages[$0.id])
+            Self.buildAudioTrack(
+                id: String($0.id),
+                name: $0.name,
+                language: languages[$0.id],
+                isUnsupported: undecodable.contains($0.id)
+            )
         }
         let subtitleTracks = subtitles.map {
             Self.buildSubtitleTrack(id: String($0.id), name: $0.name, language: languages[$0.id])
@@ -906,6 +916,45 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
             languages[id] = language
         }
         return languages
+    }
+
+    /// Codec fourccs no shippable libvlc build can decode.
+    ///
+    /// Dolby TrueHD (`trhd`) and its MLP predecessor (`mlp `) are left out of the
+    /// build-config allowlist VideoLAN compiles its binaries with, so the decoder simply
+    /// isn't in the library — proven in the lab on MobileVLCKit 3.7.3 ("Codec `trhd'
+    /// (TrueHD Audio) is not supported") and on every VLCKit 4.0 alpha. Such files
+    /// usually carry a coexisting AC3 "Compatibility Track", which VLC falls back to on
+    /// its own, so default playback still has sound — only an explicit pick of the
+    /// TrueHD track goes silent, which is what the marking prevents.
+    nonisolated static let undecodableAudioFourccs: Set<String> = ["trhd", "mlp "]
+
+    /// The libvlc track ids whose codec is in `undecodableAudioFourccs`, read off the same
+    /// `tracksInformation` array the language join uses. Empty for unparsed media — the
+    /// honest default, since "we don't know the codec" must never disable a track.
+    /// Pure so the parsing can be tested without a live decode.
+    nonisolated static func undecodableTrackIDs(from tracksInformation: [Any]) -> Set<Int32> {
+        var ids: Set<Int32> = []
+        for case let info as [String: Any] in tracksInformation {
+            guard let id = (info[VLCMediaTracksInformationId] as? NSNumber)?.int32Value,
+                  let codec = (info[VLCMediaTracksInformationCodec] as? NSNumber)?.uint32Value,
+                  undecodableAudioFourccs.contains(fourccString(from: codec))
+            else { continue }
+            ids.insert(id)
+        }
+        return ids
+    }
+
+    /// Decodes libvlc's packed codec fourcc into its four characters.
+    ///
+    /// `VLC_FOURCC(a,b,c,d)` puts `a` in the LOW byte, so the characters read out
+    /// least-significant-byte first: 0x64687274 is "trhd", 0x34363268 is "h264". A value
+    /// carrying a non-printable byte isn't a fourcc at all and yields an empty string,
+    /// which matches nothing.
+    nonisolated static func fourccString(from value: UInt32) -> String {
+        let bytes = (0..<4).map { UInt8(truncatingIfNeeded: value >> (8 * $0)) }
+        guard bytes.allSatisfy({ (0x20...0x7E).contains($0) }) else { return "" }
+        return String(decoding: bytes, as: UTF8.self)
     }
 
     /// The `Int32` libvlc track id behind a `TrackID`, or nil if the id isn't in the VLC
@@ -1064,8 +1113,11 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
 
     /// `id` is VLC's own `trackId` string; it is tagged `.vlc` so it can never be
     /// confused with an AVKit option index or a Jellyfin stream index.
-    public static func buildAudioTrack(id: String, name: String, language: String?) -> AudioTrack {
-        AudioTrack(id: .vlc(id), displayName: name, languageCode: language)
+    public static func buildAudioTrack(
+        id: String, name: String, language: String?, isUnsupported: Bool = false
+    ) -> AudioTrack {
+        AudioTrack(id: .vlc(id), displayName: name, languageCode: language,
+                   isUnsupported: isUnsupported)
     }
 
     public static func buildSubtitleTrack(id: String, name: String, language: String?) -> SubtitleTrack {

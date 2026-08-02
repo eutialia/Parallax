@@ -18,7 +18,8 @@ public struct DeviceCapabilities: Sendable, Hashable, Codable {
     /// VLC-tier DirectPlay entries without importing `ParallaxPlayback`.
     public let softwareVideoCodecs: [VideoCodec]
 
-    /// Audio codecs the VLC engine adds beyond AVKit: DTS, TrueHD, FLAC, Opus.
+    /// Audio codecs the VLC engine adds beyond AVKit: DTS, FLAC, Opus. TrueHD is not
+    /// among them — no shippable libvlc build has a TrueHD/MLP decoder.
     public let softwareAudioCodecs: [AudioCodec]
 
     /// Containers VLC can open that AVKit cannot: MKV, WebM, TS, etc.
@@ -52,7 +53,7 @@ public struct DeviceCapabilities: Sendable, Hashable, Codable {
 
     // MARK: - Test stub
     /// A fully-populated stub for use in tests. Software fields reflect the
-    /// `PlaybackCapabilityMatrix` software sets (VP9/AV1, DTS/TrueHD/FLAC/Opus,
+    /// `PlaybackCapabilityMatrix` software sets (VP9/AV1, DTS/FLAC/Opus,
     /// MKV/WebM/TS/FLAC/MP3) without importing `ParallaxPlayback`.
     public static let stub = DeviceCapabilities(
         supportedVideoCodecs: [.h264, .hevc],
@@ -64,7 +65,7 @@ public struct DeviceCapabilities: Sendable, Hashable, Codable {
         audioOutput: .stereo,
         preferredSubtitleFormats: [.vtt, .srt],
         softwareVideoCodecs: [.vp9, .av1],
-        softwareAudioCodecs: [.dts, .trueHD, .flac, .opus],
+        softwareAudioCodecs: [.dts, .flac, .opus],
         softwareContainers: [.mkv, .webm, .ts, .flac, .mp3]
     )
 }

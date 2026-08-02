@@ -1480,6 +1480,11 @@ final class PlayerViewModel {
     }
 
     func selectAudioTrack(_ track: AudioTrack) async {
+        // The engine has no decoder for this track's codec — picking it would play
+        // silence. The menu already shows it as unavailable; this is the choke point
+        // every other caller (remote commands, the playback lab) goes through, so the
+        // rule lives here too. Nothing to record: the user's real selection is unchanged.
+        guard !track.isUnsupported else { return }
         // Dropped (not queued) while a start or a prior switch is mid-flight: the
         // selected label is set before the re-resolve below, so accepting a pick
         // here would show a track the reload never honors.
@@ -1698,7 +1703,11 @@ final class PlayerViewModel {
            let preferred = resolved.mediaStreams.first(where: { $0.kind == .audio && $0.index == index }),
            let language = preferred.language,
            !TrackLanguage.matches(selectedAudioTrack?.languageCode, language),
-           let match = availableAudioTracks.first(where: { TrackLanguage.matches($0.languageCode, language) }) {
+           // A track the engine can't decode is not a candidate — auto-selecting the
+           // user's preferred language would trade the engine's working pick for silence.
+           let match = availableAudioTracks.first(where: {
+               !$0.isUnsupported && TrackLanguage.matches($0.languageCode, language)
+           }) {
             await engine.setAudioTrack(match)
             selectedAudioTrack = match
         }
