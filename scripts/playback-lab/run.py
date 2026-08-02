@@ -712,7 +712,7 @@ def main() -> int:
     parser.add_argument("--config", default=DEFAULT_CONFIG, help="lab config JSON (relative to this script unless absolute)")
     parser.add_argument("--timeout", type=float, help="override the computed run timeout, in seconds")
     parser.add_argument("--app-arg", action="append", default=[],
-                        help="extra launch argument for the app (repeatable), e.g. --app-arg -smbBridgeVLC")
+                        help="extra launch argument for the app (repeatable), e.g. --app-arg -smbNativeVLC")
     parser.add_argument("--analyze", metavar="RESULTS_DIR", help="re-run the analyzer on a saved results dir")
     parser.add_argument("--selftest", action="store_true", help="run the analyzer self-test and exit")
     args = parser.parse_args()

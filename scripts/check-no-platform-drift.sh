@@ -36,10 +36,33 @@ fi
 
 # The one sanctioned exception: VideoLAN ships the same VLCKit under two module
 # names (MobileVLCKit on iOS, TVVLCKit on tvOS), so the import line has to pick
-# one. That renames a module — no logic branches on it — which is why this exact
-# form is allowed and every other conditional still fails the check.
-ALLOWED='#if[[:space:]]+canImport\(MobileVLCKit\)[[:space:]]*$'
-MATCHES=$(printf '%s' "$MATCHES" | grep -vE "$ALLOWED" || true)
+# one. That renames a module — no logic branches on it — and ONLY that: the
+# exemption verifies the whole block is the exact 4-line rename
+# (import MobileVLCKit / #else / import TVVLCKit / #endif), so a conditional
+# hiding real logic under the allowed opening line still fails the check.
+ALLOWED_OPEN='#if[[:space:]]+canImport\(MobileVLCKit\)[[:space:]]*$'
+EXPECTED_BLOCK='import MobileVLCKit
+#else
+import TVVLCKit
+#endif'
+FILTERED=""
+while IFS= read -r match; do
+    [ -z "$match" ] && continue
+    if printf '%s' "$match" | grep -qE "$ALLOWED_OPEN"; then
+        file=${match%%:*}
+        rest=${match#*:}
+        lineno=${rest%%:*}
+        # The four lines after the #if, whitespace-trimmed for comparison.
+        block=$(sed -n "$((lineno + 1)),$((lineno + 4))p" "$file" \
+                | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
+        if [ "$block" = "$EXPECTED_BLOCK" ]; then
+            continue
+        fi
+    fi
+    FILTERED="${FILTERED}${match}
+"
+done <<< "$MATCHES"
+MATCHES=$(printf '%s' "$FILTERED")
 
 if [ -n "$MATCHES" ]; then
     echo ""

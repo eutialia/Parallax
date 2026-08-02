@@ -79,11 +79,14 @@ struct SMBPlaybackResolver {
         // smb2_get_fds SIGSEGV) plus cancellation churn on every close, while the
         // bridge reuses the same AMSMB2 stack the browse wall, thumbnails, and AVKit
         // playback already trust. Hints keep the smb scheme so engine selection and
-        // cache sizing are unchanged — only the transport differs. Gated on a
-        // completed probe: a timed-out probe means the reader may be wedged, and a
-        // wedged reader would wedge the bridge — that rare case keeps the native
-        // smb2 input. DEBUG `-smbNativeVLC` restores the native input for A/B runs.
-        var vlcOverBridge = !useBridge && probeResult != nil
+        // cache sizing are unchanged — only the transport differs. Two gates keep the
+        // native smb2 input: a timed-out probe (the reader may be wedged, and a wedged
+        // reader would wedge the bridge) and an INCOMPLETE file — the bridge pins
+        // Content-Length at session start, so a still-growing download would be cut off
+        // at its open-time size and lose the read-rate duration estimate; libvlc's own
+        // input re-reads the live file. DEBUG `-smbNativeVLC` restores the native input
+        // for A/B runs.
+        var vlcOverBridge = !useBridge && probeResult?.isComplete == true
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("-smbNativeVLC") { vlcOverBridge = false }
         #endif
@@ -100,8 +103,15 @@ struct SMBPlaybackResolver {
             let contentType: String
             switch hints.container {
             case .mov: contentType = "video/quicktime"
+            case .mp4: contentType = "video/mp4"
             case .mkv: contentType = "video/x-matroska"   // VLC-over-bridge only; mkv never bridge-qualifies
-            default:   contentType = "video/mp4"
+            default:
+                // AVKit bridge only qualifies containers AVKit opens (mp4 family), so its
+                // fallback stays video/mp4. Everything else here is VLC-over-bridge — ts,
+                // webm, avi, unidentified ASF/OGM — where a wrong mime hint can only
+                // mislead libvlc's demuxer pick; the honest "no hint" lets it probe the
+                // bytes (same reason the thumbnail bridge uses octet-stream).
+                contentType = vlcOverBridge ? "application/octet-stream" : "video/mp4"
             }
             let session = SMBBridgeSession(reader: reader, fileName: fileName, contentType: contentType)
             let url = try await session.start()
@@ -113,10 +123,10 @@ struct SMBPlaybackResolver {
                 startTime: startTime,
                 subtitleURLs: subtitleURLs,
                 subtitleLabels: subtitleLabels,
-                // Bridge route requires a probe-proven complete file (route(probe:sizeBytes:)'s
-                // bridgeEligible gate) — AVKit reads the container's own duration atom, no estimate.
-                // VLC-over-bridge skips that gate, so it keeps the VLC route's rule.
-                hasTrustworthyDuration: vlcOverBridge ? probeResult?.isComplete == true : true,
+                // Both bridge routes require a probe-proven complete file (bridgeEligible's
+                // gate for AVKit, the vlcOverBridge gate above for VLC), so the container's
+                // duration is real — no read-rate estimate in play.
+                hasTrustworthyDuration: true,
                 hints: hints,
                 // The borrow's LIFETIME disqualifies it from pool reuse: an hours-long playback
                 // socket may be silently degraded (stalls surface as short reads, never a thrown

@@ -107,8 +107,15 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// settling its default selection (the first `.ready` ships with nothing selected, so
     /// the audio chip would keep the generic "Audio" label), or the container length
     /// finally resolving. Diffing rather than re-emitting every tick keeps it flood-free.
-    /// Reset to a fresh empty snapshot on every `load` so the first real change re-emits.
-    private var lastInventory = InventorySnapshot()
+    /// The FULL built inventory is what's diffed — not just ids/selection — because the
+    /// language and `isUnsupported` facts join in from `tracksInformation`, which can
+    /// populate ticks after the player's track arrays; a narrower key would swallow that
+    /// late arrival and the menu would never learn a track's language or undecodability.
+    /// Reset to nil on every `load` so the first real inventory re-emits.
+    private var lastPublishedInventory: TrackInventory?
+    /// Rides alongside `lastPublishedInventory`: a length that resolves without any track
+    /// change must still re-emit `.ready`.
+    private var lastPublishedLengthResolved = false
 
     /// Resume offset (ms) to seek to once the demux is seekable, or nil. Resume is done
     /// by seeking — NOT the `:start-time` media option, which truncates the input so the
@@ -229,7 +236,8 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
 
     public func load(_ asset: PlayableAsset) async throws {
         continuation.yield(.loading)
-        lastInventory = InventorySnapshot()
+        lastPublishedInventory = nil
+        lastPublishedLengthResolved = false
         subtitlesDisabled = false
         pendingStartMs = Self.startMs(from: asset.startTime)
         pendingSeekMs = nil
@@ -629,12 +637,20 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
                     // flushes the pipeline and restarts the decoder exactly like a user seek.
                     // Periodic (every 6 ticks), not one-shot — a still-wedged input keeps
                     // getting nudged until the stall watchdog bounds the session.
+                    //
+                    // Held position only, never a synthesized one: this branch ALSO matches
+                    // ordinary cold-start buffering (see the log note above), where the clock
+                    // is still invalid and a resume seek may not have applied yet. Escalating
+                    // there would re-anchor at a made-up 0 — flushing a healthy fill and
+                    // destroying the resume point — so the nudge requires a real anchor (an
+                    // in-flight user seek or a valid clock) and stands down while the resume
+                    // offset is still pending.
                     self.reassertTicks += 1
-                    if self.reassertTicks % 6 == 0 {
-                        let anchor = self.pendingSeekMs ?? max(0, self.clockMs)
+                    if self.reassertTicks % 6 == 0, self.pendingStartMs == nil,
+                       let anchor = self.pendingSeekMs ?? Self.validClockMs(self.player.time) {
                         Self.log.warning("play-intent reassert escalation: re-anchoring input at \(anchor)ms")
-                        self.player.time = VLCTime(int: anchor)
-                        self.pendingSeekMs = anchor
+                        self.player.time = VLCTime(int: max(0, anchor))
+                        self.pendingSeekMs = max(0, anchor)
                         self.pendingSeekPolls = 0
                     }
                     // A wedged post-seek resume IS a stall at the target: surface it as
@@ -771,12 +787,12 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// Not gated on a known length: the app's `.ready` handler only adopts the track inventory
     /// (duration rides the position beats), so publishing tracks while the length is still
     /// unknown is correct — the duration carried here is `.indefinite` until it resolves.
-    private func emitReady() {
+    private func emitReady(_ inventory: TrackInventory) {
         guard currentMedia != nil else { return }
         loadWatchdog.disarm()   // tracks/length resolved = the demux is progressing, the load is alive
         continuation.yield(.ready(
             duration: Self.vlcDurationToCMTime(ms: effectiveDurationMs()),
-            tracks: buildTrackInventory()
+            tracks: inventory
         ))
     }
 
@@ -831,22 +847,21 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     }
 
     /// Re-emit `.ready` when the inventory the app would see has actually changed. Cheap
-    /// enough to run every 500ms tick (four small array reads), and the diff is what keeps
-    /// it from re-publishing an identical inventory forever. Replaces 4.x's
-    /// `mediaPlayerLengthChanged` / `mediaPlayerTrackAdded` / `mediaPlayerTrackSelected`
-    /// delegates, none of which exist on 3.x.
+    /// enough to run every 500ms tick (small array reads + one `tracksInformation` walk),
+    /// and the diff is what keeps it from re-publishing an identical inventory forever.
+    /// Replaces 4.x's `mediaPlayerLengthChanged` / `mediaPlayerTrackAdded` /
+    /// `mediaPlayerTrackSelected` delegates, none of which exist on 3.x. Diffs the FULL
+    /// built inventory (see `lastPublishedInventory`) and hands the build to `emitReady`
+    /// so a re-emit doesn't pay for it twice.
     private func publishInventoryIfChanged() {
         guard let media = currentMedia else { return }
-        let snapshot = InventorySnapshot(
-            audioIDs: audioDescriptors().map(\.id),
-            subtitleIDs: subtitleDescriptors().map(\.id),
-            selectedAudioID: player.currentAudioTrackIndex,
-            selectedSubtitleID: player.currentVideoSubTitleIndex,
-            hasResolvedLength: (Self.validClockMs(media.length) ?? 0) > 0
-        )
-        guard snapshot != lastInventory else { return }
-        lastInventory = snapshot
-        emitReady()
+        let inventory = buildTrackInventory()
+        let lengthResolved = (Self.validClockMs(media.length) ?? 0) > 0
+        guard inventory != lastPublishedInventory
+                || lengthResolved != lastPublishedLengthResolved else { return }
+        lastPublishedInventory = inventory
+        lastPublishedLengthResolved = lengthResolved
+        emitReady(inventory)
     }
 
     /// Idempotent one-time setter for VLC's events configuration. The first access
@@ -1125,21 +1140,6 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     }
 }
 
-// MARK: - Inventory snapshot
-
-private extension VLCKitEngine {
-    /// Everything about the track picture the app can observe, so the poll can tell a real
-    /// change from an identical re-read. An empty value is the "nothing discovered yet"
-    /// baseline `load` resets to.
-    struct InventorySnapshot: Equatable {
-        var audioIDs: [Int32] = []
-        var subtitleIDs: [Int32] = []
-        var selectedAudioID: Int32 = VLCKitEngine.disabledTrackIndex
-        var selectedSubtitleID: Int32 = VLCKitEngine.disabledTrackIndex
-        var hasResolvedLength = false
-    }
-}
-
 // MARK: - VLCMediaPlayerDelegate
 
 extension VLCKitEngine: VLCMediaPlayerDelegate {
@@ -1163,7 +1163,7 @@ extension VLCKitEngine: VLCMediaPlayerDelegate {
         switch state {
         case .opening:
             continuation.yield(.loading)
-        case .stopped, .ended:
+        case .ended:
             // Natural end-of-stream. During teardown the delegate is nilled BEFORE
             // player.stop(), so this branch is never reached from teardown — no
             // spurious .ended beat.
@@ -1172,6 +1172,15 @@ extension VLCKitEngine: VLCMediaPlayerDelegate {
             if currentMedia != nil {
                 continuation.yield(.ended)
             }
+        case .stopped:
+            // NOT end-of-stream on 3.x — `.ended` is ("Stream has ended"); `.stopped` is
+            // the stop / set-media transition and the initial idle state ("Player has
+            // stopped"). A reused engine's `load()` assigns `player.media` on a live
+            // player, which stops the old input and lands here mid track-switch;
+            // surfacing that as `.ended` would fire a spurious end-of-playback (dismiss /
+            // 100% progress) in the middle of the reload. Teardown nils the delegate
+            // before stop(), so nothing legitimate ever needs an emit from this state.
+            break
         case .error:
             desiredPlaying = false
             loadWatchdog.disarm()   // libvlc surfaced the failure itself; don't also time out
