@@ -57,6 +57,7 @@ def merge_scenario(config: dict, scenario: dict, file_override: str | None) -> d
         "server": config["server"],
         "path": config.get("path", ""),
         "file": file_override or scenario["file"],
+        "resume": scenario.get("resume", False),
         "timeline": scenario["timeline"],
     }
 

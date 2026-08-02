@@ -1,0 +1,18 @@
+{
+  "file": "hevc-truehd-ac3.mkv",
+  "timeline": [
+    {"cmd": "waitPlaying", "timeoutSeconds": 60},
+    {"cmd": "wait", "seconds": 5},
+    {"cmd": "subtitle", "name": "Timecode"},
+    {"cmd": "wait", "seconds": 5},
+    {"cmd": "scrub", "toSeconds": 90},
+    {"cmd": "wait", "seconds": 12},
+    {"cmd": "scrub", "toSeconds": 30},
+    {"cmd": "wait", "seconds": 12},
+    {"cmd": "scrub", "toSeconds": 150},
+    {"cmd": "wait", "seconds": 12},
+    {"cmd": "scrub", "toSeconds": 60},
+    {"cmd": "wait", "seconds": 12},
+    {"cmd": "finish"}
+  ]
+}

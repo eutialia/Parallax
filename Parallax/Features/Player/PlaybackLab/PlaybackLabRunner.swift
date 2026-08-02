@@ -81,6 +81,11 @@ final class PlaybackLabRunner {
         do {
             let ref = try await addSource()
             let item = try await resolveItem(ref: ref)
+            if scenario.resume != true {
+                // Deterministic start: a prior run's saved position would silently
+                // shift what every scenario measures (see PlaybackLabScenario.resume).
+                await SMBResumeStore.shared.clear(item.id)
+            }
             playback.playSMB(item, ref: ref)
             try await waitForViewModel()
             for step in scenario.timeline {
@@ -171,6 +176,8 @@ final class PlaybackLabRunner {
             await scrub(to: step.toSeconds ?? 0)
         case "audioTrack":
             await selectAudioTrack(matching: step.name ?? "")
+        case "subtitle":
+            await selectSubtitle(matching: step.name ?? "")
         case "finish":
             playback.dismiss()
             try await Task.sleep(for: .seconds(1))
@@ -234,6 +241,25 @@ final class PlaybackLabRunner {
         }
         await vm.selectAudioTrack(match)
         await telemetry.record("audioTrackSelected", ["name": match.displayName])
+    }
+
+    /// Selects a subtitle track by name substring through the HUD's exact path
+    /// (nil-safe: an empty fragment or no match records the miss and leaves the
+    /// current selection). Same inventory-record contract as `selectAudioTrack`.
+    private func selectSubtitle(matching fragment: String) async {
+        guard let vm else { return }
+        let tracks = vm.availableSubtitleTracks
+        await telemetry.record("subtitleTracks", [
+            "available": tracks.map(\.displayName),
+            "selected": vm.selectedSubtitleTrack?.displayName ?? "none",
+        ])
+        let lowered = fragment.lowercased()
+        guard let match = tracks.first(where: { $0.displayName.lowercased().contains(lowered) }) else {
+            await telemetry.record("subtitleMiss", ["wanted": fragment])
+            return
+        }
+        await vm.selectSubtitleTrack(match)
+        await telemetry.record("subtitleSelected", ["name": match.displayName])
     }
 
     private func labTime(_ seconds: Double) -> CMTime {
