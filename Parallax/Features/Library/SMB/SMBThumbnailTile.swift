@@ -8,10 +8,11 @@ import ParallaxFileBrowse
 /// gray placeholder as a missing Jellyfin poster.
 ///
 /// The `.task(id:)` starts when the cell scrolls into the `LazyVGrid` and is cancelled on scroll-off
-/// or item-identity change — but that cancellation now abandons only this tile's AWAIT of the shared,
-/// provider-owned generation, never the generation itself (which runs to completion; a folder-wide
-/// prefetch wants every key anyway). So a scrolled-past tile costs nothing extra; the work it kicked
-/// off still finishes and lands in the cache for the next appearance.
+/// or item-identity change — that cancellation abandons this tile's AWAIT of the shared,
+/// provider-owned generation and withdraws the key's visible-priority claim in the gate (so tiles
+/// still on screen are served first), never the generation itself (which runs to completion; a
+/// folder-wide prefetch wants every key anyway). So a scrolled-past tile costs nothing extra; the
+/// work it kicked off still finishes and lands in the cache for the next appearance.
 struct SMBThumbnailTile: View {
     let item: Item
     let ref: SMBServerRef
