@@ -173,6 +173,27 @@ extension View {
         #endif
     }
 
+    /// Apply to a screen-filling STATIC state (an empty/error placeholder, a loading spinner)
+    /// so the tvOS focus engine still has a target on a screen with no interactive content.
+    /// Without one, focus never enters the screen and the remote goes dead: a Menu press has
+    /// no in-app responder, so instead of popping the navigation stack it SUSPENDS THE APP —
+    /// the empty-SMB-folder trap (sim-reproduced 2026-08-02: pushed "Nothing Here" level,
+    /// Menu lands on the tvOS home screen). With the placeholder focusable, Menu pops
+    /// normally and directional presses can reach surrounding chrome (e.g. the sidebar at a
+    /// tab root). Invisible: a plain focusable view carries no system focus chrome. No-op on iOS.
+    ///
+    /// Pass `false` for a state that sits under permanently-focusable chrome (the Search screen's
+    /// system keyboard): it can never strand the remote, and an invisible full-bleed focus target
+    /// there would capture directional presses with no visible focus ring.
+    @ViewBuilder
+    func tvFocusableSurface(_ isEnabled: Bool = true) -> some View {
+        #if os(tvOS)
+        self.focusable(isEnabled)
+        #else
+        self
+        #endif
+    }
+
     /// Group a row/section so the tvOS focus engine treats it as one unit (preferred focus
     /// target, contained traversal). No-op on iOS.
     @ViewBuilder

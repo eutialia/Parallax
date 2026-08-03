@@ -302,6 +302,10 @@ struct DetailLoadingSkeleton: View {
         .scrollDisabled(true)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Loading details")
+        // This skeleton fills a PUSHED tvOS detail screen (which drops the tab sidebar) with no
+        // interactive content — keep a focus target so a Menu press during a slow load pops the
+        // stack instead of suspending the app (see `tvFocusableSurface()`).
+        .tvFocusableSurface()
     }
 }
 

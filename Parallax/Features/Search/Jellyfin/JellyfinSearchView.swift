@@ -121,6 +121,11 @@ struct JellyfinSearchView: View {
         }
         .screenFloor()
         .itemDetailNavigation()
+        // Search's status states (idle prompt, no results, failed) always render under the
+        // system search keyboard — focus always has a real home here, so the tvOS
+        // focus-target fallback must not add an invisible surface that competes with it
+        // (see `statusStateProvidesTVFocusTarget`).
+        .environment(\.statusStateProvidesTVFocusTarget, false)
         // Keyed on the reload token, not `activeServerID`: search aggregates EVERY signed-in
         // server, so adding or removing one must rebuild the provider list — and adding a second
         // server never moves the active id (see AppRouter.libraryReloadToken).

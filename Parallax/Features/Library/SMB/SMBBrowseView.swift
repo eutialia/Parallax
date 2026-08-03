@@ -82,6 +82,10 @@ struct SMBBrowseView: View {
             } else {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    // A loading level has no interactive content yet; keep a tvOS focus
+                    // target so a Menu press mid-list still pops instead of suspending
+                    // the app (the error/empty branches get theirs via StatusStateView).
+                    .tvFocusableSurface()
             }
         }
         // tvOS deliberately carries NO in-content title, matching `LibraryGridView` (a tvOS
@@ -206,6 +210,8 @@ struct SMBBrowseView: View {
         if model.isLoading, model.folders.isEmpty, model.media.isEmpty {
             ProgressView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // Same tvOS focus-target rule as the pre-model spinner above.
+                .tvFocusableSurface()
         } else if let error = model.error, model.folders.isEmpty, model.media.isEmpty {
             if path.path.isEmpty, model.errorIsSignInRefusal {
                 // Share-root SIGN-IN refusal (libsmb2 EPERM — stale/lost stored password): the
