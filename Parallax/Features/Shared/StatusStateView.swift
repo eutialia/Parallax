@@ -35,6 +35,10 @@ struct StatusStateView: View {
 
     private let layout: Layout
 
+    /// See the `EnvironmentValues` entry below — Search opts its states out of the tvOS
+    /// focus-target fallback.
+    @Environment(\.statusStateProvidesTVFocusTarget) private var providesTVFocusTarget
+
     init(title: String, systemImage: String, message: String? = nil) {
         layout = .labeled(title: title, systemImage: systemImage, message: message)
     }
@@ -133,7 +137,21 @@ struct StatusStateView: View {
         // Search's idle prompt still centers above an open keyboard.
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .ignoresSafeArea(.container, edges: .vertical)
+        // Every bare empty/error screen needs a tvOS focus target, or the remote goes dead
+        // (Menu suspends the app instead of popping — see `tvFocusableSurface()`). Hosts whose
+        // chrome is always focusable (Search's system keyboard) opt out via the environment —
+        // there the surface can't strand, and an invisible focus target would capture presses.
+        .tvFocusableSurface(providesTVFocusTarget)
     }
+}
+
+extension EnvironmentValues {
+    /// Whether a bare `StatusStateView` provides its own tvOS focus target. Defaults on — the
+    /// no-focusable-content screens (empty SMB folder, SMB-only Home, failed feeds) are exactly
+    /// where the remote otherwise goes dead. The Search screen turns it off: its states always
+    /// render under the system search keyboard (and, on tvOS, the persistent scope chips), so
+    /// focus always has a real home and the invisible surface must not compete with it.
+    @Entry var statusStateProvidesTVFocusTarget = true
 }
 
 #if DEBUG

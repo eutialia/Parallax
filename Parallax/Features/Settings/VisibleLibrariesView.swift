@@ -22,10 +22,16 @@ struct VisibleLibrariesView: View {
             if isLoading {
                 ProgressView()
                     .frame(maxWidth: .infinity, minHeight: 140)
+                    // A pushed tvOS screen with no focusable content traps the remote (Menu
+                    // suspends the app instead of popping) — the loading and empty states here
+                    // are exactly that, so each keeps a focus target. The error branch has its
+                    // Retry button; the loaded branch has the library rows.
+                    .tvFocusableSurface()
             } else if let loadError {
                 SettingsRetryError(message: loadError) { Task { await load() } }
             } else if collections.isEmpty {
                 SettingsSectionFooter("This server has no libraries.")
+                    .tvFocusableSurface()
             } else {
                 SettingsGroup(footer: "Hidden libraries won’t appear in your library list.") {
                     ForEach(collections) { collection in
