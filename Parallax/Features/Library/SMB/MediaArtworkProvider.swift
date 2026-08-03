@@ -1,4 +1,5 @@
 import Foundation
+import os
 import OSLog
 import ParallaxCore
 import ParallaxFileBrowse
@@ -28,13 +29,19 @@ struct MediaArtwork: Sendable, Equatable {
 /// then visibly demands — awaits that shared task rather than starting a duplicate. Generation tasks
 /// RUN TO COMPLETION once started: they are never cancelled, so a scrolled-past tile's frame-grab is
 /// NOT wasted work — the viewport-ahead prefetch window wants every nearby key anyway, and abandoning
-/// the decode would just re-charge it on the next scroll. A tile scrolling off only abandons its *await* of the shared
-/// task (awaiting a `Never`-failure `Task.value` doesn't propagate the awaiter's cancellation), never
-/// the generation.
+/// the decode would just re-charge it on the next scroll. A tile scrolling off abandons its *await* of the shared
+/// task (awaiting a `Never`-failure `Task.value` doesn't propagate the awaiter's cancellation) and
+/// withdraws the key's VISIBLE claim (`gate.demote`) — never the generation itself.
 ///
-/// **Gate.** A multi-permit, two-priority async gate (`ThumbnailGate`) bounds concurrent SMB work.
-/// Visible requests outrank prefetch; `promote` moves a demanded key ahead of the prefetch backlog
-/// (gate-owned, so it catches a generation that hasn't queued yet). Concurrency is a constant 3, but
+/// **Gate.** A multi-permit, two-band async gate (`ThumbnailGate`) bounds concurrent SMB work.
+/// Visibly demanded keys outrank prefetch warming, and the demand record is GATE-OWNED and
+/// COUNTED, bracketed here around each visible await (`awaitVisibly`): `promote` opens a claim
+/// before awaiting, `demote` closes it when the await ends — by the tile's cancellation
+/// (scroll-off) or by the generation completing. So the band a generation queues in always
+/// reflects what is on screen NOW — not what was when it was scheduled. Without the demote half,
+/// a fast scroll left every transiently mounted tile queued at visible priority in mount order,
+/// and the tiles actually on screen drained LAST (the fetches-start-from-the-top bug).
+/// Concurrency is a constant 3, but
 /// admission is link-class-aware: at most ONE wan/unknown-classed generation runs at a time — because
 /// 2 permits were MEASURED WORSE over VPN (2026-07-10: fetches are BANDWIDTH-bound, each moves
 /// 7–17 MB, and two in flight split the link into lockstep timeouts that each throw away a full
@@ -70,7 +77,7 @@ actor MediaArtworkProvider {
     /// shapes each generation's gate admission (WAN serialised to 1, LAN up to 3).
     private let pool: SMBSharePool
 
-    /// Multi-permit, two-priority gate — see the type doc. Admission is link-class-aware (3 wide,
+    /// Multi-permit, two-band gate — see the type doc. Admission is link-class-aware (3 wide,
     /// WAN serialised to 1). The 2-permit-worse-over-VPN measurement (2026-07-10) is why WAN pins to 1.
     private let gate = ThumbnailGate()
 
@@ -142,37 +149,62 @@ actor MediaArtworkProvider {
     ///
     /// Order matters for cost: the cache key is built from the ItemID's decoded path alone (no
     /// Keychain), so a disk hit or a negative-cache skip returns WITHOUT a Keychain round-trip or the
-    /// gate. Only a genuine miss coalesces onto gated generation. A visible request `bump`s a pending
-    /// prefetch for the same key ahead of the prefetch queue. Cancelling the caller's task (scroll-off)
-    /// abandons only this await — the shared generation runs to completion for the next requester.
+    /// gate. Only a genuine miss coalesces onto gated generation, with a visible claim on the key
+    /// held in the gate for the lifetime of this await (`awaitVisibly`) — the shared generation
+    /// runs to completion either way, only its place in line changes.
     func artwork(for item: Item, ref: SMBServerRef, sidecar: SMBDirectoryEntry?) async -> MediaArtwork {
         guard let key = thumbnailKey(for: item, ref: ref) else { return .none }
 
         if let hit = await cache.existing(for: key) { return MediaArtwork(source: .local(hit.url), duration: hit.duration) }
         if await isNegativelyCached(key) { return .none }
 
-        if let existing = pending[key] {
-            // A visible tile wants a key another request already scheduled — promote it ahead of the
-            // prefetch backlog. Gate-OWNED promotion: the key is recorded in the gate and consulted
-            // atomically at enqueue, so this also catches a generation task that hasn't reached
-            // `wait` yet (still suspended in `linkClass`), which a queued-waiter-only bump would miss.
-            await gate.promote(key)
-            if pending[key] == nil {
-                // The generation completed while `promote` hopped actors, and actor hops from
-                // separate tasks are UNORDERED — its `forget` may have run BEFORE our `promote`,
-                // stranding the key in the gate's promotion set. Re-forget; idempotent either way.
-                await gate.forget(key)
+        // A key another request already scheduled coalesces onto the pending task; only a genuine
+        // first request schedules. Either way `awaitVisibly` opens the visible claim — for a
+        // coalesced prefetch generation, `promote` also moves its already-queued waiter up.
+        let generation = pending[key] ?? scheduleGeneration(key: key, item: item, ref: ref, sidecar: sidecar)
+        return await awaitVisibly(generation, key: key)
+    }
+
+    /// Awaits a shared generation on behalf of a VISIBLE tile, holding a visible claim on `key` in
+    /// the gate for exactly the await's lifetime: `promote` opens it; `demote` closes it on the
+    /// tile's cancellation (scroll-off, item-identity change — the queued waiter then moves behind
+    /// the tiles still on screen) or when the await returns. The generation itself is never
+    /// cancelled (see the type doc).
+    ///
+    /// The claim is COUNTED in the gate, so the pairing survives unordered actor hops (a stale
+    /// cancellation demote landing after a re-appearing tile's promote closes only its own claim).
+    /// The two close paths RACE for one claim, though: a cancelled awaiter still returns when the
+    /// generation finishes, so without the one-shot guard it would demote twice — and the extra
+    /// close can strip a claim a concurrent awaiter of the same key opened, mis-banding a visible
+    /// generation into the evictable prefetch backlog. Whichever path wins the lock closes; the
+    /// loser is a no-op.
+    private func awaitVisibly(_ task: Task<MediaArtwork, Never>, key: SMBThumbnailKey) async -> MediaArtwork {
+        await gate.promote(key)
+        let gate = gate
+        let closed = OSAllocatedUnfairLock(initialState: false)
+        @Sendable func closeClaim() async {
+            let firstClose = closed.withLock { alreadyClosed in
+                defer { alreadyClosed = true }
+                return !alreadyClosed
             }
-            return await existing.value
+            if firstClose { await gate.demote(key) }
         }
-        return await scheduleGeneration(key: key, item: item, ref: ref, sidecar: sidecar, priority: .visible).value
+        let value = await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            // Runs at scroll-off; `gate`/`closed` are Sendable values, readable here.
+            Task { await closeClaim() }
+        }
+        await closeClaim()
+        return value
     }
 
     /// Warms a viewport-ahead SLICE of a browsed folder — the view hands over ~a dozen rows past the
     /// tile that just appeared, NOT the whole listing (explicit user policy, perception over
     /// completeness: scroll landings stay warm while a huge directory never fetches wall-to-wall).
-    /// Schedules generation for the items not already cached / negatively-cached / pending, at
-    /// PREFETCH priority (yielding to visible tiles), and does NOT await them. Runs on every link
+    /// Schedules generation for the items not already cached / negatively-cached / pending — with
+    /// no visible claim, so they queue in the prefetch band (yielding to visible tiles) — and does
+    /// NOT await them. Runs on every link
     /// class; the coalescing (a visible `artwork(for:)` for the same key just awaits the
     /// already-running task) means a prefetch is never duplicated work, only earlier work.
     ///
@@ -191,7 +223,7 @@ actor MediaArtworkProvider {
             if pending[key] != nil { continue }
             if await cache.existing(for: key) != nil { continue }
             if await isNegativelyCached(key) { continue }
-            _ = scheduleGeneration(key: key, item: item, ref: ref, sidecar: sidecars[item.id], priority: .prefetch)
+            _ = scheduleGeneration(key: key, item: item, ref: ref, sidecar: sidecars[item.id])
         }
     }
 
@@ -226,15 +258,17 @@ actor MediaArtworkProvider {
     }
 
     /// Creates (or returns the existing) shared generation task for `key`, stored in `pending`. The
-    /// task runs to completion and clears its own `pending` entry.
+    /// task runs to completion and clears its own `pending` entry. It carries NO band of its own:
+    /// the gate's demand record decides visible-vs-prefetch when the generation reaches `wait`, and
+    /// that record is owned entirely by the visible awaiters (`awaitVisibly`) — nothing to clean
+    /// up here on completion.
     private func scheduleGeneration(
-        key: SMBThumbnailKey, item: Item, ref: SMBServerRef, sidecar: SMBDirectoryEntry?, priority: GatePriority
+        key: SMBThumbnailKey, item: Item, ref: SMBServerRef, sidecar: SMBDirectoryEntry?
     ) -> Task<MediaArtwork, Never> {
         if let existing = pending[key] { return existing }
         let task = Task { [self] in
-            let result = await generate(key: key, item: item, ref: ref, sidecar: sidecar, priority: priority)
+            let result = await generate(key: key, item: item, ref: ref, sidecar: sidecar)
             pending[key] = nil
-            await gate.forget(key)  // drop any recorded promotion with the completed generation
             return result
         }
         pending[key] = task
@@ -243,11 +277,11 @@ actor MediaArtworkProvider {
 
     // MARK: - Generation
 
-    /// One full generation: read the link class, acquire a gate permit at `priority` (or bail if the
-    /// bounded prefetch backlog evicted this waiter), run the held-permit pipeline (sidecar →
-    /// frame-grab), then release. Never throws.
+    /// One full generation: read the link class, acquire a gate permit (or bail if the bounded
+    /// prefetch backlog evicted this waiter), run the held-permit pipeline (sidecar → frame-grab),
+    /// then release. Never throws.
     private func generate(
-        key: SMBThumbnailKey, item: Item, ref: SMBServerRef, sidecar: SMBDirectoryEntry?, priority: GatePriority
+        key: SMBThumbnailKey, item: Item, ref: SMBServerRef, sidecar: SMBDirectoryEntry?
     ) async -> MediaArtwork {
         // Link class shapes ADMISSION, not a global limit: the gate always allows 3 concurrent
         // generations but at most ONE wan/unknown-classed one (the measured-worse-over-VPN result),
@@ -255,7 +289,7 @@ actor MediaArtworkProvider {
         // fetch.
         let link = await pool.linkClass(host: ref.data.host)
 
-        guard await gate.wait(key: key, priority: priority, link: link) else {
+        guard await gate.wait(key: key, link: link) else {
             // Evicted from the bounded prefetch backlog (superseded by newer windows before any
             // permit): no SMB work happened, so record NOTHING — a visible request or a re-entered
             // window simply reschedules it (the pending entry clears in scheduleGeneration's tail).
@@ -572,161 +606,4 @@ private extension SMBHTTPBridge.Stats {
     }
 }
 
-// MARK: - Gate
-
-private enum GatePriority: Sendable {
-    /// A tile currently on screen wants this key — served before any prefetch.
-    case visible
-    /// Warming a folder ahead of scroll — yields to every visible request.
-    case prefetch
-}
-
-/// FIFO list of continuation waiters, keyed by an optional generation key and the waiter's link
-/// class (both nil for the playback hold, which is key- and class-agnostic). A value type owned by
-/// an actor: every mutation runs under that actor's isolation, so the stored `CheckedContinuation`s
-/// never cross an isolation boundary. Continuations resume with a Bool — true = proceed (permit
-/// granted / hold released), false = ABANDONED (evicted from the bounded prefetch backlog; the
-/// generation bails without SMB work). Shared by `ThumbnailGate` and the playback hold so the FIFO
-/// bookkeeping exists once.
-private struct WaiterList {
-    typealias Waiter = (key: SMBThumbnailKey?, link: SMBLinkClass?, continuation: CheckedContinuation<Bool, Never>)
-
-    private var waiters: [Waiter] = []
-
-    var count: Int { waiters.count }
-
-    mutating func add(key: SMBThumbnailKey?, link: SMBLinkClass?, _ continuation: CheckedContinuation<Bool, Never>) {
-        waiters.append((key, link, continuation))
-    }
-
-    /// Removes and returns the first waiter whose link class passes `admissible`, or nil. FIFO within
-    /// the admissible subset — a WAN waiter blocked by the wan cap is skipped, not head-of-line
-    /// blocking the LAN waiters behind it.
-    mutating func removeFirst(where admissible: (SMBLinkClass?) -> Bool) -> Waiter? {
-        guard let index = waiters.firstIndex(where: { admissible($0.link) }) else { return nil }
-        return waiters.remove(at: index)
-    }
-
-    /// Removes and returns the OLDEST waiter unconditionally (the prefetch-backlog eviction), or nil.
-    mutating func removeOldest() -> Waiter? {
-        waiters.isEmpty ? nil : waiters.removeFirst()
-    }
-
-    /// Removes the first waiter matching `key` (for gate promotion), or nil.
-    mutating func removeWaiter(key: SMBThumbnailKey) -> Waiter? {
-        guard let index = waiters.firstIndex(where: { $0.key == key }) else { return nil }
-        return waiters.remove(at: index)
-    }
-
-    /// Releases every waiter to proceed. Snapshot-then-clear so no resume observes a stale queue.
-    mutating func resumeAll() {
-        let all = waiters
-        waiters = []
-        for waiter in all { waiter.continuation.resume(returning: true) }
-    }
-}
-
-/// Multi-permit, two-priority async gate bounding concurrent SMB thumbnail work, with link-class-
-/// aware admission.
-///
-/// Concurrency is a CONSTANT `maxConcurrent` (3), but at most ONE wan/unknown-classed generation
-/// holds a permit at a time — the 2-permit-worse-over-VPN measurement (2026-07-10: bandwidth
-/// contention, lockstep timeouts each wasting a full 10+ MB download) enforced structurally per
-/// permit HOLDER. A settable global limit was rejected: with two hosts of different classes, a later
-/// LAN generation's "widen to 3" would land under a live WAN fetch and reintroduce exactly the
-/// measured pathology (last-writer-wins). Per-holder accounting can't: the WAN cap travels with the
-/// permit. A WAN transfer plus fast LAN grabs coexist because they don't share a bottleneck link.
-///
-/// Two FIFO waiter lists: visible requests are admitted before prefetch. Promotion is gate-OWNED:
-/// `promote(key)` records the key in a set consulted atomically at enqueue AND moves any
-/// already-queued prefetch waiter to the visible band — so a visible demand can never miss a
-/// generation task that hasn't reached `wait` yet (the pre-enqueue window a queued-waiter-only bump
-/// would lose). `forget(key)` drops the record when the key's generation completes.
-private actor ThumbnailGate {
-    private static let maxConcurrent = 3
-    /// Ceiling on QUEUED prefetch waiters. Prefetch windows accumulate across folders (generations
-    /// are never cancelled), so without a bound a drill-through-many-folders session queues stale
-    /// work that saturates a WAN link for minutes after the user left. Beyond the cap, the OLDEST
-    /// queued prefetch waiter is resumed as ABANDONED (false) — it did no SMB work, records no
-    /// failure, and a visible request or a re-entered window simply reschedules it. Roughly one
-    /// window's worth: newer windows describe where the user actually is.
-    private static let maxQueuedPrefetch = 24
-
-    private var inFlight = 0
-    /// WAN/unknown-classed permits currently held — `admissible` caps this at 1.
-    private var wanInFlight = 0
-    private var visible = WaiterList()
-    private var prefetch = WaiterList()
-    /// Keys a tile visibly demanded, consulted at enqueue so a late-arriving waiter lands in the
-    /// visible band even when `promote` ran before its generation task reached `wait`.
-    private var promotedKeys: Set<SMBThumbnailKey> = []
-
-    /// Acquires a permit, suspending (FIFO within the priority band) until admissible. Returns true
-    /// with the permit held, or false when the waiter was evicted from the bounded prefetch backlog
-    /// — the caller must bail without SMB work and WITHOUT `signal`ing (no permit was granted).
-    func wait(key: SMBThumbnailKey, priority: GatePriority, link: SMBLinkClass?) async -> Bool {
-        if admissible(link) {
-            account(link)
-            return true
-        }
-        return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
-            let effective: GatePriority = promotedKeys.contains(key) ? .visible : priority
-            switch effective {
-            case .visible:
-                visible.add(key: key, link: link, continuation)
-            case .prefetch:
-                prefetch.add(key: key, link: link, continuation)
-                if prefetch.count > Self.maxQueuedPrefetch, let evicted = prefetch.removeOldest() {
-                    evicted.continuation.resume(returning: false)
-                }
-            }
-        }
-        // Resumed by `admit` (true; permit already accounted) or backlog eviction (false).
-    }
-
-    /// Releases a held permit (declassing it) and admits the next admissible waiter (visible first).
-    func signal(link: SMBLinkClass?) {
-        inFlight -= 1
-        if link != .lan { wanInFlight -= 1 }
-        admit()
-    }
-
-    /// Records a visible demand for `key` and moves an already-queued prefetch waiter for it to the
-    /// visible band. Safe to call before the key's generation reaches `wait` — the recorded key is
-    /// consulted at enqueue, closing that race. (No `admit` here: moving bands frees no permit.)
-    func promote(_ key: SMBThumbnailKey) {
-        promotedKeys.insert(key)
-        guard let waiter = prefetch.removeWaiter(key: key) else { return }
-        visible.add(key: key, link: waiter.link, waiter.continuation)
-    }
-
-    /// Drops a completed key's promotion record (its generation finished; nothing left to promote).
-    func forget(_ key: SMBThumbnailKey) {
-        promotedKeys.remove(key)
-    }
-
-    /// A `link`-classed generation may take a permit: a free slot, and — for wan/unknown — no other
-    /// wan/unknown permit in flight.
-    private func admissible(_ link: SMBLinkClass?) -> Bool {
-        guard inFlight < Self.maxConcurrent else { return false }
-        return link == .lan || wanInFlight == 0
-    }
-
-    private func account(_ link: SMBLinkClass?) {
-        inFlight += 1
-        if link != .lan { wanInFlight += 1 }
-    }
-
-    /// Hands out permits to waiting generations while any is admissible: visible band first, then
-    /// prefetch, skipping over waiters the wan cap blocks (a blocked WAN waiter admits as soon as the
-    /// running WAN permit frees; LAN waiters behind it need not wait for that). Each admitted
-    /// waiter's permit is accounted here (its `wait` won't re-account).
-    private func admit() {
-        while true {
-            guard let waiter = visible.removeFirst(where: { admissible($0) })
-                ?? prefetch.removeFirst(where: { admissible($0) }) else { break }
-            account(waiter.link)
-            waiter.continuation.resume(returning: true)
-        }
-    }
-}
+// The gate and its waiter bookkeeping live in `ThumbnailGate.swift`.
