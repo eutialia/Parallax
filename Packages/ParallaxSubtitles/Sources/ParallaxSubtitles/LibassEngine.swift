@@ -18,6 +18,22 @@ final class LibassEngine {
     let renderer: OpaquePointer
     private(set) var track: UnsafeMutablePointer<ASS_Track>?
 
+    /// libass' own diagnostics (font selection, parse complaints), captured via the
+    /// message callback instead of the default stderr spam. Font problems are
+    /// invisible in the output bitmap — a missing glyph renders as a perfectly
+    /// valid tofu box — so this log is the only ground truth for "which font did
+    /// libass actually use". Ring-buffered; confined to the owning actor like
+    /// every other libass structure here.
+    final class MessageLog {
+        private(set) var lines: [String] = []
+        func append(level: Int32, message: String) {
+            if lines.count >= 400 { lines.removeFirst(100) }
+            lines.append("[\(level)] \(message)")
+        }
+    }
+
+    let messageLog = MessageLog()
+
     /// The `Name` buffer for `ass_set_selective_style_override`, alive as long as
     /// the renderer is.
     ///
@@ -29,7 +45,7 @@ final class LibassEngine {
     /// header implies is safe, would leave libass holding a dangling pointer.
     let overrideStyleName: UnsafeMutablePointer<CChar>
 
-    init?(defaultFontFamily: String) {
+    init?(defaultFontFamily: String, defaultFontPath: String? = nil) {
         // Allocated first so a failure here needs no libass teardown.
         guard let overrideStyleName = strdup("Default") else { return nil }
         guard let library = ass_library_init() else {
@@ -45,13 +61,39 @@ final class LibassEngine {
         self.library = library
         self.renderer = renderer
 
-        // libass logs to stderr by default, which would spam a media app's console.
-        ass_set_message_cb(library, { _, _, _, _ in }, nil)
+        // Route libass' messages (stderr by default) into the ring buffer. The
+        // callback context is a raw pointer to `messageLog`; libass only invokes
+        // the callback synchronously inside calls we make from the owning actor,
+        // and the engine (which retains the log) outlives the library handle.
+        ass_set_message_cb(
+            library,
+            { level, format, args, context in
+                guard let format, let context, level <= 6 else { return }
+                var buffer = [CChar](repeating: 0, count: 512)
+                if let args {
+                    vsnprintf(&buffer, buffer.count, format, args)
+                } else {
+                    strlcpy(&buffer, format, buffer.count)
+                }
+                let log = Unmanaged<MessageLog>.fromOpaque(context).takeUnretainedValue()
+                log.append(level: level, message: String(cString: buffer))
+            },
+            Unmanaged.passUnretained(messageLog).toOpaque()
+        )
 
-        // CoreText only. There is no fontconfig on Apple platforms and we ship no
-        // font files of our own, so system faces are the whole font universe.
+        // CoreText for system faces, plus an optional default font FILE — the
+        // last-resort face for glyphs no openable system font covers. Needed
+        // because CoreText's CJK fallback answer is PingFang, whose modern
+        // container FreeType cannot parse ("loca table missing") — without a
+        // readable default, every Chinese-first run renders as tofu.
         defaultFontFamily.withCString { family in
-            ass_set_fonts(renderer, nil, family, Int32(ASS_FONTPROVIDER_CORETEXT.rawValue), nil, 1)
+            if let defaultFontPath {
+                defaultFontPath.withCString { path in
+                    ass_set_fonts(renderer, path, family, Int32(ASS_FONTPROVIDER_CORETEXT.rawValue), nil, 1)
+                }
+            } else {
+                ass_set_fonts(renderer, nil, family, Int32(ASS_FONTPROVIDER_CORETEXT.rawValue), nil, 1)
+            }
         }
         // Hinting fights smooth scaling and breaks positioned scripts.
         ass_set_hinting(renderer, ASS_HINTING_NONE)
