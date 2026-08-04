@@ -11,7 +11,6 @@ enum LicenseDoc: String, Hashable {
     case mitGet = "mit-get"
     case ccBySa4 = "cc-by-sa-4.0"
     case iscLibass = "isc-libass"
-    case oflNoto = "ofl-noto"
 
     var displayName: String {
         switch self {
@@ -21,7 +20,6 @@ enum LicenseDoc: String, Hashable {
         case .mitNuke, .mitGet: "MIT License"
         case .ccBySa4: "Creative Commons BY-SA 4.0"
         case .iscLibass: "ISC License"
-        case .oflNoto: "SIL Open Font License 1.1"
         }
     }
 
@@ -127,17 +125,6 @@ struct Acknowledgement: Identifiable, Hashable {
             licenseName: "ISC (+ FTL / MIT / LGPL-2.1 / zlib components)",
             license: .iscLibass,
             url: "github.com/libass/libass"
-        ),
-        Acknowledgement(
-            name: "Noto Sans CJK",
-            // Bundled as a resource of the subtitle renderer (not an SPM
-            // dependency): the last-resort face for CJK glyphs the system's own
-            // fallback can't supply to FreeType.
-            packageIdentities: [],
-            role: "Subtitle fallback font, © Adobe (Source Han Sans / Noto Sans CJK project)",
-            licenseName: "SIL OFL 1.1",
-            license: .oflNoto,
-            url: "github.com/notofonts/noto-cjk"
         ),
         Acknowledgement(
             name: "VLCKit",

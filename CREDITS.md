@@ -15,7 +15,6 @@ This file mirrors the in-app screen at Settings → About Parallax
 | [SwiftNIO](https://github.com/apple/swift-nio) (+ swift-atomics, swift-collections, swift-system, swift-nio-transport-services) | Apache-2.0 | Local HTTP bridge for SMB playback |
 | [libass](https://github.com/libass/libass) 0.17.5, prebuilt by [mpvkit/libass-build](https://github.com/mpvkit/libass-build) (build scripts MIT) | ISC | Client-side ASS/SSA subtitle renderer |
 | — bundled with libass: [FreeType](https://freetype.org) (FTL), [HarfBuzz](https://github.com/harfbuzz/harfbuzz) (MIT), [FriBidi](https://github.com/fribidi/fribidi) (LGPL-2.1), [libunibreak](https://github.com/adah1972/libunibreak) (zlib) | per component | Font loading, shaping, BiDi, line breaking |
-| [Noto Sans CJK](https://github.com/notofonts/noto-cjk) SC Regular (© Adobe, Source Han Sans project) | SIL OFL 1.1 | Subtitle fallback font — last-resort CJK face for glyphs the system fallback can't hand FreeType |
 
 ¹ The official Jellyfin Swift SDK currently publishes no license file. The Jellyfin
 project distributes it for building clients, so the practical risk is small.

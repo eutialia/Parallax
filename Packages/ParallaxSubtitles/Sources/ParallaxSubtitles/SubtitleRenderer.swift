@@ -24,11 +24,12 @@ public actor SubtitleRenderer {
     /// - Parameters:
     ///   - defaultFontFamily: used when a script names a font that is not
     ///     installed, and as the font of converted SRT/WebVTT sidecars.
-    ///   - defaultFontURL: a font FILE handed to libass as the last-resort face
-    ///     for glyphs nothing else covers. Defaults to the bundled CJK fallback.
+    ///   - defaultFontURL: an optional font FILE handed to libass as the
+    ///     last-resort face (test seam; production needs none — glyphs the
+    ///     system's own files can't supply are synthesized per track).
     public init(
         defaultFontFamily: String = "Helvetica Neue",
-        defaultFontURL: URL? = SubtitleFallbackFont.bundledURL
+        defaultFontURL: URL? = nil
     ) {
         self.defaultFontFamily = defaultFontFamily
         self.defaultFontURL = defaultFontURL
@@ -40,6 +41,7 @@ public actor SubtitleRenderer {
         let engine = try activeEngine()
 
         var bytes: [UInt8]
+        let scanText: String
         if format.needsConversion {
             guard let text = String(data: data, encoding: .utf8) else {
                 throw SubtitleError.undecodableText
@@ -49,10 +51,32 @@ public actor SubtitleRenderer {
             default: WebVTTToASSConverter.script(from: text, fontFamily: defaultFontFamily)
             }
             bytes = Array(script.utf8)
+            scanText = text
         } else {
             bytes = Array(data)
+            // Lossy decode is fine here: this string is only scanned for CJK
+            // coverage, and anything the decode mangles wasn't a renderable
+            // scalar to begin with.
+            scanText = String(decoding: data, as: UTF8.self)
         }
         guard !bytes.isEmpty else { throw SubtitleError.noCues }
+
+        // Cover glyphs whose system font FreeType can't read (Apple's hvgl CJK
+        // faces): synthesize per-track subsets of the SYSTEM font's own outlines
+        // and register them under the same family, so libass' fallback finds
+        // exactly what CoreText would have drawn. Before loadTrack, so shaping
+        // sees the fonts on the first render.
+        for subset in SystemGlyphFont.unreadableFamilySubsets(
+            for: SystemGlyphFont.candidateScalars(in: scanText),
+            baseFamily: defaultFontFamily
+        ) {
+            engine.addMemoryFont(
+                name: subset.familyName,
+                data: subset.data,
+                defaultFamily: defaultFontFamily,
+                defaultFontPath: defaultFontURL?.path
+            )
+        }
 
         try engine.loadTrack(bytes: &bytes)
         hasEmittedFrame = false
