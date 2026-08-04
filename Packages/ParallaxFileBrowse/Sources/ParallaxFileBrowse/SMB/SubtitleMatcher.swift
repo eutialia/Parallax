@@ -46,22 +46,10 @@ enum SubtitleMatcher {
     ]
 
     /// Language codes recognised for labels. Combo codes (`jptc`, `sc_jp`→`sc.jp`) are handled by
-    /// separator splitting before lookup, so only atomic codes live here.
-    private static let languageTokens: Set<String> = [
-        "en", "eng", "english",
-        "ja", "jp", "jpn", "japanese",
-        "chs", "sc", "gb", "gbsc", "zh",
-        "cht", "tc", "big5",
-        "ko", "kor", "korean",
-        "fr", "fra", "fre",
-        "es", "spa",
-        "de", "ger", "deu",
-        "it", "ita",
-        "pt", "por",
-        "ru", "rus",
-        "ar", "ara",
-        "nl", "nld", "dut",
-    ]
+    /// separator splitting before lookup, so only atomic codes live here. Derived from
+    /// `SubtitleLabelInfo`'s translation table so a token the matcher labels with is always one
+    /// the display layer can translate — extend the vocabulary THERE, not here.
+    private static let languageTokens: Set<String> = Set(SubtitleLabelInfo.languageTagByToken.keys)
 
     /// Subtitle qualifier flags appended after the language in a label. `hi`/`full` are deliberately
     /// omitted — too collision-prone with ordinary title words.
@@ -340,11 +328,10 @@ enum SubtitleMatcher {
     }
 
     /// Recognised multi-language combo token (`jptc`, `jpsc`, `big5gb`). Separator-joined combos
-    /// like `sc_jp` are split into atomic codes by the tokenizer before lookup, so only these
-    /// no-separator combos need listing here.
+    /// like `sc_jp` are split into atomic codes by the tokenizer before lookup, so only the
+    /// no-separator combos (shared with `SubtitleLabelInfo`'s translation table) are checked.
     private static func combinationLanguage(_ token: String) -> String? {
-        let combos: Set<String> = ["jptc", "jpsc", "big5gb"]
-        return combos.contains(token) ? token : nil
+        SubtitleLabelInfo.comboLanguageTags[token] != nil ? token : nil
     }
 
     /// A language code, language combo, or subtitle qualifier — i.e. a token that labels a track

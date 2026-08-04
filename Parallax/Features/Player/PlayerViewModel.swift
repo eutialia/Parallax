@@ -4,6 +4,7 @@ import Observation
 import os
 import CoreMedia
 import ParallaxCore
+import ParallaxFileBrowse
 import ParallaxJellyfin
 import ParallaxPlayback
 import ParallaxSubtitles
@@ -2355,7 +2356,7 @@ final class PlayerViewModel {
                 // nil) uses the pre-built `smbExternalSubtitleTracks` — either way the engine's
                 // embedded inventory can't clobber the sidecar picks.
                 let externalSubs = resolved.map(Self.externalSubtitleTracks) ?? smbExternalSubtitleTracks
-                availableSubtitleTracks = tracks.subtitles + externalSubs
+                availableSubtitleTracks = tracks.subtitles.map(Self.normalizedEmbeddedSubtitle) + externalSubs
                 // Reflect the engine's default selection so the menus show a
                 // checkmark on the track that's actually playing. Don't clobber
                 // a choice the user already made (a late/duplicate .ready).
@@ -2363,7 +2364,12 @@ final class PlayerViewModel {
                     selectedAudioTrack = tracks.audio.first { $0.id == tracks.selectedAudioID }
                 }
                 if selectedSubtitleTrack == nil {
-                    selectedSubtitleTrack = tracks.subtitles.first { $0.id == tracks.selectedSubtitleID }
+                    // The normalized copy, not the raw engine track — the chip shows
+                    // `selectedSubtitleTrack.displayName` directly, so an un-normalized
+                    // adoption would flash "SubRip" while the menu row reads "English".
+                    selectedSubtitleTrack = tracks.subtitles
+                        .first { $0.id == tracks.selectedSubtitleID }
+                        .map(Self.normalizedEmbeddedSubtitle)
                 }
                 // First inventory only: steer the engine's own picks toward the
                 // user's Jellyfin language preferences (AVKit selects by system
@@ -2736,22 +2742,101 @@ final class PlayerViewModel {
     /// renderer can't ingest (e.g. `.sub`/`.idx` image subs) never becomes a menu entry
     /// that draws nothing; `subtitleURLs` itself stays unfiltered.
     private static func externalSubtitleTracks(urls: [Int: URL], labels: [Int: String]) -> [SubtitleTrack] {
-        urls.keys.sorted().compactMap { index -> SubtitleTrack? in
+        let built = urls.keys.sorted().compactMap { index -> (track: SubtitleTrack, raw: String)? in
             guard let url = urls[index],
                   renderableSidecarExtensions.contains(url.pathExtension.lowercased())
             else { return nil }
             let format = url.pathExtension.uppercased()
             let detail = format.isEmpty ? "External" : "\(format) · External"
-            return SubtitleTrack(
+            // Translate the filename-derived label ("zh.hi", "en.forced") into the
+            // same naming tier the Jellyfin path uses: localized language name +
+            // SDH/forced flags. Labels with no recognised tokens ("Default", a
+            // release-group tag) pass through verbatim. The language tag also
+            // makes SMB sidecars visible to remembered-language matching.
+            let raw = labels[index] ?? "Subtitle \(index + 1)"
+            let info = SubtitleLabelInfo(label: raw)
+            let track = SubtitleTrack(
                 id: .jellyfinStream(index),
-                displayName: labels[index] ?? "Subtitle \(index + 1)",
-                languageCode: nil,
-                isForced: false,
+                displayName: info.displayName(fallback: raw),
+                languageCode: info.languageTags.first,
+                isForced: info.isForced,
                 detailLabel: detail,
                 isExternal: true,
-                isSDH: false
+                isSDH: info.isSDH
+            )
+            return (track, raw)
+        }
+        // Ambiguity guard: translation can collapse distinct labels onto one menu
+        // row ("en" and "en.full" both read "English") — when name AND detail
+        // collide, those tracks fall back to their raw labels; a pretty name the
+        // user can't tell apart is worse than the filename tag it replaced.
+        let rowCounts = Dictionary(
+            built.map { (key: $0.track.displayName + "|" + ($0.track.detailLabel ?? ""), value: 1) },
+            uniquingKeysWith: +
+        )
+        return built.map { track, raw in
+            guard track.displayName != raw,
+                  rowCounts[track.displayName + "|" + (track.detailLabel ?? ""), default: 0] > 1
+            else { return track }
+            return SubtitleTrack(
+                id: track.id,
+                displayName: raw,
+                languageCode: track.languageCode,
+                isForced: track.isForced,
+                detailLabel: track.detailLabel,
+                isExternal: track.isExternal,
+                isSDH: track.isSDH
             )
         }
+    }
+
+    /// VLC's untitled-track fallback names, lowercased → the format name for the
+    /// detail line. An MKV subtitle track with no authored title surfaces from
+    /// libvlc as its codec description ("ASS", "SubRip", "UTF-8"…) — not a name a
+    /// person picks a track by. When the track carries a language, swap in the
+    /// localized language name (the same tier the Jellyfin path's `menuLabel`
+    /// uses) and demote the format to the detail line. Authored titles ("Full
+    /// Subs - [Japanese]") never match this table and pass through verbatim.
+    private static let embeddedFormatFallbackNames: [String: String] = [
+        "ass": "ASS", "ssa": "SSA", "srt": "SRT", "subrip": "SRT",
+        "utf-8": "SRT", "utf8": "SRT", "vtt": "VTT", "webvtt": "VTT",
+        "pgs": "PGS", "hdmv pgs": "PGS", "vobsub": "VobSub",
+        "dvd subtitles": "VobSub", "dvb subtitles": "DVB",
+        "tx3g": "Timed Text", "mov_text": "Timed Text", "t.140": "Timed Text",
+        "microdvd": "SUB",
+    ]
+
+    /// Display normalization for ENGINE-inventoried (embedded) subtitle tracks —
+    /// the engine reports raw container metadata; naming policy lives here.
+    /// Only rewrites tracks whose name is a codec-fallback (table above) or a
+    /// generic "Track N"/"Subtitle N" AND that carry a language code; everything
+    /// else — authored titles, or fallbacks with no language to name — is kept.
+    static func normalizedEmbeddedSubtitle(_ track: SubtitleTrack) -> SubtitleTrack {
+        let lowered = track.displayName
+            .trimmingCharacters(in: .whitespaces)
+            .lowercased()
+        let format = Self.embeddedFormatFallbackNames[lowered]
+        let isGenericNumbered = ["track", "subtitle"].contains { prefix in
+            guard lowered.hasPrefix(prefix) else { return false }
+            let rest = lowered.dropFirst(prefix.count).trimmingCharacters(in: .whitespaces)
+            return !rest.isEmpty && rest.allSatisfy(\.isNumber)
+        }
+        guard format != nil || isGenericNumbered,
+              let language = TrackDisplay.languageName(track.languageCode) else {
+            return track
+        }
+        return SubtitleTrack(
+            id: track.id,
+            displayName: language,
+            languageCode: track.languageCode,
+            isForced: track.isForced,
+            // An engine track that already carries a detail (AVKit tracks matched to
+            // Jellyfin streams) keeps it — only VLC's nil gets the derived one.
+            detailLabel: track.detailLabel ?? format.map { "\($0) · Embedded" } ?? "Embedded",
+            isExternal: track.isExternal,
+            isSDH: track.isSDH,
+            isBurnedIn: track.isBurnedIn
+        )
     }
 
     /// Maps a server subtitle stream to a menu `SubtitleTrack` with a `.jellyfinStream` id
