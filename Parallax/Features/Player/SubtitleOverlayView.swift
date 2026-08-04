@@ -42,19 +42,26 @@ struct SubtitleOverlayView: View {
     @State private var surfaceSize: CGSize = .zero
 
     var body: some View {
-        SubtitleFrameView(
-            frame: clockValid ? frame : nil,
-            pointScale: displayScale,
-            canvasOrigin: videoRect.origin,
-            lift: lift
-        )
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .onGeometryChange(for: CGSize.self) { $0.size } action: { surfaceSize = $0 }
-        // Opt into full-bleed like the video host: PlayerView no longer applies a
-        // blanket .ignoresSafeArea(), so without this the canvas would be inset by
-        // the safe area and every cue would land above the home indicator band.
-        .ignoresSafeArea()
-        .allowsHitTesting(false)
+        // The geometry anchor must be a view that ALWAYS lays out. Hanging
+        // `onGeometryChange` off `SubtitleFrameView` itself deadlocks the pipeline:
+        // frameless, its `if let` body collapses to nothing, the callback never
+        // fires, `surfaceSize` stays .zero — and a zero canvas means the renderer
+        // is never asked for a frame, so it stays frameless forever.
+        Color.clear
+            .onGeometryChange(for: CGSize.self) { $0.size } action: { surfaceSize = $0 }
+            .overlay(alignment: .topLeading) {
+                SubtitleFrameView(
+                    frame: clockValid ? frame : nil,
+                    pointScale: displayScale,
+                    canvasOrigin: videoRect.origin,
+                    lift: lift
+                )
+            }
+            // Opt into full-bleed like the video host: PlayerView no longer applies a
+            // blanket .ignoresSafeArea(), so without this the canvas would be inset by
+            // the safe area and every cue would land above the home indicator band.
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
         // Keyed on the display scale: the drive loop runs off a captured copy of
         // self, so an environment change (external display, Stage Manager move)
         // must restart it to be observed — @Environment doesn't update inside a
