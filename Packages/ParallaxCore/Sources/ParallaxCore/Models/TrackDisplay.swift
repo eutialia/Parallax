@@ -8,11 +8,20 @@ public enum TrackDisplay {
     /// Localized language name for an ISO code ("eng" → "English"), skipping
     /// the codes that carry no usable language (`und` undetermined, `mis`
     /// uncoded, `zxx` no linguistic content). Handles both Jellyfin's ISO
-    /// 639-2 ("eng") and AVFoundation's BCP-47 ("en", "zh-Hant").
+    /// 639-2 ("eng") and AVFoundation's BCP-47 ("en", "zh-Hant"). A tag with a
+    /// SCRIPT subtag resolves through the full-identifier path so the script
+    /// survives — "zh-Hans"/"zh-Hant" read "Chinese, Simplified"/"Chinese,
+    /// Traditional" instead of collapsing to one "Chinese"; region subtags keep
+    /// the plain language-code path (nobody needs "(United States)" on a chip).
     public static func languageName(_ code: String?, locale: Locale = .current) -> String? {
         guard let code, !code.isEmpty else { return nil }
         let lowered = code.lowercased()
         guard lowered != "und", lowered != "mis", lowered != "zxx" else { return nil }
+        let subtags = lowered.split(separator: "-")
+        if subtags.count > 1, subtags[1].count == 4,
+           let scripted = locale.localizedString(forIdentifier: code) {
+            return scripted
+        }
         return locale.localizedString(forLanguageCode: code)
     }
 

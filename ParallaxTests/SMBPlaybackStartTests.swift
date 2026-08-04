@@ -1,6 +1,7 @@
 import Foundation
 import CoreMedia
 import Testing
+import ParallaxCore
 @testable import Parallax
 import ParallaxPlayback
 import ParallaxPlaybackTestSupport
@@ -79,11 +80,16 @@ struct SMBPlaybackStartTests {
         ))
 
         // Both sidecars are selectable menu entries even before any engine .ready beat,
-        // carrying the resolver's labels and client-render `.jellyfinStream` ids.
+        // with the resolver's language labels translated to localized names (the
+        // Jellyfin naming tier) and client-render `.jellyfinStream` ids. Expected
+        // names are computed with the same current-locale call the production path
+        // uses, so the assertion holds on a non-English test host.
         let subs = vm.availableSubtitleTracks
         #expect(subs.count == 2)
-        #expect(subs.contains { $0.id == .jellyfinStream(0) && $0.displayName == "en" && $0.isExternal })
-        #expect(subs.contains { $0.id == .jellyfinStream(1) && $0.displayName == "ja" && $0.isExternal })
+        let english = try #require(TrackDisplay.languageName("en"))
+        let japanese = try #require(TrackDisplay.languageName("ja"))
+        #expect(subs.contains { $0.id == .jellyfinStream(0) && $0.displayName == english && $0.languageCode == "en" && $0.isExternal })
+        #expect(subs.contains { $0.id == .jellyfinStream(1) && $0.displayName == japanese && $0.languageCode == "ja" && $0.isExternal })
     }
 
     @Test("start(smbItem:) surfaces every renderable sidecar (ASS included) and hides formats the renderer can't ingest")
