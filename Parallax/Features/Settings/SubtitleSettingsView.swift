@@ -14,7 +14,12 @@ struct SubtitleSettingsView: View {
 
     var body: some View {
         SettingsScaffold(showsBrand: false) {
-            SubtitleControlsList(style: prefs.style, onChange: { prefs.update($0) })
+            SubtitleControlsList(
+                style: prefs.style,
+                onChange: { prefs.update($0) },
+                overrideAuthored: prefs.overrideAuthoredStyles,
+                onOverrideAuthoredChange: { prefs.setOverrideAuthoredStyles($0) }
+            )
         }
         .navigationTitle("Subtitles")
         #if !os(tvOS)
@@ -50,6 +55,11 @@ struct SubtitleSettingsView: View {
 struct SubtitleControlsList: View {
     let style: SubtitleStyle
     let onChange: (SubtitleStyle) -> Void
+    /// Whether the user's style also replaces AUTHORED ASS/SSA styling. The group
+    /// only renders when a change handler is provided — the floating preview panel
+    /// shows appearance controls only.
+    var overrideAuthored: Bool = false
+    var onOverrideAuthoredChange: ((Bool) -> Void)? = nil
 
     var body: some View {
         #if os(tvOS)
@@ -63,6 +73,7 @@ struct SubtitleControlsList: View {
             fontGroup
             backgroundGroup
             positionGroup
+            if onOverrideAuthoredChange != nil { authoredGroup }
             footnote
         }
     }
@@ -125,8 +136,25 @@ struct SubtitleControlsList: View {
         }
     }
 
+    /// Styled (ASS) tracks carry their creators' colors, fonts and placement. Default
+    /// is to show that as authored; the user can opt into their own style instead.
+    private var authoredGroup: some View {
+        SettingsGroup(title: "Styled Subtitles") {
+            SettingsListRow(
+                title: "Keep Creator Styling",
+                accessory: overrideAuthored ? .none : .checkmark,
+                action: { onOverrideAuthoredChange?(false) }
+            )
+            SettingsListRow(
+                title: "Use My Style",
+                accessory: overrideAuthored ? .checkmark : .none,
+                action: { onOverrideAuthoredChange?(true) }
+            )
+        }
+    }
+
     private var footnote: some View {
-        Text("These settings apply to text subtitles Parallax renders itself. Subtitles built into the video — including styled tracks (anime fan-subs) and image-based ones — keep their original appearance and position.")
+        Text("These settings style the subtitles Parallax renders itself. Styled tracks (anime fan-subs) keep their creators' colors and positions unless “Use My Style” is selected. Subtitles built into the video and image-based tracks always keep their original look.")
             .font(.rowSubtitle)
             .foregroundStyle(Color.secondaryLabel)
             .frame(maxWidth: .infinity, alignment: .leading)

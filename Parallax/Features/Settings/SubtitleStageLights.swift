@@ -3,9 +3,10 @@ import ParallaxPlayback
 
 /// The floating subtitle "lights" — a translucent overlay that fades in over EVERYTHING while the
 /// Subtitles menu is open (the menu itself is a normal pushed screen). The whole view dims, a soft
-/// spotlight pool lifts only the sample cue, and the cue is drawn at its EXACT on-screen playback
-/// position (same `PlayerMetrics.forSurface` geometry + `SubtitleCueText` renderer as the real
-/// `SubtitleOverlayView`), so it's a true 1:1 of playback. Non-interactive — the dimmed menu stays
+/// spotlight pool lifts only the sample cue, drawn with the same style inputs and the same
+/// `PlayerMetrics.forSurface` geometry the playback path derives its sizing from. Since libass
+/// (`ParallaxSubtitles`) took over playback rendering this is a close APPROXIMATION, not a 1:1 —
+/// `SubtitleCueText` draws the preview glyphs in SwiftUI. Non-interactive — the dimmed menu stays
 /// fully tappable underneath; the spotlight + cue track the live style as the user adjusts it.
 struct SubtitleStageLights: View {
     let style: SubtitleStyle

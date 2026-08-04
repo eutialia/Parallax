@@ -226,11 +226,13 @@ struct DebugInfoOverlay: View {
         }
         // Engine truth — the live diagnosis for "selected but doesn't render".
         row("engine ▸", snapshot.selectedLegible ?? "none active")
-        // Client-side path: on a transcode we fetch a correctly-timed sidecar
-        // VTT and draw it ourselves (SubtitleOverlayView), so `engine ▸` reading
-        // "none active" is EXPECTED — the cues render via the overlay, not AVPlayer.
-        if !vm.activeSubtitleCues.isEmpty {
-            row("client ▸", "\(vm.activeSubtitleCues.count) cues · sidecar VTT")
+        // Server truth for the picked track — the only proof a burn-in took.
+        if let delivery = selectedSubtitleDelivery { row("server ▸", delivery) }
+        // Client-side path: we fetch the sidecar and draw it ourselves (libass via
+        // SubtitleOverlayView), so `engine ▸` reading "none active" is EXPECTED —
+        // the track renders via the overlay, not the engine.
+        if let info = vm.sidecarSubtitleInfo {
+            row("client ▸", "\(info.format) sidecar · \(info.byteCount / 1024) KB · libass")
         }
         if let warning = subtitleWarning {
             Text(warning)
@@ -238,9 +240,9 @@ struct DebugInfoOverlay: View {
                 .padding(.top, 2)
         }
         // Retime control for an ENGINE-rendered track (VLC reports a delay; AVKit
-        // doesn't). Gate on the SELECTION (intent), not `activeSubtitleCues` (the
-        // fetched effect): during a sidecar's fetch window the cues are momentarily
-        // empty, and an effect-keyed gate would flash the engine control for a track
+        // doesn't). Gate on the SELECTION (intent), not `subtitleRenderer` (the
+        // fetched effect): during a sidecar's fetch window the renderer is momentarily
+        // nil, and an effect-keyed gate would flash the engine control for a track
         // the engine isn't rendering.
         if vm.selectedSubtitleTrack?.id.jellyfinStreamIndex == nil,
            let delay = snapshot.subtitleDelayMs {
@@ -351,28 +353,61 @@ struct DebugInfoOverlay: View {
         return parts.joined(separator: " · ")
     }
 
-    /// Annotates the delivery method with the sync implication.
+    /// Annotates the delivery method with the sync implication. Compared
+    /// case-insensitively — it's a wire enum name, not a value we control.
     private func deliveryNote(_ method: String) -> String {
-        switch method {
-        case "Hls": "Hls⚠︎desync"
-        case "Encode": "Encode(burn-in)"
+        switch method.lowercased() {
+        case "hls": "\(method)⚠︎desync"
+        case "encode": "\(method)(burn-in)"
         default: method
         }
     }
 
-    /// A live diagnosis line for the two subtitle bugs.
-    private var subtitleWarning: String? {
-        // Client-side rendering active: cues are drawn by SubtitleOverlayView from
-        // a correctly-timed sidecar VTT, so the engine-selection / HLS-desync
-        // diagnostics below don't apply — suppress them to avoid false alarms.
-        if !vm.activeSubtitleCues.isEmpty { return nil }
+    /// What the server says it will do with the SELECTED subtitle, next to what its
+    /// own stream URL asks the encoder for. A burn-in that works reads "Encode" on
+    /// both sides; a burn-in the server quietly declined reads anything else — and
+    /// nothing else in the app can tell the two apart, since the subtitle would live
+    /// inside the video pixels either way.
+    private var selectedSubtitleDelivery: String? {
+        guard let track = vm.selectedSubtitleTrack,
+              let index = track.id.jellyfinStreamIndex
+        else { return nil }
+        let reported = streams(.subtitle).first { $0.index == index }?.subtitleDeliveryMethod ?? "—"
+        var parts = ["server=\(reported)"]
+        if vm.debugResolved?.method == .transcode {
+            let asked = transcodeURLValues(["SubtitleMethod", "SubtitleStreamIndex"])
+            parts.append(asked.isEmpty ? "url=(no subtitle params)" : "url \(asked.joined(separator: " "))")
+        }
+        if track.isBurnedIn {
+            parts.append(vm.serverBurnsInSubtitle(at: index) ? "✔ burning in" : "✗ NOT burning in")
+        }
+        return parts.joined(separator: " · ")
+    }
 
-        let pickedInMenu = vm.selectedSubtitleTrack != nil
-        let activeInEngine = snapshot.selectedLegible != nil
-        if pickedInMenu && !activeInEngine && !snapshot.legibleOptions.isEmpty {
+    /// A live diagnosis line for the subtitle bugs.
+    private var subtitleWarning: String? {
+        // A burn-in the server didn't agree to encode. Checked FIRST and outside the
+        // sidecar suppression below: a burn-in never produces client cues (the server
+        // paints it), so it can't be judged by whether cues are drawing.
+        if let track = vm.selectedSubtitleTrack, track.isBurnedIn,
+           let index = track.id.jellyfinStreamIndex,
+           !vm.serverBurnsInSubtitle(at: index) {
+            return "⚠︎ burn-in picked but the server isn't encoding it — nothing will render"
+        }
+        // Client-side rendering active: the track is drawn by SubtitleOverlayView
+        // from a correctly-timed sidecar, so the diagnostics below don't apply —
+        // suppress them to avoid false alarms.
+        if vm.subtitleRenderer != nil { return nil }
+        // Direct-play EMBEDDED pick that the engine isn't actually rendering — the
+        // live probe for the "selected but nothing draws" class of bug. Gated on a
+        // non-empty legible inventory: that's only ever true where the engine owns
+        // subtitle rendering (our transcodes never carry a legible group).
+        if vm.selectedSubtitleTrack != nil, !snapshot.legibleOptions.isEmpty,
+           snapshot.selectedLegible == nil {
             return "⚠︎ picked in menu but no subtitle active in engine"
         }
-        let hasHlsSub = streams(.subtitle).contains { $0.subtitleDeliveryMethod == "Hls" }
+
+        let hasHlsSub = streams(.subtitle).contains { $0.subtitleDeliveryMethod?.lowercased() == "hls" }
         if hasHlsSub {
             return "⚠︎ HLS/WebVTT delivery — known AVFoundation desync; VLC direct-play or burn-in syncs"
         }
@@ -392,14 +427,20 @@ struct DebugInfoOverlay: View {
         return [observed, indicated].compactMap { $0 }.joined(separator: " · ")
     }
 
-    private var requestedIndices: String? {
+    /// "Key=value" for each of `keys` the server actually put in the stream URL it
+    /// handed back — its own record of what it agreed to build. Shared by the
+    /// DELIVERY "requested" row and the subtitle delivery row.
+    private func transcodeURLValues(_ keys: [String]) -> [String] {
         guard let url = vm.debugResolved?.url,
               let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
-        else { return nil }
-        let keys = ["AudioStreamIndex", "SubtitleStreamIndex", "SubtitleMethod"]
-        let pairs = keys.compactMap { key in
+        else { return [] }
+        return keys.compactMap { key in
             items.first { $0.name == key }?.value.map { "\(key)=\($0)" }
         }
+    }
+
+    private var requestedIndices: String? {
+        let pairs = transcodeURLValues(["AudioStreamIndex", "SubtitleStreamIndex", "SubtitleMethod"])
         return pairs.isEmpty ? nil : pairs.joined(separator: " ")
     }
 

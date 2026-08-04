@@ -181,18 +181,29 @@ enum DeviceProfileTranslator {
         // ASS stays external — a text format, fetched + drawn client-side like VTT/SRT.
         profiles.append(SubtitleProfile(format: "ass", method: .external))
 
-        // PGS/VobSub are IMAGE formats — there is no text to hand back as a sidecar
-        // VTT, so `.external` could never actually match server-side (it silently
-        // fell through to the server's own terminal fallback, which already IS
-        // burn-in). Declaring `.encode` makes that explicit: the server renders the
-        // subtitle into the video and the client just gets a plain HLS stream with no
-        // sub track to select. It's the only way an image sub is ever selectable on
-        // the transcode path (PlaybackInfoService/PlayerViewModel gate this behind an
-        // explicit user pick — burn-in forces a full re-encode, and can even turn an
-        // HDR source SDR server-side; jellyfin-tizen#202 — so it's opt-in, never a
-        // default). Direct-play is unaffected: VLC renders PGS/VobSub natively there.
-        profiles.append(SubtitleProfile(format: "pgs", method: .encode))
-        profiles.append(SubtitleProfile(format: "vobsub", method: .encode))
+        // PGS/VobSub/DVD/DVB are IMAGE formats — there is no text to hand back as a
+        // sidecar VTT, so `.external` could never actually match server-side (it
+        // silently fell through to the server's own terminal fallback, which already
+        // IS burn-in). Declaring `.encode` makes that explicit: the server renders
+        // the subtitle into the video and the client just gets a plain HLS stream
+        // with no sub track to select. It's the only way an image sub is ever
+        // selectable on the transcode path (PlaybackInfoService/PlayerViewModel gate
+        // this behind an explicit user pick — burn-in forces a full re-encode, and
+        // can even turn an HDR source SDR server-side; jellyfin-tizen#202 — so it's
+        // opt-in, never a default). Direct-play is unaffected: VLC renders these
+        // natively there.
+        //
+        // One profile per REAL codec identifier: the server matches a profile by
+        // string equality against the stream's own codec, so the short marketing
+        // spellings this used to send ("pgs", "vobsub") could never match the
+        // "pgssub"/"hdmv_pgs_subtitle"/"dvdsub"/… a server actually reports. The
+        // list is shared with `MediaStreamInfo.isImageSubtitle`, so what the app
+        // calls an image sub and what the profile declares can't drift apart.
+        profiles.append(
+            contentsOf: MediaStreamInfo.imageSubtitleCodecs.map {
+                SubtitleProfile(format: $0, method: .encode)
+            }
+        )
 
         return profiles
     }

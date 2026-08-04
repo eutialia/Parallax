@@ -1,5 +1,5 @@
 {
-  "originHash" : "e17cf8bdbaaf8427b21619b18520f2ab5aeb8d8fdd116c33863b300c66405007",
+  "originHash" : "bf30b64d14f3ad2dc07bdd409219c2f1b14a4a31f9b2748232c35d0a01cf6e7b",
   "pins" : [
     {
       "identity" : "amsmb2",
@@ -26,6 +26,15 @@
       "state" : {
         "revision" : "09d8f31886b6bea1cfc4719a39bdb6eac1287344",
         "version" : "2.1.0"
+      }
+    },
+    {
+      "identity" : "libass-build",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/mpvkit/libass-build.git",
+      "state" : {
+        "revision" : "e08eb5bb3be5137e845f781dc9477d1843f23261",
+        "version" : "0.17.5"
       }
     },
     {

@@ -29,7 +29,7 @@ final class FakeJellyfinPlaybackClient: JellyfinPlaybackClient, @unchecked Senda
     var stopEncodingError: Error?
 
     // Call records.
-    private(set) var playbackInfoCalls: [(itemID: String, profile: DeviceProfile, startTimeTicks: Int?, audioStreamIndex: Int?, subtitleStreamIndex: Int?)] = []
+    private(set) var playbackInfoCalls: [(itemID: String, profile: DeviceProfile, startTimeTicks: Int?, selection: StreamSelection?)] = []
     private(set) var streamURLRequests: [StreamRequest] = []
     private(set) var transcodePaths: [String] = []
     private(set) var subtitleStreamURLRequests: [(itemID: String, mediaSourceID: String, streamIndex: Int, format: String)] = []
@@ -46,11 +46,10 @@ final class FakeJellyfinPlaybackClient: JellyfinPlaybackClient, @unchecked Senda
         itemID: String,
         profile: DeviceProfile,
         startTimeTicks: Int?,
-        audioStreamIndex: Int?,
-        subtitleStreamIndex: Int?
+        selection: StreamSelection?
     ) async throws -> PlaybackInfoResponse {
         try lock.withLock {
-            playbackInfoCalls.append((itemID, profile, startTimeTicks, audioStreamIndex, subtitleStreamIndex))
+            playbackInfoCalls.append((itemID, profile, startTimeTicks, selection))
             return try playbackInfoResult.get()
         }
     }

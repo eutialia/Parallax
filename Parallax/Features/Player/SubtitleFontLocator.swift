@@ -3,9 +3,15 @@ import CoreText
 import os
 import ParallaxCore
 
-/// Materializes **system** fonts for VLC's libass (ASS/SSA) subtitle renderer.
+/// Materializes **system** fonts for VLC's INTERNAL libass (ASS/SSA) subtitle renderer.
 ///
-/// libass on iOS has no font provider (no fontconfig, and this VLCKit build ships no
+/// Scope: EMBEDDED ASS tracks that VLC decodes and composites itself (its subtitle
+/// packets never leave the engine, so the client renderer can't take them). Every
+/// sidecar/external subtitle now renders through `ParallaxSubtitles`, whose own libass
+/// uses the CoreText font provider directly — none of this machinery. This locator can
+/// retire entirely if embedded tracks are ever demuxed client-side.
+///
+/// VLC's libass on iOS has no font provider (no fontconfig, and this VLCKit build ships no
 /// CoreText font-manager module). Reading the VLC + libass source settles how fonts
 /// must be supplied:
 ///

@@ -1,11 +1,13 @@
 import Foundation
 
-/// The canonical look for plain-text subtitles, shared by every renderer so all
-/// three paths read identically:
-/// - the app's client-side overlay (sidecar VTT — the common case for both engines),
+/// The canonical look for plain-text subtitles, shared by every renderer that draws
+/// them:
+/// - the app's client-side sidecar renderer (libass via `ParallaxSubtitles` — the
+///   common case for both engines; this style maps into its selective override),
 /// - AVKit's native WebVTT rendering (direct-play embedded tracks),
 /// - VLC's freetype renderer (direct-play embedded SRT on the VLC engine).
-/// ASS/SSA keep their authored styles (libass); this is the *unstyled* text look only.
+/// Authored ASS/SSA keeps its creator styles by default; this style reaches those
+/// tracks only through the user's explicit "Use My Style" opt-in.
 ///
 /// Boxless by design: a black glyph border plus each renderer's soft shadow carry
 /// legibility on light content, and the fill sits below full white so cues don't
@@ -50,13 +52,15 @@ public struct SubtitleStyle: Sendable, Hashable, Codable {
     /// Shadow vertical offset as a fraction of the font size.
     public let shadowYOffsetRatio: Double
 
-    // MARK: User-configurable (v1 subtitle settings) — overlay-only.
-    // These four are honored ONLY by the client overlay (SubtitleOverlayView);
-    // engine-native renderers (libass/AVKit) read `.standard` and ignore them,
-    // so they can never reach (or break) a self-positioned ASS/CJK track.
+    // MARK: User-configurable (v1 subtitle settings) — client-renderer-only.
+    // These four are honored by the client sidecar renderer; ENGINE-native
+    // renderers (VLC's internal libass for embedded tracks / AVKit legible) read
+    // `.standard` and ignore them. Authored ASS positioning is never affected:
+    // the override maps style, not placement.
 
-    /// Cue size multiplier on the per-surface base size (`PlayerMetrics.subtitleFontSize`).
-    /// 1.0 == the proven per-device base; the size control scales this 0.5…2.0.
+    /// Cue size multiplier on the proven per-device base size
+    /// (`PlayerMetrics.subtitleFontSize`, remapped onto the renderer's script base
+    /// by the overlay). 1.0 == the tuned base; the size control scales this 0.5…2.0.
     public let fontScale: Double
     /// Glyph family for the overlay's SwiftUI `Text`, mapped to `Font.Design` in the
     /// app. Engine-native tracks are unaffected (no font-selection API on iOS).

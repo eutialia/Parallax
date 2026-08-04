@@ -37,12 +37,14 @@ public actor PlaybackInfoService {
 
     // MARK: - Resolve
 
+    /// Negotiates a playable stream for `item`. `selection` is nil on first play —
+    /// the server then applies the user's own audio/subtitle language preferences —
+    /// and carries the explicit picks on a re-resolve after a track switch.
     public func resolve(
         item: ItemID,
         capabilities: DeviceCapabilities,
         startTime: CMTime?,
-        audioStreamIndex: Int? = nil,
-        subtitleStreamIndex: Int? = nil
+        selection: StreamSelection? = nil
     ) async throws -> ResolvedPlayback {
         let startTimeTicks = startTime.map(Self.ticks(from:))
         let profile = DeviceProfileTranslator.deviceProfile(from: capabilities)
@@ -53,8 +55,7 @@ public actor PlaybackInfoService {
                 itemID: item.rawValue,
                 profile: profile,
                 startTimeTicks: startTimeTicks,
-                audioStreamIndex: audioStreamIndex,
-                subtitleStreamIndex: subtitleStreamIndex
+                selection: selection
             )
         } catch {
             throw ErrorMapping.appError(from: error)
@@ -157,12 +158,18 @@ public actor PlaybackInfoService {
         )
     }
 
-    /// Builds an authed sidecar WebVTT URL per TEXT subtitle stream. Image subs
-    /// (PGS/VobSub) are skipped — they're not sidecars, the server burns them into
-    /// the video instead (`DeviceProfileTranslator` declares `.encode` for them).
-    /// Text subs are fetched + rendered client-side to dodge the in-manifest WebVTT
-    /// drift; image subs still appear in `mediaStreams` below (unfiltered) so the
-    /// transcode menu can offer them as an opt-in burn-in pick.
+    /// Builds an authed sidecar URL per TEXT subtitle stream. Image subs (PGS/VobSub)
+    /// are skipped — they're not sidecars, the server burns them into the video
+    /// instead (`DeviceProfileTranslator` declares `.encode` for them). Text subs are
+    /// fetched + rendered client-side to dodge the in-manifest WebVTT drift; image
+    /// subs still appear in `mediaStreams` below (unfiltered) so the transcode menu
+    /// can offer them as an opt-in burn-in pick.
+    ///
+    /// Formats the client renderer ingests natively are requested VERBATIM: the
+    /// server's conversion runs through ffmpeg, which strips ASS styling/positioning
+    /// (and SRT `{\an8}` placement) on the way to VTT — the original bytes are the
+    /// only ones that still carry what the subtitle author wrote. Everything else
+    /// falls back to the server's VTT conversion.
     private static func subtitleStreamURLs(
         streams: [MediaStreamInfo],
         itemID: String,
@@ -175,12 +182,24 @@ public actor PlaybackInfoService {
                 itemID: itemID,
                 mediaSourceID: mediaSourceID,
                 streamIndex: stream.index,
-                format: "vtt"
+                format: Self.sidecarFormat(for: stream.codec)
             ) {
                 map[stream.index] = url
             }
         }
         return map
+    }
+
+    /// The wire format to request for a text subtitle stream, by its source codec.
+    /// `subrip` is Jellyfin's name for SRT streams; the extension the endpoint
+    /// expects is still `srt`.
+    private static func sidecarFormat(for codec: String?) -> String {
+        switch codec?.lowercased() {
+        case "ass": "ass"
+        case "ssa": "ssa"
+        case "srt", "subrip": "srt"
+        default: "vtt"
+        }
     }
 
     /// Parses the `TranscodeReasons` query item the server appends to the

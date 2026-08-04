@@ -136,20 +136,22 @@ struct PlaybackInfoServiceResolveTests {
     /// An explicit pick forces the server to build the transcode around that source track; nil
     /// hands the choice back to the server's own language preferences.
     @Test(
-        "Track indices reach the PlaybackInfo request exactly as given",
-        arguments: [(4, 7) as (Int?, Int?), (nil, nil)]
+        "The selection reaches the PlaybackInfo request exactly as given",
+        arguments: [
+            StreamSelection(mediaSourceID: "ms-2", audioStreamIndex: 4, subtitleStreamIndex: 7),
+            StreamSelection(mediaSourceID: "ms-2", audioStreamIndex: nil, subtitleStreamIndex: 7, burnsInSubtitle: true),
+            nil,
+        ] as [StreamSelection?]
     )
-    func streamIndicesForwarded(audio: Int?, subtitle: Int?) async throws {
+    func streamSelectionForwarded(selection: StreamSelection?) async throws {
         let (service, fake) = makeService(source: transcodeSource())
         _ = try await service.resolve(
             item: ItemID(rawValue: "item-1"),
             capabilities: caps(),
             startTime: nil,
-            audioStreamIndex: audio,
-            subtitleStreamIndex: subtitle
+            selection: selection
         )
-        #expect(fake.playbackInfoCalls.first?.audioStreamIndex == audio)
-        #expect(fake.playbackInfoCalls.first?.subtitleStreamIndex == subtitle)
+        #expect(fake.playbackInfoCalls.first?.selection == selection)
     }
 
     @Test("Source media streams + default indices are mapped to ResolvedPlayback")
@@ -180,15 +182,26 @@ struct PlaybackInfoServiceResolveTests {
     }
 
     /// Image subs (PGS/VobSub) are burned in server-side, so they have no sidecar to fetch — but
-    /// they must still stay in `mediaStreams` so the transcode menu can offer them.
-    @Test("Sidecar URLs are requested for text subtitles only, in vtt")
+    /// they must still stay in `mediaStreams` so the transcode menu can offer them. Text subs are
+    /// requested in their ORIGINAL format when the client renderer ingests it natively (the
+    /// server's VTT conversion strips authored ASS styling and SRT placement tags); everything
+    /// else falls back to the server's VTT conversion.
+    @Test("Sidecar URLs are requested for text subtitles only, in their renderable original format")
     func subtitleSidecarURLsBuilt() async throws {
         var source = transcodeSource()          // text sub: index 1, subrip
         var pgs = MediaStream()                  // image sub: index 2, pgssub
         pgs.type = .subtitle
         pgs.index = 2
         pgs.codec = "pgssub"
-        source.mediaStreams?.append(pgs)
+        var ass = MediaStream()                  // authored styling: fetched verbatim
+        ass.type = .subtitle
+        ass.index = 3
+        ass.codec = "ass"
+        var movText = MediaStream()              // no native ingest: server converts to vtt
+        movText.type = .subtitle
+        movText.index = 4
+        movText.codec = "mov_text"
+        source.mediaStreams?.append(contentsOf: [pgs, ass, movText])
         let (service, fake) = makeService(source: source)
 
         let resolved = try await service.resolve(
@@ -197,13 +210,13 @@ struct PlaybackInfoServiceResolveTests {
             startTime: nil
         )
 
-        #expect(resolved.subtitleStreamURLs.count == 1)
+        #expect(resolved.subtitleStreamURLs.count == 3)
         #expect(resolved.subtitleStreamURLs[2] == nil, "an image sub has no sidecar to fetch")
         #expect(resolved.mediaStreams.contains { $0.index == 2 }, "but it stays selectable for burn-in")
-        // One request, for the text stream, in vtt — the URL's own shape is pinned in
-        // `DefaultJellyfinPlaybackClientTests`, not against a string this fake made up.
-        #expect(fake.subtitleStreamURLRequests.map(\.streamIndex) == [1])
-        #expect(fake.subtitleStreamURLRequests.first?.format == "vtt")
+        // One request per text stream, each in its wire format — the URL's own shape is pinned
+        // in `DefaultJellyfinPlaybackClientTests`, not against a string this fake made up.
+        #expect(fake.subtitleStreamURLRequests.map(\.streamIndex) == [1, 3, 4])
+        #expect(fake.subtitleStreamURLRequests.map(\.format) == ["srt", "ass", "vtt"])
         #expect(fake.subtitleStreamURLRequests.first?.mediaSourceID == "ms-2")
         #expect(resolved.subtitleStreamURLs[1] == fake.subtitleURLForIndex(1))
     }

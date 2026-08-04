@@ -152,6 +152,30 @@ public extension MediaStreamInfo {
         return trimmed.hasSuffix(suffix) ? String(trimmed.dropLast(suffix.count)) : trimmed
     }
 
+    /// Every codec identifier a media server reports for an IMAGE-based subtitle
+    /// (a picture per cue, not text). The same format shows up under more than one
+    /// spelling because servers echo whatever the container/ffmpeg called it —
+    /// "pgssub" and "hdmv_pgs_subtitle" are the same PGS track.
+    ///
+    /// ONE vocabulary, two readers with DIFFERENT matching strategies, on purpose:
+    /// the Jellyfin device profile declares a burn-in SubtitleProfile per entry here
+    /// (the server matches profiles by plain string equality, so these must be the
+    /// literal spellings servers report), while `isImageSubtitle` below stays
+    /// substring-tolerant over the markers — a spelling outside this list (a bare
+    /// "pgs", a future "pgs_subtitle") must still classify as an image sub, because
+    /// misreading one as TEXT builds a sidecar URL for a picture track that then
+    /// renders nothing. Lower-case: every comparison lower-cases its input first.
+    static let imageSubtitleCodecs: [String] = [
+        "pgssub", "hdmv_pgs_subtitle",
+        "dvdsub", "dvd_subtitle", "vobsub",
+        "dvbsub", "dvb_subtitle",
+        "xsub",
+    ]
+
+    /// Substring markers covering every spelling family in `imageSubtitleCodecs`,
+    /// plus whatever variants servers invent around them.
+    private static let imageSubtitleMarkers = ["pgs", "vobsub", "dvdsub", "dvd_subtitle", "dvbsub", "dvb_subtitle", "xsub"]
+
     /// An image-based subtitle (PGS / VobSub / DVD / DVB) — the server can only
     /// deliver these by burning them into the video (never a client-side sidecar).
     /// Text formats (SubRip, ASS, WebVTT…) ride along in the HLS manifest and need
@@ -160,7 +184,6 @@ public extension MediaStreamInfo {
     /// and `selectSubtitleTrack`) — since picking one costs a full re-encode.
     var isImageSubtitle: Bool {
         guard kind == .subtitle, let codec = codec?.lowercased() else { return false }
-        let imageMarkers = ["pgs", "vobsub", "dvdsub", "dvd_subtitle", "dvbsub", "dvb_subtitle", "xsub"]
-        return imageMarkers.contains { codec.contains($0) }
+        return Self.imageSubtitleMarkers.contains { codec.contains($0) }
     }
 }

@@ -240,7 +240,7 @@ struct PlayerView: View {
             let vm = PlayerViewModel(
                 deviceProfileBuilder: deps.deviceProfileBuilder,
                 playbackInfo: NoOpPlaybackReporting(),
-                resolve: { _, _, _, _, _ in
+                resolve: { _, _, _, _ in
                     // Unreachable on the SMB path — `start(resolvingSMB:)` delegates to
                     // `start(smbItem:)`, which never calls the Jellyfin resolve.
                     throw AppError.playback(.unsupportedFormat)
@@ -268,13 +268,12 @@ struct PlayerView: View {
         let vm = PlayerViewModel(
             deviceProfileBuilder: deps.deviceProfileBuilder,
             playbackInfo: info,
-            resolve: { id, caps, start, audioIndex, subtitleIndex in
+            resolve: { id, caps, start, selection in
                 try await info.resolve(
                     item: id,
                     capabilities: caps,
                     startTime: start,
-                    audioStreamIndex: audioIndex,
-                    subtitleStreamIndex: subtitleIndex
+                    selection: selection
                 )
             },
             engineFactory: deps.playbackEngineFactory,

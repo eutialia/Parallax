@@ -6,6 +6,7 @@ import CoreMedia
 import ParallaxCore
 import ParallaxJellyfin
 import ParallaxPlayback
+import ParallaxSubtitles
 
 /// The active SMB/local session's resume-tracking state — see `PlayerViewModel.smbSession`.
 /// Existence ⟺ there's a live SMB session with an id (non-optional `itemID`); Jellyfin
@@ -89,12 +90,21 @@ final class PlayerViewModel {
     private(set) var availableSubtitleTracks: [SubtitleTrack] = []
     private(set) var selectedAudioTrack: AudioTrack? = nil
     private(set) var selectedSubtitleTrack: SubtitleTrack? = nil
-    /// Parsed cues for a client-rendered subtitle that `SubtitleOverlayView` draws: the
-    /// correctly-timed sidecar WebVTT used by the transcode path AND by direct-play
-    /// EXTERNAL subs (VLC can't shape sidecar VTT on iOS). Empty when no such subtitle is
-    /// active — including direct-play EMBEDDED subs, which the engine renders itself. This
-    /// is how we sidestep the in-manifest WebVTT drift (jellyfin/jellyfin#16647).
-    private(set) var activeSubtitleCues: [SubtitleCue] = []
+    /// The client-side renderer (libass, `ParallaxSubtitles`) for the active sidecar
+    /// subtitle that `SubtitleOverlayView` draws: used by the transcode path AND by
+    /// direct-play EXTERNAL subs (VLC can't shape sidecar text on iOS). Nil when no
+    /// such subtitle is active — including direct-play EMBEDDED subs, which the engine
+    /// renders itself. This is how we sidestep the in-manifest WebVTT drift
+    /// (jellyfin/jellyfin#16647) while keeping authored ASS styling intact.
+    private(set) var subtitleRenderer: SubtitleRenderer?
+    /// Format + size the renderer was loaded with — debug panel and the style-override
+    /// policy read it. Nil ⟺ `subtitleRenderer` is nil.
+    private(set) var sidecarSubtitleInfo: SidecarSubtitleInfo?
+    /// Monotonic token bumped on every renderer install/clear. The overlay keys its
+    /// canvas pushes on this instead of object identity — a freed actor's address can
+    /// be reused by its replacement, which would silently skip the new canvas push
+    /// and leave the fresh renderer with a zero canvas (permanently blank subtitles).
+    private(set) var subtitleRendererGeneration = 0
     private(set) var currentPosition: CMTime = .zero
     private(set) var currentDuration: CMTime = .zero
 
@@ -492,6 +502,18 @@ final class PlayerViewModel {
 
     private var stateTask: Task<Void, Never>?
     private var subtitleFetchTask: Task<Void, Never>?
+    /// Last appearance pushed by the overlay (`applySubtitleAppearance`) — replayed
+    /// onto every freshly loaded renderer so a track switch keeps the user's style.
+    /// Two variants because the fontScale means different things per format: converted
+    /// SRT/VTT remaps the tuned per-device size onto the synthesized script's base,
+    /// while authored ASS scales relative to the creator's own sizes.
+    private var convertedSubtitleAppearance: SubtitleStyleOverride?
+    private var authoredSubtitleAppearance: SubtitleStyleOverride?
+    private var overrideAuthoredStyles = false
+    /// Serializes renderer style pushes: rapid preference edits must land on the actor
+    /// in submission order or the renderer can finish on a stale style (the same
+    /// discipline as `SubtitlePreferences.writeChain`).
+    private var stylePushChain: Task<Void, Never>?
     /// The in-flight play/pause command — retargeted on every toggle so a tap
     /// burst coalesces to the last intent (see `togglePlayPause`).
     private var transportTask: Task<Void, Never>?
@@ -507,9 +529,9 @@ final class PlayerViewModel {
     private var resolved: ResolvedPlayback?
     /// Source-agnostic subtitle URL map: stream-index → sidecar URL. Jellyfin
     /// populates it from `resolved.subtitleStreamURLs` in `beginPlayback`; the
-    /// SMB path (Task 10) will populate it from the filename-matched sibling
-    /// resolver before loading the engine. Both paths produce WebVTT or SRT URLs
-    /// that `loadSidecarSubtitle` fetches and parses.
+    /// SMB path populates it from the filename-matched sibling resolver before
+    /// loading the engine. Both paths produce text-subtitle URLs (ASS/SSA/SRT/VTT)
+    /// that `loadSidecarSubtitle` fetches into the client renderer.
     private var subtitleURLs: [Int: URL] = [:]
     /// Synthetic external subtitle tracks for the SMB path (`resolved` is nil there, so
     /// the Jellyfin `externalSubtitleTracks(from: resolved)` machinery can't build them).
@@ -626,10 +648,10 @@ final class PlayerViewModel {
 
     /// The resolve surface, narrowed so the integration test can inject a stub
     /// without standing up a full PlaybackInfoService. Mirrors
-    /// PlaybackInfoService.resolve(item:capabilities:startTime:audioStreamIndex:subtitleStreamIndex:).
-    /// The two indices are nil on first play (server default) and set when the
-    /// user switches a track on the transcode path.
-    typealias ResolveCall = @Sendable (ItemID, DeviceCapabilities, CMTime?, Int?, Int?) async throws -> ResolvedPlayback
+    /// PlaybackInfoService.resolve(item:capabilities:startTime:selection:).
+    /// The selection is nil on first play (server default) and carries the user's
+    /// explicit picks when a track is switched on the transcode path.
+    typealias ResolveCall = @Sendable (ItemID, DeviceCapabilities, CMTime?, StreamSelection?) async throws -> ResolvedPlayback
 
     /// Deadline for the re-resolve inside an engine-reusing reload (re-anchor / track
     /// switch). That span shows the "Buffering" scrim with NO watchdog armed yet —
@@ -1112,6 +1134,11 @@ final class PlayerViewModel {
         // so it overlaps the long network call instead of stalling makeAsset.
         async let subtitleFonts = SubtitleFontLocator.resolved()
         let caps = await deviceProfileBuilder.build()
+        let selection = streamSelection(
+            for: item,
+            audioStreamIndex: audioStreamIndex,
+            subtitleStreamIndex: subtitleStreamIndex
+        )
         let resolved: ResolvedPlayback
         if reusingEngine {
             // A reload holds the "Buffering" scrim through this call with no watchdog
@@ -1119,10 +1146,10 @@ final class PlayerViewModel {
             // negotiation becomes the ordinary fallback (old stream resumes, the
             // failure is loud, the next scrub retries) instead of a stuck scrim.
             resolved = try await Self.withDeadline(reloadResolveDeadline) { [resolve] in
-                try await resolve(item.id, caps, startTime, audioStreamIndex, subtitleStreamIndex)
+                try await resolve(item.id, caps, startTime, selection)
             }
         } else {
-            resolved = try await resolve(item.id, caps, startTime, audioStreamIndex, subtitleStreamIndex)
+            resolved = try await resolve(item.id, caps, startTime, selection)
         }
         // The critical fence: resolve is the long network call, so this is where an
         // exit-during-loading usually lands. Bail BEFORE building an engine.
@@ -1160,6 +1187,37 @@ final class PlayerViewModel {
         // The engine now plays a FRESH AVPlayerItem whose timeline mapping derives from
         // this session's own segments — any prior in-stream restart shift is laundered.
         transcodeTimelineDirty = false
+    }
+
+    /// Describes the explicit track picks for a re-resolve, or nil to let the server
+    /// choose (first play, and an episode swap — which arrives with no picks and a
+    /// `resolved` still pointing at the previous episode).
+    ///
+    /// The media source id comes from the session being replaced: the server only
+    /// honors stream indices that are sent alongside the source they index into, so
+    /// a selection built without one would be dropped server-side. That also means a
+    /// selection is only ever valid for the SAME item, hence the id check.
+    private func streamSelection(
+        for item: ItemDetail,
+        audioStreamIndex: Int?,
+        subtitleStreamIndex: Int?
+    ) -> StreamSelection? {
+        guard audioStreamIndex != nil || subtitleStreamIndex != nil,
+              let current = resolved, current.itemID == item.id.rawValue
+        else { return nil }
+        // An image subtitle can only arrive painted into the video, which rules out a
+        // stream copy — the selection carries that so the request can say so.
+        let burnsIn = subtitleStreamIndex.map { index in
+            current.mediaStreams.contains {
+                $0.kind == .subtitle && $0.index == index && $0.isImageSubtitle
+            }
+        } ?? false
+        return StreamSelection(
+            mediaSourceID: current.mediaSourceID,
+            audioStreamIndex: audioStreamIndex,
+            subtitleStreamIndex: subtitleStreamIndex,
+            burnsInSubtitle: burnsIn
+        )
     }
 
     /// Races `operation` against a wall-clock deadline; a miss throws
@@ -1388,9 +1446,7 @@ final class PlayerViewModel {
         selectedAudioTrack = nil
         selectedSubtitleTrack = nil
         trackSwitchFailure = nil
-        subtitleFetchTask?.cancel()
-        subtitleFetchTask = nil
-        activeSubtitleCues = []
+        clearSidecarSubtitle()
         subtitleURLs = [:]
         smbExternalSubtitleTracks = []
         currentPosition = .zero
@@ -1671,6 +1727,31 @@ final class PlayerViewModel {
         clearSidecarSubtitle()
         switch await switchTranscodeTrack(audioStreamIndex: currentAudioStreamIndex, subtitleStreamIndex: subtitleStreamIndex) {
         case .completed:
+            // A burn-in is the one pick whose success the client can't see: the
+            // subtitle lives inside the video pixels, so a server that quietly
+            // declined to paint it looks exactly like one that did. Ask the fresh
+            // session what it actually agreed to before claiming the pick worked.
+            if let target, target.isBurnedIn, !serverBurnsInSubtitle(at: subtitleStreamIndex) {
+                // Unlike the arms below, the reload DID happen — the new session was
+                // built around an index it isn't burning in, so leaving it recorded
+                // would make the next audio switch ask for the same dead pick. And
+                // because the session is FRESH, restoring an external text track goes
+                // through the full activation (incl. the mandatory engine deselect
+                // that guards the double-subtitle bug), not the bare restore the
+                // not-landed arms use.
+                if let previous, let prevIndex = previous.id.jellyfinStreamIndex, !previous.isBurnedIn {
+                    await activateSidecarSubtitle(previous, index: prevIndex)
+                } else {
+                    selectedSubtitleTrack = previous
+                    currentSubtitleStreamIndex = previous?.id.jellyfinStreamIndex ?? -1
+                }
+                trackSwitchFailure = TrackSwitchFailure(
+                    requested: .subtitle(target),
+                    fallback: previous.map(TrackPick.subtitle),
+                    error: .playback(.unsupportedFormat)
+                )
+                return
+            }
             await onCompleted()
             persistTrackSelection(.subtitles(languageCode: target?.languageCode))
         case .abandoned:
@@ -1712,6 +1793,23 @@ final class PlayerViewModel {
     private func restoreSidecarSubtitle(_ track: SubtitleTrack?) {
         guard let track, let index = track.id.jellyfinStreamIndex, !track.isBurnedIn else { return }
         loadSidecarSubtitle(streamIndex: index)
+    }
+
+    /// Jellyfin's word for burn-in in the per-stream delivery method it reports back
+    /// on every resolve. Compared case-insensitively — it's a wire enum name, not a
+    /// value we control.
+    private static let burnInDeliveryMethod = "encode"
+
+    /// Whether the CURRENTLY resolved session says it is painting the subtitle at
+    /// `index` into the video. This is the only client-visible proof a burn-in pick
+    /// took: the server answers a request it won't honor with a perfectly normal
+    /// stream that simply has no subtitle in it. Shared by the post-switch check and
+    /// the debug panel, so both read the same verdict.
+    func serverBurnsInSubtitle(at index: Int) -> Bool {
+        guard let stream = resolved?.mediaStreams.first(where: {
+            $0.kind == .subtitle && $0.index == index
+        }) else { return false }
+        return stream.subtitleDeliveryMethod?.lowercased() == Self.burnInDeliveryMethod
     }
 
     /// Fire-and-forget preference write-back: the service gates on the user's
@@ -1788,33 +1886,124 @@ final class PlayerViewModel {
         }
     }
 
-    /// Fetches + parses the sidecar WebVTT for `streamIndex` into
-    /// `activeSubtitleCues`. Cancels any in-flight fetch first so a slow/stale
-    /// parse can't land on screen after a newer pick.
+    /// Fetches the sidecar subtitle for `streamIndex` and loads it into a fresh
+    /// `SubtitleRenderer`. Cancels any in-flight fetch first so a slow/stale load
+    /// can't land on screen after a newer pick. Format comes from the URL extension:
+    /// the Jellyfin endpoint serves originals for formats we request verbatim
+    /// (ass/ssa/srt keep their authored styling and positioning), and an SMB sibling
+    /// is whatever the release shipped.
     private func loadSidecarSubtitle(streamIndex: Int) {
         subtitleFetchTask?.cancel()
         guard let url = subtitleURLs[streamIndex] else {
-            activeSubtitleCues = []
+            clearSidecarSubtitle()
             return
         }
         let fetch = subtitleFetch
-        // Parser by extension: Jellyfin's sidecar endpoint serves WebVTT, but an SMB sibling
-        // is whatever the release shipped — `.srt` is the common one and WebVTTParser can't
-        // read its `HH:MM:SS,mmm` comma timing. `.ass`/`.ssa` have no client renderer yet, so
-        // they fall through to WebVTT (yields []) rather than mis-parsing.
-        let isSRT = url.pathExtension.lowercased() == "srt"
+        let requestedFormat = SubtitleSourceFormat(sidecarExtension: url.pathExtension)
         subtitleFetchTask = Task { [weak self] in
-            guard let data = await fetch(url) else { return }
-            let cues = isSRT ? SRTParser.parse(data: data) : WebVTTParser.parse(data: data)
+            var data = await fetch(url)
+            var format = requestedFormat
+            // A verbatim ass/ssa request can fail server-side (the endpoint only has
+            // writers for some formats, and an embedded SSA track extracts as .ass) —
+            // degrade to the server's VTT conversion: authored styling is lost, but
+            // the track still shows instead of nothing.
+            if data == nil, format == .ass || format == .ssa,
+               let fallback = Self.vttFallbackURL(for: url) {
+                data = await fetch(fallback)
+                format = .vtt
+            }
             if Task.isCancelled { return }
-            self?.activeSubtitleCues = cues
+            guard let data else {
+                // The CURRENT pick failed to fetch — leaving the previous track's
+                // bitmaps on screen would lie about what's selected.
+                self?.clearSidecarSubtitle()
+                return
+            }
+            await self?.installSubtitleRenderer(data: data, format: format)
         }
+    }
+
+    /// Same URL with the last path component's extension swapped to `vtt` — the
+    /// Jellyfin sidecar endpoint's conversion fallback. The query (auth) is preserved.
+    private static func vttFallbackURL(for url: URL) -> URL? {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
+        let path = components.path as NSString
+        guard !path.pathExtension.isEmpty else { return nil }
+        components.path = path.deletingPathExtension.appending(".vtt")
+        return components.url
+    }
+
+    /// Builds + publishes the renderer for a fetched sidecar. A fresh renderer per
+    /// load keeps track switches simple (no cross-track libass state); the overlay
+    /// detects the swap via `subtitleRendererGeneration`. Undecodable data clears
+    /// instead of throwing — same silent no-op the parse path always had, now logged.
+    private func installSubtitleRenderer(data: Data, format: SubtitleSourceFormat) async {
+        let renderer = SubtitleRenderer()
+        do {
+            try await renderer.load(data, format: format)
+        } catch {
+            // A STALE failure must not tear down the newer pick's in-flight load —
+            // `clearSidecarSubtitle` cancels `subtitleFetchTask`, which by now may
+            // belong to the next selection. Same guard the success path has.
+            if Task.isCancelled { return }
+            Log.playback.error("sidecar subtitle load failed (\(String(describing: format))): \(error)")
+            clearSidecarSubtitle()
+            return
+        }
+        let info = SidecarSubtitleInfo(format: format, byteCount: data.count)
+        await renderer.setStyleOverride(effectiveStyleOverride(for: format))
+        if Task.isCancelled { return }
+        subtitleRenderer = renderer
+        sidecarSubtitleInfo = info
+        subtitleRendererGeneration &+= 1
     }
 
     private func clearSidecarSubtitle() {
         subtitleFetchTask?.cancel()
         subtitleFetchTask = nil
-        activeSubtitleCues = []
+        subtitleRenderer = nil
+        sidecarSubtitleInfo = nil
+        subtitleRendererGeneration &+= 1
+    }
+
+    /// The user's subtitle style + the authored-override toggle, pushed by the overlay
+    /// whenever preferences or the render geometry change. Applied per format policy:
+    /// converted SRT/VTT (no authored look of their own) always take the user style;
+    /// ASS/SSA keeps its creator styling unless the user opted into overriding it.
+    func applySubtitleAppearance(
+        converted: SubtitleStyleOverride?,
+        authored: SubtitleStyleOverride?,
+        overrideAuthored: Bool
+    ) {
+        convertedSubtitleAppearance = converted
+        authoredSubtitleAppearance = authored
+        overrideAuthoredStyles = overrideAuthored
+        guard let renderer = subtitleRenderer, let info = sidecarSubtitleInfo else { return }
+        let effective = effectiveStyleOverride(for: info.format)
+        let previous = stylePushChain
+        stylePushChain = Task {
+            await previous?.value          // submission order → the LAST edit wins
+            await renderer.setStyleOverride(effective)
+        }
+    }
+
+    private func effectiveStyleOverride(for format: SubtitleSourceFormat) -> SubtitleStyleOverride? {
+        switch format {
+        case .srt, .vtt: convertedSubtitleAppearance
+        case .ass, .ssa: overrideAuthoredStyles ? authoredSubtitleAppearance : nil
+        }
+    }
+
+    /// Native video dimensions for the renderer's storage size — what authored `\pos`
+    /// coordinates and border/shadow scale are computed against. Nil (SMB, or a
+    /// server that omitted dimensions) falls back to the render canvas, which is
+    /// correct-aspect anyway.
+    var videoStorageSize: CGSize? {
+        guard let stream = resolved?.mediaStreams.first(where: { $0.kind == .video }),
+              let width = stream.width, let height = stream.height,
+              width > 0, height > 0
+        else { return nil }
+        return CGSize(width: width, height: height)
     }
 
     /// How a transcode track switch ended — drives `selectAudioTrack`'s selection
@@ -2531,9 +2720,10 @@ final class PlayerViewModel {
             .map(Self.subtitleTrack(from:))
     }
 
-    /// Sidecar formats `SubtitleOverlayView`'s client-side pipeline can actually parse
-    /// (`SRTParser`/`WebVTTParser`). Case-insensitive extension check.
-    private static let renderableSidecarExtensions: Set<String> = ["srt", "vtt"]
+    /// Sidecar formats the client-side renderer (`ParallaxSubtitles`) ingests —
+    /// authored ASS/SSA verbatim, SRT/VTT via its converter. Case-insensitive
+    /// extension check.
+    private static let renderableSidecarExtensions: Set<String> = ["srt", "vtt", "ass", "ssa"]
 
     /// SMB analog of `externalSubtitleTracks(from resolved:)` — there's no `resolved`
     /// stream list on the SMB path, only the filename-matched `[index: URL]` map + the
@@ -2542,10 +2732,9 @@ final class PlayerViewModel {
     /// path works identically) with the resolver's labels and the file extension as detail.
     /// Ordered by index for a stable menu.
     ///
-    /// Filtered to `renderableSidecarExtensions`: the resolver's filename matcher also
-    /// surfaces ASS/SSA sidecars (no client renderer yet — `SubtitleOverlayView` only
-    /// parses SRT/VTT, so a selected ASS/SSA track would draw zero cues), but `subtitleURLs`
-    /// itself stays unfiltered so a future VLC-native slaving task can still see those URLs.
+    /// Filtered to `renderableSidecarExtensions` so a matched sibling in a format the
+    /// renderer can't ingest (e.g. `.sub`/`.idx` image subs) never becomes a menu entry
+    /// that draws nothing; `subtitleURLs` itself stays unfiltered.
     private static func externalSubtitleTracks(urls: [Int: URL], labels: [Int: String]) -> [SubtitleTrack] {
         urls.keys.sorted().compactMap { index -> SubtitleTrack? in
             guard let url = urls[index],
@@ -2646,8 +2835,8 @@ extension PlayerViewModel {
     /// The active engine's id, for the HUD's engine label.
     var debugEngineID: PlaybackEngineID? { engine?.id }
 
-    /// Awaits the in-flight sidecar fetch+parse (`subtitleFetchTask`) so a test can assert
-    /// `activeSubtitleCues` deterministically instead of sleeping past the Task hop. The
+    /// Awaits the in-flight sidecar fetch+load (`subtitleFetchTask`) so a test can assert
+    /// `subtitleRenderer`/`sidecarSubtitleInfo` deterministically instead of sleeping past the Task hop. The
     /// engine-beat analog is `FakePlaybackEngine.settle()`; this covers the ONE piece of
     /// per-selection work the VM detaches from the awaited call. No-op when none is in flight.
     func debugAwaitSubtitleFetch() async {
@@ -2687,7 +2876,7 @@ extension PlayerViewModel {
         let vm = PlayerViewModel(
             deviceProfileBuilder: DeviceProfileBuilder(probe: LiveCapabilityProbe()),
             playbackInfo: NoOpPlaybackReporting(),
-            resolve: { _, _, _, _, _ in throw AppError.playback(.unsupportedFormat) },
+            resolve: { _, _, _, _ in throw AppError.playback(.unsupportedFormat) },
             engineFactory: { _, _ in fatalError("preview VM never starts playback") },
             audioSession: PreviewAudioSession()
         )

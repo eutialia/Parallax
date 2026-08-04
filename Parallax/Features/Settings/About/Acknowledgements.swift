@@ -10,6 +10,7 @@ enum LicenseDoc: String, Hashable {
     case mitNuke = "mit-nuke"
     case mitGet = "mit-get"
     case ccBySa4 = "cc-by-sa-4.0"
+    case iscLibass = "isc-libass"
 
     var displayName: String {
         switch self {
@@ -18,6 +19,7 @@ enum LicenseDoc: String, Hashable {
         case .apache2: "Apache License 2.0"
         case .mitNuke, .mitGet: "MIT License"
         case .ccBySa4: "Creative Commons BY-SA 4.0"
+        case .iscLibass: "ISC License"
         }
     }
 
@@ -110,6 +112,19 @@ struct Acknowledgement: Identifiable, Hashable {
             licenseName: "Apache-2.0",
             license: .apache2,
             url: "github.com/apple/swift-nio"
+        ),
+        Acknowledgement(
+            name: "libass",
+            // Prebuilt static xcframeworks from mpvkit's libass-build (build scripts
+            // MIT); the rendering stack it bundles carries each component's own
+            // license — FreeType (FTL), HarfBuzz (MIT), FriBidi (LGPL-2.1, text
+            // bundled above), libunibreak (zlib). Full texts ship in each upstream
+            // repository linked from CREDITS.md.
+            packageIdentities: ["libass-build"],
+            role: "Client-side ASS/SSA subtitle renderer, with FreeType, HarfBuzz, FriBidi and libunibreak",
+            licenseName: "ISC (+ FTL / MIT / LGPL-2.1 / zlib components)",
+            license: .iscLibass,
+            url: "github.com/libass/libass"
         ),
         Acknowledgement(
             name: "VLCKit",

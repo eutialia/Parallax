@@ -50,7 +50,7 @@ struct ReactivePlaybackFallbackTests {
         let vlcEngine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
         let resolved = PlayerFixtures.resolved()   // mp4 / h264 / aac direct-play
         let vm = makeSwitchingVM(
-            reporting: reporting, resolve: { _, _, _, _, _ in resolved },
+            reporting: reporting, resolve: { _, _, _, _ in resolved },
             avKitEngine: avKitEngine, vlcEngine: vlcEngine
         )
 
@@ -105,7 +105,7 @@ struct ReactivePlaybackFallbackTests {
         let vlcEngine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
         let resolved = PlayerFixtures.resolved()
         let vm = makeSwitchingVM(
-            reporting: reporting, resolve: { _, _, _, _, _ in resolved },
+            reporting: reporting, resolve: { _, _, _, _ in resolved },
             avKitEngine: avKitEngine, vlcEngine: vlcEngine
         )
 
@@ -136,7 +136,7 @@ struct ReactivePlaybackFallbackTests {
         // method: .transcode → hints.container is always .hls, regardless of the source.
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
         let vm = makeSwitchingVM(
-            reporting: reporting, resolve: { _, _, _, _, _ in resolved },
+            reporting: reporting, resolve: { _, _, _, _ in resolved },
             avKitEngine: avKitEngine, vlcEngine: vlcEngine
         )
 
@@ -160,7 +160,7 @@ struct ReactivePlaybackFallbackTests {
         let vlcEngine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
         let resolved = PlayerFixtures.resolved()   // mp4 / h264 / aac direct-play
         let vm = makeSwitchingVM(
-            reporting: reporting, resolve: { _, _, _, _, _ in resolved },
+            reporting: reporting, resolve: { _, _, _, _ in resolved },
             avKitEngine: avKitEngine, vlcEngine: vlcEngine
         )
 
@@ -185,7 +185,7 @@ struct ReactivePlaybackFallbackTests {
         let vlcEngine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
         let vm = makeSwitchingVM(
             reporting: reporting,
-            resolve: { _, _, _, _, _ in
+            resolve: { _, _, _, _ in
                 Issue.record("SMB playback must not call the Jellyfin resolve")
                 throw AppError.playback(.unsupportedFormat)
             },

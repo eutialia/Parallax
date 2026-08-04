@@ -1,6 +1,6 @@
 # Parallax
 
-Jellyfin (primary) + SMB/local (v2) media player, **Apple platforms only** — iOS/iPadOS first (single `iphoneos` target), tvOS later; macOS/visionOS out of scope. App = `Parallax.xcodeproj`; all logic in local SwiftPM packages under `Packages/` (`ParallaxCore` no-deps, `ParallaxJellyfin`, `ParallaxFileBrowse`, `ParallaxPlayback`). Deeper scope lives in Claude memory.
+Jellyfin (primary) + SMB/local (v2) media player, **Apple platforms only** — iOS/iPadOS first (single `iphoneos` target), tvOS later; macOS/visionOS out of scope. App = `Parallax.xcodeproj`; all logic in local SwiftPM packages under `Packages/` (`ParallaxCore` no-deps, `ParallaxJellyfin`, `ParallaxFileBrowse`, `ParallaxPlayback`, `ParallaxSubtitles` — libass client renderer, DYNAMIC product on purpose: its link line must never contain VLCKit, whose dylib exports an old libass that captures naive static links). Deeper scope lives in Claude memory.
 
 ## Xcode MCP — query it for ground truth, don't reason from memory
 
@@ -22,7 +22,7 @@ Apple's Xcode MCP (`xcode` = `xcrun mcpbridge`) is wired in. **When Xcode is ope
 
 ## Headless fallback (Xcode closed)
 
-Schemes: `Parallax` (app), `ParallaxCore-Package`, `ParallaxFileBrowse`, `ParallaxJellyfin`, `ParallaxPlayback-Package`. Configs: `Debug`/`Release`.
+Schemes: `Parallax` (app), `ParallaxCore-Package`, `ParallaxFileBrowse`, `ParallaxJellyfin`, `ParallaxPlayback-Package`, `ParallaxSubtitles`. Configs: `Debug`/`Release`.
 - App: `xcodebuild -scheme Parallax -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build`
 - **Package tests need an iOS Simulator** — packages declare iOS/tvOS only (no macOS baseline), so host `swift test` doesn't build. From the package dir:
   `cd Packages/ParallaxJellyfin && xcodebuild test -scheme ParallaxJellyfin -destination 'platform=iOS Simulator,name=iPhone 17 Pro'`

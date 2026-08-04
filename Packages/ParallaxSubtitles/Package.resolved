@@ -1,0 +1,15 @@
+{
+  "originHash" : "3abfa79fe99635c9229b2f0392bc37804bdaf7eeb3708b400b3aaccf3fad810e",
+  "pins" : [
+    {
+      "identity" : "libass-build",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/mpvkit/libass-build.git",
+      "state" : {
+        "revision" : "e08eb5bb3be5137e845f781dc9477d1843f23261",
+        "version" : "0.17.5"
+      }
+    }
+  ],
+  "version" : 3
+}

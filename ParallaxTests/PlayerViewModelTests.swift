@@ -5,6 +5,7 @@ import Testing
 @testable import Parallax
 import ParallaxPlayback
 import ParallaxPlaybackTestSupport
+import ParallaxSubtitles
 @testable import ParallaxJellyfin
 @testable import ParallaxCore
 
@@ -141,7 +142,7 @@ struct PlayerViewModelTests {
         nonisolated(unsafe) var createdEngines: [FakePlaybackEngine] = []
         let vm = makePlayerVM(
             reporting: reporting,
-            resolve: { _, _, _, _, _ in resolved },
+            resolve: { _, _, _, _ in resolved },
             engineFactory: { _, _ in
                 let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
                 createdEngines.append(engine)
@@ -252,7 +253,7 @@ struct PlayerViewModelTests {
         let engine = FakePlaybackEngine(id: expected.engine, capabilities: .avKit)
         nonisolated(unsafe) var requestedEngineID: PlaybackEngineID?
         let vm = makePlayerVM(
-            resolve: { _, _, _, _, _ in resolved },
+            resolve: { _, _, _, _ in resolved },
             engineFactory: { id, _ in requestedEngineID = id; return engine }
         )
 
@@ -440,8 +441,8 @@ struct PlayerViewModelTests {
         nonisolated(unsafe) var resolveCalls: [(audio: Int?, sub: Int?, start: CMTime?)] = []
         let vm = makePlayerVM(
             reporting: reporting,
-            resolve: { _, _, start, audioIdx, subIdx in
-                resolveCalls.append((audioIdx, subIdx, start))
+            resolve: { _, _, start, selection in
+                resolveCalls.append((selection?.audioStreamIndex, selection?.subtitleStreamIndex, start))
                 return resolved
             },
             engine: engine
@@ -497,7 +498,7 @@ struct PlayerViewModelTests {
 
         let vm = makePlayerVM(
             reporting: reporting,
-            resolve: { _, _, _, _, _ in resolved },
+            resolve: { _, _, _, _ in resolved },
             engine: engine
         )
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -528,8 +529,8 @@ struct PlayerViewModelTests {
         nonisolated(unsafe) var fetchedURLs: [URL] = []
         let vm = makePlayerVM(
             reporting: reporting,
-            resolve: { _, _, _, audioIdx, subIdx in
-                resolveCalls.append((audioIdx, subIdx))
+            resolve: { _, _, _, selection in
+                resolveCalls.append((selection?.audioStreamIndex, selection?.subtitleStreamIndex))
                 return resolved
             },
             engine: engine,
@@ -554,7 +555,95 @@ struct PlayerViewModelTests {
         #expect(vm.selectedSubtitleTrack?.id == .jellyfinStream(7))
         #expect(engine.loadedAssets.count == 2)             // engine reloaded, like an audio switch
         #expect(fetchedURLs.isEmpty)                        // burn-in: no client-side sidecar fetch
-        #expect(vm.activeSubtitleCues.isEmpty)               // no overlay — the server draws it into the video
+        #expect(vm.subtitleRenderer == nil)                  // no overlay — the server draws it into the video
+    }
+
+    /// Both halves of the re-resolve request are load-bearing and neither is visible on screen:
+    /// without the media source id the server discards the indices and rebuilds around its own
+    /// defaults, and with video stream copy still on offer it can answer a burn-in with a copied
+    /// stream that has no room for the picture. An audio switch wants the opposite copy answer.
+    @Test("transcode: a re-resolve names its media source, and only a burn-in withdraws video stream copy")
+    func reResolveCarriesSourceAndCopyIntent() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let resolved = PlayerFixtures.resolvedMultiTrackTranscode(defaultSubtitleStreamIndex: nil)
+
+        nonisolated(unsafe) var selections: [StreamSelection?] = []
+        let vm = makePlayerVM(
+            reporting: reporting,
+            resolve: { _, _, _, selection in selections.append(selection); return resolved },
+            engine: engine
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(
+            position: CMTime(seconds: 100, preferredTimescale: 600),
+            duration: CMTime(seconds: 7200, preferredTimescale: 600),
+            buffered: nil
+        ))
+        try await engine.settle()
+
+        // First play makes no claim about tracks — the server applies the user's preferences.
+        #expect(selections == [nil])
+
+        let pgs = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(7) })
+        await vm.selectSubtitleTrack(pgs)
+        #expect(selections.last == StreamSelection(
+            mediaSourceID: "ms-1", audioStreamIndex: 3, subtitleStreamIndex: 7, burnsInSubtitle: true
+        ))
+
+        let audio5 = try #require(vm.availableAudioTracks.first { $0.id == .jellyfinStream(5) })
+        await vm.selectAudioTrack(audio5)
+        #expect(selections.last == StreamSelection(
+            mediaSourceID: "ms-1", audioStreamIndex: 5, subtitleStreamIndex: 7, burnsInSubtitle: true
+        ))
+    }
+
+    /// The silent-failure case: the server accepts the burn-in request, hands back a perfectly
+    /// normal stream, and simply doesn't paint the subtitle in. Nothing on screen distinguishes
+    /// that from success, so the reloaded session's own delivery method is the only witness —
+    /// and a pick that didn't take must fall back like any other failed switch.
+    @Test("transcode: a burn-in the server declines to encode rolls back and surfaces the failure")
+    func declinedBurnInRollsBack() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        // The server answers "Hls" for the image sub — i.e. it never agreed to burn anything in.
+        let resolved = PlayerFixtures.resolvedMultiTrackTranscode(
+            defaultSubtitleStreamIndex: nil,
+            burnInDeliveryMethod: "Hls"
+        )
+        let vtt = Data("WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nNi hao".utf8)
+
+        let vm = makePlayerVM(
+            reporting: reporting,
+            resolve: { _, _, _, _ in resolved },
+            engine: engine,
+            subtitleFetch: { _ in vtt }
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(
+            position: CMTime(seconds: 100, preferredTimescale: 600),
+            duration: CMTime(seconds: 7200, preferredTimescale: 600),
+            buffered: nil
+        ))
+        try await engine.settle()
+
+        // Start from a working text subtitle so the rollback has something to restore.
+        let chinese = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(1) })
+        await vm.selectSubtitleTrack(chinese)
+        await vm.debugAwaitSubtitleFetch()
+        #expect(vm.subtitleRenderer != nil)
+
+        let pgs = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(7) })
+        await vm.selectSubtitleTrack(pgs)
+        await vm.debugAwaitSubtitleFetch()
+
+        // The menu goes back to the track that is actually rendering, overlay included…
+        #expect(vm.selectedSubtitleTrack?.id == .jellyfinStream(1))
+        #expect(vm.subtitleRenderer != nil)
+        // …and the same scrim any other failed switch raises offers a retry.
+        let failure = try #require(vm.trackSwitchFailure)
+        #expect(failure.requested == .subtitle(pgs))
+        #expect(failure.fallback == .subtitle(chinese))
     }
 
     @Test("transcode: leaving an active burn-in for Off re-resolves with the 'no subtitle' sentinel — the server must stop re-encoding the image in")
@@ -566,8 +655,8 @@ struct PlayerViewModelTests {
         nonisolated(unsafe) var resolveCalls: [(audio: Int?, sub: Int?)] = []
         let vm = makePlayerVM(
             reporting: reporting,
-            resolve: { _, _, _, audioIdx, subIdx in
-                resolveCalls.append((audioIdx, subIdx))
+            resolve: { _, _, _, selection in
+                resolveCalls.append((selection?.audioStreamIndex, selection?.subtitleStreamIndex))
                 return resolved
             },
             engine: engine
@@ -596,7 +685,7 @@ struct PlayerViewModelTests {
         #expect(resolveCalls.last?.audio == 3)    // audio rides along unchanged
         #expect(engine.loadedAssets.count == 3)   // engine reloaded
         #expect(vm.selectedSubtitleTrack == nil)
-        #expect(vm.activeSubtitleCues.isEmpty)
+        #expect(vm.subtitleRenderer == nil)
     }
 
     @Test("transcode: leaving an active burn-in for a text sub re-resolves, then activates the sidecar once the reload lands")
@@ -609,8 +698,8 @@ struct PlayerViewModelTests {
         nonisolated(unsafe) var fetchedURLs: [URL] = []
         let vm = makePlayerVM(
             reporting: reporting,
-            resolve: { _, _, _, audioIdx, subIdx in
-                resolveCalls.append((audioIdx, subIdx))
+            resolve: { _, _, _, selection in
+                resolveCalls.append((selection?.audioStreamIndex, selection?.subtitleStreamIndex))
                 return resolved
             },
             engine: engine,
@@ -653,7 +742,7 @@ struct PlayerViewModelTests {
         nonisolated(unsafe) var resolveCalls = 0
         let vm = makePlayerVM(
             reporting: reporting,
-            resolve: { _, _, _, _, _ in resolveCalls += 1; return resolved },
+            resolve: { _, _, _, _ in resolveCalls += 1; return resolved },
             engine: engine,
             subtitleFetch: { _ in Data() }
         )
@@ -691,7 +780,7 @@ struct PlayerViewModelTests {
         nonisolated(unsafe) var fetchedURLs: [URL] = []
         let vm = makePlayerVM(
             reporting: reporting,
-            resolve: { _, _, _, _, _ in
+            resolve: { _, _, _, _ in
                 resolveCalls += 1
                 if resolveCalls == 2 { throw AppError.playback(.resourceUnavailable) }  // the burn-in switch fails
                 return resolved
@@ -741,8 +830,8 @@ struct PlayerViewModelTests {
         nonisolated(unsafe) var fetchedURLs: [URL] = []
         let vm = makePlayerVM(
             reporting: reporting,
-            resolve: { _, _, start, audio, sub in
-                resolveCalls.append((start, audio, sub))
+            resolve: { _, _, start, selection in
+                resolveCalls.append((start, selection?.audioStreamIndex, selection?.subtitleStreamIndex))
                 return resolved
             },
             engine: engine,
@@ -817,7 +906,7 @@ struct PlayerViewModelTests {
 
         nonisolated(unsafe) var resolveCalls: [CMTime?] = []
         let vm = makePlayerVM(
-            resolve: { _, _, start, _, _ in resolveCalls.append(start); return resolved },
+            resolve: { _, _, start, _ in resolveCalls.append(start); return resolved },
             engine: engine,
             fetchDelivery: { _ in delivery },
             deliveryProbeSchedule: [.milliseconds(10)]
@@ -865,7 +954,7 @@ struct PlayerViewModelTests {
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
         let vm = makePlayerVM(
             reporting: reporting,
-            resolve: { _, _, _, _, _ in resolved },
+            resolve: { _, _, _, _ in resolved },
             engine: engine,
             fetchDelivery: { _ in nil },
             deliveryProbeSchedule: [.milliseconds(5), .milliseconds(5)]
@@ -892,7 +981,7 @@ struct PlayerViewModelTests {
         nonisolated(unsafe) var resolveCalls = 0
         let vm = makePlayerVM(
             reporting: reporting,
-            resolve: { _, _, _, _, _ in resolveCalls += 1; return PlayerFixtures.resolved() },
+            resolve: { _, _, _, _ in resolveCalls += 1; return PlayerFixtures.resolved() },
             engine: engine
         )
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -913,7 +1002,7 @@ struct PlayerViewModelTests {
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         let vm = makePlayerVM(
             reporting: reporting,
-            resolve: { _, _, _, _, _ in PlayerFixtures.resolved() },
+            resolve: { _, _, _, _ in PlayerFixtures.resolved() },
             engine: engine
         )
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -933,7 +1022,7 @@ struct PlayerViewModelTests {
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
         nonisolated(unsafe) var resolveCalls: [CMTime?] = []
         let vm = makePlayerVM(
-            resolve: { _, _, start, _, _ in resolveCalls.append(start); return resolved },
+            resolve: { _, _, start, _ in resolveCalls.append(start); return resolved },
             engine: engine,
             fetchDelivery: { _ in delivery },
             deliveryProbeSchedule: [.milliseconds(10)]
@@ -971,7 +1060,7 @@ struct PlayerViewModelTests {
         )
         let vm = makePlayerVM(
             reporting: reporting,
-            resolve: { _, _, _, _, _ in resolved },
+            resolve: { _, _, _, _ in resolved },
             engine: engine,
             subtitleFetch: { _ in Data() },
             fetchDelivery: { _ in reencode },
@@ -1016,7 +1105,7 @@ struct PlayerViewModelTests {
         nonisolated(unsafe) var resolveStarts: [CMTime?] = []
         let vm = makePlayerVM(
             reporting: reporting,
-            resolve: { _, _, start, _, _ in
+            resolve: { _, _, start, _ in
                 resolveStarts.append(start)
                 // Only the target-A re-anchor parks; the initial start (nil) and the
                 // target-B re-anchor pass straight through.
@@ -1087,7 +1176,7 @@ struct PlayerViewModelTests {
         nonisolated(unsafe) var resolveCalls = 0
         let vm = makePlayerVM(
             reporting: reporting,
-            resolve: { _, _, _, _, _ in
+            resolve: { _, _, _, _ in
                 resolveCalls += 1
                 // The re-anchor's negotiation wedges (dead server mid-session). The
                 // deadline must cancel this — the sleep is cancellation-aware, so the
@@ -1130,7 +1219,7 @@ struct PlayerViewModelTests {
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
         let vm = makePlayerVM(
             reporting: reporting,
-            resolve: { _, _, _, _, _ in resolved },
+            resolve: { _, _, _, _ in resolved },
             engine: engine,
             subtitleFetch: { _ in Data() }
         )
@@ -1172,7 +1261,7 @@ struct PlayerViewModelTests {
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
         let vm = makePlayerVM(
             reporting: reporting,
-            resolve: { _, _, _, _, _ in resolved },
+            resolve: { _, _, _, _ in resolved },
             engine: engine,
             subtitleFetch: { _ in Data() }
         )
@@ -1215,7 +1304,7 @@ struct PlayerViewModelTests {
         nonisolated(unsafe) var deliveryCalls = 0
         let vm = makePlayerVM(
             reporting: reporting,
-            resolve: { _, _, _, _, _ in resolved },
+            resolve: { _, _, _, _ in resolved },
             engine: engine,
             fetchDelivery: { _ in
                 defer { deliveryCalls += 1 }
@@ -1257,7 +1346,7 @@ struct PlayerViewModelTests {
         nonisolated(unsafe) var resolveStarts: [CMTime?] = []
         let vm = makePlayerVM(
             reporting: reporting,
-            resolve: { _, _, start, _, _ in resolveStarts.append(start); return resolved },
+            resolve: { _, _, start, _ in resolveStarts.append(start); return resolved },
             engine: engine
         )
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -1293,7 +1382,7 @@ struct PlayerViewModelTests {
         nonisolated(unsafe) var createdEngines: [FakePlaybackEngine] = []
         let vm = makePlayerVM(
             reporting: reporting,
-            resolve: { _, _, _, _, _ in resolved },
+            resolve: { _, _, _, _ in resolved },
             engineFactory: { _, _ in
                 let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
                 createdEngines.append(engine)
@@ -1334,8 +1423,8 @@ struct PlayerViewModelTests {
         nonisolated(unsafe) var resolveCalls: [(audio: Int?, sub: Int?)] = []
         let vm = makePlayerVM(
             reporting: reporting,
-            resolve: { _, _, _, audioIdx, subIdx in
-                resolveCalls.append((audioIdx, subIdx))
+            resolve: { _, _, _, selection in
+                resolveCalls.append((selection?.audioStreamIndex, selection?.subtitleStreamIndex))
                 return resolved
             },
             engine: engine
@@ -1368,7 +1457,7 @@ struct PlayerViewModelTests {
         #expect(vm.selectedSubtitleTrack?.id == .jellyfinStream(1))
     }
 
-    @Test("transcode: picking a text subtitle fetches + parses a sidecar VTT (no re-resolve); Off clears it")
+    @Test("transcode: picking a text subtitle fetches + loads the sidecar into the client renderer (no re-resolve); Off clears it")
     func transcodeSidecarSubtitle() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
@@ -1379,7 +1468,7 @@ struct PlayerViewModelTests {
         nonisolated(unsafe) var fetchedURLs: [URL] = []
         let vm = makePlayerVM(
             reporting: reporting,
-            resolve: { _, _, _, _, _ in resolveCount += 1; return resolved },
+            resolve: { _, _, _, _ in resolveCount += 1; return resolved },
             engine: engine,
             subtitleFetch: { url in fetchedURLs.append(url); return vtt }
         )
@@ -1393,15 +1482,53 @@ struct PlayerViewModelTests {
 
         #expect(resolveCount == resolvesAfterStart)                                   // no re-resolve
         #expect(fetchedURLs.first?.absoluteString.contains("/Subtitles/1/Stream.vtt") == true)
-        #expect(vm.activeSubtitleCues.count == 1)
-        #expect(vm.activeSubtitleCues.first?.text == "Ni hao")
+        #expect(vm.sidecarSubtitleInfo == SidecarSubtitleInfo(format: .vtt, byteCount: vtt.count))
+        #expect(vm.subtitleRenderer != nil)
         #expect(vm.selectedSubtitleTrack?.id == .jellyfinStream(1))
 
-        // Off → cues + selection cleared, still no re-resolve.
+        // Off → renderer + selection cleared, still no re-resolve.
         await vm.selectSubtitleTrack(nil)
-        #expect(vm.activeSubtitleCues.isEmpty)
+        #expect(vm.subtitleRenderer == nil)
         #expect(vm.selectedSubtitleTrack == nil)
         #expect(resolveCount == resolvesAfterStart)
+    }
+
+    @Test("transcode: an .ass sidecar whose verbatim fetch fails falls back to the server's VTT conversion")
+    func assSidecarFallsBackToVTTConversion() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        // The resolve hands out an ORIGINAL-format URL (authored styling preserved)…
+        // No server default: the auto-activation on start() would otherwise run the
+        // same fetch+fallback pair once before the explicit pick below.
+        let assURL = URL(string: "https://jf.example.com/Videos/movie-1/ms-1/Subtitles/1/Stream.ass?api_key=abc")!
+        let resolved = PlayerFixtures.resolvedMultiTrackTranscode(
+            defaultSubtitleStreamIndex: nil,
+            chineseSidecarURL: assURL
+        )
+        let vtt = Data("WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nNi hao".utf8)
+
+        nonisolated(unsafe) var fetchedURLs: [URL] = []
+        let vm = makePlayerVM(
+            reporting: reporting,
+            resolve: { _, _, _, _ in resolved },
+            engine: engine,
+            // …but the server can't serve it verbatim (no writer for the format).
+            subtitleFetch: { url in
+                fetchedURLs.append(url)
+                return url.path.hasSuffix(".ass") ? nil : vtt
+            }
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+
+        let chinese = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(1) })
+        await vm.selectSubtitleTrack(chinese)
+        await vm.debugAwaitSubtitleFetch()
+
+        // Exactly one retry, extension swapped, auth query preserved.
+        #expect(fetchedURLs.map(\.lastPathComponent) == ["Stream.ass", "Stream.vtt"])
+        #expect(fetchedURLs.last?.query?.contains("api_key") == true)
+        #expect(vm.sidecarSubtitleInfo == SidecarSubtitleInfo(format: .vtt, byteCount: vtt.count))
+        #expect(vm.subtitleRenderer != nil)
     }
 
     // MARK: - Source-agnostic subtitle URL map
@@ -1411,7 +1538,7 @@ struct PlayerViewModelTests {
         // resolved carries index 1 → a known VTT URL (from resolvedMultiTrackTranscode).
         // After start(), selecting that subtitle track must fetch exactly that URL.
         // This is the regression guard: if subtitleURLs isn't populated from resolved,
-        // the lookup misses and activeSubtitleCues stays empty.
+        // the lookup misses and no renderer is ever installed.
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
@@ -1422,7 +1549,7 @@ struct PlayerViewModelTests {
         nonisolated(unsafe) var fetchedURL: URL?
         let vm = makePlayerVM(
             reporting: reporting,
-            resolve: { _, _, _, _, _ in resolved },
+            resolve: { _, _, _, _ in resolved },
             engine: engine,
             subtitleFetch: { url in fetchedURL = url; return vtt }
         )
@@ -1434,7 +1561,7 @@ struct PlayerViewModelTests {
 
         // The VM used the URL from resolved.subtitleStreamURLs — not a nil lookup.
         #expect(fetchedURL == expectedURL)
-        #expect(vm.activeSubtitleCues.first?.text == "Subtitle text")
+        #expect(vm.sidecarSubtitleInfo == SidecarSubtitleInfo(format: .vtt, byteCount: vtt.count))
     }
 
     @Test("setSubtitleDelay forwards to the engine (VLC's live retime; AVKit's is a protocol no-op)")
@@ -1443,7 +1570,7 @@ struct PlayerViewModelTests {
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         let vm = makePlayerVM(
             reporting: reporting,
-            resolve: { _, _, _, _, _ in PlayerFixtures.resolved() },
+            resolve: { _, _, _, _ in PlayerFixtures.resolved() },
             engine: engine
         )
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -1659,7 +1786,7 @@ struct PlayerViewModelTests {
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
         let vm = makePlayerVM(
             reporting: reporting,
-            resolve: { _, _, _, _, _ in resolved },
+            resolve: { _, _, _, _ in resolved },
             engine: engine
         )
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -1693,7 +1820,7 @@ struct PlayerViewModelTests {
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
         let vm = makePlayerVM(
             reporting: reporting,
-            resolve: { _, _, _, _, _ in resolved },
+            resolve: { _, _, _, _ in resolved },
             engine: engine,
             keepaliveInterval: .milliseconds(20)
         )
@@ -1715,7 +1842,7 @@ struct PlayerViewModelTests {
         let directReporting = StubPlaybackReporting()
         let directVM = makePlayerVM(
             reporting: directReporting,
-            resolve: { _, _, _, _, _ in PlayerFixtures.resolved() },
+            resolve: { _, _, _, _ in PlayerFixtures.resolved() },
             engineFactory: { _, _ in FakePlaybackEngine(id: .avKit, capabilities: .avKit) },
             keepaliveInterval: .milliseconds(20)
         )
@@ -1733,7 +1860,7 @@ struct PlayerViewModelTests {
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
         let vm = makePlayerVM(
             reporting: reporting,
-            resolve: { _, _, _, _, _ in resolved },
+            resolve: { _, _, _, _ in resolved },
             engine: engine,
             keepaliveInterval: .milliseconds(20)
         )
@@ -1870,7 +1997,7 @@ struct PlayerViewModelTests {
         nonisolated(unsafe) var callCount = 0
         let vm = makePlayerVM(
             reporting: reporting,
-            resolve: { _, _, _, _, _ in
+            resolve: { _, _, _, _ in
                 callCount += 1
                 if callCount >= 2 { throw AppError.playback(.resourceUnavailable) }  // the switch re-resolve fails
                 return resolved
@@ -1906,7 +2033,7 @@ struct PlayerViewModelTests {
         nonisolated(unsafe) var callCount = 0
         let vm = makePlayerVM(
             reporting: reporting,
-            resolve: { _, _, _, _, _ in
+            resolve: { _, _, _, _ in
                 callCount += 1
                 if callCount == 2 { throw AppError.playback(.resourceUnavailable) }  // the switch re-resolve fails
                 return resolved
@@ -1954,7 +2081,7 @@ struct PlayerViewModelTests {
         nonisolated(unsafe) var triggerExit: (@MainActor () -> Void)? = nil
         let vm = makePlayerVM(
             reporting: reporting,
-            resolve: { _, _, _, _, _ in
+            resolve: { _, _, _, _ in
                 callCount += 1
                 if callCount == 2 {
                     await MainActor.run { triggerExit?() }
@@ -1998,8 +2125,8 @@ struct PlayerViewModelTests {
         nonisolated(unsafe) var resolveCalls: [Int?] = []
         let vm = makePlayerVM(
             reporting: reporting,
-            resolve: { _, _, _, audioIdx, _ in
-                resolveCalls.append(audioIdx)
+            resolve: { _, _, _, selection in
+                resolveCalls.append(selection?.audioStreamIndex)
                 if resolveCalls.count == 2 { throw AppError.playback(.resourceUnavailable) }  // first switch fails
                 return resolved                                                               // retry succeeds
             },
@@ -2043,7 +2170,7 @@ struct PlayerViewModelTests {
         nonisolated(unsafe) var callCount = 0
         let vm = makePlayerVM(
             reporting: reporting,
-            resolve: { _, _, _, _, _ in
+            resolve: { _, _, _, _ in
                 callCount += 1
                 if callCount >= 2 { throw AppError.playback(.resourceUnavailable) }
                 return resolved
@@ -2091,7 +2218,7 @@ struct PlayerViewModelTests {
         nonisolated(unsafe) var fetchedID: ItemID?
         let vm = makePlayerVM(
             reporting: reporting,
-            resolve: { _, _, _, _, _ in PlayerFixtures.resolved() },
+            resolve: { _, _, _, _ in PlayerFixtures.resolved() },
             engine: engine,
             fetchDetail: { id in fetchedID = id; return PlayerFixtures.movieDetail() }
         )
@@ -2107,7 +2234,7 @@ struct PlayerViewModelTests {
         nonisolated(unsafe) var didResolve = false
         let vm = makePlayerVM(
             reporting: reporting,
-            resolve: { _, _, _, _, _ in didResolve = true; return PlayerFixtures.resolved() },
+            resolve: { _, _, _, _ in didResolve = true; return PlayerFixtures.resolved() },
             engine: engine,
             fetchDetail: { _ in throw AppError.playback(.resourceUnavailable) }
         )
@@ -2128,7 +2255,7 @@ struct PlayerViewModelTests {
         nonisolated(unsafe) var engineBuilt = false
         let vm = makePlayerVM(
             reporting: reporting,
-            resolve: { _, _, _, _, _ in
+            resolve: { _, _, _, _ in
                 for await _ in gate { break }
                 return PlayerFixtures.resolved()
             },
@@ -2177,7 +2304,7 @@ struct PlayerViewModelTests {
         nonisolated(unsafe) var resolveCalls = 0
         let vm = makePlayerVM(
             reporting: reporting,
-            resolve: { _, _, _, _, _ in
+            resolve: { _, _, _, _ in
                 resolveCalls += 1
                 if resolveCalls == 1 { throw AppError.playback(.resourceUnavailable) }
                 return PlayerFixtures.resolved()

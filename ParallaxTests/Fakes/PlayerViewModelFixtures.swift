@@ -113,7 +113,7 @@ func makePlayerVM(
 ) -> PlayerViewModel {
     makePlayerVM(
         reporting: reporting,
-        resolve: { id, _, _, _, _ in
+        resolve: { id, _, _, _ in
             capturedItem(id)
             return resolved
         },
@@ -247,17 +247,29 @@ enum PlayerFixtures {
     /// A transcoded MKV with a full multi-track source: 3 audio + 2 subtitle
     /// streams. The HLS transcode only carries the default rendition, so the
     /// menus must come from `mediaStreams` and switching re-resolves.
+    /// `burnInDeliveryMethod` is what the server says it will do with the image
+    /// subtitle at index 7. "Encode" is the healthy answer — it paints the picture
+    /// into the video. Anything else (nil included) is a server that accepted the
+    /// request and quietly declined to burn anything in, which is invisible on
+    /// screen and is exactly what the post-switch check exists to catch.
     static func resolvedMultiTrackTranscode(
         startTime: CMTime? = nil,
-        defaultSubtitleStreamIndex: Int? = 1
+        defaultSubtitleStreamIndex: Int? = 1,
+        burnInDeliveryMethod: String? = "Encode",
+        chineseSidecarURL: URL = URL(string: "https://jf.example.com/Videos/movie-1/ms-1/Subtitles/1/Stream.vtt?api_key=abc&copyTimestamps=true")!
     ) -> ResolvedPlayback {
         func audio(_ i: Int, _ title: String) -> MediaStreamInfo {
             MediaStreamInfo(index: i, kind: .audio, displayTitle: title, language: "jpn",
                             codec: "truehd", channels: 8, isExternal: false, isForced: false, isDefault: i == 3)
         }
-        func sub(_ i: Int, _ title: String, _ lang: String, _ codec: String = "subrip") -> MediaStreamInfo {
+        func sub(
+            _ i: Int, _ title: String, _ lang: String,
+            _ codec: String = "subrip",
+            deliveryMethod: String? = nil
+        ) -> MediaStreamInfo {
             MediaStreamInfo(index: i, kind: .subtitle, displayTitle: title, language: lang,
-                            codec: codec, channels: nil, isExternal: true, isForced: false, isDefault: i == 1)
+                            codec: codec, channels: nil, isExternal: true, isForced: false, isDefault: i == 1,
+                            subtitleDeliveryMethod: deliveryMethod)
         }
         return ResolvedPlayback(
             itemID: "movie-1",
@@ -275,12 +287,13 @@ enum PlayerFixtures {
                 audio(4, "Surround 5.1 - Japanese"),
                 audio(5, "Stereo - Japanese"),
                 sub(1, "Chinese", "zho"),                       // text (SubRip)
-                sub(7, "English - PGSSUB", "eng", "pgssub"),    // image — opt-in burn-in menu entry, no sidecar URL below
+                // image — opt-in burn-in menu entry, no sidecar URL below
+                sub(7, "English - PGSSUB", "eng", "pgssub", deliveryMethod: burnInDeliveryMethod),
             ],
             defaultAudioStreamIndex: 3,
             defaultSubtitleStreamIndex: defaultSubtitleStreamIndex,
             subtitleStreamURLs: [
-                1: URL(string: "https://jf.example.com/Videos/movie-1/ms-1/Subtitles/1/Stream.vtt?api_key=abc&copyTimestamps=true")!
+                1: chineseSidecarURL
             ]
         )
     }
