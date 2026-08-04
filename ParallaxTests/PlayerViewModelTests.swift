@@ -142,7 +142,7 @@ struct PlayerViewModelTests {
         let vm = makePlayerVM(
             reporting: reporting,
             resolve: { _, _, _, _, _ in resolved },
-            engineFactory: { _ in
+            engineFactory: { _, _ in
                 let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
                 createdEngines.append(engine)
                 return engine
@@ -253,7 +253,7 @@ struct PlayerViewModelTests {
         nonisolated(unsafe) var requestedEngineID: PlaybackEngineID?
         let vm = makePlayerVM(
             resolve: { _, _, _, _, _ in resolved },
-            engineFactory: { id in requestedEngineID = id; return engine }
+            engineFactory: { id, _ in requestedEngineID = id; return engine }
         )
 
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -1294,7 +1294,7 @@ struct PlayerViewModelTests {
         let vm = makePlayerVM(
             reporting: reporting,
             resolve: { _, _, _, _, _ in resolved },
-            engineFactory: { _ in
+            engineFactory: { _, _ in
                 let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
                 createdEngines.append(engine)
                 return engine
@@ -1716,7 +1716,7 @@ struct PlayerViewModelTests {
         let directVM = makePlayerVM(
             reporting: directReporting,
             resolve: { _, _, _, _, _ in PlayerFixtures.resolved() },
-            engineFactory: { _ in FakePlaybackEngine(id: .avKit, capabilities: .avKit) },
+            engineFactory: { _, _ in FakePlaybackEngine(id: .avKit, capabilities: .avKit) },
             keepaliveInterval: .milliseconds(20)
         )
         await directVM.start(item: PlayerFixtures.movieDetail())
@@ -2132,7 +2132,7 @@ struct PlayerViewModelTests {
                 for await _ in gate { break }
                 return PlayerFixtures.resolved()
             },
-            engineFactory: { _ in engineBuilt = true; return engine }
+            engineFactory: { _, _ in engineBuilt = true; return engine }
         )
 
         let startTask = Task { await vm.start(item: PlayerFixtures.movieDetail()) }

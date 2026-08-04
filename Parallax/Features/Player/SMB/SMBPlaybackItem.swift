@@ -24,6 +24,10 @@ struct SMBPlaybackItem: Sendable {
     /// (`:smb-user=…`, `:smb-pwd=…`, `:smb-domain=…`), built by the caller from the
     /// Keychain. Passed straight to `PlayableAsset.vlcOptions`; never logged.
     let vlcOptions: [String]
+    /// Raw libvlc INSTANCE arguments (`--no-drop-late-frames`, `--no-skip-frames`) for a
+    /// probe-proven timing hazard `vlcOptions`'s media-level form can't reach — see
+    /// `PlayableAsset.vlcLibraryOptions`. Nil for every ordinary file.
+    let vlcLibraryOptions: [String]?
     /// Resume offset, or nil for a fresh start. The resolver populates it from
     /// `SMBResumeStore` (the local resume store — no server holds SMB progress).
     let startTime: CMTime?
@@ -58,6 +62,7 @@ struct SMBPlaybackItem: Sendable {
         url: URL,
         title: String,
         vlcOptions: [String],
+        vlcLibraryOptions: [String]? = nil,
         startTime: CMTime? = nil,
         subtitleURLs: [Int: URL] = [:],
         subtitleLabels: [Int: String] = [:],
@@ -73,6 +78,7 @@ struct SMBPlaybackItem: Sendable {
         self.url = url
         self.title = title
         self.vlcOptions = vlcOptions
+        self.vlcLibraryOptions = vlcLibraryOptions
         self.startTime = startTime
         self.subtitleURLs = subtitleURLs
         self.subtitleLabels = subtitleLabels

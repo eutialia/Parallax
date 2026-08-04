@@ -95,6 +95,10 @@ struct SMBPlaybackResolver {
         // the on-device store (nil = fresh start). Same key the VM saves beats under.
         let startTime = await resumeStore.resumeTime(for: item.id)
 
+        // See `timingRepairLibraryOptions(for:)` for the WHY — the .decodeOrderTimestamps
+        // hazard's library-level fix.
+        let timingRepairLibraryOptions = Self.timingRepairLibraryOptions(for: probeResult)
+
         if useBridge || vlcOverBridge {
             // The reader is handed to the session and owned by it from here — the cleanup
             // closure is the only site that tears it down. `session.start()` self-tears-down
@@ -119,7 +123,8 @@ struct SMBPlaybackResolver {
                 itemID: item.id,
                 url: url,
                 title: item.displayTitle,
-                vlcOptions: [],                        // bridged http: no VLC credentials in play
+                vlcOptions: [],       // bridged http: no VLC credentials in play
+                vlcLibraryOptions: timingRepairLibraryOptions,
                 startTime: startTime,
                 subtitleURLs: subtitleURLs,
                 subtitleLabels: subtitleLabels,
@@ -157,6 +162,7 @@ struct SMBPlaybackResolver {
             url: ctx.url,
             title: item.displayTitle,
             vlcOptions: ctx.vlcOptions,
+            vlcLibraryOptions: timingRepairLibraryOptions,
             startTime: startTime,
             subtitleURLs: subtitleURLs,
             subtitleLabels: subtitleLabels,
@@ -210,7 +216,9 @@ struct SMBPlaybackResolver {
     /// on container-less hints is a default, not proof, so they'd bridge straight into
     /// AVFoundation's "Cannot Open"), the file is complete (an incomplete download needs
     /// VLC + the read-rate duration estimate), no track was codec-`.unknown` (unknown → VLC
-    /// keeps it decodable), and the selector's verdict on the `http` candidate hints is AVKit.
+    /// keeps it decodable), the probe found no AVPlayer hazard (a degenerate `ctts` on a
+    /// B-frame h264 stream plays in decode order under AVKit — VLC reconstructs it correctly),
+    /// and the selector's verdict on the `http` candidate hints is AVKit.
     static func route(probe: MediaProbeResult?, sizeBytes: Int64?) -> (hints: PlaybackHints, useBridge: Bool) {
         let candidateHints = PlaybackHints(
             scheme: "http",
@@ -224,6 +232,7 @@ struct SMBPlaybackResolver {
             $0.isComplete
                 && $0.container != nil
                 && $0.videoCodec != .unknown && $0.audioCodec != .unknown
+                && $0.avPlayerHazards.isEmpty
                 && EngineSelector.select(hints: candidateHints) == .avKit
         } ?? false
 
@@ -241,6 +250,22 @@ struct SMBPlaybackResolver {
             ),
             false
         )
+    }
+
+    /// The libvlc INSTANCE arguments that repair the `.decodeOrderTimestamps` hazard, or
+    /// nil when the probe found no such hazard. The decoder re-derives display order from
+    /// the bitstream, but roughly half the frames then carry timestamps that read as
+    /// "late" to VLC's output clock and get dropped — the visible effect is a halved frame
+    /// rate. `--no-drop-late-frames`/`--no-skip-frames` keep every decoded frame instead;
+    /// pacing beats the broken clock. Scoped to this ONE hazard — other hazards have sane
+    /// clocks and keep normal dropping. Library-level (not per-media): the vout's
+    /// `is_late_dropped` flag inherits from the owning libvlc INSTANCE, not a per-media
+    /// variable (proven on device) — `VLCMediaPlayer(options:)` is the only surface that
+    /// can set it. Pure so it's testable without a live decode.
+    static func timingRepairLibraryOptions(for probe: MediaProbeResult?) -> [String]? {
+        probe?.avPlayerHazards.contains(.decodeOrderTimestamps) == true
+            ? ["--no-drop-late-frames", "--no-skip-frames"]
+            : nil
     }
 
     /// Races a container probe against a hard `seconds` deadline, abandoning the probe

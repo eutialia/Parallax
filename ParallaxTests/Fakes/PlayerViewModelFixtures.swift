@@ -37,7 +37,7 @@ func makeTestDeviceProfileBuilder() -> DeviceProfileBuilder {
 func makePlayerVM(
     reporting: StubPlaybackReporting = StubPlaybackReporting(),
     resolve: @escaping PlayerViewModel.ResolveCall,
-    engineFactory: @escaping @MainActor @Sendable (PlaybackEngineID) -> any PlaybackEngine,
+    engineFactory: @escaping @MainActor @Sendable (PlaybackEngineID, _ vlcLibraryOptions: [String]?) -> any PlaybackEngine,
     audioSession: any AudioSessionControlling = NoopAudioSession(),
     fetchDetail: @escaping @Sendable (ItemID) async throws -> ItemDetail = { _ in
         throw AppError.playback(.unsupportedFormat)
@@ -88,7 +88,7 @@ func makePlayerVM(
     makePlayerVM(
         reporting: reporting,
         resolve: resolve,
-        engineFactory: { _ in engine },
+        engineFactory: { _, _ in engine },
         audioSession: audioSession,
         fetchDetail: fetchDetail,
         subtitleFetch: subtitleFetch,

@@ -262,6 +262,34 @@ final class PlayerViewModel {
     /// Recomputed only when the stream resolves (`recomputeMediaSummary`).
     private(set) var mediaSummary: String?
 
+    /// The just-loaded asset itself — kept so a reactive AVKit→VLC re-route
+    /// (`attemptReactiveFallback`) can rebuild it (same url/headers/hints/vlcOptions,
+    /// forced onto VLCKit) and so `ReactiveFallback.shouldReroute` can read its container
+    /// back off `hints`, without threading a duplicate copy through every play path.
+    /// Set at the top of `loadAndPlay` (every play path funnels through there); cleared
+    /// with the rest of the per-session state in `stop()`.
+    private var currentAsset: PlayableAsset?
+
+    /// One-shot latch for the reactive AVKit→VLC fallback (`attemptReactiveFallback`):
+    /// true once THIS session has already spent its single re-route, so a second
+    /// terminal failure (on VLC, or on a second MP4 defect) falls through to the normal
+    /// error scrim instead of retrying forever. Reset with the rest of the per-session
+    /// state in `stop()`.
+    private var didReactivelyReroute = false
+
+    /// True from the moment a `.failed` beat schedules the reactive-fallback hop until
+    /// `attemptReactiveFallback` clears it right before `loadAndPlay` on the retry engine.
+    /// Gates `handle(_:)` (next to `isSwitchingTracks`) so the dying AVKit engine's
+    /// trailing beats — a stray `.buffering`/`.playing` racing its own teardown — can't
+    /// land on the VM while the hop is in flight. Reset in `stop()`.
+    private var isReactivelyRerouting = false
+
+    /// The reactive-fallback hop `.failed` spawns (`attemptReactiveFallback`), stored so
+    /// `stop()` can cancel it — closing the window where `retry()`/`resetForReplay` tear
+    /// the session down while a pending hop is still in flight and would otherwise build
+    /// a VLC engine for a session that's already gone.
+    private var reactiveFallbackTask: Task<Void, Never>?
+
     /// Wall-clock milliseconds from `engine.play()` dispatch to this session's FIRST
     /// `.playing` beat — the debug overlay's `Startup:` row (Plan C, AVKit startup
     /// tuning A/B). `nil` before the first beat lands and reset per session/reload
@@ -423,7 +451,7 @@ final class PlayerViewModel {
     private let deviceProfileBuilder: DeviceProfileBuilder
     private let playbackInfo: any PlaybackReporting
     private let resolve: ResolveCall
-    private let engineFactory: @MainActor @Sendable (PlaybackEngineID) -> any PlaybackEngine
+    private let engineFactory: @MainActor @Sendable (PlaybackEngineID, _ vlcLibraryOptions: [String]?) -> any PlaybackEngine
     private let audioSession: any AudioSessionControlling
     /// Fetches an item's full detail (`ItemDetail`) from its id — used by the
     /// direct-play entry `start(itemID:)`. Defaulted so existing `start(item:)`
@@ -614,7 +642,7 @@ final class PlayerViewModel {
         deviceProfileBuilder: DeviceProfileBuilder,
         playbackInfo: any PlaybackReporting,
         resolve: @escaping ResolveCall,
-        engineFactory: @escaping @MainActor @Sendable (PlaybackEngineID) -> any PlaybackEngine,
+        engineFactory: @escaping @MainActor @Sendable (PlaybackEngineID, _ vlcLibraryOptions: [String]?) -> any PlaybackEngine,
         audioSession: any AudioSessionControlling,
         fetchDetail: @escaping @Sendable (ItemID) async throws -> ItemDetail = { _ in
             throw AppError.playback(.unsupportedFormat)
@@ -1004,7 +1032,8 @@ final class PlayerViewModel {
                 defaultSubtitleStreamIndex: nil,
                 subtitleFontURL: fonts?.primaryFile,
                 subtitleFontsDirectoryURL: fonts?.directory,
-                vlcOptions: smbItem.vlcOptions
+                vlcOptions: smbItem.vlcOptions,
+                vlcLibraryOptions: smbItem.vlcLibraryOptions
             )
             try await loadAndPlay(asset, reusingEngine: false)
         } catch is CancellationError {
@@ -1164,19 +1193,30 @@ final class PlayerViewModel {
     /// `start(smbItem:)` (SMB) both end here, so the engine lifecycle (subscription,
     /// Now Playing wiring, tvOS display-mode match, load-failure teardown, rate
     /// re-apply) lives in exactly one place.
-    private func loadAndPlay(_ asset: PlayableAsset, reusingEngine: Bool) async throws {
-        let id = EngineSelector.select(hints: asset.hints)
+    private func loadAndPlay(_ asset: PlayableAsset, reusingEngine: Bool, forcedEngine: PlaybackEngineID? = nil) async throws {
+        // Recorded up front (before the engine even attempts the load) so a reactive
+        // fallback (`attemptReactiveFallback`) can rebuild this exact asset off it
+        // without threading a duplicate copy through every play path.
+        currentAsset = asset
+        // `forcedEngine` is the reactive fallback's retry (`attemptReactiveFallback`)
+        // pinning the rebuilt asset onto VLCKit — EngineSelector stays pure and never
+        // sees the override. Every other call site leaves it nil and gets the ordinary
+        // hint-driven routing.
+        let id = forcedEngine ?? EngineSelector.select(hints: asset.hints)
 
         // Reuse the live engine when a transcode track switch keeps the same engine
         // type: reloading the asset on the existing AVPlayer keeps its video layer
         // mounted, so the surface holds the last frame through the swap instead of
         // tearing down to black. A fresh play (or an engine-type change) builds a new
-        // engine and wires up its state subscription + Now Playing handlers.
+        // engine and wires up its state subscription + Now Playing handlers. Also
+        // excluded when the new asset carries library options the existing engine
+        // wasn't built with — those are instance-scoped at construction (VLCKitEngine.init),
+        // so reusing would silently keep serving the OLD options.
         let engine: any PlaybackEngine
-        if reusingEngine, let existing = self.engine, existing.id == id {
+        if reusingEngine, let existing = self.engine, existing.id == id, asset.vlcLibraryOptions == nil {
             engine = existing
         } else {
-            engine = engineFactory(id)
+            engine = engineFactory(id, asset.vlcLibraryOptions)
             self.engine = engine
             subscribe(to: engine)
             nowPlaying.configure(
@@ -1225,7 +1265,10 @@ final class PlayerViewModel {
         await engine.play()
         // A freshly-built engine starts at 1.0×; re-apply the chosen speed so it
         // survives an engine rebuild (track switch / first play after a speed change).
-        if playbackRate != 1 {
+        // Guarded on identity: a reactive reroute can interleave and tear this engine
+        // down while the await above was suspended, and setRate must not reach a
+        // torn-down engine.
+        if playbackRate != 1, self.engine === engine {
             await engine.setRate(playbackRate)
         }
     }
@@ -1297,6 +1340,11 @@ final class PlayerViewModel {
         }
         stateTask?.cancel()
         stateTask = nil
+        // Closes the retry()/resetForReplay window where a pending reactive-fallback
+        // hop outlives its session: without this, a hop scheduled just before a
+        // restart could build a VLC engine for the NEW session's state.
+        reactiveFallbackTask?.cancel()
+        reactiveFallbackTask = nil
         keepaliveTask?.cancel()
         keepaliveTask = nil
         transportTask?.cancel()
@@ -1357,6 +1405,9 @@ final class PlayerViewModel {
         isPlaying = false
         scrubResumeIntent = nil
         mediaSummary = nil
+        currentAsset = nil
+        didReactivelyReroute = false
+        isReactivelyRerouting = false
         // NOTE: playbackRate is deliberately NOT reset here. retry() routes through
         // stop()→start(); zeroing it would silently drop the user's chosen speed on
         // the fresh engine (beginPlayback's re-apply guard would see 1.0×). A real
@@ -2084,6 +2135,9 @@ final class PlayerViewModel {
         // outgoing stream's trailing beats — a stale `.playing` would claim the new
         // session's reportStart and the server would never register it starting.
         if isSwitchingTracks { return }
+        // While a reactive AVKit→VLC fallback is hopping engines, ignore the dying
+        // engine's trailing beats — same rationale as `isSwitchingTracks` above.
+        if isReactivelyRerouting { return }
         // NOTE: do NOT gate the whole handler on `resolved` here. The SMB/local path
         // (`start(smbItem:)`) leaves `resolved` nil but still drives phase/position/
         // track/buffering beats through this surface. Each Jellyfin *reporting* call
@@ -2261,6 +2315,36 @@ final class PlayerViewModel {
                 Task { [weak self] in await self?.replacePlayback(with: advanceTarget) }
             }
         case .failed(let error):
+            // Some MP4-family files pass the SMB pre-flight probe (or arrive as an
+            // ordinary Jellyfin direct-play stream) but fail at DECODE time — a damaged
+            // bitstream or an open-GOP cut the probe can't see. AVKit surfaces that as
+            // this same terminal `.failed`, mid-load or mid-playback. One reactive
+            // re-route to VLCKit per session, on the same asset — see
+            // `attemptReactiveFallback`. Every other failure (a VLC failure, a second
+            // MP4 failure, an HLS transcode) falls through to the ordinary error scrim.
+            if let asset = currentAsset, let engine,
+               ReactiveFallback.shouldReroute(
+                   currentEngine: engine.id,
+                   container: asset.hints.container,
+                   alreadyRerouted: didReactivelyReroute,
+                   error: error
+               ) {
+                // Latched HERE, not in the fallback: a second `.failed` beat arriving
+                // before the hop below runs must not schedule a second retry.
+                didReactivelyReroute = true
+                // Set before spawning the hop: the UI must not sit on `.playing` (or
+                // any other stale phase) until the hop actually runs the retry.
+                isReactivelyRerouting = true
+                phase = .loading
+                // Unstructured hop (same shape as `.ended` above): this handler runs
+                // INSIDE `stateTask`'s await loop, and the fallback cancels `stateTask` —
+                // awaited inline, that self-cancellation trips the retry's own
+                // `Task.checkCancellation()` and the fallback dies silently, leaving the
+                // loading scrim up forever. Stored so `stop()` can cancel a hop that
+                // outlives its session (the retry()/resetForReplay window).
+                reactiveFallbackTask = Task { [weak self] in await self?.attemptReactiveFallback(from: asset) }
+                return
+            }
             isPlaying = false
             scrubResumeIntent = nil   // a terminal beat drops any pending scrub latch
             clearStall()
@@ -2269,6 +2353,69 @@ final class PlayerViewModel {
             // error scrim into a retry.
             unfreezeVideoSurface()
             phase = .failed(Self.map(error))
+        }
+    }
+
+    /// Reactive AVKit→VLC fallback: rebuilds `asset` (same url/headers/hints/vlcOptions —
+    /// nothing about the SOURCE changes, only the engine) forced onto VLCKit, resuming
+    /// from the current position if playback had progressed past the original start.
+    /// `ReactiveFallback.shouldReroute` already gated this to exactly once per session
+    /// (`didReactivelyReroute`) and to an AVKit failure on an MP4-family container.
+    ///
+    /// The failed AVKit engine is torn down NARROWLY — its state subscription and the
+    /// engine object only, not the SMB bridge or the Jellyfin encode job (`tearDownEngine`
+    /// would reap both) — because the retry reuses the exact same URL and still needs
+    /// them alive. Mirrors the ordinary mid-session `.failed` handling (no
+    /// `audioSession.deactivate()`): the session isn't over, VLC is just trying next.
+    private func attemptReactiveFallback(from asset: PlayableAsset) async {
+        // Exit can race the failure beat: beginExit()/stop() lands while this async
+        // handler is running. Building a fresh VLC engine and starting audio under an
+        // already-dismissing player would resurrect it after the fact — stop() owns the
+        // teardown, so just walk away (mirrors fallBackAfterFailedSwitch's exit guard).
+        guard !isExiting else { return }
+        // `didReactivelyReroute` was already latched by the `.failed` handler that
+        // scheduled this hop — before the hop, so a burst of failure beats can't
+        // schedule twice.
+        isPlaying = false
+        scrubResumeIntent = nil
+        clearStall()
+        unfreezeVideoSurface()
+        phase = .loading
+        // Engine-namespaced state, cleared exactly like a session boundary: the VLC leg
+        // inventories its own tracks from scratch, and `didApplyPreferredTracks = false`
+        // lets it re-apply the server-preferred picks on its own first `.ready`.
+        availableAudioTracks = []
+        availableSubtitleTracks = []
+        selectedAudioTrack = nil
+        selectedSubtitleTrack = nil
+        didApplyPreferredTracks = false
+
+        let resumeAt = CMTimeGetSeconds(currentPosition) > 0 ? currentPosition : asset.startTime
+        let retryAsset = asset.replacingStartTime(resumeAt)
+
+        stateTask?.cancel()
+        stateTask = nil
+        if let engine {
+            await engine.teardown()
+            self.engine = nil
+        }
+        // Re-guard after the teardown await: exit or a fresh stop()/retry() can land
+        // while we were suspended, and this hop must not resurrect playback for a
+        // session that's already gone.
+        guard !Task.isCancelled, !isExiting else { return }
+
+        // The retry engine's own beats must flow from here on — clear the trailing-beat
+        // gate right before starting it.
+        isReactivelyRerouting = false
+        do {
+            try await loadAndPlay(retryAsset, reusingEngine: false, forcedEngine: .vlcKit)
+        } catch is CancellationError {
+            // Exit raced the retry — stop() owns the real teardown.
+        } catch let error as AppError {
+            phase = .failed(error)
+        } catch {
+            Log.playback.error("reactive VLC fallback failed (unmapped): \(error.networkDiagnostic)")
+            phase = .failed(.unexpected("playback start failed", underlying: AnySendableError(error)))
         }
     }
 
@@ -2541,7 +2688,7 @@ extension PlayerViewModel {
             deviceProfileBuilder: DeviceProfileBuilder(probe: LiveCapabilityProbe()),
             playbackInfo: NoOpPlaybackReporting(),
             resolve: { _, _, _, _, _ in throw AppError.playback(.unsupportedFormat) },
-            engineFactory: { _ in fatalError("preview VM never starts playback") },
+            engineFactory: { _, _ in fatalError("preview VM never starts playback") },
             audioSession: PreviewAudioSession()
         )
         vm.itemTitle = "The Grand Budapest Hotel"
