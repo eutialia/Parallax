@@ -13,6 +13,7 @@ public actor SubtitleRenderer {
     private var engine: LibassEngine?
 
     private let defaultFontFamily: String
+    private let defaultFontURL: URL?
     private var canvasPixelSize: CGSize = .zero
     private var storagePixelSize: CGSize?
     private var styleOverride: SubtitleStyleOverride?
@@ -20,10 +21,17 @@ public actor SubtitleRenderer {
     /// first frame after any reconfiguration has to be emitted unconditionally.
     private var hasEmittedFrame = false
 
-    /// - Parameter defaultFontFamily: used when a script names a font that is not
-    ///   installed, and as the font of converted SRT/WebVTT sidecars.
-    public init(defaultFontFamily: String = "Helvetica Neue") {
+    /// - Parameters:
+    ///   - defaultFontFamily: used when a script names a font that is not
+    ///     installed, and as the font of converted SRT/WebVTT sidecars.
+    ///   - defaultFontURL: a font FILE handed to libass as the last-resort face
+    ///     for glyphs nothing else covers. Defaults to the bundled CJK fallback.
+    public init(
+        defaultFontFamily: String = "Helvetica Neue",
+        defaultFontURL: URL? = SubtitleFallbackFont.bundledURL
+    ) {
         self.defaultFontFamily = defaultFontFamily
+        self.defaultFontURL = defaultFontURL
     }
 
     // MARK: - Loading
@@ -225,13 +233,23 @@ public actor SubtitleRenderer {
         )
     }
 
+    // MARK: - Diagnostics
+
+    /// libass' captured message log (font selection, parse warnings). Empty until
+    /// the engine exists. The only ground truth for which font a glyph run used —
+    /// a missing glyph renders as a perfectly valid tofu box.
+    public var diagnosticLog: [String] { engine?.messageLog.lines ?? [] }
+
     // MARK: - Engine lifecycle
 
     /// Built on first use so a renderer that is never fed anything costs nothing,
     /// and configured from whatever was set before it existed.
     private func activeEngine() throws -> LibassEngine {
         if let engine { return engine }
-        guard let engine = LibassEngine(defaultFontFamily: defaultFontFamily) else {
+        guard let engine = LibassEngine(
+            defaultFontFamily: defaultFontFamily,
+            defaultFontPath: defaultFontURL?.path
+        ) else {
             throw SubtitleError.engineUnavailable
         }
         self.engine = engine
