@@ -13,6 +13,8 @@ This file mirrors the in-app screen at Settings → About Parallax
 | [Nuke](https://github.com/kean/Nuke) | MIT | Image loading & caching |
 | [AMSMB2](https://github.com/amosavian/AMSMB2) | LGPL-2.1 | SMB2/3 client (wraps libsmb2) |
 | [SwiftNIO](https://github.com/apple/swift-nio) (+ swift-atomics, swift-collections, swift-system, swift-nio-transport-services) | Apache-2.0 | Local HTTP bridge for SMB playback |
+| [libass](https://github.com/libass/libass) 0.17.5, prebuilt by [mpvkit/libass-build](https://github.com/mpvkit/libass-build) (build scripts MIT) | ISC | Client-side ASS/SSA subtitle renderer |
+| — bundled with libass: [FreeType](https://freetype.org) (FTL), [HarfBuzz](https://github.com/harfbuzz/harfbuzz) (MIT), [FriBidi](https://github.com/fribidi/fribidi) (LGPL-2.1), [libunibreak](https://github.com/adah1972/libunibreak) (zlib) | per component | Font loading, shaping, BiDi, line breaking |
 
 ¹ The official Jellyfin Swift SDK currently publishes no license file. The Jellyfin
 project distributes it for building clients, so the practical risk is small.

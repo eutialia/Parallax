@@ -6,17 +6,26 @@ import ParallaxPlayback
 /// `ParallaxCore` actor over `UserDefaults`) into an `@Observable` the player overlay
 /// and the Settings screen both read.
 ///
-/// **Overlay-only by design.** These values reach `SubtitleOverlayView` (the client
-/// renderer for sidecar/external SRT & VTT) — they never reach the engine-native
-/// renderers (libass / AVKit), which have no styling API on iOS. So a user's size /
-/// color / position / font choice can never touch (or break) a self-positioned
-/// ASS / CJK track: the override has no path to it. See the subtitle-settings spec.
+/// **Client-overlay-only by design.** These values reach the client sidecar renderer
+/// (`SubtitleOverlayView` → `ParallaxSubtitles`) — never the engine-native renderers
+/// (VLC's internal libass for embedded tracks / AVKit legible), which have no styling
+/// API on iOS. For sidecar tracks the reach is format-aware: SRT/VTT (no authored look
+/// of their own) always take this style; authored ASS/SSA keeps its creator styling
+/// unless `overrideAuthoredStyles` is explicitly switched on.
 @MainActor
 @Observable
 final class SubtitlePreferences {
     /// Reverse-DNS key, JSON-encoded into `UserDefaults` like every other setting.
     /// `defaultValue: .standard` means a fresh install renders exactly as before.
     static let key = SettingKey<SubtitleStyle>(name: "Parallax.subtitleStyle", defaultValue: .standard)
+
+    /// Whether the user's style also replaces the AUTHORED styling of ASS/SSA tracks
+    /// (fansub colors, fonts, per-speaker palettes). Default OFF: subtitles show what
+    /// their creators intended, and the style above only governs formats that carry no
+    /// styling of their own.
+    static let overrideAuthoredKey = SettingKey<Bool>(
+        name: "Parallax.subtitleOverrideAuthoredStyles", defaultValue: false
+    )
 
     private let store: SettingsStore
 
@@ -25,10 +34,14 @@ final class SubtitlePreferences {
     /// `.standard`, so there is no visible flash on launch.
     private(set) var style: SubtitleStyle = .standard
 
+    /// Live value of `overrideAuthoredKey`. Same load/edit discipline as `style`.
+    private(set) var overrideAuthoredStyles = false
+
     /// Set the instant the user makes their first edit, so the initial async `load()` — which may
     /// still be in flight behind its actor hop — can't resume late and clobber that edit with the
     /// stale persisted value.
     private var didEdit = false
+    private var didEditOverrideAuthored = false
 
     /// Serializes persistence: each write awaits the previous one, so rapid edits land in submission
     /// order and the LAST edit wins. Unstructured per-call `Task`s would race to the actor and could
@@ -45,9 +58,10 @@ final class SubtitlePreferences {
 
     func load() async {
         let persisted = await store.value(for: Self.key)
+        let persistedOverride = await store.value(for: Self.overrideAuthoredKey)
         // A user edit during the load wins — don't overwrite it with what was on disk at launch.
-        guard !didEdit else { return }
-        style = persisted
+        if !didEdit { style = persisted }
+        if !didEditOverrideAuthored { overrideAuthoredStyles = persistedOverride }
     }
 
     /// Apply + persist. Optimistic: updates the observable immediately so the UI reflects
@@ -60,6 +74,19 @@ final class SubtitlePreferences {
         writeChain = Task { [store] in
             await previous?.value          // strict submission order → last write wins
             try? await store.set(newStyle, for: Self.key)
+        }
+    }
+
+    /// Same optimistic apply + ordered write-through as `update(_:)`, for the
+    /// authored-styles override toggle.
+    func setOverrideAuthoredStyles(_ enabled: Bool) {
+        guard enabled != overrideAuthoredStyles else { return }
+        didEditOverrideAuthored = true
+        overrideAuthoredStyles = enabled
+        let previous = writeChain
+        writeChain = Task { [store] in
+            await previous?.value
+            try? await store.set(enabled, for: Self.overrideAuthoredKey)
         }
     }
 }

@@ -12,6 +12,8 @@
 		DAC3F6F42FC6655100EF06E5 /* ParallaxFileBrowse in Frameworks */ = {isa = PBXBuildFile; productRef = DAC3F6F32FC6655100EF06E5 /* ParallaxFileBrowse */; };
 		DAC3F6F72FC6655C00EF06E5 /* ParallaxJellyfin in Frameworks */ = {isa = PBXBuildFile; productRef = DAC3F6F62FC6655C00EF06E5 /* ParallaxJellyfin */; };
 		DAC3F6FA2FC6656700EF06E5 /* ParallaxPlayback in Frameworks */ = {isa = PBXBuildFile; productRef = DAC3F6F92FC6656700EF06E5 /* ParallaxPlayback */; };
+		DAC3F7B32FC6700000EF06E5 /* ParallaxSubtitles in Frameworks */ = {isa = PBXBuildFile; productRef = DAC3F7B22FC6700000EF06E5 /* ParallaxSubtitles */; };
+		DAC3F7B52FC6700000EF06E5 /* ParallaxSubtitles in Frameworks */ = {isa = PBXBuildFile; productRef = DAC3F7B42FC6700000EF06E5 /* ParallaxSubtitles */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -62,6 +64,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				DAC3F6FA2FC6656700EF06E5 /* ParallaxPlayback in Frameworks */,
+				DAC3F7B32FC6700000EF06E5 /* ParallaxSubtitles in Frameworks */,
 				DAC3F6F72FC6655C00EF06E5 /* ParallaxJellyfin in Frameworks */,
 				DAC3F6F12FC6654500EF06E5 /* ParallaxCore in Frameworks */,
 				DAC3F6F42FC6655100EF06E5 /* ParallaxFileBrowse in Frameworks */,
@@ -73,6 +76,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				0A691D74E0B02484D9953B0E /* ParallaxPlaybackTestSupport in Frameworks */,
+				DAC3F7B52FC6700000EF06E5 /* ParallaxSubtitles in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -131,6 +135,7 @@
 				DAC3F6F32FC6655100EF06E5 /* ParallaxFileBrowse */,
 				DAC3F6F62FC6655C00EF06E5 /* ParallaxJellyfin */,
 				DAC3F6F92FC6656700EF06E5 /* ParallaxPlayback */,
+				DAC3F7B22FC6700000EF06E5 /* ParallaxSubtitles */,
 			);
 			productName = Parallax;
 			productReference = DAC3F6652FC652DA00EF06E5 /* Parallax.app */;
@@ -155,6 +160,7 @@
 			name = ParallaxTests;
 			packageProductDependencies = (
 				BCD82FE15B4AF58016FEF5C1 /* ParallaxPlaybackTestSupport */,
+				DAC3F7B42FC6700000EF06E5 /* ParallaxSubtitles */,
 			);
 			productName = ParallaxTests;
 			productReference = DAC3F6722FC652DB00EF06E5 /* ParallaxTests.xctest */;
@@ -218,6 +224,7 @@
 				DAC3F6F22FC6655100EF06E5 /* XCLocalSwiftPackageReference "Packages/ParallaxFileBrowse" */,
 				DAC3F6F52FC6655C00EF06E5 /* XCLocalSwiftPackageReference "Packages/ParallaxJellyfin" */,
 				DAC3F6F82FC6656700EF06E5 /* XCLocalSwiftPackageReference "Packages/ParallaxPlayback" */,
+				DAC3F7B12FC6700000EF06E5 /* XCLocalSwiftPackageReference "Packages/ParallaxSubtitles" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = DAC3F6662FC652DA00EF06E5 /* Products */;
@@ -631,6 +638,10 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = Packages/ParallaxPlayback;
 		};
+		DAC3F7B12FC6700000EF06E5 /* XCLocalSwiftPackageReference "Packages/ParallaxSubtitles" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/ParallaxSubtitles;
+		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -654,6 +665,16 @@
 		DAC3F6F92FC6656700EF06E5 /* ParallaxPlayback */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = ParallaxPlayback;
+		};
+		DAC3F7B22FC6700000EF06E5 /* ParallaxSubtitles */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = DAC3F7B12FC6700000EF06E5 /* XCLocalSwiftPackageReference "Packages/ParallaxSubtitles" */;
+			productName = ParallaxSubtitles;
+		};
+		DAC3F7B42FC6700000EF06E5 /* ParallaxSubtitles */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = DAC3F7B12FC6700000EF06E5 /* XCLocalSwiftPackageReference "Packages/ParallaxSubtitles" */;
+			productName = ParallaxSubtitles;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

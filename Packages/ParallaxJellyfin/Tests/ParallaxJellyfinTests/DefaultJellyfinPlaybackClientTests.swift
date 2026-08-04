@@ -76,8 +76,7 @@ struct DefaultJellyfinPlaybackClientTests {
             profile: DeviceProfileTranslator.deviceProfile(from: capabilities),
             startTimeTicks: nil,
             userID: "u1",
-            audioStreamIndex: nil,
-            subtitleStreamIndex: nil
+            selection: nil
         )
         switch field {
         case .videoStreamCopy:
@@ -96,19 +95,45 @@ struct DefaultJellyfinPlaybackClientTests {
         case videoStreamCopy, audioStreamCopy, maxStreamingBitrate
     }
 
+    /// The media source id is the load-bearing part: Jellyfin only applies stream indices that
+    /// arrive alongside the source they index into, and drops them silently otherwise — a switch
+    /// sent without it looks accepted and rebuilds around the server's own defaults.
     @Test("Track indices and start time reach the body so a track switch rebuilds the transcode")
     func bodyCarriesTrackSelection() {
         let body = DefaultJellyfinPlaybackClient.playbackInfoBody(
             profile: DeviceProfileTranslator.deviceProfile(from: JellyfinFixtures.caps()),
             startTimeTicks: 6_000_000_000,
             userID: "u1",
-            audioStreamIndex: 4,
-            subtitleStreamIndex: 7
+            selection: StreamSelection(mediaSourceID: "ms-1", audioStreamIndex: 4, subtitleStreamIndex: 7)
         )
+        #expect(body.mediaSourceID == "ms-1")
         #expect(body.audioStreamIndex == 4)
         #expect(body.subtitleStreamIndex == 7)
         #expect(body.startTimeTicks == 6_000_000_000)
         #expect(body.userID == "u1")
+    }
+
+    /// Burn-in paints the subtitle into the picture, which a copied video stream can't carry — so
+    /// that one pick has to withdraw the stream-copy offer. Every other resolve keeps it (a copy
+    /// preserves HDR and costs the server nothing).
+    @Test(
+        "Video stream copy is offered on every resolve except a burn-in subtitle pick",
+        arguments: [
+            (nil as StreamSelection?, true),
+            (StreamSelection(mediaSourceID: "ms-1", audioStreamIndex: 4, subtitleStreamIndex: 1), true),
+            (StreamSelection(mediaSourceID: "ms-1", audioStreamIndex: nil, subtitleStreamIndex: 7, burnsInSubtitle: true), false),
+        ]
+    )
+    func bodyVideoStreamCopyFollowsBurnIn(selection: StreamSelection?, allowsCopy: Bool) {
+        let body = DefaultJellyfinPlaybackClient.playbackInfoBody(
+            profile: DeviceProfileTranslator.deviceProfile(from: JellyfinFixtures.caps()),
+            startTimeTicks: nil,
+            userID: "u1",
+            selection: selection
+        )
+        #expect(body.allowVideoStreamCopy == allowsCopy)
+        // Audio copy is orthogonal — burning a subtitle in never touches the audio stream.
+        #expect(body.allowAudioStreamCopy == true)
     }
 
 }
@@ -145,8 +170,7 @@ struct DefaultJellyfinPlaybackClientWireTests {
             itemID: "item-1",
             profile: DeviceProfileTranslator.deviceProfile(from: JellyfinFixtures.caps()),
             startTimeTicks: 120_000_000,
-            audioStreamIndex: 2,
-            subtitleStreamIndex: 3
+            selection: StreamSelection(mediaSourceID: "ms-1", audioStreamIndex: 2, subtitleStreamIndex: 3)
         )
 
         let request = try stub.onlyExchange()
@@ -156,6 +180,8 @@ struct DefaultJellyfinPlaybackClientWireTests {
         #expect(request.query("startTimeTicks") == "120000000")
         #expect(request.query("audioStreamIndex") == "2")
         #expect(request.query("subtitleStreamIndex") == "3")
+        // Without this the server discards both indices above and rebuilds around its defaults.
+        #expect(request.query("mediaSourceId") == "ms-1")
         // The body is authoritative for this endpoint — assert it on the wire, not only via the
         // pure builder.
         let body = try request.decodedBody(PlaybackInfoDto.self)

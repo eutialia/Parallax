@@ -278,9 +278,22 @@ struct MediaStreamInfoHelperTests {
         #expect(TrackDisplay.languageName(nil, locale: en) == nil)
     }
 
-    @Test("image-based subtitle formats are flagged for burn-in",
-          arguments: ["PGSSUB", "hdmv_pgs_subtitle", "vobsub", "dvd_subtitle"])
+    /// Driven by the shared list rather than a re-typed set of strings: the Jellyfin device
+    /// profile declares one burn-in entry per identifier here, so anything the flag recognizes
+    /// must be something the profile also declares, and vice versa.
+    @Test("every shared image-subtitle codec identifier is flagged for burn-in",
+          arguments: MediaStreamInfo.imageSubtitleCodecs)
     func imageSubtitleFormats(codec: String) {
+        #expect(sub(codec).isImageSubtitle)
+        #expect(sub(codec.uppercased()).isImageSubtitle, "servers report their own casing")
+    }
+
+    /// The flag is deliberately substring-tolerant beyond the exact profile list:
+    /// a spelling variant misread as TEXT would get a sidecar URL built for a
+    /// picture track and render nothing.
+    @Test("image-subtitle spelling variants outside the profile list still classify as image",
+          arguments: ["pgs", "pgs_subtitle", "hdmv_pgs"])
+    func imageSubtitleSpellingVariants(codec: String) {
         #expect(sub(codec).isImageSubtitle)
     }
 

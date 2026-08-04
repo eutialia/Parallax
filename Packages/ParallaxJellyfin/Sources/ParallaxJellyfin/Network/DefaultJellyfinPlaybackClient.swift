@@ -57,28 +57,28 @@ public final class DefaultJellyfinPlaybackClient: JellyfinPlaybackClient, Sendab
         itemID: String,
         profile: DeviceProfile,
         startTimeTicks: Int?,
-        audioStreamIndex: Int?,
-        subtitleStreamIndex: Int?
+        selection: StreamSelection?
     ) async throws -> PlaybackInfoResponse {
         var params = Paths.GetPostedPlaybackInfoParameters()
         params.userID = userID
         params.startTimeTicks = startTimeTicks
-        // Force the server to build the transcode around a specific source
-        // track (track switching on the transcode path). nil → server default.
-        params.audioStreamIndex = audioStreamIndex
-        params.subtitleStreamIndex = subtitleStreamIndex
+        // Force the server to build the transcode around a specific source track
+        // (track switching on the transcode path). The media source id must ride
+        // along or the server throws both indices away — see `StreamSelection`.
+        params.mediaSourceID = selection?.mediaSourceID
+        params.audioStreamIndex = selection?.audioStreamIndex
+        params.subtitleStreamIndex = selection?.subtitleStreamIndex
         params.enableDirectPlay = true
         params.enableDirectStream = true
         params.enableTranscoding = true
-        params.allowVideoStreamCopy = true
+        params.allowVideoStreamCopy = Self.allowsVideoStreamCopy(for: selection)
         params.allowAudioStreamCopy = true
 
         let body = Self.playbackInfoBody(
             profile: profile,
             startTimeTicks: startTimeTicks,
             userID: userID,
-            audioStreamIndex: audioStreamIndex,
-            subtitleStreamIndex: subtitleStreamIndex
+            selection: selection
         )
 
         let request = Paths.getPostedPlaybackInfo(itemID: itemID, parameters: params, body)
@@ -97,8 +97,7 @@ public final class DefaultJellyfinPlaybackClient: JellyfinPlaybackClient, Sendab
         profile: DeviceProfile,
         startTimeTicks: Int?,
         userID: String,
-        audioStreamIndex: Int?,
-        subtitleStreamIndex: Int?
+        selection: StreamSelection?
     ) -> PlaybackInfoDto {
         var body = PlaybackInfoDto(
             deviceProfile: profile,
@@ -108,11 +107,20 @@ public final class DefaultJellyfinPlaybackClient: JellyfinPlaybackClient, Sendab
             startTimeTicks: startTimeTicks,
             userID: userID
         )
-        body.audioStreamIndex = audioStreamIndex
-        body.subtitleStreamIndex = subtitleStreamIndex
-        body.allowVideoStreamCopy = true
+        body.mediaSourceID = selection?.mediaSourceID
+        body.audioStreamIndex = selection?.audioStreamIndex
+        body.subtitleStreamIndex = selection?.subtitleStreamIndex
+        body.allowVideoStreamCopy = Self.allowsVideoStreamCopy(for: selection)
         body.allowAudioStreamCopy = true
         return body
+    }
+
+    /// Stream-copying the video is normally what we want (it preserves HDR and
+    /// costs the server nothing), but a burned-in subtitle has to be painted into
+    /// the picture, which a copy can't do. Withdraw the offer for that one pick so
+    /// the server can't answer with a stream that has nowhere to put the subtitle.
+    private static func allowsVideoStreamCopy(for selection: StreamSelection?) -> Bool {
+        selection?.burnsInSubtitle != true
     }
 
     // MARK: - Stream URLs

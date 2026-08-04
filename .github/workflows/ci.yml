@@ -38,6 +38,8 @@ jobs:
             scheme: ParallaxFileBrowse
           - package: ParallaxPlayback
             scheme: ParallaxPlayback-Package
+          - package: ParallaxSubtitles
+            scheme: ParallaxSubtitles
     steps:
       - uses: actions/checkout@v4
       - name: Select Xcode

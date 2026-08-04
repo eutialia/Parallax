@@ -195,18 +195,27 @@ struct DeviceProfileTranslatorTests {
     /// rendered client-side (one cross-engine overlay, and it dodges the in-manifest WebVTT drift),
     /// while IMAGE formats have no sidecar to render and must be burned in server-side.
     @Test(
-        "Each subtitle format declares the only delivery method that can work for it",
-        arguments: [
-            ("vtt", SubtitleDeliveryMethod.external),
-            ("srt", .external),
-            ("ass", .external),
-            ("pgs", .encode),
-            ("vobsub", .encode),
-        ]
+        "Each text subtitle format declares the only delivery method that can work for it",
+        arguments: ["vtt", "srt", "ass"]
     )
-    func subtitleProfileMethods(format: String, method: SubtitleDeliveryMethod) {
+    func textSubtitleProfileMethods(format: String) {
         let subs = DeviceProfileTranslator.deviceProfile(from: tieredCaps()).subtitleProfiles ?? []
-        #expect(subs.contains { $0.format == format && $0.method == method })
+        #expect(subs.contains { $0.format == format && $0.method == .external })
+    }
+
+    /// The server matches a subtitle profile by string equality against the stream's own codec, so
+    /// the burn-in declarations are only real if they name the identifiers a server actually
+    /// reports. Pinning the emitted set to the shared Core list — rather than to a re-typed literal
+    /// — is what keeps the profile and `MediaStreamInfo.isImageSubtitle` from drifting: a codec
+    /// added to one is added to both, and a codec in neither can't be picked as burn-in anyway.
+    @Test("Image subtitle formats declare burn-in, one profile per shared codec identifier")
+    func imageSubtitleProfilesMatchSharedCodecList() {
+        let subs = DeviceProfileTranslator.deviceProfile(from: tieredCaps()).subtitleProfiles ?? []
+        let encoded = subs.filter { $0.method == .encode }.compactMap(\.format)
+        #expect(Set(encoded) == Set(MediaStreamInfo.imageSubtitleCodecs))
+        #expect(encoded.count == MediaStreamInfo.imageSubtitleCodecs.count, "no duplicate declarations")
+        // The old short spellings matched nothing server-side; they must not come back.
+        #expect(!encoded.contains("pgs"))
     }
 
     /// No subtitle may ride in the HLS manifest: an in-manifest WebVTT mis-times on fMP4 segments

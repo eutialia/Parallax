@@ -36,7 +36,7 @@ struct PlayerViewModelSegmentTests {
         adjacent: @escaping @Sendable (ItemID, ItemID) async -> AdjacentEpisodes = { _, _ in .none }
     ) -> PlayerViewModel {
         makePlayerVM(
-            resolve: { id, _, _, _, _ in PlayerFixtures.resolvedEpisode(id: id.rawValue) },
+            resolve: { id, _, _, _ in PlayerFixtures.resolvedEpisode(id: id.rawValue) },
             engine: engine,
             fetchSegments: { _ in segments },
             fetchAdjacent: adjacent
@@ -121,7 +121,7 @@ struct PlayerViewModelSegmentTests {
         adjacent: @escaping @Sendable (ItemID, ItemID) async -> AdjacentEpisodes
     ) -> PlayerViewModel {
         makePlayerVM(
-            resolve: { id, _, _, _, _ in resolvedIDs(id); return PlayerFixtures.resolvedEpisode(id: id.rawValue) },
+            resolve: { id, _, _, _ in resolvedIDs(id); return PlayerFixtures.resolvedEpisode(id: id.rawValue) },
             engineFactory: { _, _ in engines.make() },
             fetchDetail: { id in PlayerFixtures.episodeDetail(id: id.rawValue) },
             fetchAdjacent: adjacent

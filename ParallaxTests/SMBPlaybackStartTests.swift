@@ -4,6 +4,7 @@ import Testing
 @testable import Parallax
 import ParallaxPlayback
 import ParallaxPlaybackTestSupport
+import ParallaxSubtitles
 @testable import ParallaxJellyfin
 @testable import ParallaxCore
 
@@ -33,7 +34,7 @@ struct SMBPlaybackStartTests {
         return PlayerViewModel(
             deviceProfileBuilder: makeTestDeviceProfileBuilder(),
             playbackInfo: reporting,
-            resolve: { _, _, _, _, _ in
+            resolve: { _, _, _, _ in
                 Issue.record("SMB playback must not call the Jellyfin resolve")
                 throw AppError.playback(.unsupportedFormat)
             },
@@ -85,36 +86,38 @@ struct SMBPlaybackStartTests {
         #expect(subs.contains { $0.id == .jellyfinStream(1) && $0.displayName == "ja" && $0.isExternal })
     }
 
-    @Test("start(smbItem:) hides ASS/SSA sidecars from the menu — no client renderer yet")
-    func startHidesUnrenderableSidecarFormats() async throws {
+    @Test("start(smbItem:) surfaces every renderable sidecar (ASS included) and hides formats the renderer can't ingest")
+    func startFiltersSidecarFormatsByRenderability() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
         let vm = makeVM(reporting: reporting, engine: engine)
 
         let srt = URL(string: "smb://nas.local/Media/Movies/x.srt")!
         let ass = URL(string: "smb://nas.local/Media/Movies/y.ass")!
+        let idx = URL(string: "smb://nas.local/Media/Movies/y.idx")!
         let vtt = URL(string: "smb://nas.local/Media/Movies/z.vtt")!
         await vm.start(smbItem: smbItem(
-            subtitleURLs: [0: srt, 1: ass, 2: vtt],
-            subtitleLabels: [0: "srt-label", 1: "ass-label", 2: "vtt-label"]
+            subtitleURLs: [0: srt, 1: ass, 2: vtt, 3: idx],
+            subtitleLabels: [0: "srt-label", 1: "ass-label", 2: "vtt-label", 3: "idx-label"]
         ))
 
-        // The resolver's filename matcher still surfaces the ASS sidecar (matched, just
-        // unrenderable client-side) — the fix filters it out of the MENU, not the resolver.
+        // ASS renders client-side (libass) so it's a real menu entry now; the VobSub
+        // index file is image-based and stays out of the menu.
         let subs = vm.availableSubtitleTracks
-        #expect(subs.count == 2)
+        #expect(subs.count == 3)
         #expect(subs.contains { $0.id == .jellyfinStream(0) && $0.displayName == "srt-label" })
+        #expect(subs.contains { $0.id == .jellyfinStream(1) && $0.displayName == "ass-label" })
         #expect(subs.contains { $0.id == .jellyfinStream(2) && $0.displayName == "vtt-label" })
-        #expect(!subs.contains { $0.id == .jellyfinStream(1) })
+        #expect(!subs.contains { $0.id == .jellyfinStream(3) })
     }
 
-    @Test("selecting an SMB .srt sidecar fetches + parses via SRTParser into activeSubtitleCues")
-    func selectingSRTSidecarParsesViaSRTParser() async throws {
+    @Test("selecting an SMB .srt sidecar fetches + loads the client renderer as SRT")
+    func selectingSRTSidecarLoadsRenderer() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
 
-        // A minimal single-cue SRT blob — comma timing WebVTTParser can't read, so a green
-        // count proves the extension routed to SRTParser rather than WebVTTParser (→ 0 cues).
+        // A minimal single-cue SRT blob with comma timing — the format tag proves the
+        // extension routed the data down the renderer's SRT ingest, not the VTT one.
         let srt = "1\n00:00:01,000 --> 00:00:04,000\nHello world\n"
         let subURL = URL(string: "smb://nas.local/Media/Movies/Example.en.srt")!
         let vm = makeVM(reporting: reporting, engine: engine, subtitleFetch: { url in
@@ -127,8 +130,8 @@ struct SMBPlaybackStartTests {
         await vm.selectSubtitleTrack(track)
         await vm.debugAwaitSubtitleFetch()
 
-        #expect(vm.activeSubtitleCues.count == 1)
-        #expect(vm.activeSubtitleCues.first?.text == "Hello world")
+        #expect(vm.sidecarSubtitleInfo == SidecarSubtitleInfo(format: .srt, byteCount: srt.utf8.count))
+        #expect(vm.subtitleRenderer != nil)
     }
 
     /// Counts resolve-closure invocations so a test can prove `retry()` replays it.

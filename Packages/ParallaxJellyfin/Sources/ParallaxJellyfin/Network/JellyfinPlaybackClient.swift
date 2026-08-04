@@ -34,12 +34,15 @@ public struct StreamRequest: Sendable, Hashable {
 /// `streamURL` / `transcodeURL` return self-contained URLs (api_key in the
 /// query) so AVPlayer can fetch HLS segments without an auth header.
 public protocol JellyfinPlaybackClient: Sendable {
+    /// Negotiates a playable stream. `selection` is nil on first play (the server
+    /// applies the user's own language preferences) and carries the media source +
+    /// stream indices on a re-resolve after a track switch — see `StreamSelection`
+    /// for why the source id is mandatory there.
     func playbackInfo(
         itemID: String,
         profile: DeviceProfile,
         startTimeTicks: Int?,
-        audioStreamIndex: Int?,
-        subtitleStreamIndex: Int?
+        selection: StreamSelection?
     ) async throws -> PlaybackInfoResponse
 
     func streamURL(_ request: StreamRequest) -> URL?
