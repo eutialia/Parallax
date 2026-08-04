@@ -122,7 +122,7 @@ struct PlayerViewModelSegmentTests {
     ) -> PlayerViewModel {
         makePlayerVM(
             resolve: { id, _, _, _, _ in resolvedIDs(id); return PlayerFixtures.resolvedEpisode(id: id.rawValue) },
-            engineFactory: { _ in engines.make() },
+            engineFactory: { _, _ in engines.make() },
             fetchDetail: { id in PlayerFixtures.episodeDetail(id: id.rawValue) },
             fetchAdjacent: adjacent
         )

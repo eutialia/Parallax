@@ -35,26 +35,37 @@ extension PlaybackEngineCapabilities {
 /// - `teardown()` finishes the stream so async `for await` loops terminate.
 /// - Call `finish()` to close the stream without recording "teardown".
 ///
-/// Thread-safety: this is a test double. Its recording fields are
-/// `nonisolated(unsafe)` so the class can satisfy `PlaybackEngine`'s `Sendable`
-/// requirement without actor isolation. The safety invariant is that all writes
-/// happen inside the `async` protocol methods, and every consuming test suite
-/// drives a given instance from a single actor context (the suites are
-/// `@MainActor`). Do NOT call this engine's protocol methods from two concurrent
-/// Tasks on the same instance — that would race the recording fields. Use one
-/// instance per test.
+/// Thread-safety: this is a test double, called from the generic executor (the
+/// protocol's `async` methods) while `@MainActor` tests poll its recording fields —
+/// two different isolation domains touching the same state. `calls`, `loadedAssets`,
+/// `selectedAudioTrackID`, and `selectedSubtitleTrackID` are guarded by a `Mutex`
+/// (`recordedState`) so a real reactive-fallback-style engine swap (a background hop
+/// writing while the test reads) can't race; the public properties below are
+/// computed reads through the lock, so the call-site surface is unchanged. Reads are
+/// safe from any context; PROVING an ordering (e.g. "the retry engine's `play` landed
+/// after the teardown") still needs `settle()`/`waitUntil` — the lock only rules out
+/// a torn read, it doesn't sequence calls for you.
 public final class FakePlaybackEngine: PlaybackEngine {
 
     public nonisolated let id: PlaybackEngineID
     public nonisolated let capabilities: PlaybackEngineCapabilities
     public nonisolated let state: AsyncStream<PlaybackState>
 
-    public nonisolated(unsafe) private(set) var loadedAssets: [PlayableAsset] = []
-    public nonisolated(unsafe) private(set) var calls: [String] = []
+    private struct RecordedState {
+        var loadedAssets: [PlayableAsset] = []
+        var calls: [String] = []
+        var selectedAudioTrackID: TrackID? = nil
+        var selectedSubtitleTrackID: TrackID? = nil
+    }
+    private let recordedState = Mutex(RecordedState())
+
+    public var loadedAssets: [PlayableAsset] { recordedState.withLock { $0.loadedAssets } }
+    public var calls: [String] { recordedState.withLock { $0.calls } }
+    public var selectedAudioTrackID: TrackID? { recordedState.withLock { $0.selectedAudioTrackID } }
+    public var selectedSubtitleTrackID: TrackID? { recordedState.withLock { $0.selectedSubtitleTrackID } }
+
     /// Set to make every `load` throw after recording — a failed stream load.
     public nonisolated(unsafe) var loadError: Error? = nil
-    public nonisolated(unsafe) private(set) var selectedAudioTrackID: TrackID? = nil
-    public nonisolated(unsafe) private(set) var selectedSubtitleTrackID: TrackID? = nil
     /// Drives `isBuffered(at:)`. `nil` (default) → always buffered, matching the
     /// protocol default so seek-path tests are unaffected. Set a range to make a
     /// target outside it read as out-of-buffer (→ the transcode re-anchor path).
@@ -138,19 +149,21 @@ public final class FakePlaybackEngine: PlaybackEngine {
     }
 
     public func load(_ asset: PlayableAsset) async throws {
-        loadedAssets.append(asset)
-        calls.append("load")
+        recordedState.withLock {
+            $0.loadedAssets.append(asset)
+            $0.calls.append("load")
+        }
         if let loadError { throw loadError }
     }
 
-    public func play() async { calls.append("play") }
+    public func play() async { recordedState.withLock { $0.calls.append("play") } }
 
-    public func pause() async { calls.append("pause") }
+    public func pause() async { recordedState.withLock { $0.calls.append("pause") } }
 
     public func seek(to time: CMTime) async {
         let seconds = CMTimeGetSeconds(time)
         let formatted = String(format: "%.1f", seconds)
-        calls.append("seek(\(formatted))")
+        recordedState.withLock { $0.calls.append("seek(\(formatted))") }
     }
 
     public func isBuffered(at time: CMTime) async -> Bool {
@@ -159,21 +172,25 @@ public final class FakePlaybackEngine: PlaybackEngine {
     }
 
     public func setAudioTrack(_ track: AudioTrack) async {
-        selectedAudioTrackID = track.id
-        calls.append("setAudioTrack(\(track.id))")
+        recordedState.withLock {
+            $0.selectedAudioTrackID = track.id
+            $0.calls.append("setAudioTrack(\(track.id))")
+        }
     }
 
     public func setSubtitleTrack(_ track: SubtitleTrack?) async {
-        selectedSubtitleTrackID = track?.id
-        calls.append(track.map { "setSubtitleTrack(\($0.id))" } ?? "setSubtitleTrack(nil)")
+        recordedState.withLock {
+            $0.selectedSubtitleTrackID = track?.id
+            $0.calls.append(track.map { "setSubtitleTrack(\($0.id))" } ?? "setSubtitleTrack(nil)")
+        }
     }
 
     public func setSubtitleDelay(milliseconds: Int) async {
-        calls.append("setSubtitleDelay(\(milliseconds))")
+        recordedState.withLock { $0.calls.append("setSubtitleDelay(\(milliseconds))") }
     }
 
     public func teardown() async {
-        calls.append("teardown")
+        recordedState.withLock { $0.calls.append("teardown") }
         finish()
     }
 }

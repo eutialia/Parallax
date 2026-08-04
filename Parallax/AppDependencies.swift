@@ -29,7 +29,7 @@ final class AppDependencies {
     let imagePipelineFactory: ImagePipelineFactory
     let deviceProfileBuilder: DeviceProfileBuilder
     let playbackInfoFactory: @Sendable (Session) async -> PlaybackInfoService
-    let playbackEngineFactory: @MainActor @Sendable (PlaybackEngineID) -> any PlaybackEngine
+    let playbackEngineFactory: @MainActor @Sendable (PlaybackEngineID, _ vlcLibraryOptions: [String]?) -> any PlaybackEngine
     let audioSession: any AudioSessionControlling
     /// Resolves a browsed SMB `Item` into a ready-to-play `SMBPlaybackItem` (decodes
     /// the share path, reads the Keychain password, builds the `smb://` URL + libVLC
@@ -60,7 +60,7 @@ final class AppDependencies {
         imagePipelineFactory: ImagePipelineFactory,
         deviceProfileBuilder: DeviceProfileBuilder,
         playbackInfoFactory: @Sendable @escaping (Session) async -> PlaybackInfoService,
-        playbackEngineFactory: @MainActor @Sendable @escaping (PlaybackEngineID) -> any PlaybackEngine,
+        playbackEngineFactory: @MainActor @Sendable @escaping (PlaybackEngineID, _ vlcLibraryOptions: [String]?) -> any PlaybackEngine,
         audioSession: any AudioSessionControlling,
         smbPlaybackResolver: SMBPlaybackResolver,
         mediaArtworkProvider: MediaArtworkProvider,
@@ -160,12 +160,15 @@ final class AppDependencies {
         // The DEBUG-picked startup profile only applies to .avKit — VLCKitEngine has its
         // own buffering knobs and this store never touches it.
         let startupTuningStore = StartupTuningStore()
-        let engineFactory: @MainActor @Sendable (PlaybackEngineID) -> any PlaybackEngine = { id in
+        let engineFactory: @MainActor @Sendable (PlaybackEngineID, _ vlcLibraryOptions: [String]?) -> any PlaybackEngine = { id, vlcLibraryOptions in
             switch id {
             case .avKit:
                 return AVKitEngine(tuning: startupTuningStore.selected.tuning)
             case .vlcKit:
-                return VLCKitEngine()
+                // Library options are instance-scoped and must exist at player creation
+                // (see `VLCKitEngine.init`), so they're a factory input, not a
+                // post-build configuration.
+                return VLCKitEngine(libraryOptions: vlcLibraryOptions)
             }
         }
 

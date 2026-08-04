@@ -48,11 +48,14 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
 
     // MARK: - VLC internals
 
-    // `nonisolated(unsafe)` is required because Swift 6 forbids `nonisolated let`
-    // for non-Sendable types, even though `let` is immutable. The player is only
-    // ever mutated (delegate, media, play/stop) from MainActor-isolated code;
-    // the nonisolated `vlcPlayer` accessor is read-only and accessed synchronously
-    // from UIViewRepresentable contexts that cannot hop to MainActor.
+    // `nonisolated(unsafe)` is required because Swift 6 forbids `nonisolated let`/`var`
+    // for non-Sendable types. It IS `let`: built once in `init`, either against the shared
+    // `VLCLibrary` or a private one scoped to `libraryOptions` (see `init(libraryOptions:)`)
+    // — never reassigned or swapped after that. The player is only ever mutated (delegate,
+    // media, play/stop) from MainActor-isolated code; the nonisolated `vlcPlayer` accessor
+    // is read-only and accessed synchronously from UIViewRepresentable contexts that cannot
+    // hop to MainActor. The drawable handle contract (see `vlcPlayer` below) is unaffected
+    // either way.
     private nonisolated(unsafe) let player: VLCMediaPlayer
 
     /// The underlying `VLCMediaPlayer`, exposed `nonisolated` so the app's
@@ -217,14 +220,41 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
 
     // MARK: - Init
 
-    public override init() {
+    /// `libraryOptions`: raw libvlc instance arguments (e.g. `--no-drop-late-frames`) for
+    /// defects per-media options can't reach — the vout's `is_late_dropped` flag reads off
+    /// the OWNING libvlc instance, not a per-media variable (proven on device), and
+    /// `VLCMediaPlayer(options:)` is the only surface that can set instance-scoped flags.
+    /// Decided at CONSTRUCTION so exactly one player ever exists per engine: a mid-`load`
+    /// player swap would race the SwiftUI host, which binds `vlcPlayer.drawable` as soon
+    /// as the engine is published. Nil = the shared library instance.
+    ///
+    /// The vendored `VLCLibrary.h` states the framework does not support multiple
+    /// `VLCLibrary` instances. `VLCMediaPlayer(options:)` creates one anyway (it's the only
+    /// surface that can set instance-scoped options), so this is knowingly off the
+    /// documented path — device-exercised, though (playback + delegate events verified),
+    /// and the only way to reach per-player library flags.
+    public init(libraryOptions: [String]? = nil) {
         _ = Self._eventsConfigured   // guarantee main-queue delegate delivery before the player exists
         let (stream, cont) = PlaybackStateStream.makeStream()
         self.state = stream
         self.continuation = cont
-        self.player = VLCMediaPlayer()
+        let usesPrivateLibrary = libraryOptions?.isEmpty == false
+        if usesPrivateLibrary, let libraryOptions {
+            self.player = VLCMediaPlayer(options: libraryOptions)
+        } else {
+            self.player = VLCMediaPlayer()
+        }
         super.init()
         player.delegate = self
+        // `_eventsConfigured` only attaches the audio diagnostics logger to
+        // `VLCLibrary.shared()` — a private instance (exactly the defect files this is
+        // tracing) never gets it. `player.libraryInstance` is the player's own library,
+        // so attach it here too.
+        #if DEBUG
+        if usesPrivateLibrary {
+            player.libraryInstance.loggers = [VLCAudioDiagnosticsLogger()]
+        }
+        #endif
         // NOTE: 3.x exposes no time-update cadence knobs (`minimalTimePeriod` /
         // `timeChangeUpdateInterval` are 4.x-only). `player.time` here is the cached value
         // libvlc's own time-changed event refreshes, which fires as the input advances

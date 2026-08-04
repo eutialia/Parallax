@@ -3,6 +3,75 @@ import ParallaxCoreTestSupport
 import Testing
 @testable import ParallaxCore
 
+/// One decode-order-timestamp hazard row: a ctts shape plus whether a B slice sits in the
+/// sample window the probe reads, and the hazard verdict that combination should produce.
+struct HazardCase: Sendable, CustomTestStringConvertible {
+    let name: String
+    let ctts: ISOBMFFFixtures.CttsFixture
+    /// Sample index (of 64) that gets a B slice; `nil` means every sample is P/I.
+    let bSliceIndex: Int?
+    let expectedHazard: Bool
+    var testDescription: String { name }
+}
+
+private let hazardCases: [HazardCase] = [
+    HazardCase(
+        name: "piecewise-constant ctts + a B slice → hazard",
+        ctts: .entries([(count: 32, offset: 0), (count: 32, offset: 1)]),
+        bSliceIndex: 5, expectedHazard: true
+    ),
+    // The real defect's exact shape: the offset climbs one tick every few samples, so it
+    // drifts across the track while any 32-sample window spreads ~6 ticks — far under the
+    // half-frame threshold (500 here), so every window reads degenerate.
+    HazardCase(
+        name: "slowly drifting ctts + a B slice → hazard",
+        ctts: .entries((0..<16).map { (count: UInt32(4), offset: Int32($0)) }),
+        bSliceIndex: 5, expectedHazard: true
+    ),
+    HazardCase(
+        name: "no ctts at all + a B slice → hazard",
+        ctts: .absent,
+        bSliceIndex: 5, expectedHazard: true
+    ),
+    HazardCase(
+        name: "degenerate ctts but only P/I slices → no hazard",
+        ctts: .entries([(count: 32, offset: 0), (count: 32, offset: 1)]),
+        bSliceIndex: nil, expectedHazard: false
+    ),
+    // Offsets swing 0/2000/4000 (well past the 500-tick half-duration threshold) inside every
+    // window — a normal encoder's real per-frame reorder offsets — so it never reads degenerate.
+    HazardCase(
+        name: "healthy varied ctts + a B slice → no hazard",
+        ctts: .entries((0..<64).map { (count: UInt32(1), offset: Int32([0, 2000, 4000][$0 % 3])) }),
+        bSliceIndex: 5, expectedHazard: false
+    ),
+]
+
+/// One "the ctts box's declared entry count can't be trusted" case: the box either promises
+/// entries it doesn't physically carry, or promises far more than its own declared size could
+/// ever hold.
+struct MalformedCttsCase: Sendable, CustomTestStringConvertible {
+    let name: String
+    let raw: Data
+    var testDescription: String { name }
+}
+
+private let malformedCttsCases: [MalformedCttsCase] = [
+    MalformedCttsCase(name: "declares entries the box doesn't carry", raw: {
+        var data = Data([0, 0, 0, 0]) // version/flags
+        var declaredCount = UInt32(5).bigEndian
+        withUnsafeBytes(of: &declaredCount) { data.append(contentsOf: $0) } // promises 5 entries…
+        return data // …but no entry bytes follow.
+    }()),
+    MalformedCttsCase(name: "declares ~4 billion entries in a 16-byte box", raw: {
+        var data = Data([0, 0, 0, 0]) // version/flags
+        var declaredCount = UInt32.max.bigEndian
+        withUnsafeBytes(of: &declaredCount) { data.append(contentsOf: $0) }
+        data.append(contentsOf: [0, 0, 0, 1, 0, 0, 0, 0]) // one real entry, 4 billion promised
+        return data
+    }()),
+]
+
 /// Box trees are assembled with `ISOBMFFFixtures` (shared, so the builders exist once for the
 /// whole target) and fed through `InMemoryRandomAccessReader`.
 @Suite("MediaProbe")
@@ -333,6 +402,297 @@ struct MediaProbeTests {
         #expect(result.container == nil)
         #expect(result.videoCodec == .none)
         #expect(result.audioCodec == .none)
+    }
+
+    // MARK: - Decode-order timestamp hazard
+
+    @Test("decode-order timestamp hazard, per ctts shape and B-slice presence", arguments: hazardCases)
+    func decodeOrderTimestampHazard(_ row: HazardCase) async throws {
+        let sampleCount = 64
+        let samples = (0..<sampleCount).map { index in
+            Fixture.h264Sample(nalLengthSize: 4, sliceType: index == row.bSliceIndex ? 1 : 2)
+        }
+        let data = Fixture.h264HazardMp4(
+            sttsEntries: [(count: UInt32(sampleCount), delta: 1000)],
+            ctts: row.ctts,
+            sampleData: samples
+        )
+
+        let result = try await probe(data)
+        #expect(result.videoCodec == .known(.h264))
+        #expect(result.avPlayerHazards.contains(.decodeOrderTimestamps) == row.expectedHazard)
+    }
+
+    /// A `ctts` box whose declared entry count can't be trusted — either it promises entries it
+    /// doesn't carry, or it promises far more than the 16-byte box could ever hold — is a
+    /// different signal than "no ctts at all": it must fail open rather than being read as an
+    /// automatic hazard candidate or driving a giant allocation, and the rest of the probe
+    /// result stays intact.
+    @Test("an untrustworthy ctts entry count fails open — no hazard, other fields intact", arguments: malformedCttsCases)
+    func malformedCttsFailsOpen(_ row: MalformedCttsCase) async throws {
+        let sampleCount = 8
+        let samples = (0..<sampleCount).map { index in
+            Fixture.h264Sample(nalLengthSize: 4, sliceType: index == 2 ? 1 : 2)
+        }
+        let data = Fixture.h264HazardMp4(
+            sttsEntries: [(count: UInt32(sampleCount), delta: 1000)],
+            ctts: .raw(row.raw),
+            sampleData: samples
+        )
+
+        let result = try await probe(data)
+        #expect(result.container == .mp4)
+        #expect(result.videoCodec == .known(.h264))
+        #expect(result.avPlayerHazards.isEmpty)
+    }
+
+    /// The sample table is fully valid and degenerate, but the sample bytes themselves aren't
+    /// reachable (the file ends right where `mdat`'s payload would start) — the B-slice read
+    /// comes back empty, and that must fail open too, not crash or misreport.
+    @Test("unreadable sample bytes fail open — no hazard, other fields intact")
+    func unreadableSampleBytesFailsOpen() async throws {
+        let sampleCount = 64
+        let samples = (0..<sampleCount).map { index in
+            Fixture.h264Sample(nalLengthSize: 4, sliceType: index == 5 ? 1 : 2)
+        }
+        let data = Fixture.h264HazardMp4(
+            sttsEntries: [(count: UInt32(sampleCount), delta: 1000)],
+            ctts: .entries([(count: 32, offset: 0), (count: 32, offset: 1)]),
+            sampleData: samples
+        )
+        let sampleBytesTotal = samples.reduce(0) { $0 + $1.count }
+        let reader = SyntheticRandomAccessReader(prefix: data, declaredSize: UInt64(data.count - sampleBytesTotal))
+
+        let result = try await MediaProbe.probe(reader)
+        #expect(result.container == .mp4)
+        #expect(result.videoCodec == .known(.h264))
+        #expect(result.avPlayerHazards.isEmpty)
+    }
+
+    /// 32 samples of 20 KiB each sum well past `confirmBSlices`' 256 KiB read budget in one
+    /// contiguous span. The old coalesced-bulk-read path would have spent the whole budget
+    /// reading sample 0 alone and never reached sample 5's B slice; the per-sample-head fallback
+    /// must still find it.
+    @Test("a hazard whose samples sum past the read budget is still found via per-sample reads")
+    func hazardBeyondReadBudgetStillDetected() async throws {
+        let sampleCount = 32
+        let samples = (0..<sampleCount).map { index -> Data in
+            var sample = Fixture.h264Sample(nalLengthSize: 4, sliceType: index == 5 ? 1 : 2)
+            // Pad well past the NAL bytes — the B slice's own NAL stays in the first few bytes,
+            // which the 4 KiB per-sample head read still covers, but 32 of these coalesced into
+            // one bulk read would blow the budget on sample 0 alone.
+            sample.append(Data(count: 20_000 - sample.count))
+            return sample
+        }
+        let data = Fixture.h264HazardMp4(
+            sttsEntries: [(count: UInt32(sampleCount), delta: 1000)],
+            ctts: .absent,
+            sampleData: samples
+        )
+
+        let result = try await probe(data)
+        #expect(result.avPlayerHazards.contains(.decodeOrderTimestamps))
+    }
+
+    /// The fixed-size `stsz` branch (`sample_size != 0`, no per-sample table) reaching the
+    /// hazard detector end-to-end — every other fixture in this suite goes through the
+    /// per-sample table branch instead.
+    @Test("a hazard behind a fixed-size stsz table is still detected")
+    func hazardWithFixedSizeStszIsDetected() async throws {
+        let sampleCount = 64
+        let samples = (0..<sampleCount).map { index in
+            Fixture.h264Sample(nalLengthSize: 4, sliceType: index == 5 ? 1 : 2)
+        }
+        let data = Fixture.h264HazardMp4(
+            sttsEntries: [(count: UInt32(sampleCount), delta: 1000)],
+            ctts: .absent,
+            sampleData: samples,
+            stszEncoding: .fixed
+        )
+
+        let result = try await probe(data)
+        #expect(result.avPlayerHazards.contains(.decodeOrderTimestamps))
+    }
+
+    /// Baseline profile (profile_idc 66) H.264 cannot carry B-slices, so the probe must skip the
+    /// sample-read scan entirely — even with a degenerate (absent) ctts and a (synthetically
+    /// implausible, but proving the skip) planted B slice, no hazard is reported.
+    @Test("a Baseline-profile stream reports no decode-order hazard even with a planted B slice")
+    func baselineProfileSkipsDecodeOrderScan() async throws {
+        let sampleCount = 64
+        let samples = (0..<sampleCount).map { index in
+            Fixture.h264Sample(nalLengthSize: 4, sliceType: index == 5 ? 1 : 2)
+        }
+        let data = Fixture.h264HazardMp4(
+            sttsEntries: [(count: UInt32(sampleCount), delta: 1000)],
+            ctts: .absent,
+            sampleData: samples,
+            spsNALs: [Fixture.h264SPS(profileIdc: 66, frameMbsOnlyFlag: 1)]
+        )
+
+        let result = try await probe(data)
+        #expect(!result.avPlayerHazards.contains(.decodeOrderTimestamps))
+    }
+
+    /// Two stsc/stco chunks of 16 samples each, with the B slice in chunk 2 (sample index 20) —
+    /// a single-chunk fixture can't exercise `sampleByteRanges` walking past its first `stco`
+    /// entry, so this locks that chunk walk.
+    @Test("a hazard reached only by walking into a second stsc/stco chunk is still detected")
+    func hazardAcrossMultipleChunksIsDetected() async throws {
+        let sampleCount = 32
+        let samples = (0..<sampleCount).map { index in
+            Fixture.h264Sample(nalLengthSize: 4, sliceType: index == 20 ? 1 : 2)
+        }
+        let data = Fixture.h264HazardMp4(
+            sttsEntries: [(count: UInt32(sampleCount), delta: 1000)],
+            ctts: .absent,
+            sampleData: samples,
+            samplesPerChunk: 16
+        )
+
+        let result = try await probe(data)
+        #expect(result.avPlayerHazards.contains(.decodeOrderTimestamps))
+    }
+
+    // MARK: - In-band parameter sets
+
+    @Test("in-band-parameter-set sample entry tags are hazarded, out-of-band tags are not", arguments: [
+        ("hev1", true), ("avc3", true), ("avc4", true), ("dvhe", true),
+        ("hvc1", false), ("avc1", false), ("dvh1", false),
+    ])
+    func inBandParameterSetsHazard(fourcc: String, expectedHazard: Bool) async throws {
+        let result = try await probe(Fixture.mp4(traks: [
+            Fixture.trak(stsdEntries: [fourcc], handler: "vide"),
+        ]))
+        #expect(result.avPlayerHazards.contains(.inBandParameterSets) == expectedHazard)
+    }
+
+    // MARK: - Interlaced (field-coded) video
+
+    @Test("an avc1 SPS's frame_mbs_only_flag drives the interlace hazard", arguments: [
+        (66, 1, false),   // baseline, progressive
+        (66, 0, true),    // baseline, field-coded
+        (100, 1, false),  // High profile (exercises the chroma/bit-depth branch), progressive
+        (100, 0, true),   // High profile, field-coded
+    ])
+    func interlacedH264Hazard(profileIdc: Int, frameMbsOnlyFlag: Int, expectedHazard: Bool) async throws {
+        let sps = Fixture.h264SPS(profileIdc: profileIdc, frameMbsOnlyFlag: frameMbsOnlyFlag)
+        let entry = Fixture.avcVideoSampleEntry(spsNALs: [sps])
+        let result = try await probe(Fixture.mp4(traks: [
+            Fixture.trakRaw(stsdEntries: [entry], handler: "vide"),
+        ]))
+        #expect(result.avPlayerHazards.contains(.interlacedVideo) == expectedHazard)
+    }
+
+    /// The scaling-matrix branch is a deliberate parser bail, not a confirmed-progressive read —
+    /// it must report no hazard even though the field-coded flag it never reaches would be 0.
+    @Test("a High-profile SPS with seq_scaling_matrix_present_flag set fails open")
+    func scalingMatrixPresentFailsOpen() async throws {
+        let sps = Fixture.h264SPS(profileIdc: 100, frameMbsOnlyFlag: 0, scalingMatrixPresent: true)
+        let entry = Fixture.avcVideoSampleEntry(spsNALs: [sps])
+        let result = try await probe(Fixture.mp4(traks: [
+            Fixture.trakRaw(stsdEntries: [entry], handler: "vide"),
+        ]))
+        #expect(!result.avPlayerHazards.contains(.interlacedVideo))
+    }
+
+    @Test("a truncated SPS fails open rather than misreading garbage bits")
+    func truncatedSPSFailsOpen() async throws {
+        let sps = Fixture.h264SPS(profileIdc: 66, frameMbsOnlyFlag: 0, truncated: true)
+        let entry = Fixture.avcVideoSampleEntry(spsNALs: [sps])
+        let result = try await probe(Fixture.mp4(traks: [
+            Fixture.trakRaw(stsdEntries: [entry], handler: "vide"),
+        ]))
+        #expect(!result.avPlayerHazards.contains(.interlacedVideo))
+    }
+
+    @Test("hvcC's interlaced/progressive source flags drive the HEVC interlace hazard", arguments: [
+        (UInt8(0x40), true),   // interlaced only
+        (UInt8(0x80), false),  // progressive only
+        (UInt8(0xC0), false),  // both set — not treated as interlaced
+        (UInt8(0x00), false),  // neither set
+    ])
+    func interlacedHevcHazard(constraintByte6: UInt8, expectedHazard: Bool) async throws {
+        let entry = Fixture.hevcVideoSampleEntry(type: "hvc1", constraintByte6: constraintByte6)
+        let result = try await probe(Fixture.mp4(traks: [
+            Fixture.trakRaw(stsdEntries: [entry], handler: "vide"),
+        ]))
+        #expect(result.avPlayerHazards.contains(.interlacedVideo) == expectedHazard)
+    }
+
+    // MARK: - Multiple sample descriptions
+
+    @Test("stsd entry count on the video trak drives multipleSampleDescriptions", arguments: [
+        (["avc1", "hvc1"], true),
+        (["avc1"], false),
+    ])
+    func multipleSampleDescriptionsHazard(stsdEntries: [String], expectedHazard: Bool) async throws {
+        let result = try await probe(Fixture.mp4(traks: [
+            Fixture.trak(stsdEntries: stsdEntries, handler: "vide"),
+        ]))
+        #expect(result.avPlayerHazards.contains(.multipleSampleDescriptions) == expectedHazard)
+    }
+
+    /// A `free`/`skip` padding box (or any stray bytes) trailing the stsd's DECLARED entries must
+    /// not be miscounted as a second sample description — the walk has to stop at `entry_count`,
+    /// not at the box's own end.
+    @Test("a padding box trailing one declared stsd entry is not read as a second one")
+    func stsdTrailingPaddingBoxIsNotMultipleSampleDescriptions() async throws {
+        var hdlr = Data(count: 8)
+        hdlr.append(Data("vide".utf8))
+        hdlr.append(Data(count: 13))
+
+        var stsdPayload = Data([0, 0, 0, 0])
+        var entryCount = UInt32(1).bigEndian
+        withUnsafeBytes(of: &entryCount) { stsdPayload.append(contentsOf: $0) }
+        stsdPayload.append(Fixture.box("avc1"))
+        stsdPayload.append(Fixture.box("free")) // trailing padding, not a real second entry
+        let stsd = Fixture.box("stsd", stsdPayload)
+
+        let trakContent = Fixture.box("mdia", Fixture.box("hdlr", hdlr) + Fixture.box("minf", Fixture.box("stbl", stsd)))
+        let trak = Fixture.box("trak", trakContent)
+
+        let result = try await probe(Fixture.mp4(traks: [trak]))
+        #expect(!result.avPlayerHazards.contains(.multipleSampleDescriptions))
+        #expect(result.videoCodec == .known(.h264))
+    }
+
+    // MARK: - Missing parameter sets
+
+    @Test("avcC's SPS count drives missingParameterSets", arguments: [
+        ([], true),
+        ([ISOBMFFFixtures.h264SPS(profileIdc: 66, frameMbsOnlyFlag: 1)], false),
+    ])
+    func missingParameterSetsHazard(spsNALs: [Data], expectedHazard: Bool) async throws {
+        let entry = Fixture.avcVideoSampleEntry(spsNALs: spsNALs)
+        let result = try await probe(Fixture.mp4(traks: [
+            Fixture.trakRaw(stsdEntries: [entry], handler: "vide"),
+        ]))
+        #expect(result.avPlayerHazards.contains(.missingParameterSets) == expectedHazard)
+    }
+
+    // MARK: - Combined hazards
+
+    /// A file can carry more than one hazard at once: an avc1 stream that's both field-coded and
+    /// exhibits the decode-order-timestamp defect must report both, independently.
+    @Test("an interlaced avc1 stream with a degenerate ctts and a B slice reports both hazards")
+    func combinedInterlacedAndDecodeOrderHazards() async throws {
+        let sampleCount = 64
+        let samples = (0..<sampleCount).map { index in
+            Fixture.h264Sample(nalLengthSize: 4, sliceType: index == 5 ? 1 : 2)
+        }
+        let data = Fixture.h264HazardMp4(
+            sttsEntries: [(count: UInt32(sampleCount), delta: 1000)],
+            ctts: .absent,
+            sampleData: samples,
+            // Main profile (77), not Baseline (66) — Baseline can never carry a B-slice, so the
+            // decode-order-hazard scan would skip before this hazard could combine with interlace.
+            spsNALs: [Fixture.h264SPS(profileIdc: 77, frameMbsOnlyFlag: 0)]
+        )
+
+        let result = try await probe(data)
+        #expect(result.avPlayerHazards.contains(.interlacedVideo))
+        #expect(result.avPlayerHazards.contains(.decodeOrderTimestamps))
     }
 }
 

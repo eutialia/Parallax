@@ -69,6 +69,32 @@ private let routeCases: [RouteCase] = [
         sizeBytes: 42, usesBridge: false, scheme: "smb",
         container: nil, videoCodec: nil, audioCodec: nil
     ),
+    // An otherwise AVKit-clean h264/aac mp4, but the probe proved AVPlayer would misplay it
+    // (degenerate ctts + real B-frames): the hazard alone must disqualify the bridge, even
+    // though every other bridge gate passes.
+    RouteCase(
+        name: "decode-order timestamp hazard — AVKit-clean file still stays on VLC",
+        probe: MediaProbeResult(
+            container: .mp4, videoCodec: .known(.h264), audioCodec: .known(.aac), isComplete: true,
+            avPlayerHazards: [.decodeOrderTimestamps]
+        ),
+        sizeBytes: 1_234, usesBridge: false, scheme: "smb",
+        container: .mp4, videoCodec: .h264, audioCodec: .aac
+    ),
+    // A DIFFERENT hazard case proves the route gate is set-agnostic — ANY non-empty
+    // `avPlayerHazards` disqualifies the bridge, not just `.decodeOrderTimestamps`
+    // specifically (that one gets its own timing-repair library options — see
+    // `SMBPlaybackResolver.timingRepairLibraryOptions(for:)` below — but routing itself
+    // doesn't special-case which hazard tripped).
+    RouteCase(
+        name: "interlaced-video hazard — AVKit-clean file still stays on VLC",
+        probe: MediaProbeResult(
+            container: .mp4, videoCodec: .known(.h264), audioCodec: .known(.aac), isComplete: true,
+            avPlayerHazards: [.interlacedVideo]
+        ),
+        sizeBytes: 1_234, usesBridge: false, scheme: "smb",
+        container: .mp4, videoCodec: .h264, audioCodec: .aac
+    ),
 ]
 
 /// The pure routing decision `SMBPlaybackResolver.route` makes from a probe result:
@@ -88,6 +114,37 @@ struct SMBPlaybackRouteTests {
         // The size rides along on EVERY route, bridged or not — VLC needs it for its duration
         // estimate just as much as the bridge needs it for range requests.
         #expect(hints.fileSizeBytes == row.sizeBytes)
+    }
+}
+
+/// `SMBPlaybackResolver.timingRepairLibraryOptions(for:)`: the pure decision behind the
+/// libvlc instance flags that repair the `.decodeOrderTimestamps` hazard (a broken vout
+/// clock drops ~half the frames — see the method's own doc for the full mechanism).
+@Suite("SMBPlaybackResolver.timingRepairLibraryOptions")
+struct SMBTimingRepairLibraryOptionsTests {
+    @Test("nil probe → nil (no evidence of the hazard)")
+    func nilProbe() {
+        #expect(SMBPlaybackResolver.timingRepairLibraryOptions(for: nil) == nil)
+    }
+
+    @Test("a decode-order-timestamps probe → the two repair flags")
+    func decodeOrderHazard() {
+        let probe = MediaProbeResult(
+            container: .mp4, videoCodec: .known(.h264), audioCodec: .known(.aac), isComplete: true,
+            avPlayerHazards: [.decodeOrderTimestamps]
+        )
+        #expect(SMBPlaybackResolver.timingRepairLibraryOptions(for: probe) == [
+            "--no-drop-late-frames", "--no-skip-frames",
+        ])
+    }
+
+    @Test("a different hazard → nil (scoped to this one defect, not hazards in general)")
+    func otherHazard() {
+        let probe = MediaProbeResult(
+            container: .mp4, videoCodec: .known(.h264), audioCodec: .known(.aac), isComplete: true,
+            avPlayerHazards: [.interlacedVideo]
+        )
+        #expect(SMBPlaybackResolver.timingRepairLibraryOptions(for: probe) == nil)
     }
 }
 
