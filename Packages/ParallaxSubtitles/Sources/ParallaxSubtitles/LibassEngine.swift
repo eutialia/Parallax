@@ -81,20 +81,10 @@ final class LibassEngine {
             Unmanaged.passUnretained(messageLog).toOpaque()
         )
 
-        // CoreText for system faces, plus an optional default font FILE — the
-        // last-resort face for glyphs no openable system font covers. Needed
-        // because CoreText's CJK fallback answer is PingFang, whose modern
-        // container FreeType cannot parse ("loca table missing") — without a
-        // readable default, every Chinese-first run renders as tofu.
-        defaultFontFamily.withCString { family in
-            if let defaultFontPath {
-                defaultFontPath.withCString { path in
-                    ass_set_fonts(renderer, path, family, Int32(ASS_FONTPROVIDER_CORETEXT.rawValue), nil, 1)
-                }
-            } else {
-                ass_set_fonts(renderer, nil, family, Int32(ASS_FONTPROVIDER_CORETEXT.rawValue), nil, 1)
-            }
-        }
+        // CoreText for system faces, plus an optional default font FILE as the
+        // last-resort face. Fonts FreeType can't read (Apple's hvgl-format CJK
+        // faces) are covered per track by `addMemoryFont` glyph subsets instead.
+        configureFonts(defaultFamily: defaultFontFamily, defaultFontPath: defaultFontPath)
         // Hinting fights smooth scaling and breaks positioned scripts.
         ass_set_hinting(renderer, ASS_HINTING_NONE)
     }
@@ -106,6 +96,32 @@ final class LibassEngine {
         ass_library_done(library)
         // Only safe once the renderer is gone: it held this pointer, not a copy.
         free(overrideStyleName)
+    }
+
+    /// Registers an in-memory font with libass' embedded-font provider under
+    /// `name`, then reapplies the font configuration — fontselect snapshots its
+    /// candidate set when fonts are configured, so late additions must rebuild
+    /// it. Used for on-device glyph subsets of fonts FreeType can't read
+    /// (`SystemGlyphFont`); libass matches them by the family in their name
+    /// table exactly like a fansub's embedded fonts.
+    func addMemoryFont(name: String, data: Data, defaultFamily: String, defaultFontPath: String?) {
+        data.withUnsafeBytes { (bytes: UnsafeRawBufferPointer) in
+            guard let base = bytes.baseAddress else { return }
+            ass_add_font(library, name, base.assumingMemoryBound(to: CChar.self), Int32(bytes.count))
+        }
+        configureFonts(defaultFamily: defaultFamily, defaultFontPath: defaultFontPath)
+    }
+
+    func configureFonts(defaultFamily: String, defaultFontPath: String?) {
+        defaultFamily.withCString { family in
+            if let defaultFontPath {
+                defaultFontPath.withCString { path in
+                    ass_set_fonts(renderer, path, family, Int32(ASS_FONTPROVIDER_CORETEXT.rawValue), nil, 1)
+                }
+            } else {
+                ass_set_fonts(renderer, nil, family, Int32(ASS_FONTPROVIDER_CORETEXT.rawValue), nil, 1)
+            }
+        }
     }
 
     /// Parses a script and, only if it yielded events, swaps it in for the current one.

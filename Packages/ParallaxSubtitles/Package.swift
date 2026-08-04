@@ -33,12 +33,6 @@ let package = Package(
                 "CSubtitleBlend",
                 .product(name: "libass", package: "libass-build"),
             ],
-            // Noto Sans CJK: libass' last-resort font. CoreText's fallback answer
-            // for Chinese is PingFang, whose modern container FreeType cannot
-            // parse — without a bundled face all-Chinese cues render as tofu.
-            resources: [
-                .copy("Resources/NotoSansCJKsc-Regular.otf"),
-            ],
             swiftSettings: [ .swiftLanguageMode(.v6) ],
             // The prebuilt archives are pure static libraries and declare none of
             // their own system dependencies: libass' CoreText font provider and
