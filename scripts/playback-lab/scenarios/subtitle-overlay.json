@@ -1,0 +1,24 @@
+{
+  "file": "hevc-opus.mkv",
+  "timeline": [
+    {
+      "cmd": "waitPlaying",
+      "timeoutSeconds": 60
+    },
+    {
+      "cmd": "wait",
+      "seconds": 3
+    },
+    {
+      "cmd": "subtitle",
+      "name": "Default"
+    },
+    {
+      "cmd": "wait",
+      "seconds": 45
+    },
+    {
+      "cmd": "finish"
+    }
+  ]
+}
