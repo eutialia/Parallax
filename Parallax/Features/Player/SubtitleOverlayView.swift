@@ -120,8 +120,7 @@ struct SubtitleOverlayView: View {
     /// synthesized bottom-center so raising the whole frame is safe. Authored ASS
     /// placements are exactly what the creator intended; never shift those.
     private var lift: CGFloat {
-        guard let format = vm.sidecarSubtitleInfo?.format,
-              format == .srt || format == .vtt else { return 0 }
+        guard isConvertedFormat else { return 0 }
         return subtitlePrefs.style.verticalOffsetRatio * surfaceSize.height
     }
 
@@ -129,7 +128,13 @@ struct SubtitleOverlayView: View {
         let style = subtitlePrefs.style
         vm.applySubtitleAppearance(
             converted: style.convertedRendererOverride(surface: surfaceSize, canvas: canvasRect),
-            authored: style.rendererOverride(fontScale: style.fontScale),
+            authored: style.rendererOverride(
+                fontScale: style.fontScale,
+                // Resolved, never nil: the sans bucket's nil mapping would leave
+                // the font-name flag unset and the user's typeface pick would
+                // silently skip authored tracks.
+                fontFamily: style.fontDesign.rendererFamily ?? SubtitleRenderer.standardFontFamily
+            ),
             overrideAuthored: subtitlePrefs.overrideAuthoredStyles
         )
     }
