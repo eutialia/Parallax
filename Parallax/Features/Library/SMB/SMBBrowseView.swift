@@ -80,12 +80,7 @@ struct SMBBrowseView: View {
                     message: setupError
                 )
             } else {
-                ProgressView()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    // A loading level has no interactive content yet; keep a tvOS focus
-                    // target so a Menu press mid-list still pops instead of suspending
-                    // the app (the error/empty branches get theirs via StatusStateView).
-                    .tvFocusableSurface()
+                loadingSkeleton
             }
         }
         // tvOS deliberately carries NO in-content title, matching `LibraryGridView` (a tvOS
@@ -208,10 +203,7 @@ struct SMBBrowseView: View {
     @ViewBuilder
     private func content(model: SMBBrowseViewModel) -> some View {
         if model.isLoading, model.folders.isEmpty, model.media.isEmpty {
-            ProgressView()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                // Same tvOS focus-target rule as the pre-model spinner above.
-                .tvFocusableSurface()
+            loadingSkeleton
         } else if let error = model.error, model.folders.isEmpty, model.media.isEmpty {
             if path.path.isEmpty, model.errorIsSignInRefusal {
                 // Share-root SIGN-IN refusal (libsmb2 EPERM — stale/lost stored password): the
@@ -260,12 +252,26 @@ struct SMBBrowseView: View {
                     )
                 }
             }
-            .contentMargins(.horizontal, AppLayout.contentHMargin(idiom: idiom), for: .scrollContent)
-            .contentMargins(.vertical, idiom == .tv ? Space.s40 : Space.s12, for: .scrollContent)
+            // The share ROOT keeps the tvOS tab chrome, so it takes the root-chrome bypass to rest
+            // at the same y as the chrome-less pushed levels — see `mediaWallContentMargins`.
+            .mediaWallContentMargins(iosVertical: Space.s12, tvRootChromeBypass: path.path.isEmpty)
             // Pairs with the grids' `.scrollTargetLayout()` (see `SMBBrowseGrid`): identity-
             // anchored scroll restoration across the player's landscape reflow.
             .scrollPosition(id: $scrollAnchorID)
         }
+    }
+
+    /// The listing placeholder both loading branches show (building the lister, and the first
+    /// list of a built one) — the wall's shape instead of a bare spinner. Same margins + root
+    /// bypass as the loaded wall so the arrival lands where the skeleton stood. The skeleton
+    /// itself carries the tvOS focus target (Menu mid-list must pop, not suspend the app; the
+    /// error/empty branches get theirs via StatusStateView).
+    private var loadingSkeleton: some View {
+        ScrollView {
+            SMBBrowseLoadingSkeleton()
+        }
+        .scrollDisabled(true)
+        .mediaWallContentMargins(iosVertical: Space.s12, tvRootChromeBypass: path.path.isEmpty)
     }
 
     // MARK: - tvOS sort header
@@ -281,8 +287,10 @@ struct SMBBrowseView: View {
         @Bindable var model = model
         return SMBBrowseSortChip(field: $model.sortField, direction: $model.sortDirection)
             .frame(maxWidth: .infinity, alignment: .center)
-            .padding(.top, Space.s8)
-            .padding(.bottom, Space.s30)
+            // The shared chip-row tokens (not raw Space values): `SMBBrowseLoadingSkeleton`'s
+            // chip stub reads the same pair, so the skeleton→chip swap stays coupled by compiler.
+            .padding(.top, AppLayout.chipRowTopPadding)
+            .padding(.bottom, AppLayout.chipRowBottomClearance)
             .tvFocusSection()
     }
     #endif
@@ -316,7 +324,7 @@ struct SMBBrowseGrid: View {
         // Folders above media, each in its own titled section at the dense landscape column count
         // (4-up on iPad). The section header turns the folder→media boundary into a deliberate break
         // (an incomplete folder row otherwise just reads as ragged empty space).
-        VStack(alignment: .leading, spacing: AppLayout.posterGridRowSpacing(idiom: idiom) + Space.s12) {
+        VStack(alignment: .leading, spacing: AppLayout.browseSectionGap(idiom: idiom)) {
             if !folders.isEmpty {
                 browseSection("Folders") {
                     LazyVGrid(columns: columns, spacing: AppLayout.posterGridRowSpacing(idiom: idiom)) {

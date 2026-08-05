@@ -20,20 +20,30 @@ enum AppLayout {
     /// on-device gap drifts. Any future sidebar header/footer should use this same value.
     static let sidebarLeadingInset: CGFloat = 30
 
-    /// tvOS title-safe horizontal inset (≈ the system overscan margin, ~90pt on the 1920×1080
-    /// canvas). Hero screens drop the system horizontal safe area via `heroScreenSafeArea()` so
-    /// artwork bleeds to the physical edges, then re-add THIS to non-hero content via
-    /// `tvContentInset()`. It stacks with each component's own `contentHMargin`, reconstructing
-    /// the exact gutter the safe area used to provide — so shelves/body don't move, only the
-    /// hero goes full-bleed. tvOS reserves it on all four edges and clips focusable content that
-    /// strays outside, so cards must stay inside it. (Apple HIG "Designing for tvOS" / WWDC19.)
-    static let tvOverscanInset: CGFloat = 90
+    /// tvOS title-safe horizontal inset. Hero screens drop the system horizontal safe area via
+    /// `heroScreenSafeArea()` so artwork bleeds to the physical edges, then re-add THIS to
+    /// non-hero content via `tvContentInset()`. It stacks with each component's own
+    /// `contentHMargin`, reconstructing the gutter the safe area used to provide — so
+    /// shelves/body don't move, only the hero goes full-bleed. Value: the current HIG (Layout →
+    /// tvOS: "Inset primary content 60 points from the top and bottom of the screen, and 80
+    /// points from the sides"). WWDC19 said 90pt sides — Apple moved the figure to 80 and this
+    /// followed (2026-08); check the HIG again before "correcting" it in either direction.
+    static let tvOverscanInset: CGFloat = 80
+
+    /// tvOS title-safe VERTICAL inset — the vertical counterpart of `tvOverscanInset`, same HIG
+    /// sentence ("60 points from the top and bottom", unchanged since WWDC19). Used where a
+    /// screen opts out of the container's top safe area and rebuilds the title-safe margin by
+    /// hand — the tvOS tab-ROOT walls, where the collapsed-sidebar chrome inflates the container
+    /// inset to 120pt (measured in-sim, tvOS 26; see `mediaWallContentMargins`). Re-measure if a
+    /// tvOS update moves the title-safe band.
+    static let tvTitleSafeVInset: CGFloat = 60
 
     /// Top clearance for the tvOS **system search screen** under a `.sidebarAdaptable` TabView.
-    /// The collapsed sidebar pill floats over content without reserving layout space, and the
-    /// `.searchable` screen pins its field + keyboard to the container's very top — the two system
-    /// components don't know about each other, so the pill lands on the search field (framework
-    /// gap, render-proven in `TVSearchLayoutPreview`). Plain `.padding(.top, …)` on the searchable
+    /// The collapsed sidebar pill's chrome band IS reserved as safe area at tab roots (see
+    /// `tvTitleSafeVInset` / `mediaWallContentMargins`), but the `.searchable` screen IGNORES it
+    /// and pins its field + keyboard to the container's very top — the two system components
+    /// don't know about each other, so the pill lands on the search field (framework gap,
+    /// render-proven in `TVSearchLayoutPreview`). Plain `.padding(.top, …)` on the searchable
     /// screen is the one lever the search chrome respects (`safeAreaPadding` is ignored).
     /// Value: the collapsed pill's bottom edge measures ~130pt (device screenshot) and the search
     /// screen carries ~75pt of its own internal headroom above the field, so 72 puts the field's
@@ -70,9 +80,10 @@ enum AppLayout {
     /// shadow isn't shaved flat by the ScrollView's clip. The column stays `tvSettingsColumnWidth` wide —
     /// only the scroll frame grows.
     static let tvSettingsColumnBleed: CGFloat = 24
-    /// Top inset above the first section — clears the native collapsed-sidebar "Settings" pill (which
-    /// the system parks at the top-leading overscan). Matches the handoff's `.tv-col top:140px` (×1.5 =
-    /// 210pt absolute), minus the tvOS top safe area the ScrollView already reserves.
+    /// Top inset above the first settings section, ON TOP of the hand-rebuilt title-safe band
+    /// (`tvTitleSafeVInset` — the scaffold ignores the container's top inset so the tab-root's
+    /// sidebar chrome can't sag it 60pt below pushed pages). 60 + 150 = the handoff's
+    /// `.tv-col top:140px` (×1.5 = 210pt absolute) on every scaffold host.
     static let tvSettingsColumnTopInset: CGFloat = 150
     /// Bottom inset below the last pill: overscan clearance plus room for its focus lift before the
     /// scroll edge. Shared with the focus-clip-guard preview alongside `tvSettingsColumnTopInset`.
@@ -112,6 +123,13 @@ enum AppLayout {
         case .compact, .regular: Space.s16
         case .tv: Space.s40
         }
+    }
+
+    /// Section-to-section gap in the SMB browse wall (Folders → Videos) — one token shared by
+    /// `SMBBrowseGrid` and `SMBBrowseLoadingSkeleton` so the skeleton's rhythm can't silently
+    /// drift from the loaded wall's. Row spacing plus a little group air.
+    static func browseSectionGap(idiom: AppIdiom) -> CGFloat {
+        posterGridRowSpacing(idiom: idiom) + Space.s12
     }
 
     /// Header→content gap for a sectioned grid (`GridSection`). A native focus lift raises a 2:3

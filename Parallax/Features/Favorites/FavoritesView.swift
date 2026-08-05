@@ -116,10 +116,10 @@ struct FavoritesView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .contentMargins(.horizontal, AppLayout.contentHMargin(idiom: idiom), for: .scrollContent)
-        // Overscan room so a focused poster's lift at the wall's top or bottom edge has space to
-        // grow WITHIN the clip. tvOS only; iOS has no focus lift.
-        .contentMargins(.vertical, idiom == .tv ? Space.s40 : 0, for: .scrollContent)
+        // tvOS hosts Favorites only as a sidebar tab ROOT, so it always takes the root-chrome
+        // bypass — same resting geometry as the library grid and SMB walls. See
+        // `mediaWallContentMargins`.
+        .mediaWallContentMargins(tvRootChromeBypass: true)
     }
 
     @ViewBuilder
@@ -258,7 +258,9 @@ private struct FavoritesLoadingPlaceholder: View {
             }
         }
         .scrollDisabled(true)
-        .contentMargins(.horizontal, AppLayout.contentHMargin(idiom: idiom), for: .scrollContent)
-        .contentMargins(.vertical, idiom == .tv ? Space.s40 : 0, for: .scrollContent)
+        // The IDENTICAL margins + root-chrome bypass as the loaded wall. (The placeholder still
+        // omits the wall's header→section gap — a pre-existing, ledgered deviation; margins are
+        // what this call keeps in lockstep.)
+        .mediaWallContentMargins(tvRootChromeBypass: true)
     }
 }

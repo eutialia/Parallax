@@ -128,12 +128,10 @@ struct LibraryGridView: View {
                     gridScrollContent(vm: vm)
                 }
             }
-            .contentMargins(.horizontal, AppLayout.contentHMargin(idiom: idiom), for: .scrollContent)
-            // Overscan room so a focused poster's (or the tvOS header chip's) lift/shadow at the
-            // grid's top or bottom edge has space to grow WITHIN the clip — the title-safe-margin
-            // approach, instead of disabling the scroll clip (which let scrolled rows bleed over the
-            // chrome). tvOS only; iOS has no focus lift.
-            .contentMargins(.vertical, idiom == .tv ? Space.s40 : 0, for: .scrollContent)
+            // tvOS hosts this grid only as a sidebar tab ROOT, so it always takes the root-chrome
+            // bypass — the wall rests at title-safe like every other wall instead of 60pt lower
+            // under the collapsed-pill band. See `mediaWallContentMargins`.
+            .mediaWallContentMargins(tvRootChromeBypass: true)
             // iPhone/iPad: pin the refresh-error banner as a top inset — it's a transient alert and
             // there's no focus engine to trap. tvOS folds the banner into the scroll content above.
             .safeAreaInset(edge: .top, spacing: 0) {
@@ -289,9 +287,8 @@ private struct LibraryGridLoadingPlaceholder: View {
             }
         }
         .scrollDisabled(true)
-        .contentMargins(.horizontal, AppLayout.contentHMargin(idiom: idiom), for: .scrollContent)
-        // Match the loaded grid's vertical overscan (line up `gridContent`) so the first poster row
-        // lands at the same y when the skeleton swaps out — no 40pt jump on tvOS load.
-        .contentMargins(.vertical, idiom == .tv ? Space.s40 : 0, for: .scrollContent)
+        // The IDENTICAL margins + root-chrome bypass as the loaded grid (`gridContent`), so the
+        // first poster row lands at the same y when the skeleton swaps out — no jump on tvOS load.
+        .mediaWallContentMargins(tvRootChromeBypass: true)
     }
 }

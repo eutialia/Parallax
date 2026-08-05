@@ -27,12 +27,22 @@ extension View {
     /// `\.heroViewportHeight` (published by `measuresHeroViewport()` at the app root), and the band's
     /// bottom paints into the overscan via the screen's own `scrollClipDisabled` — so no bottom safe
     /// area is dropped here and the shelves/body keep their natural title-safe bottom inset.
+    ///
+    /// `active` exists for screens whose hero can be ABSENT at runtime (Home with an empty hero
+    /// feed — a server with no eligible items, or the feed call failing): the TOP bleed only
+    /// serves the artwork, so with no hero the screen must ride the normal top safe area again or
+    /// its first content parks at the raw screen top, under the tvOS collapsed-sidebar pill.
+    /// The tvOS HORIZONTAL drop stays unconditional — the hero-screen content re-adds it via
+    /// `tvContentInset()` (self-centering status branches don't need it), so honoring it again
+    /// would double the side gutters. The detail screens keep the default: their skeleton renders
+    /// a band, and their bandless FAILED branch is a pushed, chrome-less screen whose centered
+    /// status view tolerates the bleed — extend `active` there if that ever changes.
     @ViewBuilder
-    func heroScreenSafeArea() -> some View {
+    func heroScreenSafeArea(active: Bool = true) -> some View {
         #if os(tvOS)
-        self.ignoresSafeArea(edges: [.top, .horizontal])
+        self.ignoresSafeArea(edges: active ? [.top, .horizontal] : .horizontal)
         #else
-        self.ignoresSafeArea(edges: .top)
+        self.ignoresSafeArea(edges: active ? .top : [])
         #endif
     }
 

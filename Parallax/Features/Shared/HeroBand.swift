@@ -282,31 +282,36 @@ enum HeroMetrics {
     /// bottom-anchored controls down and scrolling the band's top off-screen; a constant value holds.
     static let tvHeroHeightFraction: CGFloat = 1.0
     /// On tvOS the full-bleed hero fills the whole viewport, so its bottom-anchored controls must
-    /// sit well ABOVE the bottom — not merely past the ~90pt overscan, but far enough that the focus
-    /// engine doesn't auto-scroll the whole hero to lift the focused Play/Favorite into the title-safe
-    /// zone and reveal "look-ahead" context below them (a control near the bottom edge makes tvOS
-    /// scroll the band up, dragging the next shelf in and breaking the full-screen look). Two overscan
-    /// insets — the title-safe line plus a full overscan of clearance — parks the controls in the lower
-    /// third where Apple's own TV hero sits. iPhone/iPad have no overscan, so they keep the tight inset.
+    /// sit well ABOVE the bottom — not merely past the overscan margin, but far enough that the
+    /// focus engine doesn't auto-scroll the whole hero to lift the focused Play/Favorite into the
+    /// title-safe zone and reveal "look-ahead" context below them (a control near the bottom edge
+    /// makes tvOS scroll the band up, dragging the next shelf in and breaking the full-screen
+    /// look). The 180pt was tuned against that observed focus behavior on device — an ABSOLUTE,
+    /// deliberately not derived from `tvOverscanInset` (a horizontal gutter token whose value
+    /// tracks the system inset and can move; this calibration must not move with it). Parks the
+    /// controls in the lower third where Apple's own TV hero sits. iPhone/iPad have no overscan,
+    /// so they keep the tight inset.
     static func foregroundBottomInset(idiom: AppIdiom) -> CGFloat {
         switch idiom {
         // Compact lifts the column a notch more so the page dots stop crowding the third overview
         // line; regular keeps the tighter inset. tvOS parks the controls well above the overscan.
         case .compact: Space.s40
         case .regular: Space.s30
-        case .tv: AppLayout.tvOverscanInset * 2
+        case .tv: 180
         }
     }
     /// Bottom inset for the carousel's page dots, measured from the band's bottom edge. compact/regular
     /// tuck them just below the action row (the old iPhone `Space.s3` jammed them against the poster's
     /// bottom seam, reading as "falling out" of the hero into the shelves). tvOS keeps them near the
-    /// bottom edge — just clear of the overscan title-safe line — NOT lifted with the controls: the dots
+    /// bottom edge — just clear of the title-safe line — NOT lifted with the controls: the dots
     /// aren't focusable, so they don't trigger the focus-scroll the controls' inset guards against, and a
-    /// page indicator reads better at the bottom than floating in the lower third.
+    /// page indicator reads better at the bottom than floating in the lower third. Absolute for the
+    /// same reason as `foregroundBottomInset`: a VERTICAL calibration must not ride the horizontal
+    /// `tvOverscanInset` token (it happened to share the old 90 value).
     static func pageIndicatorBottomInset(idiom: AppIdiom) -> CGFloat {
         switch idiom {
         case .compact, .regular: Space.s22
-        case .tv: AppLayout.tvOverscanInset
+        case .tv: 90
         }
     }
     /// Height of the page's contact shadow on the artwork (`HeroEdgeShadow`). Short on purpose —
