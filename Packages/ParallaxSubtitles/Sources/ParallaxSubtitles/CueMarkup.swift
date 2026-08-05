@@ -49,6 +49,12 @@ enum CueMarkup {
             }
             seconds += Double(value) / pow(10, Double(fraction.count))
         }
+
+        // ASS timecodes top out at H:MM:SS.cc with no field width limit on H, but
+        // Double->Int conversion downstream traps past a few hundred years' worth
+        // of seconds. 100 hours is already an absurd cue time; reject rather than
+        // let a malformed timestamp propagate.
+        guard seconds.isFinite, seconds <= 359_999.99 else { return nil }
         return seconds
     }
 

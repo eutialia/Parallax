@@ -118,6 +118,12 @@ struct WebVTTToASSConverterTests {
         ("align combines with the band", "line:5% align:start", "{\\an7\\pos(40,36)}"),
         ("trailing line alignment hint is ignored", "line:90%,end", "{\\an2\\pos(640,648)}"),
         ("unmapped settings are dropped", "vertical:rl size:50%", ""),
+        // Malformed settings must fail open (dropped, no crash) rather than trap.
+        ("empty align value does not crash and picks the default corner", "align:", "{\\an2}"),
+        ("empty line value before a trailing hint parses as empty, not the hint",
+         "line:,end", ""),
+        ("NaN position is dropped, not applied", "position:nan%", ""),
+        ("an out-of-range line percentage is dropped, not applied", "line:1e999%", ""),
     ] as [(String, String, String)])
     func cueSettings(label: String, settings: String, expected: String) {
         #expect(cue(body: "Hi", settings: settings)?.text == expected + "Hi", "\(label)")
@@ -139,6 +145,27 @@ struct WebVTTToASSConverterTests {
             )
         )
         #expect(converted.map(\.text) == ["Earlier", "Later"])
+    }
+
+    /// A cue timed past 100 hours would overflow the Double->Int conversion in
+    /// ASSScriptBuilder.timecode; CueMarkup rejects it at parse time instead, and
+    /// the malformed cue is simply dropped.
+    @Test("a cue timed past 100 hours is dropped, not converted")
+    func extremeTimestampDropped() {
+        let converted = cues(
+            script(
+                """
+                WEBVTT
+
+                00:00:01.000 --> 00:00:02.000
+                Kept
+
+                100:00:00.000 --> 100:00:01.000
+                Dropped
+                """
+            )
+        )
+        #expect(converted.map(\.text) == ["Kept"])
     }
 
     @Test("structurally broken input yields no cues", arguments: [
