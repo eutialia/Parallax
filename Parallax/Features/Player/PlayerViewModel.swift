@@ -1782,7 +1782,7 @@ final class PlayerViewModel {
         await engine?.setSubtitleTrack(nil)
         currentSubtitleStreamIndex = index
         selectedSubtitleTrack = track
-        loadSidecarSubtitle(streamIndex: index)
+        loadSidecarSubtitle(streamIndex: index, languageCode: track.languageCode)
     }
 
     /// Re-arms the client overlay for the track a failed/abandoned subtitle switch fell
@@ -1793,7 +1793,7 @@ final class PlayerViewModel {
     /// nothing — there's no sidecar to fetch either way).
     private func restoreSidecarSubtitle(_ track: SubtitleTrack?) {
         guard let track, let index = track.id.jellyfinStreamIndex, !track.isBurnedIn else { return }
-        loadSidecarSubtitle(streamIndex: index)
+        loadSidecarSubtitle(streamIndex: index, languageCode: track.languageCode)
     }
 
     /// Jellyfin's word for burn-in in the per-stream delivery method it reports back
@@ -1893,7 +1893,7 @@ final class PlayerViewModel {
     /// the Jellyfin endpoint serves originals for formats we request verbatim
     /// (ass/ssa/srt keep their authored styling and positioning), and an SMB sibling
     /// is whatever the release shipped.
-    private func loadSidecarSubtitle(streamIndex: Int) {
+    private func loadSidecarSubtitle(streamIndex: Int, languageCode: String?) {
         subtitleFetchTask?.cancel()
         guard let url = subtitleURLs[streamIndex] else {
             clearSidecarSubtitle()
@@ -1920,7 +1920,7 @@ final class PlayerViewModel {
                 self?.clearSidecarSubtitle()
                 return
             }
-            await self?.installSubtitleRenderer(data: data, format: format)
+            await self?.installSubtitleRenderer(data: data, format: format, languageCode: languageCode)
         }
     }
 
@@ -1938,10 +1938,14 @@ final class PlayerViewModel {
     /// load keeps track switches simple (no cross-track libass state); the overlay
     /// detects the swap via `subtitleRendererGeneration`. Undecodable data clears
     /// instead of throwing — same silent no-op the parse path always had, now logged.
-    private func installSubtitleRenderer(data: Data, format: SubtitleSourceFormat) async {
+    private func installSubtitleRenderer(
+        data: Data,
+        format: SubtitleSourceFormat,
+        languageCode: String?
+    ) async {
         let renderer = SubtitleRenderer()
         do {
-            try await renderer.load(data, format: format)
+            try await renderer.load(data, format: format, languageHint: languageCode)
         } catch {
             // A STALE failure must not tear down the newer pick's in-flight load —
             // `clearSidecarSubtitle` cancels `subtitleFetchTask`, which by now may

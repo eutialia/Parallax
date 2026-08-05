@@ -21,11 +21,12 @@ import Testing
 struct CJKRenderProbeTests {
 
     /// Han-FIRST text is the poison case — its CoreText fallback is PingFang.
+    /// The Latin tail rides through the bare `{\fn}` reset after a CJK run.
     private static let hanFirstSRT = """
     1
     00:00:01,000 --> 00:00:03,000
     這是繁體中文字幕測試
-    简体字幕测试
+    简体字幕测试 ABC123
 
     """
 
@@ -77,9 +78,16 @@ struct CJKRenderProbeTests {
 
         let log = await renderer.diagnosticLog
         #expect(!log.contains { $0.contains("failed to find any fallback") })
+        // The \fn tags must satisfy every CJK glyph by direct family match —
+        // one "selecting one more font" here means the per-glyph fallback
+        // lottery (device-language dependent!) is back in play.
+        #expect(!log.contains { $0.contains("selecting one more font") })
+        // And the bare {\fn} reset must revert to the STYLE font, not request
+        // an empty family for the Latin tail.
+        #expect(!log.contains { $0.contains("fontselect: (,") })
     }
 
-    @Test("authored ASS with an uninstalled fansub font still covers Han glyphs")
+    @Test("authored ASS with an uninstalled fansub font renders it as ONE shadowed font")
     func authoredASSWithFansubFontCoversHan() async throws {
         let renderer = await makeProbeRenderer()
         let script = ASSFixture.script(text: "字幕測試 简体测试")
@@ -91,5 +99,9 @@ struct CJKRenderProbeTests {
 
         let log = await renderer.diagnosticLog
         #expect(!log.contains { $0.contains("failed to find any fallback") })
+        // The missing family resolves straight to its shadow subset (the
+        // "-Subset" PostScript suffix in the fontselect line), not through
+        // per-glyph fallback.
+        #expect(log.contains { $0.contains("方正准圆_GBK") && $0.contains("-Subset") })
     }
 }
