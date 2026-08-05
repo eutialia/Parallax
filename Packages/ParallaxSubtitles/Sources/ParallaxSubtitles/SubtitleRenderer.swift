@@ -39,6 +39,12 @@ public actor SubtitleRenderer {
         Double(ASSScriptBuilder.fontSize)
     }
 
+    /// The synthesized script's PlayRes canvas, for callers converting device
+    /// points into script units (margins are authored against this grid).
+    public static var convertedScriptPlayRes: CGSize {
+        CGSize(width: ASSScriptBuilder.playResX, height: ASSScriptBuilder.playResY)
+    }
+
     /// - Parameters:
     ///   - defaultFontFamily: used when a script names a font that is not
     ///     installed, and as the font of converted SRT/WebVTT sidecars.
@@ -243,6 +249,14 @@ public actor SubtitleRenderer {
             style.Shadow = boxed ? 0 : (override.shadowOffset ?? ASSScriptBuilder.shadowOffset)
         }
 
+        if override.overridesMargins {
+            // One flag covers all three margins, so every field is filled: an
+            // unset side would otherwise replace the authored margin with zero.
+            style.MarginV = Int32((override.marginVertical ?? 0).rounded())
+            style.MarginL = Int32((override.marginHorizontal ?? 0).rounded())
+            style.MarginR = Int32((override.marginHorizontal ?? 0).rounded())
+        }
+
         ass_set_selective_style_override(renderer, &style)
         ass_set_selective_style_override_enabled(renderer, override.overrideBits)
         ass_set_font_scale(renderer, override.fontScale ?? 1)
@@ -254,6 +268,9 @@ public actor SubtitleRenderer {
     ///   last call. Cheap enough to poll every display refresh: libass' own change
     ///   detection short-circuits before any compositing happens.
     public func frame(at seconds: Double) -> SubtitleFrame? {
+        // A non-finite clock would trap in the millisecond conversion below;
+        // "nothing to show" is the honest answer to a nonsense time.
+        guard seconds.isFinite else { return nil }
         guard let engine, engine.track != nil, canvasPixelSize != .zero else { return nil }
 
         var changed: Int32 = 0

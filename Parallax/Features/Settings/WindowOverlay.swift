@@ -41,6 +41,7 @@ struct WindowOverlay<OverlayContent: View>: UIViewRepresentable {
         /// not `<AnyView>`. Type erasure makes SwiftUI treat each `rootView` reassignment as a brand-new
         /// root and REMOUNT the overlay, so a live style change would hard-cut — the `.smooth` animation
         /// inside `SubtitleStageLights` only fires when SwiftUI DIFFS a same-type root in place.
+        /// Lives per PRESENTATION, not per process: a landed dismissal releases it.
         private var host: UIHostingController<OverlayContent>?
         /// Latest desired state. A fade-out completion that lands AFTER a re-present must not hide a
         /// window that's meant to be visible again (the quick exit→re-enter race).
@@ -67,7 +68,14 @@ struct WindowOverlay<OverlayContent: View>: UIViewRepresentable {
             } else if let w = window, let host, !w.isHidden {
                 UIView.animate(withDuration: subtitleLightsFadeDuration, animations: { host.view.alpha = 0 }) { [weak self] _ in
                     // Only hide if we're STILL meant to be gone; a re-present mid-fade cancelled the exit.
-                    if self?.presented == false { w.isHidden = true }
+                    guard let self, !self.presented else { return }
+                    w.isHidden = true
+                    // Release the host with the window: it retains the live
+                    // preview's render engine, which must not stay resident for
+                    // the rest of the process after one Subtitles visit. Re-entry
+                    // rebuilds it lazily behind the menu's activation delay.
+                    w.rootViewController = nil
+                    self.host = nil
                 }
             }
         }

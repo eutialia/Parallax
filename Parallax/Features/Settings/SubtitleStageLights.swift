@@ -50,7 +50,10 @@ struct SubtitleStageLights: View {
                         .position(cue.center)
                 }
             }
-            .animation(.smooth(duration: 0.28), value: style)
+            // Motion note: the cue and spotlight glide because the preview
+            // wraps its async frame/lift assignments in withAnimation — an
+            // .animation(value:) here would be inert, nothing in this subtree
+            // changes in the same transaction as `style`.
             .onChange(of: style, initial: true) {
                 preview.update(style: style, stageSize: size, displayScale: displayScale)
             }
@@ -67,8 +70,11 @@ struct SubtitleStageLights: View {
     /// bottom edge standing in for the virtual video's bottom edge.
     private func cueLayout(in size: CGSize) -> (center: CGPoint, size: CGSize) {
         guard let frame = preview.frame, frame.canvasSize.height > 0, preview.pointScale > 0 else {
-            // Nothing rendered yet — aim the spotlight where cues land.
-            return (CGPoint(x: size.width / 2, y: size.height * 0.82), CGSize(width: 0, height: 24))
+            // Nothing rendered yet — aim the spotlight at the tuned rest
+            // position (the same metric the render will land on), so the beam
+            // doesn't jump when the first frame arrives.
+            let rest = size.height - PlayerMetrics.forSurface(size).subtitleBottom - 12
+            return (CGPoint(x: size.width / 2, y: rest), CGSize(width: 0, height: 24))
         }
         let scale = preview.pointScale
         let cueSize = CGSize(
@@ -91,7 +97,10 @@ struct SubtitleStageLights: View {
 #Preview("Subtitle stage lights — over menu", traits: .fixedLayout(width: 393, height: 852)) {
     ZStack {
         BackgroundField.style
-        SubtitleControlsList(style: .standard, onChange: { _ in })
+        SubtitleControlsList(
+            style: .standard, onChange: { _ in },
+            overrideAuthored: false, onOverrideAuthoredChange: { _ in }
+        )
             .frame(maxWidth: 540)
             .frame(maxHeight: .infinity, alignment: .top)
             .padding(.top, 60)
