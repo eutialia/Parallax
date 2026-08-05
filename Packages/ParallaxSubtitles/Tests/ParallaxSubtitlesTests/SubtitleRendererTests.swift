@@ -227,7 +227,7 @@ struct SubtitleRendererTests {
 
     /// Converted sidecars have to survive the whole path, not just the converter.
     @Test("converted sidecars render", arguments: [
-        (SubtitleSourceFormat.srt, "1\n00:00:01,000 --> 00:00:03,000\nSidecar\n\n"),
+        (SubtitleSourceFormat.srt, SRTFixture.text("Sidecar")),
         (SubtitleSourceFormat.vtt, "WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nSidecar"),
     ] as [(SubtitleSourceFormat, String)])
     func sidecarRoundTrip(format: SubtitleSourceFormat, source: String) async throws {

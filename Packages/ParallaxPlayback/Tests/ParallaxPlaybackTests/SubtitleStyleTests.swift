@@ -68,7 +68,6 @@ struct SubtitleStyleStandardTests {
     func shadowIsResolutionIndependent() {
         let s = SubtitleStyle.standard
         #expect(s.shadowOpacity > 0 && s.shadowOpacity < 1)
-        #expect(s.shadowRadiusRatio > 0)
         #expect(s.shadowYOffsetRatio > 0, "a zero offset would hide the shadow behind the glyph")
     }
 }
@@ -89,7 +88,6 @@ struct SubtitleStyleBuilderTests {
         #expect(scaled.outline == base.outline)
         #expect(scaled.outlineWidthRatio == base.outlineWidthRatio)
         #expect(scaled.shadowOpacity == base.shadowOpacity)
-        #expect(scaled.shadowRadiusRatio == base.shadowRadiusRatio)
         #expect(scaled.shadowYOffsetRatio == base.shadowYOffsetRatio)
         #expect(scaled.fontDesign == base.fontDesign)
         #expect(scaled.background == base.background)

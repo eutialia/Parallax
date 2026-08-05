@@ -17,7 +17,7 @@ struct StyleOverrideBorderTests {
             size: CGSize(width: 1280, height: 720), scale: 1,
             storageSize: CGSize(width: 1280, height: 720)
         )
-        try await renderer.load(Data("1\n00:00:01,000 --> 00:00:03,000\nBorder\n".utf8), format: .srt)
+        try await renderer.load(SRTFixture.data(text: "Border"), format: .srt)
         await renderer.setStyleOverride(SubtitleStyleOverride(
             fontScale: 1,
             primaryColor: SubtitleColor(red: 1, green: 1, blue: 1),
