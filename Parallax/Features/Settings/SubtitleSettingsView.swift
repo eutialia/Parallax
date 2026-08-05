@@ -47,19 +47,18 @@ struct SubtitleSettingsView: View {
     }
 }
 
-/// The five subtitle selection lists — Size, Color, Font, Background, Position — plus the
-/// overlay-only footnote. A pure view (`SubtitleStyle` in, `onChange` out) so it drops into the
-/// preview overlay's floating panel and renders in a `#Preview` with plain `@State`. Each control
-/// is the grouped-row idiom (`Button + SettingsRowLabel(accessory: .checkmark)`), the one
-/// tappable-selection pattern that's tvOS-focus-safe here (no native Form/Picker).
+/// The subtitle selection lists — the Styled Subtitles scope toggle, then Size, Color,
+/// Font, Background, Position, each captioned for the chosen scope — plus the closing
+/// footnote. A pure view (`SubtitleStyle` in, `onChange` out) so it renders in a
+/// `#Preview` with plain `@State`. Each control is the grouped-row idiom
+/// (`Button + SettingsRowLabel(accessory: .checkmark)`), the one tappable-selection
+/// pattern that's tvOS-focus-safe here (no native Form/Picker).
 struct SubtitleControlsList: View {
     let style: SubtitleStyle
     let onChange: (SubtitleStyle) -> Void
-    /// Whether the user's style also replaces AUTHORED ASS/SSA styling. The group
-    /// only renders when a change handler is provided — the floating preview panel
-    /// shows appearance controls only.
-    var overrideAuthored: Bool = false
-    var onOverrideAuthoredChange: ((Bool) -> Void)? = nil
+    /// Whether the user's style also replaces AUTHORED ASS/SSA styling.
+    let overrideAuthored: Bool
+    let onOverrideAuthoredChange: (Bool) -> Void
 
     var body: some View {
         #if os(tvOS)
@@ -71,9 +70,9 @@ struct SubtitleControlsList: View {
             // Scope first: the toggle decides WHO the style below applies to,
             // so it reads before the style itself — and every section's caption
             // restates its own effect for the chosen scope.
-            if hasScopeToggle { authoredSection }
+            authoredSection
             section(sizeGroup, scoped(
-                off: "Plain subtitles render at this size — steady across videos and orientations.",
+                off: "Plain subtitles render at this size in every video and orientation.",
                 on: "Plain subtitles render at this size. Styled tracks scale their authored sizes by it."
             ))
             section(colorGroup, scoped(
@@ -85,35 +84,27 @@ struct SubtitleControlsList: View {
                 on: "The typeface for plain and styled subtitles."
             ))
             section(backgroundGroup, scoped(
-                off: "The legibility backing behind plain subtitles.",
-                on: "The legibility backing for plain and styled subtitles, replacing authored borders."
+                off: "The outline or box that keeps plain subtitles readable.",
+                on: "The outline or box that keeps plain and styled subtitles readable. It replaces authored borders."
             ))
             section(positionGroup, scoped(
                 off: "Raises plain subtitles from the bottom of the screen.",
-                on: "Plain subtitles only — styled tracks keep their authored placement."
+                on: "Plain subtitles only. Styled tracks keep their authored placement."
             ))
             footnote
         }
         .animation(.default, value: overrideAuthored)
     }
 
-    private var hasScopeToggle: Bool { onOverrideAuthoredChange != nil }
-
-    /// The caption matching the toggle's current scope — nil outside the
-    /// settings context (the floating preview panel shows bare controls).
-    private func scoped(off: String, on: String) -> String? {
-        hasScopeToggle ? (overrideAuthored ? on : off) : nil
+    /// The caption matching the toggle's current scope.
+    private func scoped(off: String, on: String) -> String {
+        overrideAuthored ? on : off
     }
 
-    @ViewBuilder
-    private func section(_ group: some View, _ captionText: String?) -> some View {
-        if let captionText {
-            VStack(spacing: Space.s8) {
-                group
-                caption(captionText)
-            }
-        } else {
+    private func section(_ group: some View, _ captionText: String) -> some View {
+        VStack(spacing: Space.s8) {
             group
+            caption(captionText)
         }
     }
 
@@ -186,15 +177,15 @@ struct SubtitleControlsList: View {
                 SettingsListRow(
                     title: "Keep Creator Styling",
                     accessory: overrideAuthored ? .none : .checkmark,
-                    action: { onOverrideAuthoredChange?(false) }
+                    action: { onOverrideAuthoredChange(false) }
                 )
                 SettingsListRow(
                     title: "Use My Style",
                     accessory: overrideAuthored ? .checkmark : .none,
-                    action: { onOverrideAuthoredChange?(true) }
+                    action: { onOverrideAuthoredChange(true) }
                 )
             }
-            caption("Styled tracks — anime fan-subs — carry their creators' colors, fonts and placement.")
+            caption("Styled tracks, like anime fan subs, carry their creators' colors, fonts, and placement.")
         }
     }
 
