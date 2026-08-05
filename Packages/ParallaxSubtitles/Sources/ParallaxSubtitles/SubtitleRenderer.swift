@@ -21,6 +21,17 @@ public actor SubtitleRenderer {
     /// first frame after any reconfiguration has to be emitted unconditionally.
     private var hasEmittedFrame = false
 
+    /// The family converted scripts are synthesized against when the caller
+    /// doesn't choose one.
+    public static let standardFontFamily = "Helvetica Neue"
+
+    /// The synthesized Default style's font size as a fraction of the script
+    /// canvas height — what callers remap tuned point sizes against. Exposed so
+    /// the app-side mapping can never drift from `ASSScriptBuilder`'s numbers.
+    public static var convertedScriptFontFraction: Double {
+        Double(ASSScriptBuilder.fontSize) / Double(ASSScriptBuilder.playResY)
+    }
+
     /// - Parameters:
     ///   - defaultFontFamily: used when a script names a font that is not
     ///     installed, and as the font of converted SRT/WebVTT sidecars.
@@ -28,7 +39,7 @@ public actor SubtitleRenderer {
     ///     last-resort face (test seam; production needs none — glyphs the
     ///     system's own files can't supply are synthesized per track).
     public init(
-        defaultFontFamily: String = "Helvetica Neue",
+        defaultFontFamily: String = SubtitleRenderer.standardFontFamily,
         defaultFontURL: URL? = nil
     ) {
         self.defaultFontFamily = defaultFontFamily
