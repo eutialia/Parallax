@@ -123,7 +123,10 @@ struct AppLayoutTests {
         // overscan), so its foreground must re-inset in ABSOLUTE terms to the same gutter the
         // shelves land on: the re-added overscan (`tvContentInset()`) PLUS each shelf's own
         // `contentHMargin`. If these drift, the hero title/Play stop lining up with the rows.
-        #expect(AppLayout.tvOverscanInset == 90)
+        // 80 = the system's actual horizontal safe-area inset on tvOS 26 (GeometryReader-measured
+        // in-sim, 2026-08; matches the current HIG's "80 points from the sides" — the old 90 was
+        // WWDC19's figure and had drifted from what the system reserves).
+        #expect(AppLayout.tvOverscanInset == 80)
         #expect(
             HeroMetrics.foregroundHorizontalInset(idiom: .tv)
                 == AppLayout.tvOverscanInset + AppLayout.contentHMargin(idiom: .tv)
@@ -152,7 +155,9 @@ struct AppLayoutTests {
         #expect(HeroMetrics.pageIndicatorBottomInset(idiom: .regular) == Space.s22)
         // tvOS: dots sit at the title-safe line near the bottom; the focusable controls are lifted
         // higher (clear of the focus-scroll zone on the full-bleed hero), so controls > dots.
-        #expect(HeroMetrics.pageIndicatorBottomInset(idiom: .tv) == AppLayout.tvOverscanInset)
+        // 90 is the dots' own device-tuned absolute — deliberately NOT `tvOverscanInset`, which is
+        // a horizontal token that tracks the system inset (it moved 90→80 and these must not).
+        #expect(HeroMetrics.pageIndicatorBottomInset(idiom: .tv) == 90)
         #expect(HeroMetrics.foregroundBottomInset(idiom: .tv) > HeroMetrics.pageIndicatorBottomInset(idiom: .tv))
     }
 }

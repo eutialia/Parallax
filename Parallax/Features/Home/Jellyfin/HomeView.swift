@@ -16,6 +16,7 @@ struct HomeView: View {
     @Environment(LaunchGate.self) private var launchGate
     @Environment(PlaybackPresenter.self) private var playback
     @Environment(UserDataActions.self) private var userDataActions
+    @Environment(\.appIdiom) private var idiom
     /// Supplied by the tvOS launch gate (`FocusRootView`), which loads the feed up front so the
     /// hero is on screen — and focusable — the instant the sidebar appears. When set, the view
     /// skips its own fetch. iOS leaves this nil and self-loads in `.task` as before.
@@ -55,9 +56,11 @@ struct HomeView: View {
         .defaultScrollAnchor(.top)
         // Suppress iOS 26's automatic top scroll-edge fade — the hero paints flush under the
         // status bar (`.ignoresSafeArea(.top)`), so the soft edge effect reads as a stray fade
-        // on the artwork. Matches the movie/series detail screens.
+        // on the artwork. Matches the movie/series detail screens. Gated on the bleed: with no
+        // hero the shelves DO scroll under the (transparent) bar and want the system's
+        // legibility fade back.
         #if !os(tvOS)
-        .scrollEdgeEffectHidden(true, for: .top)
+        .scrollEdgeEffectHidden(showsHeroBleed, for: .top)
         #endif
         // Fill the detail width even while the loading state's content is small —
         // otherwise on a cold launch the ScrollView collapses to its content's ideal
@@ -66,8 +69,17 @@ struct HomeView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // tvOS bleeds the hero horizontally too (overscan) and measures the true screen height into
         // `\.heroViewportHeight` so the band fills the whole screen; the shelves re-inset via
-        // `tvContentInset()` below. iOS only drops the top inset (status-bar bleed).
-        .heroScreenSafeArea()
+        // `tvContentInset()` below. iOS only drops the top inset (status-bar bleed). The bleed is
+        // CONDITIONAL: it exists for the hero band, and the hero can be absent at runtime (empty
+        // hero feed from the server, or the feed call failing to a StatusStateView) — bleeding then
+        // parks the shelves/failure text at the raw screen top, colliding with the tvOS
+        // collapsed-sidebar pill. With no hero the screen rides the normal safe area — the
+        // SYSTEM's chrome-honoring rest (120pt at a tvOS tab root), deliberately not the walls'
+        // 100pt bypass rest: the shelves are a different surface family with no pushed sibling
+        // to match, and the fallback state prefers the system's own answer. The skeleton keeps the bleed (its hero
+        // placeholder is full-bleed like the real band) — so a HERO reveal doesn't shift, while
+        // the rarer hero-less reveal drops the band height once at the swap, by design.
+        .heroScreenSafeArea(active: showsHeroBleed)
         // Paint the screen floor in the content so the scroll region matches the chrome and lifts
         // with the system when the iPad window is elevated (see `screenFloor`). The hero draws
         // opaque artwork on top, so this only shows in the loading state and under any gaps.
@@ -76,8 +88,10 @@ struct HomeView: View {
         // hero still bleeds under it via `ignoresSafeArea` + `scrollEdgeEffectHidden`,
         // but the bar gives the pushed detail's back button a shared bar to cross-fade
         // with. Without it (bar hidden) the zoom-transition back button has no
-        // counterpart and slides across the screen on dismiss.
-        .toolbarBackground(.hidden, for: .navigationBar)
+        // counterpart and slides across the screen on dismiss. The BACKGROUND hide is
+        // hero-only: on a hero-less feed the shelves scroll under the bar, and the
+        // system's automatic material is what keeps that edge legible.
+        .toolbarBackground(showsHeroBleed ? .hidden : .automatic, for: .navigationBar)
         .itemDetailNavigation()
         // Keyed on `libraryReloadToken`, NOT raw `activeServerID`: an SMB-only cold launch keeps
         // `activeServerID` nil across the bootstrap→home flip, so a task keyed on it fires once
@@ -179,6 +193,36 @@ struct HomeView: View {
         launchGate.markContentReady()
     }
 
+    /// Whether the scroll surface should bleed for a full-bleed hero band — see the
+    /// `heroScreenSafeArea(active:)` call site. Skeleton bleeds (its hero placeholder is
+    /// full-bleed); loaded bleeds only when the hero feed actually has entries; the failure and
+    /// SMB-only placeholders have no band and honor the safe area.
+    /// DEBUG layout arg: force the hero-less Home (`-herolessHome`) against a server whose feed
+    /// HAS heroes — the empty-hero state depends entirely on server data, so scripted
+    /// verification of this layout needs the switch. `static let` so argv is scanned once, not
+    /// on every body evaluation (launch arguments can't change mid-process anyway).
+    #if DEBUG
+    private static let forceHeroless = ProcessInfo.processInfo.arguments.contains("-herolessHome")
+    #else
+    private static let forceHeroless = false
+    #endif
+
+    /// THE hero-presence predicate — the body's carousel `if`, the safe-area bleed, and the
+    /// hero-less headroom all derive from this one answer so they can never disagree (a bleed
+    /// without a band parks content under the tvOS pill; a band without the bleed reserves a
+    /// stray safe-area strip above it).
+    private func showsHero(_ vm: HomeViewModel) -> Bool {
+        !vm.heroFeed.isEmpty && !Self.forceHeroless
+    }
+
+    private var showsHeroBleed: Bool {
+        switch contentPhase {
+        case .skeleton: return true
+        case .loaded: return viewModel.map(showsHero) ?? false
+        case .failed, .unavailable: return false
+        }
+    }
+
     /// Discriminates which top-level branch of `content` is showing, for `crossfadeStateSwap`.
     /// Deliberately NOT `vm.state` itself (payload-carrying, not `Hashable`) — both loading
     /// branches (the pre-session bootstrap skeleton and `vm.state`'s own `.idle`/`.loading`)
@@ -214,7 +258,7 @@ struct HomeView: View {
                 // there's nothing to lazily defer. Parallax insulation still holds — `HomeShelves`
                 // is its own view, so it isn't re-evaluated on the hero's per-frame scroll writes.
                 VStack(alignment: .leading, spacing: Space.s30) {
-                    if !vm.heroFeed.isEmpty {
+                    if showsHero(vm) {
                         HomeHeroCarousel(
                             entries: vm.heroFeed,
                             viewModel: vm,
@@ -224,6 +268,10 @@ struct HomeView: View {
                     HomeShelves(viewModel: vm)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                // Hero-less iPhone/iPad: with the band gone the first shelf header sat flush
+                // against the status/nav bar — give it section headroom. tvOS already rests
+                // below the pill band via the honored safe area; the hero case fills the top.
+                .padding(.top, showsHeroBleed || idiom == .tv ? 0 : Space.s22)
                 .padding(.bottom, Space.s30)
             case .failed(let message):
                 StatusStateView.failure("Couldn't load Home", message: message)

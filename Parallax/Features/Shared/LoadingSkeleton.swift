@@ -69,26 +69,29 @@ extension View {
 
 // MARK: - Tiles & rows
 
-/// Tile placeholder — mirrors `MediaTile`. Poster grids show the bare artwork block; SMB landscape
-/// grids set `showsMetadata` to reserve the under-thumbnail filename + duration row so the
-/// loading→loaded swap doesn't shift the grid.
+/// Tile placeholder — mirrors `MediaTile`. Poster grids show the bare artwork block (0 lines);
+/// tiles with an under-thumbnail caption reserve it by line count so the loading→loaded swap
+/// doesn't shift the grid: 2 = filename + duration (`MediaTile.metadataRow`, the SMB video tiles
+/// and episode shelves), 1 = a lone name line (`FolderBrowseCard`).
 struct MediaTileSkeleton: View {
     var aspectRatio: CGFloat = MediaImage.poster
-    var showsMetadata: Bool = false
+    var metadataLines: Int = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: MediaTile.metadataGap) {
             SkeletonBlock(cornerRadius: Radius.tile)
                 .aspectRatio(aspectRatio, contentMode: .fit)
-            if showsMetadata {
-                // Two stub lines reserving the real MediaTile.metadataRow's rendered height (a
+            if metadataLines > 0 {
+                // Stub lines reserving the real MediaTile.metadataRow's rendered height (a
                 // .subheadline title line + gap + a .caption2 line) so the loading→loaded swap
                 // doesn't shift the grid. Sizes come from MediaTile's shared statics — compiler-
                 // coupled to the real row, not comment-coupled, so the two can't silently drift.
                 VStack(alignment: .leading, spacing: MediaTile.metadataLineSpacing) {
                     SkeletonBlock(cornerRadius: 4, height: MediaTile.metadataTitleStubHeight)
-                    SkeletonBlock(cornerRadius: 4, height: MediaTile.metadataDetailStubHeight)
-                        .frame(width: 56)
+                    if metadataLines > 1 {
+                        SkeletonBlock(cornerRadius: 4, height: MediaTile.metadataDetailStubHeight)
+                            .frame(width: 56)
+                    }
                 }
             }
         }
@@ -196,8 +199,9 @@ struct AdaptivePosterGridLoadingSkeleton: View {
     /// Tile shape — `.poster` for Jellyfin grids, `.landscape` for SMB frame-grab grids, so the
     /// skeleton matches the loaded tiles and the swap stays shift-free.
     var aspectRatio: CGFloat = MediaImage.poster
-    /// Reserve the under-thumbnail metadata row (SMB grids) so the swap to loaded tiles is shift-free.
-    var showsMetadata: Bool = false
+    /// Under-thumbnail caption lines to reserve (SMB grids) so the swap to loaded tiles is
+    /// shift-free — see `MediaTileSkeleton.metadataLines`.
+    var metadataLines: Int = 0
 
     @Environment(\.appIdiom) private var idiom
 
@@ -209,10 +213,73 @@ struct AdaptivePosterGridLoadingSkeleton: View {
         )
         LazyVGrid(columns: columns, spacing: AppLayout.posterGridRowSpacing(idiom: idiom)) {
             ForEach(0..<tileCount, id: \.self) { _ in
-                MediaTileSkeleton(aspectRatio: aspectRatio, showsMetadata: showsMetadata)
+                MediaTileSkeleton(aspectRatio: aspectRatio, metadataLines: metadataLines)
             }
         }
         .skeletonShimmer()
+    }
+}
+
+/// First-list placeholder for one SMB browse level — the shape of `SMBBrowseGrid` (tvOS sort chip,
+/// a "Folders" row, then a "Videos" wall at the dense landscape column count) instead of the bare
+/// centered spinner every level used to show. The exact loaded geometry depends on the listing
+/// (folder/video counts), so this is an impression of the wall, not a shift-free contract like the
+/// poster-grid skeletons; section stubs + tiles use the same tokens as the real grid so nothing
+/// re-spaces on arrival. Built from raw grids (not `AdaptivePosterGridLoadingSkeleton`) so ONE
+/// `skeletonShimmer()` clock drives the whole screen.
+struct SMBBrowseLoadingSkeleton: View {
+    @Environment(\.appIdiom) private var idiom
+
+    var body: some View {
+        let columnCount = AppLayout.landscapeGridColumns(idiom: idiom)
+        let columns = posterGridColumns(
+            fixedColumns: columnCount, columnMinWidth: 0,
+            columnSpacing: AppLayout.posterGridColumnSpacing(idiom: idiom)
+        )
+        // Chip in a spacing-0 wrapper mirroring the loaded tree (`VStack(spacing: 0) { sortHeader;
+        // SMBBrowseGrid }`): its own bottom clearance is the ONLY gap under it — parking it inside
+        // the section-spaced stack double-gapped the first section 52pt low.
+        VStack(alignment: .leading, spacing: 0) {
+            if idiom == .tv {
+                // The lone Sort chip's stand-in, centered like `SMBBrowseView.sortHeader` — same
+                // metrics family as the library header's chip skeleton, same row tokens as the
+                // real chip.
+                Capsule().fill(Color.fill)
+                    .frame(width: LibraryHeaderChip.sortWidth, height: LibraryHeaderChip.height)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.top, AppLayout.chipRowTopPadding)
+                    .padding(.bottom, AppLayout.chipRowBottomClearance)
+            }
+            VStack(alignment: .leading, spacing: AppLayout.browseSectionGap(idiom: idiom)) {
+                // Folders carry a single name line under the card; videos the filename + duration
+                // pair — mirror both so neither section's rows land short/tall before the swap.
+                browseSectionSkeleton(rows: 1, metadataLines: 1, columnCount: columnCount, columns: columns)
+                browseSectionSkeleton(rows: 2, metadataLines: 2, columnCount: columnCount, columns: columns)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .skeletonShimmer()
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Loading contents")
+        // A content-less tvOS screen needs a focus target or a Menu press suspends the app —
+        // carried IN the skeleton (like `DetailLoadingSkeleton`) so no future host can forget it.
+        .tvFocusableSurface()
+    }
+
+    /// One titled group stub (mirrors `SMBBrowseGrid.browseSection`): a `.sectionHeader`-sized
+    /// line above a landscape tile grid with the under-thumbnail caption reserved.
+    private func browseSectionSkeleton(rows: Int, metadataLines: Int, columnCount: Int, columns: [GridItem]) -> some View {
+        VStack(alignment: .leading, spacing: Space.s8) {
+            // `.sectionHeader` is 23pt semibold on tvOS (~28pt line box) vs footnote-class on
+            // iOS — a fixed 12 landed every tvOS section ~16pt high before the swap.
+            SkeletonBlock(cornerRadius: 4, height: idiom == .tv ? 28 : 13)
+                .frame(width: 88)
+            LazyVGrid(columns: columns, spacing: AppLayout.posterGridRowSpacing(idiom: idiom)) {
+                ForEach(0..<(columnCount * rows), id: \.self) { _ in
+                    MediaTileSkeleton(aspectRatio: MediaImage.landscape, metadataLines: metadataLines)
+                }
+            }
+        }
     }
 }
 
@@ -320,13 +387,13 @@ struct EpisodeListLoadingSkeleton: View {
                         .frame(width: 120)
                         .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
                     ScrollView(.horizontal, showsIndicators: false) {
-                        // `showsMetadata`: the season-row tiles now carry a title + time row BELOW the
+                        // `metadataLines: 2`: the season-row tiles carry a title + time row BELOW the
                         // still (the one-text-region law moved the caption there), so the skeleton must
                         // reserve those lines or the load→loaded swap jumps. `.top`-aligned like the
                         // real `MetadataRow`.
                         HStack(alignment: .top, spacing: Space.s12) {
                             ForEach(0..<5, id: \.self) { _ in
-                                MediaTileSkeleton(aspectRatio: MediaImage.landscape, showsMetadata: true)
+                                MediaTileSkeleton(aspectRatio: MediaImage.landscape, metadataLines: 2)
                                     // Idiom-aware, like the loaded shelf: the tv tile is 280pt, and a
                                     // 240pt skeleton would make the whole row reflow on load there.
                                     .frame(width: AppLayout.seriesEpisodeTileWidth(idiom: idiom))

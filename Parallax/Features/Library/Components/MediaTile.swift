@@ -283,7 +283,7 @@ struct MediaTile: View {
 /// iOS destination and confirm the thumbnail bottoms and the text bands below them line up.
 #Preview("SMB skeleton ↔ loaded parity", traits: .sizeThatFitsLayout) {
     HStack(alignment: .top, spacing: 16) {
-        MediaTileSkeleton(aspectRatio: MediaImage.landscape, showsMetadata: true)
+        MediaTileSkeleton(aspectRatio: MediaImage.landscape, metadataLines: 2)
             .frame(width: 280)
         MediaTile(
             title: "The Grand Budapest Hotel (2014)",

@@ -47,9 +47,15 @@ struct SettingsScaffold<Content: View>: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         // Hide the tvOS navigation bar. A pushed page's system `navigationTitle` reserves a top band
         // that shoves this column DOWN, so a titled page sat lower than a title-less one. Hiding it
-        // anchors every scaffold page at the SAME top — and unlike `ignoresSafeArea(.top)` it does NOT
-        // push content under the tvOS overscan.
+        // anchors every scaffold page at the SAME top.
         .toolbar(.hidden, for: .navigationBar)
+        // Deterministic top for every scaffold host: the signed-in Settings TAB ROOT keeps the
+        // sidebar chrome, whose safe-area band (60pt over title-safe) shoved its column 60pt below
+        // the SAME scaffold on pushed pages and logged-out Connect (chrome-less, title-safe only).
+        // Drop the container's top inset and rebuild it by hand in `tvColumn`'s top padding — all
+        // three hosts land the first section at the identical absolute y. Same mechanism as the
+        // media walls (`mediaWallContentMargins`); see `AppLayout.tvTitleSafeVInset`.
+        .ignoresSafeArea(.container, edges: .top)
         #else
         ScrollView {
             VStack(spacing: Space.s22) {
@@ -103,7 +109,10 @@ struct SettingsScaffold<Content: View>: View {
             .tvFocusSection()
             .frame(width: AppLayout.tvSettingsColumnWidth, alignment: .leading)
             .padding(.horizontal, AppLayout.tvSettingsColumnBleed)
-            .padding(.top, AppLayout.tvSettingsColumnTopInset)
+            // Title-safe rebuilt by hand (the scaffold ignores the container's top inset — see
+            // `body`), so this is an ABSOLUTE screen offset: 60 title-safe + 150 = 210pt, the
+            // handoff's `.tv-col top` on every host, root or pushed.
+            .padding(.top, AppLayout.tvTitleSafeVInset + AppLayout.tvSettingsColumnTopInset)
             .padding(.bottom, AppLayout.tvSettingsColumnBottomInset)
     }
     #endif

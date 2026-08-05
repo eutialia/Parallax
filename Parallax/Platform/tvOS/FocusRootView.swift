@@ -55,6 +55,15 @@ struct FocusRootView: View {
             guard ProcessInfo.processInfo.arguments.contains("-openSettingsTab") else { return }
             selectedTab = .settings
         }
+        // Same idea for the library tabs (`-openSMBTab` / `-openJellyfinTab`, first entry of that
+        // source wins): scripted verification of the browse walls needs to land there without
+        // driving the hero + sidebar by key events. Two triggers, both needed: `isReady` covers
+        // the cold path (entries commit BEFORE the reveal), and `groups` covers the cache-reveal
+        // path — `revealFromCache` can flip `isReady` on a hydrated Home feed with NO cached
+        // groups, and nothing re-flips it when `loadLibraries()` lands the entries a moment
+        // later. One-shot via the tab check so later library reloads don't yank the selection.
+        .onChange(of: isReady) { _, _ in jumpToRequestedLibraryTab() }
+        .onChange(of: groups) { _, _ in jumpToRequestedLibraryTab() }
         #endif
         // Keyed on the reload token (server switch + SMB add/remove), matching RootTabView.
         // The `.id(activeServerID)` remount above stays session-only.
@@ -158,6 +167,28 @@ struct FocusRootView: View {
         // isn't left on a gone tab (shared with RootTabView via `snappedIfStale`).
         selectedTab = selectedTab.snappedIfStale(against: outcome.entries)
     }
+
+    #if DEBUG
+    /// Body of the `-openSMBTab` / `-openJellyfinTab` launch-arg jump — see the `.onChange` pair
+    /// in `body`. One-shot: only fires while the selection still sits on the launch default, so
+    /// the library reloads that also move `groups` can't yank the user's later navigation.
+    private func jumpToRequestedLibraryTab() {
+        guard selectedTab == .home else { return }
+        let args = ProcessInfo.processInfo.arguments
+        let wantsSMB = args.contains("-openSMBTab")
+        let wantsJellyfin = args.contains("-openJellyfinTab")
+        guard wantsSMB || wantsJellyfin else { return }
+        for entry in groups.allEntries {
+            switch entry.source {
+            case .smb where wantsSMB, .jellyfin where wantsJellyfin:
+                selectedTab = .collection(entry.id)
+                return
+            default:
+                continue
+            }
+        }
+    }
+    #endif
 
     /// One library row in a server's sidebar section. Extracted with an EXPLICIT
     /// `some TabContent<AppTab>` return type, and not inlined, for two reasons that bit here:
