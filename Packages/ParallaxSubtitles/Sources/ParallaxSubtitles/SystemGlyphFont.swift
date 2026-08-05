@@ -218,9 +218,12 @@ enum SystemGlyphFont {
         /// winAscent+winDescent over unitsPerEm, per planned family. libass
         /// sizes fonts VSFilter-style by dividing by this box, so a CJK face
         /// declaring 1.36 em renders at 73% of the style size next to Latin.
-        /// Converted cues neutralize it with `\fs` so an em renders at the
-        /// declared size — the sizing model every non-VSFilter renderer uses.
+        /// Converted cues neutralize the DIFFERENCE against the style font
+        /// with `\fs`, so every family in a cue agrees on em size.
         let sizeFactorByFamily: [String: Double]
+        /// The style font's own box — the reference the per-run compensation is
+        /// relative to (the app-side scale mapping already accounts for it).
+        let styleFontEmBoxFactor: Double
         let trackDefaultLanguage: Language
         /// Per-line classification computed once at plan time — detection runs
         /// a recognizer, and tagging revisits every line.
@@ -342,6 +345,7 @@ enum SystemGlyphFont {
             subsets: subsets,
             familyByLanguage: familyByLanguage,
             sizeFactorByFamily: sizeFactorByFamily,
+            styleFontEmBoxFactor: SubtitleFontMetrics.emBoxFactor(forFamily: baseFamily),
             trackDefaultLanguage: trackDefault,
             languageByLine: languageByLine,
             shadowFont: shadowFont,

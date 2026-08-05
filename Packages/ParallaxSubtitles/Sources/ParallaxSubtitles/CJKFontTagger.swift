@@ -108,7 +108,9 @@ enum CJKFontTagger {
         })
         guard let family = plan.family(forLine: plain) else { return reassembled(tokens) }
 
-        let factor = plan.sizeFactor(forFamily: family)
+        // Relative to the STYLE font's box: the app-side scale mapping already
+        // compensates the style font itself, so runs only need the difference.
+        let factor = plan.sizeFactor(forFamily: family) / plan.styleFontEmBoxFactor
         let compensates = abs(factor - 1) > 0.02
         let size = String(format: "%.1f", styleFontSize * factor)
         let open = compensates

@@ -26,6 +26,26 @@ extension SubtitleSourceFormat {
 }
 
 extension SubtitleStyle {
+    /// The converted-track override for one playback geometry — THE single source
+    /// for both the player overlay and the settings live preview, so the preview
+    /// cannot drift from what actually renders. Two mappings live here:
+    /// - the tuned per-device cue size (`PlayerMetrics.subtitleFontSize`) remapped
+    ///   onto the synthesized script's font base, keyed on the video rect height;
+    /// - the font's own win box multiplied BACK: libass sizes VSFilter-style by
+    ///   dividing the style size by that box, so without the factor the size that
+    ///   renders is ~14% under the size that was tuned.
+    @MainActor
+    func convertedRendererOverride(surface: CGSize, videoRect: CGRect) -> SubtitleStyleOverride {
+        let metrics = PlayerMetrics.forSurface(surface)
+        let scriptPt = videoRect.height * SubtitleRenderer.convertedScriptFontFraction
+        let family = fontDesign.rendererFamily ?? SubtitleRenderer.standardFontFamily
+        let scale = scriptPt > 0
+            ? (metrics.subtitleFontSize * fontScale) / scriptPt
+                * SubtitleFontMetrics.emBoxFactor(forFamily: family)
+            : fontScale
+        return rendererOverride(fontScale: scale)
+    }
+
     /// The user's overlay style expressed as the renderer's selective override, with
     /// the caller-computed font scale (converted tracks remap the per-device tuned
     /// size; authored tracks scale the creator's own sizes). Font-family mapping is
