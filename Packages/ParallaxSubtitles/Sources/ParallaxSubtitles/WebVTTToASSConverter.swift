@@ -34,7 +34,7 @@ enum WebVTTToASSConverter {
             guard pair.count == 2 else { continue }
             // Both `line` and `position` may carry a trailing alignment hint
             // (`line:90%,end`). We place from the primary value only.
-            let value = pair[1].split(separator: ",", maxSplits: 1)[0]
+            let value = pair[1].split(separator: ",", maxSplits: 1, omittingEmptySubsequences: false)[0]
 
             switch pair[0] {
             case "align":
@@ -57,8 +57,8 @@ enum WebVTTToASSConverter {
     }
 
     private static func percentage(_ value: some StringProtocol) -> Double? {
-        guard value.hasSuffix("%") else { return nil }
-        return Double(value.dropLast())
+        guard value.hasSuffix("%"), let parsed = Double(value.dropLast()), parsed.isFinite else { return nil }
+        return parsed
     }
 
     /// The ASS override block that reproduces these settings, or nil to leave the

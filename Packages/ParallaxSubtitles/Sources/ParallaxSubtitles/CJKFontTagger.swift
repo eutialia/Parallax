@@ -252,10 +252,13 @@ enum ASSScriptScan {
     }
 
     /// Strips the `@` vertical-layout marker and whitespace — `@X` names the
-    /// same face as `X`.
+    /// same face as `X`. No real family name approaches 128 characters, so a
+    /// longer one is treated as hostile input and dropped (empty is already
+    /// filtered by callers).
     private static func normalizedFontName(_ raw: String) -> String {
         var name = raw.trimmingCharacters(in: .whitespaces)
         if name.hasPrefix("@") { name.removeFirst() }
+        guard name.count <= 128 else { return "" }
         return name
     }
 }

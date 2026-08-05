@@ -43,7 +43,7 @@ enum ASSScriptBuilder {
 
     /// `H:MM:SS.cc` — ASS stores centiseconds, so sub-10ms detail is lost by design.
     static func timecode(_ seconds: Double) -> String {
-        let clamped = max(0, seconds)
+        let clamped = min(max(0, seconds), 359_999.99)
         let total = Int((clamped * 100).rounded())
         let centiseconds = total % 100
         let totalSeconds = total / 100
