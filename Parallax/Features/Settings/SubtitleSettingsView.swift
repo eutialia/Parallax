@@ -69,14 +69,51 @@ struct SubtitleControlsList: View {
         #endif
         VStack(spacing: spacing) {
             // Scope first: the toggle decides WHO the style below applies to,
-            // so it reads before the style itself.
-            if onOverrideAuthoredChange != nil { authoredSection }
-            sizeGroup
-            colorGroup
-            fontGroup
-            backgroundGroup
-            positionSection
+            // so it reads before the style itself — and every section's caption
+            // restates its own effect for the chosen scope.
+            if hasScopeToggle { authoredSection }
+            section(sizeGroup, scoped(
+                off: "Plain subtitles render at this size — steady across videos and orientations.",
+                on: "Plain subtitles render at this size. Styled tracks scale their authored sizes by it."
+            ))
+            section(colorGroup, scoped(
+                off: "The fill color for plain subtitles.",
+                on: "The fill color for plain and styled subtitles."
+            ))
+            section(fontGroup, scoped(
+                off: "The typeface for plain subtitles.",
+                on: "The typeface for plain and styled subtitles."
+            ))
+            section(backgroundGroup, scoped(
+                off: "The legibility backing behind plain subtitles.",
+                on: "The legibility backing for plain and styled subtitles, replacing authored borders."
+            ))
+            section(positionGroup, scoped(
+                off: "Raises plain subtitles from the bottom of the screen.",
+                on: "Plain subtitles only — styled tracks keep their authored placement."
+            ))
             footnote
+        }
+        .animation(.default, value: overrideAuthored)
+    }
+
+    private var hasScopeToggle: Bool { onOverrideAuthoredChange != nil }
+
+    /// The caption matching the toggle's current scope — nil outside the
+    /// settings context (the floating preview panel shows bare controls).
+    private func scoped(off: String, on: String) -> String? {
+        hasScopeToggle ? (overrideAuthored ? on : off) : nil
+    }
+
+    @ViewBuilder
+    private func section(_ group: some View, _ captionText: String?) -> some View {
+        if let captionText {
+            VStack(spacing: Space.s8) {
+                group
+                caption(captionText)
+            }
+        } else {
+            group
         }
     }
 
@@ -128,22 +165,15 @@ struct SubtitleControlsList: View {
 
     /// Position is the one control that never reaches styled tracks — their
     /// placement is authored (the full 9-cell spec, margins, signs), and the
-    /// override maps style, not placement. The caption says so exactly when
-    /// the user has opted into restyling styled tracks and would otherwise
-    /// expect every control below the toggle to follow.
-    private var positionSection: some View {
-        VStack(spacing: Space.s8) {
-            SettingsGroup(title: "Position") {
-                ForEach(Self.positionOptions, id: \.ratio) { option in
-                    SettingsListRow(
-                        title: option.name,
-                        accessory: Self.approxEqual(style.verticalOffsetRatio, option.ratio) ? .checkmark : .none,
-                        action: { onChange(style.with { $0.verticalOffsetRatio = option.ratio }) }
-                    )
-                }
-            }
-            if overrideAuthored {
-                caption("Position applies to plain subtitles only — styled tracks keep their authored placement.")
+    /// override maps style, not placement. Its scoped caption says so.
+    private var positionGroup: some View {
+        SettingsGroup(title: "Position") {
+            ForEach(Self.positionOptions, id: \.ratio) { option in
+                SettingsListRow(
+                    title: option.name,
+                    accessory: Self.approxEqual(style.verticalOffsetRatio, option.ratio) ? .checkmark : .none,
+                    action: { onChange(style.with { $0.verticalOffsetRatio = option.ratio }) }
+                )
             }
         }
     }
