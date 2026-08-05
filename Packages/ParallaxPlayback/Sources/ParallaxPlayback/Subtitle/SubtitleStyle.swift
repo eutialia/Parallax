@@ -38,7 +38,8 @@ public struct SubtitleStyle: Sendable, Hashable, Codable {
 
     /// Glyph fill.
     public let foreground: RGBA
-    /// Glyph border. Opaque, so the overlay's overlapping outline passes can't band.
+    /// Glyph border. Opaque, so it reads as a solid ring against the video instead
+    /// of letting the frame show through (libass strokes it in one pass).
     public let outline: RGBA
     /// Border thickness as a fraction of the font size (resolution-independent).
     public let outlineWidthRatio: Double
@@ -47,8 +48,6 @@ public struct SubtitleStyle: Sendable, Hashable, Codable {
     /// not parameterized here), but they're part of the one canonical look — tune
     /// them with the palette, not in a view file. Black, at this opacity:
     public let shadowOpacity: Double
-    /// Shadow blur radius as a fraction of the font size.
-    public let shadowRadiusRatio: Double
     /// Shadow vertical offset as a fraction of the font size.
     public let shadowYOffsetRatio: Double
 
@@ -62,8 +61,10 @@ public struct SubtitleStyle: Sendable, Hashable, Codable {
     /// (`PlayerMetrics.subtitleFontSize`, remapped onto the renderer's script base
     /// by the overlay). 1.0 == the tuned base; the size control scales this 0.5…2.0.
     public let fontScale: Double
-    /// Glyph family for the overlay's SwiftUI `Text`, mapped to `Font.Design` in the
-    /// app. Engine-native tracks are unaffected (no font-selection API on iOS).
+    /// Glyph family for the client renderer, mapped to a real font name ("Times New
+    /// Roman" for serif, "Courier New" for monospaced; `nil`/sans keeps the
+    /// renderer's own default). Engine-native tracks are unaffected (no
+    /// font-selection API on iOS).
     public let fontDesign: SubtitleFontDesign
     /// Legibility backing: the canonical outline-ring + shadow, OR an opaque box
     /// (mutually exclusive — a box carries its own contrast, so no ring/shadow).
@@ -73,7 +74,7 @@ public struct SubtitleStyle: Sendable, Hashable, Codable {
     public let verticalOffsetRatio: Double
 
     public init(foreground: RGBA, outline: RGBA, outlineWidthRatio: Double,
-                shadowOpacity: Double, shadowRadiusRatio: Double, shadowYOffsetRatio: Double,
+                shadowOpacity: Double, shadowYOffsetRatio: Double,
                 fontScale: Double = 1.0,
                 fontDesign: SubtitleFontDesign = .sansSerif,
                 background: SubtitleBackground = .outlineShadow,
@@ -82,7 +83,6 @@ public struct SubtitleStyle: Sendable, Hashable, Codable {
         self.outline = outline
         self.outlineWidthRatio = outlineWidthRatio
         self.shadowOpacity = shadowOpacity
-        self.shadowRadiusRatio = shadowRadiusRatio
         self.shadowYOffsetRatio = shadowYOffsetRatio
         self.fontScale = fontScale
         self.fontDesign = fontDesign
@@ -120,7 +120,7 @@ public struct SubtitleStyle: Sendable, Hashable, Codable {
             SubtitleStyle(
                 foreground: foreground, outline: base.outline,
                 outlineWidthRatio: base.outlineWidthRatio,
-                shadowOpacity: base.shadowOpacity, shadowRadiusRatio: base.shadowRadiusRatio,
+                shadowOpacity: base.shadowOpacity,
                 shadowYOffsetRatio: base.shadowYOffsetRatio,
                 fontScale: fontScale, fontDesign: fontDesign,
                 background: background, verticalOffsetRatio: verticalOffsetRatio
@@ -135,16 +135,17 @@ public struct SubtitleStyle: Sendable, Hashable, Codable {
         outline: RGBA(red: 0, green: 0, blue: 0),
         outlineWidthRatio: 0.06,
         shadowOpacity: 0.55,
-        shadowRadiusRatio: 0.10,
         shadowYOffsetRatio: 0.04
     )
 }
 
-/// Subtitle glyph family for the client overlay. Maps to SwiftUI `Font.Design` in
-/// the app (`.default`/`.serif`/`.monospaced`); a plain enum here so the package
-/// stays UI-framework-free. NOTE: `.serif` is New York (Latin) — CJK glyphs fall
-/// back via the system cascade and may not resolve to a serif face. Verify by
-/// render before relying on serif for CJK (see the subtitle-settings spec).
+/// Subtitle glyph family for the client renderer. A plain enum here so the package
+/// stays UI-framework-free; the app maps each case to a real font name (`.serif` →
+/// "Times New Roman", `.monospaced` → "Courier New", `.sansSerif` → the renderer's
+/// own default). `.serif` is Latin-only by name, but CJK lines still reach a serif
+/// design: the renderer plans CJK font choice through the SAME family, so a
+/// Japanese line under `.serif` resolves through CoreText's cascade to a Mincho
+/// face instead of falling back to the sans default.
 public enum SubtitleFontDesign: String, Sendable, Hashable, Codable, CaseIterable {
     case sansSerif
     case serif

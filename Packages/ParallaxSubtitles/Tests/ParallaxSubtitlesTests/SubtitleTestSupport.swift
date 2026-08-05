@@ -4,6 +4,24 @@ import Testing
 
 @testable import ParallaxSubtitles
 
+// MARK: - Converted SRT fixtures
+
+enum SRTFixture {
+    /// One SRT cue running 1s–3s — the shape most render-path probes need.
+    static func text(_ body: String) -> String {
+        "1\n00:00:01,000 --> 00:00:03,000\n\(body)\n"
+    }
+
+    static func data(text: String) -> Data {
+        Data(Self.text(text).utf8)
+    }
+}
+
+/// The system CJK font every synthesis/metrics probe exercises: the one whose
+/// outline table (`hvgl`) FreeType cannot read, which is the whole reason
+/// `SystemGlyphFont` exists.
+let pingFangSCRegular = "PingFangSC-Regular"
+
 // MARK: - Authored ASS fixtures
 
 enum ASSFixture {

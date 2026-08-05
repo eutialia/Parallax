@@ -22,17 +22,11 @@ struct CJKRenderProbeTests {
 
     /// Han-FIRST text is the poison case — its CoreText fallback is PingFang.
     /// The Latin tail rides through the bare `{\fn}` reset after a CJK run.
-    private static let hanFirstSRT = """
-    1
-    00:00:01,000 --> 00:00:03,000
-    這是繁體中文字幕測試
-    简体字幕测试 ABC123
-
-    """
+    private static let hanFirstSRT = SRTFixture.text("這是繁體中文字幕測試\n简体字幕测试 ABC123")
 
     @Test("PingFang's file is (still) FreeType-unreadable; Hiragino's is readable")
     func readabilityDiscriminates() throws {
-        let pingfang = CTFontCreateWithName("PingFangSC-Regular" as CFString, 24, nil)
+        let pingfang = CTFontCreateWithName(pingFangSCRegular as CFString, 24, nil)
         let hiragino = CTFontCreateWithName("HiraginoSans-W4" as CFString, 24, nil)
         let pfURL = try #require(CTFontCopyAttribute(pingfang, kCTFontURLAttribute) as? URL)
         let hgURL = try #require(CTFontCopyAttribute(hiragino, kCTFontURLAttribute) as? URL)
@@ -44,21 +38,22 @@ struct CJKRenderProbeTests {
     @Test("subset synthesis produces a self-readable font under the source family name")
     func subsetRoundTrips() throws {
         let scalars = Array("這是繁體字幕測試简体测试".unicodeScalars)
-        let pingfang = CTFontCreateWithName("PingFangSC-Regular" as CFString, 24, nil)
+        let pingfang = CTFontCreateWithName(pingFangSCRegular as CFString, 24, nil)
         let data = try #require(SystemGlyphFont.subsetFont(scalars: scalars, from: pingfang))
 
         // The subset must clear the same readability bar system files are held to.
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("pf-subset.ttf")
         try data.write(to: url)
         #expect(SystemGlyphFont.fileIsFreeTypeReadable(url))
-        print("CJKPROBE subset: \(data.count) bytes at \(url.path)")
 
         // And CoreText itself must accept it — a stronger structural check than
         // our own directory parse (cmap, glyf and metrics all get validated).
         let provider = try #require(CGDataProvider(data: data as CFData))
         let cgFont = try #require(CGFont(provider))
-        #expect(cgFont.numberOfGlyphs == Set(scalars.map { String(String.UnicodeScalarView([$0])) }).count + 1
-                || cgFont.numberOfGlyphs > 1)
+        // Deterministic: extraction dedupes by CGGlyph id, and distinct CJK
+        // characters resolve to distinct glyphs in PingFang, so the assembled
+        // font carries exactly one glyph per unique scalar plus .notdef.
+        #expect(cgFont.numberOfGlyphs == Set(scalars).count + 1)
         let ctFont = CTFontCreateWithGraphicsFont(cgFont, 24, nil, nil)
         var chars = Array("字".utf16)
         var glyphs = [CGGlyph](repeating: 0, count: chars.count)

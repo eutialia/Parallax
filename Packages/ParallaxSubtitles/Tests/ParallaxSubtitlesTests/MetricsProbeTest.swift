@@ -15,7 +15,7 @@ struct MetricsProbeTest {
 
     @Test("subset carries the source file's vertical metrics, ratio-exact")
     func subsetCopiesRealMetrics() throws {
-        let pingfang = CTFontCreateWithName("PingFangSC-Regular" as CFString, 24, nil)
+        let pingfang = CTFontCreateWithName(pingFangSCRegular as CFString, 24, nil)
         let sourceURL = try #require(CTFontCopyAttribute(pingfang, kCTFontURLAttribute) as? URL)
         let source = try #require(SystemGlyphFont.faceMetrics(of: sourceURL))
 
@@ -56,12 +56,12 @@ struct MetricsProbeTest {
     func subsetMatchesSystemScale() async throws {
         // Han goes through the synthesized PingFang subset…
         let han = await makeProbeRenderer()
-        try await han.load(Data("1\n00:00:01,000 --> 00:00:03,000\n字字字字\n".utf8), format: .srt)
+        try await han.load(SRTFixture.data(text: "字字字字"), format: .srt)
         let hanRect = try #require(await han.frame(at: 2.0)).imageRect
 
         // …kana through Hiragino's real, FreeType-readable file.
         let kana = await makeProbeRenderer()
-        try await kana.load(Data("1\n00:00:01,000 --> 00:00:03,000\nああああ\n".utf8), format: .srt)
+        try await kana.load(SRTFixture.data(text: "ああああ"), format: .srt)
         let kanaRect = try #require(await kana.frame(at: 2.0)).imageRect
 
         // Both are 4 full-width CJK cells at the same style size. With real

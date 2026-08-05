@@ -12,9 +12,15 @@ public enum SubtitleFontMetrics {
     /// by this factor. 1 when the family (or its metrics) can't be resolved.
     public static func emBoxFactor(forFamily family: String) -> Double {
         let font = CTFontCreateWithName(family as CFString, 12, nil)
-        guard let url = CTFontCopyAttribute(font, kCTFontURLAttribute) as? URL,
-              let metrics = SystemGlyphFont.faceMetrics(of: url),
-              metrics.unitsPerEm > 0 else { return 1 }
+        guard let url = CTFontCopyAttribute(font, kCTFontURLAttribute) as? URL else { return 1 }
+        return emBoxFactor(forFace: url)
+    }
+
+    /// Same ratio, from a face already resolved to a file URL — the path callers
+    /// that already have one (from a `CTFont` they hold, not a family name) take,
+    /// so they don't pay for a second `CTFontCreateWithName` + attribute lookup.
+    public static func emBoxFactor(forFace url: URL) -> Double {
+        guard let metrics = SystemGlyphFont.faceMetrics(of: url), metrics.unitsPerEm > 0 else { return 1 }
         let box = Double(metrics.winAscent) + Double(metrics.winDescent)
         return box > 0 ? box / Double(metrics.unitsPerEm) : 1
     }

@@ -142,16 +142,21 @@ enum SystemGlyphFont {
 
         var hans = 0
         var hant = 0
+        // One recognizer, reset per line: a fresh NLLanguageRecognizer costs
+        // ~9x a reset (measured), and this loop runs up to the vote sample
+        // limit's worth of lines.
+        let recognizer = NLLanguageRecognizer()
         for line in hanOnlyLines.prefix(chineseVoteSampleLimit) {
-            switch chineseScript(of: line) {
+            switch chineseScript(of: line, using: recognizer) {
             case .simplifiedChinese: hans += 1
             case .traditionalChinese: hant += 1
             default: break
             }
         }
         if hans != hant { return hans > hant ? .simplifiedChinese : .traditionalChinese }
-        return chineseScript(of: hanOnlyLines.prefix(chineseVoteSampleLimit).joined(separator: "\n"))
-            ?? .simplifiedChinese
+        return chineseScript(
+            of: hanOnlyLines.prefix(chineseVoteSampleLimit).joined(separator: "\n"), using: recognizer
+        ) ?? .simplifiedChinese
     }
 
     /// Whole-track voting caps here — enough for any real ambiguity, and it
@@ -162,7 +167,9 @@ enum SystemGlyphFont {
     /// line has no CJK content at all. Kana and hangul decide outright; Han is
     /// discriminated Hans/Hant only inside a Chinese-defaulted track; anything
     /// else (shared characters, CJK punctuation alone) takes the track default.
-    static func language(of line: String, trackDefault: Language) -> Language? {
+    static func language(
+        of line: String, trackDefault: Language, using recognizer: NLLanguageRecognizer = NLLanguageRecognizer()
+    ) -> Language? {
         var sawCJK = false
         var sawHan = false
         for scalar in line.unicodeScalars {
@@ -176,7 +183,7 @@ enum SystemGlyphFont {
             }
         }
         guard sawCJK else { return nil }
-        if sawHan, trackDefault.isChinese, let script = chineseScript(of: line) { return script }
+        if sawHan, trackDefault.isChinese, let script = chineseScript(of: line, using: recognizer) { return script }
         return trackDefault
     }
 
@@ -184,8 +191,12 @@ enum SystemGlyphFont {
     /// the scales either way. Only meaningful for text already known to be
     /// Chinese: the recognizer is constrained to the two Chinese classes and
     /// renormalizes over them, so it is confidently wrong about Japanese kanji.
-    static func chineseScript(of text: String) -> Language? {
-        let recognizer = NLLanguageRecognizer()
+    static func chineseScript(
+        of text: String, using recognizer: NLLanguageRecognizer = NLLanguageRecognizer()
+    ) -> Language? {
+        // reset() drops the constraints along with the accumulated evidence, so
+        // a caller reusing one recognizer across lines must reapply them here.
+        recognizer.reset()
         recognizer.languageConstraints = [.simplifiedChinese, .traditionalChinese]
         recognizer.processString(text)
         guard let best = recognizer.languageHypotheses(withMaximum: 2)
@@ -262,8 +273,14 @@ enum SystemGlyphFont {
             "永" as CFString, CFRange(location: 0, length: 1),
             trackDefault.rawValue as CFString
         )
+        // One recognizer for every line this plan classifies — a fresh
+        // NLLanguageRecognizer per line measured ~9x a reset, ~0.7s on a
+        // 3000-line Chinese-default track.
+        let recognizer = NLLanguageRecognizer()
         func classify(_ line: String) -> Language? {
-            guard let language = language(of: line, trackDefault: trackDefault) else { return nil }
+            guard let language = language(of: line, trackDefault: trackDefault, using: recognizer) else {
+                return nil
+            }
             guard language == trackDefault, !trackDefault.isChinese, let defaultFontProbe,
                   line.unicodeScalars.contains(where: { isHan($0.value) })
             else { return language }
@@ -272,7 +289,7 @@ enum SystemGlyphFont {
             var glyphs = [CGGlyph](repeating: 0, count: chars.count)
             let covered = CTFontGetGlyphsForCharacters(defaultFontProbe, &chars, &glyphs, chars.count)
             guard !covered else { return language }
-            return chineseScript(of: line) ?? .simplifiedChinese
+            return chineseScript(of: line, using: recognizer) ?? .simplifiedChinese
         }
 
         var languageByLine: [String: Language] = [:]
@@ -327,12 +344,8 @@ enum SystemGlyphFont {
 
         var sizeFactorByFamily: [String: Double] = [:]
         for family in Set(familyByLanguage.values) {
-            guard let url = familyGroups[family]?.url,
-                  let metrics = faceMetrics(of: url),
-                  metrics.unitsPerEm > 0 else { continue }
-            let winBox = Double(metrics.winAscent) + Double(metrics.winDescent)
-            guard winBox > 0 else { continue }
-            sizeFactorByFamily[family] = winBox / Double(metrics.unitsPerEm)
+            guard let url = familyGroups[family]?.url else { continue }
+            sizeFactorByFamily[family] = SubtitleFontMetrics.emBoxFactor(forFace: url)
         }
 
         let shadowFont = familyByLanguage[trackDefault].flatMap { familyGroups[$0]?.font }
@@ -391,13 +404,7 @@ enum SystemGlyphFont {
     /// `Style: …,PingFang SC,…`). Nil when libass can serve the name itself.
     static func unusableRequestedFont(named name: String) -> CTFont? {
         let font = CTFontCreateWithName(name as CFString, synthesisPointSize, nil)
-        let candidates = [
-            CTFontCopyFamilyName(font) as String,
-            CTFontCopyPostScriptName(font) as String,
-            CTFontCopyFullName(font) as String,
-        ]
-        let installed = candidates.contains { $0.caseInsensitiveCompare(name) == .orderedSame }
-        guard installed else { return nil }  // missing → shadow from the plan's font
+        guard resolvesToInstalledName(font, name) else { return nil }  // missing → shadow from the plan's font
         guard let url = CTFontCopyAttribute(font, kCTFontURLAttribute) as? URL,
               fileIsFreeTypeReadable(url)
         else { return font }  // installed, but libass can't read it → shadow from itself
@@ -407,7 +414,14 @@ enum SystemGlyphFont {
     /// Whether CoreText resolves `name` to an actual installed face (as opposed
     /// to silently substituting one), under any of its addressable names.
     static func fontFamilyInstalled(_ name: String) -> Bool {
-        let font = CTFontCreateWithName(name as CFString, 12, nil)
+        resolvesToInstalledName(CTFontCreateWithName(name as CFString, 12, nil), name)
+    }
+
+    /// Whether `font` — CoreText's resolution of `name` — is actually installed
+    /// under that name, rather than a silent substitution. Checked against the
+    /// family, PostScript and full names, since scripts address fonts by any of
+    /// the three.
+    private static func resolvesToInstalledName(_ font: CTFont, _ name: String) -> Bool {
         let candidates = [
             CTFontCopyFamilyName(font) as String,
             CTFontCopyPostScriptName(font) as String,
