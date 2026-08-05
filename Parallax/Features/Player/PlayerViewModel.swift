@@ -503,6 +503,12 @@ final class PlayerViewModel {
 
     private var stateTask: Task<Void, Never>?
     private var subtitleFetchTask: Task<Void, Never>?
+    /// The stream index the live `subtitleFetchTask` FETCH belongs to; nil once
+    /// its install lands (or when the slot holds a same-track style rebuild).
+    /// Guards the rebuild path: cancelling another track's in-flight fetch to
+    /// rebuild from the INSTALLED payload would reinstall the old track under
+    /// the new selection, and nothing would ever fetch the picked one.
+    private var sidecarFetchStreamIndex: Int?
     /// Last appearance pushed by the overlay (`applySubtitleAppearance`) — replayed
     /// onto every freshly loaded renderer so a track switch keeps the user's style.
     /// Two variants because the fontScale means different things per format: converted
@@ -677,7 +683,16 @@ final class PlayerViewModel {
         fetchDetail: @escaping @Sendable (ItemID) async throws -> ItemDetail = { _ in
             throw AppError.playback(.unsupportedFormat)
         },
-        subtitleFetch: @escaping @Sendable (URL) async -> Data? = { try? await URLSession.shared.data(from: $0).0 },
+        subtitleFetch: @escaping @Sendable (URL) async -> Data? = { url in
+            // URLSession does not throw on HTTP 4xx/5xx — it returns the error
+            // body. Without this guard a server-side conversion failure hands
+            // back HTML/JSON "subtitles" and the ass→VTT fallback never fires.
+            guard let (data, response) = try? await URLSession.shared.data(from: url),
+                  !data.isEmpty,
+                  (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) ?? true
+            else { return nil }
+            return data
+        },
         rememberTrackSelection: @escaping @Sendable (TrackSelectionUpdate) async -> Void = { _ in },
         fetchSegments: @escaping @Sendable (ItemID) async -> [MediaSegment] = { _ in [] },
         fetchAdjacent: @escaping @Sendable (ItemID, ItemID) async -> AdjacentEpisodes = { _, _ in .none },
@@ -712,6 +727,7 @@ final class PlayerViewModel {
         // never reached.
         stateTask?.cancel()
         subtitleFetchTask?.cancel()
+        stylePushChain?.cancel()
         stallDebounceTask?.cancel()
         keepaliveTask?.cancel()
         deliveryProbeTask?.cancel()
@@ -1747,15 +1763,24 @@ final class PlayerViewModel {
                 // through the full activation (incl. the mandatory engine deselect
                 // that guards the double-subtitle bug), not the bare restore the
                 // not-landed arms use.
-                if let previous, let prevIndex = previous.id.jellyfinStreamIndex, !previous.isBurnedIn {
-                    await activateSidecarSubtitle(previous, index: prevIndex)
+                // The declined session was still negotiated FOR a burn-in — video
+                // stream copy off, a full re-encode with nothing to show for it —
+                // so the rollback must re-resolve too, not just restore the
+                // overlay, or the wasteful session outlives the failed pick. No
+                // recursion risk: the fallback is never a burn-in. The failure
+                // record lands AFTER the nested reload, whose own optimistic set
+                // would clear it.
+                let fallback = previous.flatMap { $0.isBurnedIn ? nil : $0 }
+                if let fallback, let prevIndex = fallback.id.jellyfinStreamIndex {
+                    await reloadSubtitleTranscode(to: fallback, subtitleStreamIndex: prevIndex) {
+                        await self.activateSidecarSubtitle(fallback, index: prevIndex)
+                    }
                 } else {
-                    selectedSubtitleTrack = previous
-                    currentSubtitleStreamIndex = previous?.id.jellyfinStreamIndex ?? -1
+                    await reloadSubtitleTranscode(to: nil, subtitleStreamIndex: -1)
                 }
                 trackSwitchFailure = TrackSwitchFailure(
                     requested: .subtitle(target),
-                    fallback: previous.map(TrackPick.subtitle),
+                    fallback: fallback.map(TrackPick.subtitle),
                     error: .playback(.unsupportedFormat)
                 )
                 return
@@ -1906,6 +1931,7 @@ final class PlayerViewModel {
             clearSidecarSubtitle()
             return
         }
+        sidecarFetchStreamIndex = streamIndex
         let fetch = subtitleFetch
         let requestedFormat = SubtitleSourceFormat(sidecarExtension: url.pathExtension)
         subtitleFetchTask = Task { [weak self] in
@@ -1973,6 +1999,7 @@ final class PlayerViewModel {
         sidecarSubtitleInfo = info
         sidecarPayload = (data, format, languageCode)
         sidecarRendererFamily = family
+        sidecarFetchStreamIndex = nil
         subtitleRendererGeneration &+= 1
     }
 
@@ -1985,6 +2012,7 @@ final class PlayerViewModel {
     private func clearSidecarSubtitle() {
         subtitleFetchTask?.cancel()
         subtitleFetchTask = nil
+        sidecarFetchStreamIndex = nil
         subtitleRenderer = nil
         sidecarSubtitleInfo = nil
         sidecarPayload = nil
@@ -2007,8 +2035,11 @@ final class PlayerViewModel {
         guard let renderer = subtitleRenderer, let info = sidecarSubtitleInfo else { return }
         // A font-FAMILY change can't be pushed onto a loaded track: the CJK
         // font plan and \fn tags were baked at load against the previous
-        // family. Rebuild the renderer from the kept payload instead.
-        if let payload = sidecarPayload,
+        // family. Rebuild the renderer from the kept payload instead — unless
+        // another track's fetch is in flight: that install reads the family at
+        // its own completion, and cancelling it here would strand the newer
+        // pick on the old track's payload.
+        if sidecarFetchStreamIndex == nil, let payload = sidecarPayload,
            effectiveSidecarFontFamily(for: info.format) != sidecarRendererFamily {
             subtitleFetchTask?.cancel()
             subtitleFetchTask = Task { [weak self] in
@@ -2754,11 +2785,13 @@ final class PlayerViewModel {
     }
 
     /// External (sidecar) text subtitles from the server, as direct-play menu entries
-    /// with `.jellyfinStream` ids. These render client-side (`SubtitleOverlayView`, fed by
-    /// `loadSidecarSubtitle`) rather than through the engine — VLC can't shape sidecar VTT
-    /// on iOS, and embedded subs already come from the engine's own inventory. Image subs
-    /// are excluded (no client renderer for them yet). Labels come from the server, so they
-    /// read "English" etc. instead of VLC's generic "Track N".
+    /// with `.jellyfinStream` ids. All sidecar text renders client-side
+    /// (`SubtitleOverlayView`, fed by `loadSidecarSubtitle`, requesting ass/ssa/srt
+    /// verbatim so authored styling survives) rather than through the engine — VLC
+    /// can't shape sidecar text on iOS, and embedded subs already come from the
+    /// engine's own inventory. Image subs are excluded here by policy: they go
+    /// through server burn-in. Labels come from the server, so they read "English"
+    /// etc. instead of VLC's generic "Track N".
     private static func externalSubtitleTracks(from resolved: ResolvedPlayback) -> [SubtitleTrack] {
         resolved.mediaStreams
             .filter { $0.kind == .subtitle && $0.isExternal && !$0.isImageSubtitle }

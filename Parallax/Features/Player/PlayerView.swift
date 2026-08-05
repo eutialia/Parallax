@@ -235,7 +235,14 @@ struct PlayerView: View {
                 if url.scheme == "smb" {
                     return await smbResolver.subtitleData(for: url, ref: ref)
                 }
-                return try? await URLSession.shared.data(from: url).0
+                // Same status guard as the default closure: URLSession returns
+                // HTTP error bodies instead of throwing, and those must read as
+                // "no data" so the format fallback can fire.
+                guard let (data, response) = try? await URLSession.shared.data(from: url),
+                      !data.isEmpty,
+                      (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) ?? true
+                else { return nil }
+                return data
             }
             let vm = PlayerViewModel(
                 deviceProfileBuilder: deps.deviceProfileBuilder,
