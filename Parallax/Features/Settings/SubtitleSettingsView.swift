@@ -68,12 +68,14 @@ struct SubtitleControlsList: View {
         let spacing = Space.s22
         #endif
         VStack(spacing: spacing) {
+            // Scope first: the toggle decides WHO the style below applies to,
+            // so it reads before the style itself.
+            if onOverrideAuthoredChange != nil { authoredSection }
             sizeGroup
             colorGroup
             fontGroup
             backgroundGroup
-            positionGroup
-            if onOverrideAuthoredChange != nil { authoredGroup }
+            positionSection
             footnote
         }
     }
@@ -124,42 +126,59 @@ struct SubtitleControlsList: View {
         }
     }
 
-    private var positionGroup: some View {
-        SettingsGroup(title: "Position") {
-            ForEach(Self.positionOptions, id: \.ratio) { option in
-                SettingsListRow(
-                    title: option.name,
-                    accessory: Self.approxEqual(style.verticalOffsetRatio, option.ratio) ? .checkmark : .none,
-                    action: { onChange(style.with { $0.verticalOffsetRatio = option.ratio }) }
-                )
+    /// Position is the one control that never reaches styled tracks — their
+    /// placement is authored (the full 9-cell spec, margins, signs), and the
+    /// override maps style, not placement. The caption says so exactly when
+    /// the user has opted into restyling styled tracks and would otherwise
+    /// expect every control below the toggle to follow.
+    private var positionSection: some View {
+        VStack(spacing: Space.s8) {
+            SettingsGroup(title: "Position") {
+                ForEach(Self.positionOptions, id: \.ratio) { option in
+                    SettingsListRow(
+                        title: option.name,
+                        accessory: Self.approxEqual(style.verticalOffsetRatio, option.ratio) ? .checkmark : .none,
+                        action: { onChange(style.with { $0.verticalOffsetRatio = option.ratio }) }
+                    )
+                }
+            }
+            if overrideAuthored {
+                caption("Position applies to plain subtitles only — styled tracks keep their authored placement.")
             }
         }
     }
 
     /// Styled (ASS) tracks carry their creators' colors, fonts and placement. Default
     /// is to show that as authored; the user can opt into their own style instead.
-    private var authoredGroup: some View {
-        SettingsGroup(title: "Styled Subtitles") {
-            SettingsListRow(
-                title: "Keep Creator Styling",
-                accessory: overrideAuthored ? .none : .checkmark,
-                action: { onOverrideAuthoredChange?(false) }
-            )
-            SettingsListRow(
-                title: "Use My Style",
-                accessory: overrideAuthored ? .checkmark : .none,
-                action: { onOverrideAuthoredChange?(true) }
-            )
+    private var authoredSection: some View {
+        VStack(spacing: Space.s8) {
+            SettingsGroup(title: "Styled Subtitles") {
+                SettingsListRow(
+                    title: "Keep Creator Styling",
+                    accessory: overrideAuthored ? .none : .checkmark,
+                    action: { onOverrideAuthoredChange?(false) }
+                )
+                SettingsListRow(
+                    title: "Use My Style",
+                    accessory: overrideAuthored ? .checkmark : .none,
+                    action: { onOverrideAuthoredChange?(true) }
+                )
+            }
+            caption("Styled tracks — anime fan-subs — carry their creators' colors, fonts and placement.")
         }
     }
 
     private var footnote: some View {
-        Text("These settings style the subtitles Parallax renders itself. Styled tracks (anime fan-subs) keep their creators' colors and positions unless “Use My Style” is selected. Subtitles built into the video and image-based tracks always keep their original look.")
+        caption("These settings style the subtitles Parallax renders itself. Subtitles built into the video and image-based tracks always keep their original look.")
+            .padding(.top, Space.s8)
+    }
+
+    private func caption(_ text: String) -> some View {
+        Text(text)
             .font(.rowSubtitle)
             .foregroundStyle(Color.secondaryLabel)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, SettingsMetrics.headerInset)
-            .padding(.top, Space.s8)
     }
 
     /// Color row: a filled swatch in the glyph column (the only control that needs an arbitrary
