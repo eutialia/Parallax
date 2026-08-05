@@ -3,6 +3,7 @@ import Foundation
 import Observation
 import ParallaxPlayback
 import ParallaxSubtitles
+import SwiftUI
 
 /// Drives the settings preview through the REAL subtitle pipeline: the same
 /// `SubtitleRenderer`, the same converted-script synthesis (CJK font planning
@@ -10,8 +11,9 @@ import ParallaxSubtitles
 /// player overlay pushes (`convertedRendererOverride` — one function, so the
 /// preview CANNOT drift from playback). The rendered bitmap is the preview.
 ///
-/// The simulated session is a fullscreen landscape playback of a 16:9 video on
-/// this device — the geometry the tuned cue sizes are authored against.
+/// The simulated session is a fullscreen landscape playback on this device —
+/// the geometry the tuned cue sizes are authored against — scaled to fit the
+/// stage's width so the wrapped cue can never overrun the stage.
 @MainActor
 @Observable
 final class SubtitleLivePreview {
@@ -28,7 +30,11 @@ final class SubtitleLivePreview {
     @ObservationIgnored private var renderer = SubtitleRenderer()
     @ObservationIgnored private var rendererFamily = SubtitleRenderer.standardFontFamily
     @ObservationIgnored private var loaded = false
-    @ObservationIgnored private var chain: Task<Void, Never>?
+    /// The latest requested render; a single worker drains it so a burst of
+    /// updates (size sliders, live-resize geometry) coalesces to the newest
+    /// request instead of rendering every intermediate one in order.
+    @ObservationIgnored private var pending: (rect: CGRect, override: SubtitleStyleOverride, scale: CGFloat)?
+    @ObservationIgnored private var worker: Task<Void, Never>?
 
     /// The sample cue rides the whole conversion pipeline.
     private static let sampleSRT = """
@@ -48,36 +54,52 @@ final class SubtitleLivePreview {
             renderer = SubtitleRenderer(defaultFontFamily: family)
             loaded = false
         }
-        // Fullscreen landscape surface of this device. Converted tracks map
-        // their canvas to the DEVICE (full surface, storage unset), exactly as
-        // `SubtitleOverlayView` does — the cue's distance from the canvas
-        // bottom IS its distance from the screen bottom, every orientation.
-        let surface = CGSize(
+        // A fullscreen landscape session of this device, scaled to FIT the
+        // stage's width: the converted mapping is canvas-height-invariant (the
+        // cue renders at the same point size and the margin override pins the
+        // same rest distance on any canvas), so shrinking the canvas changes
+        // only the wrap width — which must not exceed the stage, or the bitmap
+        // would run off both edges at large sizes.
+        let landscape = CGSize(
             width: max(stageSize.width, stageSize.height),
             height: min(stageSize.width, stageSize.height)
         )
-        let rect = CGRect(origin: .zero, size: surface)
-        let override = style.convertedRendererOverride(surface: surface, canvas: rect)
+        let fit = stageSize.width / landscape.width
+        let rect = CGRect(
+            origin: .zero,
+            size: CGSize(width: landscape.width * fit, height: landscape.height * fit)
+        )
+        let override = style.convertedRendererOverride(surface: stageSize, canvas: rect)
 
         pointScale = displayScale
-        lift = style.verticalOffsetRatio * surface.height
+        // The lift the player applies in landscape (ratio × landscape height).
+        withAnimation(.smooth(duration: 0.28)) {
+            lift = style.verticalOffsetRatio * landscape.height
+        }
 
-        // Submission order — rapid slider edits must land last-edit-wins, the
-        // same discipline as the player's style push chain. The renderer is
-        // captured per task: a design change swaps the instance mid-chain.
-        let needsLoad = !loaded
-        loaded = true
-        let previous = chain
-        chain = Task { [renderer] in
-            await previous?.value
-            if needsLoad {
-                try? await renderer.load(Data(Self.sampleSRT.utf8), format: .srt)
+        // Last-edit-wins: park the request and let the single worker drain to
+        // the newest one. The renderer is re-read per pass — a design change
+        // swaps the instance between passes.
+        pending = (rect, override, displayScale)
+        guard worker == nil else { return }
+        worker = Task {
+            defer { worker = nil }
+            while let request = pending {
+                pending = nil
+                let renderer = renderer
+                if !loaded {
+                    loaded = true
+                    try? await renderer.load(Data(Self.sampleSRT.utf8), format: .srt)
+                }
+                await renderer.setCanvas(
+                    size: request.rect.size, scale: request.scale, storageSize: nil
+                )
+                await renderer.setStyleOverride(request.override)
+                // nil = nothing changed since the last render — keep what's shown.
+                if let fresh = await renderer.frame(at: 2.0) {
+                    withAnimation(.smooth(duration: 0.28)) { frame = fresh }
+                }
             }
-            await renderer.setCanvas(size: rect.size, scale: displayScale, storageSize: nil)
-            await renderer.setStyleOverride(override)
-            guard !Task.isCancelled else { return }
-            // nil = nothing changed since the last render — keep what's shown.
-            if let fresh = await renderer.frame(at: 2.0) { frame = fresh }
         }
     }
 }

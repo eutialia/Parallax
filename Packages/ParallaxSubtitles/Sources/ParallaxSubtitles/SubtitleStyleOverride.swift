@@ -61,6 +61,14 @@ public struct SubtitleStyleOverride: Sendable, Equatable {
     /// Shadow opacity for the boxless look. Nil keeps the default half black.
     public var shadowAlpha: Double?
 
+    /// Rest distance from the bottom of the canvas, in script units. libass has
+    /// a single flag for all three margins, so setting either margin field
+    /// replaces the authored left/right/vertical margins together — a caller
+    /// who sets one should set both.
+    public var marginVertical: Double?
+    /// Left AND right inset in script units, applied symmetrically.
+    public var marginHorizontal: Double?
+
     public init(
         fontFamily: String? = nil,
         fontScale: Double? = nil,
@@ -69,7 +77,9 @@ public struct SubtitleStyleOverride: Sendable, Equatable {
         opaqueBox: Bool? = nil,
         outlineWidth: Double? = nil,
         shadowOffset: Double? = nil,
-        shadowAlpha: Double? = nil
+        shadowAlpha: Double? = nil,
+        marginVertical: Double? = nil,
+        marginHorizontal: Double? = nil
     ) {
         self.fontFamily = fontFamily
         self.fontScale = fontScale
@@ -79,12 +89,14 @@ public struct SubtitleStyleOverride: Sendable, Equatable {
         self.outlineWidth = outlineWidth
         self.shadowOffset = shadowOffset
         self.shadowAlpha = shadowAlpha
+        self.marginVertical = marginVertical
+        self.marginHorizontal = marginHorizontal
     }
 
     /// True when nothing would change.
     var isNoOp: Bool {
         fontFamily == nil && fontScale == nil && primaryColor == nil
-            && outlineColor == nil && opaqueBox == nil
+            && outlineColor == nil && opaqueBox == nil && !overridesMargins
     }
 
     /// Whether the border fields have to be pushed through.
@@ -95,6 +107,9 @@ public struct SubtitleStyleOverride: Sendable, Equatable {
     var overridesColors: Bool {
         primaryColor != nil || outlineColor != nil || opaqueBox != nil
     }
+
+    /// Whether the margin fields have to be pushed through.
+    var overridesMargins: Bool { marginVertical != nil || marginHorizontal != nil }
 
     /// The `ASS_OverrideBits` mask matching the fields that are set.
     var overrideBits: Int32 {
@@ -112,6 +127,10 @@ public struct SubtitleStyleOverride: Sendable, Equatable {
         if overridesBorder {
             // Covers BorderStyle, Outline and Shadow together.
             bits |= Int32(ASS_OVERRIDE_BIT_BORDER.rawValue)
+        }
+        if overridesMargins {
+            // Covers MarginL, MarginR and MarginV together.
+            bits |= Int32(ASS_OVERRIDE_BIT_MARGINS.rawValue)
         }
         return bits
     }
