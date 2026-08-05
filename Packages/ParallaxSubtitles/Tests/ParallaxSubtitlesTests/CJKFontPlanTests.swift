@@ -196,6 +196,22 @@ struct CJKFontPlanTests {
         #expect(plan.subsets.isEmpty)  // Hiragino's file is FreeType-readable
     }
 
+    @Test("a serif style font routes Japanese through Mincho; Chinese has no serif to go to")
+    func serifBaseCascades() throws {
+        // The plan resolves through the STYLE font's cascade, so the user's
+        // serif choice reaches CJK where the platform has a serif to offer:
+        // Japanese (Hiragino Mincho). iOS ships no Chinese serif — those lines
+        // stay PingFang, correctly, rather than borrowing Mincho's JIS-only
+        // repertoire and reintroducing mixed-font lines.
+        let plan = try #require(SystemGlyphFont.plan(
+            lines: ["こんにちは世界", "简体字幕测试"],
+            baseFamily: "Times New Roman",
+            languageHint: nil
+        ))
+        #expect(plan.familyByLanguage[.japanese] == "Hiragino Mincho ProN")
+        #expect(plan.familyByLanguage[.simplifiedChinese] == "PingFang SC")
+    }
+
     @Test("a Latin-only track needs no plan at all")
     func latinTracksSkipPlanning() {
         #expect(SystemGlyphFont.plan(

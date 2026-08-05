@@ -50,18 +50,35 @@ public struct SubtitleStyleOverride: Sendable, Equatable {
     /// also forces the colour override on — see the note above.
     public var opaqueBox: Bool?
 
+    /// Border thickness in SCRIPT units (the synthesized scripts author against
+    /// a 720-line canvas). Nil keeps the synthesized default — a constant, which
+    /// reads proportionally heavier the smaller the text; callers that scale the
+    /// font should scale this with it.
+    public var outlineWidth: Double?
+    /// Drop-shadow offset in script units, boxless look only (the box carries
+    /// its own contrast). Nil keeps the synthesized default.
+    public var shadowOffset: Double?
+    /// Shadow opacity for the boxless look. Nil keeps the default half black.
+    public var shadowAlpha: Double?
+
     public init(
         fontFamily: String? = nil,
         fontScale: Double? = nil,
         primaryColor: SubtitleColor? = nil,
         outlineColor: SubtitleColor? = nil,
-        opaqueBox: Bool? = nil
+        opaqueBox: Bool? = nil,
+        outlineWidth: Double? = nil,
+        shadowOffset: Double? = nil,
+        shadowAlpha: Double? = nil
     ) {
         self.fontFamily = fontFamily
         self.fontScale = fontScale
         self.primaryColor = primaryColor
         self.outlineColor = outlineColor
         self.opaqueBox = opaqueBox
+        self.outlineWidth = outlineWidth
+        self.shadowOffset = shadowOffset
+        self.shadowAlpha = shadowAlpha
     }
 
     /// True when nothing would change.
