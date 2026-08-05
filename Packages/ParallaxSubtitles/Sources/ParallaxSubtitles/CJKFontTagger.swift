@@ -67,16 +67,22 @@ enum CJKFontTagger {
     }
 
     /// Rewrites one event's Text field with `\fn` around every CJK run, chosen
-    /// per visual line from the plan. Runs close with a bare `{\fn}` — libass
-    /// reverts to the CURRENT style's font, which keeps the user's style
+    /// per visual line from the plan. Runs close with bare tags — libass
+    /// reverts to the CURRENT style's values, which keeps the user's style
     /// override in charge of Latin text (a named reset would bake the load-time
     /// default in and silently defeat a Serif/Mono caption choice).
-    static func tagged(_ text: String, plan: SystemGlyphFont.Plan) -> String {
+    ///
+    /// - Parameter styleFontSize: the synthesized style's Fontsize, in script
+    ///   units. CJK runs whose family declares a tall win box also get `\fs`
+    ///   compensation so an em renders at this size instead of being divided by
+    ///   the box — otherwise CJK sits visually smaller than the Latin around it
+    ///   (and its outline proportionally heavier).
+    static func tagged(_ text: String, plan: SystemGlyphFont.Plan, styleFontSize: Double) -> String {
         var out = ""
         var segment: [Token] = []
 
         func flush() {
-            out += taggedSegment(segment, plan: plan)
+            out += taggedSegment(segment, plan: plan, styleFontSize: styleFontSize)
             segment = []
         }
 
@@ -92,14 +98,23 @@ enum CJKFontTagger {
         return out
     }
 
-    private static func taggedSegment(_ tokens: [Token], plan: SystemGlyphFont.Plan) -> String {
+    private static func taggedSegment(
+        _ tokens: [Token],
+        plan: SystemGlyphFont.Plan,
+        styleFontSize: Double
+    ) -> String {
         let plain = String(tokens.compactMap {
             if case .character(let character) = $0 { return character } else { return nil }
         })
         guard let family = plan.family(forLine: plain) else { return reassembled(tokens) }
 
-        let open = "{\\fn\(tagSafe(family))}"
-        let close = "{\\fn}"
+        let factor = plan.sizeFactor(forFamily: family)
+        let compensates = abs(factor - 1) > 0.02
+        let size = String(format: "%.1f", styleFontSize * factor)
+        let open = compensates
+            ? "{\\fn\(tagSafe(family))\\fs\(size)}"
+            : "{\\fn\(tagSafe(family))}"
+        let close = compensates ? "{\\fn\\fs}" : "{\\fn}"
         var out = ""
         var inRun = false
         func endRun() {
