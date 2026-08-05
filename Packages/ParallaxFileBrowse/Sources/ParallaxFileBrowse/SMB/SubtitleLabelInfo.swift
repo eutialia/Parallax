@@ -64,7 +64,11 @@ public struct SubtitleLabelInfo: Sendable, Equatable {
     /// subtag doesn't parse as script/region. Chinese region conventions carry
     /// script information ("zh-cn" means Simplified as surely as "chs" does), so
     /// they resolve to the script form the display layer distinguishes.
-    private static func bcp47Tag(_ component: String) -> String? {
+    ///
+    /// Internal (not `private`) so `SubtitleMatcher` can probe whether a hyphenated
+    /// filename component resolves whole *before* hyphen-splitting it — see the
+    /// language pass in `SubtitleMatcher.NameModel.init`.
+    static func bcp47Tag(_ component: String) -> String? {
         let subtags = component.split(separator: "-").map(String.init)
         guard let base = subtags.first, var tag = Self.languageTagByToken[base] else { return nil }
         for subtag in subtags.dropFirst() {

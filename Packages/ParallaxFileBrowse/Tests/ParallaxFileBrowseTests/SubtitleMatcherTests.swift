@@ -127,6 +127,39 @@ struct SubtitleMatcherTests {
     @Test("T4 — no episode on either side", arguments: noEpisode)
     func noEpisodeTier(_ testCase: Case) { verify(testCase) }
 
+    // MARK: - Hyphenated BCP-47 language components (review fix)
+    //
+    // A hyphenated filename component ("en-GB", "zh-Hant", "pt-BR") is a single BCP-47 unit and
+    // must resolve WHOLE (via `SubtitleLabelInfo.bcp47Tag`) before any hyphen-splitting — splitting
+    // first previously misread "en-GB" as language "en" + fansub token "gb" (zh-Hans), producing
+    // "English + Chinese, Simplified" for a plain British-English track.
+
+    static let hyphenatedLanguage: [Case] = [
+        .init("T4 region tag resolves whole → en-gb (not en + fansub gb)",
+              video: "Movie.Title.2021.1080p.BluRay.x264.mkv", sub: "Movie.Title.2021.en-GB.srt",
+              expected: "en-gb"),
+        .init("T4 script tag resolves whole → zh-hant",
+              video: "Movie.Title.2021.1080p.BluRay.x264.mkv", sub: "Movie.Title.2021.zh-Hant.srt",
+              expected: "zh-hant"),
+        .init("T4 region tag resolves whole → pt-br",
+              video: "Movie.Title.2021.1080p.BluRay.x264.mkv", sub: "Movie.Title.2021.pt-BR.srt",
+              expected: "pt-br"),
+        .init("T5 lonely-video whole-unit region tag",
+              video: "TheOnlyMovieHere.1080p.x265.mkv", sub: "subtitle.en-GB.srt",
+              lonely: true, expected: "en-gb"),
+        // A hyphen that is NOT a whole BCP-47 unit still falls through to the split scan — the fix
+        // must not regress a trailing language token onto a non-language hyphen prefix.
+        .init("non-BCP-47 hyphen still splits to recover a trailing language token",
+              video: "Movie.mkv", sub: "Movie-EN.srt", expected: "en"),
+        // Control: a bare fansub token with no hyphen is untouched by the whole-unit check.
+        .init("bare fansub token unaffected by hyphen handling",
+              video: "Movie.Title.2021.1080p.BluRay.x264.mkv", sub: "Movie.Title.2021.gb.srt",
+              expected: "gb"),
+    ]
+
+    @Test("Hyphenated BCP-47 components resolve whole before splitting", arguments: hyphenatedLanguage)
+    func hyphenatedLanguageTier(_ testCase: Case) { verify(testCase) }
+
     // MARK: - Hard rejects
 
     static let hardRejects: [Case] = [

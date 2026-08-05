@@ -93,6 +93,14 @@ enum SubtitleMatcher {
     /// Characters that delimit tokens once bracket groups are flattened.
     private static let separators = CharacterSet(charactersIn: " ._-+&[](){}")
 
+    /// `separators` minus "-", for the language pass only: a hyphenated component may be a
+    /// whole BCP-47 unit (`en-gb`, `zh-Hant`) that must resolve as one piece before any
+    /// hyphen-splitting — matches `SubtitleLabelInfo`'s own separator set/invariant.
+    private static let separatorsKeepHyphen = CharacterSet(charactersIn: " ._+&[](){}")
+
+    /// Hyphen alone, for splitting a component that failed the whole-unit BCP-47 check.
+    private static let hyphenSeparator = CharacterSet(charactersIn: "-")
+
     // MARK: - Parsed filename
 
     /// Everything the tiers/guards need about one filename, computed once.
@@ -187,13 +195,29 @@ enum SubtitleMatcher {
             self.part = SubtitleMatcher.firstInt(SubtitleMatcher.partRegex, in: s, group: 1)
 
             // N7 — language label: recognised language tokens (in source order) then flags, dot-joined.
+            // Hyphenated components are BCP-47 units ("en-gb", "zh-Hant") that must resolve WHOLE
+            // before any hyphen-splitting — the same invariant `SubtitleLabelInfo` documents on its
+            // own separator set. Tokenise without "-" first (`wideTokens`); a component containing
+            // "-" is kept verbatim when `SubtitleLabelInfo.bcp47Tag` recognises it whole (preserving
+            // region/script instead of losing them to a naive split — "en-gb" degrading through
+            // split tokens "en"/"gb" is exactly what mislabelled "gb" as Chinese, Simplified). Only a
+            // hyphenated component that does NOT resolve whole falls through to splitting on "-", so
+            // a group/title hyphen ("Movie-EN") still recovers its language token.
             var langs: [String] = []
             var flags: [String] = []
-            for token in allTokens {
-                if SubtitleMatcher.languageTokens.contains(token) || SubtitleMatcher.combinationLanguage(token) != nil {
-                    if !langs.contains(token) { langs.append(token) }
-                } else if SubtitleMatcher.subtitleFlagTokens.contains(token), !flags.contains(token) {
-                    flags.append(token)
+            let wideTokens = s.components(separatedBy: SubtitleMatcher.separatorsKeepHyphen).filter { !$0.isEmpty }
+            for wideToken in wideTokens {
+                if wideToken.contains("-"), SubtitleLabelInfo.bcp47Tag(wideToken) != nil {
+                    if !langs.contains(wideToken) { langs.append(wideToken) }
+                    continue
+                }
+                let subtokens = wideToken.components(separatedBy: SubtitleMatcher.hyphenSeparator).filter { !$0.isEmpty }
+                for token in subtokens {
+                    if SubtitleMatcher.languageTokens.contains(token) || SubtitleMatcher.combinationLanguage(token) != nil {
+                        if !langs.contains(token) { langs.append(token) }
+                    } else if SubtitleMatcher.subtitleFlagTokens.contains(token), !flags.contains(token) {
+                        flags.append(token)
+                    }
                 }
             }
             let combined = langs + flags  // combos (jptc/jpsc/big5gb) are kept verbatim
