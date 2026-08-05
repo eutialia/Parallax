@@ -32,6 +32,13 @@ public actor SubtitleRenderer {
         Double(ASSScriptBuilder.fontSize) / Double(ASSScriptBuilder.playResY)
     }
 
+    /// The synthesized Default style's font size in script units — the base a
+    /// caller multiplies to express other script-unit quantities (border,
+    /// shadow) proportional to the size it asked for.
+    public static var convertedScriptFontSize: Double {
+        Double(ASSScriptBuilder.fontSize)
+    }
+
     /// - Parameters:
     ///   - defaultFontFamily: used when a script names a font that is not
     ///     installed, and as the font of converted SRT/WebVTT sidecars.
@@ -220,16 +227,20 @@ public actor SubtitleRenderer {
         style.SecondaryColour = SubtitleColor(red: 1, green: 0, blue: 0).assPacked
         style.OutlineColour = (override.outlineColor ?? SubtitleColor(red: 0, green: 0, blue: 0)).assPacked
         // At BorderStyle 3 this is the box fill and has to be fully opaque;
-        // otherwise it is only the drop shadow, where half transparency reads better.
-        style.BackColour = SubtitleColor(red: 0, green: 0, blue: 0, alpha: boxed ? 1 : 0.5).assPacked
+        // otherwise it is only the drop shadow, where the caller's opacity (or
+        // half transparency) reads better.
+        style.BackColour = SubtitleColor(
+            red: 0, green: 0, blue: 0,
+            alpha: boxed ? 1 : (override.shadowAlpha ?? 0.5)
+        ).assPacked
 
         if override.overridesBorder {
             // 3 = opaque box, 1 = outline + shadow. At 3 the Outline field stops
             // being a stroke width and becomes the box's padding, so the same
             // proportion the synthesized style uses carries straight over.
             style.BorderStyle = boxed ? 3 : 1
-            style.Outline = ASSScriptBuilder.outlineWidth
-            style.Shadow = boxed ? 0 : ASSScriptBuilder.shadowOffset
+            style.Outline = override.outlineWidth ?? ASSScriptBuilder.outlineWidth
+            style.Shadow = boxed ? 0 : (override.shadowOffset ?? ASSScriptBuilder.shadowOffset)
         }
 
         ass_set_selective_style_override(renderer, &style)

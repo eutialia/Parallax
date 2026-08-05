@@ -39,19 +39,32 @@ extension SubtitleStyle {
         let metrics = PlayerMetrics.forSurface(surface)
         let scriptPt = videoRect.height * SubtitleRenderer.convertedScriptFontFraction
         let family = fontDesign.rendererFamily ?? SubtitleRenderer.standardFontFamily
-        let scale = scriptPt > 0
-            ? (metrics.subtitleFontSize * fontScale) / scriptPt
-                * SubtitleFontMetrics.emBoxFactor(forFamily: family)
-            : fontScale
-        return rendererOverride(fontScale: scale)
+        let base = scriptPt > 0 ? (metrics.subtitleFontSize * fontScale) / scriptPt : fontScale
+        // The em the cue actually renders at, in script units — the base for
+        // border and shadow, which libass does NOT scale with the font scale.
+        // Left constant they read heavier the smaller the text (the "tint").
+        let emUnits = SubtitleRenderer.convertedScriptFontSize * base
+        return rendererOverride(
+            fontScale: base * SubtitleFontMetrics.emBoxFactor(forFamily: family),
+            outlineWidth: outlineWidthRatio * emUnits,
+            shadowOffset: shadowYOffsetRatio * emUnits,
+            shadowAlpha: shadowOpacity
+        )
     }
 
     /// The user's overlay style expressed as the renderer's selective override, with
     /// the caller-computed font scale (converted tracks remap the per-device tuned
-    /// size; authored tracks scale the creator's own sizes). Font-family mapping is
-    /// approximate on purpose: libass resolves real family names through CoreText,
-    /// and the design buckets pick a face every device ships.
-    func rendererOverride(fontScale: Double) -> SubtitleStyleOverride {
+    /// size; authored tracks scale the creator's own sizes) and optional script-unit
+    /// border/shadow (converted tracks size them proportional to the cue; authored
+    /// tracks keep the synthesized defaults). Font-family mapping is approximate on
+    /// purpose: libass resolves real family names through CoreText, and the design
+    /// buckets pick a face every device ships.
+    func rendererOverride(
+        fontScale: Double,
+        outlineWidth: Double? = nil,
+        shadowOffset: Double? = nil,
+        shadowAlpha: Double? = nil
+    ) -> SubtitleStyleOverride {
         SubtitleStyleOverride(
             fontFamily: fontDesign.rendererFamily,
             fontScale: fontScale,
@@ -63,7 +76,10 @@ extension SubtitleStyle {
                 red: outline.red, green: outline.green,
                 blue: outline.blue, alpha: outline.alpha
             ),
-            opaqueBox: background == .opaqueBox
+            opaqueBox: background == .opaqueBox,
+            outlineWidth: outlineWidth,
+            shadowOffset: shadowOffset,
+            shadowAlpha: shadowAlpha
         )
     }
 }

@@ -25,23 +25,29 @@ final class SubtitleLivePreview {
     /// applies it in the overlay (not the renderer), so the preview must too.
     private(set) var lift: CGFloat = 0
 
-    @ObservationIgnored private let renderer = SubtitleRenderer()
+    @ObservationIgnored private var renderer = SubtitleRenderer()
+    @ObservationIgnored private var rendererFamily = SubtitleRenderer.standardFontFamily
     @ObservationIgnored private var loaded = false
     @ObservationIgnored private var chain: Task<Void, Never>?
 
-    /// The sample cue rides the whole conversion pipeline. The second line
-    /// exercises the CJK path — synthesized system glyphs, language plan, size
-    /// compensation — so the preview is honest about CJK subtitles too.
+    /// The sample cue rides the whole conversion pipeline.
     private static let sampleSRT = """
     1
     00:00:01,000 --> 00:00:03,000
     Slowly, then all at once.
-    慢慢地，然后一下子。
 
     """
 
     func update(style: SubtitleStyle, stageSize: CGSize, displayScale: CGFloat) {
         guard stageSize.width > 0, stageSize.height > 0, displayScale > 0 else { return }
+        // A font-design change rebuilds the renderer around the new family —
+        // the font plan is baked at load, exactly like playback's reinstall.
+        let family = style.fontDesign.rendererFamily ?? SubtitleRenderer.standardFontFamily
+        if family != rendererFamily {
+            rendererFamily = family
+            renderer = SubtitleRenderer(defaultFontFamily: family)
+            loaded = false
+        }
         // Fullscreen landscape surface of this device, 16:9 picture aspect-fit
         // into it — `videoRect` exactly as `SubtitleOverlayView` derives it.
         let surface = CGSize(
@@ -57,12 +63,14 @@ final class SubtitleLivePreview {
         lift = style.verticalOffsetRatio * surface.height
 
         // Submission order — rapid slider edits must land last-edit-wins, the
-        // same discipline as the player's style push chain.
+        // same discipline as the player's style push chain. The renderer is
+        // captured per task: a design change swaps the instance mid-chain.
+        let needsLoad = !loaded
+        loaded = true
         let previous = chain
-        chain = Task {
+        chain = Task { [renderer] in
             await previous?.value
-            if !loaded {
-                loaded = true
+            if needsLoad {
                 try? await renderer.load(Data(Self.sampleSRT.utf8), format: .srt)
             }
             await renderer.setCanvas(size: rect.size, scale: displayScale, storageSize: storage)

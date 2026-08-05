@@ -511,6 +511,13 @@ final class PlayerViewModel {
     private var convertedSubtitleAppearance: SubtitleStyleOverride?
     private var authoredSubtitleAppearance: SubtitleStyleOverride?
     private var overrideAuthoredStyles = false
+    /// The current sidecar's raw payload, kept so a font-design change can
+    /// REBUILD the renderer: the CJK `\fn` tags and font plan are baked at load
+    /// against the style family, so a new family needs a fresh load, not a
+    /// style push.
+    private var sidecarPayload: (data: Data, format: SubtitleSourceFormat, languageCode: String?)?
+    /// The family the current renderer was built around.
+    private var sidecarRendererFamily: String?
     /// Serializes renderer style pushes: rapid preference edits must land on the actor
     /// in submission order or the renderer can finish on a stale style (the same
     /// discipline as `SubtitlePreferences.writeChain`).
@@ -1943,7 +1950,11 @@ final class PlayerViewModel {
         format: SubtitleSourceFormat,
         languageCode: String?
     ) async {
-        let renderer = SubtitleRenderer()
+        // Built around the style's font family so the CJK plan resolves through
+        // ITS cascade — serif must reach Mincho for Japanese lines, which a
+        // Helvetica-based plan would tag right past.
+        let family = effectiveSidecarFontFamily(for: format)
+        let renderer = SubtitleRenderer(defaultFontFamily: family)
         do {
             try await renderer.load(data, format: format, languageHint: languageCode)
         } catch {
@@ -1960,7 +1971,15 @@ final class PlayerViewModel {
         if Task.isCancelled { return }
         subtitleRenderer = renderer
         sidecarSubtitleInfo = info
+        sidecarPayload = (data, format, languageCode)
+        sidecarRendererFamily = family
         subtitleRendererGeneration &+= 1
+    }
+
+    /// The family the sidecar renderer plans fonts around — the style override's
+    /// when the format takes it, else the renderer's own default.
+    private func effectiveSidecarFontFamily(for format: SubtitleSourceFormat) -> String {
+        effectiveStyleOverride(for: format)?.fontFamily ?? SubtitleRenderer.standardFontFamily
     }
 
     private func clearSidecarSubtitle() {
@@ -1968,6 +1987,8 @@ final class PlayerViewModel {
         subtitleFetchTask = nil
         subtitleRenderer = nil
         sidecarSubtitleInfo = nil
+        sidecarPayload = nil
+        sidecarRendererFamily = nil
         subtitleRendererGeneration &+= 1
     }
 
@@ -1984,6 +2005,20 @@ final class PlayerViewModel {
         authoredSubtitleAppearance = authored
         overrideAuthoredStyles = overrideAuthored
         guard let renderer = subtitleRenderer, let info = sidecarSubtitleInfo else { return }
+        // A font-FAMILY change can't be pushed onto a loaded track: the CJK
+        // font plan and \fn tags were baked at load against the previous
+        // family. Rebuild the renderer from the kept payload instead.
+        if let payload = sidecarPayload,
+           effectiveSidecarFontFamily(for: info.format) != sidecarRendererFamily {
+            subtitleFetchTask?.cancel()
+            subtitleFetchTask = Task { [weak self] in
+                await self?.installSubtitleRenderer(
+                    data: payload.data, format: payload.format,
+                    languageCode: payload.languageCode
+                )
+            }
+            return
+        }
         let effective = effectiveStyleOverride(for: info.format)
         let previous = stylePushChain
         stylePushChain = Task {
