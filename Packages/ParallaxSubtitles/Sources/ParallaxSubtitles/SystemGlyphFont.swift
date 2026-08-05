@@ -215,6 +215,12 @@ enum SystemGlyphFont {
     struct Plan {
         var subsets: [Subset]
         let familyByLanguage: [Language: String]
+        /// winAscent+winDescent over unitsPerEm, per planned family. libass
+        /// sizes fonts VSFilter-style by dividing by this box, so a CJK face
+        /// declaring 1.36 em renders at 73% of the style size next to Latin.
+        /// Converted cues neutralize it with `\fs` so an em renders at the
+        /// declared size — the sizing model every non-VSFilter renderer uses.
+        let sizeFactorByFamily: [String: Double]
         let trackDefaultLanguage: Language
         /// Per-line classification computed once at plan time — detection runs
         /// a recognizer, and tagging revisits every line.
@@ -229,6 +235,10 @@ enum SystemGlyphFont {
             let language = languageByLine[line]
                 ?? SystemGlyphFont.language(of: line, trackDefault: trackDefaultLanguage)
             return language.flatMap { familyByLanguage[$0] }
+        }
+
+        func sizeFactor(forFamily family: String) -> Double {
+            sizeFactorByFamily[family] ?? 1
         }
     }
 
@@ -312,6 +322,16 @@ enum SystemGlyphFont {
                     .map { Subset(familyName: family, data: $0) }
             }
 
+        var sizeFactorByFamily: [String: Double] = [:]
+        for family in Set(familyByLanguage.values) {
+            guard let url = familyGroups[family]?.url,
+                  let metrics = faceMetrics(of: url),
+                  metrics.unitsPerEm > 0 else { continue }
+            let winBox = Double(metrics.winAscent) + Double(metrics.winDescent)
+            guard winBox > 0 else { continue }
+            sizeFactorByFamily[family] = winBox / Double(metrics.unitsPerEm)
+        }
+
         let shadowFont = familyByLanguage[trackDefault].flatMap { familyGroups[$0]?.font }
             ?? familyGroups.min { $0.key < $1.key }?.value.font
             ?? base
@@ -321,6 +341,7 @@ enum SystemGlyphFont {
         return Plan(
             subsets: subsets,
             familyByLanguage: familyByLanguage,
+            sizeFactorByFamily: sizeFactorByFamily,
             trackDefaultLanguage: trackDefault,
             languageByLine: languageByLine,
             shadowFont: shadowFont,

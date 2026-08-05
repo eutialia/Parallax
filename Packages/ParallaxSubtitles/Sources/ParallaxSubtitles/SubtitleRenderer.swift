@@ -70,7 +70,10 @@ public actor SubtitleRenderer {
                 // Converted text is ours to write: make the choice explicit
                 // with \fn so libass matches by family, deterministically.
                 for index in events.indices {
-                    events[index].text = CJKFontTagger.tagged(events[index].text, plan: plan)
+                    events[index].text = CJKFontTagger.tagged(
+                        events[index].text, plan: plan,
+                        styleFontSize: Double(ASSScriptBuilder.fontSize)
+                    )
                 }
             }
             bytes = Array(ASSScriptBuilder.script(events: events, fontFamily: defaultFontFamily).utf8)

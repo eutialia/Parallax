@@ -15,11 +15,13 @@ struct CJKFontPlanTests {
 
     private static func stubPlan(
         families: [SystemGlyphFont.Language: String],
+        sizeFactors: [String: Double] = [:],
         trackDefault: SystemGlyphFont.Language = .simplifiedChinese
     ) -> SystemGlyphFont.Plan {
         SystemGlyphFont.Plan(
             subsets: [],
             familyByLanguage: families,
+            sizeFactorByFamily: sizeFactors,
             trackDefaultLanguage: trackDefault,
             languageByLine: [:],
             shadowFont: CTFontCreateWithName("Helvetica Neue" as CFString, 24, nil),
@@ -154,6 +156,14 @@ struct CJKFontPlanTests {
         #expect(subsetFamilies.contains("PingFang SC"))
         #expect(subsetFamilies.contains("PingFang TC"))
         #expect(!subsetFamilies.contains { $0.contains("Hiragino") })
+
+        // Real win boxes from the files: PingFang declares ~1.36 em, Hiragino
+        // ~1.12 — the numbers `\fs` compensation neutralizes.
+        let pingfang = try #require(plan.sizeFactorByFamily["PingFang SC"])
+        #expect(abs(pingfang - 1.362) < 0.02)
+        let hiragino = try #require(plan.familyByLanguage[.japanese]
+            .flatMap { plan.sizeFactorByFamily[$0] })
+        #expect(abs(hiragino - 1.123) < 0.02)
     }
 
     @Test("a dual-language track's simplified rows escape the Japanese default via font coverage")
@@ -194,8 +204,28 @@ struct CJKFontPlanTests {
     @Test("CJK runs get the plan's family; the reset is bare so style overrides stay in charge")
     func tagsRunsPerLanguage() {
         let plan = Self.stubPlan(families: [.simplifiedChinese: "PingFang SC"])
-        let tagged = CJKFontTagger.tagged("简体字幕 ABC 测试", plan: plan)
+        let tagged = CJKFontTagger.tagged("简体字幕 ABC 测试", plan: plan, styleFontSize: 48)
         #expect(tagged == "{\\fnPingFang SC}简体字幕{\\fn} ABC {\\fnPingFang SC}测试{\\fn}")
+    }
+
+    @Test("a tall win box earns \\fs compensation so an em renders at the style size")
+    func compensatesTallWinBoxes() {
+        let plan = Self.stubPlan(
+            families: [.simplifiedChinese: "PingFang SC"],
+            sizeFactors: ["PingFang SC": 1.362]
+        )
+        let tagged = CJKFontTagger.tagged("简体 ABC", plan: plan, styleFontSize: 48)
+        #expect(tagged == "{\\fnPingFang SC\\fs65.4}简体{\\fn\\fs} ABC")
+    }
+
+    @Test("a near-unit factor adds no size tag")
+    func skipsNegligibleCompensation() {
+        let plan = Self.stubPlan(
+            families: [.simplifiedChinese: "PingFang SC"],
+            sizeFactors: ["PingFang SC": 1.01]
+        )
+        #expect(CJKFontTagger.tagged("简体", plan: plan, styleFontSize: 48)
+            == "{\\fnPingFang SC}简体{\\fn}")
     }
 
     @Test("each visual line is tagged with its own language's family")
@@ -203,14 +233,14 @@ struct CJKFontPlanTests {
         let plan = Self.stubPlan(families: [
             .simplifiedChinese: "PingFang SC", .japanese: "Hiragino Sans",
         ])
-        let tagged = CJKFontTagger.tagged("简体测试\\Nこんにちは", plan: plan)
+        let tagged = CJKFontTagger.tagged("简体测试\\Nこんにちは", plan: plan, styleFontSize: 48)
         #expect(tagged == "{\\fnPingFang SC}简体测试{\\fn}\\N{\\fnHiragino Sans}こんにちは{\\fn}")
     }
 
     @Test("override blocks and escapes pass through untouched, outside runs")
     func preservesMarkup() {
         let plan = Self.stubPlan(families: [.simplifiedChinese: "PingFang SC"])
-        let tagged = CJKFontTagger.tagged("{\\an8}字\\{幕\\}", plan: plan)
+        let tagged = CJKFontTagger.tagged("{\\an8}字\\{幕\\}", plan: plan, styleFontSize: 48)
         #expect(tagged == "{\\an8}{\\fnPingFang SC}字{\\fn}\\{{\\fnPingFang SC}幕{\\fn}\\}")
     }
 
@@ -218,7 +248,7 @@ struct CJKFontPlanTests {
     func leavesUnplannedLinesAlone() {
         let plan = Self.stubPlan(families: [:])
         let text = "{\\i1}Hello\\N简体"
-        #expect(CJKFontTagger.tagged(text, plan: plan) == text)
+        #expect(CJKFontTagger.tagged(text, plan: plan, styleFontSize: 48) == text)
     }
 
     // MARK: - Authored script scanning
