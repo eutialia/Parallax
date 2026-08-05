@@ -53,7 +53,7 @@ struct SubtitleOverlayView: View {
                 SubtitleFrameView(
                     frame: clockValid ? frame : nil,
                     pointScale: displayScale,
-                    canvasOrigin: videoRect.origin,
+                    canvasOrigin: canvasRect.origin,
                     lift: lift
                 )
             }
@@ -71,12 +71,37 @@ struct SubtitleOverlayView: View {
         .onChange(of: subtitlePrefs.overrideAuthoredStyles) { pushAppearance() }
     }
 
+    /// Whether the loaded track is one WE author (converted SRT/VTT) as opposed
+    /// to creator-authored ASS/SSA.
+    private var isConvertedFormat: Bool {
+        let format = vm.sidecarSubtitleInfo?.format
+        return format == .srt || format == .vtt
+    }
+
+    /// The libass canvas, chosen by who authored the track:
+    /// - Converted tracks map their 9-cell grid to the DEVICE — full surface,
+    ///   storage unset (storage == frame keeps libass' pixel-aspect at 1, no
+    ///   glyph stretch). Cell 2 is the screen bottom, `{\an8}` the screen top,
+    ///   so letterboxed portrait drops cues into the black band and playback
+    ///   matches the settings preview in every orientation. There is no author
+    ///   to betray: the cells are ours.
+    /// - Authored tracks stay on the video PICTURE rect with the native storage
+    ///   size, so `\pos` and the creator's cells land on the picture features
+    ///   they were typeset against.
+    private var canvasRect: CGRect {
+        isConvertedFormat ? CGRect(origin: .zero, size: surfaceSize) : videoRect
+    }
+
+    private var canvasStorage: CGSize? {
+        isConvertedFormat ? nil : vm.videoStorageSize
+    }
+
     /// The rect the video PICTURE actually occupies (aspect-fit of the native video
-    /// dimensions into the surface, both engines render `.resizeAspect`). This — not
-    /// the full surface — is the libass canvas: frame aspect == storage aspect keeps
-    /// libass' derived pixel-aspect at 1 (no glyph stretch on letterboxed layouts),
-    /// and authored `\pos` coordinates land on the picture features they were typeset
-    /// against. Unknown video dimensions (SMB) fall back to the full surface.
+    /// dimensions into the surface, both engines render `.resizeAspect`). The canvas
+    /// for AUTHORED tracks: frame aspect == storage aspect keeps libass' derived
+    /// pixel-aspect at 1 (no glyph stretch on letterboxed layouts), and authored
+    /// `\pos` coordinates land on the picture features they were typeset against.
+    /// Unknown video dimensions (SMB) fall back to the full surface.
     private var videoRect: CGRect {
         guard let video = vm.videoStorageSize, video.width > 0, video.height > 0,
               surfaceSize != .zero
@@ -103,7 +128,7 @@ struct SubtitleOverlayView: View {
     private func pushAppearance() {
         let style = subtitlePrefs.style
         vm.applySubtitleAppearance(
-            converted: style.convertedRendererOverride(surface: surfaceSize, videoRect: videoRect),
+            converted: style.convertedRendererOverride(surface: surfaceSize, canvas: canvasRect),
             authored: style.rendererOverride(fontScale: style.fontScale),
             overrideAuthored: subtitlePrefs.overrideAuthoredStyles
         )
@@ -126,13 +151,13 @@ struct SubtitleOverlayView: View {
                 try? await Task.sleep(for: .milliseconds(66))
                 continue
             }
-            let rect = videoRect
+            let rect = canvasRect
             let key = CanvasKey(
                 generation: vm.subtitleRendererGeneration, rect: rect, scale: displayScale
             )
             if key != pushedCanvas, rect.size != .zero {
                 await renderer.setCanvas(
-                    size: rect.size, scale: displayScale, storageSize: vm.videoStorageSize
+                    size: rect.size, scale: displayScale, storageSize: canvasStorage
                 )
                 pushedCanvas = key
                 // The converted-track font mapping depends on the canvas height.

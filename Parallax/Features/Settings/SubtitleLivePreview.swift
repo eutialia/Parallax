@@ -48,16 +48,16 @@ final class SubtitleLivePreview {
             renderer = SubtitleRenderer(defaultFontFamily: family)
             loaded = false
         }
-        // Fullscreen landscape surface of this device, 16:9 picture aspect-fit
-        // into it — `videoRect` exactly as `SubtitleOverlayView` derives it.
+        // Fullscreen landscape surface of this device. Converted tracks map
+        // their canvas to the DEVICE (full surface, storage unset), exactly as
+        // `SubtitleOverlayView` does — the cue's distance from the canvas
+        // bottom IS its distance from the screen bottom, every orientation.
         let surface = CGSize(
             width: max(stageSize.width, stageSize.height),
             height: min(stageSize.width, stageSize.height)
         )
-        let storage = CGSize(width: 1920, height: 1080)
-        let fit = min(surface.width / storage.width, surface.height / storage.height)
-        let rect = CGRect(x: 0, y: 0, width: storage.width * fit, height: storage.height * fit)
-        let override = style.convertedRendererOverride(surface: surface, videoRect: rect)
+        let rect = CGRect(origin: .zero, size: surface)
+        let override = style.convertedRendererOverride(surface: surface, canvas: rect)
 
         pointScale = displayScale
         lift = style.verticalOffsetRatio * surface.height
@@ -73,7 +73,7 @@ final class SubtitleLivePreview {
             if needsLoad {
                 try? await renderer.load(Data(Self.sampleSRT.utf8), format: .srt)
             }
-            await renderer.setCanvas(size: rect.size, scale: displayScale, storageSize: storage)
+            await renderer.setCanvas(size: rect.size, scale: displayScale, storageSize: nil)
             await renderer.setStyleOverride(override)
             guard !Task.isCancelled else { return }
             // nil = nothing changed since the last render — keep what's shown.
