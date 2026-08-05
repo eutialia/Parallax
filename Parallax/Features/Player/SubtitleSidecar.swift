@@ -97,7 +97,9 @@ extension SubtitleStyle {
             opaqueBox: background == .opaqueBox,
             outlineWidth: outlineWidth,
             shadowOffset: shadowOffset,
-            shadowAlpha: shadowAlpha
+            shadowAlpha: shadowAlpha,
+            marginVertical: marginVertical,
+            marginHorizontal: marginHorizontal
         )
     }
 }

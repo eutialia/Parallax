@@ -96,11 +96,15 @@ public struct SubtitleStyleOverride: Sendable, Equatable {
     /// True when nothing would change.
     var isNoOp: Bool {
         fontFamily == nil && fontScale == nil && primaryColor == nil
-            && outlineColor == nil && opaqueBox == nil && !overridesMargins
+            && outlineColor == nil && !overridesBorder && !overridesMargins
     }
 
-    /// Whether the border fields have to be pushed through.
-    var overridesBorder: Bool { opaqueBox != nil }
+    /// Whether the border fields have to be pushed through. Any of the three
+    /// counts: without this, an outline or shadow set on its own would be
+    /// silently ignored (the flag is what makes libass read the fields).
+    var overridesBorder: Bool {
+        opaqueBox != nil || outlineWidth != nil || shadowOffset != nil
+    }
 
     /// Whether any colour field has to be pushed through. The opaque box counts:
     /// its fill IS the back colour.

@@ -53,8 +53,17 @@ SubtitleBlendResult subtitle_blend_images(const ASS_Image *head) {
         return out;
     }
 
-    const size_t width = (size_t)(max_x - min_x);
-    const size_t height = (size_t)(max_y - min_y);
+    /* Deltas in a wider type: dst_x/dst_y come from libass off untrusted
+     * scripts, and a signed int32 subtraction near the limits is undefined
+     * before the cast. Anything wider than int32 is not a drawable frame. */
+    const int64_t wide_width = (int64_t)max_x - (int64_t)min_x;
+    const int64_t wide_height = (int64_t)max_y - (int64_t)min_y;
+    if (wide_width > INT32_MAX || wide_height > INT32_MAX) {
+        return out;
+    }
+
+    const size_t width = (size_t)wide_width;
+    const size_t height = (size_t)wide_height;
     const size_t bytes_per_row = width * 4;
     const size_t byte_count = bytes_per_row * height;
 
