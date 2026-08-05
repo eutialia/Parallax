@@ -37,46 +37,87 @@ public actor SubtitleRenderer {
 
     // MARK: - Loading
 
-    public func load(_ data: Data, format: SubtitleSourceFormat) throws {
+    /// - Parameter languageHint: the track's own language label, when known.
+    ///   Only a tie-breaker: it decides which Chinese script Han-only lines
+    ///   assume when their characters are shared between the two.
+    public func load(
+        _ data: Data,
+        format: SubtitleSourceFormat,
+        languageHint: String? = nil
+    ) throws {
         let engine = try activeEngine()
 
+        // CJK font choice is planned per line BEFORE libass sees the script —
+        // libass' own per-glyph fallback asks the platform with no language
+        // context, which makes the font (and whether it's even FreeType-
+        // readable) depend on the device's preferred-languages list.
         var bytes: [UInt8]
-        let scanText: String
+        var subsets: [SystemGlyphFont.Subset] = []
         if format.needsConversion {
             guard let text = String(data: data, encoding: .utf8) else {
                 throw SubtitleError.undecodableText
             }
-            let script = switch format {
-            case .srt: SRTToASSConverter.script(from: text, fontFamily: defaultFontFamily)
-            default: WebVTTToASSConverter.script(from: text, fontFamily: defaultFontFamily)
+            var events = switch format {
+            case .srt: SRTToASSConverter.events(from: text)
+            default: WebVTTToASSConverter.events(from: text)
             }
-            bytes = Array(script.utf8)
-            scanText = text
+            if let plan = SystemGlyphFont.plan(
+                lines: events.flatMap { CJKFontTagger.plainLines(of: $0.text) },
+                baseFamily: defaultFontFamily,
+                languageHint: languageHint
+            ) {
+                subsets = plan.subsets
+                // Converted text is ours to write: make the choice explicit
+                // with \fn so libass matches by family, deterministically.
+                for index in events.indices {
+                    events[index].text = CJKFontTagger.tagged(events[index].text, plan: plan)
+                }
+            }
+            bytes = Array(ASSScriptBuilder.script(events: events, fontFamily: defaultFontFamily).utf8)
         } else {
-            bytes = Array(data)
             // Lossy decode is fine here: this string is only scanned for CJK
-            // coverage, and anything the decode mangles wasn't a renderable
-            // scalar to begin with.
-            scanText = String(decoding: data, as: UTF8.self)
+            // coverage and font names, and anything the decode mangles wasn't
+            // a renderable scalar to begin with.
+            let scanText = String(decoding: data, as: UTF8.self)
+            let scan = ASSScriptScan.scan(script: scanText)
+            if let plan = SystemGlyphFont.plan(
+                lines: scan.plainLines,
+                baseFamily: defaultFontFamily,
+                languageHint: languageHint
+            ) {
+                // Authored text stays authored — no tags injected. A CJK style
+                // whose font libass cannot serve from disk (not installed, or
+                // installed but FreeType-unreadable, like `PingFang SC` named
+                // directly) gets that name shadowed instead, so the whole style
+                // renders from one coherent font.
+                let covered = Set(plan.subsets.map(\.familyName))
+                let shadows: [SystemGlyphFont.ShadowRequest] = scan.cjkFontNames
+                    .subtracting(covered)
+                    .compactMap { name in
+                        if let unusable = SystemGlyphFont.unusableRequestedFont(named: name) {
+                            // Installed but FreeType-unreadable: its own glyphs.
+                            return SystemGlyphFont.ShadowRequest(name: name, font: unusable)
+                        }
+                        if !SystemGlyphFont.fontFamilyInstalled(name) {
+                            // Missing outright: the plan's dominant font.
+                            return SystemGlyphFont.ShadowRequest(name: name, font: plan.shadowFont)
+                        }
+                        return nil  // a readable installed face — libass serves it
+                    }
+                subsets = plan.subsets + SystemGlyphFont.shadowSubsets(
+                    requests: shadows, scalars: plan.shadowScalars
+                )
+            }
+            bytes = Array(data)
         }
         guard !bytes.isEmpty else { throw SubtitleError.noCues }
 
-        // Cover glyphs whose system font FreeType can't read (Apple's hvgl CJK
-        // faces): synthesize per-track subsets of the SYSTEM font's own outlines
-        // and register them under the same family, so libass' fallback finds
-        // exactly what CoreText would have drawn. Before loadTrack, so shaping
-        // sees the fonts on the first render.
-        for subset in SystemGlyphFont.unreadableFamilySubsets(
-            for: SystemGlyphFont.candidateScalars(in: scanText),
-            baseFamily: defaultFontFamily
-        ) {
-            engine.addMemoryFont(
-                name: subset.familyName,
-                data: subset.data,
-                defaultFamily: defaultFontFamily,
-                defaultFontPath: defaultFontURL?.path
-            )
-        }
+        // Register before loadTrack, so shaping sees the fonts on the first render.
+        engine.addMemoryFonts(
+            subsets.map { ($0.familyName, $0.data) },
+            defaultFamily: defaultFontFamily,
+            defaultFontPath: defaultFontURL?.path
+        )
 
         try engine.loadTrack(bytes: &bytes)
         hasEmittedFrame = false

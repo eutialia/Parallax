@@ -83,7 +83,7 @@ final class LibassEngine {
 
         // CoreText for system faces, plus an optional default font FILE as the
         // last-resort face. Fonts FreeType can't read (Apple's hvgl-format CJK
-        // faces) are covered per track by `addMemoryFont` glyph subsets instead.
+        // faces) are covered per track by `addMemoryFonts` glyph subsets instead.
         configureFonts(defaultFamily: defaultFontFamily, defaultFontPath: defaultFontPath)
         // Hinting fights smooth scaling and breaks positioned scripts.
         ass_set_hinting(renderer, ASS_HINTING_NONE)
@@ -98,16 +98,24 @@ final class LibassEngine {
         free(overrideStyleName)
     }
 
-    /// Registers an in-memory font with libass' embedded-font provider under
-    /// `name`, then reapplies the font configuration — fontselect snapshots its
+    /// Registers in-memory fonts with libass' embedded-font provider, then
+    /// reapplies the font configuration ONCE — fontselect snapshots its
     /// candidate set when fonts are configured, so late additions must rebuild
-    /// it. Used for on-device glyph subsets of fonts FreeType can't read
-    /// (`SystemGlyphFont`); libass matches them by the family in their name
-    /// table exactly like a fansub's embedded fonts.
-    func addMemoryFont(name: String, data: Data, defaultFamily: String, defaultFontPath: String?) {
-        data.withUnsafeBytes { (bytes: UnsafeRawBufferPointer) in
-            guard let base = bytes.baseAddress else { return }
-            ass_add_font(library, name, base.assumingMemoryBound(to: CChar.self), Int32(bytes.count))
+    /// it, and rebuilding re-enumerates every system face. Used for on-device
+    /// glyph subsets of fonts FreeType can't read (`SystemGlyphFont`); libass
+    /// matches them by the family in their name table exactly like a fansub's
+    /// embedded fonts.
+    func addMemoryFonts(
+        _ fonts: [(name: String, data: Data)],
+        defaultFamily: String,
+        defaultFontPath: String?
+    ) {
+        guard !fonts.isEmpty else { return }
+        for font in fonts {
+            font.data.withUnsafeBytes { (bytes: UnsafeRawBufferPointer) in
+                guard let base = bytes.baseAddress else { return }
+                ass_add_font(library, font.name, base.assumingMemoryBound(to: CChar.self), Int32(bytes.count))
+            }
         }
         configureFonts(defaultFamily: defaultFamily, defaultFontPath: defaultFontPath)
     }
