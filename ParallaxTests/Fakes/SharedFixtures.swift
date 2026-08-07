@@ -9,9 +9,10 @@ import ParallaxJellyfin
 // field defaulted to the value the majority of callers used, so a suite that needs a
 // different shape passes an argument instead of re-spelling the literal.
 //
-// Deliberately NOT importing `ParallaxCoreTestSupport`: linking that product into the
-// app-hosted bundle statically duplicates ParallaxCore and breaks cross-boundary
-// `as AppError` casts — the same reason `Fakes/FakeKeychain.swift` stays a local copy.
+// Deliberately NOT importing `ParallaxCoreTestSupport`: it's a SECOND product of the
+// ParallaxCore package, and a sibling product duplicates ParallaxCore in the app-hosted
+// bundle, breaking cross-boundary `as AppError` casts — same reason `Fakes/FakeKeychain.swift`
+// stays a local copy.
 //
 // Player-side fixtures (`PlayerFixtures`, the audio-session stubs, `makePlayerVM`) live in
 // `Fakes/PlayerViewModelFixtures.swift`, which already carries the ParallaxPlayback imports.

@@ -14,10 +14,16 @@ import Foundation
 /// correctness expectations untouched. Local runs stay tight at ×1. CI reaches the
 /// simulator test host as `CI` via `TEST_RUNNER_CI` in ci.yml (plain shell env never
 /// crosses into simulator processes) — the same probe the live-VLC-decode suite uses.
+///
+/// Lives in a zero-dependency product (`ParallaxTestScaling`) on purpose: app-hosted
+/// test bundles may reach this transitively without pulling a second static copy of
+/// `ParallaxCore`. Never add a `ParallaxCore` (or any other) dependency here — that is
+/// what keeps the transitive path safe. CI detection stays test-only, out of shipping
+/// code (`ParallaxCoreTestSupport`-adjacent but decoupled).
 public enum CITimeScale {
     /// ×12 on CI — above the worst measured overshoot (83s against a 10s ceiling,
-    /// ×8.3) with margin, while a genuine hang still fails in minutes, inside the
-    /// job's 20-minute bound. ×1 locally.
+    /// ×8.3) with margin, while a genuine hang still fails in minutes, well inside
+    /// the CI jobs' timeout bounds. ×1 locally.
     public static let factor: Double =
         ProcessInfo.processInfo.environment["CI"] == nil ? 1 : 12
 

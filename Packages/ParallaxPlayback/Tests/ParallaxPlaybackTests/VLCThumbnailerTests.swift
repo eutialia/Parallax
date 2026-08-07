@@ -1,7 +1,8 @@
 import Testing
 import Foundation
 import CoreGraphics
-import ParallaxCoreTestSupport
+import ImageIO
+import ParallaxTestScaling
 import ParallaxPlaybackTestSupport
 @testable import ParallaxPlayback
 

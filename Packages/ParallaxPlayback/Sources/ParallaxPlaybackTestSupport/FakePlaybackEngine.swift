@@ -1,7 +1,7 @@
 import Foundation
 import CoreMedia
 import Synchronization
-import ParallaxCoreTestSupport
+import ParallaxTestScaling
 import ParallaxPlayback
 
 // MARK: — PlaybackEngineCapabilities convenience stubs

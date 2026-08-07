@@ -6,6 +6,7 @@ import Testing
 import ParallaxPlayback
 import ParallaxPlaybackTestSupport
 import ParallaxSubtitles
+import ParallaxTestScaling
 @testable import ParallaxJellyfin
 @testable import ParallaxCore
 
@@ -2197,7 +2198,9 @@ struct PlayerViewModelTests {
     func failedStateClearsIsPlaying() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let resolved = PlayerFixtures.resolved()
+        // `.mkv` is outside ReactiveFallback's MP4-family set, so `.assetNotPlayable`
+        // stays terminal (no AVKit→VLC re-route) and we assert the real failed path.
+        let resolved = PlayerFixtures.resolvedTranscodedMKV()
         let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
 
@@ -2429,7 +2432,7 @@ struct PlayerViewModelTests {
         /// anti-hang bound, so it scales for oversubscribed CI runners.
         private func waitForBackfill(
             _ recorder: BackfillRecorder,
-            timeout: Duration = .seconds(2 * ciTimeScale)
+            timeout: Duration = CITimeScale.seconds(2)
         ) async {
             let deadline = ContinuousClock.now.advanced(by: timeout)
             while await recorder.invocations.isEmpty, ContinuousClock.now < deadline {
@@ -2550,7 +2553,7 @@ struct PlayerViewModelTests {
             let recorder = BackfillRecorder()
             // `stop()` has to land inside this window in WALL-CLOCK time, against a `.low`-priority
             // sleep — so the window scales for oversubscribed runners rather than flaking on them.
-            let delay = Duration.milliseconds(Int(500 * ciTimeScale))
+            let delay = Duration.milliseconds(Int(500 * CITimeScale.factor))
             let vm = makeVM(engine: engine, recorder: recorder, backfillDelay: delay)
 
             await vm.start(smbItem: smbItem())
@@ -2587,7 +2590,7 @@ struct PlayerViewModelTests {
 
             // Polls far past the (short) delay, had a backfill been scheduled — the gate is
             // `smbSession != nil`, which a Jellyfin session never sets.
-            await waitForBackfill(recorder, timeout: .milliseconds(Int(500 * ciTimeScale)))
+            await waitForBackfill(recorder, timeout: .milliseconds(Int(500 * CITimeScale.factor)))
             #expect(await recorder.invocations.isEmpty)
         }
 

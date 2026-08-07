@@ -2,6 +2,7 @@ import Foundation
 import Testing
 import ParallaxCore
 import ParallaxJellyfin
+import ParallaxTestScaling
 @testable import Parallax
 
 extension Tag {
@@ -34,20 +35,13 @@ func waitUntil(
 ) async {
     let clock = ContinuousClock()
     let start = clock.now
-    let ceiling: Duration = .seconds(10 * ciTimeScale)
+    let ceiling: Duration = CITimeScale.seconds(10)
     while start.duration(to: clock.now) < ceiling {
         if await condition() { return }
         try? await Task.sleep(for: .milliseconds(10))
     }
     Issue.record(comment)
 }
-
-/// Anti-hang ceilings are calibrated for dev hardware; loaded CI runners overshoot them while the
-/// code under test behaves correctly (measured up to ×8.3), so scale the CEILING, never the
-/// assertion. Deliberately a local copy of `ParallaxCoreTestSupport.CITimeScale.factor` — linking
-/// that product into this app-hosted bundle statically duplicates ParallaxCore (the same reason
-/// `FakeKeychain` is a local copy).
-let ciTimeScale: Double = ProcessInfo.processInfo.environment["CI"] == nil ? 1 : 12
 
 /// A `JellyfinClientFactory` for suites that must construct a `SessionManager` (view models take
 /// one) but never reach the network. It only satisfies the initializer, and traps if a test ever

@@ -1,5 +1,5 @@
 import Foundation
-import ParallaxCoreTestSupport
+import ParallaxTestScaling
 import Testing
 @testable import ParallaxFileBrowse
 

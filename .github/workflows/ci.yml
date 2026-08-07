@@ -92,6 +92,33 @@ jobs:
             -scheme Parallax \
             -destination 'generic/platform=iOS Simulator'
 
+  # App-hosted ParallaxTests (host app + test bundle). Package-tests alone miss
+  # cross-boundary cast bugs from a second static ParallaxCore copy in the bundle.
+  app-hosted-tests:
+    runs-on: macos-26
+    timeout-minutes: 30
+    needs: [drift-check, package-tests]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+      - name: Fetch VLCKit binaries
+        uses: ./.github/actions/fetch-vlckit
+      - name: Run ParallaxTests
+        # Device from the image inventory — same rot-proof pattern as package-tests.
+        env:
+          TEST_RUNNER_CI: 'true'
+        run: |
+          DEVICE=$(xcrun simctl list devices available | grep -E '^ +iPhone' | head -1 | sed -E 's/^ +//; s/ \(.*//')
+          echo "Testing on simulator: ${DEVICE}"
+          xcodebuild test \
+            -project Parallax.xcodeproj \
+            -scheme Parallax \
+            -destination "platform=iOS Simulator,OS=latest,name=${DEVICE}" \
+            -only-testing:ParallaxTests
+
   tvos-build:
     runs-on: macos-26
     timeout-minutes: 30
