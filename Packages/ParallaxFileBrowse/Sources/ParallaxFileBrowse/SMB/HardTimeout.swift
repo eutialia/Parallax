@@ -2,7 +2,13 @@ import Foundation
 import os
 
 /// Thrown by `withHardTimeout` when the ceiling expires before the operation finishes.
-struct HardTimeoutError: Error {}
+///
+/// Public because `withHardTimeout` is: an app-side caller (the thumbnail sidecar tier) has to be
+/// able to tell "the ceiling fired" — link evidence — from a content-level failure, and it cannot
+/// do that without naming the error the public API throws at it.
+public struct HardTimeoutError: Error, Sendable {
+    public init() {}
+}
 
 /// Races `operation` against a wall-clock ceiling; whichever finishes first wins the result, and
 /// caller cancellation settles the race immediately with `CancellationError`.

@@ -138,6 +138,81 @@ struct SMBRandomAccessReaderTests {
         #expect(world.timeoutsSet == [7], "a warm reuse inherits the last borrower's timeout — re-assert ours")
     }
 
+    // MARK: - Transport fault flag
+
+    @Test("a clean read leaves hadTransportFault false")
+    func cleanReadDoesNotMarkTransportFault() async throws {
+        let world = FakeSMBWorld()
+        let reader = makeReader(world: world)
+
+        _ = try await reader.read(offset: 0, length: 16)
+
+        #expect(await reader.hadTransportFault == false)
+    }
+
+    @Test("a transport-class read error flips hadTransportFault")
+    func transportClassReadMarksTransportFault() async throws {
+        let world = FakeSMBWorld()
+        let reader = makeReader(world: world)
+        world.setReadOutcome(.fails(POSIXError(.ECONNRESET)))
+
+        await #expect(throws: POSIXError.self) {
+            _ = try await reader.read(offset: 0, length: 16)
+        }
+
+        #expect(await reader.hadTransportFault == true)
+    }
+
+    /// The checkout is a network phase too, and it used to sit OUTSIDE the classified region: every
+    /// refused/unreachable/timed-out cold connect left the flag false, so the thumbnail poison guard
+    /// blamed the file for a reachability blip. Both ops must classify their borrow.
+    @Test("a connect-class failure flips hadTransportFault on both ops",
+          arguments: [ReaderOp.read, .fileSize])
+    func connectFailureMarksTransportFault(_ op: ReaderOp) async throws {
+        let world = FakeSMBWorld()
+        let reader = makeReader(world: world)
+        world.failConnects(with: innerTimeoutError)
+
+        await #expect(throws: POSIXError.self) { try await op.run(reader) }
+
+        #expect(await reader.hadTransportFault == true)
+    }
+
+    /// The two entry points that borrow a connection, so the connect-phase classification is pinned
+    /// on both rather than only on whichever one a single test happened to call.
+    enum ReaderOp: Sendable, CustomTestStringConvertible {
+        case read
+        case fileSize
+
+        var testDescription: String {
+            switch self {
+            case .read: return "read"
+            case .fileSize: return "fileSize"
+            }
+        }
+
+        func run(_ reader: SMBRandomAccessReader<FakeSMBConnection>) async throws {
+            switch self {
+            case .read: _ = try await reader.read(offset: 0, length: 16)
+            case .fileSize: _ = try await reader.fileSize
+            }
+        }
+    }
+
+    @Test("a non-transport read error leaves hadTransportFault false")
+    func contentLevelReadDoesNotMarkTransportFault() async throws {
+        let world = FakeSMBWorld()
+        let reader = makeReader(world: world)
+        // A plain Error has no POSIX code — content/decode shape, not a socket death.
+        world.setReadOutcome(.fails(ReadFailure()))
+
+        await #expect(throws: ReadFailure.self) {
+            _ = try await reader.read(offset: 0, length: 16)
+        }
+
+        #expect(await reader.hadTransportFault == false)
+    }
+
     // MARK: - The taint rule
 
     @Test("a clean borrow is checked back into the pool and reused")

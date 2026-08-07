@@ -67,6 +67,7 @@ struct SMBBrowseRenderTests {
             parentPath: "Anime",
             artworkProvider: MediaArtworkProvider(
                 thumbnailer: VLCThumbnailer(),
+                avThumbnailer: AVThumbnailer(),
                 // Isolated defaults suite + the in-memory keychain: a layout capture must not
                 // read or write the device's real server list or Keychain (it never resolves a
                 // thumbnail in a synchronous render, so the store is pure scaffolding).

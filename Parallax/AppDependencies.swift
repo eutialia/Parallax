@@ -221,6 +221,7 @@ final class AppDependencies {
         // frame-grab reads ride the warm connections.
         let mediaArtworkProvider = MediaArtworkProvider(
             thumbnailer: VLCThumbnailer(),
+            avThumbnailer: AVThumbnailer(),
             serverStore: store,
             pool: smbConnectionPool
         )

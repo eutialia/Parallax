@@ -83,6 +83,8 @@ public final class VLCThumbnailer {
     ///     pre-parse resolved a duration, so the decode opens at the target offset directly.
     ///   - timeout: hard ceiling; if VLC neither finishes nor times out by then, throws `.timedOut`.
     /// - Returns: the encoded frame plus the source duration (nil if libvlc couldn't read the length).
+    /// - Throws: `CancellationError` if the enclosing task was cancelled (callers distinguish that
+    ///   from a real failure), `VLCThumbnailError` otherwise.
     public func thumbnailData(
         for url: URL,
         options: [String] = [],
@@ -118,7 +120,13 @@ public final class VLCThumbnailer {
         let clock = ContinuousClock()
         let parseStart = clock.now
         let parsed = await MediaParseAwaiter().run(media, timeout: timeout)
-        guard parsed == .done else { throw VLCThumbnailError.parseTimedOut }
+        guard parsed == .done else {
+            // The awaiter reports cancellation as `.timeout` too. Surface it as `CancellationError`
+            // so callers' `error is CancellationError` guards read the same on both engines
+            // (`AVThumbnailer` throws it directly).
+            try Task.checkCancellation()
+            throw VLCThumbnailError.parseTimedOut
+        }
         let remaining = timeout - parseStart.duration(to: clock.now)
         guard remaining > .zero else { throw VLCThumbnailError.parseTimedOut }
 
@@ -174,18 +182,20 @@ public final class VLCThumbnailer {
                 delegate.timeoutTask = Task { [weak self] in
                     try? await Task.sleep(for: remaining)
                     guard !Task.isCancelled else { return }
-                    self?.resolve(id, with: .failure(.timedOut))
+                    self?.resolve(id, with: .failure(VLCThumbnailError.timedOut))
                 }
 
                 thumbnailer.fetchThumbnail()
             }
         } onCancel: {
             // Task cancellation (e.g. a cancelled enclosing tile load) also resolves —
-            // otherwise the continuation would never resume. Hop to main since the
-            // cancellation handler is nonisolated; resume-once makes a late delegate
-            // callback a no-op.
+            // otherwise the continuation would never resume. It surfaces as `CancellationError`,
+            // NOT `.timedOut`: callers separate "nobody waited for the answer" from "the decode
+            // gave up" (poison rules, AIMD feedback), and `AVThumbnailer` already reports it that
+            // way. Hop to main since the cancellation handler is nonisolated; resume-once makes a
+            // late delegate callback a no-op.
             Task { @MainActor [weak self] in
-                self?.resolve(id, with: .failure(.timedOut))
+                self?.resolve(id, with: .failure(CancellationError()))
             }
         }
 
@@ -219,12 +229,12 @@ public final class VLCThumbnailer {
     /// because the fetch is already gone. Safe without a lock — everything is `@MainActor`.
     /// Tears down the strong refs + the timeout sleeper, then resumes the continuation it
     /// owns exactly once.
-    private func resolve(_ id: UUID, with result: Result<CGImage, VLCThumbnailError>) {
+    private func resolve(_ id: UUID, with result: Result<CGImage, any Error>) {
         guard let fetch = inFlight.removeValue(forKey: id) else { return }
         fetch.delegate.timeoutTask?.cancel()
         fetch.delegate.timeoutTask = nil
         fetch.delegate.resolve = nil  // block any late delegate callback
-        fetch.delegate.continuation.resume(with: result.mapError { $0 as Error })
+        fetch.delegate.continuation.resume(with: result)
     }
 }
 
@@ -234,11 +244,11 @@ public enum VLCThumbnailError: Error, Sendable {
     /// `.timedOut` so a caller's failure log attributes the loss to the demux/probe phase
     /// (e.g. an AVI index rebuild scanning the whole file) rather than the frame decode.
     case parseTimedOut
-    /// VLC's delegate timed out, our hard timeout fired after a successful parse, or the
-    /// enclosing task was cancelled mid-fetch. A media that opens but can't decode a frame
-    /// also surfaces here — `VLCMediaThumbnailerDelegate` exposes no decode-error callback
-    /// to distinguish it. Callers treat this and `.parseTimedOut` the same
-    /// (poison-unless-cancelled); the split is diagnostic only.
+    /// VLC's delegate timed out, or our hard timeout fired after a successful parse. A media that
+    /// opens but can't decode a frame also surfaces here — `VLCMediaThumbnailerDelegate` exposes no
+    /// decode-error callback to distinguish it. Caller cancellation is NOT this: it surfaces as
+    /// `CancellationError`, matching `AVThumbnailer`. Callers treat this and `.parseTimedOut` the
+    /// same (poison-unless-cancelled); the split is diagnostic only.
     case timedOut
     case encodingFailed  // CGImage → HEIC/JPEG data failed (genuine ImageIO failure, not a missing HEVC encoder)
 }
@@ -352,15 +362,17 @@ private final class ThumbnailDelegate: NSObject, VLCMediaThumbnailerDelegate {
     let continuation: CheckedContinuation<CGImage, Error>
 
     /// Routes a delegate outcome to `VLCThumbnailer.resolve`; cleared after the first
-    /// resolution so a late callback can't re-enter.
-    var resolve: ((Result<CGImage, VLCThumbnailError>) -> Void)?
+    /// resolution so a late callback can't re-enter. Untyped failure because the racers throw two
+    /// different things — the delegate/timeout a `VLCThumbnailError`, caller cancellation a
+    /// `CancellationError`.
+    var resolve: ((Result<CGImage, any Error>) -> Void)?
 
     /// The hard-timeout sleeper, retained here so `resolve` can cancel it.
     var timeoutTask: Task<Void, Never>?
 
     init(
         continuation: CheckedContinuation<CGImage, Error>,
-        resolve: @escaping (Result<CGImage, VLCThumbnailError>) -> Void
+        resolve: @escaping (Result<CGImage, any Error>) -> Void
     ) {
         self.continuation = continuation
         self.resolve = resolve
@@ -376,7 +388,7 @@ private final class ThumbnailDelegate: NSObject, VLCMediaThumbnailerDelegate {
 
     nonisolated func mediaThumbnailerDidTimeOut(_ mediaThumbnailer: VLCMediaThumbnailer) {
         MainActor.assumeIsolated {
-            resolve?(.failure(.timedOut))
+            resolve?(.failure(VLCThumbnailError.timedOut))
         }
     }
 }

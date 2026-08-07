@@ -127,15 +127,26 @@ public struct SMBFileSource: Sendable {
         return classify(error)
     }
 
-    /// Whether `error` says the SOCKET died rather than the server having answered a definitive no.
+    /// Whether `error` is a transport-class fault: the SOCKET died (or never connected) rather than
+    /// the server having answered a definitive no. Used by the listing retry path and by the
+    /// random-access reader's transport-fault flag — both need the same cut so a content-level
+    /// failure is never treated as "try again on a fresh connection" and a blip is never blamed
+    /// on the file.
     ///
-    /// Reads the SAME table `classify` maps user-facing messages from — deliberately, so there is one
-    /// place that decides what "the connection is gone" means: anything the user would be told was a
-    /// lost connection is worth retrying on a fresh connection, while a sign-in failure, a permission
-    /// denial or a missing path is a real answer and retrying it just wastes a handshake.
-    static func isTransportFailure(_ error: any Error) -> Bool {
-        if case .source(.connectionLost) = classify(error) { return true }
-        return false
+    /// Cancellation is never transport (the caller gave up). Named hard-timeout shapes are always
+    /// transport. POSIX codes reuse the same bucket table as `classify`, but only when a real
+    /// POSIX code is present — a bare non-POSIX error is not assumed to be a lost connection.
+    static func isTransportClass(_ error: any Error) -> Bool {
+        if error is CancellationError { return false }
+        if error is HardTimeoutError { return true }
+        if let listerError = error as? SMBListerError {
+            switch listerError {
+            case .timedOut: return true
+            case .managerInitFailed: return false
+            }
+        }
+        guard let posixCode = posixCode(of: error) else { return false }
+        return SMBPOSIXErrorClass.classify(posixCode: posixCode) == .connectionLost
     }
 
     /// EPERM is deliberately NOT bucketed with EACCES. libsmb2's only EPERM source is its
@@ -145,19 +156,19 @@ public struct SMBFileSource: Sendable {
     /// ACL denial (NT_STATUS_ACCESS_DENIED) arrives as EACCES. So EPERM is a sign-in failure:
     /// the recovery is re-entering credentials, not requesting access to an item.
     private static func classify(_ error: Error) -> AppError {
-        let ns = error as NSError
-        let posixCode: Int32? = (error as? POSIXError).map { $0.code.rawValue }
-            ?? (ns.domain == NSPOSIXErrorDomain ? Int32(ns.code) : nil)
-        switch posixCode {
-        case POSIXErrorCode.EPERM.rawValue:
-            return .auth(.invalidCredentials)
-        case POSIXErrorCode.EACCES.rawValue:
-            return .source(.permissionDenied)
-        case POSIXErrorCode.ENOENT.rawValue, POSIXErrorCode.ENOTDIR.rawValue, POSIXErrorCode.ENODEV.rawValue:
-            return .source(.notFound)
-        default:
-            return .source(.connectionLost)
+        switch SMBPOSIXErrorClass.classify(posixCode: posixCode(of: error)) {
+        case .auth: return .auth(.invalidCredentials)
+        case .permissionDenied: return .source(.permissionDenied)
+        case .notFound: return .source(.notFound)
+        case .connectionLost: return .source(.connectionLost)
         }
+    }
+
+    /// POSIX code from a `POSIXError` or an `NSPOSIXErrorDomain` `NSError`, else nil.
+    private static func posixCode(of error: Error) -> Int32? {
+        let ns = error as NSError
+        return (error as? POSIXError).map { $0.code.rawValue }
+            ?? (ns.domain == NSPOSIXErrorDomain ? Int32(ns.code) : nil)
     }
 
     /// Lists top-level media files in `path` (or the configured `root` when `path` is empty).
@@ -214,6 +225,35 @@ public struct SMBFileSource: Sendable {
             }
         }
         return SMBBrowseListing(folders: folders, media: media, artwork: artwork)
+    }
+}
+
+// MARK: - POSIX error buckets
+
+/// Shared POSIX-code → failure-bucket mapping for SMB errors. `SMBFileSource.classify` maps each
+/// bucket onto a user-facing `AppError`; `isTransportClass` uses the same table so "the socket died"
+/// means the same thing to the retry path and the thumbnail negative-cache guard.
+enum SMBPOSIXErrorClass: Equatable {
+    case notFound
+    case permissionDenied
+    case auth
+    case connectionLost
+
+    /// Classifies a raw POSIX errno. `nil` falls into `.connectionLost` — matching the historical
+    /// `classify` default for non-POSIX errors (user-facing "connection lost"). Callers that must
+    /// NOT treat bare non-POSIX errors as transport (e.g. `isTransportClass`) must check for a
+    /// present code before calling this.
+    static func classify(posixCode: Int32?) -> SMBPOSIXErrorClass {
+        switch posixCode {
+        case POSIXErrorCode.EPERM.rawValue:
+            return .auth
+        case POSIXErrorCode.EACCES.rawValue:
+            return .permissionDenied
+        case POSIXErrorCode.ENOENT.rawValue, POSIXErrorCode.ENOTDIR.rawValue, POSIXErrorCode.ENODEV.rawValue:
+            return .notFound
+        default:
+            return .connectionLost
+        }
     }
 }
 
