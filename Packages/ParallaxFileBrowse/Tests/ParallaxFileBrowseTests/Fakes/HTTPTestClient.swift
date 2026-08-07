@@ -39,10 +39,17 @@ func rawHTTPExchange(
     guard let host = url.host, let rawPort = url.port, let port = NWEndpoint.Port(rawValue: UInt16(rawPort)) else {
         throw RawClientError.missingURLComponent
     }
-    let connection = NWConnection(host: NWEndpoint.Host(host), port: port, using: .tcp)
+    // Creating, starting and cancelling an `NWConnection` reaches the kernel's network-policy
+    // layer on the calling thread and can block there, so all three stay on this queue instead of
+    // a Swift concurrency cooperative thread — a stuck lane would stall the whole test process.
     let queue = DispatchQueue(label: "raw-http-test-client")
+    let connection = await withCheckedContinuation { (continuation: CheckedContinuation<NWConnection, Never>) in
+        queue.async {
+            continuation.resume(returning: NWConnection(host: NWEndpoint.Host(host), port: port, using: .tcp))
+        }
+    }
 
-    defer { connection.cancel() }
+    defer { queue.async { connection.cancel() } }
 
     try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
         let readyOnce = OnceBox()
@@ -54,7 +61,7 @@ func rawHTTPExchange(
             default: break
             }
         }
-        connection.start(queue: queue)
+        queue.async { connection.start(queue: queue) }
     }
 
     try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
@@ -74,7 +81,7 @@ func rawHTTPExchange(
     let deadline = Task {
         try? await Task.sleep(for: timeout)
         guard Task.isCancelled == false else { return }
-        connection.cancel()
+        queue.async { connection.cancel() }
     }
     defer { deadline.cancel() }
 

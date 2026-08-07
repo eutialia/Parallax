@@ -28,9 +28,18 @@ public actor SMBHTTPBridge {
 
     /// Serial queue for all Network.framework callbacks. One queue for the listener and every
     /// connection keeps callback ordering simple; real work happens on the actor.
+    ///
+    /// It also hosts every create/start/cancel of an `NWListener`/`NWConnection` (see `offPool`):
+    /// those calls reach the kernel's network-policy layer on the CALLING thread, and when that
+    /// layer is degraded they can sit there for seconds. A Swift concurrency cooperative thread
+    /// must never host a call like that — the pool is only as wide as the core count, so a couple
+    /// of stuck lanes stall every unrelated task in the process.
     private let queue = DispatchQueue(label: "com.lhdev.parallax.smb-http-bridge")
 
     private var listener: NWListener?
+    /// `start()` suspends while the listener is built, so single-shot-ness can't be inferred from
+    /// `listener` alone — a second caller could slip in before the first assigns it.
+    private var hasStarted = false
     /// Live connections keyed by identity, so `stop()` can cancel every one and each handler
     /// can remove itself on close without a linear scan.
     private var connections: [ObjectIdentifier: NWConnection] = [:]
@@ -102,12 +111,22 @@ public actor SMBHTTPBridge {
     /// one URL serves both. Pass `.loopback` for on-device-only clients (see `AddressScope`).
     public func start(scope: AddressScope = .lan) async throws -> URL {
         guard !isStopped else { throw BridgeError.stopped }
-        guard listener == nil else { throw BridgeError.alreadyStarted }
+        guard !hasStarted else { throw BridgeError.alreadyStarted }
+        hasStarted = true
 
-        let listener = try NWListener(using: .tcp, on: .any)
+        let queue = self.queue
+        let listener = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<NWListener, Error>) in
+            queue.async { continuation.resume(with: Result { try NWListener(using: .tcp, on: .any) }) }
+        }
+        // A `stop()` that landed while the listener was being built found nothing to cancel.
+        guard !isStopped else {
+            await offPool { listener.cancel() }
+            throw BridgeError.stopped
+        }
         self.listener = listener
 
         listener.newConnectionHandler = { [weak self] connection in
+            // Already on `queue` — Network.framework delivers this callback there.
             guard let self else { connection.cancel(); return }
             Task { await self.accept(connection) }
         }
@@ -129,12 +148,13 @@ public actor SMBHTTPBridge {
                     break
                 }
             }
-            listener.start(queue: queue)
+            queue.async { listener.start(queue: queue) }
         }
 
         guard let port = listener.port else { throw BridgeError.noPort }
         let host: String = switch scope {
-        case .lan: LocalNetworkAddress.primaryIPv4() ?? "127.0.0.1"
+        // `getifaddrs` is another syscall that stays off the cooperative pool.
+        case .lan: await offPool { LocalNetworkAddress.primaryIPv4() } ?? "127.0.0.1"
         case .loopback: "127.0.0.1"
         }
         guard let url = URL(string: "http://\(host):\(port.rawValue)\(expectedPath)") else {
@@ -148,17 +168,33 @@ public actor SMBHTTPBridge {
     public func stop() async {
         guard !isStopped else { return }
         isStopped = true
-        listener?.cancel()
-        listener = nil
-        for connection in connections.values { connection.cancel() }
-        connections.removeAll()
+        let listener = self.listener
+        let connections = Array(self.connections.values)
+        self.listener = nil
+        self.connections.removeAll()
+        await offPool {
+            listener?.cancel()
+            for connection in connections { connection.cancel() }
+        }
+    }
+
+    /// Runs `body` on `queue` and resumes with its result — the hop that keeps Network.framework's
+    /// blocking create/start/cancel calls off the cooperative pool (see `queue`).
+    private func offPool<T: Sendable>(_ body: @escaping @Sendable () -> T) async -> T {
+        let queue = self.queue
+        return await withCheckedContinuation { continuation in
+            queue.async { continuation.resume(returning: body()) }
+        }
     }
 
     // MARK: - Connections
 
     private func accept(_ connection: NWConnection) {
         // A connection that raced in during/after `stop()` gets refused — never served.
-        guard !isStopped, listener != nil else { connection.cancel(); return }
+        guard !isStopped, listener != nil else {
+            Task { await self.offPool { connection.cancel() } }
+            return
+        }
         statsConnections += 1
         connections[ObjectIdentifier(connection)] = connection
         connection.stateUpdateHandler = { [weak self] state in
@@ -169,8 +205,11 @@ public actor SMBHTTPBridge {
                 break
             }
         }
-        connection.start(queue: queue)
-        Task { await self.serve(connection) }
+        Task {
+            let queue = self.queue
+            await self.offPool { connection.start(queue: queue) }
+            await self.serve(connection)
+        }
     }
 
     private func remove(_ connection: NWConnection) {
@@ -191,7 +230,7 @@ public actor SMBHTTPBridge {
         } catch {
             // receive/send failure or EOF — normal connection teardown, nothing actionable.
         }
-        connection.cancel()
+        await offPool { connection.cancel() }
         remove(connection)
     }
 

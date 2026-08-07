@@ -3,16 +3,27 @@ import Testing
 import ParallaxCore
 @testable import ParallaxFileBrowse
 
-@Suite("SMBHTTPBridge", .timeLimit(.minutes(1)))
+/// `.serialized` caps what this suite costs at any one instant: run in parallel it stands up ~21
+/// listeners and sockets at once, plus the two multi-chunk fixtures, which a 2-core CI runner
+/// cannot absorb. One bridge at a time still exercises every path — nothing here tests concurrency.
+@Suite("SMBHTTPBridge", .serialized, .timeLimit(.minutes(1)))
 struct SMBHTTPBridgeTests {
 
-    /// `byte[i] == i % 251`, so any slice is verifiable by index alone.
+    /// `byte[i] == i % 251`, so any slice is verifiable by index alone. Filled in place: the
+    /// `map`-into-`Data` this replaces built a whole intermediate array first, which at
+    /// `multiChunkSize` is megabytes of pointless churn in an unoptimised test build.
     private static func fixture(_ count: Int) -> Data {
-        Data((0..<count).map { UInt8($0 % 251) })
+        var data = Data(count: count)
+        data.withUnsafeMutableBytes { (raw: UnsafeMutableRawBufferPointer) in
+            for i in 0..<count { raw[i] = UInt8(i % 251) }
+        }
+        return data
     }
 
-    /// One 1 MiB body — comfortably inside a single `chunkSize` slice.
-    private static let smallSize = 1_048_576
+    /// Default body: big enough for every slice these tests ask for (the largest is `bytes=0-4095`)
+    /// and nothing more. Byte-exactness over a repeating pattern proves no more at 1 MiB than at
+    /// 8 KiB, and the `streamBody` chunk loop is the multi-chunk tests' job, not this size's.
+    private static let smallSize = 8 * 1024
     /// Strictly larger than one chunk, so a full-body fetch walks the streamBody loop several
     /// times. Derived from the production ceiling: widening `chunkSize` must not silently stop
     /// exercising the multi-chunk path.
