@@ -71,8 +71,17 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
     private var idle: [SMBConnectionKey: [IdleEntry]] = [:]
 
     /// Latest cold-connect classification per host. `nil` until a host's first cold connect; a warm
-    /// reuse records nothing (it did no round trips to time). Latest cold connect wins.
+    /// reuse records nothing (it did no round trips to time). See `recordColdLatency` for which
+    /// samples are allowed to change it.
     private var coldLinkClass: [String: SMBLinkClass] = [:]
+
+    /// Consecutive SLOW cold samples per host, reset by any fast one. Feeds the demotion hysteresis
+    /// in `recordColdLatency`; the entry is removed (never kept at zero) once a fast sample lands.
+    private var consecutiveSlowColds: [String: Int] = [:]
+
+    /// Bumped by `flushIdle`. Every borrow is stamped with the epoch it was taken under, and a
+    /// check-in from an older epoch is disposed instead of pooled — see `checkin`.
+    private var flushEpoch = 0
 
     /// One in-flight classification probe per host — concurrent `ensureLinkClass` callers coalesce
     /// onto it instead of each cold-connecting.
@@ -162,7 +171,8 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
             for connection in corpses { Task { await connection.disconnectGracefully() } }
         } else if var entries = idle[key], let reused = entries.popLast() {
             idle[key] = entries.isEmpty ? nil : entries
-            return SMBPooledConnection(key: key, connection: reused.connection, isWarm: true)
+            return SMBPooledConnection(
+                key: key, connection: reused.connection, isWarm: true, epoch: flushEpoch)
         }
 
         // Cold connect — timed for the link-class signal and bounded by the shared hard timeout.
@@ -190,7 +200,10 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
             throw error
         }
         recordColdLatency(host: target.host, elapsed: start.duration(to: now()))
-        return SMBPooledConnection(key: key, connection: connection, isWarm: false)
+        // Stamped AFTER the connect: a flush that happened while this handshake was in flight
+        // targeted the sockets that existed before it, not this brand-new one.
+        return SMBPooledConnection(
+            key: key, connection: connection, isWarm: false, epoch: flushEpoch)
     }
 
     /// Takes ownership of whatever a failed connect managed to build, so no abandonment ever leaves
@@ -238,7 +251,17 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
     /// a real NAS, and no caller returning a connection should be charged for pool hygiene. The
     /// eviction is still decided synchronously and the entry is out of `idle` before any teardown
     /// starts, so the "only ever disconnect a zero-borrower idle connection" invariant is untouched.
+    ///
+    /// A borrow taken BEFORE the latest `flushIdle` is disposed rather than pooled: the flush's
+    /// whole premise is that every socket predating it died in device sleep, and a long-running
+    /// borrow (a thumbnail reader holds one for tens of seconds) checking in after the wake would
+    /// otherwise re-seed the freshly emptied idle map with exactly the corpse the flush removed.
     public func checkin(_ handle: SMBPooledConnection<Connection>) async {
+        guard handle.epoch >= flushEpoch else {
+            // Detached, like every other teardown here: the borrower pays nothing for pool hygiene.
+            Task { await handle.connection.disconnectGracefully() }
+            return
+        }
         await reapIdle(asOf: now())
 
         var entries = idle[handle.key] ?? []
@@ -427,8 +450,54 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
         }
     }
 
+    /// Drops every idle connection across the whole pool — no per-key survivor.
+    ///
+    /// Called on foreground reactivation after device sleep: the OS has almost certainly killed
+    /// every socket while the app was suspended, so every warm idle entry is a corpse. Unlike
+    /// `reapIdle` (which deliberately keeps each key's last warm connection so the next drill-in
+    /// is handshake-free), a post-sleep "survivor" is just another dead socket and must go too —
+    /// the same reasoning as `checkout(requireFresh:)`'s whole-key purge, applied pool-wide.
+    ///
+    /// Does not touch condemned connections (graveyard), link-class caches, or latency probes, and
+    /// never disconnects a checked-out connection (it is not in `idle`) — but it does mark those
+    /// borrows: bumping the epoch means their `checkin` disposes them instead of pooling them, so a
+    /// borrow that predates the sleep can't re-fill the map the flush just emptied. Removes every
+    /// idle entry FIRST (synchronously, before any suspension), then tears each down in a detached
+    /// `Task` — the same removes-then-tears-down idiom as `reapIdle` / the `requireFresh` branch, so
+    /// a reentrant `checkout` can never re-borrow a connection mid-teardown.
+    public func flushIdle() async {
+        flushEpoch += 1
+        let corpses = idle.values.flatMap { $0.map(\.connection) }
+        idle.removeAll()
+        for connection in corpses {
+            Task { await connection.disconnectGracefully() }
+        }
+    }
+
+    /// Folds one cold-connect measurement into `host`'s class, with HYSTERESIS on the way down.
+    ///
+    /// Promotion is instant: a fast cold connect proves the host is local, and nothing about a
+    /// stale `.wan` label is worth keeping against that. Demotion needs TWO consecutive slow
+    /// samples, because the moments that produce a single slow one are exactly the moments a LAN
+    /// host looks worst — a post-wake flush forces a cold connect while the radio is still
+    /// re-associating and the NAS disks are spinning up. One such sample used to pin the host `.wan`
+    /// for the rest of the session (once a warm survivor exists, nothing re-measures), and that
+    /// label then narrowed the thumbnail admission window to 1 and disabled the backfill's
+    /// LAN-only capture.
     private func recordColdLatency(host: String, elapsed: Duration) {
-        coldLinkClass[host] = elapsed < Self.lanThreshold ? .lan : .wan
+        guard elapsed >= Self.lanThreshold else {
+            consecutiveSlowColds[host] = nil
+            coldLinkClass[host] = .lan
+            return
+        }
+        let slowRun = (consecutiveSlowColds[host] ?? 0) + 1
+        consecutiveSlowColds[host] = slowRun
+        // First slow sample against a host already measured `.lan` is treated as a blip; anything
+        // else (unclassified host, already `.wan`, or a second slow sample in a row) classes `.wan`.
+        let isFirstBlipOnALANHost = coldLinkClass[host] == .lan && slowRun < 2
+        if !isFirstBlipOnALANHost {
+            coldLinkClass[host] = .wan
+        }
     }
 
     private func startSweepIfNeeded() {
@@ -583,10 +652,15 @@ public struct SMBPooledConnection<Connection: PoolableSMBConnection>: Sendable {
     /// unreachable" — only the first is worth one retry (see `PooledSMBLister.list`).
     let isWarm: Bool
 
-    init(key: SMBConnectionKey, connection: Connection, isWarm: Bool) {
+    /// The pool's flush epoch when this borrow was taken. `checkin` compares it against the current
+    /// one so a borrow that predates a `flushIdle` is disposed rather than pooled.
+    let epoch: Int
+
+    init(key: SMBConnectionKey, connection: Connection, isWarm: Bool, epoch: Int) {
         self.key = key
         self.connection = connection
         self.isWarm = isWarm
+        self.epoch = epoch
     }
 }
 

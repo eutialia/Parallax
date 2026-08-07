@@ -32,6 +32,9 @@ final class AppDependencies {
     /// rather than loose strings: a function type can't carry argument labels, and host/username/
     /// password/domain are all `String`.
     let makeSMBListerForCredentials: @Sendable (SMBCredentials) -> any SMBLister
+    /// Foreground-reactivation hook: flushes dead idle SMB connections after the OS kills every
+    /// socket during sleep, so the next browse re-list cold-connects instead of borrowing a corpse.
+    let flushSMBConnections: @Sendable () async -> Void
     let imagePipelineFactory: ImagePipelineFactory
     let deviceProfileBuilder: DeviceProfileBuilder
     let playbackInfoFactory: @Sendable (Session) async -> PlaybackInfoService
@@ -64,6 +67,7 @@ final class AppDependencies {
         mediaRepoFactory: @Sendable @escaping (Session) async -> any MediaRepository,
         makeSMBLister: @Sendable @escaping (SMBServerRef) async throws -> any SMBLister,
         makeSMBListerForCredentials: @Sendable @escaping (SMBCredentials) -> any SMBLister,
+        flushSMBConnections: @Sendable @escaping () async -> Void,
         imagePipelineFactory: ImagePipelineFactory,
         deviceProfileBuilder: DeviceProfileBuilder,
         playbackInfoFactory: @Sendable @escaping (Session) async -> PlaybackInfoService,
@@ -83,6 +87,7 @@ final class AppDependencies {
         self.mediaRepoFactory = mediaRepoFactory
         self.makeSMBLister = makeSMBLister
         self.makeSMBListerForCredentials = makeSMBListerForCredentials
+        self.flushSMBConnections = flushSMBConnections
         self.imagePipelineFactory = imagePipelineFactory
         self.deviceProfileBuilder = deviceProfileBuilder
         self.playbackInfoFactory = playbackInfoFactory
@@ -183,6 +188,11 @@ final class AppDependencies {
         let makeSMBListerForCredentials: @Sendable (SMBCredentials) -> any SMBLister = { credentials in
             PooledSMBLister(pool: smbConnectionPool, credentials: credentials)
         }
+        // Drop every idle pooled socket on foreground return: after sleep they are corpses, and
+        // the next browse re-list must cold-connect rather than re-borrow a dead session.
+        let flushSMBConnections: @Sendable () async -> Void = {
+            await smbConnectionPool.flushIdle()
+        }
         // The saved-server path. The password comes through `ServerStore.smbPassword(for:)`, which
         // throws `.auth(.credentialUnavailable)` on a lost Keychain slot instead of degrading to an
         // empty-password logon the server rejects with an error that reads as its fault (the
@@ -226,6 +236,7 @@ final class AppDependencies {
             mediaRepoFactory: mediaRepoFactory,
             makeSMBLister: makeSMBLister,
             makeSMBListerForCredentials: makeSMBListerForCredentials,
+            flushSMBConnections: flushSMBConnections,
             // Resolve the image-pipeline device identity from the same provider
             // as auth, so image traffic presents the persisted deviceID rather
             // than a per-launch random UUID.

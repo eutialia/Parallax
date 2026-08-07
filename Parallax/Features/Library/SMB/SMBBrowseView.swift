@@ -51,6 +51,7 @@ struct SMBBrowseView: View {
     @Environment(AppDependencies.self) private var deps
     @Environment(PlaybackPresenter.self) private var playback
     @Environment(\.appIdiom) private var idiom
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var model: SMBBrowseViewModel?
     /// Highest media index the viewport-ahead prefetch window has covered; -1 = none yet. Monotonic
     /// per listing so scroll-back re-appearances don't re-hand items to the provider.
@@ -143,6 +144,23 @@ struct SMBBrowseView: View {
                 Task { await openLevel() }
             }
         }
+        // After sleep every pooled socket is dead: flush idle corpses first, then re-list this
+        // level with the current content still on screen. Flush-then-refresh so this level's own
+        // re-list can't check out a connection that's already a corpse (checkout cold-connects when
+        // nothing warm is idle). It only orders THIS call: on a stalled level `.recoversFromOffline`
+        // fires its own `load()` on the same `.active` edge with no ordering against the flush, so
+        // that listing may still borrow a pre-flush corpse — the pool's warm-corpse retry
+        // (`PooledSMBLister.list`) absorbs it. Only the currently-visible top of the stack fires
+        // (see `.refreshesOnForeground`).
+        //
+        // Disabled while a player is up: on iOS the player is an OVERLAY, so this level stays
+        // mounted (no `onDisappear`) and a foreground return mid-playback would flush the pool and
+        // re-list over the very uplink the stream is using. The artwork provider's `playbackActive`
+        // hold covers thumbnail generation only — a directory listing is not gated by it.
+        .refreshesOnForeground(isEnabled: !playback.isPlayerPresent) {
+            await deps.flushSMBConnections()
+            model?.refresh()
+        }
     }
 
     /// Builds this level's lister + view model and starts the first list. Failure before the model
@@ -174,6 +192,20 @@ struct SMBBrowseView: View {
     private var levelTitle: String {
         path.path.split(separator: "/").last.map(String.init) ?? path.share
     }
+
+    /// Whether a revalidate is allowed to dim + freeze this wall.
+    ///
+    /// Unlike `LibraryGridView` — whose revalidate follows a sort/filter the user just chose — the
+    /// only trigger here is the INVOLUNTARY foreground wake re-list (a sort change goes through
+    /// `load()` and the skeleton). On tvOS the modifier's `allowsHitTesting(false)` pulls focus off
+    /// whatever poster the user was on and parks it on the sort chip, losing a deep scroll position
+    /// for a refresh nobody asked for. So tvOS revalidates SILENTLY; iOS has no focus to lose and
+    /// keeps the crossfade.
+    #if os(tvOS)
+    private static let dimsOnRevalidate = false
+    #else
+    private static let dimsOnRevalidate = true
+    #endif
 
     /// Rows of thumbnails warmed BEYOND the tile that just appeared — a perception buffer, not the
     /// whole folder (explicit user policy: scroll landings should be warm, but a huge directory must
@@ -241,6 +273,12 @@ struct SMBBrowseView: View {
         } else {
             ScrollView {
                 VStack(spacing: 0) {
+                    // The sort chip stays OUTSIDE `.staleWhileRevalidate` below — that modifier
+                    // applies `.allowsHitTesting(false)` while refreshing, and a pushed tvOS level
+                    // hides the tab sidebar, so trapping the chip too would leave the level with
+                    // zero focusable elements for the length of the re-list (the tvOS empty-focus
+                    // trap this scoping avoids; mirrors `LibraryGridView.gridScrollContent`, whose
+                    // header controls sit outside its own `MediaGrid`-scoped modifier).
                     #if os(tvOS)
                     sortHeader(model: model)
                     #endif
@@ -254,6 +292,13 @@ struct SMBBrowseView: View {
                         artworkProvider: deps.mediaArtworkProvider,
                         onMediaTileAppeared: { prefetchWindow(from: $0, model: model) },
                         onPlay: { playback.playSMB($0, ref: path.ref) }
+                    )
+                    // Stale-while-revalidate dim → crossfade during a foreground re-list (shared
+                    // with the library grid so the two never drift). Scoped to the grid, not the
+                    // whole scroll subtree — see the comment on `sortHeader` above.
+                    .staleWhileRevalidate(
+                        isRefreshing: Self.dimsOnRevalidate && model.isRefreshing,
+                        reduceMotion: reduceMotion
                     )
                 }
             }
