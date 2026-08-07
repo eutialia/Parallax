@@ -1,18 +1,9 @@
 import Testing
 import Foundation
 import CoreGraphics
-import ImageIO
 import ParallaxCoreTestSupport
+import ParallaxPlaybackTestSupport
 @testable import ParallaxPlayback
-
-/// Decode the encoded thumbnail `Data` (HEIC, or JPEG on a host with no HEVC encoder)
-/// back into a `CGImage` to assert pixel dimensions / validity. Codec-agnostic: ImageIO
-/// sniffs the format.
-private func decodeImage(_ data: Data) -> CGImage? {
-    guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-          CGImageSourceGetCount(source) >= 1 else { return nil }
-    return CGImageSourceCreateImageAtIndex(source, 0, nil)
-}
 
 /// The `Duration` → libvlc-milliseconds conversion feeding `VLCMedia.parse(timeout:)`.
 /// Pure, and the clamps matter: 0 means INFINITE to libvlc (a hang), and an
@@ -159,7 +150,7 @@ struct VLCThumbnailerHappyPathTests {
         let frame = try await VLCThumbnailer().thumbnailData(for: url, height: 320, timeout: .seconds(20))
 
         #expect(frame.data.isEmpty == false)
-        let image = try #require(decodeImage(frame.data), "thumbnail data did not decode as an image")
+        let image = try #require(decodeThumbnailImage(frame.data), "thumbnail data did not decode as an image")
         #expect(image.width > 0)
         #expect(image.height > 0)
         let aspect = Double(image.width) / Double(image.height)
@@ -168,5 +159,25 @@ struct VLCThumbnailerHappyPathTests {
 
         let duration = try #require(frame.duration, "expected libvlc to report the clip's length")
         #expect(duration > .zero)
+    }
+
+    /// Same 320-tall tier pin as `AVThumbnailerTests`, on the live VLC path. `tiny.mp4` is
+    /// 160×90 so it cannot see a missing height bound; a 640×480 synth source would come
+    /// back at native size if the default `height: 320` were dropped.
+    @Test("a source taller than 320 scales to height == 320")
+    func oversizedSourceScalesToTierHeight() async throws {
+        let source = try await OversizedThumbnailSource.make()
+        defer { source.cleanup() }
+
+        let frame = try await VLCThumbnailer().thumbnailData(
+            for: source.url, height: 320, timeout: .seconds(20))
+        #expect(frame.data.isEmpty == false)
+
+        let image = try #require(
+            decodeThumbnailImage(frame.data),
+            "thumbnail data did not decode as an image"
+        )
+        #expect(image.height == 320,
+                "expected the 320 tier bound, got \(image.width)×\(image.height)")
     }
 }

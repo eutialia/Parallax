@@ -213,6 +213,94 @@ struct SMBRandomAccessReaderTests {
         #expect(await reader.hadTransportFault == false)
     }
 
+    // MARK: - teardownCapturingTransportFault
+
+    /// Probe-timeout call sites (thumbnail frame-grab, playback resolve) abandon the reader and
+    /// must not drop sticky transport evidence with it. The helper samples the flag, then
+    /// fire-and-forget-disconnects — same shape both app sites need.
+    @Test("teardownCapturingTransportFault returns false on a clean reader and still tears it down")
+    func teardownCapturesFalseOnCleanReader() async throws {
+        let world = FakeSMBWorld()
+        let pool = makeFakePool(world: world)
+        let reader = makeReader(world: world, pool: pool)
+
+        _ = try await reader.read(offset: 0, length: 16)
+        let fault = await reader.teardownCapturingTransportFault()
+        #expect(fault == false)
+
+        // Fire-and-forget disconnect: wait until the reader is closed, then prove check-in.
+        await untilSettled {
+            do {
+                _ = try await reader.read(offset: 0, length: 1)
+                return false
+            } catch is CancellationError {
+                return true
+            } catch {
+                return false
+            }
+        }
+        #expect(world.disconnectedIDs.isEmpty, "clean borrow checks in, does not discard")
+        // The read-rejection above only proves the reader is closed, not that the check-in has
+        // landed in the pool yet (disconnect()'s checkin() await is a separate suspension) — wait
+        // for the idle slot before racing checkout against it.
+        await untilSettled { await pool.idleCount == 1 }
+        let reused = try await pool.checkout(fakeTarget(host: "nas", share: "Media"))
+        #expect(reused.connection.id == 0)
+    }
+
+    @Test("teardownCapturingTransportFault returns prior transport evidence and discards the borrow")
+    func teardownCapturesTrueAfterTransportFault() async throws {
+        let world = FakeSMBWorld()
+        let pool = makeFakePool(world: world)
+        let reader = makeReader(world: world, pool: pool)
+        world.setReadOutcome(.fails(POSIXError(.ECONNRESET)))
+
+        await #expect(throws: POSIXError.self) {
+            _ = try await reader.read(offset: 0, length: 16)
+        }
+        #expect(await reader.hadTransportFault == true)
+
+        let fault = await reader.teardownCapturingTransportFault()
+        #expect(fault == true)
+        await untilSettled { world.disconnectedIDs == [0] }
+        #expect(world.disconnectedIDs == [0], "tainted borrow is discarded, not pooled")
+    }
+
+    /// The production shape: an earlier op on the same borrow set the sticky flag, then a later
+    /// op wedges (probe deadline abandons while the native call is still in libsmb2's poll).
+    /// Teardown must still report the earlier transport evidence — the wedged call has not
+    /// unwound, so it cannot set the flag itself.
+    @Test("teardownCapturingTransportFault preserves earlier transport evidence across a later wedge")
+    func teardownCapturesPriorFaultWhileNextOpIsWedged() async throws {
+        let world = FakeSMBWorld()
+        let pool = makeFakePool(world: world)
+        let reader = makeReader(world: world, pool: pool)
+
+        // Op 1: transport-class failure — flips the sticky flag and taints the borrow.
+        world.setReadOutcome(.fails(POSIXError(.ECONNRESET)))
+        await #expect(throws: POSIXError.self) {
+            _ = try await reader.read(offset: 0, length: 16)
+        }
+        #expect(await reader.hadTransportFault == true)
+
+        // Op 2: re-arm success, wedge mid-read (probe-timeout shape). Arrivals are cumulative —
+        // the failed read already counted as 1, so the wedged read is arrival 2.
+        world.setReadOutcome(.fromContents)
+        await world.operationGate.close()
+        let wedged = Task { try await reader.read(offset: 0, length: 16) }
+        await world.operationGate.awaitArrivals(2)
+
+        let fault = await reader.teardownCapturingTransportFault()
+        #expect(fault == true, "earlier ECONNRESET must survive the wedge discard")
+        await untilSettled { await pool.condemnedCount == 1 }
+        #expect(await pool.condemnedCount == 1, "in-flight op at disconnect condemns")
+        #expect(world.disconnectedIDs.isEmpty)
+
+        await world.operationGate.open()
+        _ = try? await wedged.value
+        await untilSettled { await pool.condemnedCount == 0 }
+    }
+
     // MARK: - The taint rule
 
     @Test("a clean borrow is checked back into the pool and reused")

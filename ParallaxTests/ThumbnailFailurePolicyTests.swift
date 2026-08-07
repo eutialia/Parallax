@@ -46,4 +46,55 @@ struct ThumbnailFailurePolicyTests {
             ) == testCase.records
         )
     }
+
+    /// Probe-stage transport evidence is sampled off the discarded probe reader and ORed with
+    /// the frame-grab session's flag. A nil-probe path that already saw ECONNRESET (or similar)
+    /// must still feed `.transportFailure` / refuse poison even when the FRESH grab session
+    /// itself is clean — pin the OR so neither side can be dropped silently.
+    struct TransportComposeCase: Sendable, CustomTestStringConvertible {
+        let name: String
+        let session: Bool
+        let probe: Bool
+        let expected: Bool
+        var testDescription: String { name }
+    }
+
+    static let transportComposeCases: [TransportComposeCase] = [
+        TransportComposeCase(name: "neither", session: false, probe: false, expected: false),
+        TransportComposeCase(name: "session only", session: true, probe: false, expected: true),
+        TransportComposeCase(name: "probe stage only (discarded reader)", session: false, probe: true, expected: true),
+        TransportComposeCase(name: "both", session: true, probe: true, expected: true),
+    ]
+
+    @Test("probe-stage transport evidence ORs with the session flag", arguments: transportComposeCases)
+    func transportCompose(_ testCase: TransportComposeCase) {
+        let composed = MediaArtworkProvider.effectiveTransportFault(
+            sessionHadTransportFault: testCase.session, probeTransportFault: testCase.probe)
+        #expect(composed == testCase.expected)
+        // And the poison guard sees the composed bit: any transport evidence — from either side —
+        // must refuse to blacklist the file; only the "neither" case still poisons.
+        #expect(
+            MediaArtworkProvider.shouldRecordFailure(
+                error: VLCThumbnailError.encodingFailed, hadTransportFault: composed
+            ) == !testCase.expected
+        )
+    }
+
+    /// `frameGrab`'s early exit (the bridge's own `session.start()` throwing before any decode ran)
+    /// still owes `.transportFailure` when the nil-probe branch already captured evidence off the
+    /// discarded probe reader — pins the THREADING of that sticky bit into the early-exit outcome,
+    /// not just the OR inside `effectiveTransportFault`. A call site that silently drops
+    /// `probeTransportFault` (e.g. hardcodes `false`) would make this fail.
+    @Test("a nil-probe's sticky transport fault still wins the early bridge-start-failure exit",
+          arguments: [(probe: false, expectTransportFailure: false), (probe: true, expectTransportFailure: true)])
+    func earlyExitOutcomeThreadsProbeFault(_ testCase: (probe: Bool, expectTransportFailure: Bool)) {
+        switch MediaArtworkProvider.earlyExitOutcome(probeTransportFault: testCase.probe) {
+        case .transportFailure:
+            #expect(testCase.expectTransportFailure)
+        case .inconclusive:
+            #expect(!testCase.expectTransportFailure)
+        case .success:
+            Issue.record("early exit must never report .success — nothing decoded")
+        }
+    }
 }
