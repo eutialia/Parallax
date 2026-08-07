@@ -252,7 +252,7 @@ struct SMBHTTPBridgeTests {
         let data = Self.fixture(1024)
         let bridge = SMBHTTPBridge(reader: InMemoryRandomAccessReader(data: data),
                                    fileName: "video.mp4", contentType: "video/mp4")
-        let url = try await bridge.start()
+        let url = try await bridge.start(scope: .loopback)
         await bridge.stop()
 
         let error = await #expect(throws: URLError.self) {
@@ -266,14 +266,14 @@ struct SMBHTTPBridgeTests {
     func startIsSingleShotAndStopIsPermanent() async throws {
         let bridge = SMBHTTPBridge(reader: InMemoryRandomAccessReader(data: Self.fixture(16)),
                                    fileName: "video.mp4", contentType: "video/mp4")
-        _ = try await bridge.start()
+        _ = try await bridge.start(scope: .loopback)
 
-        await #expect(throws: SMBHTTPBridge.BridgeError.alreadyStarted) { _ = try await bridge.start() }
+        await #expect(throws: SMBHTTPBridge.BridgeError.alreadyStarted) { _ = try await bridge.start(scope: .loopback) }
 
         await bridge.stop()
         await bridge.stop()   // idempotent
 
-        await #expect(throws: SMBHTTPBridge.BridgeError.stopped) { _ = try await bridge.start() }
+        await #expect(throws: SMBHTTPBridge.BridgeError.stopped) { _ = try await bridge.start(scope: .loopback) }
     }
 
     // MARK: - Malformed request heads
