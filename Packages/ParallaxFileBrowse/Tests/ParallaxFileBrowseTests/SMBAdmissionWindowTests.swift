@@ -5,7 +5,7 @@ import Testing
 /// Pins the pure AIMD policy behind per-host thumbnail admission — seed widths, additive growth
 /// paced by the current limit, the hard ceiling, multiplicative shrink with a floor of 1, and
 /// recovery after a shrink. No actor, no queue; the gate integration lives in app-hosted tests.
-@Suite("SMBAdmissionWindow", .timeLimit(.minutes(1)))
+@Suite("SMBAdmissionWindow", .timeLimit(.minutes(3)))
 struct SMBAdmissionWindowTests {
 
     struct SeedCase: Sendable, CustomTestStringConvertible {

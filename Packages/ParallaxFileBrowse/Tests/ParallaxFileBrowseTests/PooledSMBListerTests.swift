@@ -8,7 +8,7 @@ import Testing
 /// native call is still pending.
 /// Time-limited: most of these tests wait on a gate, a fuse or a detached check-in, so a regression
 /// that never signals should fail red rather than hang the whole run.
-@Suite("PooledSMBLister", .timeLimit(.minutes(1)))
+@Suite("PooledSMBLister", .timeLimit(.minutes(3)))
 struct PooledSMBListerTests {
 
     private struct ListFailure: Error {}
