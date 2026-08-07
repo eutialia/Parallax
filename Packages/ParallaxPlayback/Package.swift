@@ -41,7 +41,12 @@ let package = Package(
             dependencies: [
                 "ParallaxPlayback",
                 "ParallaxCore",
-                .product(name: "ParallaxCoreTestSupport", package: "ParallaxCore"),
+                // Never add ParallaxCoreTestSupport here: it's a SECOND product of the
+                // ParallaxCore package, and a sibling product drags in a duplicate
+                // ParallaxCore target when this reaches the app-hosted ParallaxTests
+                // bundle, breaking `as? AppError` casts. ParallaxTestScaling is safe —
+                // it's the only ParallaxCore-package product with no ParallaxCore dep.
+                .product(name: "ParallaxTestScaling", package: "ParallaxCore"),
             ],
             swiftSettings: [ .swiftLanguageMode(.v6) ]
         ),
@@ -50,7 +55,7 @@ let package = Package(
             dependencies: [
                 "ParallaxPlayback",
                 "ParallaxPlaybackTestSupport",
-                .product(name: "ParallaxCoreTestSupport", package: "ParallaxCore"),
+                .product(name: "ParallaxTestScaling", package: "ParallaxCore"),
             ],
             resources: [
                 .copy("Fixtures"),

@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		0A691D74E0B02484D9953B0E /* ParallaxPlaybackTestSupport in Frameworks */ = {isa = PBXBuildFile; productRef = BCD82FE15B4AF58016FEF5C1 /* ParallaxPlaybackTestSupport */; };
+		340517C31CAC50D1812C9CFA /* ParallaxTestScaling in Frameworks */ = {isa = PBXBuildFile; productRef = 9E971FF0816E60C82857DB13 /* ParallaxTestScaling */; };
 		DAC3F6F12FC6654500EF06E5 /* ParallaxCore in Frameworks */ = {isa = PBXBuildFile; productRef = DAC3F6F02FC6654500EF06E5 /* ParallaxCore */; };
 		DAC3F6F42FC6655100EF06E5 /* ParallaxFileBrowse in Frameworks */ = {isa = PBXBuildFile; productRef = DAC3F6F32FC6655100EF06E5 /* ParallaxFileBrowse */; };
 		DAC3F6F72FC6655C00EF06E5 /* ParallaxJellyfin in Frameworks */ = {isa = PBXBuildFile; productRef = DAC3F6F62FC6655C00EF06E5 /* ParallaxJellyfin */; };
@@ -91,6 +92,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				0A691D74E0B02484D9953B0E /* ParallaxPlaybackTestSupport in Frameworks */,
+				340517C31CAC50D1812C9CFA /* ParallaxTestScaling in Frameworks */,
 				DAE931F4302291E900CBE663 /* ParallaxSubtitles in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -176,6 +178,7 @@
 			name = ParallaxTests;
 			packageProductDependencies = (
 				BCD82FE15B4AF58016FEF5C1 /* ParallaxPlaybackTestSupport */,
+				9E971FF0816E60C82857DB13 /* ParallaxTestScaling */,
 				DAE931F3302291E900CBE662 /* ParallaxSubtitles */,
 			);
 			productName = ParallaxTests;
@@ -665,6 +668,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = DAC3F6F82FC6656700EF06E5 /* XCLocalSwiftPackageReference "Packages/ParallaxPlayback" */;
 			productName = ParallaxPlaybackTestSupport;
+		};
+		9E971FF0816E60C82857DB13 /* ParallaxTestScaling */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = DAC3F6EF2FC6654500EF06E5 /* XCLocalSwiftPackageReference "Packages/ParallaxCore" */;
+			productName = ParallaxTestScaling;
 		};
 		DAC3F6F02FC6654500EF06E5 /* ParallaxCore */ = {
 			isa = XCSwiftPackageProductDependency;

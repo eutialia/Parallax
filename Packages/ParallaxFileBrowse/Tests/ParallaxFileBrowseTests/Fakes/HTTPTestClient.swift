@@ -1,6 +1,6 @@
 import Foundation
 import Network
-import ParallaxCoreTestSupport
+import ParallaxTestScaling
 
 /// A fresh ephemeral `URLSession` per call. The bridge suites must NOT share
 /// `URLSession.shared`: its process-wide cache and connection pool leak state between tests that
