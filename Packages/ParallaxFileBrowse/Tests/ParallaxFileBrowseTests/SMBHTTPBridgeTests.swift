@@ -3,7 +3,7 @@ import Testing
 import ParallaxCore
 @testable import ParallaxFileBrowse
 
-@Suite("SMBHTTPBridge")
+@Suite("SMBHTTPBridge", .timeLimit(.minutes(1)))
 struct SMBHTTPBridgeTests {
 
     /// `byte[i] == i % 251`, so any slice is verifiable by index alone.
@@ -29,7 +29,10 @@ struct SMBHTTPBridgeTests {
                                    fileName: "video.mp4", contentType: "video/mp4")
         let url: URL
         do {
-            url = try await bridge.start()
+            // Loopback, never the default `.lan` scope: headless CI runners grant no local-network
+            // access, so LAN-scope self-connections crawl through the policy path for minutes and
+            // starve the whole cooperative pool. Loopback is exempt from that path.
+            url = try await bridge.start(scope: .loopback)
         } catch {
             await bridge.stop()
             throw error

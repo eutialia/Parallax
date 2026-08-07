@@ -331,8 +331,10 @@ struct SMBConnectionPoolTests {
 
         // No further pool traffic: only the scheduled sweep can tear this down — and it sleeps on a
         // REAL clock, so this waits in real time rather than in scheduler turns. The ceiling is an
-        // anti-hang bound, so it scales for oversubscribed CI runners instead of flaking on them.
-        let deadline = ContinuousClock().now.advanced(by: CITimeScale.seconds(5))
+        // anti-hang bound, so it scales for oversubscribed CI runners instead of flaking on them —
+        // capped below the suite's one-minute time limit, which the bare ×12 CI scale would equal
+        // exactly, leaving the wait unable to ever win the race on a slow runner.
+        let deadline = ContinuousClock().now.advanced(by: min(CITimeScale.seconds(5), .seconds(45)))
         while world.disconnectedIDs.isEmpty, ContinuousClock().now < deadline {
             try await Task.sleep(for: .milliseconds(10))
         }
