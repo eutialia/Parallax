@@ -2399,4 +2399,214 @@ struct PlayerViewModelTests {
             #expect((info[MPNowPlayingInfoPropertyElapsedPlaybackTime] as? Double) == 120.0)
         }
     }
+
+    /// The SMB thumbnail backfill seam (`scheduleThumbnailBackfill()`, `backfillThumbnail`,
+    /// `backfillDelay`): a session's first `.playing` beat schedules a low-priority, delayed
+    /// frame capture that lands in the app's `MediaArtworkProvider` sink — see
+    /// `PlayerViewModel.scheduleThumbnailBackfill()`. These tests drive the seam directly
+    /// (never a real `MediaArtworkProvider`) with a short injected `backfillDelay` so nothing
+    /// here waits wall-clock seconds for the real 8s default.
+    @Suite("SMB thumbnail backfill")
+    @MainActor
+    struct SMBThumbnailBackfillTests {
+        /// Records every `backfillThumbnail` invocation the VM drives — the `duration`/
+        /// `performsIO` arguments, plus whatever the test's own closure got back from calling
+        /// the injected `captureFrame`. Actor-isolated: the VM calls in from its own low-priority
+        /// backfill `Task`, off the MainActor test body.
+        private actor BackfillRecorder {
+            private(set) var invocations: [(duration: Duration?, performsIO: Bool, data: Data?)] = []
+
+            func record(duration: Duration?, performsIO: Bool, data: Data?) {
+                invocations.append((duration, performsIO, data))
+            }
+        }
+
+        /// Polls until `recorder` has at least one invocation or `timeout` passes. The backfill
+        /// fires from a detached `Task` the beat handler never awaits, so `engine.settle()` alone
+        /// only proves the beat was consumed — not that the (short, injected) delay has elapsed.
+        /// Used by the negative cases too: it returns the INSTANT anything is recorded, so a
+        /// regression reports immediately instead of riding out a fixed sleep. The ceiling is an
+        /// anti-hang bound, so it scales for oversubscribed CI runners.
+        private func waitForBackfill(
+            _ recorder: BackfillRecorder,
+            timeout: Duration = .seconds(2 * ciTimeScale)
+        ) async {
+            let deadline = ContinuousClock.now.advanced(by: timeout)
+            while await recorder.invocations.isEmpty, ContinuousClock.now < deadline {
+                try? await Task.sleep(for: .milliseconds(10))
+            }
+        }
+
+        /// The one `backfillThumbnail` sink these tests install: forwards the arguments the VM
+        /// passed, plus whatever the VM's own capture closure returns, into `recorder`.
+        private func recordingSink(
+            into recorder: BackfillRecorder
+        ) -> @Sendable (Duration?, Bool, @escaping @Sendable () async -> Data?) async -> Void {
+            { duration, performsIO, captureFrame in
+                await recorder.record(
+                    duration: duration, performsIO: performsIO, data: await captureFrame())
+            }
+        }
+
+        /// `makeVM` with the shared recording sink already wired — what every SMB case here wants.
+        private func makeVM(
+            engine: FakePlaybackEngine,
+            recorder: BackfillRecorder,
+            backfillDelay: Duration = .milliseconds(5)
+        ) -> PlayerViewModel {
+            makeVM(
+                engine: engine,
+                backfillDelay: backfillDelay,
+                backfillThumbnail: recordingSink(into: recorder)
+            )
+        }
+
+        /// A `PlayerViewModel` on the SMB path with both backfill seams injectable — mirrors
+        /// `SMBPlaybackStartTests.makeVM` but exposes `backfillThumbnail`/`backfillDelay`, which
+        /// that suite predates.
+        private func makeVM(
+            engine: FakePlaybackEngine,
+            backfillDelay: Duration = .milliseconds(5),
+            backfillThumbnail: @escaping @Sendable (Duration?, Bool, @escaping @Sendable () async -> Data?) async -> Void = { _, _, _ in }
+        ) -> PlayerViewModel {
+            PlayerViewModel(
+                deviceProfileBuilder: makeTestDeviceProfileBuilder(),
+                playbackInfo: StubPlaybackReporting(),
+                resolve: { _, _, _, _ in
+                    Issue.record("SMB playback must not call the Jellyfin resolve")
+                    throw AppError.playback(.unsupportedFormat)
+                },
+                engineFactory: { _, _ in engine },
+                audioSession: NoopAudioSession(),
+                subtitleFetch: { _ in nil },
+                smbResumeStore: SMBTestFixtures.inertResumeStore(),
+                backfillThumbnail: backfillThumbnail,
+                backfillDelay: backfillDelay
+            )
+        }
+
+        private func smbItem(hasTrustworthyDuration: Bool = true) -> SMBPlaybackItem {
+            SMBPlaybackItem(
+                itemID: ItemID(rawValue: "smb-backfill-item"),
+                url: URL(string: "smb://nas.local/Media/Movies/Backfill.mkv")!,
+                title: "Backfill",
+                vlcOptions: [],
+                hasTrustworthyDuration: hasTrustworthyDuration
+            )
+        }
+
+        @Test("an SMB session's first .playing beat schedules exactly one backfill; a second .playing beat schedules none")
+        func firstPlayingBeatSchedulesExactlyOneBackfill() async throws {
+            let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+            // Flipped off the fake's default so the assertion below can't pass on `true == true`:
+            // the sink must report what THIS engine says, not the protocol default.
+            engine.captureFramePerformsIO = false
+            let recorder = BackfillRecorder()
+            let vm = makeVM(engine: engine, recorder: recorder)
+
+            await vm.start(smbItem: smbItem())
+            engine.push(.playing(position: CMTime(seconds: 1, preferredTimescale: 1),
+                                  duration: CMTime(seconds: 6000, preferredTimescale: 1), buffered: nil))
+            engine.push(.playing(position: CMTime(seconds: 2, preferredTimescale: 1),
+                                  duration: CMTime(seconds: 6000, preferredTimescale: 1), buffered: nil))
+            try await engine.settle()
+
+            await waitForBackfill(recorder)
+
+            let invocations = await recorder.invocations
+            #expect(invocations.count == 1)
+            // Threaded straight from `engine.captureFramePerformsIO`: the sink gates an I/O-issuing
+            // capture off non-LAN links, so a hardcoded value here would be a silent policy bypass.
+            #expect(invocations.first?.performsIO == false)
+        }
+
+        @Test("the engine's captured frame reaches the backfill sink's capture closure after the injected delay")
+        func capturedFrameReachesSinkAfterDelay() async throws {
+            let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+            let frame = Data([0xAA, 0xBB, 0xCC])
+            engine.captureFrameResult = frame
+            let recorder = BackfillRecorder()
+            let vm = makeVM(engine: engine, recorder: recorder)
+
+            await vm.start(smbItem: smbItem())
+            engine.push(.playing(position: CMTime(seconds: 1, preferredTimescale: 1),
+                                  duration: CMTime(seconds: 6000, preferredTimescale: 1), buffered: nil))
+            try await engine.settle()
+
+            await waitForBackfill(recorder)
+
+            #expect(await recorder.invocations.first?.data == frame)
+            #expect(engine.calls.contains("captureFrame"))
+        }
+
+        /// Two independent protections, either of which alone would hold: `stop()` cancels the
+        /// pending backfill `Task` outright, and it also nils the SMB session — which the task
+        /// re-reads AFTER its sleep, so even a cancel that lost the race finds nothing to capture
+        /// for. (`tearDownEngine()`, which `stop()` also runs, cancels the task as well, so a
+        /// reactive engine rebuild can't burn the session's one shot either.)
+        @Test("stop() before the backfill delay fires prevents any store")
+        func stopBeforeDelayPreventsStore() async throws {
+            let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+            let recorder = BackfillRecorder()
+            // `stop()` has to land inside this window in WALL-CLOCK time, against a `.low`-priority
+            // sleep — so the window scales for oversubscribed runners rather than flaking on them.
+            let delay = Duration.milliseconds(Int(500 * ciTimeScale))
+            let vm = makeVM(engine: engine, recorder: recorder, backfillDelay: delay)
+
+            await vm.start(smbItem: smbItem())
+            engine.push(.playing(position: CMTime(seconds: 1, preferredTimescale: 1),
+                                  duration: CMTime(seconds: 6000, preferredTimescale: 1), buffered: nil))
+            try await engine.settle()
+
+            // Well within the delay — the pending backfill Task must not survive this.
+            await vm.stop()
+
+            // Polls well past the delay, returning early the moment anything IS recorded.
+            await waitForBackfill(recorder, timeout: delay * 3)
+            #expect(await recorder.invocations.isEmpty)
+        }
+
+        @Test("a non-SMB (Jellyfin) session never invokes the backfill sink")
+        func nonSMBSessionNeverInvokesBackfill() async throws {
+            let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+            let resolved = PlayerFixtures.resolved()
+            let recorder = BackfillRecorder()
+            let vm = PlayerViewModel(
+                deviceProfileBuilder: makeTestDeviceProfileBuilder(),
+                playbackInfo: StubPlaybackReporting(),
+                resolve: { _, _, _, _ in resolved },
+                engineFactory: { _, _ in engine },
+                audioSession: NoopAudioSession(),
+                backfillThumbnail: recordingSink(into: recorder),
+                backfillDelay: .milliseconds(5)
+            )
+
+            await vm.start(item: PlayerFixtures.movieDetail())
+            engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+            try await engine.settle()
+
+            // Polls far past the (short) delay, had a backfill been scheduled — the gate is
+            // `smbSession != nil`, which a Jellyfin session never sets.
+            await waitForBackfill(recorder, timeout: .milliseconds(Int(500 * ciTimeScale)))
+            #expect(await recorder.invocations.isEmpty)
+        }
+
+        @Test("an untrustworthy duration is never carried into the backfill sink")
+        func untrustworthyDurationStoresNilDuration() async throws {
+            let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+            let recorder = BackfillRecorder()
+            let vm = makeVM(engine: engine, recorder: recorder)
+
+            await vm.start(smbItem: smbItem(hasTrustworthyDuration: false))
+            // Numeric, real-looking duration — proving the nil comes from the trust bit, not
+            // from `hasKnownDuration` being false too.
+            engine.push(.playing(position: CMTime(seconds: 1, preferredTimescale: 1),
+                                  duration: CMTime(seconds: 6000, preferredTimescale: 1), buffered: nil))
+            try await engine.settle()
+
+            await waitForBackfill(recorder)
+
+            #expect(await recorder.invocations.first?.duration == nil)
+        }
+    }
 }

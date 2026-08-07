@@ -18,6 +18,11 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     private let player = AVPlayer()
     public nonisolated var avPlayer: AVPlayer { player }
 
+    /// `AVAssetImageGenerator` issues fresh range reads for its still — over the SMB bridge
+    /// route those queue behind (and ahead of) the player's own reads on the same reader. See
+    /// the protocol doc.
+    public nonisolated let captureFramePerformsIO = true
+
     /// Injected buffering profile — see `StartupTuning`. `.systemDefault` (every field
     /// `nil`) applies nothing in `load()`, so the shipping default is byte-identical to
     /// today's behavior.
@@ -324,6 +329,78 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         defaultAudioStreamIndex = nil
         defaultSubtitleStreamIndex = nil
         continuation.finish()
+    }
+
+    /// Still-frame grab for SMB thumbnail backfill: reuses the already-open
+    /// `AVPlayerItem` asset so the capture never re-opens the network URL. Loose
+    /// keyframe tolerances keep it off the exact-decode path (which can hitch
+    /// playback); failures of any kind become nil so the live session is never
+    /// perturbed. Encodes via `ImageTranscode` (HEIC, JPEG fallback) — the same
+    /// codec the SMB thumbnail cache writes — so the app can store the bytes
+    /// as-is under a `.heic` name.
+    public func captureFrame() async -> Data? {
+        guard let asset = currentItem?.asset else { return nil }
+        let time = player.currentTime()
+        // `.invalid` / non-numeric (e.g. indefinite) clocks have no capture target;
+        // a pre-ready item can also sit at a non-numeric time.
+        guard time.isValid, time.isNumeric else { return nil }
+
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        // Land on a nearby keyframe rather than forcing an exact decode: a 1s
+        // window is plenty for a browse-tile still and avoids the hitch an exact
+        // tolerance can cause on a live, still-decoding item.
+        let tolerance = CMTime(seconds: 1, preferredTimescale: 600)
+        generator.requestedTimeToleranceBefore = tolerance
+        generator.requestedTimeToleranceAfter = tolerance
+        // The SAME 320pt tier the browse thumbnailers produce (`AVThumbnailer`,
+        // `VLCThumbnailer`): a backfilled still lands in `SMBThumbnailCache`
+        // beside theirs, under a budget sized at ~30–120 KB per HEIC, and a 1280
+        // still is 5–10× that. Height-bounded with a 0 width, so AVFoundation
+        // scales the width from the source aspect (a portrait clip caps on its
+        // long edge too, since that IS the height).
+        generator.maximumSize = CGSize(width: 0, height: 320)
+
+        do {
+            // Completion-handler API rather than `image(at:)` — the async form requires `sending`
+            // the generator, which a MainActor holder can't do (same wall AVThumbnailer hit).
+            // Any error (no track, decode fail, cancelled generation) becomes nil — the backfill
+            // is best-effort only. Cancellation of the awaiting task (stop/teardown) is forwarded
+            // to AVFoundation explicitly: without it the generator's range reads keep streaming
+            // after the Swift task dies. `nonisolated(unsafe)`: the handler closure is `@Sendable`
+            // and the generator isn't, but `cancelAllCGImageGeneration()` is documented
+            // thread-safe and this handle is used for that one call only (same idiom as
+            // VLCKitEngine's player handle).
+            nonisolated(unsafe) let cancellableGenerator = generator
+            let cgImage: CGImage = try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { continuation in
+                    generator.generateCGImageAsynchronously(for: time) { image, _, error in
+                        if let image {
+                            continuation.resume(returning: image)
+                        } else {
+                            continuation.resume(throwing: error ?? CancellationError())
+                        }
+                    }
+                }
+            } onCancel: {
+                cancellableGenerator.cancelAllCGImageGeneration()
+            }
+            // HEIC-encoding a full frame is real CPU work; `captureFrame()`'s contract
+            // (`PlaybackEngine.swift`) says it must never stall playback, and this
+            // engine is pinned to `@MainActor` — so the encode has to run off-actor.
+            // `CGImage`/`Data` are Sendable.
+            return await Self.encode(cgImage)
+        } catch {
+            return nil
+        }
+    }
+
+    /// Runs `ImageTranscode.encodeHEIC` off the main actor via a detached task — see
+    /// `captureFrame()`. `nonisolated` because encoding touches no engine/player state.
+    private nonisolated static func encode(_ image: CGImage) async -> Data? {
+        await Task.detached(priority: .utility) {
+            try? ImageTranscode.encodeHEIC(image)
+        }.value
     }
 
     /// Tears down the current item's observers + async inventory load. Shared by

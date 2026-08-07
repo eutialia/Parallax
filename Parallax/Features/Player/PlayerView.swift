@@ -254,7 +254,17 @@ struct PlayerView: View {
                 },
                 engineFactory: deps.playbackEngineFactory,
                 audioSession: deps.audioSession,
-                subtitleFetch: subtitleFetch
+                subtitleFetch: subtitleFetch,
+                // SMB-only: live-session frame grab → `MediaArtworkProvider` cache. Duration
+                // is threaded from the VM at call time (~8s in); the WAN I/O skip and the
+                // cache-key recipe both stay inside the provider. Jellyfin construction
+                // leaves the default no-op.
+                backfillThumbnail: { duration, captureFramePerformsIO, captureFrame in
+                    await deps.mediaArtworkProvider.backfillThumbnail(
+                        item: item, ref: ref, duration: duration,
+                        captureFramePerformsIO: captureFramePerformsIO, captureFrame: captureFrame
+                    )
+                }
             )
             viewModel = vm
             #if DEBUG

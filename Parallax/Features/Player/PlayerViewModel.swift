@@ -660,6 +660,14 @@ final class PlayerViewModel {
     /// `.playing` beat, which includes a track-switch rebuild.
     private var deliveryProbeTask: Task<Void, Never>?
 
+    /// Set once per SMB session on its first `.playing` beat; gates `scheduleThumbnailBackfill()`
+    /// so a resume-from-pause or post-stall `.playing` beat never schedules a second backfill task.
+    private var didScheduleThumbnailBackfill = false
+    /// Pending low-priority SMB thumbnail backfill — waits past startup churn, then grabs one
+    /// frame from the live engine. Cancelled on session teardown (`stop()` / deinit) so a
+    /// dismissed player never pays for a capture that will never be stored.
+    private var thumbnailBackfillTask: Task<Void, Never>?
+
     /// The resolve surface, narrowed so the integration test can inject a stub
     /// without standing up a full PlaybackInfoService. Mirrors
     /// PlaybackInfoService.resolve(item:capabilities:startTime:selection:).
@@ -673,6 +681,17 @@ final class PlayerViewModel {
     /// resolve left the scrim up forever (tvOS field report, 2026-07-20). Injectable
     /// so tests can force the timeout without waiting wall-clock seconds.
     private let reloadResolveDeadline: Duration
+
+    /// SMB-only thumbnail backfill sink: `(duration, engine.captureFramePerformsIO, captureFrame)
+    /// → Void`. Default no-op so the Jellyfin construction site (and every test fixture) compiles
+    /// unchanged; the SMB `PlayerView` branch wires it to `MediaArtworkProvider.backfillThumbnail`,
+    /// which uses the `Bool` to skip an I/O-issuing capture on a non-LAN link. The duration is
+    /// sampled at call time (~8s into playback), not at schedule time.
+    private let backfillThumbnail: @Sendable (Duration?, Bool, @escaping @Sendable () async -> Data?) async -> Void
+
+    /// Delay before the SMB thumbnail backfill grabs its frame — see `scheduleThumbnailBackfill()`.
+    /// Injectable so tests don't wait wall-clock seconds for it to fire.
+    private let backfillDelay: Duration
 
     init(
         deviceProfileBuilder: DeviceProfileBuilder,
@@ -700,7 +719,9 @@ final class PlayerViewModel {
         fetchDelivery: @escaping @Sendable (String) async -> TranscodeDelivery? = { _ in nil },
         deliveryProbeSchedule: [Duration] = [.seconds(2), .seconds(5)],
         reloadResolveDeadline: Duration = .seconds(15),
-        smbResumeStore: SMBResumeStore = .shared
+        smbResumeStore: SMBResumeStore = .shared,
+        backfillThumbnail: @escaping @Sendable (Duration?, Bool, @escaping @Sendable () async -> Data?) async -> Void = { _, _, _ in },
+        backfillDelay: Duration = .seconds(8)
     ) {
         self.deviceProfileBuilder = deviceProfileBuilder
         self.playbackInfo = playbackInfo
@@ -717,6 +738,8 @@ final class PlayerViewModel {
         self.deliveryProbeSchedule = deliveryProbeSchedule
         self.reloadResolveDeadline = reloadResolveDeadline
         self.smbResumeStore = smbResumeStore
+        self.backfillThumbnail = backfillThumbnail
+        self.backfillDelay = backfillDelay
     }
 
     isolated deinit {
@@ -731,6 +754,7 @@ final class PlayerViewModel {
         stallDebounceTask?.cancel()
         keepaliveTask?.cancel()
         deliveryProbeTask?.cancel()
+        thumbnailBackfillTask?.cancel()
         segmentsTask?.cancel()
     }
 
@@ -1138,7 +1162,46 @@ final class PlayerViewModel {
     private func clearSMBSession() async {
         guard let session = smbSession else { return }
         smbSession = nil
+        // Session-scoped one-shot: a fresh SMB session (retry, next file) must not inherit a
+        // stale "already scheduled" flag from the previous one — and the previous session's
+        // still-sleeping backfill task must not wake up against the new session either.
+        didScheduleThumbnailBackfill = false
+        thumbnailBackfillTask?.cancel()
+        thumbnailBackfillTask = nil
         await session.resumeSaveTask?.value
+    }
+
+    /// Best-effort SMB thumbnail backfill: waits past playback startup churn (~8s — first frames
+    /// are often black / fade-in, and the engine is still settling decode + buffer), then — if the
+    /// session is still the active one and no thumbnail already exists for this file — grabs a
+    /// frame from the live engine and stores it into the SMB thumbnail cache, healing a
+    /// previously-failed or never-attempted thumbnail just by being watched. Low priority: must
+    /// never affect playback. Cancelled on session teardown (`stop()`, `tearDownEngine()`, deinit).
+    private func scheduleThumbnailBackfill() {
+        thumbnailBackfillTask?.cancel()
+        // The delay is read HERE, and `self` is only reached after it: holding a strong `self`
+        // across an 8s sleep pins the whole view model for the length of the delay and puts the
+        // `isolated deinit`'s cancel out of reach. Same shape as `stallDebounceTask` /
+        // `deliveryProbeTask`.
+        let delay = backfillDelay
+        thumbnailBackfillTask = Task(priority: .low) { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled, let self else { return }
+            guard let session = self.smbSession, let engine = self.engine else { return }
+            // Duration sampled NOW (not at schedule time): playback has progressed ~8s, and
+            // VLC may have only just resolved a real length. Same gate as the resume store
+            // (`saveSMBResumeThrottled`): the duration only rides along when it's both real
+            // (`hasKnownDuration`) AND TRUSTED (`session.hasTrustworthyDuration`) — an
+            // incomplete file can play with a NUMERIC but ESTIMATED length
+            // (VLCKitEngine's fileSize×time/readBytes guess), and that must never ride along
+            // as a bogus sidecar.
+            let duration: Duration? = (self.hasKnownDuration && session.hasTrustworthyDuration)
+                ? .seconds(CMTimeGetSeconds(self.currentDuration))
+                : nil
+            await self.backfillThumbnail(duration, engine.captureFramePerformsIO) { [weak engine] in
+                await engine?.captureFrame()
+            }
+        }
     }
 
     /// Resolve + load + play. Shared by first play (`start`) and a transcode
@@ -1369,6 +1432,15 @@ final class PlayerViewModel {
         keepaliveTask = nil
         deliveryProbeTask?.cancel()
         deliveryProbeTask = nil
+        // The backfill is a ONE-SHOT per SMB session, armed on the first `.playing` beat and
+        // sitting on a multi-second delay. A reactive engine rebuild (AVKit → VLC) mid-delay would
+        // otherwise let it fire against an engine being torn down and burn the session's only
+        // attempt; cancelling and re-arming lets the rebuilt engine's next `.playing` beat schedule
+        // a clean one. The SMB session itself survives a rebuild, so the flag has to be reset here
+        // too (`clearSMBSession` only runs when the session really ends).
+        thumbnailBackfillTask?.cancel()
+        thumbnailBackfillTask = nil
+        didScheduleThumbnailBackfill = false
         transcodeDelivery = nil
         if let engine {
             await engine.teardown()
@@ -1464,6 +1536,8 @@ final class PlayerViewModel {
         unfreezeVideoSurface()
         deliveryProbeTask?.cancel()
         deliveryProbeTask = nil
+        thumbnailBackfillTask?.cancel()
+        thumbnailBackfillTask = nil
         transcodeDelivery = nil
         availableAudioTracks = []
         availableSubtitleTracks = []
@@ -2488,6 +2562,14 @@ final class PlayerViewModel {
                 }
             } else if smbSession != nil {
                 saveSMBResumeThrottled()
+            }
+            // One-shot SMB thumbnail backfill: first `.playing` only (the flag is consumed
+            // here; resume-from-pause / post-stall beats skip it). Schedules an 8s-delayed
+            // low-priority capture so startup churn and an often-black first frame don't
+            // poison the cache — see `scheduleThumbnailBackfill()`.
+            if smbSession != nil, !didScheduleThumbnailBackfill {
+                didScheduleThumbnailBackfill = true
+                scheduleThumbnailBackfill()
             }
         case .paused(let position, let duration, let buffered):
             // A LIVE beat like .playing: a paused scrub's re-anchor is re-paused by

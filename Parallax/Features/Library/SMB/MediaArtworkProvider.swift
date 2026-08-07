@@ -260,6 +260,37 @@ actor MediaArtworkProvider {
         )
     }
 
+    /// SMB playback-session thumbnail backfill entry point. Called from `PlayerViewModel` a few
+    /// seconds into an SMB session that has no thumbnail yet. Checks the cache first so a file that
+    /// already has one never pays for a frame capture; `captureFrame` is only invoked on a real
+    /// miss. Best-effort throughout: any nil from `captureFrame`, or a storage failure, is a silent
+    /// no-op — this must never surface an error to playback. A successful store also clears any
+    /// persistent `.fail` marker (see `SMBThumbnailCache.store`), so a previously-failed file heals
+    /// itself just by being watched. The movie→key recipe lives only here (via `thumbnailKey`) so
+    /// the player never reimplements it.
+    ///
+    /// `captureFramePerformsIO` (from `PlaybackEngine.captureFramePerformsIO`) gates an I/O-issuing
+    /// capture (AVKit) off non-LAN links: its fresh range reads queue on the SAME serialized bridge
+    /// reader playback is pulling its next chunk from, so on WAN they contend for bandwidth the
+    /// player needs more than the thumbnail does. VLC's capture reads no bytes at all and always
+    /// runs, regardless of link class.
+    func backfillThumbnail(
+        item: Item,
+        ref: SMBServerRef,
+        duration: Duration?,
+        captureFramePerformsIO: Bool,
+        captureFrame: @Sendable () async -> Data?
+    ) async {
+        guard let key = thumbnailKey(for: item, ref: ref) else { return }
+        // Cross-actor call into `SMBThumbnailCache` — needs await even from this actor.
+        guard await cache.existing(for: key) == nil else { return }
+        if captureFramePerformsIO, await pool.linkClass(host: ref.data.host) != .lan {
+            return
+        }
+        guard let data = await captureFrame() else { return }
+        _ = await cache.store(data, duration: duration, for: key)
+    }
+
     /// One-time link classification for `ref`'s host, run before a prefetch batch schedules. Skips
     /// instantly once the pool knows the class; otherwise pays one Keychain read + one probe
     /// checkout (which the pool keeps warm for the first real fetch). Non-movie items can't build a
