@@ -69,6 +69,10 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// drawable handle, not a control surface.
     public nonisolated var vlcPlayer: VLCMediaPlayer { player }
 
+    /// VLC's snapshot reads no bytes at all — it grabs the frame already on the live decode
+    /// surface, no fresh SMB I/O. See the protocol doc.
+    public nonisolated let captureFramePerformsIO = false
+
     /// Live playback clock for the client-side subtitle overlay. Returns `.invalid` while
     /// libvlc has no clock (before the first frame, during a seek) so the overlay skips
     /// rather than flashing the 0:00 cue. See `clockMs` for why `intValue` alone can't
@@ -144,6 +148,20 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// total is what the scrub bar needs. 0 until captured (→ `.indefinite`, indeterminate bar);
     /// reset on every fresh `load`. Never used once `media.length` resolves to a real value.
     private var lastEstimateMs: Int32 = 0
+
+    /// In-flight `captureFrame()` continuation. VLC's `saveVideoSnapshot(at:withWidth:andHeight:)`
+    /// is fire-and-forget; the PNG lands on disk and surfaces via `mediaPlayerSnapshot(_:)`. The
+    /// continuation bridges that into `async` with a timeout race — see `captureFrame()`. Nil'd
+    /// immediately on resume so a late snapshot/timeout can never double-resume.
+    private var snapshotContinuation: CheckedContinuation<Bool, Never>?
+    /// Races the snapshot notification; cancelled when the notification arrives first (or on
+    /// teardown) so a late timeout never touches a finished capture.
+    private var snapshotTimeoutTask: Task<Void, Never>?
+    /// Full path of the PNG the in-flight `captureFrame()` is waiting on. `mediaPlayerSnapshot(_:)`
+    /// carries no identity of its own (VLCKit's notification payload names only the player), so this
+    /// is the only way to tell a genuine snapshot for THIS capture apart from a stale notification
+    /// for an earlier, already-timed-out capture whose write raced back in after the fact.
+    private var snapshotExpectedPath: String?
 
     /// Source file size in bytes (from the SMB lister via `PlaybackHints`), or nil for streamed
     /// sources. The only way to convert the demux read-rate into a total runtime once `position`
@@ -526,6 +544,9 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         progressTask = nil
         resumeTask?.cancel()
         resumeTask = nil
+        // A still-waiting captureFrame continuation must not outlive the player: resume
+        // it as a failure before nil'ing the delegate (which would otherwise strand it).
+        completeSnapshot(success: false)
         pendingSeekMs = nil
         rateFlushAnchorMs = nil
         player.drawable = nil
@@ -533,6 +554,98 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         player.stop()
         currentMedia = nil
         continuation.finish()
+    }
+
+    /// Still-frame grab for SMB thumbnail backfill: asks libvlc for a PNG snapshot of the
+    /// live decode surface (no second network open), then re-encodes to HEIC so the app
+    /// cache can store the bytes under its current `.heic` extension. Best-effort: any
+    /// failure (nothing loaded, timeout, empty file, encode error) returns nil and never
+    /// perturbs playback. VLC's snapshot API is fire-and-forget + `mediaPlayerSnapshot`
+    /// notification — bridged here with a checked continuation raced against a 5s timeout;
+    /// the nil-out-after-resume pattern makes a double-resume impossible.
+    public func captureFrame() async -> Data? {
+        guard currentMedia != nil else { return nil }
+
+        // Unique temp path per capture — VLC writes PNG regardless of extension, but the
+        // suffix keeps the file recognizable in a crash dump / leftover-temp scan.
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("png")
+
+        // If a previous capture is somehow still pending (shouldn't happen — the app
+        // schedules one backfill per session), fail it first so its continuation can't
+        // race this one's resume.
+        completeSnapshot(success: false)
+
+        let succeeded = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            snapshotContinuation = continuation
+            snapshotExpectedPath = path.path
+            snapshotTimeoutTask = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(5))
+                guard !Task.isCancelled else { return }
+                // Hop to MainActor: the timeout Task is unstructured and may resume off-main;
+                // completeSnapshot mutates MainActor-isolated state.
+                await self?.completeSnapshot(success: false)
+            }
+            // Fixed height, width 0: the vendored VLCMediaPlayer.h documents "If width OR
+            // height is 0, original aspect-ratio is preserved" — libvlc itself hands back a
+            // browse-tile-scale PNG instead of a full source-resolution one this method
+            // would otherwise have to decode+downscale on top of. 320 is the tier both browse
+            // thumbnailers emit (`VLCThumbnailer`'s `height: 320` default, `AVThumbnailer`'s
+            // `targetHeight`); a backfilled still shares their cache and its ~30–120 KB per
+            // HEIC budget, which a 1280 frame blows by 5–10×.
+            player.saveVideoSnapshot(at: path.path, withWidth: 0, andHeight: 320)
+        }
+
+        // Immediate best-effort cleanup, with a delayed second pass behind it (see
+        // `scheduleCleanup`) — libvlc's write isn't bounded by our timeout, so a capture that
+        // timed out here can still land on disk moments later.
+        defer { Self.scheduleCleanup(at: path) }
+        guard succeeded else { return nil }
+        // Reading + decoding the PNG and re-encoding it as HEIC is real CPU work for a
+        // full frame; `captureFrame()`'s contract (`PlaybackEngine.swift`) says it must
+        // never stall playback, and this whole engine is pinned to `@MainActor` — so the
+        // work has to run off-actor. `Data`/`CGImage` are Sendable.
+        return await Self.decodeAndEncode(pngAt: path)
+    }
+
+    /// Decodes the PNG at `path` and re-encodes it as HEIC, entirely off the main actor via a
+    /// detached task. Long-edge-capped at 320: the snapshot is already 320 tall (see
+    /// `captureFrame()`), but a very wide source's width can still exceed that, and this is the
+    /// tier AVKitEngine and both browse thumbnailers share. `nonisolated` because none of this
+    /// touches VLC or actor state — it's pure ImageIO work. ImageTranscode falls back to JPEG when
+    /// the host has no HEVC encoder (simulator).
+    private nonisolated static func decodeAndEncode(pngAt path: URL) async -> Data? {
+        await Task.detached(priority: .utility) {
+            guard let pngData = try? Data(contentsOf: path), !pngData.isEmpty else { return nil }
+            guard let cgImage = ImageTranscode.downscaledImage(from: pngData, maxPixelSize: 320) else {
+                return nil
+            }
+            return try? ImageTranscode.encodeHEIC(cgImage)
+        }.value
+    }
+
+    /// Removes the temp snapshot at `path` now, then again after a delay. libvlc's snapshot write
+    /// is fire-and-forget and can land AFTER a timed-out `captureFrame()` already gave up and ran
+    /// its immediate cleanup — without the delayed pass that late write leaks a tmp PNG forever.
+    private nonisolated static func scheduleCleanup(at path: URL) {
+        try? FileManager.default.removeItem(at: path)
+        Task.detached(priority: .background) {
+            try? await Task.sleep(for: .seconds(10))
+            try? FileManager.default.removeItem(at: path)
+        }
+    }
+
+    /// Resume-once for the snapshot continuation. Nil's the stored continuation BEFORE
+    /// `resume` so a late timeout (or a second `mediaPlayerSnapshot`) is a no-op rather
+    /// than a double-resume crash. Also cancels the racing timeout task.
+    private func completeSnapshot(success: Bool) {
+        snapshotTimeoutTask?.cancel()
+        snapshotTimeoutTask = nil
+        snapshotExpectedPath = nil
+        guard let continuation = snapshotContinuation else { return }
+        snapshotContinuation = nil
+        continuation.resume(returning: success)
     }
 
     // MARK: - Private helpers
@@ -1185,6 +1298,36 @@ extension VLCKitEngine: VLCMediaPlayerDelegate {
         MainActor.assumeIsolated {
             handleStateChanged(player.state)
         }
+    }
+
+    /// Snapshot taken: `saveVideoSnapshot(at:withWidth:andHeight:)` finished writing SOME PNG.
+    /// The notification carries no path or capture identity, so it can't tell a genuine write for
+    /// the in-flight `captureFrame()` apart from a stale notification belonging to an earlier,
+    /// already-timed-out capture whose write raced back in after the fact — verifying the expected
+    /// file actually landed on disk is what makes that distinction.
+    ///
+    /// A notification whose expected file is NOT there is therefore IGNORED, not failed. Failing it
+    /// would resolve the continuation the current capture is waiting on and cancel its timeout, so
+    /// one late write from the previous capture killed the next one before libvlc had even started
+    /// it — a capture that would have succeeded reports nil instead. The in-flight capture keeps
+    /// waiting; its own notification or its own 5s timeout ends it.
+    ///
+    /// Isolation shape matches the other delegate methods — legacy events config delivers on main;
+    /// Swift can't prove it, so assert via `assumeIsolated`.
+    public nonisolated func mediaPlayerSnapshot(_ aNotification: Notification) {
+        MainActor.assumeIsolated {
+            guard snapshotFileReady() else { return }
+            completeSnapshot(success: true)
+        }
+    }
+
+    /// Whether the file this specific `captureFrame()` call is waiting on actually exists on
+    /// disk. `snapshots`/`lastSnapshot` (the other VLCKit surfaces for "what did I just write")
+    /// give back an undocumented name/UIImage, not a path to compare — checking the known
+    /// expected path directly is the reliable signal.
+    private func snapshotFileReady() -> Bool {
+        guard let expected = snapshotExpectedPath else { return false }
+        return FileManager.default.fileExists(atPath: expected)
     }
 
     // MARK: — Private (MainActor, called via assumeIsolated)

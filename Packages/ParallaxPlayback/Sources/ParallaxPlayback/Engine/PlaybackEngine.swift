@@ -69,6 +69,22 @@ public protocol PlaybackEngine: AnyObject, Sendable {
     /// Set the playback rate (1.0 = normal). Persisted by the engine so a
     /// later `play()` resumes at the chosen speed.
     func setRate(_ rate: Float) async
+
+    /// Best-effort single-frame capture near the current playback position, for SMB thumbnail
+    /// backfill (see `PlayerViewModel` in the app target). Must never throw and must never stall
+    /// or otherwise perturb playback — any failure (no active item, decode error, API unsupported
+    /// on this engine) returns nil. The returned Data is an already-encoded still image (HEIC or
+    /// JPEG — see below), not raw pixels.
+    func captureFrame() async -> Data?
+
+    /// Whether `captureFrame()` issues its own fresh I/O to produce the still, as opposed to
+    /// reading a frame already resident from ordinary decode. AVKit's `AVAssetImageGenerator`
+    /// issues fresh range reads over the SMB bridge reader — contending with the SAME uplink
+    /// playback is pulling from; VLC's live snapshot reads no bytes at all, it grabs the frame
+    /// already on the decode surface. The app-side backfill (`MediaArtworkProvider`) uses this to
+    /// skip the capture on a non-LAN link, where those extra reads can queue ahead of the
+    /// player's next chunk and cost a buffer dip for a thumbnail.
+    nonisolated var captureFramePerformsIO: Bool { get }
 }
 
 public extension PlaybackEngine {
@@ -87,4 +103,14 @@ public extension PlaybackEngine {
 
     /// Default: no-op. Engines that support variable-speed playback override.
     func setRate(_ rate: Float) async {}
+
+    /// Default: nil. Only engines that can grab a still from the live decode path
+    /// (`AVKitEngine`, `VLCKitEngine`) override; a bare / fake engine never pays for a
+    /// capture the app-side backfill would just discard.
+    func captureFrame() async -> Data? { nil }
+
+    /// Default: true (the conservative assumption — a capture that reads bytes). Symmetric with
+    /// `captureFrame()`'s default: an engine that never overrides `captureFrame()` returns nil
+    /// from it anyway, so whether this reads true or false there never changes behavior for it.
+    nonisolated var captureFramePerformsIO: Bool { true }
 }

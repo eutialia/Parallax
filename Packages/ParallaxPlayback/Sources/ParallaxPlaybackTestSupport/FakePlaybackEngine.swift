@@ -71,6 +71,14 @@ public final class FakePlaybackEngine: PlaybackEngine {
     /// target outside it read as out-of-buffer (→ the transcode re-anchor path).
     public nonisolated(unsafe) var bufferedRange: ClosedRange<Double>? = nil
 
+    /// Returned by `captureFrame()`. `nil` (default) matches the protocol default; a test that
+    /// wants to prove a captured frame flows through to a store sets this before pushing the
+    /// beat that schedules the capture.
+    public nonisolated(unsafe) var captureFrameResult: Data? = nil
+    /// Overrides `captureFramePerformsIO`. Defaults to the protocol's own default (`true`) so a
+    /// test that doesn't care about the WAN-skip behavior isn't surprised by a fake-specific one.
+    public nonisolated(unsafe) var captureFramePerformsIO = true
+
     private let continuation: AsyncStream<PlaybackState>.Continuation
     /// The hand-off ledger `settle()` reads — see `DrainBarrier`.
     private let barrier: DrainBarrier
@@ -192,6 +200,11 @@ public final class FakePlaybackEngine: PlaybackEngine {
     public func teardown() async {
         recordedState.withLock { $0.calls.append("teardown") }
         finish()
+    }
+
+    public func captureFrame() async -> Data? {
+        recordedState.withLock { $0.calls.append("captureFrame") }
+        return captureFrameResult
     }
 }
 
