@@ -22,8 +22,8 @@ nonisolated struct MediaArtwork: Sendable, Equatable {
 }
 
 /// Resolves a poster for a source-neutral `Item` that carries no server artwork — today only the
-/// SMB path, which prefers a strict sidecar image beside the file and otherwise generates a
-/// frame-grab from the video itself.
+/// SMB path, which prefers a strict sidecar image beside the file, then (for MKV) an embedded
+/// Matroska cover-art attachment, and otherwise generates a frame-grab from the video itself.
 ///
 /// Owns the whole generation pipeline so the call site (a grid tile's `.task`) stays trivial:
 ///   disk-cache hit (instant) → negative-cache skip (instant) → coalesced generation on a real miss.
@@ -90,12 +90,13 @@ actor MediaArtworkProvider {
     /// value; the task removes its own entry on completion. Awaiting the task never cancels it.
     private var pending: [SMBThumbnailKey: Task<MediaArtwork, Never>] = [:]
 
-    /// Hard ceiling for the WHOLE frame-grab tier, anchored when the tier starts: the container
-    /// probe, an AV attempt and a VLC fallback all draw from this ONE budget (see
-    /// `GenerationDeadline`) rather than each arming its own. 30s, not the thumbnailer's 20s
-    /// default: over VPN a *successful* fetch measured 11.1s and several legitimate files timed out
-    /// at 20s, so the default ceiling sat inside the observed success band. On LAN a fetch takes
-    /// 1–3s, so only genuinely broken files ever pay this — and they're then backed off anyway.
+    /// Hard ceiling for the WHOLE post-sidecar pipeline, anchored when cover-art / frame-grab
+    /// work starts: the MKV cover-art extract, the container probe, an AV attempt and a VLC
+    /// fallback all draw from this ONE budget (see `GenerationDeadline`) rather than each arming
+    /// its own. 30s, not the thumbnailer's 20s default: over VPN a *successful* fetch measured
+    /// 11.1s and several legitimate files timed out at 20s, so the default ceiling sat inside the
+    /// observed success band. On LAN a fetch takes 1–3s, so only genuinely broken files ever pay
+    /// this — and they're then backed off anyway.
     private static let generationTimeout: Duration = .seconds(30)
 
     /// Cap on the AVFoundation attempt WITHIN the generation budget. Stricter than the 30s total on
@@ -106,6 +107,11 @@ actor MediaArtworkProvider {
     /// Cap on the container probe WITHIN the generation budget — the same 4s deadline
     /// `SMBPlaybackResolver` gives its own probe.
     private static let probeTimeout: Duration = .seconds(4)
+
+    /// Cap on the embedded cover-art extract WITHIN the generation budget. Metadata seeks are a
+    /// handful of KiB when the SeekHead points cleanly; 6s is generous on LAN and still leaves the
+    /// bulk of the 30s budget for a frame-grab fallback when the walk wedges over a bad link.
+    private static let coverArtTimeout: Duration = .seconds(6)
 
     /// Sidecar reads are bounded tighter: a poster is small, and a sidecar that can't stream in ~10s
     /// is a wedge worth abandoning to the frame-grab (which has its own, longer ceiling).
@@ -328,8 +334,8 @@ actor MediaArtworkProvider {
 
     /// One full generation: read the link class, acquire a gate permit for this host (or bail if
     /// the bounded prefetch backlog evicted this waiter), run the held-permit pipeline
-    /// (sidecar → frame-grab), then release with a completion outcome that feeds the host's AIMD
-    /// window. Never throws.
+    /// (sidecar → cover-art → frame-grab), then release with a completion outcome that feeds the
+    /// host's AIMD window. Never throws.
     private func generate(
         key: SMBThumbnailKey, item: Item, ref: SMBServerRef, sidecar: SMBDirectoryEntry?
     ) async -> MediaArtwork {
@@ -354,9 +360,9 @@ actor MediaArtworkProvider {
 
     /// Runs under a held permit. Holds while a player owns the screen (the permit is kept), re-checks
     /// the disk + negative cache AFTER the hold (coalescing: a sibling's write or poisoning during a
-    /// long session is seen on resume), assembles credentials once, then tries the sidecar tier and
-    /// falls through to the frame-grab. Returns the artwork plus the completion outcome for the
-    /// LAST tier that actually ran (exactly one `signal` per `wait`). Never throws.
+    /// long session is seen on resume), assembles credentials once, then tries sidecar → cover-art
+    /// (MKV) → frame-grab. Returns the artwork plus the completion outcome for the LAST tier
+    /// that actually ran (exactly one `signal` per `wait`). Never throws.
     ///
     /// Exits that never touched the network report `.inconclusive`: they release the permit without
     /// pretending the link proved anything.
@@ -385,28 +391,45 @@ actor MediaArtworkProvider {
 
         // Sidecar tier first: a strict sibling image is a truer poster than a mid-file frame, and
         // reading + downscaling a small image is far cheaper than a demux. ANY sidecar failure falls
-        // through to the frame-grab WITHOUT poisoning the key; the frame-grab's outcome is then
-        // what reaches `gate.signal` (one signal per held permit).
-        var sidecarTransportFault = false
+        // through WITHOUT poisoning the key; later tiers' outcomes are what reach `gate.signal`
+        // (one signal per held permit). Transport-fault evidence from sidecar and cover-art OR
+        // together so either earlier tier can still shrink the AIMD window when frame-grab is quiet.
+        var earlierTierTransportFault = false
         if let sidecar {
             switch await trySidecar(sidecar: sidecar, ctx: ctx, ref: ref, key: key,
                                     fileName: fileName, link: link) {
             case .resolved(let art):
                 return (art, .success)
             case .fellThrough(let transportFault):
-                sidecarTransportFault = transportFault
+                earlierTierTransportFault = transportFault
+            }
+        }
+
+        // ONE ceiling shared by cover-art + frame-grab (probe / AV / VLC) — see `GenerationDeadline`.
+        let deadline = GenerationDeadline(clock: clock, budget: Self.generationTimeout)
+        // MKV only: WebM's element subset excludes Attachments entirely, so the walk would be
+        // pure waste (a guaranteed-nil probe) on every .webm file.
+        let ext = (ctx.path as NSString).pathExtension.lowercased()
+        if ext == "mkv" {
+            switch await tryCoverArt(
+                ctx: ctx, ref: ref, key: key, fileName: fileName, link: link, deadline: deadline
+            ) {
+            case .resolved(let art):
+                return (art, .success)
+            case .fellThrough(let transportFault):
+                earlierTierTransportFault = earlierTierTransportFault || transportFault
             }
         }
 
         let grab = await frameGrab(
-            ctx: ctx, ref: ref, key: key, fileName: fileName, link: link)
-        guard sidecarTransportFault else { return (grab.artwork, grab.outcome) }
-        // The sidecar read is link evidence too, and it used to be invisible to the window: a host
-        // that timed out every sidecar and then fell through looked perfectly healthy. A frame-grab
-        // that actually PRODUCED a frame overrides it — the link demonstrably carried a whole demux,
-        // so the earlier blip is stale news. Anything else and the sidecar's fault is the best
-        // evidence this generation has. "Produced" means DECODED, not stored: a failed disk write
-        // says nothing about the link that just carried the whole file.
+            ctx: ctx, ref: ref, key: key, fileName: fileName, link: link, deadline: deadline)
+        guard earlierTierTransportFault else { return (grab.artwork, grab.outcome) }
+        // Earlier-tier reads are link evidence too, and used to be invisible to the window: a host
+        // that timed out every sidecar/cover-art and then fell through looked perfectly healthy. A
+        // frame-grab that actually PRODUCED a frame overrides it — the link demonstrably carried a
+        // whole demux, so the earlier blip is stale news. Anything else and the earlier fault is
+        // the best evidence this generation has. "Produced" means DECODED, not stored: a failed
+        // disk write says nothing about the link that just carried the whole file.
         return (grab.artwork, grab.decodedAFrame ? .success : .transportFailure)
     }
 
@@ -471,6 +494,65 @@ actor MediaArtworkProvider {
         }
     }
 
+    /// The MKV embedded cover-art tier: SeekHead (or pre-cluster linear scan) → Attachments
+    /// → HEIC tile, sharing the generation deadline with the frame-grab that follows on fall-through.
+    /// Poster-class downscale (`sidecarMaxPixel`) — cover art is not a frame grab.
+    private func tryCoverArt(
+        ctx: SMBSourceContext, ref: SMBServerRef, key: SMBThumbnailKey,
+        fileName: String, link: SMBLinkClass?, deadline: GenerationDeadline
+    ) async -> CoverArtAttempt {
+        let reader: SMBShareReader = SMBRandomAccessReader(
+            pool: pool, host: ref.data.host, username: ref.data.username, password: ctx.password,
+            domain: ref.data.domain, share: ctx.share, path: ctx.path
+        )
+        let start = clock.now
+        do {
+            // Same race primitive the sidecar tier uses (`withHardTimeout`, below) rather than a
+            // bespoke continuation: it cancels its own losing timer on a normal finish, so a fast
+            // extract never leaves a sleeper parked for the rest of `coverArtTimeout`.
+            let data = try await withHardTimeout(
+                seconds: deadline.capped(at: Self.coverArtTimeout).fractionalSeconds
+            ) {
+                try await MatroskaCoverArt.extract(reader)
+            }
+            guard let data else {
+                let elapsed = start.duration(to: clock.now)
+                await reader.disconnect()
+                Self.log.info("thumbnail coverart fell through: \(fileName, privacy: .public) [tier=coverart \(Self.context(link), privacy: .public)] after \(elapsed.formattedSeconds, privacy: .public) (no embedded cover art)")
+                return .fellThrough(transportFault: false)
+            }
+            guard let image = ImageTranscode.downscaledImage(from: data, maxPixelSize: Self.sidecarMaxPixel) else {
+                // Undecodable bytes — not a poison, not link evidence (mirrors sidecar).
+                let elapsed = start.duration(to: clock.now)
+                await reader.disconnect()
+                Self.log.info("thumbnail coverart FELL THROUGH: \(fileName, privacy: .public) [tier=coverart \(Self.context(link), privacy: .public)] after \(elapsed.formattedSeconds, privacy: .public) (undecodable) — frame-grab fallback")
+                return .fellThrough(transportFault: false)
+            }
+            let heic = try ImageTranscode.encodeHEIC(image)
+            await reader.disconnect()
+            let elapsed = start.duration(to: clock.now)
+            guard let cached = await cache.store(heic, duration: nil, for: key) else {
+                Self.log.info("thumbnail coverart store failed: \(fileName, privacy: .public) [\(Self.context(link), privacy: .public)] — frame-grab fallback")
+                return .fellThrough(transportFault: false)
+            }
+            failures[key] = nil
+            Self.log.info("thumbnail generated: \(fileName, privacy: .public) [tier=coverart \(Self.context(link), privacy: .public)] in \(elapsed.formattedSeconds, privacy: .public)")
+            return .resolved(MediaArtwork(source: .local(cached.url), duration: cached.duration))
+        } catch {
+            let transportFault = await reader.hadTransportFault || error is HardTimeoutError
+            if error is HardTimeoutError {
+                // Wedged reader may still be parked in libsmb2 — fire-and-forget disconnect, same
+                // idiom as frameGrab's nil-probe path. Don't await; don't build a replacement.
+                Task { await reader.disconnect() }
+            } else {
+                await reader.disconnect()
+            }
+            let elapsed = start.duration(to: clock.now)
+            Self.log.info("thumbnail coverart FELL THROUGH: \(fileName, privacy: .public) [tier=coverart \(Self.context(link), privacy: .public)] after \(elapsed.formattedSeconds, privacy: .public) (\(String(describing: error), privacy: .public)) — frame-grab fallback")
+            return .fellThrough(transportFault: transportFault)
+        }
+    }
+
     /// The frame-grab tier — rides the local HTTP bridge over a pooled reader, exactly as before.
     ///
     /// **Generation rides the local HTTP bridge, not `smb://`.** Pointing libvlc at a per-fetch
@@ -485,13 +567,13 @@ actor MediaArtworkProvider {
     ///    zombie player (no cancel API; it otherwise streams the share until its internal 45s timer).
     /// Credentials also stay out of libvlc entirely: they live in the reader's pooled target; the
     /// bridge URL carries only a random one-shot token.
+    ///
+    /// `deadline` is the shared generation ceiling (cover-art already spent some of it when that
+    /// tier ran); do not construct a fresh budget here.
     private func frameGrab(
         ctx: SMBSourceContext, ref: SMBServerRef, key: SMBThumbnailKey,
-        fileName: String, link: SMBLinkClass?
+        fileName: String, link: SMBLinkClass?, deadline: GenerationDeadline
     ) async -> FrameGrabAttempt {
-        // ONE ceiling for the whole tier, anchored here — see `GenerationDeadline`.
-        let deadline = GenerationDeadline(clock: clock, budget: Self.generationTimeout)
-
         func newReader() -> SMBShareReader {
             SMBRandomAccessReader(
                 pool: pool, host: ref.data.host, username: ref.data.username, password: ctx.password,
@@ -844,13 +926,23 @@ nonisolated private enum SidecarAttempt {
     case fellThrough(transportFault: Bool)
 }
 
+/// What the MKV cover-art tier produced: a poster from an embedded attachment, or a fall-through
+/// to the frame-grab that also reports whether the tier's own failure was LINK evidence (a
+/// transport-class read fault or the tier's hard timeout) rather than absent/undecodable cover art.
+///
+/// `nonisolated` for the same app-target MainActor-default reason as `WaiterList`.
+nonisolated private enum CoverArtAttempt {
+    case resolved(MediaArtwork)
+    case fellThrough(transportFault: Bool)
+}
+
 /// What the frame-grab tier produced: the artwork, the admission outcome, and — separately —
 /// whether a frame actually came back from the DECODER.
 ///
 /// "Decoded" and "stored" are different facts. A decode that succeeded but whose disk write failed
 /// returns `.none` artwork, and reading that as "no frame" made a failed write look like link
-/// trouble to the sidecar-fault override above. The write is local; only the decode says the link
-/// carried the file.
+/// trouble to the earlier-tier-fault override above. The write is local; only the decode says the
+/// link carried the file.
 ///
 /// `nonisolated` for the same app-target MainActor-default reason as `WaiterList`.
 nonisolated private struct FrameGrabAttempt {
@@ -859,13 +951,14 @@ nonisolated private struct FrameGrabAttempt {
     let decodedAFrame: Bool
 }
 
-/// The ONE ceiling a frame-grab generation runs under, anchored when the tier starts.
+/// The ONE ceiling cover-art + frame-grab draw from, anchored in `generateHoldingPermit` before
+/// either tier runs.
 ///
-/// The probe, an AV attempt and a VLC fallback used to arm INDEPENDENT ceilings and run in series
-/// under a single held permit — 4 + 15 + 30 = 49s worst case, well past the 30s the VLC-only path
-/// was sized for, with the whole host's admission slot blocked for all of it. They now draw from
-/// this shared budget: each phase asks for its own cap or whatever is left, whichever is smaller, so
-/// the total can never exceed the budget however the phases fall out.
+/// The cover-art extract, the probe, an AV attempt and a VLC fallback used to (or would) arm
+/// INDEPENDENT ceilings and run in series under a single held permit — well past the 30s budget,
+/// with the whole host's admission slot blocked for all of it. They now draw from this shared
+/// budget: each phase asks for its own cap or whatever is left, whichever is smaller, so the total
+/// can never exceed the budget however the phases fall out.
 ///
 /// `nonisolated` for the same app-target MainActor-default reason as `WaiterList`.
 nonisolated private struct GenerationDeadline {
