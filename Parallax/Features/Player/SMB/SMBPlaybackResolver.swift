@@ -219,7 +219,11 @@ struct SMBPlaybackResolver {
     /// keeps it decodable), the probe found no AVPlayer hazard (a degenerate `ctts` on a
     /// B-frame h264 stream plays in decode order under AVKit — VLC reconstructs it correctly),
     /// and the selector's verdict on the `http` candidate hints is AVKit.
-    static func route(probe: MediaProbeResult?, sizeBytes: Int64?) -> (hints: PlaybackHints, useBridge: Bool) {
+    ///
+    /// `nonisolated` because it is pure: the app target infers `@MainActor` for everything, which
+    /// would make this decision unreachable from the actors that share it (`MediaArtworkProvider`
+    /// routes its frame-grabs through exactly the same call).
+    nonisolated static func route(probe: MediaProbeResult?, sizeBytes: Int64?) -> (hints: PlaybackHints, useBridge: Bool) {
         let candidateHints = PlaybackHints(
             scheme: "http",
             container: probe?.container,
@@ -278,7 +282,10 @@ struct SMBPlaybackResolver {
     /// probe self-terminates within the reader's connect timeout and holds only memory
     /// (the reader outlives it either way — the bridge route hands it to the bridge, the
     /// VLC route fire-and-forget-disconnects it behind the in-flight read).
-    static func probeWithDeadline(_ reader: any RandomAccessReading, seconds: Double = 4) async -> MediaProbeResult? {
+    ///
+    /// `nonisolated` for the same reason as `route`: it touches no main-actor state, and the
+    /// thumbnail provider's actor probes through it too.
+    nonisolated static func probeWithDeadline(_ reader: any RandomAccessReading, seconds: Double = 4) async -> MediaProbeResult? {
         await withCheckedContinuation { (continuation: CheckedContinuation<MediaProbeResult?, Never>) in
             let latch = OneShotLatch(continuation)
             let probe = Task { latch.resume(try? await MediaProbe.probe(reader)) }
@@ -310,7 +317,10 @@ struct SMBPlaybackResolver {
 /// deadline firing); whichever wins takes the continuation out under the lock, and the
 /// loser's `resume` is a no-op. A double-resume of a `CheckedContinuation` traps, so the
 /// mutual exclusion here is load-bearing, not defensive.
-private final class OneShotLatch: Sendable {
+///
+/// `nonisolated` because `probeWithDeadline` is: the app target's default `@MainActor` inference
+/// would otherwise pin the latch to main and make the probe race unable to touch it.
+nonisolated private final class OneShotLatch: Sendable {
     private let box: Mutex<CheckedContinuation<MediaProbeResult?, Never>?>
 
     init(_ continuation: CheckedContinuation<MediaProbeResult?, Never>) {

@@ -8,6 +8,10 @@ import ParallaxCore
 public protocol SMBBridgeReading: RandomAccessReading {
     /// Teardown that waits (bounded) for in-flight reads before deciding checkin-vs-disconnect.
     func drainAndDisconnect() async
+
+    /// Whether any SMB read/attribute fetch on this reader failed with a transport-class error
+    /// (connection lost, connect failure, hard timeout) during its lifetime.
+    var hadTransportFault: Bool { get async }
 }
 
 extension SMBRandomAccessReader: SMBBridgeReading {}
@@ -61,5 +65,14 @@ public struct SMBBridgeSession: Sendable {
     /// The bridge's session diagnostics (readable after `stop()` too).
     public var stats: SMBHTTPBridge.Stats {
         get async { await bridge.stats }
+    }
+
+    /// Whether any SMB read/attribute fetch on this session's reader failed with a transport-class
+    /// error (connection lost, connect failure, hard timeout) during the session's lifetime. A
+    /// `MediaArtworkProvider` frame-grab checks this after a decode failure to decide whether to
+    /// poison the file's negative cache: a transport fault means the FILE may be fine and the network
+    /// just blipped, so it must not be blamed.
+    public var hadTransportFault: Bool {
+        get async { await reader.hadTransportFault }
     }
 }

@@ -211,11 +211,9 @@ public struct PooledSMBLister<Connection: SMBListableConnection>: SMBLister {
             } else {
                 pool.discard(borrowed)
                 // Only here: the call RETURNED, so a retry cannot be racing anything still pending.
-                // Cancellation is excluded by hand — nobody wants the listing any more, and it
-                // classifies as a lost connection only because it has no POSIX code of its own.
+                // `isTransportClass` already excludes cancellation (and content-level answers).
                 deservesFreshRetry = borrowed.isWarm
-                    && !(error is CancellationError)
-                    && SMBFileSource.isTransportFailure(error)
+                    && SMBFileSource.isTransportClass(error)
             }
             throw ListAttemptFailure(underlying: error, deservesFreshRetry: deservesFreshRetry)
         }

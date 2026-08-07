@@ -82,11 +82,14 @@ struct VLCThumbnailerFailureTests {
     }
 
     /// Cancelling the enclosing task must resolve through the `onCancel` path — the one
-    /// resolver the other tests don't exercise. The 30s `timeout` makes the point: if
-    /// `onCancel` didn't resolve, this would sit for 30s; a prompt `VLCThumbnailError`
-    /// proves cancellation resolved it, not the hard timeout. Ceiling AND hard timeout
-    /// are CITimeScale'd TOGETHER: the assertion's meaning is `ceiling < timeout`, so
-    /// scaling one without the other would let the hard timeout pass the test.
+    /// resolver the other tests don't exercise — and surface a `CancellationError`, matching
+    /// `AVThumbnailer`, so callers' `error is CancellationError` guards behave the same on both
+    /// engines (cancellation must never poison a key or shrink the admission window). The 30s
+    /// `timeout` makes the point: if `onCancel` didn't resolve, this would sit for 30s; a prompt
+    /// throw proves cancellation resolved it, not the hard timeout — which would throw
+    /// `VLCThumbnailError` instead. Ceiling AND hard timeout are CITimeScale'd TOGETHER: the
+    /// assertion's meaning is `ceiling < timeout`, so scaling one without the other would let the
+    /// hard timeout pass the test.
     @Test("cancelling the task resolves promptly via onCancel, never hangs")
     func cancellationResolves() async {
         let thumbnailer = VLCThumbnailer()
@@ -100,7 +103,7 @@ struct VLCThumbnailerFailureTests {
         case .success:
             Issue.record("expected a throw after cancellation, got data")
         case .failure(let error):
-            #expect(error is VLCThumbnailError, "unexpected error type: \(error)")
+            #expect(error is CancellationError, "unexpected error type: \(error)")
         }
         #expect(start.duration(to: clock.now) < CITimeScale.seconds(25),
                 "resolved by the hard timeout instead of onCancel")

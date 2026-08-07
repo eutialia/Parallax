@@ -16,6 +16,9 @@ struct SMBBridgeSessionTests {
         private let data: Data
         private var probe: (@Sendable () async -> Void)?
         private(set) var drainCount = 0
+        /// Production readers set this from real SMB errors; nothing in this suite drives it, so it
+        /// stays at its resting value.
+        let hadTransportFault = false
 
         init(data: Data) { self.data = data }
 

@@ -8,7 +8,11 @@ import ParallaxCore
 /// hosts many shares, so the SHARE is what keeps two files at the same share-relative path on
 /// different shares of one host (both `Movies/Film.mkv`) from colliding; size+mtime mean a changed
 /// file produces a different key — the stale thumbnail is bypassed rather than served.
-struct SMBThumbnailKey: Hashable, Sendable {
+/// Pure value identity — must stay usable as a dictionary key from plain (non-MainActor) actors
+/// (`MediaArtworkProvider`, `ThumbnailGate`). With the app target's default MainActor isolation,
+/// an unmarked type's synthesized `Hashable` would be MainActor-isolated and illegal to call from
+/// those actors' dictionary operations.
+nonisolated struct SMBThumbnailKey: Hashable, Sendable {
     let serverID: String  // per SMB server — host-level since the migration (ServerID.rawValue == "smb-<host>")
     let share: String     // the share the file lives on; one host serves many, so this discriminates them
     let path: String      // share-relative path, e.g. "Movies/Film.mkv"
@@ -20,7 +24,7 @@ struct SMBThumbnailKey: Hashable, Sendable {
 /// `.dur` sidecar). `duration` is nil when none was stored — a sidecar-image thumbnail (which has no
 /// video length), an old entry written before duration extraction, or a file libvlc couldn't read a
 /// length from.
-struct CachedThumbnail: Sendable, Equatable {
+nonisolated struct CachedThumbnail: Sendable, Equatable {
     let url: URL
     let duration: Duration?
 }
@@ -123,7 +127,8 @@ actor SMBThumbnailCache {
     }
 
     /// Writes `data` as the `.heic` thumbnail for `key` (plus `duration` as a `.dur` sidecar when
-    /// present), returning the cached record, or nil if the image write fails (createDirectory /
+    /// present; a nil `duration` leaves any existing sidecar alone — see below),
+    /// returning the cached record, or nil if the image write fails (createDirectory /
     /// atomic-write error). A nil here means a STORAGE failure, NOT a generation failure — the caller
     /// already produced valid bytes — so the caller must not treat it as a reason to negative-cache
     /// the key. No partial file is left behind on failure. A successful write CLEARS any persistent
@@ -140,15 +145,24 @@ actor SMBThumbnailCache {
         // A decodable file: drop any stale failure marker so its backoff doesn't linger.
         removeFailure(base: base)
         // Persist the duration sidecar and report back ONLY what actually reached disk: a failed
-        // sidecar write (or no duration) means a later `existing(for:)` reads nil, so store() must
-        // return nil too — otherwise the same key shows a duration now and none after a
-        // scroll-off/scroll-back. Re-storing a key without a duration also clears any stale sidecar.
+        // sidecar write means a later `existing(for:)` reads nil, so store() must return nil too —
+        // otherwise the same key shows a duration now and none after a scroll-off/scroll-back.
+        //
+        // A nil duration PRESERVES whatever sidecar is already there. The key embeds size + mtime,
+        // so an existing sidecar was written for this exact file and is still true; the caller
+        // simply couldn't read a length this time (a playback backfill capture, where VLC never
+        // resolved one). Deleting it stripped the runtime label off a tile a full generation had
+        // already measured.
         let persistedDuration: Duration?
-        if let duration, writeDuration(duration, base: base) {
-            persistedDuration = duration
+        if let duration {
+            if writeDuration(duration, base: base) {
+                persistedDuration = duration
+            } else {
+                removeDuration(base: base)
+                persistedDuration = nil
+            }
         } else {
-            removeDuration(base: base)
-            persistedDuration = nil
+            persistedDuration = readDuration(base: base)
         }
 
         // Amortise the bounded-LRU sweep across writes — never on the read/hit path, so the steady
