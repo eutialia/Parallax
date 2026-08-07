@@ -4,7 +4,7 @@ import ParallaxCore
 
 /// `RandomAccessReading` over AMSMB2 (libsmb2 SMB2/3), for container probing, sidecar-image reads,
 /// and the localhost HTTP bridge that feeds AVPlayer. Logic-free glue: it maps `read`/`fileSize`
-/// onto a single `SMB2Manager`, mirroring `AMSMB2Lister`'s connection, credential, and
+/// onto a single `SMB2Manager`, mirroring `PooledSMBLister`'s connection, credential, and
 /// fast-fail-timeout pattern.
 ///
 /// **Pooled connections.** The reader BORROWS a warm connection from an `SMBConnectionPool` on first
@@ -15,9 +15,11 @@ import ParallaxCore
 /// checked-in connection is never torn down under a live read.
 ///
 /// **The taint rule (see `disconnect()`).** A clean, fully-completed borrow checks back in reusable.
-/// A borrow that saw a thrown read/attributes error, or is torn down while an operation is still in
-/// flight (the probe-timeout wedge), is DISCARDED — the pool disconnects it gracefully in the
-/// background instead of handing a broken/half-consumed socket to the next borrower.
+/// A borrow that saw a thrown read/attributes error is DISCARDED — the pool disconnects it gracefully
+/// in the background instead of handing a broken/half-consumed socket to the next borrower. A borrow
+/// torn down while a read is still IN FLIGHT (the probe-timeout wedge) is neither: it is CONDEMNED to
+/// `SMBConnectionGraveyard`, which never disconnects it and does not even release it until that read
+/// returns.
 ///
 /// Concurrency: an `actor`. `SMB2Manager` is a stateful single-share connection, so serialising every
 /// `read`/`fileSize`/`disconnect` through the actor keeps the borrow lifecycle race-free.
@@ -63,6 +65,11 @@ public actor SMBRandomAccessReader<Connection: SMBReadableConnection>: RandomAcc
     /// `disconnect()` to decide check-in vs. discard.
     private var tainted = false
 
+    /// An op RETURNED with AMSMB2's own reply timeout, which leaves the request queued inside
+    /// libsmb2 (see `SMBAbandonedCall`). `inFlightOps` cannot see this — the call unwound — but the
+    /// connection is just as pending, so teardown must condemn rather than discard.
+    private var leftRequestQueued = false
+
     /// Operations currently suspended inside a native AMSMB2 call. Non-zero at `disconnect()` means a
     /// read hasn't unwound (the classic probe-timeout wedge) — the borrow is discarded, not returned.
     private var inFlightOps = 0
@@ -70,6 +77,11 @@ public actor SMBRandomAccessReader<Connection: SMBReadableConnection>: RandomAcc
     /// Continuations parked by `drainAndDisconnect` until `inFlightOps` reaches zero (or its
     /// deadline fires). Resumed by `opFinished()`.
     private var drainWaiters: [CheckedContinuation<Void, Never>] = []
+
+    /// The receipt handed to the graveyard when this reader gave up on a still-running read. Signalled
+    /// by `opFinished()` when the last op unwinds, which is what lets the condemned connection be
+    /// released. Nil whenever nothing has been condemned.
+    private var condemnedSettlement: SMBOperationSettlement?
 
     /// Pooled reader: borrows a warm connection from `pool` on first use and checks it back in on
     /// `disconnect()`.
@@ -107,7 +119,7 @@ public actor SMBRandomAccessReader<Connection: SMBReadableConnection>: RandomAcc
             } catch {
                 // The borrow saw a real failure — mark it unreusable so `disconnect()` discards it
                 // rather than handing a broken socket to the next borrower.
-                tainted = true
+                noteFailure(error)
                 throw error
             }
         }
@@ -136,30 +148,41 @@ public actor SMBRandomAccessReader<Connection: SMBReadableConnection>: RandomAcc
             // end-of-file shape leaves the connection perfectly reusable.
             return Data()
         } catch {
-            tainted = true
+            noteFailure(error)
             throw error
         }
     }
 
-    /// Checks the borrowed connection back into the pool for reuse — or discards it. Idempotent; the
-    /// reader is permanently closed afterwards (`read`/`fileSize` throw instead of re-borrowing).
+    /// One place both op paths record a failure: the borrow is unreusable, and — when the failure is
+    /// AMSMB2's own reply timeout — the connection additionally still owes libsmb2 a request, which
+    /// upgrades teardown from discard to condemn.
+    private func noteFailure(_ error: any Error) {
+        tainted = true
+        if SMBAbandonedCall.leavesRequestQueued(error) { leftRequestQueued = true }
+    }
+
+    /// Checks the borrowed connection back into the pool for reuse — or gets rid of it. Idempotent;
+    /// the reader is permanently closed afterwards (`read`/`fileSize` throw instead of re-borrowing).
     ///
-    /// **The taint rule.** A borrow is only returned to the idle pool when it completed a CLEAN
-    /// lifecycle: no op threw (`tainted`) and no op is still in flight (`inFlightOps == 0`). Otherwise
-    /// it is DISCARDED via `pool.discard`, which disconnects it gracefully in the background:
-    ///  - `tainted` — an SMB op already errored, so the socket may be in an undefined state; returning
-    ///    it would surface a stranger's failure as the next borrower's.
-    ///  - `inFlightOps > 0` — `disconnect()` raced a still-wedged native read (the probe-timeout path
-    ///    fire-and-forgets teardown while an AMSMB2 read is stuck in libsmb2's poll loop). Checking in
-    ///    a connection whose read hasn't unwound would hand a half-consumed session to the next
-    ///    borrower; discarding drains it gracefully instead (the 76d6fcd use-after-free guard).
+    /// **The taint rule, in the order it must be asked.**
+    ///  - `inFlightOps > 0` — a native read is still stuck in libsmb2's poll loop (the caller's own
+    ///    hard timeout fired and it tore the reader down anyway). CONDEMN: this connection may not be
+    ///    disconnected in any mode, nor released, until that call returns — see
+    ///    `SMBConnectionGraveyard`. Asked FIRST, because a borrow that is both tainted and wedged is
+    ///    still a wedged one.
+    ///  - `tainted` — an SMB op already errored and returned, so the socket may be in an undefined
+    ///    state; returning it would surface a stranger's failure as the next borrower's. DISCARD, the
+    ///    background graceful teardown, which has nothing pending to race.
+    ///  - otherwise the borrow completed a clean lifecycle and CHECKS IN.
     public func disconnect() async {
         isClosed = true
         manager = nil
         let borrowed = handle
         handle = nil
         guard let borrowed else { return }
-        if tainted || inFlightOps > 0 {
+        if let pending = pendingCall() {
+            await pool.condemn(borrowed, settlement: pending.settlement, releaseAfter: pending.fuse)
+        } else if tainted {
             pool.discard(borrowed)
         } else {
             await pool.checkin(borrowed)
@@ -184,8 +207,12 @@ public actor SMBRandomAccessReader<Connection: SMBReadableConnection>: RandomAcc
     ///  - **no drain/next-fetch overlap** (the f4ad8c0 tuning): the caller releases its gate permit
     ///    right after teardown returns, so the drain must be AWAITED — a fire-and-forget discard's
     ///    tail would stream over the same WAN link as the next generation's fresh fetch.
-    /// The wait is bounded by `connectTimeout`; a still-wedged op past that (or a tainted borrow)
-    /// is disconnected gracefully INLINE — still awaited, still no overlap.
+    /// The wait is bounded by `connectTimeout`. Past that deadline the outcomes split the same way
+    /// `disconnect()` splits them: a tainted borrow whose ops all RETURNED is disconnected gracefully
+    /// INLINE (still awaited, still no overlap), while an op still wedged at the deadline is
+    /// CONDEMNED — the deadline expiring proves nothing about the native call except that it is still
+    /// running, and disconnecting it then is the crash `SMBConnectionGraveyard` documents. Condemning
+    /// is also awaited, but it parks a reference rather than draining a socket, so it adds no tail.
     public func drainAndDisconnect() async {
         isClosed = true
         manager = nil
@@ -193,11 +220,44 @@ public actor SMBRandomAccessReader<Connection: SMBReadableConnection>: RandomAcc
         handle = nil
         guard let borrowed else { return }
         await waitForDrain(upTo: connectTimeout)
-        if !tainted && inFlightOps == 0 {
-            await pool.checkin(borrowed)
-        } else {
+        if let pending = pendingCall() {
+            await pool.condemn(borrowed, settlement: pending.settlement, releaseAfter: pending.fuse)
+        } else if tainted {
             await borrowed.connection.disconnectGracefully()
+        } else {
+            await pool.checkin(borrowed)
         }
+    }
+
+    /// The receipt to condemn this borrow with — plus the fuse it needs, if any — or nil when the
+    /// connection owes nothing.
+    ///
+    /// Two ways to owe something, and they settle differently:
+    ///  - an op is still suspended inside a native call — `opFinished()` settles that receipt when it
+    ///    unwinds, and the graveyard releases the connection then. NO fuse: releasing under a call
+    ///    that is still running is the disposal the graveyard forbids;
+    ///  - an op RETURNED on AMSMB2's reply timeout — the request is still queued in libsmb2 and we
+    ///    have no signal at all for when it retires, so this receipt is one nobody ever settles. It
+    ///    carries a FUSE instead, which is safe precisely because the call has returned: nothing is
+    ///    inside libsmb2 on this context any more (see `SMBConnectionGraveyard`).
+    private func pendingCall() -> (settlement: SMBOperationSettlement, fuse: Duration?)? {
+        if inFlightOps > 0 { return (settlementForCondemnedOps(), nil) }
+        if leftRequestQueued {
+            return (
+                SMBOperationSettlement(),
+                SMBAbandonedCall.releaseFuse(afterOperationTimeout: connectTimeout)
+            )
+        }
+        return nil
+    }
+
+    /// The receipt for a connection being condemned right now, signalled by `opFinished()` when the
+    /// last in-flight op unwinds. Minted at most once per reader: both teardown paths take `handle`
+    /// and nil it before they ask, so a second teardown returns early and never reaches here.
+    private func settlementForCondemnedOps() -> SMBOperationSettlement {
+        let settlement = SMBOperationSettlement()
+        condemnedSettlement = settlement
+        return settlement
     }
 
     /// Suspends until `inFlightOps` reaches zero or `seconds` elapse (a spurious deadline resume is
@@ -219,11 +279,16 @@ public actor SMBRandomAccessReader<Connection: SMBReadableConnection>: RandomAcc
         deadline.cancel()
     }
 
-    /// Op-completion bookkeeping shared by `read`/`fileSize` defers: decrement, and when the last
-    /// op unwinds, release any parked drain waiters.
+    /// Op-completion bookkeeping shared by `read`/`fileSize` defers: decrement, and when the last op
+    /// unwinds, settle a condemned connection's receipt (which releases it) and release any parked
+    /// drain waiters.
     private func opFinished() {
         inFlightOps -= 1
-        guard inFlightOps == 0, !drainWaiters.isEmpty else { return }
+        guard inFlightOps == 0 else { return }
+        // Nothing pending on this connection any more — whoever condemned it may now let it go.
+        condemnedSettlement?.markSettled()
+        condemnedSettlement = nil
+        guard !drainWaiters.isEmpty else { return }
         let waiters = drainWaiters
         drainWaiters = []
         for waiter in waiters { waiter.resume() }
@@ -275,14 +340,10 @@ public actor SMBRandomAccessReader<Connection: SMBReadableConnection>: RandomAcc
 /// own `PoolableSMBConnection` lifecycle contract. Production conforms `SMB2Manager` (below); tests
 /// conform a fake, so the borrow/taint/drain lifecycle above is testable without a live share.
 ///
-/// The three members are deliberately thin renames of AMSMB2's own API rather than a wider
-/// abstraction: `SMB2Manager`'s `contents(atPath:range:)` is generic over `RangeExpression` and its
-/// `timeout` is a settable property, neither of which can witness a protocol requirement directly.
+/// Both members are deliberately thin renames of AMSMB2's own API rather than a wider abstraction:
+/// `SMB2Manager`'s `contents(atPath:range:)` is generic over `RangeExpression`, which cannot witness
+/// a protocol requirement directly.
 public protocol SMBReadableConnection: PoolableSMBConnection {
-    /// Pins the per-operation response ceiling. Warm reuse inherits the previous borrower's value,
-    /// so each borrow re-asserts its own.
-    func setOperationTimeout(_ seconds: TimeInterval)
-
     /// Size in bytes of the item at `path`, or nil when the server reports none.
     func fileSizeOfItem(atPath path: String) async throws -> Int64?
 
@@ -292,10 +353,6 @@ public protocol SMBReadableConnection: PoolableSMBConnection {
 }
 
 extension SMB2Manager: SMBReadableConnection {
-    public func setOperationTimeout(_ seconds: TimeInterval) {
-        timeout = seconds
-    }
-
     public func fileSizeOfItem(atPath path: String) async throws -> Int64? {
         try await attributesOfItem(atPath: path).fileSize
     }

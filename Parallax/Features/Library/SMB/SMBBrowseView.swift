@@ -8,9 +8,9 @@ import ParallaxPlayback  // preview-only: builds a real MediaArtworkProvider for
 
 /// Navigation value for one level of an SMB share browse. Drilling into a folder just pushes a new
 /// value with the child's path; `smbBrowseDestination()` below resolves it recursively. The
-/// lister/`SMBFileSource` is deliberately NOT carried here — an `AMSMB2Lister` is an actor (not
-/// `Hashable`), so each `SMBBrowseView` rebuilds its own from `ref` in `.task` and disconnects it
-/// on disappear.
+/// lister/`SMBFileSource` is deliberately NOT carried here — neither is `Hashable` — so each
+/// `SMBBrowseView` rebuilds its own from `ref` in `.task`. Rebuilding is cheap: the lister only
+/// borrows from the shared connection pool.
 struct SMBBrowsePath: Hashable {
     /// The owning server — supplies the host + credentials to build a lister for this level.
     let ref: SMBServerRef
@@ -37,10 +37,14 @@ extension View {
 /// this same view); media plays through the app's `PlaybackPresenter`, the same entry point the
 /// library grid's SMB tiles use (`playback.playSMB(_:ref:)`).
 ///
-/// Each level owns its connection: `.task` builds a lister via `deps.makeSMBLister(ref)` and an
-/// `SMBFileSource(lister:host:share:root:"")`, then the view model lists `path.path`; `.onDisappear`
-/// tears it down (`teardown()` cancels + disconnects). Empty `root` because the level's absolute
-/// share-relative path is passed as the browse `path`, which replaces (never joins) `root`.
+/// Connections belong to the shared pool, not to a level: `.task` builds a lister via
+/// `deps.makeSMBLister(ref)` and an `SMBFileSource(lister:host:share:root:"")`, then the view model
+/// lists `path.path`. Every level of every share borrows the same warm connections, so a drill-in
+/// costs no handshake and leaving a level tears nothing down — the pool ages idle connections out
+/// on its own, and only ever while nobody is using them. It deliberately KEEPS one warm connection
+/// per share indefinitely (not a leak: that survivor is what makes the next drill-in handshake-free
+/// — see `SMBConnectionPool.reapIdle`). Empty `root` because the level's absolute share-relative
+/// path is passed as the browse `path`, which replaces (never joins) `root`.
 struct SMBBrowseView: View {
     let path: SMBBrowsePath
 
@@ -119,16 +123,13 @@ struct SMBBrowseView: View {
         }
         #endif
         .screenFloor()
-        // Lifecycle: drilling into a child folder triggers this level's `onDisappear`, disconnecting
-        // the per-level lister and freeing the SMB connection while off-screen. On back-navigation
-        // the `.task` guard (`model != nil`) intentionally skips a reload and shows the cached
-        // listing — fast and stale-tolerant; each level owns an independent lister so the child
-        // level is completely unaffected by this level's teardown/reconnect cycle.
+        // Lifecycle: on back-navigation the `.task` guard (`model != nil`) intentionally skips a
+        // reload and shows the cached listing — fast and stale-tolerant. There is no matching
+        // teardown: the level holds no connection, only a pooled borrower.
         .task {
             guard model == nil, setupError == nil else { return }
             await openLevel()
         }
-        .onDisappear { model?.teardown() }
         // Auto-recover a "Share Unavailable" / "Couldn't open" level when the network returns (or
         // the app foregrounds online) — re-lists this level. Gated on `isStalled` (errored AND
         // nothing listed) so a populated level isn't re-listed; a non-terminal setup failure
@@ -150,6 +151,10 @@ struct SMBBrowseView: View {
     private func openLevel() async {
         do {
             let lister = try await deps.makeSMBLister(path.ref)
+            // The factory awaits a Keychain read, so this level may already have been popped (or the
+            // offline-recovery hook may have restarted it) by the time it returns — building a model
+            // and starting a listing then costs a borrow nothing will look at.
+            guard !Task.isCancelled else { return }
             let source = SMBFileSource(lister: lister, host: path.ref.data.host, share: path.share, root: "")
             let vm = SMBBrowseViewModel(source: source, share: path.share, path: path.path)
             model = vm

@@ -35,8 +35,8 @@ public enum SMBURL {
     /// Scheme-only connection URL (`smb://host`, no share/path, no userinfo) — what
     /// `SMB2Manager` derives its connection target from. Percent-encodes the host so a
     /// Bonjour-synthesised name with a space (e.g. "My NAS.local") forms a real URL and
-    /// attempts a resolve. ONE home for that encoding subtlety — `AMSMB2Lister` and
-    /// `SMBConnectionTarget` both build their connection URL here.
+    /// attempts a resolve. ONE home for that encoding subtlety — every SMB connection URL,
+    /// pooled or one-shot, is built here through `SMBConnectionTarget`.
     public static func hostOnly(_ host: String) -> URL {
         URL(string: "smb://\(encoded(host, allowing: .urlHostAllowed))")!
     }

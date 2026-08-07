@@ -5,15 +5,29 @@ import ParallaxJellyfin
 
 /// Backs one level of `SMBBrowseView`: lists a single directory of a share into name-sorted
 /// subfolders (drill targets) and playable media. One view model per browsed level — each
-/// `SMBBrowseView` builds its own lister/`SMBFileSource` (an `AMSMB2Lister` is an actor, so it
-/// can't ride the `Hashable` nav value) and tears it down on disappear.
+/// `SMBBrowseView` builds its own lister/`SMBFileSource` (a lister can't ride the `Hashable` nav
+/// value). The lister is a thin, stateless borrower of the shared connection pool, so a level owns
+/// no connection and has nothing to tear down.
+///
+/// **Leaving a level does NOT cancel its listing, on purpose.** There is no `deinit` teardown and no
+/// `onDisappear` hook: a listing that is cancelled mid-flight leaves a native call the pool cannot
+/// reuse the connection under, so the pooled lister CONDEMNS it — parked alive until that call
+/// returns, and never handed to another borrower. Cancelling on every back-navigation would
+/// therefore burn a warm connection each time. Letting the abandoned load finish instead returns the
+/// connection to the pool; it costs one bounded listing (the lister's hard ceiling caps it) plus
+/// this model and its `SMBFileSource` staying alive that long. Its writes DO land — and that is the
+/// point: coming back to the level finds the listing already there instead of an empty wall,
+/// because the view rebuilds against this same model.
 ///
 /// Loading cancels any in-flight task before starting a new one; a stale-guard on the current
 /// path ensures a slow, cancelled load can't overwrite the live directory. The level's path is
 /// fixed for the model's lifetime, so the guard collapses to the cancellation check — but it's
-/// kept explicit so the pattern remains readable. Failures map through `SMBFileSource.mapListError`
-/// to the same `AppError` `userMessage` the Jellyfin grid surfaces (`LibraryGridViewModel`), so
-/// SMB and Jellyfin errors read in one voice.
+/// kept explicit so the pattern remains readable. That cancel-on-reload has a price worth naming:
+/// each re-sort abandons the running listing's connection to the graveyard, so a burst of sort
+/// changes burns a warm connection apiece. Accepted — a re-sort is deliberate and rare, and the
+/// alternative (reusing a socket mid-response) is the crash this layer exists to avoid. Failures map
+/// through `SMBFileSource.mapListError` to the same `AppError` `userMessage` the Jellyfin grid
+/// surfaces (`LibraryGridViewModel`), so SMB and Jellyfin errors read in one voice.
 @Observable
 @MainActor
 final class SMBBrowseViewModel {
@@ -77,15 +91,6 @@ final class SMBBrowseViewModel {
         self.path = path
     }
 
-    /// Mirror of `LibraryGridViewModel`'s teardown deinit: if the level is released without
-    /// `.onDisappear` firing (a programmatic path reset), still cancel the in-flight list and close
-    /// the share socket — the load Task retains `self` + the `SMBFileSource` until `browse` returns.
-    /// Identical to `teardown()`, so it just calls it (the spawned disconnect captures `source`, not
-    /// `self`, so it safely outlives deinit).
-    isolated deinit {
-        teardown()
-    }
-
     func load() {
         isLoading = true
         error = nil
@@ -112,13 +117,5 @@ final class SMBBrowseViewModel {
                 self.error = appError.userMessage
             }
         }
-    }
-
-    /// Cancel the in-flight list and drop the share connection. Called from the view's
-    /// `.onDisappear` regardless of how the level leaves (back, deeper push, app background);
-    /// `SMBFileSource.disconnect()` forwards to the lister actor, so it's safe from MainActor.
-    func teardown() {
-        loadTask?.cancel()
-        Task { [source] in await source.disconnect() }
     }
 }

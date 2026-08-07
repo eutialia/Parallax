@@ -4,13 +4,10 @@ import ParallaxJellyfin
 
 /// Multi-select share picker shown after a successful `listShares()`. Each `SMBShare` returned
 /// by the server is presented as a toggleable row; the user picks which shares to mount as
-/// libraries. Confirming calls `ServerStore.addSMBServer` with the selected share names, then
-/// disconnects the lister and fires `onAdded`.
-///
-/// `lister.disconnect()` runs in `onDisappear` regardless of how the view leaves (back, success,
-/// or app background); the lister is an actor, so it's always safe from MainActor context.
+/// libraries. Confirming calls `ServerStore.addSMBServer` with the selected share names and fires
+/// `onAdded`. The enumeration is already done by the time this appears, so the picker holds no
+/// connection of its own.
 struct SMBShareSelectionView: View {
-    let lister: AMSMB2Lister
     let host: String
     let username: String
     let password: String
@@ -81,9 +78,6 @@ struct SMBShareSelectionView: View {
         #if !os(tvOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
-        .onDisappear {
-            Task { await lister.disconnect() }
-        }
     }
 
     // MARK: - Selection
@@ -105,7 +99,6 @@ struct SMBShareSelectionView: View {
                     SMBServerData(host: host, username: username, domain: domain, shares: selected.sorted()),
                     password: capturedPassword
                 )
-                await lister.disconnect()
                 onAdded()
             } catch {
                 saveError = "Couldn't save the shares. Try again."

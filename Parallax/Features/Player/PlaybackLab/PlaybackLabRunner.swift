@@ -127,7 +127,6 @@ final class PlaybackLabRunner {
     private func resolveItem(ref: SMBServerRef) async throws -> Item {
         let lister = try await deps.makeSMBLister(ref)
         let source = SMBFileSource(lister: lister, host: ref.data.host, share: scenario.server.share, root: "")
-        defer { Task { await source.disconnect() } }
         let entries: [SMBDirectoryEntry]
         do {
             entries = try await source.mediaFiles(in: scenario.path)

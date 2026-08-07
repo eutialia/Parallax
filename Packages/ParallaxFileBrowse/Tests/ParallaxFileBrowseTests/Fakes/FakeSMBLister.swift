@@ -6,7 +6,6 @@ import Foundation
 final class FakeSMBLister: SMBLister, @unchecked Sendable {
     let entries: [SMBDirectoryEntry]
     let shares: [SMBShare]
-    private(set) var disconnectCalled = false
 
     init(entries: [SMBDirectoryEntry], shares: [SMBShare] = []) {
         self.entries = entries
@@ -17,10 +16,6 @@ final class FakeSMBLister: SMBLister, @unchecked Sendable {
 
     func list(share: String, path: String) async throws -> [SMBDirectoryEntry] {
         entries
-    }
-
-    func disconnect() async {
-        disconnectCalled = true
     }
 }
 
@@ -41,6 +36,4 @@ final class CountingSMBLister: SMBLister, @unchecked Sendable {
         listCallCount += 1
         return try await inner.list(share: share, path: path)
     }
-
-    func disconnect() async { await inner.disconnect() }
 }

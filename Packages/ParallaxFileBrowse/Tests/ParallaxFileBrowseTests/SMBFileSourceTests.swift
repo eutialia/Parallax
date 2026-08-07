@@ -105,15 +105,6 @@ struct SMBFileSourceTests {
         #expect(url.lastPathComponent == name)
     }
 
-    // MARK: - disconnect
-
-    @Test("disconnect forwards to the underlying lister")
-    func disconnectForwards() async {
-        let lister = FakeSMBLister(entries: [])
-        await SMBFileSource(lister: lister, host: "nas", share: "Media", root: "").disconnect()
-        #expect(lister.disconnectCalled)
-    }
-
     // MARK: - ItemID codec
 
     @Test("decodeItemID round-trips itemID(share:path:)",
@@ -350,6 +341,4 @@ private final class RecordingPathLister: SMBLister, @unchecked Sendable {
         listedPaths.append(path)
         return []
     }
-
-    func disconnect() async {}
 }

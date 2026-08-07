@@ -29,11 +29,6 @@ struct SMBLoginView: View {
 
     @State private var connectionError: String?
 
-    /// The live lister handed to the share selector AFTER a successful enumeration.
-    /// Holding it here (not as a navigation value) because `AMSMB2Lister` is an actor
-    /// and can't be made `Hashable` for `.navigationDestination(for:)`. Instead we push
-    /// by setting this and using a `navigationDestination(isPresented:)` binding.
-    @State private var pendingLister: AMSMB2Lister?
     @State private var discoveredShares: [SMBShare] = []
     @State private var showShareSelector = false
 
@@ -114,18 +109,15 @@ struct SMBLoginView: View {
         // tabs mid-connect and back showed a stale Cancel+spinner with no live task behind it.
         .onDisappear { cancelConnect() }
         .navigationDestination(isPresented: $showShareSelector) {
-            if let lister = pendingLister {
-                SMBShareSelectionView(
-                    lister: lister,
-                    host: host,
-                    username: username,
-                    password: password,
-                    domain: domain,
-                    shares: discoveredShares,
-                    onAdded: onAdded
-                )
-                .tvHidesTabSidebar()
-            }
+            SMBShareSelectionView(
+                host: host,
+                username: username,
+                password: password,
+                domain: domain,
+                shares: discoveredShares,
+                onAdded: onAdded
+            )
+            .tvHidesTabSidebar()
         }
     }
 
@@ -258,9 +250,11 @@ struct SMBLoginView: View {
         // for Menu presses dying during a connect (see CredentialRowList's sweep rationale).
         fieldSweep += 1
 
-        // Capture to avoid closing over @State bindings inside the Task.
+        // Capture to avoid closing over @State bindings inside the Task — the dependency factory
+        // included, so nothing inside the escaping Task reads view state.
         let capturedPassword = password
         let capturedDomain = domain
+        let makeLister = deps.makeSMBListerForCredentials
 
         // Replace any prior in-flight attempt and HOLD the handle so onDisappear / Cancel can stop
         // it. Post-`await` writes are gated on `!Task.isCancelled` so a backed-out attempt never
@@ -268,23 +262,22 @@ struct SMBLoginView: View {
         connectTask?.cancel()
         connectTask = Task {
             diagnostics.stage = "task-started"
-            let lister = AMSMB2Lister(
-                host: trimHost,
-                username: trimUser,
-                password: capturedPassword,
-                domain: capturedDomain
+            let lister = makeLister(
+                SMBCredentials(
+                    host: trimHost, username: trimUser,
+                    password: capturedPassword, domain: capturedDomain
+                )
             )
             do {
                 diagnostics.stage = "listing-shares"
                 let shares = try await lister.listShares()
                 diagnostics.stage = "listed(\(shares.count))"
-                guard !Task.isCancelled else { await lister.disconnect(); return }
+                guard !Task.isCancelled else { return }
                 // A server can enumerate ZERO visible shares (everything hidden/admin —
                 // `listShares` filters `$` shares). Pushing the picker then strands the tvOS
                 // focus engine on a screen whose only control is the disabled Add button — no
                 // focusable element, dead remote. Surface it as an inline error instead.
                 guard !shares.isEmpty else {
-                    await lister.disconnect()
                     connectionError = "\(trimHost) has no shares to add. Check the server's shared folders."
                     isConnecting = false
                     watchdogTask?.cancel()
@@ -298,14 +291,11 @@ struct SMBLoginView: View {
                 // exactly what the connection used.
                 host = trimHost
                 username = trimUser
-                // Hand the connected lister + discovered shares to the selector.
-                pendingLister = lister
+                // Hand the discovered shares to the selector.
                 discoveredShares = shares
                 showShareSelector = true
             } catch {
                 diagnostics.stage = "threw"
-                // Disconnect so the actor doesn't hold a dangling connection.
-                await lister.disconnect()
                 guard !Task.isCancelled else { return }
                 // Never expose the password in the error message.
                 connectionError = "Couldn't connect to \(trimHost). Check the host and credentials."

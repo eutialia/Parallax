@@ -22,10 +22,9 @@ struct SMBPlaybackResolver {
     /// `SMB2Manager` specialization in the test module fails to link); production injects the ONE
     /// app-scoped pool from `AppDependencies`.
     var pool: SMBSharePool = SMBSharePool()
-    /// Injectable so subtitle resolution is fakeable in tests; defaults to the live AMSMB2 lister.
-    var makeLister: @Sendable (_ ref: SMBServerRef, _ password: String) -> any SMBLister = { ref, password in
-        AMSMB2Lister(host: ref.data.host, username: ref.data.username, password: password, domain: ref.data.domain)
-    }
+    /// Builds the sidecar-subtitle lister. No default: production hands over the app-scoped pooled
+    /// lister (same warm connections as everything else), and tests inject a fake.
+    var makeLister: @Sendable (_ ref: SMBServerRef, _ password: String) -> any SMBLister
     /// Injectable so tests read/write an isolated suite-backed store instead of `UserDefaults.standard`.
     var resumeStore: SMBResumeStore = .shared
 
@@ -149,9 +148,10 @@ struct SMBPlaybackResolver {
             // return until its socket timeout. Awaiting disconnect() inline would serialize behind that
             // wedge on the reader's actor and re-stall resolve()'s return — the very veil-stall the 4s
             // deadline just avoided. Fire-and-forget cleanup. With pooling this is also the CORRECTNESS
-            // path: disconnect() sees the still-in-flight op (inFlightOps > 0) and DISCARDS the borrow
-            // rather than checking it in — a wedged/error-tainted socket is never handed to the next
-            // borrower; the pool drains it gracefully in the background once the native call unwinds.
+            // path: disconnect() sees the still-in-flight op (inFlightOps > 0) and CONDEMNS the borrow
+            // rather than checking it in — it is parked alive and never disconnected in any mode, and
+            // the reference is let go only once that native read finally returns (a reply timeout
+            // condemns too, but on a fuse). Either way the next borrower never sees this socket.
             Task { await reader.disconnect() }
         } else {
             // Probe completed cleanly; the reader is idle — check its borrow back in (reusable) inline.

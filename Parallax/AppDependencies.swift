@@ -22,10 +22,16 @@ final class AppDependencies {
     /// `MediaRepository`: shares are listed directly via `makeSMBLister` + `SMBFileSource`, so
     /// this is Jellyfin-only.
     let mediaRepoFactory: @Sendable (Session) async -> any MediaRepository
-    /// Builds an `AMSMB2Lister` for a configured SMB server, reading the password from the
-    /// Keychain (slot `token-<id>`). The one place SMB listers are constructed for browsing,
-    /// so every SMB surface (folder picker, file browse) shares the same credential read.
-    let makeSMBLister: @Sendable (SMBServerRef) async throws -> AMSMB2Lister
+    /// Builds a lister for a configured SMB server, reading the password from the Keychain
+    /// (slot `token-<id>`). The one place SMB listers are constructed for browsing, so every SMB
+    /// surface (folder picker, file browse) shares the same credential read — and the same pooled
+    /// share connections, so no browse surface owns a connection lifetime of its own.
+    let makeSMBLister: @Sendable (SMBServerRef) async throws -> any SMBLister
+    /// Builds a lister for credentials that are not saved yet — the add-server form, which has to
+    /// enumerate shares before anything reaches the Keychain. Takes one `SMBCredentials` value
+    /// rather than loose strings: a function type can't carry argument labels, and host/username/
+    /// password/domain are all `String`.
+    let makeSMBListerForCredentials: @Sendable (SMBCredentials) -> any SMBLister
     let imagePipelineFactory: ImagePipelineFactory
     let deviceProfileBuilder: DeviceProfileBuilder
     let playbackInfoFactory: @Sendable (Session) async -> PlaybackInfoService
@@ -56,7 +62,8 @@ final class AppDependencies {
         smbDiscovery: SMBBonjourDiscovery,
         jellyfinLibraryRepoFactory: @Sendable @escaping (Session) async -> LibraryRepository,
         mediaRepoFactory: @Sendable @escaping (Session) async -> any MediaRepository,
-        makeSMBLister: @Sendable @escaping (SMBServerRef) async throws -> AMSMB2Lister,
+        makeSMBLister: @Sendable @escaping (SMBServerRef) async throws -> any SMBLister,
+        makeSMBListerForCredentials: @Sendable @escaping (SMBCredentials) -> any SMBLister,
         imagePipelineFactory: ImagePipelineFactory,
         deviceProfileBuilder: DeviceProfileBuilder,
         playbackInfoFactory: @Sendable @escaping (Session) async -> PlaybackInfoService,
@@ -75,6 +82,7 @@ final class AppDependencies {
         self.jellyfinLibraryRepoFactory = jellyfinLibraryRepoFactory
         self.mediaRepoFactory = mediaRepoFactory
         self.makeSMBLister = makeSMBLister
+        self.makeSMBListerForCredentials = makeSMBListerForCredentials
         self.imagePipelineFactory = imagePipelineFactory
         self.deviceProfileBuilder = deviceProfileBuilder
         self.playbackInfoFactory = playbackInfoFactory
@@ -122,20 +130,6 @@ final class AppDependencies {
         let mediaRepoFactory: @Sendable (Session) async -> any MediaRepository = { session in
             await repoStore.repository(for: session)
         }
-        // The single SMB-lister construction site. The password comes through
-        // `ServerStore.smbPassword(for:)`, which throws `.auth(.credentialUnavailable)` on a lost
-        // Keychain slot instead of degrading to an empty-password logon the server rejects with
-        // an error that reads as its fault (the live-NAS EPERM incident). SMB browsing lists
-        // shares directly via SMBFileSource — no MediaRepository involved.
-        let makeSMBLister: @Sendable (SMBServerRef) async throws -> AMSMB2Lister = { [store] ref in
-            let password = try await store.smbPassword(for: ref.id)
-            return AMSMB2Lister(
-                host: ref.data.host,
-                username: ref.data.username,
-                password: password,
-                domain: ref.data.domain
-            )
-        }
 
         // Playback wiring. The profile builder probes HDR/audio at runtime via
         // the iOS-only LiveCapabilityProbe; everything else is the fixed
@@ -174,16 +168,42 @@ final class AppDependencies {
 
         let audioSession = LiveAudioSession()
 
-        // ONE app-scoped SMB connection pool, shared by the thumbnail provider and the playback
-        // resolver: a browse-then-play flow reuses the same warm authenticated share connections
-        // (and the single cold-connect LAN/WAN classification) instead of re-handshaking per surface.
+        // ONE app-scoped SMB connection pool, shared by the browse listers, the thumbnail provider
+        // and the playback resolver: a browse-then-play flow reuses the same warm authenticated
+        // share connections (and the single cold-connect LAN/WAN classification) instead of
+        // re-handshaking per surface. The pool also OWNS the lifetime of every POOLED share
+        // connection — no browse surface may disconnect one — which is what keeps a listing on a
+        // wedged socket from being freed under its own pending call. (Share ENUMERATION is the
+        // documented exception: it has no share to key on, so `PooledSMBLister.listShares` owns and
+        // gracefully tears down a one-shot connection of its own.)
         let smbConnectionPool = SMBSharePool()
+
+        // THE single SMB-lister construction site. Everything below routes through it, so every
+        // lister in the app shares one pool and one credential shape.
+        let makeSMBListerForCredentials: @Sendable (SMBCredentials) -> any SMBLister = { credentials in
+            PooledSMBLister(pool: smbConnectionPool, credentials: credentials)
+        }
+        // The saved-server path. The password comes through `ServerStore.smbPassword(for:)`, which
+        // throws `.auth(.credentialUnavailable)` on a lost Keychain slot instead of degrading to an
+        // empty-password logon the server rejects with an error that reads as its fault (the
+        // live-NAS EPERM incident). SMB browsing lists shares directly via SMBFileSource — no
+        // MediaRepository involved.
+        let makeSMBLister: @Sendable (SMBServerRef) async throws -> any SMBLister = { [store] ref in
+            let password = try await store.smbPassword(for: ref.id)
+            return makeSMBListerForCredentials(ref.credentials(password: password))
+        }
 
         // One SMB resolver, sharing the same Keychain as the media repos above so a
         // tapped SMB file resolves its credentials from the same slot it was browsed
-        // under. Default `makeLister` (the live AMSMB2 sidecar-subtitle lister); its
-        // ad-hoc probe/subtitle readers borrow from the shared pool.
-        let smbPlaybackResolver = SMBPlaybackResolver(serverStore: store, pool: smbConnectionPool)
+        // under. Its sidecar-subtitle lister and its probe/subtitle readers all borrow
+        // from the shared pool.
+        let smbPlaybackResolver = SMBPlaybackResolver(
+            serverStore: store,
+            pool: smbConnectionPool,
+            makeLister: { ref, password in
+                makeSMBListerForCredentials(ref.credentials(password: password))
+            }
+        )
 
         // One app-scoped artwork provider. VLCThumbnailer is @MainActor — built here (live() is
         // @MainActor) and handed to the provider actor. Same ServerStore as the resolvers so it
@@ -205,6 +225,7 @@ final class AppDependencies {
             jellyfinLibraryRepoFactory: jellyfinRepoFactory,
             mediaRepoFactory: mediaRepoFactory,
             makeSMBLister: makeSMBLister,
+            makeSMBListerForCredentials: makeSMBListerForCredentials,
             // Resolve the image-pipeline device identity from the same provider
             // as auth, so image traffic presents the persisted deviceID rather
             // than a per-launch random UUID.
