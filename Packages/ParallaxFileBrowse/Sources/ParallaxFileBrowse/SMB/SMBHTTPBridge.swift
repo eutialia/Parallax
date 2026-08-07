@@ -113,54 +113,64 @@ public actor SMBHTTPBridge {
         guard !isStopped else { throw BridgeError.stopped }
         guard !hasStarted else { throw BridgeError.alreadyStarted }
         hasStarted = true
-
-        let queue = self.queue
-        let listener = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<NWListener, Error>) in
-            queue.async { continuation.resume(with: Result { try NWListener(using: .tcp, on: .any) }) }
-        }
-        // A `stop()` that landed while the listener was being built found nothing to cancel.
-        guard !isStopped else {
-            await offPool { listener.cancel() }
-            throw BridgeError.stopped
-        }
-        self.listener = listener
-
-        listener.newConnectionHandler = { [weak self] connection in
-            // Already on `queue` — Network.framework delivers this callback there.
-            guard let self else { connection.cancel(); return }
-            Task { await self.accept(connection) }
-        }
-
-        // Wait for `.ready` (assigns the port) or surface the bind failure. `ReadyGuard` makes
-        // the continuation single-shot: state callbacks are serialised on `queue`, so a later
-        // `.failed`/`.cancelled` after `.ready` can't double-resume.
-        let readyGuard = ReadyGuard()
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            listener.stateUpdateHandler = { state in
-                switch state {
-                case .ready:
-                    readyGuard.once { continuation.resume() }
-                case .failed(let error):
-                    readyGuard.once { continuation.resume(throwing: error) }
-                case .cancelled:
-                    readyGuard.once { continuation.resume(throwing: BridgeError.stopped) }
-                default:
-                    break
-                }
+        do {
+            let queue = self.queue
+            let listener = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<NWListener, Error>) in
+                queue.async { continuation.resume(with: Result { try NWListener(using: .tcp, on: .any) }) }
             }
-            queue.async { listener.start(queue: queue) }
-        }
+            // A `stop()` that landed while the listener was being built found nothing to cancel.
+            guard !isStopped else {
+                await offPool { listener.cancel() }
+                throw BridgeError.stopped
+            }
+            self.listener = listener
 
-        guard let port = listener.port else { throw BridgeError.noPort }
-        let host: String = switch scope {
-        // `getifaddrs` is another syscall that stays off the cooperative pool.
-        case .lan: await offPool { LocalNetworkAddress.primaryIPv4() } ?? "127.0.0.1"
-        case .loopback: "127.0.0.1"
+            listener.newConnectionHandler = { [weak self] connection in
+                // Already on `queue` — Network.framework delivers this callback there.
+                guard let self else { connection.cancel(); return }
+                Task { await self.accept(connection) }
+            }
+
+            // Wait for `.ready` (assigns the port) or surface the bind failure. `ReadyGuard` makes
+            // the continuation single-shot: state callbacks are serialised on `queue`, so a later
+            // `.failed`/`.cancelled` after `.ready` can't double-resume.
+            let readyGuard = ReadyGuard()
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                listener.stateUpdateHandler = { state in
+                    switch state {
+                    case .ready:
+                        readyGuard.once { continuation.resume() }
+                    case .failed(let error):
+                        readyGuard.once { continuation.resume(throwing: error) }
+                    case .cancelled:
+                        readyGuard.once { continuation.resume(throwing: BridgeError.stopped) }
+                    default:
+                        break
+                    }
+                }
+                queue.async { listener.start(queue: queue) }
+            }
+
+            guard let port = listener.port else { throw BridgeError.noPort }
+            let host: String = switch scope {
+            // `getifaddrs` is another syscall that stays off the cooperative pool.
+            case .lan: await offPool { LocalNetworkAddress.primaryIPv4() } ?? "127.0.0.1"
+            case .loopback: "127.0.0.1"
+            }
+            guard let url = URL(string: "http://\(host):\(port.rawValue)\(expectedPath)") else {
+                throw BridgeError.noPort
+            }
+            return url
+        } catch {
+            // A failed start stays retryable — only a successful start (or `stop()`) spends the
+            // single shot. Tear down whatever the attempt built before rethrowing.
+            if let built = self.listener {
+                self.listener = nil
+                await offPool { built.cancel() }
+            }
+            hasStarted = false
+            throw error
         }
-        guard let url = URL(string: "http://\(host):\(port.rawValue)\(expectedPath)") else {
-            throw BridgeError.noPort
-        }
-        return url
     }
 
     /// Idempotent. Cancels the listener and every open connection; in-flight sends unwind as
