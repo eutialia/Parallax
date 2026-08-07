@@ -152,7 +152,17 @@ struct SMBPlaybackResolver {
             // rather than checking it in — it is parked alive and never disconnected in any mode, and
             // the reference is let go only once that native read finally returns (a reply timeout
             // condemns too, but on a fuse). Either way the next borrower never sees this socket.
-            Task { await reader.disconnect() }
+            //
+            // Sample hadTransportFault first: resolve still falls through to native VLC (no throw,
+            // no SMBPlaybackItem field the VM reacts to), so a connect/op blip that the probe then
+            // abandoned has no admission/poison consumer — surface it at warning so the evidence
+            // is not dropped with the reader. Fire-and-forget: awaiting the teardown inline would
+            // serialize behind the still-wedged native call it's escaping.
+            Task {
+                if await reader.teardownCapturingTransportFault() {
+                    logger.warning("SMB probe abandoned with prior transport fault for \(ctx.path, privacy: .public) — falling back to native VLC")
+                }
+            }
         } else {
             // Probe completed cleanly; the reader is idle — check its borrow back in (reusable) inline.
             await reader.disconnect()

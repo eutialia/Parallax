@@ -506,6 +506,10 @@ actor MediaArtworkProvider {
         // (`movie.size ?? 0` → 0 means unknown → nil).
         let probeResult = await SMBPlaybackResolver.probeWithDeadline(
             reader, seconds: deadline.capped(at: Self.probeTimeout).fractionalSeconds)
+        // Sticky transport evidence from the probe reader, sampled at discard. Nil probe always
+        // routes to VLC on a FRESH reader; without capturing this bit the probe stage's link
+        // fault vanished with the discarded borrow (same override shape as sidecarTransportFault).
+        var probeTransportFault = false
         if probeResult == nil {
             // The gate `SMBPlaybackResolver.resolve` applies, mirrored: a nil probe means the
             // deadline won (or the probe failed), so the reader may still have a native AMSMB2 call
@@ -515,8 +519,7 @@ actor MediaArtworkProvider {
             // condemn machinery: `disconnect()` sees the in-flight op and parks the borrow instead
             // of returning it. The generation carries on over a FRESH reader — a nil probe always
             // routes to VLC, which needs no probe.
-            let wedged = reader
-            Task { await wedged.disconnect() }
+            probeTransportFault = await reader.teardownCapturingTransportFault()
             reader = newReader()
         }
         let sizeBytes: Int64? = key.size > 0 ? key.size : nil
@@ -531,15 +534,20 @@ actor MediaArtworkProvider {
             // policy layer resets self-connections to LAN/link-local addresses — the observed
             // "connection reset by peer" storm that broke generation over VPN. `start` tears the
             // session down itself on failure — a local bind failure is not a decode failure and
-            // says nothing at all about the REMOTE host's link: don't poison, don't move the window.
+            // says nothing at all about the REMOTE host's link: don't poison the key over it. But a
+            // nil probe's sticky fault is still positive REMOTE evidence gathered before the bind
+            // ever ran, so it still counts toward `.transportFailure`.
             bridgeURL = try await session.start(scope: .loopback)
         } catch {
-            return FrameGrabAttempt(artwork: .none, outcome: .inconclusive, decodedAFrame: false)
+            return FrameGrabAttempt(
+                artwork: .none,
+                outcome: Self.earlyExitOutcome(probeTransportFault: probeTransportFault),
+                decodedAFrame: false)
         }
 
         let result = await decodeAndStore(
             via: bridgeURL, session: session, key: key, fileName: fileName, link: link,
-            useAV: useAV, deadline: deadline)
+            useAV: useAV, deadline: deadline, probeTransportFault: probeTransportFault)
         // Torn down on EVERY exit (decodeAndStore never throws): starves a zombie fetch the moment we
         // stop caring instead of it streaming SMB for up to 45s more. AWAITED, not fire-and-forget:
         // the caller releases the gate permit right after we return, and the bridge-first teardown
@@ -560,7 +568,8 @@ actor MediaArtworkProvider {
     /// `useAV` is false, VLC runs alone with the whole remainder.
     private func decodeAndStore(
         via bridgeURL: URL, session: SMBBridgeSession, key: SMBThumbnailKey, fileName: String,
-        link: SMBLinkClass?, useAV: Bool, deadline: GenerationDeadline
+        link: SMBLinkClass?, useAV: Bool, deadline: GenerationDeadline,
+        probeTransportFault: Bool
     ) async -> FrameGrabAttempt {
         let start = clock.now
         // Hoisted out of the `do` so the FAILURE log names the tier that actually ran: a fall-through
@@ -582,6 +591,9 @@ actor MediaArtworkProvider {
                     throw CancellationError()
                 } catch {
                     // Transport blip → don't blame the file, don't spend another 30s on VLC.
+                    // `useAV` only happens on a non-nil probe (`route`'s bridgeEligible is `probe.map
+                    // {...} ?? false`), so `probeTransportFault` — set only on a nil probe — is always
+                    // false here; the session's own flag is the whole story.
                     if await session.hadTransportFault {
                         let elapsed = start.duration(to: clock.now)
                         let stats = await session.stats
@@ -617,7 +629,13 @@ actor MediaArtworkProvider {
             )
         } catch {
             let elapsed = start.duration(to: clock.now)
-            let transportFault = await session.hadTransportFault
+            // Probe-stage transport evidence ORs with the frame-grab session's: the discarded
+            // probe reader is gone, so only this bit carries its hadTransportFault into poison
+            // and AIMD (same composition as sidecarTransportFault → generateHoldingPermit).
+            let transportFault = Self.effectiveTransportFault(
+                sessionHadTransportFault: await session.hadTransportFault,
+                probeTransportFault: probeTransportFault
+            )
             if Self.shouldRecordFailure(error: error, hadTransportFault: transportFault) {
                 await recordFailure(key)
             }
@@ -654,6 +672,31 @@ actor MediaArtworkProvider {
         if error is CancellationError { return false }
         if hadTransportFault { return false }
         return true
+    }
+
+    /// Transport evidence for poison + AIMD after a frame-grab. ORs the live session's flag with
+    /// any sticky bit captured from a discarded probe reader — that reader is gone by the time
+    /// the grab finishes, so the bit must be threaded in separately (same composition idea as
+    /// `sidecarTransportFault` in `generateHoldingPermit`).
+    ///
+    /// `nonisolated static` and pure so the OR is pin-able without a share or a bridge.
+    nonisolated static func effectiveTransportFault(
+        sessionHadTransportFault: Bool,
+        probeTransportFault: Bool
+    ) -> Bool {
+        sessionHadTransportFault || probeTransportFault
+    }
+
+    /// The outcome for `frameGrab`'s early exit — the bridge's own `session.start()` throwing before
+    /// any decode ever ran. The local bind failure itself says nothing about the remote host (see the
+    /// call site), but a nil-probe branch may have already captured positive transport evidence off
+    /// the discarded probe reader; that sticky bit still deserves `.transportFailure` over a blank
+    /// `.inconclusive`.
+    ///
+    /// `nonisolated static` and pure so this threading — not just the OR inside
+    /// `effectiveTransportFault` — is pinnable without a share, a pool, or a bridge.
+    nonisolated static func earlyExitOutcome(probeTransportFault: Bool) -> ThumbnailFetchOutcome {
+        probeTransportFault ? .transportFailure : .inconclusive
     }
 
     /// Whether `error` is a thumbnailer's own "gave up waiting" shape — distinct from content-side

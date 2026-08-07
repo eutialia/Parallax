@@ -77,6 +77,26 @@ public actor SMBRandomAccessReader<Connection: SMBReadableConnection>: RandomAcc
     /// Whether any SMB op on this reader failed with a transport-class error during its lifetime.
     public var hadTransportFault: Bool { transportFaulted }
 
+    /// Fire-and-forget teardown that samples transport evidence first.
+    ///
+    /// Call sites that abandon a reader after a hard probe deadline (thumbnail frame-grab,
+    /// playback resolve) must not drop `hadTransportFault` with the discarded reference —
+    /// that bit is sticky evidence from an earlier op on the same borrow, and is the only
+    /// signal those callers have that the probe stage already saw a link-class fault. Disconnect
+    /// is fire-and-forget for the same reason the call sites already use: awaiting it would
+    /// serialize behind a still-wedged native call. A still-suspended op has not flipped the
+    /// flag yet (nothing returned to `noteFailure`); reading at discard time is the best
+    /// available evidence, not invented evidence for an unwound call.
+    ///
+    /// Routes through the same clean-vs-wedged `disconnect()` fork as any other teardown: a clean
+    /// borrow checks back in for reuse, a wedged one is condemned to the graveyard. "Discard" would
+    /// overstate it — only the wedged/tainted case actually discards.
+    public func teardownCapturingTransportFault() -> Bool {
+        let fault = transportFaulted
+        Task { await self.disconnect() }
+        return fault
+    }
+
     /// Operations currently suspended inside a native AMSMB2 call. Non-zero at `disconnect()` means a
     /// read hasn't unwound (the classic probe-timeout wedge) — the borrow is discarded, not returned.
     private var inFlightOps = 0
