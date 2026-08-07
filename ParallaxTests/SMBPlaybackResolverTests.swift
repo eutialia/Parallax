@@ -24,8 +24,6 @@ private final class StubSMBLister: SMBLister, @unchecked Sendable {
         return entries
     }
 
-    func disconnect() async {}
-
     enum StubError: Error { case listFailed }
 }
 
@@ -78,7 +76,7 @@ struct SMBPlaybackResolverTests {
             settings: SettingsStore(defaults: UserDefaults(suiteName: suite)!),
             keychain: keychain
         )
-        var resolver = SMBPlaybackResolver(serverStore: store) { _, _ in lister }
+        var resolver = SMBPlaybackResolver(serverStore: store, makeLister: { _, _ in lister })
         resolver.resumeStore = resumeStore ?? SMBTestFixtures.inertResumeStore()
         return resolver
     }

@@ -377,7 +377,8 @@ actor MediaArtworkProvider {
             Self.log.info("thumbnail generated: \(fileName, privacy: .public) [tier=sidecar \(Self.context(link), privacy: .public)] in \(elapsed.formattedSeconds, privacy: .public) (\(size.mibLabel, privacy: .public) read)")
             return MediaArtwork(source: .local(cached.url), duration: nil)
         } catch {
-            // A thrown read taints the borrow → discarded on disconnect (never returned to idle).
+            // A thrown read taints the borrow → discarded on disconnect (never returned to idle);
+            // a reply timeout condemns instead.
             await reader.disconnect()
             let elapsed = start.duration(to: clock.now)
             Self.log.info("thumbnail sidecar FELL THROUGH: \(fileName, privacy: .public) [tier=sidecar \(Self.context(link), privacy: .public)] after \(elapsed.formattedSeconds, privacy: .public) (\(String(describing: error), privacy: .public)) — frame-grab fallback")

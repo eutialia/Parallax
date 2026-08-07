@@ -4,10 +4,9 @@
     {
       "identity" : "amsmb2",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/amosavian/AMSMB2.git",
+      "location" : "https://github.com/eutialia/AMSMB2.git",
       "state" : {
-        "revision" : "1726aaaf7adf63d7d1d2a0c5d1b0e635028215c0",
-        "version" : "4.0.3"
+        "revision" : "701793a87e220619e095bf94a77c6cf300aed26a"
       }
     },
     {

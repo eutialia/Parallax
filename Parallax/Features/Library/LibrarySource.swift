@@ -1,4 +1,5 @@
 import Foundation
+import ParallaxFileBrowse
 import ParallaxJellyfin
 import ParallaxCore
 
@@ -10,6 +11,19 @@ import ParallaxCore
 struct SMBServerRef: Hashable {
     let id: ServerID
     let data: SMBServerData
+
+    /// This server's stored identity plus the Keychain password, as the one value every SMB
+    /// connection-builder takes. ONE place joins the two halves, so no call site can transpose the
+    /// interchangeable credential strings on its way to a lister, a reader, or a pool key.
+    ///
+    /// `nonisolated` because the app target defaults to main-actor isolation and both call sites are
+    /// `@Sendable` connection-builder closures off the main actor. It only reads immutable stored
+    /// values, so there is nothing here for an actor to protect.
+    nonisolated func credentials(password: String) -> SMBCredentials {
+        SMBCredentials(
+            host: data.host, username: data.username, password: password, domain: data.domain
+        )
+    }
 }
 
 // MARK: - Library source

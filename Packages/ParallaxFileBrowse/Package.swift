@@ -14,7 +14,10 @@ let package = Package(
         .package(path: "../ParallaxCore"),
         // libsmb2-backed SMB2/3 client (LGPL — dynamically linked per its own Package.swift).
         // Used for directory enumeration only; streaming goes through libVLC's smb:// path.
-        .package(url: "https://github.com/amosavian/AMSMB2.git", from: "4.0.3"),
+        // Pinned to our fork's parallax-stable (upstream 4.0.3 + a memory-safety patch: heap-owned
+        // async request state). Return to an upstream version pin once the patch merges
+        // (amosavian/AMSMB2 issues #129/#136).
+        .package(url: "https://github.com/eutialia/AMSMB2.git", revision: "701793a87e220619e095bf94a77c6cf300aed26a"),
     ],
     targets: [
         .target(

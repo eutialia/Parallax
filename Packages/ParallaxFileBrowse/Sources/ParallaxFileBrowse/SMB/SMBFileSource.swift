@@ -127,6 +127,17 @@ public struct SMBFileSource: Sendable {
         return classify(error)
     }
 
+    /// Whether `error` says the SOCKET died rather than the server having answered a definitive no.
+    ///
+    /// Reads the SAME table `classify` maps user-facing messages from — deliberately, so there is one
+    /// place that decides what "the connection is gone" means: anything the user would be told was a
+    /// lost connection is worth retrying on a fresh connection, while a sign-in failure, a permission
+    /// denial or a missing path is a real answer and retrying it just wastes a handshake.
+    static func isTransportFailure(_ error: any Error) -> Bool {
+        if case .source(.connectionLost) = classify(error) { return true }
+        return false
+    }
+
     /// EPERM is deliberately NOT bucketed with EACCES. libsmb2's only EPERM source is its
     /// NT-status→errno table — the TCP connect succeeded and the SERVER refused the session —
     /// and live-server probing (nas.example.lan, 2026-07-21) showed every credential failure shape
@@ -203,11 +214,6 @@ public struct SMBFileSource: Sendable {
             }
         }
         return SMBBrowseListing(folders: folders, media: media, artwork: artwork)
-    }
-
-    /// Forwards disconnect to the underlying lister.
-    public func disconnect() async {
-        await lister.disconnect()
     }
 }
 

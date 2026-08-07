@@ -34,11 +34,14 @@ struct SMBServerSettingsView: View {
     @State private var loadState: LoadState = .loading
     /// The set of share names currently toggled on (synced from persisted data on load).
     @State private var enabledShares: Set<String> = []
-    /// The lister, held for disconnect on disappear.
-    @State private var lister: AMSMB2Lister?
     /// Serialises share-toggle writes so rapid taps persist in tap order — an unordered `Task` per
     /// tap can let a stale snapshot land last, desyncing the store from the on-screen circles.
     @State private var saveTask: Task<Void, Never>?
+    /// Monotonic token so only the LATEST share load may write state. Retry stays tappable while a
+    /// load runs, so two loads can overlap — and they resolve in arrival order, not start order, so
+    /// without this an older answer can land last and show a stale list (or a failure the newer,
+    /// successful load already cleared).
+    @State private var loadGeneration = 0
 
     // MARK: - tvOS focus
 
@@ -109,7 +112,6 @@ struct SMBServerSettingsView: View {
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .task { await loadShares() }
-        .onDisappear { Task { await lister?.disconnect() } }
         .confirmationDialog(
             "Remove this server?",
             isPresented: $isConfirmingRemove,
@@ -206,33 +208,40 @@ struct SMBServerSettingsView: View {
 
     private func loadShares() async {
         guard let data else { return }
-        if let existing = lister { await existing.disconnect() }
+        loadGeneration += 1
+        let generation = loadGeneration
         loadState = .loading
         let ref = SMBServerRef(id: server.id, data: data)
         do {
-            let newLister = try await deps.makeSMBLister(ref)
-            lister = newLister
-            let fetched = try await newLister.listShares()
+            let fetched = try await deps.makeSMBLister(ref).listShares()
             let sorted = fetched.sorted { $0.name.localizedCompare($1.name) == .orderedAscending }
             // Seed the toggles from the LIVE store, not the navigation snapshot: `server` is captured
             // when the row is tapped and the parent's list isn't refreshed on a toggle, so re-entering
             // this screen after toggling would otherwise revert the circles to the stale snapshot.
-            enabledShares = await persistedShares()
+            let persisted = await persistedShares()
+            guard generation == loadGeneration, !Task.isCancelled else { return }
+            enabledShares = persisted
             loadState = .loaded(sorted)
         } catch {
+            // A disappearing view cancels this task; its error must not paint a stale failure state
+            // over whatever the next appearance loads.
+            guard !Task.isCancelled else { return }
             // One classification for both throw sites: makeSMBLister's pre-flight already yields a
             // typed AppError (lost Keychain slot — never reached the server), and listShares' raw
             // POSIX failures go through the shared mapper. Either way, auth-shaped faults get the
             // credential recovery instead of a generic host message that reads as connectivity.
             let appError = (error as? AppError) ?? SMBFileSource.mapShareListError(error, host: host)
+            let message: String
             switch appError {
             case .auth(.credentialUnavailable):
-                loadState = .failed(appError.userMessage)
+                message = appError.userMessage
             case .auth:
-                loadState = .failed("\(host) rejected the sign-in. Remove this server and add it again to update the password.")
+                message = "\(host) rejected the sign-in. Remove this server and add it again to update the password."
             default:
-                loadState = .failed("Couldn't load shares from \(host).")
+                message = "Couldn't load shares from \(host)."
             }
+            guard generation == loadGeneration else { return }
+            loadState = .failed(message)
         }
     }
 

@@ -41,6 +41,10 @@ actor AsyncGate {
         for waiter in waiting { waiter.resume() }
     }
 
+    /// How many callers have reached `pass()` so far. Polled (rather than awaited) by tests that
+    /// must assert an arrival count did NOT grow — `awaitArrivals` can only wait for one to.
+    var arrivalCount: Int { arrivals }
+
     /// Suspends until at least `count` callers have reached `pass()`.
     func awaitArrivals(_ count: Int = 1) async {
         while arrivals < count {
