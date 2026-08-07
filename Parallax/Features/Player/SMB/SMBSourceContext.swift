@@ -35,7 +35,10 @@ enum SMBSourceResolver {
     /// The share + share-relative path encoded in the item's ID — decoded with NO Keychain read, so
     /// a caller can build a cache key and check caches before paying for credential assembly. Returns
     /// nil if the ItemID wasn't minted by `SMBFileSource` (no colon / empty share or path).
-    static func shareAndPath(for item: Item) -> (share: String, path: String)? {
+    ///
+    /// `nonisolated` because it is pure: the app target's default `@MainActor` inference would
+    /// otherwise put a main-actor hop between the thumbnail actor and its own cache key.
+    nonisolated static func shareAndPath(for item: Item) -> (share: String, path: String)? {
         SMBFileSource.decodeItemID(item.id)
     }
 

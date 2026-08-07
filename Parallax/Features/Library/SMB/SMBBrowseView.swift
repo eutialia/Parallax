@@ -535,6 +535,7 @@ private struct SMBBrowseGridPreview: View {
                     parentPath: "Anime",
                     artworkProvider: MediaArtworkProvider(
                         thumbnailer: VLCThumbnailer(),
+                        avThumbnailer: AVThumbnailer(),
                         serverStore: ServerStore(
                             settings: SettingsStore(defaults: .standard),
                             keychain: Keychain(service: "preview")

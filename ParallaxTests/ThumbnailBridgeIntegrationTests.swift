@@ -58,4 +58,36 @@ struct ThumbnailBridgeIntegrationTests {
         }
         await bridge.stop()
     }
+
+    /// The same round trip for the AV tier — the one an AVKit-eligible container actually takes.
+    /// It exercises the whole deadline-raced pipeline (`moov` load → keyframe decode → HEIC) against
+    /// a live ranged server, which no unit test reaches.
+    ///
+    /// The size check is a CEILING, not an equality: `AVAssetImageGenerator.maximumSize` bounds the
+    /// output and never upscales, while libvlc's thumbnailer does — so on this deliberately tiny
+    /// fixture the two engines legitimately differ. Their shared tile bound lives in
+    /// `AVThumbnailer.targetHeight`; what this pins is that the AV output is inside it and keeps the
+    /// source aspect.
+    @Test("AVThumbnailer decodes a frame served through a loopback bridge")
+    func avThumbnailOverLoopbackBridge() async throws {
+        let data = try fixtureData()
+        let bridge = SMBHTTPBridge(
+            reader: InMemoryRandomAccessReader(data: data),
+            fileName: "tiny.mp4",
+            contentType: "application/octet-stream"
+        )
+        let url = try await bridge.start(scope: .loopback)
+
+        do {
+            let frame = try await AVThumbnailer().thumbnailData(
+                for: url, position: 0.05, timeout: .seconds(20)
+            )
+            let image = try #require(UIImage(data: frame.data), "the frame bytes must decode as an image")
+            #expect(image.size.height <= Self.requestedHeight, "the tile bound must cap the output")
+            #expect(abs(image.size.width / image.size.height - MediaImage.landscape) < 0.02)
+        } catch {
+            Issue.record("AV thumbnail over bridge failed: \(error)")
+        }
+        await bridge.stop()
+    }
 }

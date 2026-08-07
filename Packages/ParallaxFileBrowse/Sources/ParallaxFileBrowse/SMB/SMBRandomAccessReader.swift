@@ -70,6 +70,13 @@ public actor SMBRandomAccessReader<Connection: SMBReadableConnection>: RandomAcc
     /// connection is just as pending, so teardown must condemn rather than discard.
     private var leftRequestQueued = false
 
+    /// Set when any op failed with a transport-class error (socket died / hard timeout). Sticky for
+    /// the reader's lifetime so a frame-grab that starved on a blip can refuse to poison the file.
+    private var transportFaulted = false
+
+    /// Whether any SMB op on this reader failed with a transport-class error during its lifetime.
+    public var hadTransportFault: Bool { transportFaulted }
+
     /// Operations currently suspended inside a native AMSMB2 call. Non-zero at `disconnect()` means a
     /// read hasn't unwound (the classic probe-timeout wedge) — the borrow is discarded, not returned.
     private var inFlightOps = 0
@@ -109,7 +116,7 @@ public actor SMBRandomAccessReader<Connection: SMBReadableConnection>: RandomAcc
     public var fileSize: UInt64 {
         get async throws {
             if let cachedFileSize { return cachedFileSize }
-            let client = try await connectedManager()
+            let client = try await borrowedManager()
             inFlightOps += 1
             defer { opFinished() }
             do {
@@ -131,7 +138,7 @@ public actor SMBRandomAccessReader<Connection: SMBReadableConnection>: RandomAcc
     /// truncates to the remaining file content — so no manual clamping is needed.
     public func read(offset: UInt64, length: Int) async throws -> Data {
         guard length > 0 else { return Data() }
-        let client = try await connectedManager()
+        let client = try await borrowedManager()
         inFlightOps += 1
         defer { opFinished() }
         // SATURATING, not wrapping: an offset within `length` of `UInt64.max` (a corrupt
@@ -153,12 +160,30 @@ public actor SMBRandomAccessReader<Connection: SMBReadableConnection>: RandomAcc
         }
     }
 
+    /// The borrowed manager, acquired under the SAME failure classification the ops run under.
+    ///
+    /// The checkout is a network phase like any other: a refused connect, the pool's hard connect
+    /// ceiling, an unreachable host, a share key that died while the device slept — all of them are
+    /// exactly the transport evidence `hadTransportFault` exists to carry. Running the checkout
+    /// OUTSIDE the classified region left `transportFaulted` false for every one of them, so a
+    /// caller's poison guard blamed the FILE for what was a reachability blip.
+    private func borrowedManager() async throws -> Connection {
+        do {
+            return try await connectedManager()
+        } catch {
+            noteFailure(error)
+            throw error
+        }
+    }
+
     /// One place both op paths record a failure: the borrow is unreusable, and — when the failure is
     /// AMSMB2's own reply timeout — the connection additionally still owes libsmb2 a request, which
-    /// upgrades teardown from discard to condemn.
+    /// upgrades teardown from discard to condemn. Transport-class faults also flip
+    /// `hadTransportFault` so callers can refuse to blame the file for a network blip.
     private func noteFailure(_ error: any Error) {
         tainted = true
         if SMBAbandonedCall.leavesRequestQueued(error) { leftRequestQueued = true }
+        if SMBFileSource.isTransportClass(error) { transportFaulted = true }
     }
 
     /// Checks the borrowed connection back into the pool for reuse — or gets rid of it. Idempotent;
