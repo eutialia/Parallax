@@ -195,6 +195,127 @@ struct SMBConnectionPoolTests {
         #expect(world.disconnectedIDs == [1])
     }
 
+    // MARK: - Foreground flush
+
+    /// Opposite of the reaper's survivor rule: after device sleep every idle socket is a corpse, so
+    /// `flushIdle` must empty the whole map — every key, no last-warm carve-out.
+    @Test("flushIdle empties idle entries across every key and disconnects them all")
+    func flushIdleEmptiesEveryKey() async throws {
+        let world = FakeSMBWorld()
+        let pool = makeFakePool(world: world)
+        // Seeded BEFORE the flush so the doc comment's "link-class caches… untouched" promise has
+        // something to survive.
+        world.setLatency(Self.lanLatency, host: "host")
+
+        let media = try await pool.checkout(fakeTarget(share: "Media"))
+        let backups = try await pool.checkout(fakeTarget(share: "Backups"))
+        await pool.checkin(media)
+        await pool.checkin(backups)
+
+        await pool.flushIdle()
+        await untilSettled { world.disconnectedIDs.sorted() == [0, 1] }
+
+        #expect(await pool.idleCount == 0, "flushIdle keeps no per-key survivor")
+        #expect(world.disconnectedIDs.sorted() == [0, 1], "every flushed connection is torn down")
+        #expect(await pool.condemnedCount == 0, "flushIdle never touches the graveyard")
+        #expect(await pool.linkClass(host: "host") == .lan, "the cold-latency link-class cache survives a flush")
+    }
+
+    /// Same load-bearing invariant as the reaper: a CHECKED-OUT connection is not in `idle`, so
+    /// `flushIdle` must not touch it — the borrower can still check it back in cleanly.
+    @Test("flushIdle never disconnects a borrowed connection")
+    func flushIdleLeavesBorrowedUntouched() async throws {
+        let world = FakeSMBWorld()
+        let pool = makeFakePool(world: world)
+        // Seeded BEFORE the flush so the doc comment's "link-class caches… untouched" promise has
+        // something to survive.
+        world.setLatency(Self.lanLatency, host: "host")
+
+        let borrowed = try await pool.checkout(fakeTarget())   // conn 0, stays OUT
+        let sibling = try await pool.checkout(fakeTarget())    // conn 1
+        let spare = try await pool.checkout(fakeTarget())      // conn 2
+        await pool.checkin(sibling)                            // conn 1 idle
+        await pool.checkin(spare)                              // conn 2 idle
+
+        await pool.flushIdle()
+        await untilSettled { world.disconnectedIDs.sorted() == [1, 2] }
+
+        #expect(world.disconnectedIDs.sorted() == [1, 2], "only idle siblings are flushed")
+        #expect(world.disconnectedIDs.contains(0) == false, "the borrowed connection is never disconnected")
+        #expect(await pool.condemnedCount == 0, "flushIdle never touches the graveyard")
+        #expect(await pool.linkClass(host: "host") == .lan, "the cold-latency link-class cache survives a flush")
+
+        // The FLUSH left it alone; its eventual check-in is where a pre-flush borrow is disposed
+        // (see `checkinOfAPreFlushBorrowDisposesIt`) — never pooled back into the emptied map.
+        await pool.checkin(borrowed)
+        await untilSettled { world.disconnectedIDs.sorted() == [0, 1, 2] }
+        #expect(await pool.idleCount == 0)
+    }
+
+    /// A borrow taken before the flush is a corpse too — it just wasn't in `idle` to be reaped.
+    /// Thumbnail readers hold a borrow for tens of seconds, so a check-in landing after the wake is
+    /// the normal case, and pooling it would re-fill the map the flush had just emptied with the
+    /// exact dead socket the flush existed to remove.
+    @Test("a borrow taken before flushIdle is disposed on checkin, never pooled")
+    func checkinOfAPreFlushBorrowDisposesIt() async throws {
+        let world = FakeSMBWorld()
+        let pool = makeFakePool(world: world)
+
+        let preSleep = try await pool.checkout(fakeTarget())   // conn 0, still OUT across the flush
+        await pool.flushIdle()
+
+        await pool.checkin(preSleep)
+        await untilSettled { world.disconnectedIDs == [0] }
+
+        #expect(await pool.idleCount == 0, "a pre-flush borrow must not re-pollute the idle map")
+        #expect(world.disconnectedIDs == [0], "it is disposed with a graceful disconnect")
+        #expect(await pool.condemnedCount == 0, "disposal is not a condemn — the call had returned")
+
+        // And the next borrower gets a genuinely fresh connection, not the corpse.
+        let fresh = try await pool.checkout(fakeTarget())
+        #expect(fresh.connection.id == 1)
+    }
+
+    /// The epoch check must only fire for borrows that actually straddle a flush — a borrow taken
+    /// afterwards is a live socket and pools normally.
+    @Test("a borrow taken after flushIdle checks in normally")
+    func checkinOfAPostFlushBorrowIdlesNormally() async throws {
+        let world = FakeSMBWorld()
+        let pool = makeFakePool(world: world)
+
+        await pool.flushIdle()
+        let borrowed = try await pool.checkout(fakeTarget())   // conn 0, taken under the new epoch
+        await pool.checkin(borrowed)
+
+        #expect(await pool.idleCount == 1, "a post-flush borrow returns to the pool as usual")
+        #expect(world.disconnectedIDs.isEmpty, "nothing about it is a corpse")
+
+        // Proven warm: the next checkout reuses it instead of connecting again.
+        let reused = try await pool.checkout(fakeTarget())
+        #expect(reused.connection.id == 0)
+        #expect(world.connectedIDs == [0])
+    }
+
+    /// After a flush the idle list is empty, so the next checkout must cold-connect rather than
+    /// hand back one of the flushed corpses (mirrors `requireFresh`'s "fresh id, not a corpse").
+    @Test("checkout after flushIdle builds a fresh connection")
+    func checkoutAfterFlushBuildsFresh() async throws {
+        let world = FakeSMBWorld()
+        let pool = makeFakePool(world: world)
+
+        let first = try await pool.checkout(fakeTarget())
+        let second = try await pool.checkout(fakeTarget())
+        await pool.checkin(first)
+        await pool.checkin(second)
+
+        await pool.flushIdle()
+        await untilSettled { world.disconnectedIDs.sorted() == [0, 1] }
+
+        let fresh = try await pool.checkout(fakeTarget())
+        #expect(fresh.connection.id == 2, "the borrow is a cold connect, never one of the flushed corpses")
+        #expect(world.connectedIDs == [0, 1, 2])
+    }
+
     /// The background sweep exists for a pool that went quiet with connections still warm — nothing
     /// else would reap them, since the opportunistic reaps only run on checkout/checkin.
     @Test("the scheduled sweep reaps a pool that went quiet")
@@ -467,7 +588,7 @@ struct SMBConnectionPoolTests {
         #expect(reused.connection.id == 0)
     }
 
-    @Test("a warm reuse records no new link class; latest cold connect wins")
+    @Test("a warm reuse records no new link class; a sustained slow run reclassifies")
     func linkClassLatestColdWins() async throws {
         let world = FakeSMBWorld()
         let pool = makeFakePool(world: world)
@@ -481,11 +602,59 @@ struct SMBConnectionPoolTests {
         _ = try await pool.checkout(fakeTarget(host: "host", share: "one"))
         #expect(await pool.linkClass(host: "host") == .lan)
 
-        // A fresh cold connect to the same host (different share → different key) at high latency
-        // reclassifies: latest cold connect wins.
+        // Fresh cold connects to the same host (different shares → different keys) at high latency.
+        // The FIRST is absorbed as a blip; the second confirms it and the host is reclassified.
         world.setLatency(Self.wanLatency, host: "host")
         _ = try await pool.checkout(fakeTarget(host: "host", share: "two"))
+        _ = try await pool.checkout(fakeTarget(host: "host", share: "three"))
         #expect(await pool.linkClass(host: "host") == .wan)
+    }
+
+    /// Demotion hysteresis. A single slow cold connect is exactly what a post-sleep flush produces
+    /// — the radio is still re-associating and the NAS disks are asleep — and once a warm survivor
+    /// exists nothing ever re-measures, so one bad sample used to pin a LAN host `.wan` for the rest
+    /// of the session (narrowing the thumbnail admission window and disabling the AV backfill).
+    @Test("one slow cold sample never demotes a LAN host; two consecutive ones do")
+    func lanDemotionNeedsTwoConsecutiveSlowSamples() async throws {
+        let world = FakeSMBWorld()
+        let pool = makeFakePool(world: world)
+
+        world.setLatency(Self.lanLatency, host: "host")
+        _ = try await pool.checkout(fakeTarget(host: "host", share: "one"))
+        #expect(await pool.linkClass(host: "host") == .lan)
+
+        // Slow → fast → slow: the run is broken each time, so the host stays LAN throughout.
+        world.setLatency(Self.wanLatency, host: "host")
+        _ = try await pool.checkout(fakeTarget(host: "host", share: "two"))
+        #expect(await pool.linkClass(host: "host") == .lan, "a lone slow sample is a blip, not a class")
+
+        world.setLatency(Self.lanLatency, host: "host")
+        _ = try await pool.checkout(fakeTarget(host: "host", share: "three"))
+        #expect(await pool.linkClass(host: "host") == .lan)
+
+        world.setLatency(Self.wanLatency, host: "host")
+        _ = try await pool.checkout(fakeTarget(host: "host", share: "four"))
+        #expect(await pool.linkClass(host: "host") == .lan, "the fast sample reset the slow run")
+
+        // Two in a row now: the link really did change.
+        _ = try await pool.checkout(fakeTarget(host: "host", share: "five"))
+        #expect(await pool.linkClass(host: "host") == .wan)
+    }
+
+    /// The reverse direction has no hysteresis: a fast cold connect is proof the host is local, and
+    /// nothing about a stale `.wan` label is worth holding against it.
+    @Test("a single fast cold sample promotes a WAN host immediately")
+    func fastSamplePromotesImmediately() async throws {
+        let world = FakeSMBWorld()
+        let pool = makeFakePool(world: world)
+
+        world.setLatency(Self.wanLatency, host: "host")
+        _ = try await pool.checkout(fakeTarget(host: "host", share: "one"))
+        #expect(await pool.linkClass(host: "host") == .wan)
+
+        world.setLatency(Self.lanLatency, host: "host")
+        _ = try await pool.checkout(fakeTarget(host: "host", share: "two"))
+        #expect(await pool.linkClass(host: "host") == .lan)
     }
 
     /// A dead host must be re-probed once per backoff window, not once per prefetch batch — without

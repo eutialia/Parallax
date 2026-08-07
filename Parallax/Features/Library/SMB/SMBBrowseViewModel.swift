@@ -42,6 +42,11 @@ final class SMBBrowseViewModel {
     /// appear. Threaded to each tile so the thumbnail provider prefers a real poster over a frame-grab.
     private(set) var artwork: [ItemID: SMBDirectoryEntry] = [:]
     private(set) var isLoading = false
+    /// True while a background re-list is in flight over content that is already on screen
+    /// (stale-while-revalidate). The view dims via `.staleWhileRevalidate` and never swaps to a
+    /// skeleton — current folders/media stay put until fresh data lands or the revalidate fails
+    /// silently.
+    private(set) var isRefreshing = false
     private(set) var error: String?
     /// True when the last failure was the server refusing the SIGN-IN (`.auth`, e.g. libsmb2's
     /// EPERM for a stale/lost password) rather than a share/connectivity fault. The share-root
@@ -79,10 +84,16 @@ final class SMBBrowseViewModel {
     private let share: String
     private let path: String
     private var loadTask: Task<Void, Never>?
-    /// Monotonic token so only the LATEST load may mutate `isLoading`. A re-sort cancels the prior
-    /// task, but AMSMB2's `list` ignores cooperative cancellation, so the cancelled task still
-    /// resumes and would run its `defer` — clearing `isLoading` while the new load is in flight.
-    /// The data writes are already stale-guarded by `Task.isCancelled`; this guards the shared flag.
+    /// Monotonic token so only the LATEST listing flight may clear its own progress flag
+    /// (`isLoading` for `load`, `isRefreshing` for `refresh`). A re-sort or foreground revalidate
+    /// cancels the prior task, but AMSMB2's `list` ignores cooperative cancellation, so the
+    /// cancelled task still resumes and would run its `defer` — clearing a flag while the new
+    /// flight is in progress. The data writes are already stale-guarded by `Task.isCancelled`;
+    /// this guards the shared flags. `load` and `refresh` share one counter and one `loadTask`
+    /// (single-flight): whichever starts last owns the generation. Only `load` preempts — it clears
+    /// `isRefreshing` so a revalidate it cancelled can't leave that flag stuck true when its defer
+    /// sees a generation mismatch and skips its own clear. `refresh` never preempts (it skips
+    /// while either flag is set), so it has no flag of the other's to clear.
     private var loadGeneration = 0
 
     init(source: SMBFileSource, share: String, path: String) {
@@ -93,6 +104,8 @@ final class SMBBrowseViewModel {
 
     func load() {
         isLoading = true
+        // A foreground revalidate may still be in flight; this load owns the single flight now.
+        isRefreshing = false
         error = nil
         loadTask?.cancel()
         loadGeneration += 1
@@ -115,6 +128,53 @@ final class SMBBrowseViewModel {
                     self.errorIsSignInRefusal = false
                 }
                 self.error = appError.userMessage
+            }
+        }
+    }
+
+    /// Stale-while-revalidate re-list of this level. The in-flight/empty/stalled split matters
+    /// because `.recoversFromOffline` ALSO fires `load()` on the same `.active` edge whenever
+    /// `isStalled` (errored, nothing listed): falling through to `load()` here too would race it,
+    /// and the loser's cancelled listing condemns its connection to the graveyard for nothing. So:
+    /// - A listing ALREADY IN FLIGHT does NOTHING. It is about to deliver fresh data, which is all
+    ///   a revalidate wants; preempting it just cancels a live listing and condemns its connection.
+    ///   This is also what keeps the offline-recovery race honest: `load()` clears `error`
+    ///   synchronously, so by the time this runs (after the foreground flush suspension) `isStalled`
+    ///   already reads false and the stalled guard below would wave the second flight through.
+    /// - Empty AND no error (a healthy empty folder) falls through to `load()` — there is nothing
+    ///   to preserve, and nobody else owns re-listing this case.
+    /// - Empty WITH an error (a stalled level) does NOTHING — `.recoversFromOffline` owns it.
+    /// - Otherwise (content on screen) revalidates in place: keeps folders/media/artwork up the
+    ///   whole time, never touches `isLoading` (nothing is loading — the first guard proved it),
+    ///   and never paints an error over content the user is already browsing. A failed revalidate
+    ///   is a silent no-op.
+    func refresh() {
+        guard !isLoading, !isRefreshing else { return }
+        guard !isStalled else { return }
+        if folders.isEmpty && media.isEmpty {
+            load()
+            return
+        }
+        isRefreshing = true
+        loadTask?.cancel()
+        loadGeneration += 1
+        let generation = loadGeneration
+        loadTask = Task { [source, path, sort] in
+            defer { if generation == loadGeneration { isRefreshing = false } }
+            do {
+                let listing = try await source.browse(in: path, sort: sort)
+                guard !Task.isCancelled else { return }
+                folders = listing.folders
+                media = listing.media
+                artwork = listing.artwork
+                listingGeneration += 1
+                // A stale error must not repaint over a refresh that came back healthy — an empty
+                // listing here means "Nothing Here", not the old failure.
+                error = nil
+                errorIsSignInRefusal = false
+            } catch {
+                // Failed background revalidate must not paint over content the user is browsing —
+                // leave folders/media/artwork/error/errorIsSignInRefusal exactly as they were.
             }
         }
     }
