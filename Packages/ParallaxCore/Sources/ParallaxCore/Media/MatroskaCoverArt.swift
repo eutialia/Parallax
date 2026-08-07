@@ -23,6 +23,14 @@ public enum MatroskaCoverArt {
     /// Cap on the FINAL chosen attachment's FileData size. Separate from the
     /// structural budget so a legitimate large cover is still readable in full.
     static let maxAttachmentBytes: UInt64 = 8 * 1024 * 1024
+
+    /// Overflow-checked offset advance. Element sizes are VINT-bounded (≤ 2^56), but offsets
+    /// descend from the server-reported file size, which a hostile server can place near
+    /// `UInt64.max` — a crafted jump must degrade to absence, never trap.
+    private static func advance(_ base: UInt64, by size: UInt64) -> UInt64? {
+        let (sum, overflow) = base.addingReportingOverflow(size)
+        return overflow ? nil : sum
+    }
     /// Bound children walked in any single master element so a garbage size table
     /// can't spin forever.
     private static let maxChildrenPerMaster = 4096
@@ -73,9 +81,9 @@ public enum MatroskaCoverArt {
         // EBML header — only need its extent so the next top-level element starts right after.
         guard let ebml = try await state.readHeader(at: 0),
               ebml.id == idEBML,
-              case .known(let ebmlSize) = ebml.size
+              case .known(let ebmlSize) = ebml.size,
+              let afterEBML = advance(ebml.dataStart, by: ebmlSize)
         else { return nil }
-        let afterEBML = ebml.dataStart + ebmlSize
 
         guard let segment = try await state.readHeader(at: afterEBML),
               segment.id == idSegment
@@ -85,7 +93,8 @@ public enum MatroskaCoverArt {
         let segmentDataEnd: UInt64?
         switch segment.size {
         case .known(let size):
-            segmentDataEnd = segmentDataStart + size
+            guard let end = advance(segmentDataStart, by: size) else { return nil }
+            segmentDataEnd = end
         case .unknown:
             // Legal only for Segment here — treat as "extends to EOF".
             segmentDataEnd = fileSize
@@ -212,8 +221,8 @@ public enum MatroskaCoverArt {
             if header.id == want { return header }
             // Unknown-size non-Segment: unrecoverable here.
             guard case .known(let size) = header.size else { return nil }
-            let next = header.dataStart + size
-            guard next > offset else { return nil } // must advance — also catches size == 0
+            guard let next = advance(header.dataStart, by: size),
+                  next > offset else { return nil } // must advance — also catches size == 0
             offset = next
             children += 1
         }
@@ -414,8 +423,8 @@ public enum MatroskaCoverArt {
                 return (header.dataStart, size)
             }
             guard case .known(let size) = header.size else { return nil }
-            let next = header.dataStart + size
-            guard next > offset else { return nil }
+            guard let next = advance(header.dataStart, by: size),
+                  next > offset else { return nil }
             offset = next
             children += 1
         }
@@ -703,7 +712,7 @@ public enum MatroskaCoverArt {
 
     /// Tracks the structural byte/read budgets and issues size-capped reader pulls.
     /// FileData payload reads intentionally bypass this type so they don't share
-    /// the 256 KiB / 64-read ceilings.
+    /// the `structuralBudget` / `maxStructuralReads` ceilings.
     ///
     /// `@unchecked Sendable`: one instance is created per `extract()` call and
     /// mutated only on that call's single sequential `await` chain — it never
