@@ -7,7 +7,7 @@ import Testing
 ///
 /// Time-limited: the drain and wedge tests wait on gates and detached teardowns, so a regression
 /// that never signals should fail red rather than hang the whole run.
-@Suite("SMBRandomAccessReader", .timeLimit(.minutes(1)))
+@Suite("SMBRandomAccessReader", .timeLimit(.minutes(3)))
 struct SMBRandomAccessReaderTests {
 
     private struct ReadFailure: Error {}

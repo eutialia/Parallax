@@ -5,7 +5,7 @@ import Testing
 
 /// Time-limited: nearly every test here waits on a gate, a fuse or a detached teardown, so a
 /// regression that never signals should fail red rather than hang the whole run.
-@Suite("SMBConnectionPool", .timeLimit(.minutes(1)))
+@Suite("SMBConnectionPool", .timeLimit(.minutes(3)))
 struct SMBConnectionPoolTests {
 
     private struct ConnectFailure: Error {}
@@ -332,9 +332,10 @@ struct SMBConnectionPoolTests {
         // No further pool traffic: only the scheduled sweep can tear this down — and it sleeps on a
         // REAL clock, so this waits in real time rather than in scheduler turns. The ceiling is an
         // anti-hang bound, so it scales for oversubscribed CI runners instead of flaking on them —
-        // capped below the suite's one-minute time limit, which the bare ×12 CI scale would equal
-        // exactly, leaving the wait unable to ever win the race on a slow runner.
-        let deadline = ContinuousClock().now.advanced(by: min(CITimeScale.seconds(5), .seconds(45)))
+        // capped below the suite's time limit so the wait can still win its race — but with
+        // headroom above the ~45-100s whole-VM stalls observed on virtualized CI runners, which
+        // no in-process ceiling can prevent, only outlast.
+        let deadline = ContinuousClock().now.advanced(by: min(CITimeScale.seconds(5), .seconds(150)))
         while world.disconnectedIDs.isEmpty, ContinuousClock().now < deadline {
             try await Task.sleep(for: .milliseconds(10))
         }
