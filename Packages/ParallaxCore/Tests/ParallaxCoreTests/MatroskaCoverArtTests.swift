@@ -168,8 +168,8 @@ struct MatroskaCoverArtTests {
     @Test("SeekHead cycle with no Attachments is authoritative — Strategy B must not run")
     func seekHeadCycleNoAttachmentsSkipsStrategyB() async throws {
         // Complete SeekHead chain with no Attachments entry anywhere (second hop
-        // points back at the first SeekHead). Attachments sits before Cluster so
-        // Strategy B WOULD find it if Finding 4b's gate regressed.
+        // points back at the first SeekHead). Attachments sits before Cluster, so the
+        // linear fallback WOULD find it if the authoritative-absence gate regressed.
         let data = F.mkv(pieces: [
             .seekHead(targets: [
                 F.SeekTarget(pieceIndex: 1, id: F.seekHeadID, idLength: 4),
