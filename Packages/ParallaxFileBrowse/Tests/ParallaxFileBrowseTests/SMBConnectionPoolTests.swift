@@ -332,7 +332,7 @@ struct SMBConnectionPoolTests {
         // No further pool traffic: only the scheduled sweep can tear this down — and it sleeps on a
         // REAL clock, so this waits in real time rather than in scheduler turns. The ceiling is an
         // anti-hang bound, so it scales for oversubscribed CI runners instead of flaking on them —
-        // The CI-scaled ceiling (150s) sits above the ~45-100s whole-VM stalls observed on
+        // the CI-scaled ceiling (150s) sits above the ~45-100s whole-VM stalls observed on
         // virtualized runners — a stall can only be outlasted, never prevented in-process — while
         // staying under the suite's three-minute time limit so the wait still wins its race.
         let deadline = ContinuousClock().now.advanced(by: CITimeScale.seconds(12.5))
