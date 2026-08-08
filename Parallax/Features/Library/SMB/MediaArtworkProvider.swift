@@ -52,9 +52,9 @@ nonisolated struct MediaArtwork: Sendable, Equatable {
 /// budget; a struggling link self-throttles without a hardcoded permanent cap.
 ///
 /// **Pooled sessions.** Generation borrows warm SMB connections from a shared `SMBConnectionPool`
-/// (injected) instead of standing up a fresh session per fetch. The sidecar reader and the
-/// frame-grab bridge both ride the pool; check-in/discard and the libsmb2 teardown guard live in the
-/// reader + pool (see `SMBRandomAccessReader.disconnect()`).
+/// (injected) instead of standing up a fresh session per fetch. The sidecar reader, the cover-art
+/// walker, and the frame-grab bridge all ride the pool; check-in/discard and the libsmb2 teardown
+/// guard live in the reader + pool (see `SMBRandomAccessReader.disconnect()`).
 ///
 /// **Failure memory.** A generation failure is recorded both in-memory (fast path) and as a
 /// persistent `.fail` marker on disk, so a file libvlc can't decode isn't re-attempted (and
@@ -114,7 +114,8 @@ actor MediaArtworkProvider {
     private static let coverArtTimeout: Duration = .seconds(6)
 
     /// Sidecar reads are bounded tighter: a poster is small, and a sidecar that can't stream in ~10s
-    /// is a wedge worth abandoning to the frame-grab (which has its own, longer ceiling).
+    /// is a wedge worth abandoning to the later tiers (cover-art for MKV, then the frame-grab —
+    /// both drawing from the shared generation deadline rather than their own ceilings).
     private static let sidecarReadTimeout: TimeInterval = 10
     /// A sidecar image larger than this isn't a tile poster — skip it and frame-grab instead. 8 MiB
     /// comfortably covers a 4K-ish JPEG/PNG scraper poster without reading a misplaced huge file.
@@ -688,7 +689,7 @@ actor MediaArtworkProvider {
             // A nil from store() is a WRITE failure, not a decode failure — return .none but do NOT
             // poison the key, so the next scroll retries instead of hiding a decodable file. The
             // frame still DECODED, which is what the link evidence is about: `decodedAFrame` stays
-            // true so a sidecar blip earlier in the same generation is correctly overridden.
+            // true so a sidecar or cover-art blip earlier in the same generation is overridden.
             guard let cached = await cache.store(frame.data, duration: frame.duration, for: key) else {
                 return FrameGrabAttempt(artwork: .none, outcome: .success, decodedAFrame: true)
             }

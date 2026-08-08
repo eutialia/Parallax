@@ -665,7 +665,10 @@ public enum MatroskaCoverArt {
             guard case .known(let size) = mem.size else { return nil }
             let headerLength = mem.contentStart - rel
             guard headerLength > 0 else { return nil }
-            let dataStart = cursor + UInt64(headerLength)
+            // Cursor can descend from a server-reported size — same near-max trap class as
+            // `advance`, so degrade to absence instead of trapping.
+            let (dataStart, overflowed) = cursor.addingReportingOverflow(UInt64(headerLength))
+            guard !overflowed else { return nil }
             return BufferedHeader(id: mem.id, size: size, dataStart: dataStart)
         }
 
@@ -743,7 +746,10 @@ public enum MatroskaCoverArt {
             let headerLength = idLen + sizeLen
             // A zero-length header can't advance the walk — treat as corrupt.
             guard headerLength > 0 else { return nil }
-            let dataStart = offset + UInt64(headerLength)
+            // Offset can descend from a server-reported size — same near-max trap class as
+            // `advance`, so degrade to absence instead of trapping.
+            let (dataStart, overflowed) = offset.addingReportingOverflow(UInt64(headerLength))
+            guard !overflowed else { return nil }
             return ElementHeader(id: id, size: size, headerLength: headerLength, dataStart: dataStart)
         }
 
