@@ -2,6 +2,7 @@ import Foundation
 import Testing
 import ParallaxCore
 import ParallaxPlayback
+import ParallaxTestScaling
 @testable import Parallax
 
 /// One routing row: a probe result plus the file size, and everything `route` must hand back for it.
@@ -169,12 +170,13 @@ struct SMBProbeDeadlineTests {
         let clock = ContinuousClock()
         let start = clock.now
         // 0.2s deadline (not the 4s default) so the test proves the race without a
-        // wall-clock stall; the generous 6s bound only guards against CI scheduling flake.
+        // wall-clock stall; the generous bound only guards against CI scheduling flake,
+        // so it rides CITimeScale (a stalled runner can blow a flat 6s ceiling).
         let result = await SMBPlaybackResolver.probeWithDeadline(HangingReader(), seconds: 0.2)
         let elapsed = start.duration(to: clock.now)
 
         #expect(result == nil)
-        #expect(elapsed < .seconds(6))
+        #expect(elapsed < CITimeScale.seconds(6))
     }
 
     @Test("a fast in-memory probe returns its result well before the deadline")
