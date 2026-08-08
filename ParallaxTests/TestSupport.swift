@@ -27,7 +27,7 @@ func waitUntil(_ condition: @MainActor () -> Bool) async {
 /// The actor-polling variant: waits until an `async` condition holds (state on a non-MainActor
 /// actor, where the yield-loop above can't look), sleeping between polls. Records an Issue when
 /// the anti-hang ceiling expires — the ceiling is a hang detector, never part of the assertion,
-/// and it is CI-scaled (below) so an oversubscribed runner can't trip it while the code under
+/// and it rides CITimeScale so an oversubscribed runner can't trip it while the code under
 /// test behaves correctly.
 func waitUntil(
     _ comment: Comment,
