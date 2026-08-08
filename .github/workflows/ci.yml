@@ -65,7 +65,10 @@ jobs:
           # TEST_RUNNER_ prefix); the live-VLC-decode suite skips itself on it.
           TEST_RUNNER_CI: 'true'
         run: |
-          DEVICE=$(xcrun simctl list devices available | grep -E '^ +iPhone' | head -1 | sed -E 's/^ +//; s/ \([^)]*\) \([^)]*\)$//')
+          # The ` *$` (not `$`) matters: `simctl list` pads a trailing space after the
+          # state, and an anchored-$ pattern then matches nothing and passes the whole
+          # "name (UUID) (Shutdown) " string through as the destination.
+          DEVICE=$(xcrun simctl list devices available | grep -E '^ +iPhone' | head -1 | sed -E 's/^ +//; s/ \([^)]*\) \([^)]*\) *$//')
           echo "Testing on simulator: ${DEVICE}"
           xcodebuild test \
             -scheme ${{ matrix.scheme }} \
@@ -111,7 +114,7 @@ jobs:
         env:
           TEST_RUNNER_CI: 'true'
         run: |
-          DEVICE=$(xcrun simctl list devices available | grep -E '^ +iPhone' | head -1 | sed -E 's/^ +//; s/ \([^)]*\) \([^)]*\)$//')
+          DEVICE=$(xcrun simctl list devices available | grep -E '^ +iPhone' | head -1 | sed -E 's/^ +//; s/ \([^)]*\) \([^)]*\) *$//')
           echo "Testing on simulator: ${DEVICE}"
           xcodebuild test \
             -project Parallax.xcodeproj \
