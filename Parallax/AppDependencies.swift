@@ -191,7 +191,9 @@ final class AppDependencies {
         // Drop every idle pooled socket on foreground return: after sleep they are corpses, and
         // the next browse re-list must cold-connect rather than re-borrow a dead session.
         let flushSMBConnections: @Sendable () async -> Void = {
+            AppDiagnostics.lifecycle.mark("→ foreground SMB flush")
             await smbConnectionPool.flushIdle()
+            AppDiagnostics.lifecycle.mark("← foreground SMB flush")
         }
         // The saved-server path. The password comes through `ServerStore.smbPassword(for:)`, which
         // throws `.auth(.credentialUnavailable)` on a lost Keychain slot instead of degrading to an

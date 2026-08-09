@@ -159,6 +159,8 @@ struct SMBBrowseView: View {
         // hold covers thumbnail generation only — a directory listing is not gated by it.
         .refreshesOnForeground(isEnabled: !playback.isPlayerPresent) {
             await deps.flushSMBConnections()
+            // `refresh()` marks its own start and finish from inside its task — it returns as soon
+            // as that task is spawned, so a bracket here would only ever time the spawn.
             model?.refresh()
         }
     }
