@@ -1,4 +1,5 @@
 import SwiftUI
+import ParallaxCore
 import ParallaxJellyfin
 
 /// The app's settings surface — the server list plus the add-server → sign-in flow, so server
@@ -40,6 +41,13 @@ struct SettingsView: View {
         case subtitles
         case about
         case license(Acknowledgement)
+        case diagnostics
+        /// One saved run's log. Carries the whole session value rather than an id — it is `Hashable`
+        /// and `Sendable` already, and re-deriving it from a file name in the destination would race
+        /// the pruning that happens at every launch.
+        case diagnosticsSession(DiagnosticsSession)
+        /// tvOS only: serve the logs over the LAN, since tvOS has no share sheet.
+        case diagnosticsHandoff
     }
 
     var body: some View {
@@ -150,6 +158,16 @@ struct SettingsView: View {
             AboutView()
         case .license(let entry):
             LicenseTextView(entry: entry)
+        case .diagnostics:
+            DiagnosticsView()
+        case .diagnosticsSession(let session):
+            DiagnosticsSessionView(session: session)
+        case .diagnosticsHandoff:
+            #if os(tvOS)
+            DiagnosticsHandoffView()
+            #else
+            EmptyView()
+            #endif
         }
     }
 
@@ -182,6 +200,7 @@ struct SettingsView: View {
                 },
                 onSelectSubtitles: { path.append(.subtitles) },
                 onSelectAbout: { path.append(.about) },
+                onSelectDiagnostics: { path.append(.diagnostics) },
                 storage: { ThumbnailCacheCard() }
             )
         } else {
@@ -319,6 +338,7 @@ struct SettingsContentView<Storage: View>: View {
     let onAddServer: () -> Void
     let onSelectSubtitles: () -> Void
     var onSelectAbout: () -> Void = {}
+    var onSelectDiagnostics: () -> Void = {}
     @ViewBuilder var storage: Storage
 
     var body: some View {
@@ -397,6 +417,10 @@ struct SettingsContentView<Storage: View>: View {
         SettingsGroup(title: "About") {
             SettingsListRow(systemImage: "info.circle", title: "About Parallax",
                             accessory: .chevron, action: onSelectAbout)
+            // Ships in Release on purpose: the crashes this exists to explain happen on devices no
+            // debugger is attached to. See `DiagnosticsView`.
+            SettingsListRow(systemImage: "stethoscope", title: "Diagnostics",
+                            accessory: .chevron, action: onSelectDiagnostics)
         }
     }
 }

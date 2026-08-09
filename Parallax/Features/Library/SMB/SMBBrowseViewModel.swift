@@ -159,8 +159,18 @@ final class SMBBrowseViewModel {
         loadTask?.cancel()
         loadGeneration += 1
         let generation = loadGeneration
-        loadTask = Task { [source, path, sort] in
-            defer { if generation == loadGeneration { isRefreshing = false } }
+        // The CLOSING mark is made from inside the task, not around the call. `refresh()` returns the
+        // instant it has spawned this, so a bracket at the call site would measure the spawn (~1ms)
+        // and say nothing about the work. What matters is when the listing FINISHES, so the start
+        // instant is captured here at spawn and the elapsed time is reported from the task's `defer`.
+        let started = ContinuousClock().now
+        AppDiagnostics.lifecycle.mark("→ refresh \(share)\(DiagnosticsRedaction.path(path))")
+        loadTask = Task { [source, share, path, sort] in
+            defer {
+                if generation == loadGeneration { isRefreshing = false }
+                AppDiagnostics.lifecycle.mark(
+                    "← refresh \(share)\(DiagnosticsRedaction.path(path)) in \(started.duration(to: ContinuousClock().now))")
+            }
             do {
                 let listing = try await source.browse(in: path, sort: sort)
                 guard !Task.isCancelled else { return }

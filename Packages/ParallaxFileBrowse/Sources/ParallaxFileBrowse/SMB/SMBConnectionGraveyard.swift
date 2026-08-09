@@ -124,10 +124,13 @@ actor SMBConnectionGraveyard<Connection: PoolableSMBConnection> {
         let plot = nextPlot
         nextPlot += 1
         plots[plot] = connection
+        SMBDiagnostics.graveyard.notice(
+            "condemn plot=\(plot) abandoned=\(settlement.isAbandoned) "
+                + "fuse=\(fuse.map(String.init(describing:)) ?? "none") occupancy=\(plots.count)")
         // Runs inline when the call already settled while the caller was deciding — so the parking
         // and the release cannot deadlock on ordering.
         settlement.whenSettled { [weak self] in
-            Task { await self?.release(plot) }
+            Task { await self?.release(plot, reason: "settled") }
         }
         guard let fuse else { return }
         fuses[plot] = Task { [weak self, sleep] in
@@ -153,17 +156,27 @@ actor SMBConnectionGraveyard<Connection: PoolableSMBConnection> {
     /// The fuse elapsed with nothing having settled — the only path that lets go of a connection
     /// whose request libsmb2 may still be holding. Named apart from `release` for that reason.
     private func releaseOnFuse(_ plot: Int) {
-        release(plot)
+        release(plot, reason: "fuse")
     }
 
     /// Frees one plot, at most once — a fused park can be reached by both its settlement and its
     /// fuse, and the loser must be a no-op rather than a second release.
-    private func release(_ plot: Int) {
+    ///
+    /// `reason` exists only for the retained log, and it earns its place: a `fuse` release is the ONLY
+    /// path that drops the last reference to a connection whose request libsmb2 may still be holding,
+    /// so `SMB2Client.deinit` → `smb2_destroy_context` walks a live request list right here. A crash
+    /// recorded straight after one of these points at exactly that walk — which is a different bug
+    /// from a crash after a `settled` release, where nothing was pending by construction.
+    private func release(_ plot: Int, reason: String) {
         fuses.removeValue(forKey: plot)?.cancel()
+        guard plots[plot] != nil else { return }
+        SMBDiagnostics.graveyard.notice("→ release plot=\(plot) by=\(reason)")
         // Last-reference drop: ARC deallocates the connection here, and `SMB2Client.deinit` runs its
         // OWN `disconnect()` when the socket still looks connected — so this is a disposal site too.
-        guard plots[plot] != nil else { return }
         plots[plot] = nil
         releases += 1
+        // The `←` is only written if that deinit returned. A `→ release` with no `← released` is a
+        // teardown that took the process with it.
+        SMBDiagnostics.graveyard.notice("← released plot=\(plot) occupancy=\(plots.count)")
     }
 }

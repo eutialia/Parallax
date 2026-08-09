@@ -1,5 +1,6 @@
 import AMSMB2
 import Foundation
+import ParallaxCore
 
 /// `SMBLister` over the shared `SMBConnectionPool` — directory enumeration and share enumeration.
 /// Streaming runs through libVLC's native `smb://` path or the HTTP bridge, not this type.
@@ -99,11 +100,16 @@ public struct PooledSMBLister<Connection: SMBListableConnection>: SMBLister {
         }
         connection.setOperationTimeout(operationCeiling)
         let settlement = SMBOperationSettlement()
+        SMBDiagnostics.lister.info("→ listShares \(credentials.host)")
         do {
             let shares = try await bounded(settlement: settlement) { try await connection.availableShares() }
+            SMBDiagnostics.lister.info("← listShares ok \(credentials.host) shares=\(shares.count)")
             Self.tearDown(connection)
             return shares
         } catch {
+            SMBDiagnostics.lister.error(
+                "← listShares FAILED \(credentials.host) abandoned=\(settlement.isAbandoned) "
+                    + "error=\(error.networkDiagnostic)")
             // Same split as `list`: an enumeration that FINISHED badly is torn down (the drain finds
             // nothing pending), while one still running on a wedged socket is condemned — tearing that
             // one down is the graceful-disconnect crash, one-shot connection or not.
@@ -172,10 +178,14 @@ public struct PooledSMBLister<Connection: SMBListableConnection>: SMBLister {
         connection.setOperationTimeout(operationCeiling)
         let listPath = path.isEmpty ? "/" : path
         let settlement = SMBOperationSettlement()
+        SMBDiagnostics.lister.info(
+            "→ list \(credentials.host)/\(share)\(DiagnosticsRedaction.path(listPath)) "
+                + "warm=\(borrowed.isWarm) fresh=\(requireFresh)")
         do {
             let entries = try await bounded(settlement: settlement) {
                 try await connection.directoryEntries(atPath: listPath)
             }
+            SMBDiagnostics.lister.info("← list ok \(share)\(DiagnosticsRedaction.path(listPath)) entries=\(entries.count)")
             // Check in DETACHED: the folder the user just opened is on screen the moment these
             // entries return, and pool hygiene (reaping, cap eviction) must not be charged to it —
             // on a real NAS each teardown it triggers is a tree-disconnect plus a logoff round trip.
@@ -204,6 +214,11 @@ public struct PooledSMBLister<Connection: SMBListableConnection>: SMBLister {
             // cancelled listing leaves the socket mid-response exactly like a wedged one. The cost is
             // that a cancelled browse burns a warm connection; correctness wins.
             var deservesFreshRetry = false
+            SMBDiagnostics.lister.error(
+                "← list FAILED \(share)\(DiagnosticsRedaction.path(listPath)) warm=\(borrowed.isWarm) "
+                    + "abandoned=\(settlement.isAbandoned) "
+                    + "queued=\(SMBAbandonedCall.leavesRequestQueued(error)) "
+                    + "error=\(error.networkDiagnostic)")
             if settlement.isAbandoned {
                 await pool.condemn(borrowed, settlement: settlement)
             } else if SMBAbandonedCall.leavesRequestQueued(error) {

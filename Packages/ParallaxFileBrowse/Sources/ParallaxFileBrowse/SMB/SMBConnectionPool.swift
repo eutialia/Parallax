@@ -168,9 +168,13 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
             // entries with zero borrowers (the teardown rule is untouched), and leaving them would
             // just hand the next borrower another corpse. Detached, like every other eviction.
             let corpses = (idle.removeValue(forKey: key) ?? []).map(\.connection)
+            SMBDiagnostics.pool.info(
+                "checkout requireFresh \(target.host)/\(target.share) purged=\(corpses.count)")
             for connection in corpses { Task { await connection.disconnectGracefully() } }
         } else if var entries = idle[key], let reused = entries.popLast() {
             idle[key] = entries.isEmpty ? nil : entries
+            SMBDiagnostics.pool.info(
+                "checkout warm \(target.host)/\(target.share) epoch=\(flushEpoch) idleLeft=\(entries.count)")
             return SMBPooledConnection(
                 key: key, connection: reused.connection, isWarm: true, epoch: flushEpoch)
         }
@@ -184,6 +188,7 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
         // actually returned.
         let escrow = SMBConnectionEscrow<Connection>()
         let settlement = SMBOperationSettlement()
+        SMBDiagnostics.pool.info("→ cold connect \(target.host)/\(target.share) epoch=\(flushEpoch)")
         do {
             let connector = connect
             connection = try await withHardTimeout(
@@ -193,13 +198,18 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
                 try await connector(target) { escrow.deliver($0) }
             }
         } catch {
+            SMBDiagnostics.pool.error(
+                "← cold connect FAILED \(target.host)/\(target.share) "
+                    + "abandoned=\(settlement.isAbandoned) error=\(error.networkDiagnostic)")
             claimAbandonedConnect(
                 escrow, failedWith: error, settlement: settlement, operationTimeout: connectTimeout
             )
             if error is HardTimeoutError { throw SMBListerError.timedOut }
             throw error
         }
-        recordColdLatency(host: target.host, elapsed: start.duration(to: now()))
+        let elapsed = start.duration(to: now())
+        SMBDiagnostics.pool.info("← cold connect ok \(target.host)/\(target.share) in \(elapsed)")
+        recordColdLatency(host: target.host, elapsed: elapsed)
         // Stamped AFTER the connect: a flush that happened while this handshake was in flight
         // targeted the sockets that existed before it, not this brand-new one.
         return SMBPooledConnection(
@@ -235,6 +245,9 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
         let fuse: Duration? = SMBAbandonedCall.leavesRequestQueued(error)
             ? SMBAbandonedCall.releaseFuse(afterOperationTimeout: operationTimeout)
             : nil
+        SMBDiagnostics.pool.notice(
+            "claimAbandonedConnect abandoned=\(settlement.isAbandoned) "
+                + "fuse=\(fuse.map(String.init(describing:)) ?? "none") error=\(error.networkDiagnostic)")
         // Not abandoned and nothing queued ⇒ the connect call has returned for good, so the receipt
         // is already true: mark it, and the park below releases the instant it is made.
         if fuse == nil, !settlement.isAbandoned { settlement.markSettled() }
@@ -258,6 +271,9 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
     /// otherwise re-seed the freshly emptied idle map with exactly the corpse the flush removed.
     public func checkin(_ handle: SMBPooledConnection<Connection>) async {
         guard handle.epoch >= flushEpoch else {
+            SMBDiagnostics.pool.notice(
+                "checkin STALE \(handle.key.host)/\(handle.key.share) "
+                    + "borrowEpoch=\(handle.epoch) flushEpoch=\(flushEpoch) → disposing")
             // Detached, like every other teardown here: the borrower pays nothing for pool hygiene.
             Task { await handle.connection.disconnectGracefully() }
             return
@@ -277,6 +293,8 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
         }
         idle[handle.key] = entries
 
+        SMBDiagnostics.pool.info(
+            "checkin \(handle.key.host)/\(handle.key.share) idle=\(entries.count) evicted=\(overflow.count)")
         for connection in overflow {
             Task { await connection.disconnectGracefully() }
         }
@@ -347,6 +365,8 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
     /// from `idle` at checkout, so simply never re-adding it is the discard) and it must NOT block the
     /// caller's `disconnect()` on a teardown that could take the full socket timeout.
     public nonisolated func discard(_ handle: SMBPooledConnection<Connection>) {
+        SMBDiagnostics.pool.notice(
+            "discard \(handle.key.host)/\(handle.key.share) warm=\(handle.isWarm)")
         Task { await handle.connection.disconnectGracefully() }
     }
 
@@ -445,6 +465,11 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
             idle[key] = kept.isEmpty ? nil : kept
             expired.append(contentsOf: reaped.map(\.connection))
         }
+        // Only when it actually reaped: the sweep runs every 30s for the life of the app and a
+        // "reaped nothing" record every time would be the loudest thing in the file.
+        if !expired.isEmpty {
+            SMBDiagnostics.pool.notice("reapIdle expired=\(expired.count) idleLeft=\(idleCount)")
+        }
         for connection in expired {
             Task { await connection.disconnectGracefully() }
         }
@@ -468,9 +493,26 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
     public func flushIdle() async {
         flushEpoch += 1
         let corpses = idle.values.flatMap { $0.map(\.connection) }
+        // Named, not just counted: a flush that tears down several connections AT ONCE is the shape
+        // that precedes the post-resume death, and whether they are all one share or spread across
+        // several is the difference between a per-connection bug and a concurrency one.
+        let torn = idle.keys.map { "\($0.host)/\($0.share)" }.sorted().joined(separator: ",")
         idle.removeAll()
+        SMBDiagnostics.pool.mark(
+            "flushIdle epoch=\(flushEpoch) corpses=\(corpses.count) keys=[\(torn)]")
         for connection in corpses {
             Task { await connection.disconnectGracefully() }
+        }
+        // Parked occupancy is worth knowing but must NOT be awaited inline. The graveyard runs its
+        // last-reference drop on its own actor, and that drop can reach `SMB2Client.deinit` →
+        // `smb2_destroy_context` on a wedged socket. Awaiting it here would park the foreground
+        // flush — and everything queued behind this actor — behind a native teardown, so the
+        // instrumentation would extend the exact stall it was added to measure, and the log would
+        // show `→ foreground SMB flush` with no `←` for a reason that had nothing to do with SMB.
+        // Awaited into a local first: the channel takes a non-async autoclosure.
+        Task { [graveyard] in
+            let parked = await graveyard.occupancy
+            SMBDiagnostics.pool.notice("graveyard parked=\(parked)")
         }
     }
 
@@ -633,8 +675,25 @@ extension SMB2Manager: PoolableSMBConnection {
     /// libsmb2 destroys the client context — the crash guard from 76d6fcd. A teardown throw isn't
     /// actionable here (the connection is being discarded anyway), so it's swallowed.
     public func disconnectGracefully() async {
-        // THE choke point: every real `disconnectShare` in the app funnels through here.
-        try? await disconnectShare(gracefully: true)
+        // THE choke point: every real `disconnectShare` in the app funnels through here — which also
+        // makes it the most valuable bracket in the retained log. A `→` with no matching `←` is a
+        // teardown that never returned, and if the process died right after one, this call is where
+        // it died.
+        let tag = SMBDiagnostics.tag(self)
+        let started = ContinuousClock().now
+        let inFlight = SMBDiagnostics.beginDisconnect()
+        SMBDiagnostics.pool.notice("→ disconnectShare(gracefully:) conn=\(tag) inFlight=\(inFlight)")
+        do {
+            try await disconnectShare(gracefully: true)
+            let elapsed = started.duration(to: ContinuousClock().now)
+            SMBDiagnostics.pool.notice(
+                "← disconnectShare ok conn=\(tag) in \(elapsed) inFlight=\(SMBDiagnostics.endDisconnect())")
+        } catch {
+            let elapsed = started.duration(to: ContinuousClock().now)
+            SMBDiagnostics.pool.notice(
+                "← disconnectShare threw conn=\(tag) in \(elapsed) "
+                    + "inFlight=\(SMBDiagnostics.endDisconnect()) error=\(error.networkDiagnostic)")
+        }
     }
 }
 

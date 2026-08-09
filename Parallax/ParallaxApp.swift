@@ -49,6 +49,12 @@ struct ParallaxApp: App {
     /// mode is decided from what's on disk — so both are constructed here rather than in
     /// their property initializers.
     init() {
+        // FIRST, before dependencies: the retained log has to be open before anything it might want
+        // to record runs, and arming `CrashSentinel` early is the difference between a crash during
+        // startup leaving a stack behind and leaving nothing.
+        DiagnosticsLog.start()
+        AppDiagnostics.lifecycle.mark("launch")
+
         let dependencies = AppDependencies.live()
         _dependencies = State(initialValue: dependencies)
         _launchGate = State(initialValue: LaunchGate(playsStory: Self.playsLaunchStory(for: dependencies)))
@@ -130,6 +136,9 @@ struct ParallaxApp: App {
             // inside a `.sidebarAdaptable` tab (Home) fills the whole screen instead of its
             // overscan-short tab region (see `\.heroViewportHeight`). No-op on iOS.
             .measuresHeroViewport()
+            // Unconditional scene-phase record for the retained log — see the modifier for why the
+            // per-screen refresh modifiers can't stand in for it.
+            .recordsScenePhaseForDiagnostics()
             .task {
                 do {
                     try await dependencies.serverStore.load()
