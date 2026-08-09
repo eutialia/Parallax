@@ -17,7 +17,7 @@ let package = Package(
         // Pinned to our fork's parallax-stable (upstream 4.0.3 + a memory-safety patch: heap-owned
         // async request state). Return to an upstream version pin once the patch merges
         // (amosavian/AMSMB2 issues #129/#136).
-        .package(url: "https://github.com/eutialia/AMSMB2.git", revision: "701793a87e220619e095bf94a77c6cf300aed26a"),
+        .package(url: "https://github.com/eutialia/AMSMB2.git", revision: "365a2c0a0d5af17a48e3d7d9d3d7c12c4ba239cb"),
     ],
     targets: [
         .target(
