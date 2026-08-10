@@ -45,6 +45,8 @@ struct HeroOverview: View {
             .lineLimit(3)
             .truncationMode(.tail)
             .fixedSize(horizontal: false, vertical: true)
+            // Wide band carries no veil — the blurb wears the subtitle-style contour instead.
+            .heroTypeContour(idiom: idiom)
             .frame(
                 maxWidth: HeroMetrics.overviewMaxWidth(idiom: idiom),
                 alignment: .leading
@@ -79,6 +81,8 @@ struct AdaptiveHeroOverview: View {
             .lineLimit(limit)
             .truncationMode(.tail)
             .fixedSize(horizontal: false, vertical: true)
+            // Wide band carries no veil — the blurb wears the subtitle-style contour instead.
+            .heroTypeContour(idiom: idiom)
     }
 }
 

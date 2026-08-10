@@ -146,27 +146,28 @@ Light: secondary label = ink at 78%, tertiary at 60%, separator 12%, fill 10% / 
 
 ## 4. Elevation
 
-Depth in Parallax is **material and scrim layering, not shadow stacking**. Surfaces separate through tone and hairline strokes — Liquid Glass (`.glassEffect` + `glassBorder`) where glass is sanctioned, flat `surface` panels everywhere else — and legibility over artwork comes from band scrims and gradient washes — never bare text, never text shadows in chrome. The system is flat at rest; what reads as "elevation" is material translucency.
+Depth in Parallax is **material and scrim layering, not shadow stacking**. Surfaces separate through tone and hairline strokes — Liquid Glass (`.glassEffect` + `glassBorder`) where glass is sanctioned, flat `surface` panels everywhere else. Legibility over artwork is idiom-structural (amended 2026-08-10): the tall iPhone band keeps its full-width scrim (`HeroBottomFade` — the text column spans the band, so the scrim reads as its backing), while the wide iPad/tvOS band carries **no veil** — every band-shaped treatment read as a wash or a smudge there — and its type protects itself with tight per-glyph contours (`heroTypeContour`/`heroLogoContour`, sanctioned under the Legibility-Only Shadow Rule). The system is flat at rest; what reads as "elevation" is material translucency.
 
 ### Shadow Vocabulary
 Shadows exist only where something floats over *media*:
 - **Player handle/bubble** (`black @0.5–0.6, radius 2–20 × u`): scrub affordances over video.
 - **Subtitle legibility** (`black @0.9, radius 3`): text over unpredictable frames.
+- **Hero type contour** (`black @0.65, radius 1.5, y 1` text; `@0.45, radius 7, y 2` logo): type over the veil-less wide hero band — the subtitle recipe's sibling, wide screens only.
 - **Library card** (`black @0.2, radius 8, y 4`): the single chrome shadow, under 16:9 banners.
 
 ### Named Rules
 **The Legibility-Only Shadow Rule.** A shadow must justify itself as legibility over media. Decorative shadows on chrome are prohibited — separation is glass's job.
 
-**The Scrim-Under-Text Rule.** Text over artwork always sits on a scrim or glass layer (hero band scrims, shelf footer progressive blur, player dim at `rgba(4,4,8,0.46)` × state factor). If you can imagine a bright frame breaking the text, it's already broken.
+**The Scrim-Under-Text Rule.** Text over artwork sits on a scrim or glass layer (compact hero band scrim, shelf footer progressive blur, player dim at `rgba(4,4,8,0.46)` × state factor) — or, on the veil-less wide hero band only, carries its own legibility contour (amended 2026-08-10; see Elevation). If you can imagine a bright frame breaking the text, it's already broken.
 
 ## 5. Components
 
-Controls are **flat**: each non-player control draws its own solid / `fill` fill via `flatControlFill` (the single rest-fill ↔ focus-platter helper). Liquid Glass is reserved for the player + system bars. The non-player tvOS focus model is ONE bespoke treatment — white platter + ink content + lift — applied uniformly, because the system platter doesn't recolor custom content (it would leave white-on-white).
+Controls are **flat**, with one amended exception (2026-08-10): the hero action row on iPhone/iPad wears interactive Liquid Glass — the flat white pill had no border and vanished into white artwork; the glass rim is the visibility mechanism. Everywhere else each non-player control draws its own solid / `fill` fill via `flatControlFill` (the single rest-fill ↔ focus-platter helper), and Liquid Glass stays reserved for the player + system bars + that hero row. The non-player tvOS focus model is ONE bespoke treatment — white platter + ink content + lift — applied uniformly (tvOS hero buttons stay flat: the focus platter carries their visibility), because the system platter doesn't recolor custom content (it would leave white-on-white).
 
 ### Buttons
 - **Shape:** Capsule pills and circles, continuous corners everywhere. Pill height = circle diameter, matched via `ActionRow.controlHeight` (iPhone 50 / iPad 52 / tvOS 62).
-- **Primary (Play pill, `PrimaryPlayButton`):** a flat solid pill, theme-FIXED white + player-ink label in BOTH schemes (owner directive 2026-07-14 — it rides artwork and must not flip with the app theme). Reserves its widest title invisibly so Play/Resume swaps never resize.
-- **Icon buttons (`CircleGlassButton`):** circular `heroGlass` fill + hairline + white glyph — the SAME recipe as the 4K/HDR/CC badges; the active state is a glyph swap (heart→heart.fill). 1.05 optical overshoot on iOS.
+- **Primary (Play pill, `PrimaryPlayButton`):** theme-FIXED white + player-ink label in BOTH schemes (it rides artwork and must not flip with the app theme). iPhone/iPad: white-tinted interactive glass pinned dark (2026-08-10 — the borderless flat pill vanished into white artwork); tvOS: the flat white pill, focus-carried. Reserves its widest title invisibly so Play/Resume swaps never resize.
+- **Icon buttons (`CircleGlassButton`):** white glyph on a fixed dark face. iPhone/iPad: `heroGlass`-tinted interactive glass pinned dark; tvOS: the flat `heroGlass` fill + hairline (still the 4K/HDR/CC badge recipe — the badges stay flat on every platform). Active state is a glyph swap (heart→heart.fill). 1.05 optical overshoot on iOS.
 - **Form CTAs (`formActionButton`):** `.solid` = solid `buttonFill`; `.glass` (secondary) = `fill` + hairline. Disabled dims the pill but keeps the label legible (no blank-pill bug).
 - **Focus (tvOS):** one bespoke recipe for every flat control — white platter + ink + lift (`flatControlFill` inverts the fill, `tvChipButton`/`tvFocusEffect` lifts). Posters keep the native `.borderless` lockup (image content); the player keeps clear-glass-over-video with a platter on its active/focused state.
 

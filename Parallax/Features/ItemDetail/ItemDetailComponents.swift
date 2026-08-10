@@ -14,6 +14,8 @@ enum DetailContentPhase: Hashable {
 struct DetailHeroMetadataRow: View {
     let metadata: DetailMetadata
 
+    @Environment(\.appIdiom) private var idiom
+
     var body: some View {
         ViewThatFits(in: .horizontal) {
             metadataRow(axis: .horizontal)
@@ -36,6 +38,10 @@ struct DetailHeroMetadataRow: View {
                     Text(text)
                         .lineLimit(1)
                         .minimumScaleFactor(0.85)
+                        // Bare text on the bare wide band — same subtitle-style contour as the
+                        // Home overview. The badges stay clean: their filled capsules are their
+                        // own backing.
+                        .heroTypeContour(idiom: idiom)
                 }
                 badges
             }
@@ -43,6 +49,7 @@ struct DetailHeroMetadataRow: View {
             VStack(alignment: .leading, spacing: 6) {
                 if !metadata.textParts.isEmpty {
                     Text(text)
+                        .heroTypeContour(idiom: idiom)
                 }
                 badges
             }

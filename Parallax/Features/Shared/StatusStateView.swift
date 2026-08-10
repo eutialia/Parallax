@@ -218,7 +218,7 @@ extension EnvironmentValues {
             message: "Movies, shows, and episodes from your library."
         )
         .navigationBarTitleDisplayMode(.inline)
-        .toolbarBackground(.hidden, for: .navigationBar)
+        .toolbarBackgroundVisibility(.hidden, for: .navigationBar)
         .searchable(
             text: .constant(""),
             placement: .navigationBarDrawer(displayMode: .always),

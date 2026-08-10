@@ -56,10 +56,15 @@ struct JellyfinSearchView: View {
         #endif
         // The SYSTEM search FIELD on every platform — no custom in-content field. tvOS renders
         // the HIG search screen (system keyboard on top, results beneath). iPhone/iPad use the
-        // DRAWER placement: the wide bar stacked below the nav bar (SwiftUI's analog of UIKit's
-        // `.stacked` — the Apple TV app's search-tab layout), NOT the default iPadOS 26
-        // trailing-corner field. Being chrome-hosted keeps the field out of the keyboard-avoidance
-        // path that shoved the old in-content bar off-screen.
+        // DRAWER placement: the wide bar stacked below the nav bar, shown ONLY on this tab —
+        // the Apple-TV-app search layout the WWDC25-323 session also demonstrates (~13:24),
+        // NOT the default iPadOS 26 trailing-corner field. Being chrome-hosted keeps the field
+        // out of the keyboard-avoidance path that shoved the old in-content bar off-screen.
+        //
+        // TRIED AND REVERTED (2026-08-10, owner-rejected on device): `.searchable` hoisted onto
+        // the TabView paired with the tab's `role: .search` — the session's OTHER search shape.
+        // That floats a search affordance across every tab's chrome; this app wants the field to
+        // exist only on the search page, full width. Don't re-hoist.
         //
         // The scope selector is OURS on BOTH platforms — deliberately no `.searchScopes` in any
         // production path. (The one exception is `SearchScopeBandPreview`, a `#if !os(tvOS) && DEBUG`
@@ -102,7 +107,7 @@ struct JellyfinSearchView: View {
         // Transparent bar, matching Home and the detail screens: the drawer + scope strip
         // otherwise paint the system bar material — an off-tone band that doesn't blend
         // with the daylight floor. Background only; the bar itself stays (zoom rule above).
-        .toolbarBackground(.hidden, for: .navigationBar)
+        .toolbarBackgroundVisibility(.hidden, for: .navigationBar)
         // Soft top edge: the HIG-recommended style on iPadOS ("hard" is primarily macOS).
         // Over the flat floor it reads as no edge at all while still fading results that
         // scroll up under the drawer field.

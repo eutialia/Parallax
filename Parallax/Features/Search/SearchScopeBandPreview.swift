@@ -67,7 +67,7 @@ private struct ScopeBandDemo: View {
         .modifier(SystemScopes(enabled: useSystemScopes, scope: $scope))
         .searchPresentationToolbarBehavior(.avoidHidingContent)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbarBackground(.hidden, for: .navigationBar)
+        .toolbarBackgroundVisibility(.hidden, for: .navigationBar)
         .modifier(EdgeTreatment(variant: variant))
         .screenFloor()
     }

@@ -173,14 +173,12 @@ struct RootTabView: View {
             // Search is Jellyfin-backed (SMB has no search index), so it's hidden in an
             // SMB-only config rather than shown as a permanently-empty tab.
             //
-            // `role: .search` + `.searchable` inside JellyfinSearchView = the system
-            // search-tab pattern: the separated magnifier pill in the bar, the field
-            // hosted in the chrome via the DRAWER placement (the wide bar stacked below
-            // the nav bar, like the TV app — see JellyfinSearchView; the default
-            // placement rendered a top-trailing corner field instead). Living in the
-            // chrome keeps the field out of the keyboard-avoidance path entirely — the
-            // old in-content custom bar got translated off-screen by the keyboard under
-            // the TabView's hosting.
+            // `role: .search` + `.searchable` inside JellyfinSearchView = the separated magnifier
+            // pill in the bar, with the field hosted in the chrome via the DRAWER placement —
+            // the full-width bar shown ONLY on this tab (the Apple-TV-app layout, demonstrated
+            // ~13:24 in WWDC25-323; see JellyfinSearchView). Hoisting `.searchable` onto the
+            // TabView (the session's other search shape) was TRIED AND REVERTED 2026-08-10:
+            // it floats a search affordance across every tab's chrome — owner-rejected.
             if router.hasSearchableSource {
                 Tab(value: AppTab.search, role: .search) {
                     NavigationStack {
@@ -250,6 +248,10 @@ struct RootTabView: View {
             }
         }
         .tabViewStyle(.sidebarAdaptable)
+        // iPhone: the floating tab bar ducks out of the way on scroll-down and re-expands on
+        // scroll-up — the content-forward behavior the new design demonstrates on exactly this
+        // app class (the session's example is the TV app). No-op in the iPad sidebar layout.
+        .tabBarMinimizeBehavior(.onScrollDown)
         // The screen floor is a single `BackgroundField` behind the whole tab host (see
         // `RootView`); tabs no longer paint their own. The sidebar / bottom-bar glass now tints
         // from that floor and reads as a solid bar — fine: the field is locally near-flat

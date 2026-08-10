@@ -48,7 +48,7 @@ struct SettingsScaffold<Content: View>: View {
         // Hide the tvOS navigation bar. A pushed page's system `navigationTitle` reserves a top band
         // that shoves this column DOWN, so a titled page sat lower than a title-less one. Hiding it
         // anchors every scaffold page at the SAME top.
-        .toolbar(.hidden, for: .navigationBar)
+        .toolbarVisibility(.hidden, for: .navigationBar)
         // Deterministic top for every scaffold host: the signed-in Settings TAB ROOT keeps the
         // sidebar chrome, whose safe-area band (60pt over title-safe) shoved its column 60pt below
         // the SAME scaffold on pushed pages and logged-out Connect (chrome-less, title-safe only).

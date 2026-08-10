@@ -10,6 +10,9 @@ struct LazyImageRenderer: View {
     let url: URL
     let session: Session
     var contentMode: ContentMode = .fill
+    /// Pipeline-level processors (e.g. the logo alpha-trim). Part of Nuke's cache key via each
+    /// processor's `identifier`, so processed variants cache independently of the original.
+    var processors: [any ImageProcessing] = []
 
     @Environment(AppDependencies.self) private var deps
     @State private var pipeline: ImagePipeline?
@@ -17,7 +20,7 @@ struct LazyImageRenderer: View {
     var body: some View {
         Group {
             if let pipeline {
-                LazyImage(url: url) { state in
+                LazyImage(request: ImageRequest(url: url, processors: processors)) { state in
                     if let image = state.image {
                         image.resizable().aspectRatio(contentMode: contentMode)
                             .accessibilityIgnoresInvertColors()

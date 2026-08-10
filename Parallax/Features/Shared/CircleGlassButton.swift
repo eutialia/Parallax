@@ -1,10 +1,12 @@
 import SwiftUI
 
 /// Icon-only circular action button over hero/detail artwork (Favorite, Watched, …).
-/// FLAT, matching the 4K/HDR/CC badges: a `heroGlass` fill + hairline + white glyph — Liquid
-/// Glass is reserved for the player + system bars. On tvOS the disc inverts to the HIG white
-/// platter + ink glyph on focus (with the `tvChipButton()` lift); iOS never focuses. The active
-/// state is a glyph-level cue — callers pass the filled symbol variant.
+/// iPhone/iPad: INTERACTIVE LIQUID GLASS disc + white glyph (owner directive 2026-08-10,
+/// amending the flat-disc rule for the hero action row — the glass rim keeps the control
+/// visible on white artwork, where the flat `heroGlass` fill washed out). On tvOS the flat
+/// disc stays and inverts to the HIG white platter + ink glyph on focus (with the
+/// `tvChipButton()` lift) — device-tuned, untouched. The active state is a glyph-level cue —
+/// callers pass the filled symbol variant.
 struct CircleGlassButton: View {
     let systemImage: String
     let accessibilityLabel: String
@@ -32,12 +34,27 @@ struct CircleGlassButton: View {
                     .font(ActionRow.glyphFont)
                     .foregroundStyle(focused ? Color.playerInk : .white)
                     .frame(width: d, height: d)
+                    #if os(tvOS)
                     .flatControlFill(
                         focused: focused,
                         rest: bareUntilFocused ? .clear : .heroGlass,
                         hairline: bareUntilFocused ? nil : .heroGlassBorder,
                         in: Circle()
                     )
+                    #else
+                    // Glass ON THE LABEL (the button style stays `.plain` via `tvChipButton()`)
+                    // so the disc diameter token remains the single geometry source — see
+                    // PrimaryPlayButton. Tinted with the SAME fixed dark `heroGlass` the flat
+                    // disc used: untinted clear glass re-colored itself from the artwork behind
+                    // it (owner-rejected) — the tint pins the disc to one face while the glass
+                    // rim keeps it visible on white artwork.
+                    // (`bareUntilFocused` is a tvOS-only concept — iOS never focuses.)
+                    .glassEffect(.regular.tint(Color.heroGlass).interactive(), in: Circle())
+                    // Dark-pinned like the Play pill: unpinned glass resolves the LIGHT variant
+                    // by day and the disc jumps ~mid-gray (render-measured) — the theme-flip the
+                    // fixed `heroGlass` tint exists to prevent.
+                    .environment(\.colorScheme, .dark)
+                    #endif
             }
         }
         // Owns the button style (tvOS lift / `.plain` on iOS) — never pair an inner `.buttonStyle`.
@@ -50,7 +67,7 @@ struct CircleGlassButton: View {
     }
 }
 
-#Preview("Flat action row · over artwork") {
+#Preview("Action row · over artwork") {
     ZStack {
         LinearGradient(
             colors: [Color(red: 0.93, green: 0.86, blue: 0.72),
