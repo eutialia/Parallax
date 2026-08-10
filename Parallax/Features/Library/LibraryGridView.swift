@@ -132,12 +132,13 @@ struct LibraryGridView: View {
             // bypass — the wall rests at title-safe like every other wall instead of 60pt lower
             // under the collapsed-pill band. See `mediaWallContentMargins`.
             .mediaWallContentMargins(tvRootChromeBypass: true)
-            // iPhone/iPad: pin the refresh-error banner as a top inset — it's a transient alert and
-            // there's no focus engine to trap. tvOS folds the banner into the scroll content above.
-            .safeAreaInset(edge: .top, spacing: 0) {
+            // iPhone/iPad: pin the refresh-error banner as a top BAR — `safeAreaBar` gives it the
+            // system's bar treatment in the scroll-edge region (the old `safeAreaInset` +
+            // opaque `Color.background` was exactly the "extra background behind the bar" the
+            // new design warns against). tvOS folds the banner into the scroll content above.
+            .safeAreaBar(edge: .top, spacing: 0) {
                 if idiom != .tv, let message = vm.refreshErrorMessage {
                     refreshErrorBanner(message: message, vm: vm)
-                        .background(Color.background)
                 }
             }
         }
@@ -174,7 +175,13 @@ struct LibraryGridView: View {
         }
         .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
         .padding(.vertical, Space.s8)
+        // No opaque backing on iPhone/iPad: the banner rides `safeAreaBar`, whose scroll-edge
+        // treatment IS the backing — a fill here would re-create the "extra background behind
+        // the bar" the migration removed. tvOS still inlines the banner in scroll content
+        // (no bar hosting), so it keeps its own fill.
+        #if os(tvOS)
         .background(Color.fill)
+        #endif
         .accessibilityElement(children: .combine)
     }
 

@@ -1,11 +1,13 @@
 import SwiftUI
 
-/// Primary action over hero/detail artwork — a FLAT solid pill (Liquid Glass is reserved for the
-/// player + system bars). ALWAYS a white pill + ink label, in BOTH themes (owner directive
-/// 2026-07-14): the pill rides artwork — a dark-pinned region like `heroGlass` — so it must not
-/// flip with the app theme (the old espresso-by-day face read as a hole in the hero). On tvOS
-/// focus keeps the same white; the `tvChipButton()` lift + focus shadow carry the state, exactly
-/// as dark mode always behaved. Label patterns: "Play", "Resume · 1h 02m left", "Resume S3 E1".
+/// Primary action over hero/detail artwork. iPhone/iPad: WHITE-TINTED INTERACTIVE LIQUID GLASS
+/// (owner directive 2026-08-10, amending the 2026-07-14 "flat pill" rule for the hero action row:
+/// the flat white pill had no border, so it vanished into white artwork — the glass rim is the
+/// visibility mechanism). Still ALWAYS white + ink label in BOTH themes: the pill rides artwork,
+/// a dark-pinned region, so it must not flip with the app theme (the old espresso-by-day face
+/// read as a hole in the hero). tvOS keeps the flat white treatment — its focus platter + the
+/// `tvChipButton()` lift/shadow are device-tuned and carry visibility on their own.
+/// Label patterns: "Play", "Resume · 1h 02m left", "Resume S3 E1".
 struct PrimaryPlayButton: View {
     let title: String
     var systemImage: String = "play.fill"
@@ -43,7 +45,20 @@ struct PrimaryPlayButton: View {
             .padding(.horizontal, Space.s22)
             .frame(height: ActionRow.controlHeight(idiom))
             .frame(maxWidth: fillWidth ? .infinity : nil)
+            #if os(tvOS)
             .flatControlFill(focused: focused, rest: .white, in: Capsule())
+            #else
+            // Glass ON THE LABEL, not a glass buttonStyle: `tvChipButton()` keeps `.plain`, so
+            // the geometry tokens (control height, s22 inset, capsule) stay the single source —
+            // a glass style would wrap its own insets around them and break pill/circle parity.
+            // `.interactive()` gives the press response a plain style otherwise loses.
+            .glassEffect(.regular.tint(.white).interactive(), in: Capsule())
+            // Pin the glass to its dark variant: `glassEffect` resolves light/dark from the
+            // environment, and this row rides dark-pinned artwork — unpinned, the row flips
+            // with the app theme (the exact drift the theme-fixed rule forbids). Same recipe
+            // as LibraryCard's tinted glass.
+            .environment(\.colorScheme, .dark)
+            #endif
     }
 
     /// The label, optionally reserving the widest copy's width behind the live title so the pill

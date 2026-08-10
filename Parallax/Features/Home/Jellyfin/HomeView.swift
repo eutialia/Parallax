@@ -34,6 +34,10 @@ struct HomeView: View {
     // reloading the foreground's logo image on iOS (where parallax is live) and doing the same
     // dead work on tvOS (parallax is 0 there). See `HeroScrollState`.
     @State private var heroScroll = HeroScrollState()
+    // The carousel's page state, owned HERE because the hero's two halves sit on opposite sides of
+    // the scroll view: the picture is a fixed backdrop behind it, the foreground + dots ride the
+    // content. Both read this one object — see `HomeHeroCarouselState`.
+    @State private var heroCarousel = HomeHeroCarouselState()
 
     init(preloaded: (session: Session, viewModel: HomeViewModel)? = nil) {
         self.preloaded = preloaded
@@ -56,9 +60,12 @@ struct HomeView: View {
         .defaultScrollAnchor(.top)
         // Suppress iOS 26's automatic top scroll-edge fade — the hero paints flush under the
         // status bar (`.ignoresSafeArea(.top)`), so the soft edge effect reads as a stray fade
-        // on the artwork. Matches the movie/series detail screens. Gated on the bleed: with no
-        // hero the shelves DO scroll under the (transparent) bar and want the system's
-        // legibility fade back.
+        // on the artwork (measured 2026-07). A `.soft` re-test in the 2026-08-10 WWDC25-323
+        // audit (Landmarks keeps the effect on its hero) was CONFOUNDED — the artifact blamed
+        // on it turned out to be HeroVeilTreatments' centering bug — and was reverted without a
+        // clean verdict; re-judge `.soft` only on a clean band if it ever matters. Gated on the
+        // bleed: with no hero the shelves DO scroll under the (transparent) bar and want the
+        // system's legibility fade back. Matches the movie/series detail screens.
         #if !os(tvOS)
         .scrollEdgeEffectHidden(showsHeroBleed, for: .top)
         #endif
@@ -67,6 +74,13 @@ struct HomeView: View {
         // width (~100pt for the loading spinner) until a later layout pass, showing a
         // narrow strip. Greedy frame pins it to the proposed width from the first pass.
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // The hero's PICTURE, pinned behind the scroll content (no-op on tvOS, whose band carries
+        // its own). Ahead of `heroScreenSafeArea` so it inherits the dropped top inset and paints
+        // under the status bar, and ahead of `screenFloor` so the floor stays behind it — keeping
+        // the floor screen-sized and screen-pinned instead of scrolling with the page.
+        // Gated on the hero actually existing: `showsHeroBleed` is also true for the SKELETON,
+        // which has no feed to draw.
+        .heroBackdrop(active: showsHeroBackdrop, scroll: heroScroll, artwork: heroArtwork)
         // tvOS bleeds the hero horizontally too (overscan) and measures the true screen height into
         // `\.heroViewportHeight` so the band fills the whole screen; the shelves re-inset via
         // `tvContentInset()` below. iOS only drops the top inset (status-bar bleed). The bleed is
@@ -91,7 +105,7 @@ struct HomeView: View {
         // counterpart and slides across the screen on dismiss. The BACKGROUND hide is
         // hero-only: on a hero-less feed the shelves scroll under the bar, and the
         // system's automatic material is what keeps that edge legible.
-        .toolbarBackground(showsHeroBleed ? .hidden : .automatic, for: .navigationBar)
+        .toolbarBackgroundVisibility(showsHeroBleed ? .hidden : .automatic, for: .navigationBar)
         .itemDetailNavigation()
         // Keyed on `libraryReloadToken`, NOT raw `activeServerID`: an SMB-only cold launch keeps
         // `activeServerID` nil across the bootstrap→home flip, so a task keyed on it fires once
@@ -223,6 +237,25 @@ struct HomeView: View {
         }
     }
 
+    /// Whether the fixed hero backdrop should paint. Narrower than `showsHeroBleed`, which also
+    /// covers the SKELETON: the skeleton draws its own full-bleed placeholder and has no feed for
+    /// the backdrop to render.
+    private var showsHeroBackdrop: Bool {
+        guard case .loaded = contentPhase, let vm = viewModel else { return false }
+        return showsHero(vm)
+    }
+
+    /// The hero's picture — ONE expression, handed to both halves: the `heroBackdrop` behind the
+    /// scroll view paints it, and `HomeHeroCarousel` forwards the same value to `HeroBand` (which
+    /// renders it on tvOS). Safe to build with an empty feed; it draws nothing.
+    private var heroArtwork: HomeHeroArtwork {
+        HomeHeroArtwork(
+            entries: viewModel?.heroFeed ?? [],
+            carousel: heroCarousel,
+            regularWidth: idiom.usesLandscapeHeroBand
+        )
+    }
+
     /// Discriminates which top-level branch of `content` is showing, for `crossfadeStateSwap`.
     /// Deliberately NOT `vm.state` itself (payload-carrying, not `Hashable`) — both loading
     /// branches (the pre-session bootstrap skeleton and `vm.state`'s own `.idle`/`.loading`)
@@ -262,7 +295,9 @@ struct HomeView: View {
                         HomeHeroCarousel(
                             entries: vm.heroFeed,
                             viewModel: vm,
-                            scroll: heroScroll
+                            carousel: heroCarousel,
+                            scroll: heroScroll,
+                            artwork: heroArtwork
                         )
                     }
                     HomeShelves(viewModel: vm)

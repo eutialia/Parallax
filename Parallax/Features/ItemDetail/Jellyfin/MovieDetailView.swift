@@ -34,17 +34,21 @@ struct MovieDetailView: View {
                 case .idle, .loading:
                     DetailLoadingSkeleton()
                 case .loaded(let md):
+                    // Built ONCE and handed to both halves of the hero: the fixed `heroBackdrop`
+                    // behind the scroll view paints it, and the in-scroll `HeroBand` reserves its
+                    // room (and renders it on tvOS). Two instances would mean two image loads and
+                    // two chances to drift.
+                    let heroImage = HeroBandImage(
+                        landscapeRef: md.movie.imageRef(.backdrop(index: 0)),
+                        posterRef: md.movie.imageRef(.primary),
+                        session: session,
+                        regularWidth: idiom.usesLandscapeHeroBand
+                    )
                     ScrollView {
                         // Band→ledger gap is the shared clearance token: the floor bleed washes
                         // artwork color down here, so the first text line needs more air than a
                         // plain section gap (see `HeroMetrics.floorTextClearance`).
                         VStack(alignment: .leading, spacing: HeroMetrics.floorTextClearance(idiom: idiom)) {
-                            let heroImage = HeroBandImage(
-                                landscapeRef: md.movie.imageRef(.backdrop(index: 0)),
-                                posterRef: md.movie.imageRef(.primary),
-                                session: session,
-                                regularWidth: idiom.usesLandscapeHeroBand
-                            )
                             HeroBand(scroll: heroScroll, floorBleedHash: heroImage.displayedRef?.blurHash) {
                                 heroImage
                             } foreground: {
@@ -105,7 +109,13 @@ struct MovieDetailView: View {
                     }
                     .scrollClipDisabled(true)
                     .heroScrollChannel(heroScroll)
+                    // The hero's picture, pinned behind the scroll content. Ahead of the
+                    // `heroScreenSafeArea()`/`screenFloor()` pair applied to the outer Group, so it
+                    // inherits the dropped top inset and still sits in front of the floor.
+                    .heroBackdrop(scroll: heroScroll, artwork: heroImage)
                     #if !os(tvOS)
+                    // Hidden, not `.soft` — see HomeView's scroll-edge note (one rule for
+                    // every hero screen).
                     .scrollEdgeEffectHidden(true, for: .top)
                     #endif
                 case .failed(let message):
@@ -124,8 +134,11 @@ struct MovieDetailView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .heroScreenSafeArea()
         .screenFloor()
-        .toolbar(.visible, for: .navigationBar)
-        .toolbarBackground(.hidden, for: .navigationBar)
+        // Explicit visibility ON PURPOSE (review-restored guard): an ancestor once propagated
+        // `.toolbar(.hidden)` down this stack and the zoom push lost its back button — this
+        // screen is a `.zoom` destination and must always keep a (transparent) system bar.
+        .toolbarVisibility(.visible, for: .navigationBar)
+        .toolbarBackgroundVisibility(.hidden, for: .navigationBar)
         .task {
             if viewModel == nil {
                 let repo = await deps.jellyfinLibraryRepoFactory(session)

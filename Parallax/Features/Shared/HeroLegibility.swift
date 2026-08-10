@@ -1,17 +1,20 @@
 import SwiftUI
 
-// Hero legibility — the treatment that keeps the white title/actions readable over artwork we
-// don't control. It sits between the artwork and the foreground, and `HeroBand` composites it WITH
-// the artwork into the layer the iPad sidebar `backgroundExtensionEffect` samples — so the mirrored
-// sidebar strip carries the same veil as the main side (no luminance seam at the boundary). It
-// replaces the old full-band gradient scrim, which gambled on the image and washed the whole frame.
+// Hero legibility — what keeps the white title/actions readable over artwork we don't control.
+// Idiom-split by STRUCTURE, not taste (owner-settled 2026-08-10): a band-level treatment only
+// reads as UI when its geometry matches a UI structure. On the tall iPhone band the text column
+// spans the full width, so a full-width frosted bottom fade (`HeroBottomFade`) reads as the
+// column's own backing — it stays. On the wide landscape band (iPad/tvOS) the foreground is a
+// bottom-leading corner column: a full-width band washed acres of empty artwork, and the
+// corner-focused ellipse (`HeroCornerFade`, deleted) mapped to no visible structure and read as a
+// smudge on the photo — so the wide band carries NO veil at all; the type protects itself with
+// the tight per-glyph contours below (`heroTypeContour`/`heroLogoContour`). A WIDE SOFT HALO on
+// the whole column was tried first and killed the same day — a halo reads as a layer, a contour
+// reads as part of the letterform; keep that distinction when tuning. `HeroEdgeShadow` is not a
+// veil — it's the band boundary's depth cue and stays on every idiom.
 //
-// Two idiom-split frosted treatments, both the SAME `.ultraThinMaterial` + scrim recipe the
-// Continue Watching shelf footers use (`shelfTileFooterGlass`), pinned dark: the tall poster band
-// (iPhone) gets a full-width bottom fade; the wide landscape band (iPad/tvOS) gets a corner-focused
-// glow so the darkening sits on the bottom-leading text, not the empty right side. The earlier
-// opaque floating panel read as a dark box dropped in the corner of a wide photo; the fades read as
-// a cinematic base the content sits on.
+// On iPhone/iPad the treatments ride ABOVE the `backgroundExtensionEffect` (`HeroVeilOverlay`
+// continues them under the iPad sidebar with a clamp-smear); tvOS composites them with the artwork.
 
 /// Frosted bottom fade — the compact (iPhone) legibility. A full-width band-level layer: fills the
 /// band, then frosts + scrims the bottom `coverage` fraction (progressive `.ultraThinMaterial` ramp
@@ -29,6 +32,67 @@ struct HeroBottomFade: View {
                 .shelfTileFooterGlass()
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         }
+        .allowsHitTesting(false)
+    }
+}
+
+// MARK: - Type contour (wide screens)
+
+extension View {
+    /// Subtitle-style contour for hero TYPE over the bare wide-band artwork (owner-requested
+    /// 2026-08-10): a tight dark shadow hugging the glyph edges — the video-subtitle recipe, not
+    /// the big soft halo (that variant was tried on the whole column and killed the same day; a
+    /// wide halo reads as a layer, a contour reads as part of the letterform). Compact is a
+    /// no-op: the iPhone band keeps its bottom fade and its signed-off look.
+    @ViewBuilder
+    func heroTypeContour(idiom: AppIdiom) -> some View {
+        if idiom == .compact {
+            self
+        } else {
+            self.shadow(color: .black.opacity(0.65), radius: 1.5, x: 0, y: 1)
+        }
+    }
+
+    /// The LOGO variant: same idea, softer and larger — a wordmark PNG is a big shape, and the
+    /// 1.5pt text contour under it reads as a rendering artifact. SwiftUI's `shadow` follows the
+    /// view's alpha, so the trimmed transparent PNG casts a letter-shaped plate, not a box.
+    /// Compact no-op for the same reason as `heroTypeContour`.
+    @ViewBuilder
+    func heroLogoContour(idiom: AppIdiom) -> some View {
+        if idiom == .compact {
+            self
+        } else {
+            self.shadow(color: .black.opacity(0.45), radius: 7, x: 0, y: 2)
+        }
+    }
+}
+
+/// The edge-depth cue — the band boundary read as ELEVATION, not decoration (owner-directed
+/// 2026-07-18, after the colored "picture rail" flopped): the page below the band is a surface
+/// standing IN FRONT of the artwork's plane, supporting it, and ALL of the depth is drawn on the
+/// artwork's side — this contact shadow, cast by the page up onto the recessed artwork. The page
+/// itself stays a seamless whole (a 1pt specular "lip" on its top edge shipped briefly and read as
+/// a stray white line by day — owner-killed; no chrome on the page side, ever). The floor bleed
+/// then reads as the artwork's light washing down onto that surface — one coherent physical story.
+///
+/// A short darkening ramp hugging the band's bottom edge, tight and soft like a real occlusion
+/// shadow (not a scrim — legibility belongs to the compact fade / the type contours). On
+/// iPhone/iPad it rides `HeroVeilTreatments` ABOVE the extension effect (never mirrored; the
+/// clamp-smear continues it under the iPad sidebar so the mirror darkens in lockstep); tvOS
+/// composites it with the artwork. The darkened strip doubles as extra backing for the page
+/// dots seated on the edge. Bottom-aligned by the treatments' `.bottomLeading` ZStack; the
+/// caller sets the height (`edgeShadowHeight`).
+struct HeroEdgeShadow: View {
+    var body: some View {
+        LinearGradient(
+            stops: [
+                .init(color: .clear, location: 0),
+                .init(color: .black.opacity(0.04), location: 0.45),
+                .init(color: .black.opacity(0.10), location: 0.8),
+                .init(color: .black.opacity(0.19), location: 1),
+            ],
+            startPoint: .top, endPoint: .bottom
+        )
         .allowsHitTesting(false)
     }
 }
@@ -51,67 +115,6 @@ struct HeroBottomFade: View {
 /// siblings — shelf titles, tiles, the detail ledger — draw over it and it reads as ambience behind
 /// the page, not a layer on it). `nil`/malformed hash = no bleed: the clean hard edge ships as-is.
 /// Reduce Motion pins the mesh to its resting grid — the spill stays, the breathing stops.
-/// Alpha mask that feathers `HeroCornerFade`'s darkening WASH out of the contact-shadow zone: full
-/// strength until the band's last `featherHeight`, then easing to a whisper at the edge. Without
-/// it, the wash stacks with `HeroEdgeShadow` in the leading corner and the occlusion line reads
-/// heavier on the left than the right — the depth grammar wants ONE uniform shadow along the edge
-/// (frost = artwork atmosphere, shadow = page occlusion). Applied to the wash ONLY: masking the
-/// material frost too left a visible gap where the blur lifted off above the boundary. A
-/// `featherHeight` of 0 degrades to a full-strength mask (no feather). Not applied to the compact
-/// `HeroBottomFade`: the full-width poster frost backs the page dots and is part of that band's look.
-struct VeilEdgeFeather: View {
-    let featherHeight: CGFloat
-
-    var body: some View {
-        // The curve is tuned against `HeroEdgeShadow`'s ramp so their SUM stays monotonic down the
-        // last stretch: an earlier, steeper feather (to 0.12 at the edge) outran the shadow's ramp
-        // and the combined darkness dipped ~10pt above the boundary — a visible lighter band that
-        // read as a gap between the frost and the edge (owner-caught, zoom-verified). The 0.40
-        // floor keeps just enough wash at the edge for the shadow to take over seamlessly, while
-        // still killing most of the old left-corner stacking.
-        VStack(spacing: 0) {
-            Rectangle().fill(.black)
-            LinearGradient(
-                stops: [
-                    .init(color: .black, location: 0),
-                    .init(color: .black.opacity(0.72), location: 0.55),
-                    .init(color: .black.opacity(0.40), location: 1),
-                ],
-                startPoint: .top, endPoint: .bottom
-            )
-            .frame(height: featherHeight)
-        }
-    }
-}
-
-/// The edge-depth cue — the band boundary read as ELEVATION, not decoration (owner-directed
-/// 2026-07-18, after the colored "picture rail" flopped): the page below the band is a surface
-/// standing IN FRONT of the artwork's plane, supporting it, and ALL of the depth is drawn on the
-/// artwork's side — this contact shadow, cast by the page up onto the recessed artwork. The page
-/// itself stays a seamless whole (a 1pt specular "lip" on its top edge shipped briefly and read as
-/// a stray white line by day — owner-killed; no chrome on the page side, ever). The floor bleed
-/// then reads as the artwork's light washing down onto that surface — one coherent physical story.
-///
-/// A short darkening ramp hugging the band's bottom edge, tight and soft like a real occlusion
-/// shadow (not a scrim — the legibility veils own that job). Lives INSIDE the artwork+veil
-/// composite so the iPad sidebar mirror darkens in lockstep, and the darkened strip doubles as
-/// extra backing for the page dots seated on the edge. Bottom-aligned by the composite's
-/// `.bottomLeading` ZStack; the caller sets the height (`edgeShadowHeight`).
-struct HeroEdgeShadow: View {
-    var body: some View {
-        LinearGradient(
-            stops: [
-                .init(color: .clear, location: 0),
-                .init(color: .black.opacity(0.04), location: 0.45),
-                .init(color: .black.opacity(0.10), location: 0.8),
-                .init(color: .black.opacity(0.19), location: 1),
-            ],
-            startPoint: .top, endPoint: .bottom
-        )
-        .allowsHitTesting(false)
-    }
-}
-
 struct HeroFloorBleed: View {
     let hash: String?
 
@@ -239,59 +242,3 @@ struct HeroFloorBleed: View {
     }
 }
 
-/// Corner-focused frosted glow — the LANDSCAPE (iPad / tvOS) legibility. An elliptical frost + scrim
-/// centered ON the bottom-leading title block (not the empty corner), fading out toward the
-/// top-right. On a wide band a flat bottom strip darkens a lot of empty artwork; this concentrates
-/// the darkening where the text actually is. Focus/spread/darkness were dialed in the
-/// `docs/hero-fade-demo.html` prototype; `EllipticalGradient` maps the CSS radial 1:1 (same focus,
-/// same stop locations, `endRadiusFraction` = the prototype's spread). Pinned dark so the material
-/// resolves to its dark frosted variant over photography.
-struct HeroCornerFade: View {
-    var focus = UnitPoint(x: 0.16, y: 0.78)
-    var spread: CGFloat = 0.90
-    var darkness: Double = 0.40
-    /// Height of the bottom strip where the darkening WASH yields to `HeroEdgeShadow` (the page's
-    /// contact shadow), so the two never stack into a leading-corner-heavy edge. The MATERIAL frost
-    /// deliberately keeps running to the edge — feathering it too left a visible "frost lifts off
-    /// here" gap above the boundary (owner-caught); the blur is harmless under the shadow, only the
-    /// black wash fought it. 0 = no feather (the wash runs full height).
-    var washFeatherHeight: CGFloat = 0
-
-    /// Frost distribution (owner-tuned 2026-07-18 via the extent ruler): the plateau runs at ~78%
-    /// mask alpha — full material read as too heavy over the title block — and the fade shoulder is
-    /// raised + stretched (mid stop 0.58 @ 0.42, reach out to 0.74) so the total atmosphere is
-    /// conserved: less blur where the text sits, more carried by the surround.
-    private static let plateauEnd: CGFloat = 0.16
-    private static let reach: CGFloat = 0.74
-
-    var body: some View {
-        ZStack {
-            Rectangle()
-                .fill(.ultraThinMaterial)
-                .mask(
-                    EllipticalGradient(
-                        stops: [
-                            .init(color: .black.opacity(0.78), location: 0),
-                            .init(color: .black.opacity(0.78), location: Self.plateauEnd),
-                            .init(color: .black.opacity(0.58), location: 0.42),
-                            .init(color: .clear, location: Self.reach),
-                        ],
-                        center: focus,
-                        endRadiusFraction: spread
-                    )
-                )
-            EllipticalGradient(
-                stops: [
-                    .init(color: .black.opacity(darkness), location: 0),
-                    .init(color: .black.opacity(darkness * 0.5), location: 0.34),
-                    .init(color: .clear, location: Self.reach),
-                ],
-                center: focus,
-                endRadiusFraction: spread
-            )
-            .mask { VeilEdgeFeather(featherHeight: washFeatherHeight) }
-        }
-        .environment(\.colorScheme, .dark)
-        .allowsHitTesting(false)
-    }
-}

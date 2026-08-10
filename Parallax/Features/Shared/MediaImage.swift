@@ -154,7 +154,10 @@ struct MediaImage: View {
             let renderer = LazyImageRenderer(
                 url: url,
                 session: session,
-                contentMode: style == .logo ? .fit : .fill
+                contentMode: style == .logo ? .fit : .fill,
+                // Logos: crop the transparent canvas margins so the layout box fits the MARK —
+                // the margins were why equal boxes rendered wildly different visual sizes.
+                processors: style == .logo ? [LogoAlphaTrim()] : []
             )
             // Logo titles must stay leading-aligned; an infinite frame makes `.fit` letterbox
             // inside the full column width and reads as centered. Fill/boxed need it to cover cells.

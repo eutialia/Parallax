@@ -40,6 +40,19 @@ struct HeroTitle: View {
         }
     }
 
+    /// Width cap for the TRIMMED logo — deliberately tighter than the column
+    /// (`contentMaxWidth`, the old cap): with the alpha margins cropped away
+    /// (`LogoAlphaTrim`), an ultra-wide wordmark would otherwise span the whole readable
+    /// column and dwarf its neighbors. Height × this cap is the box every mark aspect-fits
+    /// into, which is what keeps different logos at a SIMILAR visual size.
+    static func logoMaxWidth(idiom: AppIdiom) -> CGFloat {
+        switch idiom {
+        case .compact: 300
+        case .regular: 440
+        case .tv: 640
+        }
+    }
+
     let title: String
     let logoRef: ImageRef?
     let session: Session
@@ -63,19 +76,27 @@ struct HeroTitle: View {
             .foregroundStyle(.white)
             .lineLimit(2)
             .minimumScaleFactor(0.7)
+            // The logo's stand-in carries the logo-tier readability treatment on the bare wide
+            // band, same as the mark it replaces.
+            .heroTypeContour(idiom: idiom)
     }
 
     private func logo(_ ref: ImageRef) -> some View {
-        // Request ceiling = the column cap × 2x display scale: a wide logo filling the cap needs
-        // that many pixels; the old flat 800 upscaled wide logos on iPad and tv alike.
+        // Request ceiling = the width cap × 3: 2x–3x display scale PLUS headroom for
+        // `LogoAlphaTrim` — the server's `maxWidth` bounds the UNTRIMMED canvas, and on the
+        // margin-heavy assets the trim exists for, a ×2 ceiling left too few pixels in the
+        // surviving mark and re-created the upscaling the old flat-800 ceiling had.
         MediaImage(
             jellyfin: ref,
             session: session,
-            maxWidth: Int(HeroMetrics.contentMaxWidth(idiom: idiom) * 2),
+            maxWidth: Int(Self.logoMaxWidth(idiom: idiom) * 3),
             style: .logo
         )
         .frame(height: Self.logoHeight(idiom: idiom), alignment: .leading)
-        .frame(maxWidth: HeroMetrics.contentMaxWidth(idiom: idiom), alignment: .leading)
+        .frame(maxWidth: Self.logoMaxWidth(idiom: idiom), alignment: .leading)
+        // SwiftUI shadows follow the rendered alpha, so the trimmed PNG casts a
+        // letterform-shaped plate — the wide band's whole logo legibility story.
+        .heroLogoContour(idiom: idiom)
         .accessibilityLabel(title)
     }
 }
@@ -95,8 +116,10 @@ extension HeroTitle {
 
 /// Mock logo artwork standing in for a Jellyfin `.logo` image — a static render can't load
 /// `MediaImage` over the network. Drawn on a fixed 340×100 design canvas (3.4:1, a typical
-/// transparent-wordmark aspect), then scaled exactly like the real `.fit` path: height pinned
-/// to `HeroTitle.logoHeight`'s box, width following the aspect, 720pt cap, leading-aligned.
+/// transparent-wordmark aspect — pre-trimmed, since production crops alpha margins via
+/// `LogoAlphaTrim` before layout ever sees the image), then scaled exactly like the real `.fit`
+/// path: height pinned to `HeroTitle.logoHeight`'s box, width following the aspect, capped at
+/// `logoMaxWidth`, leading-aligned, with the shipping logo contour.
 private struct PreviewHeroLogo: View {
     let idiom: AppIdiom
 
@@ -117,7 +140,8 @@ private struct PreviewHeroLogo: View {
         .frame(width: Self.designSize.width, height: Self.designSize.height)
         .scaleEffect(scale, anchor: .topLeading)
         .frame(width: Self.designSize.width * scale, height: height, alignment: .topLeading)
-        .frame(maxWidth: HeroMetrics.contentMaxWidth(idiom: idiom), alignment: .leading)
+        .frame(maxWidth: HeroTitle.logoMaxWidth(idiom: idiom), alignment: .leading)
+        .heroLogoContour(idiom: idiom)
     }
 }
 

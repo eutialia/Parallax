@@ -9,6 +9,10 @@ import SwiftUI
 //   B. `.searchable` on the TABVIEW — the shape `TabRole.search`'s docs describe
 //      ("Searchable tab views will prefer to have the first tab with this role
 //      implement search"), letting the tab host coordinate search with its own chrome.
+//      ← TRIED AND REVERTED 2026-08-10 (WWDC25-323 audit): shipped briefly, owner-rejected
+//      on device — the tab-host pairing floats a search affordance across every tab's
+//      chrome, and the app wants the full-width field to exist only on the search page
+//      (the session's other demonstrated shape, ~13:24). Variant C's clearance shim stays.
 //
 // Self-contained (no app dependencies) so the difference is attributable to the
 // searchable attachment point alone.
@@ -93,7 +97,7 @@ private struct SearchableChromeHidden: View {
                     DemoResults()
                         .searchable(text: $query, prompt: "Search your library")
                 }
-                .toolbar(.hidden, for: .tabBar)
+                .toolbarVisibility(.hidden, for: .tabBar)
             }
         }
         .tabViewStyle(.sidebarAdaptable)
