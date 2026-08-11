@@ -19,6 +19,9 @@ struct SMBServerSettingsView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var isConfirmingRemove = false
+    /// Drives the pushed password-recovery form (same `navigationDestination(isPresented:)` idiom
+    /// the add-server form uses for its share picker).
+    @State private var isEnteringPassword = false
 
     // MARK: - Share list state
 
@@ -28,7 +31,11 @@ struct SMBServerSettingsView: View {
     enum LoadState: Equatable {
         case loading
         case loaded([SMBShare])
-        case failed(String)
+        /// `offersPasswordRecovery` marks the failures the saved password can explain — a lost
+        /// Keychain slot, or a server that refused the sign-in. Those get the "Enter Password…"
+        /// row beside Retry; a plain unreachable host doesn't, since re-typing a correct password
+        /// wouldn't help.
+        case failed(String, offersPasswordRecovery: Bool)
     }
 
     @State private var loadState: LoadState = .loading
@@ -122,6 +129,16 @@ struct SMBServerSettingsView: View {
         } message: {
             Text("\(host) will be removed from your libraries.")
         }
+        .navigationDestination(isPresented: $isEnteringPassword) {
+            if let data {
+                SMBPasswordRecoveryView(id: server.id, data: data) {
+                    isEnteringPassword = false
+                    // The password is live again — re-run the share load that failed.
+                    Task { await loadShares() }
+                }
+                .tvHidesTabSidebar()
+            }
+        }
     }
 
     // MARK: - Shares section
@@ -134,9 +151,16 @@ struct SMBServerSettingsView: View {
                 ProgressView()
                     .frame(maxWidth: .infinity, minHeight: 80)
 
-            case .failed(let message):
+            case .failed(let message, let offersPasswordRecovery):
                 SettingsRetryError(message: message, retryFocus: $retryFocused) {
                     Task { await loadShares() }
+                }
+                if offersPasswordRecovery {
+                    // In-place recovery instead of the old remove-and-re-add dead end: the row
+                    // already knows the host, account and shares — only the secret is missing.
+                    SettingsListRow(systemImage: "key", title: "Enter Password…") {
+                        isEnteringPassword = true
+                    }
                 }
 
             case .loaded(let shares):
@@ -232,16 +256,20 @@ struct SMBServerSettingsView: View {
             // credential recovery instead of a generic host message that reads as connectivity.
             let appError = (error as? AppError) ?? SMBFileSource.mapShareListError(error, host: host)
             let message: String
+            // Both auth shapes are recoverable in place now: the slot was lost, or the stored
+            // password is stale. Either way the fix is re-entering it, not deleting the server.
+            var offersPasswordRecovery = true
             switch appError {
             case .auth(.credentialUnavailable):
                 message = appError.userMessage
             case .auth:
-                message = "\(host) rejected the sign-in. Remove this server and add it again to update the password."
+                message = "\(host) rejected the sign-in. Enter the password again to reconnect."
             default:
                 message = "Couldn't load shares from \(host)."
+                offersPasswordRecovery = false
             }
             guard generation == loadGeneration else { return }
-            loadState = .failed(message)
+            loadState = .failed(message, offersPasswordRecovery: offersPasswordRecovery)
         }
     }
 
