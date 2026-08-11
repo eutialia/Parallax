@@ -1410,7 +1410,7 @@ struct PlayerViewModelTests {
         #expect((vm.engine as? FakePlaybackEngine) === engineAfterStart)         // same instance, reloaded
         #expect(engineAfterStart.loadedAssets.count == 2)                        // start load + switch reload
         #expect(!engineAfterStart.calls.contains("teardown"))                    // never torn down across the swap
-        #expect(engineAfterStart.calls.contains("pause"))                        // frame frozen at selection
+        #expect(engineAfterStart.calls.contains("silence"))                      // frame frozen + audio killed at selection
     }
 
     @Test("transcode: subtitle selection is isolated — an explicit sub survives an audio switch; none stays none")

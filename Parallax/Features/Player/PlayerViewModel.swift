@@ -2340,13 +2340,16 @@ final class PlayerViewModel {
         defer { isSwitchingTracks = false }
 
         // Freeze the current frame at the moment of the swap — the frosted cover
-        // frosts over it while the new transcode buffers, and pausing stops the
-        // outgoing audio instead of letting it play on under the cover. The snapshot
+        // frosts over it while the new transcode buffers, and silencing stops the
+        // outgoing audio instead of letting it play on under the cover (`silence()`,
+        // not `pause()`: VLC's pause can lag behind a blocked input read while audio
+        // keeps draining; the next `play()` restores audio — including the no-reload
+        // fallback resume after a failed switch). The snapshot
         // (not the layer) is what actually holds the frame: `replaceCurrentItem` can
         // flush AVPlayerLayer to black (see `AVKitVideoLayerHost.onFreezeReady`).
-        // Taken BEFORE the pause's await so the frame on screen is the live one.
+        // Taken BEFORE the silence's await so the frame on screen is the live one.
         freezeVideoSurface()
-        await engine?.pause()
+        await engine?.silence()
         phase = .loading
         // The outgoing stream's buffer is meaningless for the new transcode —
         // showing it would advertise instant seeks the reload can't honor.

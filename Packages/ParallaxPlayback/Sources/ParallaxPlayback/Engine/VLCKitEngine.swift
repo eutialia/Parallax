@@ -311,6 +311,11 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
 
     public func play() async {
         desiredPlaying = true
+        // Release silence()'s exit mute here, not in load(): play() covers EVERY path that
+        // resumes audio (a reload's fresh start, but also a bare resume after a failed
+        // track-switch fallback), and unmuting at load() would lift the mute while a reused
+        // engine's outgoing stream still has samples queued.
+        player.audio?.isMuted = false
         player.play()
         // Start beats immediately so reportStart / cover-hide / the setRate re-apply aren't
         // gated on the resume readiness window. The resume seek runs concurrently (stored so
@@ -373,6 +378,19 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         guard !Task.isCancelled, currentMedia != nil else { return }
         player.time = VLCTime(int: ms)
         pendingStartMs = nil
+    }
+
+    /// Exit-time audio kill switch. libvlc's `pause()` is a command the INPUT thread
+    /// processes — and on SMB that thread is routinely blocked mid-network-read (the
+    /// 1.5-3s `network-caching` window), so the pause can sit unprocessed for seconds
+    /// while the audio output keeps draining its own pre-enqueued buffer: audio outlives
+    /// the close animation. `libvlc_audio_set_mute` never touches the input thread — it
+    /// lands on the audio-output module, where the renderer applies it to samples ALREADY
+    /// queued — so muting first makes the cut immediate no matter how wedged the input is.
+    /// `play()` unmutes, so any resumed or reloaded session starts audible.
+    public func silence() async {
+        player.audio?.isMuted = true
+        await pause()
     }
 
     public func pause() async {
