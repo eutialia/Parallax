@@ -1,0 +1,18 @@
+# Config for GitHub's release-notes generator, which the release-tag workflow
+# calls on every v* tag push. PRs are grouped by label (the pr-labels workflow
+# applies them from the conventional-commit title prefix); version-bump PRs
+# carry the release label and stay out of the notes entirely.
+changelog:
+  exclude:
+    labels:
+      - release
+  categories:
+    - title: Features
+      labels:
+        - feature
+    - title: Fixes
+      labels:
+        - bugfix
+    - title: Housekeeping
+      labels:
+        - "*"

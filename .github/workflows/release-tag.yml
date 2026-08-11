@@ -20,3 +20,40 @@ jobs:
             exit 1
           fi
           echo "tag v${TAG} matches MARKETING_VERSION"
+
+  github-release:
+    needs: tag-matches-version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read # the notes generator reads merged-PR metadata
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history: the previous tag bounds the generated notes
+      - name: Create the GitHub release with generated notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # PR-only main + conventional titles means the generated "What's Changed"
+        # list reads as a changelog on its own. Bound it at the previous release
+        # tag explicitly — with no prior GitHub release, the generator would
+        # otherwise reach back to the repo root. Then restyle to the house
+        # format: a "Change log" heading, "title (@author, PR)" lines, and no
+        # Full Changelog footer.
+        run: |
+          # The tag right after the pushed one in version order — not just the
+          # second-highest overall, which would misbound the notes for a patch
+          # tag cut on an older release line.
+          PREV=$(git tag --list 'v*' --sort=-v:refname \
+            | awk -v tag="$GITHUB_REF_NAME" '$0 == tag { if (getline > 0) print; exit }')
+          gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+            -f tag_name="$GITHUB_REF_NAME" \
+            ${PREV:+-f previous_tag_name="$PREV"} \
+            -q .body > notes.md
+          sed -E -i \
+            -e "s|^## What's Changed$|## Change log|" \
+            -e 's|^\* (.*) by (@[A-Za-z0-9-]+) in (https://[^ ]+)$|* \1 (\2, \3)|' \
+            -e '/^\*\*Full Changelog\*\*/d' notes.md
+          gh release create "$GITHUB_REF_NAME" \
+            --title "Parallax ${GITHUB_REF_NAME#v}" \
+            --verify-tag --notes-file notes.md
