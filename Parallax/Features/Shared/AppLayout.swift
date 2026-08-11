@@ -57,7 +57,7 @@ enum AppLayout {
     /// loading skeleton in `LibraryGridView`) — the only consumer. The 10-foot `.headline` type
     /// (~38pt vs ~17pt on iOS) needs more vertical room than the iOS metrics. This governs ONLY that
     /// chip; the hero/detail action row AND the full-width form CTAs both ride
-    /// `ActionRow.controlHeight(.tv)` (62, handoff-spec'd) so the control families read at one height.
+    /// `ActionRow.controlHeight(.tv)` so the control families read at one height.
     /// This library-header chip stays its own knob. Pairs with `contentHMargin(.tv)` for the gutter.
     static let tvControlHeight: CGFloat = 64
 

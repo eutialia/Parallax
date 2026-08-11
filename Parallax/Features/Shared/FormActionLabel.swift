@@ -55,7 +55,7 @@ private struct FormActionLabelModifier: ViewModifier {
 
     private var ctaHeight: CGFloat {
         #if os(tvOS)
-        // Ride the shared hero/detail control-height family (62 on tvOS) instead of a bespoke 66, so
+        // Ride the shared hero/detail control-height family instead of a bespoke height, so
         // the form CTA matches the Play pill / circle actions rather than diverging.
         ActionRow.controlHeight(.tv)
         #else

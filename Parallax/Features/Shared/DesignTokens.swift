@@ -195,11 +195,14 @@ enum Radius {
 }
 
 /// Hero / detail action row (Play pill + circle buttons). The pill height and circle diameter
-/// are matched so the row aligns; sizes per the handoff (iPhone 50 / iPad 52 / Apple TV 62).
+/// are matched so the row aligns (iPhone 50 / iPad 52 / Apple TV 76). The tv height is taller
+/// than a strict scale-up: the tv `.headline` resolves to ~38pt, and the earlier 62pt height
+/// held that label at ratio 1.6 vs iPad's 3.1 — visibly squashed. 76 (ratio 2.0) matches
+/// native tvOS button proportions around a 38pt label without ballooning the row.
 enum ActionRow {
     static func controlHeight(_ idiom: AppIdiom) -> CGFloat {
         #if os(tvOS)
-        62
+        76
         #else
         idiom == .regular ? 52 : 50
         #endif
@@ -208,11 +211,12 @@ enum ActionRow {
     /// Glyph font inside the circle buttons (Favorite, Watched, pager chevron). iOS keeps the
     /// Play pill's `.headline` (17pt in the 50/52pt disc) so the row's optical weight matches.
     /// tvOS pins an explicit size instead: its `.headline` resolves to 38pt (HIG tv ramp), which
-    /// overfills the 62pt disc — glyph/disc 0.61 vs iOS's 0.34. 26pt (~0.42) keeps a 10-ft
-    /// legibility boost over strict proportionality (would be 21pt) without the crowded look.
+    /// overfills the disc — glyph/disc 0.61 vs iOS's 0.34. 30pt (~0.39 in the 76pt disc) keeps
+    /// the same 10-ft legibility boost over strict proportionality (would be ~26pt) the old
+    /// 26-in-62 (0.42) carried, without the crowded look.
     static var glyphFont: Font {
         #if os(tvOS)
-        .system(size: 26, weight: .semibold)
+        .system(size: 30, weight: .semibold)
         #else
         .headline.weight(.semibold)
         #endif
