@@ -896,6 +896,72 @@ struct PlayerViewModelTests {
     }
 
     @Test("""
+          cancelling the scrub-commit task mid-re-anchor must not kill the reload: every scrub \
+          surface cancels the in-flight commit when a newer input lands, and a reload that dies \
+          with it strands the loading scrim over a paused engine with its encode job already killed
+          """)
+    func scrubCommitCancellationSurvivesReanchor() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let resolved = PlayerFixtures.resolvedMultiTrackTranscode(defaultSubtitleStreamIndex: nil)
+
+        // The SECOND resolve (the re-anchor) parks on a gate so the test can cancel the
+        // commit task while the reload is mid-negotiation. `entered` signals the reload
+        // reached the resolve; `release` lets it return. AsyncStream's `next()` is
+        // cancellation-aware, so under a broken (unshielded) reload the cancel below
+        // unparks it immediately — the gate can never deadlock the failure mode.
+        nonisolated(unsafe) var resolveCalls = 0
+        let (enteredStream, entered) = AsyncStream.makeStream(of: Void.self)
+        let (releaseStream, release) = AsyncStream.makeStream(of: Void.self)
+        let vm = makePlayerVM(
+            resolve: { _, _, _, _ in
+                resolveCalls += 1
+                if resolveCalls == 2 {
+                    entered.yield(())
+                    var gate = releaseStream.makeAsyncIterator()
+                    await gate.next()
+                }
+                return resolved
+            },
+            engine: engine
+        )
+
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
+                             duration: CMTime(seconds: 7200, preferredTimescale: 600), buffered: nil))
+        try await engine.settle()
+        let loadsAfterStart = engine.loadedAssets.count
+
+        // Arm the subs-aware gate: a clean-session text pick is the cheap path (no reload).
+        let text = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(1) })
+        await vm.selectSubtitleTrack(text)
+        await vm.debugAwaitSubtitleFetch()
+        #expect(resolveCalls == 1)
+
+        // Out-of-buffer commit with the sidecar up → re-anchor reload. Run it on its own
+        // task and cancel mid-resolve — what `scrubCommitTask?.cancel()` (drag/VoiceOver)
+        // and `SeekCommitCoalescer.schedule` (double-tap/click burst) do to the in-flight
+        // commit whenever a newer scrub arrives.
+        engine.bufferedRange = 0...120
+        let commit = Task {
+            await vm.commitScrubSeek(to: CMTime(seconds: 5000, preferredTimescale: 600), resume: true)
+        }
+        var reloadEntered = enteredStream.makeAsyncIterator()
+        await reloadEntered.next()
+        commit.cancel()
+        release.yield(())
+        await commit.value
+
+        // The reload must survive the caller's cancellation: fresh session resolved,
+        // engine reloaded and playing — not abandoned into a permanent .loading scrim.
+        #expect(resolveCalls == 2)
+        #expect(engine.loadedAssets.count == loadsAfterStart + 1)
+        engine.push(.playing(position: CMTime(seconds: 5000, preferredTimescale: 600),
+                             duration: CMTime(seconds: 7200, preferredTimescale: 600), buffered: nil))
+        try await engine.settle()
+        #expect(vm.phase == .playing)
+    }
+
+    @Test("""
           transcode seek with a sidecar up: in-buffer stays in-stream, out-of-buffer re-anchors — \
           for a re-encode (#15845 drift) AND for a proven video copy (a mid-session ffmpeg restart \
           shifts AVPlayer's established timeline even when the copy lands on a true keyframe)
