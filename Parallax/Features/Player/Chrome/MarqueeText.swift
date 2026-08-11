@@ -10,12 +10,24 @@ extension EnvironmentValues {
 /// Single-line text that loops horizontally when it overflows its container —
 /// the Music-app now-playing treatment, for menu rows whose names can't dictate
 /// the panel's width (chapter titles). Truncates statically under Reduce
-/// Motion; on tvOS it runs only while the enclosing focusable row is focused
-/// (the native list-row behavior), on touch it runs whenever it overflows.
+/// Motion; on tvOS it runs while the enclosing focusable row is focused (the
+/// native list-row behavior) or when the host opts in via `loopsWithoutFocus`,
+/// on touch it runs whenever it overflows.
 struct MarqueeText: View {
     let text: String
     let font: Font
     let color: Color
+    /// tvOS ties looping to the enclosing focusable by default (the native
+    /// list-row behavior). Non-focusable surfaces — the segment prompt is a
+    /// visual-only overlay there — opt in to loop whenever the text overflows.
+    var loopsWithoutFocus: Bool = false
+    /// Pause before the loop starts. The default suits persistent rows; a
+    /// transient host (the 5s segment prompt) shortens it so the tail of a
+    /// long text is actually reached before the host disappears.
+    var startDelay: TimeInterval = 1.5
+    /// Scroll speed. Same tradeoff as `startDelay`: transient hosts run
+    /// faster so one pass fits their lifetime.
+    var pointsPerSecond: CGFloat = 30
 
     /// Intrinsic single-line width of the text, from the hidden probe.
     @State private var textWidth: CGFloat = 0
@@ -31,8 +43,6 @@ struct MarqueeText: View {
     /// Gap between the looping copies — wide enough that the restart reads as
     /// a loop, not a glitch.
     private let gap: CGFloat = 56
-    private let pointsPerSecond: CGFloat = 30
-    private let startDelay: TimeInterval = 1.5
     /// Soft fade at the clip edges while scrolling, so glyphs slide under a
     /// feather instead of guillotining at the frame.
     private let edgeFade: CGFloat = 12
@@ -42,7 +52,7 @@ struct MarqueeText: View {
     private var animates: Bool {
         guard overflows, !reduceMotion, marqueeEnabled else { return false }
         #if os(tvOS)
-        return isFocused
+        return isFocused || loopsWithoutFocus
         #else
         return true
         #endif
