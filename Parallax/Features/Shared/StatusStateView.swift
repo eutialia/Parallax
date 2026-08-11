@@ -33,18 +33,34 @@ struct StatusStateView: View {
         case searchNoResults
     }
 
+    /// The single recovery button a state may offer under its message (e.g. "Enter Password…" on an
+    /// SMB share whose saved credential stopped working). One action, not a stack: an empty/error
+    /// screen with a menu of choices stops being a status and starts being a form.
+    struct Action {
+        let title: String
+        let handler: () -> Void
+
+        init(_ title: String, handler: @escaping () -> Void) {
+            self.title = title
+            self.handler = handler
+        }
+    }
+
     private let layout: Layout
+    private let action: Action?
 
     /// See the `EnvironmentValues` entry below — Search opts its states out of the tvOS
     /// focus-target fallback.
     @Environment(\.statusStateProvidesTVFocusTarget) private var providesTVFocusTarget
 
-    init(title: String, systemImage: String, message: String? = nil) {
+    init(title: String, systemImage: String, message: String? = nil, action: Action? = nil) {
         layout = .labeled(title: title, systemImage: systemImage, message: message)
+        self.action = action
     }
 
     private init(layout: Layout) {
         self.layout = layout
+        action = nil
     }
 
     /// The recurring load-failure variant — the `exclamationmark.triangle` glyph with a
@@ -102,6 +118,14 @@ struct StatusStateView: View {
                             // (render-measured: 15.7pt bare vs the system's 6.7pt).
                             .padding(.top, -12)
                     }
+                    if let action {
+                        // Prominent, not plain glass: on a dead-end status screen this button is
+                        // the only way forward, the role `PlayerErrorScrim` reserves prominence
+                        // for. (`SettingsRetryError`'s `.glass` Retry sits among other rows.)
+                        Button(action.title, action: action.handler)
+                            .buttonStyle(.glassProminent)
+                            .padding(.top, Space.s14)
+                    }
                 }
             case .searchNoResults:
                 // Whole-block anchored (default guide): the system view is opaque, and
@@ -141,7 +165,10 @@ struct StatusStateView: View {
         // (Menu suspends the app instead of popping — see `tvFocusableSurface()`). Hosts whose
         // chrome is always focusable (Search's system keyboard) opt out via the environment —
         // there the surface can't strand, and an invisible focus target would capture presses.
-        .tvFocusableSurface(providesTVFocusTarget)
+        // An `action` button is a real focus target for the same reason: with one present the
+        // invisible surface would only compete with it (and can win — it's screen-sized), so
+        // the surface exists only when the state has nothing else to focus.
+        .tvFocusableSurface(providesTVFocusTarget && action == nil)
     }
 }
 

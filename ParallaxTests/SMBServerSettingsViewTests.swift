@@ -99,7 +99,8 @@ private let shareFocusCases: [ShareFocusCase] = [
     // The failure branch swaps the rows for a Retry button, which is then the group's only stop.
     ShareFocusCase(
         name: "failed → the retry button",
-        state: .failed("Couldn't load shares from nas.local."), enabled: ["Media"], target: .retry
+        state: .failed("Couldn't load shares from nas.local.", offersPasswordRecovery: false),
+        enabled: ["Media"], target: .retry
     ),
     // Mid-load there are no rows yet; relocating now is the exact bug `.onChange` exists to avoid.
     ShareFocusCase(

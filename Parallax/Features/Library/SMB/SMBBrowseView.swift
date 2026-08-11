@@ -66,6 +66,12 @@ struct SMBBrowseView: View {
     /// Keychain slot). A transient fault (`.unexpected` keychain read error) stays non-terminal
     /// so `.recoversFromOffline` may clear it and retry `openLevel()`.
     @State private var setupErrorIsTerminal = false
+    /// True when `setupError` is a credential fault the user can fix here by re-entering the
+    /// password (a lost Keychain slot). Drives the recovery button on the failure state.
+    @State private var setupErrorOffersPasswordRecovery = false
+    /// Drives the pushed password-recovery form. One level at a time can be in a failure state, so
+    /// only one level's binding is ever live.
+    @State private var isEnteringPassword = false
     /// Identity of the top-most visible tile, maintained by `scrollPosition(id:)` — never
     /// written here. It exists so the system re-anchors the wall to the same tile whenever
     /// the scroll view's SIZE changes: an iPhone landscape playback session reflows this
@@ -82,7 +88,8 @@ struct SMBBrowseView: View {
                 StatusStateView(
                     title: "Can't Open Share",
                     systemImage: "externaldrive.badge.xmark",
-                    message: setupError
+                    message: setupError,
+                    action: setupErrorOffersPasswordRecovery ? passwordRecoveryAction : nil
                 )
             } else {
                 loadingSkeleton
@@ -124,6 +131,17 @@ struct SMBBrowseView: View {
         }
         #endif
         .screenFloor()
+        // In-place credential recovery, from both password-shaped dead ends on this screen (the
+        // lost Keychain slot before the lister exists, and the server refusing the sign-in at the
+        // share root). Pushed, not modal — it's a task within this browse, and the same idiom the
+        // settings share list uses for the identical repair.
+        .navigationDestination(isPresented: $isEnteringPassword) {
+            SMBPasswordRecoveryView(id: path.ref.id, data: path.ref.data) {
+                isEnteringPassword = false
+                retryAfterPasswordRecovery()
+            }
+            .tvHidesTabSidebar()
+        }
         // Lifecycle: on back-navigation the `.task` guard (`model != nil`) intentionally skips a
         // reload and shows the cached listing — fast and stale-tolerant. There is no matching
         // teardown: the level holds no connection, only a pooled borrower.
@@ -165,9 +183,28 @@ struct SMBBrowseView: View {
         }
     }
 
+    /// The recovery affordance both password-shaped failure states offer: re-enter the saved
+    /// password for this server without removing it.
+    private var passwordRecoveryAction: StatusStateView.Action {
+        StatusStateView.Action("Enter Password…") { isEnteringPassword = true }
+    }
+
+    /// After the password verified and was stored: rebuild the level from scratch. Deliberately NOT
+    /// `model.load()` — an existing view model's lister was built with the OLD password (it's baked
+    /// into the credentials the pool keys connections by), so re-listing through it would just be
+    /// refused again. Dropping the model sends `openLevel()` back through the Keychain for the
+    /// password that was just stored.
+    private func retryAfterPasswordRecovery() {
+        model = nil
+        setupError = nil
+        setupErrorOffersPasswordRecovery = false
+        setupErrorIsTerminal = false
+        Task { await openLevel() }
+    }
+
     /// Builds this level's lister + view model and starts the first list. Failure before the model
-    /// exists lands in `setupError`; only a confirmed-lost credential slot is terminal (no retry
-    /// helps until the server is re-added) — everything else stays recoverable.
+    /// exists lands in `setupError`; only a confirmed-lost credential slot is terminal (no automatic
+    /// retry helps — the user has to supply the password) — everything else stays recoverable.
     private func openLevel() async {
         do {
             let lister = try await deps.makeSMBLister(path.ref)
@@ -183,8 +220,10 @@ struct SMBBrowseView: View {
             let appError = error as? AppError
             if case .auth(.credentialUnavailable) = appError {
                 setupErrorIsTerminal = true
+                setupErrorOffersPasswordRecovery = true
             } else {
                 setupErrorIsTerminal = false
+                setupErrorOffersPasswordRecovery = false
             }
             setupError = appError?.userMessage ?? "Couldn't open this share."
         }
@@ -244,14 +283,17 @@ struct SMBBrowseView: View {
         if model.isLoading, model.folders.isEmpty, model.media.isEmpty {
             loadingSkeleton
         } else if let error = model.error, model.folders.isEmpty, model.media.isEmpty {
-            if path.path.isEmpty, model.errorIsSignInRefusal {
-                // Share-root SIGN-IN refusal (libsmb2 EPERM — stale/lost stored password): the
-                // share isn't gone, the server rejected the session. Same recovery copy as the
-                // Settings share list so both surfaces give one answer.
+            if model.errorIsSignInRefusal {
+                // SIGN-IN refusal (libsmb2 EPERM — stale/lost stored password) at ANY depth: a
+                // password can go stale server-side while the user is folders deep, and walking
+                // back to the share root to find the repair is a maze. The share isn't gone, the
+                // server rejected the session. Same recovery copy as the Settings share list so
+                // both surfaces give one answer.
                 StatusStateView(
                     title: "Sign-In Refused",
                     systemImage: "key.slash",
-                    message: "\(path.ref.data.host) rejected the sign-in. Remove this server in Settings and add it again to update the password."
+                    message: "\(path.ref.data.host) rejected the sign-in. Enter the password again to reconnect.",
+                    action: passwordRecoveryAction
                 )
             } else if path.path.isEmpty {
                 // Share-root failure: the share itself wouldn't open — gone server-side (the same

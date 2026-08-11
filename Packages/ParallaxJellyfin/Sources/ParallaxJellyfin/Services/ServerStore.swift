@@ -5,6 +5,10 @@ public actor ServerStore {
     public enum ServerStoreError: Error, Sendable {
         case persistenceFailed(underlying: String)
         case decodeFailed(underlying: String)
+        /// A write meant for an existing SMB server named an id that isn't one (unknown, or a
+        /// Jellyfin row). Refused rather than guessed at: writing a password for a row that
+        /// doesn't exist would leave a secret nothing references.
+        case notAnSMBServer(id: String)
     }
 
     /// The legacy v1 on-disk shape: a flat Jellyfin-only record. Kept ONLY as
@@ -180,7 +184,7 @@ public actor ServerStore {
             // Keychain slot holds the bearer token. SMB servers persist but
             // have no session (their slot holds the password, used at connect).
             guard case .jellyfin = server.kind else { continue }
-            let key = KeychainKey<String>(account: Self.tokenAccount(for: server.id))
+            let key = Self.secretKey(for: server.id)
             do {
                 if let token = try await keychain.read(key),
                    let session = Session(persisted: server, accessToken: token) {
@@ -316,7 +320,7 @@ public actor ServerStore {
     /// failure we restore the previous Keychain entry (or delete the new
     /// one for a fresh add) and revert the in-memory list.
     public func add(_ session: Session) async throws {
-        let key = KeychainKey<String>(account: Self.tokenAccount(for: session.id))
+        let key = Self.secretKey(for: session.id)
         let existingIndex = loadedSessions.firstIndex(where: { $0.id == session.id })
         let previousToken: String? = existingIndex.map { loadedSessions[$0].accessToken }
         let previousSessions = loadedSessions
@@ -369,7 +373,7 @@ public actor ServerStore {
     /// touching UserDefaults — better to leave the user with a visible
     /// (and removable) session than to silently orphan a live token.
     public func remove(_ id: ServerID) async throws {
-        let key = KeychainKey<String>(account: Self.tokenAccount(for: id))
+        let key = Self.secretKey(for: id)
         do {
             try await keychain.delete(key)
         } catch {
@@ -434,7 +438,7 @@ public actor ServerStore {
     @discardableResult
     public func addSMBServer(_ data: SMBServerData, password: String) async throws -> ServerID {
         let id = ServerID(rawValue: "smb-\(data.host)")
-        let key = KeychainKey<String>(account: Self.tokenAccount(for: id))
+        let key = Self.secretKey(for: id)
 
         // Capture previous state for rollback. A THROWN read (transient Keychain fault) is NOT
         // proof the slot is empty — distinguish it from a confirmed-absent slot so a re-add
@@ -483,6 +487,56 @@ public actor ServerStore {
         return id
     }
 
+    /// Re-supplies the password of an ALREADY-PERSISTED SMB server, in place.
+    ///
+    /// The recovery twin of `addSMBServer`, for the case where the row survived but its Keychain
+    /// slot didn't (access-group change after a bundle-id rename, device migration) or the password
+    /// changed server-side. Everything the server is — host, account, domain, selected shares — is
+    /// still in UserDefaults, so nothing about the row is touched and no row is ever created: an id
+    /// that isn't a persisted SMB server throws `.notAnSMBServer` instead of writing a secret
+    /// nothing references. That's what keeps this from being a back door around `addSMBServer`.
+    ///
+    /// `verify` is the credential test. This actor can't reach SMB itself (the protocol lives in
+    /// `ParallaxFileBrowse`, which this package deliberately doesn't depend on), so the caller hands
+    /// in the probe; it receives the server's persisted identity plus the candidate password and
+    /// throws if the server refuses the sign-in. The Keychain write happens ONLY after it returns,
+    /// so a wrong password leaves the stored one exactly as it was — the same "never commit a
+    /// half-credential" discipline as `addSMBServer`'s rollback, achieved by not writing at all.
+    /// A verification throw is rethrown verbatim so the caller can render its own error.
+    ///
+    /// `verify` suspends this actor, so the world can change under it: the server can be removed
+    /// (deleting the very slot this would refill) while the probe is in flight, and the caller's
+    /// task can be cancelled (its UI already reported the attempt dead). Both are re-checked AFTER
+    /// the await — the row again, cancellation explicitly — so a stale success can't write a secret
+    /// nothing references or one the user believes was never saved.
+    ///
+    /// No `settings` write, hence no rollback to do: the only mutated state is the Keychain slot.
+    public func updateSMBPassword(
+        _ password: String,
+        for id: ServerID,
+        verify: @Sendable (SMBServerData, String) async throws -> Void
+    ) async throws {
+        guard let server = persistedServers.first(where: { $0.id == id }),
+              case .smb(let data) = server.kind else {
+            throw ServerStoreError.notAnSMBServer(id: id.rawValue)
+        }
+
+        try await verify(data, password)
+
+        try Task.checkCancellation()
+        guard let current = persistedServers.first(where: { $0.id == id }),
+              case .smb = current.kind else {
+            throw ServerStoreError.notAnSMBServer(id: id.rawValue)
+        }
+
+        do {
+            try await keychain.store(password, for: Self.secretKey(for: id))
+        } catch {
+            throw ServerStoreError.persistenceFailed(underlying: String(describing: error))
+        }
+        Log.persistence.info("ServerStore.updateSMBPassword: re-stored the password for \(id.rawValue)")
+    }
+
     /// Replaces the selected `shares` on an already-persisted SMB server. No-op for an
     /// unknown id or a non-SMB server. Persists with the same revert-on-failure discipline
     /// as the other writers; the password slot is untouched.
@@ -524,7 +578,7 @@ public actor ServerStore {
         guard loadedSessions.contains(where: { $0.id == id }) else { return false }
         loadedSessions.removeAll { $0.id == id }
 
-        let key = KeychainKey<String>(account: Self.tokenAccount(for: id))
+        let key = Self.secretKey(for: id)
         do {
             try await keychain.delete(key)
         } catch {
@@ -580,7 +634,7 @@ public actor ServerStore {
     /// instead of being degraded into an empty-password logon the server rejects with an error
     /// that reads as its fault (the live-NAS EPERM incident).
     public func smbPassword(for id: ServerID) async throws -> String {
-        let key = KeychainKey<String>(account: Self.tokenAccount(for: id))
+        let key = Self.secretKey(for: id)
         let stored: String?
         do {
             stored = try await keychain.read(key)
@@ -602,5 +656,11 @@ public actor ServerStore {
     /// SMB auth with no error).
     public static func tokenAccount(for id: ServerID) -> String {
         "token-\(id.rawValue)"
+    }
+
+    /// The typed Keychain key for that slot — every read/write/delete in this actor goes through
+    /// here, so the account string and the value type are decided in exactly one place.
+    private static func secretKey(for id: ServerID) -> KeychainKey<String> {
+        KeychainKey<String>(account: tokenAccount(for: id))
     }
 }

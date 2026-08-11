@@ -80,7 +80,7 @@ public enum AuthFailure: Sendable {
         case .tokenInvalidated:
             return "Your session expired. Sign in again."
         case .credentialUnavailable:
-            return "The saved password couldn't be read. Remove this server and add it again."
+            return "The saved password couldn't be read. Enter it again in this server's settings to reconnect."
         }
     }
 }

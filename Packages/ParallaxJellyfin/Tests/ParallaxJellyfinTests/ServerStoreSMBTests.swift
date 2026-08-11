@@ -176,6 +176,134 @@ struct ServerStoreSMBTests {
         #expect(d.shares == ["Media"])   // untouched
     }
 
+    // MARK: - updateSMBPassword
+
+    /// Marker thrown by the test verifier so a refusal is distinguishable from any other failure.
+    private struct VerificationRefused: Error {}
+
+    /// What the store handed the verification probe. A reference box because the probe is a
+    /// `@Sendable` closure and a captured `var` can't be mutated from one; the tests read it only
+    /// after the (serialised) call returns.
+    private final class VerifyProbe: @unchecked Sendable {
+        var data: SMBServerData?
+        var password: String?
+        var wasCalled = false
+
+        func record(_ data: SMBServerData, _ password: String) {
+            self.data = data
+            self.password = password
+            wasCalled = true
+        }
+    }
+
+    @Test("updateSMBPassword stores the new password under the existing slot and leaves the row untouched")
+    func updatePasswordStoresUnderSameSlot() async throws {
+        let (store, _, keychain) = freshStore()
+        let id = try await store.addSMBServer(smbData(shares: ["Media"]), password: "old-pass")
+
+        let probe = VerifyProbe()
+        try await store.updateSMBPassword("new-pass", for: id) { data, password in
+            probe.record(data, password)
+        }
+
+        // Verified against the PERSISTED identity — the caller's probe never has to be handed the
+        // host/account separately (and so can't be handed a stale copy of them).
+        #expect(probe.data?.host == "nas.local")
+        #expect(probe.data?.username == "alice")
+        #expect(probe.password == "new-pass")
+
+        // Same account key `addSMBServer` wrote — a second slot would leave the reader reading the
+        // dead one forever.
+        let stored: String? = try await keychain.read(tokenKey(for: id))
+        #expect(stored == "new-pass")
+        #expect(try await store.smbPassword(for: id) == "new-pass")
+
+        // The row itself is untouched: one server, same id, same shares.
+        let servers = await store.servers
+        #expect(servers.count == 1)
+        guard let server = servers.first, case .smb(let data) = server.kind else {
+            Issue.record("expected the .smb PersistedServer"); return
+        }
+        #expect(server.id == id)
+        #expect(data.shares == ["Media"])
+    }
+
+    @Test("A refused verification rethrows and leaves the stored password untouched")
+    func updatePasswordRefusedKeepsOldSecret() async throws {
+        let (store, _, keychain) = freshStore()
+        let id = try await store.addSMBServer(smbData(), password: "old-pass")
+        let storeCallsBefore = keychain.storeCalls.count
+
+        await #expect(throws: VerificationRefused.self) {
+            try await store.updateSMBPassword("wrong-pass", for: id) { _, _ in
+                throw VerificationRefused()
+            }
+        }
+
+        // Not merely "not overwritten" — never WRITTEN: a failed attempt must not touch the slot.
+        #expect(keychain.storeCalls.count == storeCallsBefore)
+        let stored: String? = try await keychain.read(tokenKey(for: id))
+        #expect(stored == "old-pass")
+    }
+
+    /// The password slot is only ever meaningful for a persisted SMB row, so both non-SMB ids are
+    /// refused the same way — writing one would leave a secret nothing references (and, for the
+    /// Jellyfin case, would clobber a live bearer token, since both kinds share the slot naming).
+    @Test(
+        "updateSMBPassword refuses an id that isn't a persisted SMB server, without verifying or writing",
+        arguments: ["jf-1", "does-not-exist"]
+    )
+    func updatePasswordRejectsNonSMBIDs(rawID: String) async throws {
+        let (store, _, keychain) = freshStore()
+        let session = sampleSession(id: "jf-1", token: "tok-jf")
+        try await store.add(session)
+        let storeCallsBefore = keychain.storeCalls.count
+
+        let probe = VerifyProbe()
+        // The specific case, not just the type — `.persistenceFailed` passing here would let the
+        // guard silently regress into a late write failure.
+        let thrown = await #expect(throws: ServerStore.ServerStoreError.self) {
+            try await store.updateSMBPassword("pw", for: ServerID(rawValue: rawID)) { data, password in
+                probe.record(data, password)
+            }
+        }
+        guard case .notAnSMBServer(let refusedID) = thrown else {
+            Issue.record("expected .notAnSMBServer, got \(String(describing: thrown))"); return
+        }
+        #expect(refusedID == rawID)
+
+        #expect(probe.wasCalled == false)
+        #expect(keychain.storeCalls.count == storeCallsBefore)
+        // The Jellyfin token in the identically-named slot survives.
+        let token: String? = try await keychain.read(tokenKey(for: session.id))
+        #expect(token == "tok-jf")
+    }
+
+    /// The guard must hold AFTER the verify suspension too: `verify` suspends the actor, so a
+    /// concurrent `remove` can win the race and delete both the row and the slot before the probe
+    /// returns. Writing anyway would re-create a secret nothing references. Modeled directly: the
+    /// probe itself removes the server (actor reentrancy makes that legal), which is exactly the
+    /// interleaving of a user tapping Remove Server while the recovery form is verifying.
+    @Test("A server removed while verification is in flight is refused the late write")
+    func updatePasswordRefusesWriteAfterConcurrentRemove() async throws {
+        let (store, _, keychain) = freshStore()
+        let id = try await store.addSMBServer(smbData(), password: "old-pass")
+
+        let thrown = await #expect(throws: ServerStore.ServerStoreError.self) {
+            try await store.updateSMBPassword("new-pass", for: id) { _, _ in
+                try await store.remove(id)
+            }
+        }
+        guard case .notAnSMBServer = thrown else {
+            Issue.record("expected .notAnSMBServer, got \(String(describing: thrown))"); return
+        }
+
+        // The remove's deletion is the last word — no resurrected slot, no ghost row.
+        let stored: String? = try await keychain.read(tokenKey(for: id))
+        #expect(stored == nil)
+        #expect(await store.servers.isEmpty)
+    }
+
     @Test("SMB server and Jellyfin session coexist: both in servers, only Jellyfin in sessions, active unchanged")
     func smbAndJellyfinCoexist() async throws {
         let (store, _, keychain) = freshStore()
