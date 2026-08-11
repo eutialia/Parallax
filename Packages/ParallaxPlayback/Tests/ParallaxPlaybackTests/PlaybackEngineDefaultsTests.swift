@@ -1,5 +1,6 @@
 import Foundation
 import CoreMedia
+import os
 import Testing
 import ParallaxPlayback
 
@@ -21,9 +22,15 @@ private final class BarePlaybackEngine: PlaybackEngine {
         self.continuation = cont
     }
 
+    /// Recorded so the `silence()` default's delegation to `pause()` is observable.
+    /// Recording inside a REQUIRED member keeps the "no overridden defaults" rule intact.
+    /// Locked because `PlaybackEngine` is `Sendable`.
+    private let pauseCalls = OSAllocatedUnfairLock(initialState: 0)
+    var pauseCallCount: Int { pauseCalls.withLock { $0 } }
+
     func load(_ asset: PlayableAsset) async throws {}
     func play() async {}
-    func pause() async {}
+    func pause() async { pauseCalls.withLock { $0 += 1 } }
     func seek(to time: CMTime) async {}
     func setAudioTrack(_ track: AudioTrack) async {}
     func setSubtitleTrack(_ track: SubtitleTrack?) async {}
@@ -60,6 +67,16 @@ struct PlaybackEngineDefaultsTests {
     func debugSnapshotDefault() async {
         let snapshot = await BarePlaybackEngine().debugSnapshot()
         #expect(snapshot == .empty)
+    }
+
+    /// AVKit relies on this default: only the VLC engine overrides `silence()` with a
+    /// render-level mute. If the default stopped pausing, closing an AVKit player would
+    /// leave audio running behind the dismissed UI.
+    @Test("silence defaults to delegating to pause")
+    func silenceDefaultDelegatesToPause() async {
+        let engine = BarePlaybackEngine()
+        await engine.silence()
+        #expect(engine.pauseCallCount == 1)
     }
 
     /// AVKit has no subtitle-retiming or rate API; the defaults must absorb those calls
