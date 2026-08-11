@@ -401,16 +401,19 @@ struct PlayerView: View {
 
     /// Exit on user intent: silence playback NOW, tear down AFTER the slide-out.
     /// `beginExit()` synchronously fences the in-flight start path (a mid-load
-    /// exit can't resurrect playback) and `pause()` kills the audio on the spot —
-    /// but the full `stop()` waits for `onDisappear`, once the dismiss animation
-    /// has landed. Tearing down mid-slide unmounted the video host (the card went
-    /// blank as it moved) and `replaceCurrentItem(nil)`'s synchronous main-thread
-    /// burst ate dismissal frames — the "cut" slide-out. Pausing is the only
-    /// urgent part; the engine and its last frame ride the card out.
+    /// exit can't resurrect playback) and `silence()` kills the audio on the spot
+    /// (not `pause()` — VLC's pause rides the input thread, which a blocked SMB
+    /// read can wedge for seconds while audio keeps draining; silence mutes the
+    /// audio output directly first). The full `stop()` waits for `onDisappear`,
+    /// once the dismiss animation has landed. Tearing down mid-slide unmounted
+    /// the video host (the card went blank as it moved) and
+    /// `replaceCurrentItem(nil)`'s synchronous main-thread burst ate dismissal
+    /// frames — the "cut" slide-out. Silencing is the only urgent part; the
+    /// engine and its last frame ride the card out.
     private func exitPlayer() {
         viewModel?.beginExit()
         let vm = viewModel
-        Task { await vm?.engine?.pause() }
+        Task { await vm?.engine?.silence() }
         #if os(tvOS)
         // Hand display-mode selection back to the system as the player leaves.
         DisplayCriteriaMatcher.clear()

@@ -168,6 +168,10 @@ public final class FakePlaybackEngine: PlaybackEngine {
 
     public func pause() async { recordedState.withLock { $0.calls.append("pause") } }
 
+    /// Recorded distinctly from "pause" so tests can tell an exit-time silence from a
+    /// transport pause — the two diverge on real engines (VLC mutes the audio output).
+    public func silence() async { recordedState.withLock { $0.calls.append("silence") } }
+
     public func seek(to time: CMTime) async {
         let seconds = CMTimeGetSeconds(time)
         let formatted = String(format: "%.1f", seconds)

@@ -36,6 +36,12 @@ public protocol PlaybackEngine: AnyObject, Sendable {
     /// Pause playback.
     func pause() async
 
+    /// Silence audio output NOW, ahead of a deferred teardown. Dismissal keeps the
+    /// engine alive for the whole close animation (the last frame rides the card out),
+    /// so audio needs a kill switch that does not wait for `teardown()`. Best-effort;
+    /// the next `play()` restores audio.
+    func silence() async
+
     /// Seek to an arbitrary position. No-op if no item is loaded.
     func seek(to time: CMTime) async
 
@@ -97,6 +103,11 @@ public extension PlaybackEngine {
 
     /// Default: no debug info. Concrete engines override with real telemetry.
     func debugSnapshot() async -> PlaybackDebugInfo { .empty }
+
+    /// Default: pause. Enough for engines whose pause takes effect on the next render
+    /// cycle (AVKit). VLC overrides: its pause is an input-thread command that a blocked
+    /// network read can delay for seconds, so it mutes the audio output directly first.
+    func silence() async { await pause() }
 
     /// Default: no-op. Only engines that can retime subtitles (VLC) override.
     func setSubtitleDelay(milliseconds: Int) async {}
