@@ -62,13 +62,31 @@ public enum CrashSentinel {
     /// `SIGABRT` is an uncaught ObjC exception's final step and `abort()`; `SIGFPE`/`SIGSYS` round out
     /// the set. `SIGPIPE` is deliberately absent from the *catch* list — a dead socket write is
     /// normal here, not a crash — but left to its default disposition it still TERMINATES the
-    /// process, silently: no system crash report is written for it. `install` ignores it
+    /// process, silently: no system crash report is written for it. `ignoreSIGPIPE` ignores it
     /// process-wide instead, so the write fails with `EPIPE` and the caller handles it as an
     /// ordinary connection error.
     private static let fatalSignals: [Int32] = [SIGSEGV, SIGBUS, SIGILL, SIGTRAP, SIGABRT, SIGFPE, SIGSYS]
 
     /// Marker the session scanner looks for when deciding whether a retained session ended in a crash.
     public static let crashMarker = "*** PARALLAX CRASH ***"
+
+    /// Ignores `SIGPIPE` process-wide, turning a write to a dead socket into a plain `EPIPE` failure.
+    ///
+    /// libsmb2 writes to raw sockets without `SO_NOSIGPIPE`, so the first write to a socket the
+    /// OS killed during suspension raises SIGPIPE — whose default action kills the process with
+    /// no crash report at all (launchd logs "exited due to SIGPIPE" and nothing else). A
+    /// debugger swallows the signal, so only unattached runs die. Ignoring it turns that write
+    /// into a plain EPIPE failure, which the connection layers already treat as a dead link.
+    ///
+    /// Separate from `install` on purpose: `install` only runs when retained logging opens a sink,
+    /// but a dead-socket write must be non-fatal regardless, so `DiagnosticsLog.start` calls this
+    /// before any of its own guards can return early.
+    static func ignoreSIGPIPE() {
+        var action = sigaction()
+        action.__sigaction_u.__sa_handler = SIG_IGN
+        sigemptyset(&action.sa_mask)
+        sigaction(SIGPIPE, &action, nil)
+    }
 
     /// Points the handlers at `descriptor` and installs them. Idempotent: a second call is ignored.
     ///
@@ -77,13 +95,6 @@ public enum CrashSentinel {
         guard crashReportDescriptor < 0 else { return }
         crashReportDescriptor = descriptor
         crashFrameBuffer = .allocate(capacity: crashFrameCapacity)
-
-        // libsmb2 writes to raw sockets without `SO_NOSIGPIPE`, so the first write to a socket the
-        // OS killed during suspension raises SIGPIPE — whose default action kills the process with
-        // no crash report at all (launchd logs "exited due to SIGPIPE" and nothing else). A
-        // debugger swallows the signal, so only unattached runs die. Ignoring it turns that write
-        // into a plain EPIPE failure, which the connection layers already treat as a dead link.
-        signal(SIGPIPE, SIG_IGN)
 
         var action = sigaction()
         action.__sigaction_u.__sa_sigaction = crashSignalHandler
