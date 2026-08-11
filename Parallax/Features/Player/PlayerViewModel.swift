@@ -2330,6 +2330,29 @@ final class PlayerViewModel {
         audioStreamIndex: Int?,
         subtitleStreamIndex: Int?
     ) async -> TrackSwitchOutcome {
+        // Cancellation shield: every scrub surface cancels its in-flight commit when
+        // newer input lands (`scrubCommitTask?.cancel()`, `SeekCommitCoalescer`), and
+        // that cancellation must not ride into a half-done reload — by this point the
+        // outgoing encode job is dead, the surface is frozen and the phase is pinned
+        // to .loading, so dying mid-flight strands the scrim with nothing left to
+        // emit a recovering beat. Run the reload on its own task so it always reaches
+        // an outcome; the ONLY abort signal is the exit fence (`isExiting`, checked
+        // at every await via `checkStillActive`), which `beginExit()` arms
+        // synchronously before `stop()` runs.
+        await Task {
+            await performTranscodeReload(
+                resumeAt: resume,
+                audioStreamIndex: audioStreamIndex,
+                subtitleStreamIndex: subtitleStreamIndex
+            )
+        }.value
+    }
+
+    private func performTranscodeReload(
+        resumeAt resume: CMTime,
+        audioStreamIndex: Int?,
+        subtitleStreamIndex: Int?
+    ) async -> TrackSwitchOutcome {
         // The chips stay mounted through .loading — a second pick (or seek) mid-reload
         // must wait for (not race) the in-flight reload.
         guard !isSwitchingTracks, let item = playingItem else { return .abandoned }
@@ -2392,7 +2415,16 @@ final class PlayerViewModel {
             )
             return .completed
         } catch is CancellationError {
-            // Exit raced the reload — stop() already owns the teardown.
+            // Exit raced the reload — stop() already owns the teardown. The shield in
+            // `reloadTranscode` guarantees the exit fence is the only cancellation
+            // source; verify it, because a bare `.abandoned` restores no state and a
+            // NON-exit cancellation would strand the .loading scrim forever.
+            guard isExiting else {
+                return await fallBackAfterFailedSwitch(
+                    .unexpected("transcode reload cancelled mid-flight",
+                                underlying: AnySendableError(CancellationError()))
+                )
+            }
             return .abandoned
         } catch let error as AppError {
             return await fallBackAfterFailedSwitch(error)
