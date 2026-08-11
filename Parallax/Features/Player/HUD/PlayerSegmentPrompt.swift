@@ -132,15 +132,16 @@ struct PlayerSegmentPrompt: View {
     }
 }
 
-/// The pure visual: a glass capsule (the shared over-video recipe) with a white-ink
-/// icon + label and a reverse-fill countdown wash that drains its width to zero over
-/// the prompt's lifetime. Stateless, so the `#Preview` can exercise the chrome and the
-/// drain at any fraction without a live view model.
+/// The pure visual: a white capsule with ink content — the hero Play/Resume pill's
+/// vocabulary (`PrimaryPlayButton`), for contrast over the always-dark player — and a
+/// reverse-fill countdown wash that drains its width to zero over the prompt's
+/// lifetime. Stateless, so the `#Preview` can exercise the chrome and the drain at any
+/// fraction without a live view model.
 private struct SegmentPromptButton: View {
     let icon: String
     let label: String
     /// Secondary line — the next episode's name (the "Up Next" content). Dimmed and
-    /// truncated so a long title can't blow the capsule out.
+    /// width-capped so a long title can't blow the capsule out; overflow loops.
     var sub: String? = nil
     /// 1 = full (just appeared) … 0 = empty (about to hide). Drives the infill width.
     let drain: Double
@@ -156,28 +157,51 @@ private struct SegmentPromptButton: View {
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)   // never clip the CTA
             if let sub {
-                Text(sub)
-                    .font(.system(size: fontSize, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.6))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    // Flexible up to the cap: a short title sizes to itself, a long one
-                    // truncates instead of stretching the capsule across the screen.
-                    .frame(maxWidth: subMaxWidth, alignment: .leading)
+                // Fills the fixed pill's remaining width; a title that overflows it
+                // loops (marquee) instead of stretching the capsule. Loops without
+                // focus: on tvOS this capsule is a visual-only, non-focusable overlay.
+                // Faster than the menu-row defaults: the prompt lives 5s, so the
+                // default 1.5s delay at 30pt/s could never reach a long title's
+                // tail before the auto-hide.
+                MarqueeText(
+                    text: sub,
+                    font: .system(size: fontSize, weight: .semibold),
+                    color: Color.playerInk.opacity(0.6),
+                    loopsWithoutFocus: true,
+                    startDelay: 0.75,
+                    pointsPerSecond: 45
+                )
             }
         }
-        .foregroundStyle(.white)
+        // One fixed width for every prompt, so Skip Intro and Next Episode read as
+        // the same control: skip prompts center their short content, Next Episode
+        // fills the row with the rolling title.
+        .frame(maxWidth: .infinity, alignment: sub == nil ? .center : .leading)
+        .foregroundStyle(Color.playerInk)
         .frame(height: height)
         .padding(.horizontal, padX)
-        // The reverse-fill: a white wash filling the capsule, its width scaled by the
-        // remaining time. Behind the label, in front of the glass dim; the outer clip
-        // rounds it to the capsule.
+        .frame(width: width)
+        // The reverse-fill countdown: an ink wash over the white face, its width
+        // scaled by the remaining time. Behind the label, above the fill; the outer
+        // clip rounds it to the capsule.
         .background(alignment: .leading) {
             Rectangle()
-                .fill(.white.opacity(0.26))
+                .fill(Color.playerInk.opacity(0.12))
                 .scaleEffect(x: max(0, min(1, drain)), anchor: .leading)
         }
-        .playerGlassSurface(in: shape)
+        // The hero Play/Resume vocabulary (PrimaryPlayButton): a white face + ink
+        // label in both themes — high contrast over the always-dark player. iOS rides
+        // white-tinted interactive glass pinned dark; tvOS keeps the flat white fill
+        // (never focused here — the floor remote drives this pill).
+        #if os(tvOS)
+        // Unlike the hero pill, nothing else carries visibility here — no focus
+        // platter, no `tvChipButton()` lift/shadow — so a soft ink hairline keeps
+        // the capsule's silhouette when the video behind it is near-white.
+        .flatControlFill(focused: false, rest: .white, hairline: .black.opacity(0.15), in: shape)
+        #else
+        .glassEffect(.regular.tint(.white).interactive(), in: shape)
+        .environment(\.colorScheme, .dark)
+        #endif
         .clipShape(shape)
         .contentShape(shape)
     }
@@ -187,11 +211,16 @@ private struct SegmentPromptButton: View {
     private var iconSize: CGFloat { metrics.deviceClass == .phone ? 16 : metrics.chipIconSize }
     private var padX: CGFloat { metrics.deviceClass == .phone ? 18 : metrics.chipPadX }
     private var iconGap: CGFloat { metrics.deviceClass == .phone ? 8 : 10 * metrics.u }
-    /// The "Up Next" title cap — beyond this it truncates rather than widening the pill.
-    private var subMaxWidth: CGFloat { metrics.deviceClass == .phone ? 200 : 360 * metrics.u }
+    /// The shared fixed pill width — one size for Skip Intro and Next Episode, sized
+    /// between "Skip Intro looks stranded" and "the episode title has no room": on
+    /// phone it stays well inside a portrait viewport (the old content-driven pill
+    /// could span nearly all of it); big screens balance against the ~200pt-natural
+    /// skip pill. Titles that overflow the leftover slot roll to reveal more within
+    /// the prompt's 5s life (see the tuned `MarqueeText` speed above).
+    private var width: CGFloat { metrics.deviceClass == .phone ? 280 : 460 * metrics.u }
 }
 
-#Preview("Segment prompts") {
+#Preview("Segment prompts", traits: .fixedLayout(width: 1000, height: 620)) {
     ZStack {
         LinearGradient(colors: [.indigo, .black], startPoint: .topLeading, endPoint: .bottomTrailing)
             .ignoresSafeArea()
@@ -201,9 +230,42 @@ private struct SegmentPromptButton: View {
             SegmentPromptButton(icon: "forward.end.fill", label: "Next Episode",
                                 sub: "The Rains of Castamere", drain: 0.35, metrics: .tv)
             SegmentPromptButton(icon: "forward.end.fill", label: "Next Episode",
-                                sub: "A Very Long Episode Title That Has To Truncate", drain: 0.2, metrics: .tv)
+                                sub: "A Very Long Episode Title That Has To Roll", drain: 0.2, metrics: .tv)
         }
     }
-    .frame(width: 820, height: 620)
+    .frame(width: 1000, height: 620)
+    .environment(\.colorScheme, .dark)
+    // Snapshot-stable truncation branch (see `marqueeEnabled`).
+    .environment(\.marqueeEnabled, false)
+}
+
+#Preview("Segment prompts (phone)", traits: .fixedLayout(width: 420, height: 420)) {
+    ZStack {
+        LinearGradient(colors: [.indigo, .black], startPoint: .topLeading, endPoint: .bottomTrailing)
+            .ignoresSafeArea()
+        VStack(spacing: 24) {
+            SegmentPromptButton(icon: "forward.fill", label: "Skip Intro", drain: 1.0, metrics: .phone)
+            SegmentPromptButton(icon: "forward.end.fill", label: "Next Episode",
+                                sub: "Ozymandias", drain: 0.6, metrics: .phone)
+            SegmentPromptButton(icon: "forward.end.fill", label: "Next Episode",
+                                sub: "The Rains of Castamere", drain: 0.35, metrics: .phone)
+        }
+    }
+    .frame(width: 420, height: 420)
+    .environment(\.colorScheme, .dark)
+    // Snapshot-stable truncation branch (see `marqueeEnabled`).
+    .environment(\.marqueeEnabled, false)
+}
+
+// Marquee left ON: the loop never quiesces, so this is for the live canvas only —
+// `RenderPreview` would time out on it (see `marqueeEnabled`).
+#Preview("Segment prompt · live marquee (canvas only)", traits: .fixedLayout(width: 1000, height: 300)) {
+    ZStack {
+        LinearGradient(colors: [.indigo, .black], startPoint: .topLeading, endPoint: .bottomTrailing)
+            .ignoresSafeArea()
+        SegmentPromptButton(icon: "forward.end.fill", label: "Next Episode",
+                            sub: "A Very Long Episode Title That Has To Roll", drain: 0.5, metrics: .tv)
+    }
+    .frame(width: 1000, height: 300)
     .environment(\.colorScheme, .dark)
 }
