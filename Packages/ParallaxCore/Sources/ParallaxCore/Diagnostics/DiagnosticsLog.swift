@@ -126,6 +126,10 @@ public enum DiagnosticsLog {
     /// Never throws and never traps: a device that can't give us a log file gets an app with no
     /// diagnostics, not an app that fails to start.
     public static func start() {
+        // Before every guard below: a dead-socket write must not kill the process even when
+        // retained logging is off or the sink fails to open.
+        CrashSentinel.ignoreSIGPIPE()
+
         guard isEnabled else { return }
         guard let directory = directoryURL() else { return }
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
