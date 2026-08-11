@@ -1,0 +1,28 @@
+name: PR labels
+
+on:
+  pull_request:
+    types: [opened, edited]
+
+jobs:
+  label-from-title:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Label from the conventional-commit title prefix
+        # The release-notes generator groups by label (.github/release.yml),
+        # so every PR gets one from its title. Title goes through env, never
+        # inline interpolation — PR titles are untrusted input.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: ${{ github.event.pull_request.title }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          case "$TITLE" in
+            "chore(release)"*) LABEL=release ;;
+            feat*)             LABEL=feature ;;
+            fix*)              LABEL=bugfix ;;
+            *)                 LABEL=housekeeping ;;
+          esac
+          gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label "$LABEL"
