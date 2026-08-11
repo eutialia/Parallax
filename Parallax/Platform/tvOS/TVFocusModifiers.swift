@@ -222,19 +222,15 @@ extension View {
     /// container. Optional-taking so a control can read the scope from the environment and
     /// stay inert (nil) when hosted outside any scope. No-op on iOS.
     ///
-    /// The optional must be STABLE across the host's re-renders (same rule as `tvFocused`
-    /// below): nil↔non-nil toggles which `_ConditionalContent` branch is built, which
-    /// re-identifies the modified view and drops its focus/state. An environment-supplied
-    /// scope satisfies this as long as the publisher sets it unconditionally, the way
-    /// `HeroForeground` does — never inject the key behind a runtime condition.
+    /// Always applies one modifier rather than branching on the optional: an `if let` here
+    /// would build `_ConditionalContent`, and a nil↔non-nil flip across re-renders would
+    /// re-identify the modified view and drop its focus/state (the `tvFocused` hazard below).
+    /// The modifier instead disables the preference against an inert fallback namespace, so
+    /// the view type is stable no matter how the optional behaves.
     @ViewBuilder
     func tvPrefersDefaultFocus(in namespace: Namespace.ID?) -> some View {
         #if os(tvOS)
-        if let namespace {
-            self.prefersDefaultFocus(in: namespace)
-        } else {
-            self
-        }
+        modifier(TVPrefersDefaultFocusModifier(namespace: namespace))
         #else
         self
         #endif
@@ -310,6 +306,19 @@ extension View {
 }
 
 #if os(tvOS)
+/// Applies `prefersDefaultFocus` unconditionally so `tvPrefersDefaultFocus(in:)` never
+/// branches into `_ConditionalContent`. When no scope is supplied the preference is turned
+/// OFF against a private namespace nothing scopes to, which is inert by construction.
+private struct TVPrefersDefaultFocusModifier: ViewModifier {
+    let namespace: Namespace.ID?
+    /// Fallback target when `namespace` is nil — never referenced by any `focusScope`.
+    @Namespace private var inert
+
+    func body(content: Content) -> some View {
+        content.prefersDefaultFocus(namespace != nil, in: namespace ?? inert)
+    }
+}
+
 /// Chip/transport button style: lifts the label with `tvFocusEffect()` (gentle
 /// scale + shadow) and dims slightly on press — no system `.card` platter. Applying
 /// `tvFocusEffect()` to `configuration.label` works because the label is a descendant of the
