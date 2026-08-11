@@ -7,7 +7,10 @@ import ParallaxPlaybackTestSupport
 /// Pins the 320-tall AVFoundation tier that `tiny.mp4` (160×90) cannot see: AVFoundation's
 /// `maximumSize` is an upper bound and never upscales, so a sub-320 source would still
 /// pass if the bound were deleted entirely.
-@Suite("AVThumbnailer — 320px tier (live AVFoundation decode)", .timeLimit(.minutes(1)))
+// 3 minutes matches every other live-I/O suite's backstop: loaded CI runners measured
+// 65–74s wall-clock on a decode that passes, so the 1-minute ceiling reported hangs
+// that never happened.
+@Suite("AVThumbnailer — 320px tier (live AVFoundation decode)", .timeLimit(.minutes(3)))
 @MainActor
 struct AVThumbnailerTests {
 
