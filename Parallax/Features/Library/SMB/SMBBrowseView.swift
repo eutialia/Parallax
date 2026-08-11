@@ -435,6 +435,12 @@ struct SMBBrowseGrid: View {
                     // Each tile is a scroll target so the owner's `scrollPosition(id:)`
                     // can re-anchor the wall by identity when the scroll view resizes.
                     .scrollTargetLayout()
+                    // Each section grid is its own tvOS focus section so entering it (Down from
+                    // the centered sort chip, or across the Folders→Videos boundary) diverts to
+                    // the NEAREST tile. Without it the engine aims at the middle column, and a
+                    // row sparser than that column index leaves Down with no candidate — focus
+                    // strands on the chip. Mirrors the same modifier on `MediaGrid`.
+                    .tvFocusSection()
                 }
             }
             if !media.isEmpty {
@@ -460,6 +466,8 @@ struct SMBBrowseGrid: View {
                         }
                     }
                     .scrollTargetLayout()
+                    // Same nearest-tile entry divert as the Folders grid above.
+                    .tvFocusSection()
                 }
             }
         }

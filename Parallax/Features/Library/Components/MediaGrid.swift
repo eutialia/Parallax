@@ -52,6 +52,12 @@ struct MediaGrid<Item: Identifiable & Hashable, Content: View>: View {
                     }
             }
         }
+        // The grid is one tvOS focus section so entering from outside diverts to the NEAREST
+        // tile instead of the geometric projection. Without it, Down from the centered
+        // header-controls row (itself a `focusSection`) aims at the middle column of the first
+        // row — when the grid holds fewer items than that column index, no candidate exists
+        // there and Down is silently dropped, stranding focus on the header.
+        .tvFocusSection()
         // Leading/trailing inset is applied by the host ScrollView via
         // `.contentMargins` (one shared value, keeps the scroll indicator at
         // the edge) — the grid itself stays inset-free.

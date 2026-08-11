@@ -102,6 +102,12 @@ struct JellyfinSearchResultsView: View, Equatable {
             ) {
                 content()
             }
+            // Each result grid is its own tvOS focus section so entering it (Down from the
+            // scope chips, or across a section boundary) diverts to the NEAREST tile. The
+            // stacked sections don't even share a column layout (posters are 4-up, episodes
+            // 3-up on tv), so a raw geometric beam across the boundary can miss every tile
+            // and drop the press. Mirrors `MediaGrid` and `SMBBrowseGrid`.
+            .tvFocusSection()
         }
     }
 }
