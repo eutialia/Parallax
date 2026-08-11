@@ -25,6 +25,9 @@ struct HeroForeground<Subtitle: View, Actions: View>: View {
     @ViewBuilder var actions: @MainActor () -> Actions
 
     @Environment(\.appIdiom) private var idiom
+    /// Scope for the action row's default-focus pin — published into the row's environment so
+    /// `PrimaryPlayButton` can claim default focus without the call sites threading anything.
+    @Namespace private var actionRowNamespace
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.s12) {
@@ -47,21 +50,34 @@ struct HeroForeground<Subtitle: View, Actions: View>: View {
             // close enough to want the blend anyway.
             .fixedSize(horizontal: false, vertical: true)
             .padding(.top, Space.s8)
+            // The scope + `PrimaryPlayButton`'s environment-read `tvPrefersDefaultFocus` pin
+            // Play as the DEFAULT-focus landing inside this row. Without the pin, a freshly
+            // pushed detail screen resolves initial focus geometrically, and WHICH control wins
+            // depends on the row's control count — movie's three controls (Play/Favorite/Watched)
+            // landed Favorite while series's two landed Play. Default-focus evaluation only:
+            // user-directed presses (Home's accepted chevron landing on Up) are untouched.
+            .environment(\.heroActionRowFocusScope, actionRowNamespace)
+            .tvFocusScope(actionRowNamespace)
             // One focus group so the row is a single traversal unit instead of scattered geometry
             // hits. On Home this section nests INSIDE a full-width band-level section
             // (`HomeHeroCarousel`'s `.tvFocusSection()`) that catches Up presses from shelf columns
-            // past this row's intrinsic width and diverts them into this section — but
-            // `focusSection()` has no landing preference of its own, so entry is geometric-nearest
-            // and the diverted press likely lands the chevron (the rightmost control), not Play.
-            // Pinning Play would take `prefersDefaultFocus` scoped through a `@Namespace` on this
-            // row; that lever stays UNBUILT because the chevron landing was evaluated on device and
-            // accepted — build it only if the landing starts to annoy in practice.
+            // past this row's intrinsic width and diverts them into this section. `focusSection()`
+            // has no landing preference of its own, so DIRECTIONAL entry stays geometric-nearest
+            // (the diverted Up press may land the chevron — evaluated on device and accepted);
+            // only DEFAULT-focus resolution is pinned to Play, via the scope above.
             .tvFocusSection()
         }
         // Cap the column so the title/actions never climb arbitrarily up the band; the fixed rows
         // hold their height and the subtitle absorbs the remainder.
         .frame(maxHeight: HeroMetrics.foregroundMaxHeight(idiom: idiom), alignment: .bottom)
     }
+}
+
+extension EnvironmentValues {
+    /// The enclosing hero action row's focus scope, when there is one. `PrimaryPlayButton` reads
+    /// this to claim the row's default focus; nil (any host outside a hero action row) leaves the
+    /// button inert, so standalone Play pills carry no stray focus preference.
+    @Entry var heroActionRowFocusScope: Namespace.ID? = nil
 }
 
 /// The Home hero's eyebrow capsule (renders a `HeroEyebrow` kind's text). Detail headers omit it

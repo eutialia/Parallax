@@ -205,6 +205,41 @@ extension View {
         #endif
     }
 
+    /// `.focusScope(_:)` for a container whose child wants `tvPrefersDefaultFocus(in:)` — the
+    /// pair pins WHICH child the tvOS engine picks when default focus resolves into the
+    /// container (screen open), without touching user-directed traversal. No-op on iOS,
+    /// where the API doesn't exist.
+    @ViewBuilder
+    func tvFocusScope(_ namespace: Namespace.ID) -> some View {
+        #if os(tvOS)
+        self.focusScope(namespace)
+        #else
+        self
+        #endif
+    }
+
+    /// Marks the control default-focus evaluation should land on inside a `tvFocusScope`
+    /// container. Optional-taking so a control can read the scope from the environment and
+    /// stay inert (nil) when hosted outside any scope. No-op on iOS.
+    ///
+    /// The optional must be STABLE across the host's re-renders (same rule as `tvFocused`
+    /// below): nil↔non-nil toggles which `_ConditionalContent` branch is built, which
+    /// re-identifies the modified view and drops its focus/state. An environment-supplied
+    /// scope satisfies this as long as the publisher sets it unconditionally, the way
+    /// `HeroForeground` does — never inject the key behind a runtime condition.
+    @ViewBuilder
+    func tvPrefersDefaultFocus(in namespace: Namespace.ID?) -> some View {
+        #if os(tvOS)
+        if let namespace {
+            self.prefersDefaultFocus(in: namespace)
+        } else {
+            self
+        }
+        #else
+        self
+        #endif
+    }
+
     /// `.focused(_:equals:)` for FocusState that only drives the tvOS focus engine —
     /// keeps call sites to one line instead of an `#if os(tvOS)` block each. No-op on iOS.
     @ViewBuilder
