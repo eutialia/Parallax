@@ -20,6 +20,7 @@ struct PrimaryPlayButton: View {
     let action: () -> Void
 
     @Environment(\.appIdiom) private var idiom
+    @Environment(\.heroActionRowFocusScope) private var heroActionRowFocusScope
 
     var body: some View {
         // `Button { action() }`, not `Button(action: action)`: passing the stored closure directly
@@ -33,6 +34,10 @@ struct PrimaryPlayButton: View {
         }
         // Owns the button style (tvOS lift / `.plain` on iOS) — never pair an inner `.buttonStyle`.
         .tvChipButton()
+        // Inside a hero action row (scope non-nil), Play is where DEFAULT focus lands when the
+        // tvOS engine resolves into the row on screen open — the geometric fallback picks by row
+        // width, which made a movie detail (three controls) open on Favorite. See `HeroForeground`.
+        .tvPrefersDefaultFocus(in: heroActionRowFocusScope)
     }
 
     @ViewBuilder

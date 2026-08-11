@@ -165,10 +165,11 @@ struct HomeHeroCarousel: View {
         // has no "landing preference" — entry into a section is purely geometric-nearest, so which
         // control actually catches the diverted Up depends on the focused tile's column: it likely
         // lands the chevron (the rightmost control) rather than Play for shelf columns nearer the
-        // trailing edge. Forcing Play as the target would take `prefersDefaultFocus` scoped through
-        // a `@Namespace` on the action row; that lever stays UNBUILT because the chevron landing was
-        // evaluated on device and accepted — build it only if the landing starts to annoy in
-        // practice. Same structural fix, same reasoning as `LibraryHeaderControls`'s full-width
+        // trailing edge. That directional landing was evaluated on device and accepted. The action
+        // row DOES now carry a default-focus pin on Play (`HeroForeground`'s focus scope +
+        // `PrimaryPlayButton.tvPrefersDefaultFocus`), but that governs only DEFAULT-focus
+        // resolution on screen open — user-directed Up presses still land geometric-nearest.
+        // Same structural fix, same reasoning as `LibraryHeaderControls`'s full-width
         // section (device-verified there) — only the "lands on Play" claim was wrong.
         .tvFocusSection()
         #if os(tvOS)
