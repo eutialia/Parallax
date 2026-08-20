@@ -79,6 +79,31 @@ struct PlaybackEngineDefaultsTests {
         #expect(engine.pauseCallCount == 1)
     }
 
+    /// The terminal exit cut. AVKit needs nothing stronger than its resumable silence (its
+    /// pause stops the render pipeline on the spot), so the default chains through
+    /// `silence()` and, via ITS default, lands on `pause()`. Only VLC overrides, where
+    /// mute is a decode-side gain that can't reach already-queued audio.
+    @Test("endAudio defaults to delegating to silence, and so to pause")
+    func endAudioDefaultDelegatesToSilence() async {
+        let engine = BarePlaybackEngine()
+        await engine.endAudio()
+        #expect(engine.pauseCallCount == 1)
+    }
+
+    /// Exit is not always one call: the close button fences the session AND the presenter's
+    /// dismissal fences it again. The bare default carries NO latch of its own (VLC's override
+    /// is where the terminal one lives), so the second exit is not absorbed: it simply pauses
+    /// again. Harmless on an engine whose pause is already the render-level stop, which is why
+    /// AVKit needs nothing stronger. Asserted so a latch quietly added here would be caught,
+    /// not so repetition is proven inert.
+    @Test("endAudio's default carries no latch: a repeated exit just pauses again")
+    func endAudioDefaultRepeatsItsPause() async {
+        let engine = BarePlaybackEngine()
+        await engine.endAudio()
+        await engine.endAudio()
+        #expect(engine.pauseCallCount == 2)
+    }
+
     /// AVKit has no subtitle-retiming or rate API; the defaults must absorb those calls
     /// silently so the player's controls don't need to branch per engine.
     @Test("setSubtitleDelay and setRate default to inert no-ops")

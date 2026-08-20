@@ -34,6 +34,21 @@ final class PlaybackPresenter {
 
     private(set) var request: Request?
 
+    /// The live session's exit hand-off (`PlayerViewModel.beginExit`), registered by
+    /// `PlayerView` while a player is up and invoked by `dismiss()`.
+    ///
+    /// Not every dismissal goes through the player's own close button: the tvOS cover
+    /// dismisses itself through its item binding, a server switch closes the player from
+    /// `RootView`, and the debug lab dismisses from a script. Those paths used to drop
+    /// straight into the slide-out with the engine still running, so audio played on for
+    /// the whole animation: exactly the bug `endAudio()` fixes for the close button.
+    /// Routing the hand-off through here means the presenter is the one place that has to
+    /// know.
+    ///
+    /// Weak-captured at the registration site: the presenter outlives every session.
+    /// `@ObservationIgnored` because it is a wire, not state; no view reads it.
+    @ObservationIgnored var exitHandler: (@MainActor () -> Void)?
+
     /// True while the player owns the screen — presented OR still sliding out during the
     /// teardown grace. The iOS overlay leaves the live UI mounted and tappable underneath
     /// for the whole slide-out (see `isTearingDown`), so anything that must stay inert
@@ -88,6 +103,12 @@ final class PlaybackPresenter {
 
     func dismiss() {
         guard request != nil else { return }
+        // Fence + end audio BEFORE the request clears: clearing it is what starts the
+        // slide-out, and audio must already be gone by then. Consumed here so a second
+        // dismiss (the tvOS cover's binding firing after the close button's) can't call
+        // into a session that's already handed off (`beginExit()` is idempotent anyway).
+        exitHandler?()
+        exitHandler = nil
         request = nil
         guard teardownGrace > .zero else { return }
         isTearingDown = true

@@ -16,12 +16,19 @@ import ParallaxPlayback
 /// `supportsPiP: false`, which is what hides the PiP button on this engine.
 struct VLCVideoHost: UIViewRepresentable {
     let engine: any PlaybackEngine
+    /// Pushes freeze/unfreeze actions back to the VM (same shape as `AVKitVideoLayerHost`'s).
+    /// The exit path needs it here: VLC's terminal audio cut is `player.stop()`
+    /// (`VLCKitEngine.endAudio()`, since mute alone can't reach queued samples), which closes
+    /// the vout, so without a pinned still the card would slide out on black instead of the
+    /// last frame.
+    var onFreezeReady: (@MainActor (@escaping @MainActor () -> Void, @escaping @MainActor () -> Void) -> Void)?
 
     // MARK: - DrawableView
 
     /// The UIView VLC renders into. Handed straight to `player.drawable`; VLC adds and
-    /// lays out its own render subview inside it.
-    final class DrawableView: UIView {}
+    /// lays out its own render subview inside it, which a `FreezableVideoView` snapshot
+    /// captures along with everything else on the surface.
+    final class DrawableView: FreezableVideoView {}
 
     // MARK: - Coordinator
 
@@ -61,6 +68,9 @@ struct VLCVideoHost: UIViewRepresentable {
         view.backgroundColor = .black
         view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         context.coordinator.attach(to: view, engine: engine)
+        if let onFreezeReady {
+            onFreezeReady({ [weak view] in view?.freezeFrame() }, { [weak view] in view?.unfreezeFrame() })
+        }
         return view
     }
 

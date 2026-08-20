@@ -82,6 +82,8 @@ public final class FakePlaybackEngine: PlaybackEngine {
     private let continuation: AsyncStream<PlaybackState>.Continuation
     /// The hand-off ledger `settle()` reads — see `DrainBarrier`.
     private let barrier: DrainBarrier
+    /// Parks `seek(to:)` on demand. See `holdSeeks()`.
+    private let seekGate = Mutex(SeekGate())
 
     public init(id: PlaybackEngineID, capabilities: PlaybackEngineCapabilities) {
         self.id = id
@@ -168,14 +170,59 @@ public final class FakePlaybackEngine: PlaybackEngine {
 
     public func pause() async { recordedState.withLock { $0.calls.append("pause") } }
 
-    /// Recorded distinctly from "pause" so tests can tell an exit-time silence from a
+    /// Recorded distinctly from "pause" so tests can tell a resumable silence from a
     /// transport pause — the two diverge on real engines (VLC mutes the audio output).
     public func silence() async { recordedState.withLock { $0.calls.append("silence") } }
+
+    /// Recorded distinctly from "silence" too: this is the TERMINAL exit cut (VLC stops
+    /// the player outright), and the exit tests assert exactly which of the two a path took.
+    public func endAudio() async { recordedState.withLock { $0.calls.append("endAudio") } }
 
     public func seek(to time: CMTime) async {
         let seconds = CMTimeGetSeconds(time)
         let formatted = String(format: "%.1f", seconds)
         recordedState.withLock { $0.calls.append("seek(\(formatted))") }
+        await parkIfSeeksHeld()
+    }
+
+    // MARK: - Seek gate
+
+    /// Park every subsequent `seek(to:)` at its suspension point (after recording the call)
+    /// until `releaseSeeks()`. The only way to hold a caller INSIDE `await engine.seek(...)`
+    /// and run other MainActor work in that window, which is what an interleave test of a
+    /// synchronous fence landing mid-seek needs. Off by default; no other path is affected.
+    public func holdSeeks() {
+        seekGate.withLock { $0.isHeld = true }
+    }
+
+    /// True while at least one `seek(to:)` is parked on the gate. `waitUntil`-friendly proof
+    /// that the caller really is suspended, so the interleaving under test is not a guess.
+    public var hasParkedSeek: Bool {
+        seekGate.withLock { !$0.parked.isEmpty }
+    }
+
+    /// Lift the gate and resume every parked `seek(to:)`. Later seeks pass straight through.
+    public func releaseSeeks() {
+        let due = seekGate.withLock { gate -> [CheckedContinuation<Void, Never>] in
+            gate.isHeld = false
+            defer { gate.parked = [] }
+            return gate.parked
+        }
+        for continuation in due { continuation.resume() }
+    }
+
+    private func parkIfSeeksHeld() async {
+        guard seekGate.withLock({ $0.isHeld }) else { return }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            // Re-read under the lock: `releaseSeeks()` can land between the check above and
+            // here, and a continuation appended to a lifted gate would never be resumed.
+            let resumeNow = seekGate.withLock { gate -> Bool in
+                guard gate.isHeld else { return true }
+                gate.parked.append(continuation)
+                return false
+            }
+            if resumeNow { continuation.resume() }
+        }
     }
 
     public func isBuffered(at time: CMTime) async -> Bool {
@@ -210,6 +257,12 @@ public final class FakePlaybackEngine: PlaybackEngine {
         recordedState.withLock { $0.calls.append("captureFrame") }
         return captureFrameResult
     }
+}
+
+/// The `holdSeeks()` ledger: whether the gate is up, and the continuations parked behind it.
+private struct SeekGate {
+    var isHeld = false
+    var parked: [CheckedContinuation<Void, Never>] = []
 }
 
 // MARK: — settle() machinery

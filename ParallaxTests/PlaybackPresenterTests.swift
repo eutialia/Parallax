@@ -10,6 +10,14 @@ private enum PlayTargetKind: String, Sendable, CustomTestStringConvertible {
     var testDescription: String { rawValue }
 }
 
+/// What the presenter's exit hand-off recorded when it ran. A reference box so the
+/// escaping `@MainActor` handler can write to it.
+@MainActor
+private final class ExitProbe {
+    var calls = 0
+    var presentedAtExit = false
+}
+
 @MainActor
 struct PlaybackPresenterTests {
     /// The one server every test in this suite plays from.
@@ -90,6 +98,39 @@ struct PlaybackPresenterTests {
             return
         }
         #expect(id == ItemID(rawValue: "ep-2"))
+    }
+
+    /// The bypass paths (the tvOS cover dismissing itself, a server switch, the debug lab)
+    /// never reach the player's close button, so the presenter is where their exit sequence
+    /// has to run, before the request clears: clearing it starts the slide-out the audio
+    /// would otherwise play through.
+    @Test("dismiss runs the session's exit hand-off before clearing the request")
+    func dismissRunsExitHandler() {
+        let presenter = PlaybackPresenter(teardownGrace: .zero)
+        let probe = ExitProbe()
+        presenter.play(ItemID(rawValue: "ep-1"), in: session())
+        presenter.exitHandler = { [weak presenter] in
+            probe.calls += 1
+            probe.presentedAtExit = presenter?.request != nil
+        }
+        presenter.dismiss()
+        #expect(probe.calls == 1)
+        #expect(probe.presentedAtExit)
+    }
+
+    /// One session, one exit. The close button dismisses and the tvOS cover's binding
+    /// dismisses right behind it; the second must not call into a handed-off session.
+    @Test("the exit hand-off is consumed by the first dismiss")
+    func exitHandlerIsConsumed() {
+        let presenter = PlaybackPresenter(teardownGrace: .zero)
+        let s = session()
+        let probe = ExitProbe()
+        presenter.play(ItemID(rawValue: "ep-1"), in: s)
+        presenter.exitHandler = { probe.calls += 1 }
+        presenter.dismiss()
+        presenter.play(ItemID(rawValue: "ep-2"), in: s)   // a new session without a handler
+        presenter.dismiss()
+        #expect(probe.calls == 1)
     }
 
     @Test("a play during the dismissal's teardown grace is held — no second player over a stopping engine — then presented once the grace expires (latest pick wins)")

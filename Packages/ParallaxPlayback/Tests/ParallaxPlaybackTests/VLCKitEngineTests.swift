@@ -36,6 +36,112 @@ struct VLCKitEngineTests {
         #expect(engine.vlcPlayer.time.intValue == before)
         #expect(engine.vlcPlayer.isPlaying == false)
     }
+
+    /// The exit latch is what makes `endAudio()` TERMINAL. A scrub commit coalesced just
+    /// before the close button lands inside the dismiss animation and calls `play()`, which
+    /// unmutes and re-issues play, so audio comes back for the rest of the slide-out.
+    @Test("endAudio latches the session closed: a late play() can't revive it")
+    func endAudioLatchesPlayShut() async {
+        let engine = VLCKitEngine()
+        #expect(engine.audioEnded == false)
+
+        await engine.endAudio()
+        // `endAudio()` returns while its stop is still detached; join it before reading the
+        // player, or the assertions race the very thread the latch exists to outrun.
+        await engine.awaitPendingStop()
+        #expect(engine.audioEnded)
+        #expect(engine.vlcPlayer.audio?.isMuted == true)
+
+        await engine.play()
+        #expect(engine.audioEnded)   // play must not lift the latch
+        // The real witness: `play()`'s first act on an honored call is lifting the mute, so a
+        // mute still standing here is proof the guard returned before touching the input.
+        // (`isPlaying` is NOT a witness on a media-less player: it reads false either way.)
+        #expect(engine.vlcPlayer.audio?.isMuted == true)
+        await engine.teardown()
+    }
+
+    /// The other half of the latch, and the reason it is a TRANSPORT gate rather than a play
+    /// gate: the HUD calls `engine?.pause()` directly (the iOS drag begin, the tvOS reducer's
+    /// `.pause` effect) and the outgoing player stays hit-testable for the whole slide-out, so
+    /// a scrubber grabbed mid-dismiss would drive the same non-Sendable player `endAudio()`'s
+    /// detached `stop()` is still winding down. The observable is the beat: an honored
+    /// `pause()` republishes the seek hold (see `VLCKitPauseBeatTests`), so the arrangement
+    /// below emits TWO paused beats without the latch and only `seek()`'s own with it.
+    @Test("endAudio latches the session closed: a late pause() can't drive the player either")
+    func endAudioLatchesPauseShut() async throws {
+        let engine = VLCKitEngine()
+        try await engine.load(.fixture(url: URL(fileURLWithPath: "/dev/null")))
+        await engine.seek(to: CMTime(seconds: 42, preferredTimescale: 1_000))
+        await engine.endAudio()
+        await engine.awaitPendingStop()
+
+        await engine.pause()
+
+        await engine.teardown()
+        var positions: [Double] = []
+        for await state in engine.state {
+            if case .paused(let position, _, _) = state { positions.append(CMTimeGetSeconds(position)) }
+        }
+        #expect(positions == [42.0])
+    }
+
+    /// Only a fresh `load()` re-opens the session. It has to: the transcode reload reuses
+    /// this engine, and a latch that outlived the reload would leave the new stream silent
+    /// and stopped.
+    @Test("a fresh load clears the exit latch")
+    func loadClearsTheExitLatch() async throws {
+        let engine = VLCKitEngine()
+        await engine.endAudio()
+        #expect(engine.audioEnded)
+        #expect(engine.vlcPlayer.audio?.isMuted == true)
+
+        try await engine.load(.fixture(url: URL(fileURLWithPath: "/dev/null")))
+        #expect(engine.audioEnded == false)
+        // Clearing the flag is only half the claim: prove the session actually reopens by
+        // letting a `play()` through and watching it lift the exit mute it would have been
+        // refused a moment ago.
+        await engine.play()
+        #expect(engine.vlcPlayer.audio?.isMuted == false)
+        await engine.teardown()
+    }
+
+    /// Exit is not one call: the close button ends audio and the presenter's dismissal ends
+    /// it again. The second pass must be inert, and above all must not race a SECOND detached
+    /// stop against the first, on the same non-Sendable player.
+    @Test("endAudio is idempotent: the second pass spawns no second stop")
+    func endAudioIsIdempotent() async {
+        let engine = VLCKitEngine()
+        await engine.endAudio()
+        await engine.awaitPendingStop()   // first stop settled AND its reference dropped
+        await engine.endAudio()
+        #expect(engine.pendingStopTask == nil)
+        #expect(engine.audioEnded)
+        #expect(engine.vlcPlayer.isPlaying == false)
+        await engine.teardown()
+    }
+
+    /// `teardown()` drives the same non-Sendable `VLCMediaPlayer` the exit stop is still
+    /// winding down (drawable → delegate → stop). It joins first, or the two run concurrently
+    /// on two threads, the shape libvlc's own teardown aborts on.
+    @Test("teardown joins endAudio's detached stop before it touches the player")
+    func teardownJoinsPendingStop() async {
+        let engine = VLCKitEngine()
+        await engine.endAudio()
+        await engine.teardown()
+        #expect(engine.pendingStopTask == nil)
+    }
+
+    /// `silence()` is the RESUMABLE mute (the transcode reload's freeze → silence → reload →
+    /// play round-trip depends on `play()` unmuting). If it set the terminal latch, every
+    /// track switch would come back silent and stopped.
+    @Test("silence does NOT latch: the reload round-trip must stay resumable")
+    func silenceDoesNotLatch() async {
+        let engine = VLCKitEngine()
+        await engine.silence()
+        #expect(engine.audioEnded == false)
+        await engine.teardown()
+    }
 }
 
 /// Everything below is a pure static seam — the engine's decision logic, testable
@@ -225,6 +331,17 @@ struct VLCKitPollGateTests {
         #expect(VLCKitEngine.shouldReassertPlay(
             desiredPlaying: desiredPlaying, isPlaying: isPlaying, state: state
         ) == expected)
+    }
+
+    /// The exit latch, as the gate `play()` and `pause()` both read. Terminal in one
+    /// direction only: once `endAudio()` has stopped the input for the dismissal, nothing but
+    /// a fresh `load()` may let a transport command through.
+    @Test("shouldHonorTransport is false exactly while the exit latch stands", arguments: [
+        (false, true),
+        (true, false),
+    ] as [(Bool, Bool)])
+    func shouldHonorTransport(audioEnded: Bool, expected: Bool) {
+        #expect(VLCKitEngine.shouldHonorTransport(audioEnded: audioEnded) == expected)
     }
 }
 

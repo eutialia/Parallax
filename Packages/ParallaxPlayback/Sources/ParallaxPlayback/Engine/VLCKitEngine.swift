@@ -227,6 +227,23 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// it until the input obeys (see `shouldReassertPlay`).
     private var desiredPlaying = false
 
+    /// The session is closing and its audio is gone for good (`endAudio()`). While set,
+    /// `play()` and `pause()` are both inert: the exit path stops the player to cut audio at
+    /// the render level, and a late resume (a scrub commit the coalescer released just before
+    /// the close button, landing inside the dismiss animation) would unmute and restart the
+    /// input behind the outgoing UI, while a late pause (the HUD scrubber, still hit-testable
+    /// through the slide-out) would drive the same player that stop is winding down. Cleared
+    /// ONLY by `load()`, which is what makes the engine-reusing transcode reload work;
+    /// `silence()` deliberately never sets it.
+    private(set) var audioEnded = false
+
+    /// `endAudio()`'s detached `player.stop()`, kept joinable. `endAudio()` returns without
+    /// waiting on it (returning immediately is the whole point), but every path that drives
+    /// the player afterwards joins it first via `awaitPendingStop()`: two threads commanding
+    /// one non-Sendable `VLCMediaPlayer` at once is exactly the shape libvlc's own teardown
+    /// aborts on.
+    private(set) var pendingStopTask: Task<Void, Never>?
+
     /// Position (ms) captured when a rate-change flush re-decode began, or nil. While set, the
     /// progress poll publishes buffering beats at this hold point until VLC's clock advances past
     /// it (re-decode done) — so the rate-change re-buffer reads as a brief buffering moment, not a
@@ -284,9 +301,13 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
 
     public func load(_ asset: PlayableAsset) async throws {
         continuation.yield(.loading)
+        // A reused engine (the transcode reload) can still be winding down `endAudio()`'s
+        // stop on its own thread. Join it before handing the player fresh media.
+        await awaitPendingStop()
         lastPublishedInventory = nil
         lastPublishedLengthResolved = false
         subtitlesDisabled = false
+        audioEnded = false        // a fresh stream reopens the session the exit latch closed
         pendingStartMs = Self.startMs(from: asset.startTime)
         pendingSeekMs = nil
         reassertTicks = 0
@@ -310,8 +331,13 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     }
 
     public func play() async {
+        // The exit latch is terminal for this session: `endAudio()` already stopped the
+        // player to cut audio at the render level, so a play arriving after it (a coalesced
+        // scrub commit released inside the dismiss animation) must not unmute or restart
+        // anything. Only `load()` reopens the session.
+        guard Self.shouldHonorTransport(audioEnded: audioEnded) else { return }
         desiredPlaying = true
-        // Release silence()'s exit mute here, not in load(): play() covers EVERY path that
+        // Release silence()'s mute here, not in load(): play() covers EVERY path that
         // resumes audio (a reload's fresh start, but also a bare resume after a failed
         // track-switch fallback), and unmuting at load() would lift the mute while a reused
         // engine's outgoing stream still has samples queued.
@@ -380,20 +406,97 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         pendingStartMs = nil
     }
 
-    /// Exit-time audio kill switch. libvlc's `pause()` is a command the INPUT thread
-    /// processes — and on SMB that thread is routinely blocked mid-network-read (the
-    /// 1.5-3s `network-caching` window), so the pause can sit unprocessed for seconds
-    /// while the audio output keeps draining its own pre-enqueued buffer: audio outlives
-    /// the close animation. `libvlc_audio_set_mute` never touches the input thread — it
-    /// lands on the audio-output module, where the renderer applies it to samples ALREADY
-    /// queued — so muting first makes the cut immediate no matter how wedged the input is.
-    /// `play()` unmutes, so any resumed or reloaded session starts audible.
+    /// The RESUMABLE mute, for a session that comes back: the engine-reusing transcode
+    /// reload freezes the frame, silences, swaps the stream and plays again, and `play()`
+    /// unmutes on the other side.
+    ///
+    /// What it does NOT do is cut audio that is already queued. Disassembly of the vendored
+    /// VLCKit (libvlc 3.0.23) settles it: the iOS/tvOS aout module's `Open` installs a real
+    /// hardware `MuteSet` (AudioOutputUnitStop + flush), and the inlined `aout_SoftVolumeInit`
+    /// immediately overwrites `mute_set` with the soft-gain `aout_SoftMuteSet`. Mute is
+    /// therefore a per-block gain applied at decode-enqueue time (`aout_DecPlay` →
+    /// `aout_volume_Amplify`), which cannot reach the ~1-2s already sitting in the module's
+    /// unbounded frame chain; that audio plays out regardless. `VLCAudio.volume = 0` is the
+    /// same gain by another name. Muting still earns its keep: it stops every block that
+    /// has not been enqueued yet, including while a blocked SMB read holds the input thread
+    /// and delays the `pause()` below.
+    ///
+    /// For the terminal cut (exit) use `endAudio()`, the only render-level stop 3.x has.
+    /// The exit latch is deliberately NOT set here: `play()` must still be able to unmute.
+    /// The `pause()` below therefore always lands: only `endAudio()` raises the latch, only
+    /// `load()` lowers it, and the one caller of `silence()` is the transcode reload, which
+    /// runs while the session is live and never after an exit (the exit fence abandons reloads).
     public func silence() async {
         player.audio?.isMuted = true
         await pause()
     }
 
+    /// The TERMINAL exit cut: audio stops here, at the render level, and stays stopped for
+    /// the whole dismiss animation.
+    ///
+    /// `player.stop()` is the only thing in VLCKit 3.x that reaches audio already queued in
+    /// the aout (see `silence()` for why mute cannot): it tears the audio output down
+    /// rather than gaining it down. The mute still leads, because it costs nothing and
+    /// stops the blocks that have not been enqueued yet, in case the stop takes a moment.
+    ///
+    /// **Off the MainActor by design.** `stop()` winds the input down, and on SMB that
+    /// thread is routinely parked mid-network-read for seconds, so running it here would
+    /// put that wait on the thread drawing the dismissal. libvlc is thread-safe; the
+    /// engine's `@MainActor` pin exists for Swift 6's benefit (`VLCMediaPlayer` is not
+    /// `Sendable`), not because libvlc demands main. `player.media` is deliberately NOT
+    /// nil'd, same as `teardown()`: that is the `(p_md)` assertion crash.
+    ///
+    /// Detached but NOT fire-and-forget: the task is stored, and `teardown()`/`load()` join
+    /// it before they drive the player again, so the stop never runs concurrently with the
+    /// drawable/delegate/stop sequence on the way out.
+    ///
+    /// The latch is what makes it terminal: `play()` and `pause()` are both inert until the
+    /// next `load()`, so neither a late resume nor a mid-dismiss scrubber grab can drive the
+    /// player while this stop is still in flight on its own thread. The
+    /// poll's own reassert reaches `player.play()` directly, so the play intent is dropped
+    /// here too, and `.stopped` is outside `shouldReassertPlay`'s live states either way.
+    /// `teardown()` stops again on the way out; libvlc's stop is idempotent.
+    ///
+    /// Idempotent by the latch: the close button ends audio and the presenter's dismissal
+    /// fences again, and a second pass must not race a second stop against the first.
+    public func endAudio() async {
+        guard !audioEnded else { return }
+        audioEnded = true
+        desiredPlaying = false
+        // Nothing left to time out or resume: a stopped input would trip the load/stall
+        // watchdogs into a `.failed` beat under the outgoing UI, and the pending resume
+        // seek would write a clock onto a dead player.
+        loadWatchdog.disarm()
+        stallWatchdog.disarm()
+        resumeTask?.cancel()
+        resumeTask = nil
+        // The poll has nothing honest left to say about a stopped input: its inventory diff
+        // would read the emptied track arrays as a change and publish a `.ready` with no
+        // tracks at all, under a player that is already sliding away.
+        progressTask?.cancel()
+        progressTask = nil
+        player.audio?.isMuted = true
+        pendingStopTask = Task.detached { self.player.stop() }
+    }
+
+    /// Joins `endAudio()`'s detached stop and drops the reference. The choke point every
+    /// path that touches the player after an exit cut goes through (`teardown()`, `load()`)
+    /// so the stop is never in flight while the MainActor drives the same player.
+    func awaitPendingStop() async {
+        await pendingStopTask?.value
+        pendingStopTask = nil
+    }
+
     public func pause() async {
+        // Same terminal latch `play()` reads, for the same session. The HUD calls
+        // `engine?.pause()` directly (the iOS drag begin, the tvOS reducer's `.pause`
+        // effect) and the outgoing player stays mounted and hit-testable for the whole
+        // dismissal, so a scrubber grabbed mid-slide-out would command `player.pause()` on
+        // the MainActor while `endAudio()`'s detached `player.stop()` is still winding the
+        // same non-Sendable player down. A pure early return is the whole fix: the session
+        // is terminal, `endAudio()` already cleared `desiredPlaying`, and there is no beat
+        // left worth publishing under a dismissing UI.
+        guard Self.shouldHonorTransport(audioEnded: audioEnded) else { return }
         desiredPlaying = false
         player.pause()
         // An explicit pause is never a stall: drop any frozen run and cancel a pending stall failure
@@ -556,6 +659,10 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// both drop their references. Detaching the drawable first also stops the vout.
     public func teardown() async {
         desiredPlaying = false
+        // Join `endAudio()`'s detached stop before anything below drives the player:
+        // the drawable/delegate/stop sequence and that stop share one non-Sendable
+        // `VLCMediaPlayer`, and running them on two threads is the crash shape.
+        await awaitPendingStop()
         loadWatchdog.disarm()
         stallWatchdog.disarm()
         progressTask?.cancel()
@@ -733,6 +840,10 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         progressTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(500))
+                // `try?` swallows the sleep's cancellation error, so without this the loop
+                // runs ONE more full iteration after `endAudio()`/`teardown()` cancelled it
+                // and emits a stale beat from a stopping player. A cancelled poll says nothing.
+                if Task.isCancelled { return }
                 guard let self else { return }
                 // Re-assert the no-engine-subtitle latch every tick. VLC can SELECT a
                 // late-discovered embedded text track at any point during the demux. If the app is
@@ -1267,6 +1378,15 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
             return false
         }
     }
+
+    /// Whether a transport command (`play()`, `pause()`) may reach the input at all. False
+    /// exactly while the exit latch stands (`endAudio()` → `audioEnded`): that path stopped
+    /// the player to cut queued audio, so a late play would unmute and restart it behind a
+    /// dismissing UI, and a late pause would command the same non-Sendable player the
+    /// detached `player.stop()` is still winding down on its own thread. One-way: only
+    /// `load()` clears the latch. Pure so the gate is testable without a live decode;
+    /// mirrors `shouldReassertPlay`.
+    nonisolated static func shouldHonorTransport(audioEnded: Bool) -> Bool { !audioEnded }
 
     /// Whether the rate-change flush bridge should stop holding and resume live position tracking:
     /// VLC's clock has advanced past the flush anchor (the re-decode produced output at the new
