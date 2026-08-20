@@ -4,5 +4,5 @@
 // CURRENT_PROJECT_VERSION is the commit count of the release commit: monotonic
 // across releases with no bookkeeping, and it maps back to an exact commit via
 // `git rev-list --count`.
-MARKETING_VERSION = 1.1.2
-CURRENT_PROJECT_VERSION = 664
+MARKETING_VERSION = 1.1.3
+CURRENT_PROJECT_VERSION = 669
