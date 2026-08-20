@@ -1978,6 +1978,269 @@ struct PlayerViewModelTests {
         #expect(vm.desiredPlaying == false)
     }
 
+    // MARK: - Exit: audio ends at the fence, and nothing after it may restart playback
+
+    @Test("beginExit ENDS audio rather than silencing it: silence leaves VLC's queued samples playing")
+    func beginExitEndsAudio() async throws {
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let resolved = PlayerFixtures.resolved()
+        let vm = makePlayerVM(engine: engine, resolved: resolved)
+        await vm.start(item: PlayerFixtures.movieDetail())
+
+        let before = engine.calls.count
+        vm.beginExit()
+        await waitUntil { engine.calls.count > before }
+        #expect(Array(engine.calls.dropFirst(before)) == ["endAudio"])
+    }
+
+    /// The close button fences, then the presenter's `dismiss()` fences again through its
+    /// exit handler. A session ends once.
+    @Test("beginExit is idempotent: the presenter's second fence is inert")
+    func beginExitIsIdempotent() async throws {
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let vm = makePlayerVM(engine: engine, resolved: PlayerFixtures.resolved())
+        await vm.start(item: PlayerFixtures.movieDetail())
+
+        let before = engine.calls.count
+        vm.beginExit()
+        vm.beginExit()
+        await waitUntil { engine.calls.count > before }
+        await Task.yield()
+        #expect(Array(engine.calls.dropFirst(before)) == ["endAudio"])
+    }
+
+    /// THE hole this closes: every scrub surface coalesces its commit (~400ms), so a drag
+    /// released just before the close button fires INTO the dismiss animation. Its resume
+    /// branch would `engine.play()`, unmuting and restarting the audio the exit just ended,
+    /// for the rest of the slide-out. Both resume states, because the `else` branch commands
+    /// the engine too (a re-anchor's force-resume gets re-paused).
+    @Test("a scrub commit landing after the exit fence never touches the engine",
+          arguments: [true, false])
+    func commitScrubSeekIsFencedByExit(resume: Bool) async throws {
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let resolved = PlayerFixtures.resolved()
+        let vm = makePlayerVM(engine: engine, resolved: resolved)
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
+                             duration: resolved.runtime!, buffered: nil))
+        try await engine.settle()
+
+        vm.beginExit()
+        await waitUntil { engine.calls.last == "endAudio" }
+
+        let before = engine.calls.count
+        await vm.commitScrubSeek(to: CMTime(seconds: 200, preferredTimescale: 600), resume: resume)
+        #expect(Array(engine.calls.dropFirst(before)).isEmpty)
+    }
+
+    /// The interleave the entry fence alone can't catch: the commit is already PAST it and
+    /// suspended inside `await seek(to:)` when the close button lands. `beginExit()` is
+    /// synchronous MainActor work, so it slips into exactly that window; the seek then returns
+    /// `false` because ITS fence refused it, which is indistinguishable from an ordinary
+    /// in-stream seek, and the resume branch calls `engine.play()`. On AVKit nothing downstream
+    /// catches that (no engine latch), so audio comes back for the rest of the slide-out.
+    @Test("a commit suspended in its seek re-checks the fence before resuming")
+    func commitScrubSeekRechecksTheFenceAfterItsSeek() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let resolved = PlayerFixtures.resolved()
+        let vm = makePlayerVM(engine: engine, resolved: resolved)
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
+                             duration: resolved.runtime!, buffered: nil))
+        try await engine.settle()
+
+        // Park the commit inside its engine seek so the fence lands mid-await, deterministically.
+        engine.holdSeeks()
+        let before = engine.calls.count
+        let commit = Task { @MainActor in
+            await vm.commitScrubSeek(to: CMTime(seconds: 200, preferredTimescale: 600), resume: true)
+        }
+        await waitUntil { engine.hasParkedSeek }
+
+        vm.beginExit()
+        engine.releaseSeeks()
+        await commit.value
+
+        #expect(!Array(engine.calls.dropFirst(before)).contains("play"))
+    }
+
+    /// Same fence one level down, for the surfaces that seek without a transport replay
+    /// (chapter list, remote-command seek): a seek into a stopped session would re-buffer,
+    /// or on a transcode re-anchor a whole new encode, behind the dismissed player.
+    @Test("a seek landing after the exit fence never touches the engine")
+    func seekIsFencedByExit() async throws {
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let resolved = PlayerFixtures.resolved()
+        let vm = makePlayerVM(engine: engine, resolved: resolved)
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
+                             duration: resolved.runtime!, buffered: nil))
+        try await engine.settle()
+
+        vm.beginExit()
+        await waitUntil { engine.calls.last == "endAudio" }
+
+        let before = engine.calls.count
+        let reanchored = await vm.seek(to: CMTime(seconds: 200, preferredTimescale: 600))
+        #expect(reanchored == false)
+        #expect(Array(engine.calls.dropFirst(before)).isEmpty)
+    }
+
+    /// `seekPreservingTransport` is the one every non-scrub surface calls, and it reads the
+    /// live intent, which is still `true` for a player exiting mid-playback. It must inherit
+    /// the fence, not route around it.
+    @Test("seekPreservingTransport inherits the exit fence")
+    func seekPreservingTransportIsFencedByExit() async throws {
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let resolved = PlayerFixtures.resolved()
+        let vm = makePlayerVM(engine: engine, resolved: resolved)
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
+                             duration: resolved.runtime!, buffered: nil))
+        try await engine.settle()
+        #expect(vm.desiredPlaying == true)
+
+        vm.beginExit()
+        await waitUntil { engine.calls.last == "endAudio" }
+
+        let before = engine.calls.count
+        await vm.seekPreservingTransport(to: CMTime(seconds: 200, preferredTimescale: 600))
+        #expect(Array(engine.calls.dropFirst(before)).isEmpty)
+    }
+
+    /// The Now Playing / lock-screen commands stay registered until `stop()` clears them, so a
+    /// play tapped there can land inside the dismiss animation. On AVKit nothing downstream
+    /// catches it (the engine has no exit latch of its own) and playback comes back audible
+    /// under a player already sliding away.
+    @Test("a transport command landing after the exit fence never reaches the engine",
+          arguments: [true, false])
+    func setPlayingIsFencedByExit(playing: Bool) async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let resolved = PlayerFixtures.resolved()
+        let vm = makePlayerVM(engine: engine, resolved: resolved)
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
+                             duration: resolved.runtime!, buffered: nil))
+        try await engine.settle()
+
+        vm.beginExit()
+        await waitUntil { engine.calls.last == "endAudio" }
+
+        let before = engine.calls.count
+        vm.setPlaying(playing)
+        // The fence returns before any suspension, so nothing was even armed; the yields
+        // give a transport task that DID get armed every chance to reach the engine.
+        await Task.yield()
+        await Task.yield()
+        #expect(Array(engine.calls.dropFirst(before)).isEmpty)
+        #expect(vm.desiredPlaying == true)   // the fence blocks the intent write too
+    }
+
+    /// The other half of the race: the command arrives just BEFORE the fence, so its engine
+    /// hop is already armed when the close button lands. `beginExit()` cancels it, and the
+    /// task's own cancellation check sits ahead of the engine call. Ordering is deterministic
+    /// here: both tasks are enqueued on the MainActor, transport first, so "endAudio" landing
+    /// proves the transport task already ran and chose to do nothing.
+    @Test("a transport command armed just before the fence is cancelled by it")
+    func armedTransportTaskIsCancelledByExit() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let resolved = PlayerFixtures.resolved()
+        let vm = makePlayerVM(engine: engine, resolved: resolved)
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
+                             duration: resolved.runtime!, buffered: nil))
+        try await engine.settle()
+        vm.setPlaying(false)
+        await waitUntil { engine.calls.last == "pause" }
+
+        let before = engine.calls.count
+        vm.setPlaying(true)      // armed, not yet hopped
+        vm.beginExit()           // same synchronous run: cancels it before it can
+        await waitUntil { engine.calls.last == "endAudio" }
+        #expect(Array(engine.calls.dropFirst(before)) == ["endAudio"])
+    }
+
+    // MARK: - The exit freeze is terminal: no beat may uncover the closing vout
+
+    /// Beats keep coming after the fence. AVKit's default `endAudio()` funnels to `pause()`,
+    /// which yields a `.paused` beat synchronously; VLC's poll swallows the cancellation
+    /// `endAudio()` issues inside a `try?` sleep and runs one more tick. Either one used to
+    /// crossfade the exit still away mid-slide-out, onto a vout already closing under it: a
+    /// visible cut to black.
+    @Test("beats arriving after the exit fence never release the held frame",
+          arguments: [true, false])
+    func exitFreezeSurvivesLateBeats(playing: Bool) async throws {
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let resolved = PlayerFixtures.resolved()
+        let vm = makePlayerVM(engine: engine, resolved: resolved)
+        nonisolated(unsafe) var freezeCalls = 0
+        nonisolated(unsafe) var unfreezeCalls = 0
+        vm.freezeSurfaceAction = { freezeCalls += 1 }
+        vm.unfreezeSurfaceAction = { unfreezeCalls += 1 }
+
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
+                             duration: resolved.runtime!, buffered: nil))
+        try await engine.settle()
+        #expect(freezeCalls == 0)
+
+        vm.beginExit()
+        #expect(freezeCalls == 1)
+
+        let late: PlaybackState = playing
+            ? .playing(position: CMTime(seconds: 11, preferredTimescale: 600),
+                       duration: resolved.runtime!, buffered: nil)
+            : .paused(position: CMTime(seconds: 11, preferredTimescale: 600),
+                      duration: resolved.runtime!, buffered: nil)
+        engine.push(late)
+        try await engine.settle()
+        #expect(unfreezeCalls == 0)
+
+        // A terminal beat is fenced too: the stopping input can surface a failure under the
+        // outgoing card, and the error scrim is not what the user should see sliding away.
+        engine.push(.failed(.assetNotPlayable))
+        try await engine.settle()
+        #expect(unfreezeCalls == 0)
+
+        // And the teardown that follows leaves the still up for the whole dismissal.
+        await vm.stop()
+        #expect(unfreezeCalls == 0)
+    }
+
+    /// The flip side of `stop()` no longer releasing the frame: a retry replays onto the SAME
+    /// host view, and a still left pinned there would sit over the replayed video forever
+    /// (the beat-side release guards on the flag and would no-op). `resetForReplay` releases
+    /// it right after it disarms the fence.
+    @Test("a retry releases the frame the exit fence held through stop()")
+    func retryReleasesHeldFrame() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
+        let vm = makePlayerVM(
+            resolve: { _, _, _, _ in resolved },
+            engine: engine,
+            subtitleFetch: { _ in Data() }
+        )
+        nonisolated(unsafe) var freezeCalls = 0
+        nonisolated(unsafe) var unfreezeCalls = 0
+        vm.freezeSurfaceAction = { freezeCalls += 1 }
+        vm.unfreezeSurfaceAction = { unfreezeCalls += 1 }
+
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
+                             duration: CMTime(seconds: 7200, preferredTimescale: 600), buffered: nil))
+        try await engine.settle()
+
+        // Out-of-buffer commit with a sidecar up → re-anchor reload → the frame is held, and
+        // no beat follows, so it is still held when the user reaches for retry.
+        engine.bufferedRange = 0...120
+        await vm.commitScrubSeek(to: CMTime(seconds: 3000, preferredTimescale: 600), resume: true)
+        #expect(freezeCalls == 1)
+        #expect(unfreezeCalls == 0)
+
+        await vm.retry()
+        #expect(unfreezeCalls == 1)
+    }
+
     @Test("buffered beat → bufferedFraction; nil beat (VLC) hides the layer; stop() clears it")
     func bufferedFractionTracksBeats() async throws {
         let reporting = StubPlaybackReporting()

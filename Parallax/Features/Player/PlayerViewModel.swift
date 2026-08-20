@@ -65,15 +65,18 @@ final class PlayerViewModel {
     func startPiP() { startPiPAction?() }
     func stopPiP() { stopPiPAction?() }
 
-    /// Freeze/unfreeze the video surface's last frame, pushed up from the AVKit host
-    /// (`onFreezeReady`) like the PiP actions — nil until a host mounts (VLC never
-    /// wires them), so both are safe no-ops in tests and on the VLC path. The VM
-    /// freezes at the top of an engine-reusing reload (`reloadTranscode`) and
-    /// unfreezes on the swapped-in session's first LIVE beat (`.playing` OR `.paused`
-    /// — a paused scrub's re-anchor is re-paused and never plays), keeping the last
-    /// frame under the "Buffering" veil instead of the black `replaceCurrentItem`
-    /// flush. `surfaceFrozen` gates the beat-side unfreeze so ordinary beats never
-    /// call into the host.
+    /// Freeze/unfreeze the video surface's last frame, pushed up from the video host
+    /// (`onFreezeReady`) like the PiP actions, and nil until a host mounts, so both are
+    /// safe no-ops in tests. The VM freezes at the top of an engine-reusing reload
+    /// (`reloadTranscode`) and unfreezes on the swapped-in session's first LIVE beat
+    /// (`.playing` OR `.paused`, since a paused scrub's re-anchor is re-paused and never
+    /// plays), keeping the last frame under the "Buffering" veil instead of the black
+    /// `replaceCurrentItem` flush. `surfaceFrozen` gates the beat-side unfreeze so
+    /// ordinary beats never call into the host.
+    ///
+    /// `beginExit()` freezes too and never unfreezes: the engine stops under the surface
+    /// to end audio (VLC closes its vout with it), and the still is what the card slides
+    /// out on. Both hosts wire it for that reason.
     var freezeSurfaceAction: (@MainActor () -> Void)?
     var unfreezeSurfaceAction: (@MainActor () -> Void)?
     private var surfaceFrozen = false
@@ -82,8 +85,16 @@ final class PlayerViewModel {
         surfaceFrozen = true
         freezeSurfaceAction?()
     }
+    /// The exit fence lives HERE, not at the call sites, because the exit freeze has to
+    /// survive beats that arrive after it: AVKit's default `endAudio()` funnels to
+    /// `pause()`, which emits a `.paused` beat synchronously, and VLC's poll swallows its
+    /// own cancellation in a `try?` sleep for one more tick. Either would crossfade the
+    /// still away mid-slide-out, onto a vout that is already closing: a visible cut to
+    /// black. `stop()` is fenced by the same flag; the one path that comes back
+    /// (`retry()`/`replacePlayback` → `resetForReplay`) releases the frame itself, right
+    /// after it disarms the fence and before the fresh `start`.
     private func unfreezeVideoSurface() {
-        guard surfaceFrozen else { return }
+        guard !isExiting, surfaceFrozen else { return }
         surfaceFrozen = false
         unfreezeSurfaceAction?()
     }
@@ -444,6 +455,12 @@ final class PlayerViewModel {
     /// intent (`desiredPlaying`) their commit is about to replay.
     func setPlaying(_ playing: Bool) {
         guard engine != nil else { return }
+        // Same exit fence the scrub/seek surfaces carry: a Now Playing or lock-screen play
+        // command can land inside the dismiss animation (the remote commands stay registered
+        // until `stop()` clears them), and on AVKit nothing downstream would stop it from
+        // resuming audible playback under a player that is already sliding away. VLC is only
+        // saved by its own engine latch; the fence is what makes both paths behave.
+        guard !isExiting else { return }
         desiredPlaying = playing
         isPlaying = playing
         transportTask?.cancel()
@@ -1453,11 +1470,34 @@ final class PlayerViewModel {
         await stopEncodingIfNeeded()
     }
 
-    /// Synchronously fences the exit before the async `stop()` gets a MainActor
-    /// turn: the dismiss trigger calls this first, so an in-flight `start()` that
-    /// resumes in between can't slip past a checkpoint and build/play an engine
-    /// for a player that's already going away.
-    func beginExit() { isExiting = true }
+    /// THE exit hand-off, and the only urgent part of leaving: everything else rides the
+    /// close animation out (see `PlayerView.exitPlayer` / `stop()` on `onDisappear`).
+    ///
+    /// Synchronous so it fences before the async `stop()` gets a MainActor turn: an
+    /// in-flight `start()` resuming in between can't slip past a checkpoint and build/play
+    /// an engine for a player that's already going away. Then, in order: hold the last
+    /// frame (the surface freeze survives the engine stopping under it, so the card slides
+    /// out on a frame instead of black), and end audio on the spot. `endAudio()`, not
+    /// `silence()`, because VLC's silence is a decode-side gain that leaves the ~1-2s
+    /// already queued in the audio output playing for the whole dismissal. The
+    /// engine call is unstructured on purpose: no caller's cancellation may cut the audio
+    /// kill short.
+    ///
+    /// Idempotent, because the close button fences here AND the presenter fences again on
+    /// `dismiss()`, and a session only ends once.
+    func beginExit() {
+        guard !isExiting else { return }
+        isExiting = true
+        freezeVideoSurface()
+        // A transport command armed just before the fence is still pending its hop to the
+        // engine; `setPlaying`'s guard only covers commands that arrive after. The task
+        // re-checks `Task.isCancelled` before it touches the engine, so cancelling here
+        // is what stops an in-flight play from resuming audio into the dismissal.
+        transportTask?.cancel()
+        transportTask = nil
+        let engine = engine
+        Task { await engine?.endAudio() }
+    }
 
     /// Bails the start path when the player is exiting (`beginExit()`/`stop()`) or
     /// the hosting `.task` was cancelled (the view disappeared mid-load). Checked
@@ -1529,12 +1569,10 @@ final class PlayerViewModel {
         pendingReanchorTarget = nil
         isReanchoring = false
         transcodeTimelineDirty = false
-        // Release any held frame THROUGH the action, not by clearing the flag alone: on
-        // an in-place retry the host UIView survives, and a flag-only reset would strand
-        // the pinned snapshot over the replayed video (the beat-side unfreeze guards on
-        // the flag and would no-op forever). If the host is already gone the action's
-        // weak view makes this a no-op.
-        unfreezeVideoSurface()
+        // The held frame is deliberately NOT released here: `stop()` always runs with the
+        // exit fence armed, and the exit freeze is what the card slides out on. The one
+        // caller that comes back (`resetForReplay`) releases it itself, after disarming
+        // the fence.
         deliveryProbeTask?.cancel()
         deliveryProbeTask = nil
         thumbnailBackfillTask?.cancel()
@@ -1675,6 +1713,13 @@ final class PlayerViewModel {
     private func resetForReplay() async {
         await stop()
         isExiting = false
+        // Release any held frame THROUGH the action, not by clearing the flag alone: on
+        // an in-place retry the host UIView survives, and a flag-only reset would strand
+        // the pinned snapshot over the replayed video (the beat-side unfreeze guards on
+        // the flag and would no-op forever). If the host is already gone the action's
+        // weak view makes this a no-op. AFTER the fence is disarmed, since the fence is
+        // what keeps `stop()` from doing this on a real exit.
+        unfreezeVideoSurface()
         didStop = false
         phase = .idle
         didReportStart = false
@@ -2212,6 +2257,10 @@ final class PlayerViewModel {
     /// pause after a force-resuming reload.
     @discardableResult
     func seek(to target: CMTime) async -> Bool {
+        // Exit fence: the engine is stopped and its audio is ended for good the moment the
+        // player starts leaving, but the surfaces above are still mounted for the whole
+        // slide-out and a seek arriving now would re-anchor (or re-buffer) a dead session.
+        guard !isExiting else { return false }
         guard let engine else { return false }
         // Only a transcode can restart ffmpeg under the item's timeline mapping;
         // direct play / VLC / SMB seek in-stream. Delivery (copy vs re-encode) does
@@ -2282,7 +2331,17 @@ final class PlayerViewModel {
     }
 
     func commitScrubSeek(to target: CMTime, resume: Bool) async {
+        // Exit fence, and the load-bearing one: every scrub surface COALESCES its commit
+        // (`SeekCommitCoalescer`, ~400ms), so a drag released just before the close button
+        // lands here inside the dismiss animation, and its `resume` branch would call
+        // `engine.play()`, unmuting and restarting the audio the exit just ended. The
+        // engine's own latch refuses that play; this refuses to issue it at all.
+        guard !isExiting else { return }
         let didReanchor = await seek(to: target)
+        // Re-check: `beginExit()` is synchronous MainActor work and can land while this
+        // commit is suspended inside the seek above, whose fenced return (`false`) is
+        // indistinguishable from an ordinary in-stream seek.
+        guard !isExiting else { return }
         guard let engine else { return }
         if resume {
             // The reload already resumed; only the in-stream seek left the drag-pause on.
@@ -2568,7 +2627,9 @@ final class PlayerViewModel {
         case .playing(let position, let duration, let buffered):
             phase = .playing
             // First live beat after an engine-reusing reload (beats are dropped while
-            // `isSwitchingTracks`): the new session is rendering — release the held frame.
+            // `isSwitchingTracks`): the new session is rendering, so release the held frame.
+            // Not unconditionally: `unfreezeVideoSurface()` fences itself while exiting, where
+            // the freeze belongs to the dismissal and has to outlive the session.
             unfreezeVideoSurface()
             // First `.playing` beat of this session: land the startup metric and consume
             // the anchor so a later `.playing` (resume-from-pause, post-stall) never
@@ -2610,8 +2671,10 @@ final class PlayerViewModel {
             }
         case .paused(let position, let duration, let buffered):
             // A LIVE beat like .playing: a paused scrub's re-anchor is re-paused by
-            // `commitScrubSeek` and may never emit .playing — a paused AVPlayer still
-            // renders the seeked-to frame, so the held frame must release here too.
+            // `commitScrubSeek` and may never emit .playing, and a paused AVPlayer still
+            // renders the seeked-to frame, so the held frame is released here too. Again
+            // through the exit fence inside `unfreezeVideoSurface()`, which is exactly what
+            // stops `endAudio()`'s synchronous `.paused` beat from uncovering a closing vout.
             unfreezeVideoSurface()
             isPlaying = false
             clearStall()
@@ -2729,9 +2792,10 @@ final class PlayerViewModel {
             isPlaying = false
             desiredPlaying = false    // nothing left to resume; a terminal beat ends the intent too
             clearStall()
-            // A terminal beat also releases any held frame — no live beat will ever
-            // arrive to do it, and a stale snapshot must not sit latched under the
-            // error scrim into a retry.
+            // A terminal beat also releases any held frame: no live beat will ever arrive to
+            // do it, and a stale snapshot must not sit latched under the error scrim into a
+            // retry. Still fenced while exiting, where the freeze is the dismissal's, not
+            // this session's.
             unfreezeVideoSurface()
             phase = .failed(Self.map(error))
         }

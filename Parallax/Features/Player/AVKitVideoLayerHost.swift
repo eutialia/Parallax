@@ -46,42 +46,11 @@ struct AVKitVideoLayerHost: UIViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     /// A UIView whose backing layer IS an AVPlayerLayer (auto-sizes; no frame sync).
-    final class PlayerLayerView: UIView {
+    /// Freeze/unfreeze come from `FreezableVideoView`, shared with the VLC host, which
+    /// needs the same hold when its exit cut stops the player.
+    final class PlayerLayerView: FreezableVideoView {
         override class var layerClass: AnyClass { AVPlayerLayer.self }
         var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
-
-        private var frozenFrame: UIView?
-        private var fadingFrame: UIView?
-
-        /// Pin a render-server snapshot of the current frame over the player layer.
-        /// `afterScreenUpdates: false` grabs what's on screen NOW, before the reload
-        /// flushes it — and captures AVPlayer content for non-DRM streams (Jellyfin
-        /// transcodes aren't FairPlay). Idempotent: a reload chain (drain loop) must
-        /// keep the FIRST frame, not re-snapshot a possibly-black mid-swap surface.
-        func freezeFrame() {
-            guard frozenFrame == nil else { return }
-            // A rapid scrub chain can re-freeze inside the previous snapshot's fade —
-            // drop the fading one first so full-screen captures never stack.
-            fadingFrame?.removeFromSuperview()
-            fadingFrame = nil
-            guard let snapshot = snapshotView(afterScreenUpdates: false) else { return }
-            snapshot.frame = bounds
-            snapshot.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-            addSubview(snapshot)
-            frozenFrame = snapshot
-        }
-
-        /// Crossfade the snapshot away — called once the swapped-in session renders
-        /// (its first live beat), so real frames replace the frozen one seamlessly.
-        func unfreezeFrame() {
-            guard let snapshot = frozenFrame else { return }
-            frozenFrame = nil
-            fadingFrame = snapshot
-            UIView.animate(withDuration: 0.25, animations: { snapshot.alpha = 0 }) { [weak self] _ in
-                snapshot.removeFromSuperview()
-                if self?.fadingFrame === snapshot { self?.fadingFrame = nil }
-            }
-        }
     }
 
     @MainActor

@@ -36,11 +36,19 @@ public protocol PlaybackEngine: AnyObject, Sendable {
     /// Pause playback.
     func pause() async
 
-    /// Silence audio output NOW, ahead of a deferred teardown. Dismissal keeps the
-    /// engine alive for the whole close animation (the last frame rides the card out),
-    /// so audio needs a kill switch that does not wait for `teardown()`. Best-effort;
-    /// the next `play()` restores audio.
+    /// Silence audio output for a session that will come BACK: the transcode reload
+    /// freezes the frame, silences, swaps the stream and plays again, and the `play()`
+    /// on the other side must restore audio. RESUMABLE, and therefore best-effort about
+    /// how deep it reaches: VLC's implementation is a decode-side gain that cannot
+    /// touch samples already handed to the audio output.
     func silence() async
+
+    /// Silence audio output NOW and for good, ahead of a deferred teardown. Dismissal
+    /// keeps the engine alive for the whole close animation (the last frame rides the
+    /// card out), so audio needs a kill switch that does not wait for `teardown()`,
+    /// and one that a late `play()` (a scrub commit coalesced just before the exit)
+    /// cannot undo. TERMINAL for this session: only `load()` reopens it.
+    func endAudio() async
 
     /// Seek to an arbitrary position. No-op if no item is loaded.
     func seek(to time: CMTime) async
@@ -108,6 +116,12 @@ public extension PlaybackEngine {
     /// cycle (AVKit). VLC overrides: its pause is an input-thread command that a blocked
     /// network read can delay for seconds, so it mutes the audio output directly first.
     func silence() async { await pause() }
+
+    /// Default: `silence()`. An engine whose silence already stops the render pipeline on
+    /// the spot (AVKit's pause does) needs nothing stronger on exit. Only VLC overrides,
+    /// where mute is a per-block decode-side gain that leaves the ~1-2s already queued in
+    /// the audio output playing, so the terminal cut there has to stop the player.
+    func endAudio() async { await silence() }
 
     /// Default: no-op. Only engines that can retime subtitles (VLC) override.
     func setSubtitleDelay(milliseconds: Int) async {}

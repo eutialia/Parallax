@@ -171,12 +171,12 @@ struct PlayerView: View {
         .onAppear { OrientationController.shared.beginPlayerPresentation() }
         #endif
         .onDisappear {
-            // THE teardown point for every dismissal: exitPlayer() only pauses
-            // (so the last frame rides the slide-out and the teardown's
+            // THE teardown point for every dismissal: exitPlayer() only ends audio
+            // (so the frozen frame rides the slide-out and the teardown's
             // main-thread burst can't eat its frames) and the host unmounts the
-            // view once the dismissal lands — full stop() runs here. Also the
-            // backstop for paths that never saw exitPlayer() (server switch,
-            // the system tearing the tvOS cover down). stop() is idempotent.
+            // view once the dismissal lands, so the full stop() runs here. Also the
+            // backstop for paths that never saw exitPlayer() (the system tearing
+            // the tvOS cover down). stop() is idempotent.
             let vm = viewModel
             Task { await vm?.stop() }
             #if os(tvOS)
@@ -259,7 +259,7 @@ struct PlayerView: View {
                     )
                 }
             )
-            viewModel = vm
+            install(vm)
             #if DEBUG
             // Playback Lab seam: hand the live view model to a scripted lab run
             // (no-op when no lab is active). Before start(), so the lab observes
@@ -297,12 +297,21 @@ struct PlayerView: View {
             // strategy stays conservative on nil regardless.
             fetchDelivery: { (try? await info.transcodingDelivery(playSessionID: $0)) ?? nil }
         )
-        viewModel = vm
+        install(vm)
         switch source {
         case .resolved(let item, let fromBeginning): await vm.start(item: item, fromBeginning: fromBeginning)
         case .unresolved(let id, let fromBeginning): await vm.start(itemID: id, fromBeginning: fromBeginning)
         case .smb: break   // handled above
         }
+    }
+
+    /// Publish the session's view model AND hand the presenter its exit sequence, so the
+    /// dismissals that never reach `exitPlayer()` (the tvOS cover dismissing itself, a
+    /// server switch, the debug lab) still fence and end audio instead of playing on
+    /// through the slide-out. Weak: the presenter outlives every session.
+    private func install(_ vm: PlayerViewModel) {
+        viewModel = vm
+        playback.exitHandler = { [weak vm] in vm?.beginExit() }
     }
 
     /// Everything above the player's black floor — video host, veils, HUD, and
@@ -392,21 +401,15 @@ struct PlayerView: View {
         #endif
     }
 
-    /// Exit on user intent: silence playback NOW, tear down AFTER the slide-out.
-    /// `beginExit()` synchronously fences the in-flight start path (a mid-load
-    /// exit can't resurrect playback) and `silence()` kills the audio on the spot
-    /// (not `pause()` — VLC's pause rides the input thread, which a blocked SMB
-    /// read can wedge for seconds while audio keeps draining; silence mutes the
-    /// audio output directly first). The full `stop()` waits for `onDisappear`,
-    /// once the dismiss animation has landed. Tearing down mid-slide unmounted
-    /// the video host (the card went blank as it moved) and
-    /// `replaceCurrentItem(nil)`'s synchronous main-thread burst ate dismissal
-    /// frames — the "cut" slide-out. Silencing is the only urgent part; the
-    /// engine and its last frame ride the card out.
+    /// Exit on user intent: end audio NOW, tear down AFTER the slide-out.
+    /// `beginExit()` owns that hand-off (fence the start path, freeze the last
+    /// frame, `endAudio()`); the full `stop()` waits for `onDisappear`, once the
+    /// dismiss animation has landed. Tearing down mid-slide unmounted the video
+    /// host (the card went blank as it moved) and `replaceCurrentItem(nil)`'s
+    /// synchronous main-thread burst ate dismissal frames (the "cut" slide-out).
+    /// Audio is the only urgent part; the frozen frame rides the card out.
     private func exitPlayer() {
         viewModel?.beginExit()
-        let vm = viewModel
-        Task { await vm?.engine?.silence() }
         #if os(tvOS)
         // Hand display-mode selection back to the system as the player leaves.
         DisplayCriteriaMatcher.clear()
@@ -522,9 +525,14 @@ struct PlayerView: View {
                 .ignoresSafeArea()
             case .vlcKit:
                 // No PiP wiring: MobileVLCKit 3.x ships no PiP API, and the engine
-                // reports `supportsPiP: false` so the button never appears.
-                VLCVideoHost(engine: engine)
-                    .ignoresSafeArea()
+                // reports `supportsPiP: false` so the button never appears. Freeze IS
+                // wired: the exit cut stops the player (the only way to kill queued VLC
+                // audio), which closes the vout mid-slide-out.
+                VLCVideoHost(engine: engine, onFreezeReady: { freeze, unfreeze in
+                    vm.freezeSurfaceAction = freeze
+                    vm.unfreezeSurfaceAction = unfreeze
+                })
+                .ignoresSafeArea()
             }
         }
     }
