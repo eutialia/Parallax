@@ -132,12 +132,17 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// Target (ms) of an in-flight user seek. Right after `setTime`, VLCKit's clock keeps
     /// interpolating from a now-stale reference and `player.time` briefly reads far past
     /// the target before the demux settles — surfacing as a scrubber overshoot that snaps
-    /// back a poll later. The poll holds beats until the clock converges on this target
-    /// (the `seek()` beat already carries the correct position); `pendingSeekPolls` is a
-    /// fallback so a keyframe-snapped landing a few seconds off the request still resumes
-    /// live tracking instead of freezing the bar.
+    /// back a poll later. The poll withholds the raw clock until it converges on this
+    /// target, publishing an extrapolation off the target instead (`seekHoldPositionMs`);
+    /// `pendingSeekPolls` is both that extrapolation's clock and a fallback so a
+    /// keyframe-snapped landing a few seconds off the request still resumes live tracking.
     private var pendingSeekMs: Int32?
     private var pendingSeekPolls = 0
+    /// Demux byte count sampled at the previous seek-hold poll, so the hold can tell a clock
+    /// that hasn't republished yet from a fetch that has actually stopped (see
+    /// `seekHoldAction`). Reset to 0 wherever a new `pendingSeekMs` is armed, so the first
+    /// comparison always reads as "advancing" and can't flash a scrim.
+    private var seekHoldReadBytes = 0
     /// Consecutive poll ticks spent in the play-intent reassert branch (input paused
     /// against play intent). Drives the escalation nudge — see the reassert branch.
     private var reassertTicks = 0
@@ -487,6 +492,29 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         pendingStopTask = nil
     }
 
+    /// The position the progress bar is currently SHOWING, which is not `clockMs` whenever a
+    /// gate is holding the raw clock back: the resume-seek hold (`pendingStartMs`), the
+    /// rate-flush bridge (`rateFlushAnchorMs`), or a user seek still settling
+    /// (`pendingSeekMs`, whose extrapolation is what the poll has been publishing).
+    ///
+    /// Right after `setTime` libvlc keeps reporting the PRE-seek clock for seconds (see
+    /// `pendingSeekMs`), so a pause landing inside that hold published a position 15s behind a
+    /// 01:00 → 01:15 scrub: the progress dot jumped backwards, and the Now Playing position and
+    /// the throttled resume-point save persisted the wrong offset until the next resume
+    /// corrected it. Pause must publish what the bar is showing, never the stale clock.
+    private var heldPositionMs: Int32 {
+        Self.heldPositionMs(
+            pendingStartMs: pendingStartMs,
+            rateFlushAnchorMs: rateFlushAnchorMs,
+            pendingSeekMs: pendingSeekMs,
+            pendingSeekPolls: pendingSeekPolls,
+            pollMs: Self.pollIntervalMs,
+            rate: desiredRate,
+            durationMs: effectiveDurationMs(),
+            clockMs: clockMs
+        )
+    }
+
     public func pause() async {
         // Same terminal latch `play()` reads, for the same session. The HUD calls
         // `engine?.pause()` directly (the iOS drag begin, the tvOS reducer's `.pause`
@@ -508,8 +536,10 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         reassertTicks = 0
         // Emit the paused beat immediately rather than waiting for the next poll (which
         // stays silent while paused) so the transport button flips at once. `player.isPlaying`
-        // can lag a frame after pause(), so force isPlaying: false.
-        emitPosition(isPlaying: false, positionMs: clockMs)
+        // can lag a frame after pause(), so force isPlaying: false. The position is the HELD
+        // one, not the raw clock: a pause inside a settle hold would otherwise republish the
+        // pre-seek clock and jump the dot backwards (see `heldPositionMs`).
+        emitPosition(isPlaying: false, positionMs: heldPositionMs)
     }
 
     public func setRate(_ rate: Float) async {
@@ -589,6 +619,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         // post-seek reads can't surface as an overshoot (see pendingSeekMs).
         pendingSeekMs = ms
         pendingSeekPolls = 0
+        seekHoldReadBytes = 0
         // Publish the new position now so the scrubber tracks the seek instead of
         // snapping back to the last polled position on release. Carry the pre-seek intent
         // so a playing seek stays `.playing` (no phantom paused glyph).
@@ -830,7 +861,12 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         }
     }
 
-    /// Poll the live player clock every 500ms (matching `AVKitEngine`'s observer
+    /// Progress poll cadence (ms), matching `AVKitEngine`'s periodic observer. Named because
+    /// it is also the seek hold's clock: `seekHoldPositionMs` derives elapsed time from the
+    /// tick count rather than a wall-clock read, so the two must not drift apart.
+    nonisolated static let pollIntervalMs = 500
+
+    /// Poll the live player clock every `pollIntervalMs` (matching `AVKitEngine`'s observer
     /// cadence) and publish a `.playing` beat while playback is active. Stays silent
     /// while paused — pause/seek emit their own beat — so a paused stream doesn't
     /// flood progress reports, exactly like AVKit's periodic observer (which doesn't
@@ -839,7 +875,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         progressTask?.cancel()
         progressTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(500))
+                try? await Task.sleep(for: .milliseconds(Self.pollIntervalMs))
                 // `try?` swallows the sleep's cancellation error, so without this the loop
                 // runs ONE more full iteration after `endAudio()`/`teardown()` cancelled it
                 // and emits a stale beat from a stopping player. A cancelled poll says nothing.
@@ -924,6 +960,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
                         self.player.time = VLCTime(int: max(0, anchor))
                         self.pendingSeekMs = max(0, anchor)
                         self.pendingSeekPolls = 0
+                        self.seekHoldReadBytes = 0
                     }
                     // A wedged post-seek resume IS a stall at the target: surface it as
                     // (VM-debounced) buffering there instead of a frozen frame under a
@@ -935,7 +972,8 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
                 } else {
                     self.reassertTicks = 0
                 }
-                guard self.player.isPlaying else { continue }
+                guard Self.shouldRunLiveTick(desiredPlaying: self.desiredPlaying,
+                                             isPlaying: self.player.isPlaying) else { continue }
                 // Re-assert the playback rate now the input is live. libvlc applies `rate` to
                 // the active input, so the speed chosen before the demux was up (the
                 // fresh-engine re-apply right after play()) was dropped — this is where it sticks.
@@ -951,14 +989,43 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
                     if Self.seekHasSettled(now: self.clockMs, target: target, polls: self.pendingSeekPolls) {
                         self.pendingSeekMs = nil
                     } else {
-                        // A seek still filling after ~1s (2 polls) is a real network wait —
-                        // surface it as buffering AT THE TARGET (where the bar is pinned), so a
+                        // A seek still filling after ~1s (2 polls) may be a real network wait, and
+                        // that surfaces as buffering AT THE TARGET (where the bar is pinned), so a
                         // slow-share seek shows an honest spinner instead of silence. The 2-poll
                         // floor + the VM's ~400ms debounce keep a healthy in-buffer seek silent;
                         // without the floor, every LAN seek would flash the spinner for a tick.
-                        if self.pendingSeekPolls >= 2 {
+                        //
+                        // The poll count ALONE can't tell the two cases apart, because failing
+                        // the settle test above is not evidence of a stall: `clockMs` keeps
+                        // reporting the PRE-seek position until libvlc's input republishes time
+                        // after demuxing at the new offset, which on wmv/SMB overruns the ±3s
+                        // tolerance for the whole 10-poll budget. That rode a scrim over healthy
+                        // A/V, then jumped. So gate on the same honest signal the stall detector
+                        // trusts: demux bytes still climbing = the fetch is fine and only the
+                        // clock is behind; bytes flat across the hold = actually starving
+                        // (raise the scrim, exactly as before).
+                        //
+                        // A healthy hold still can't stay SILENT, though: with nothing published
+                        // the bar sits pinned at the target the `seek()` beat wrote until the
+                        // clock republishes (~2s on wmv) and then jumps forward. So extrapolate
+                        // instead: the audio and video are already running at the new offset, so
+                        // target + elapsed × rate is the honest position, and the settle below
+                        // publishes the real clock and corrects it (≈0 on an accurate landing).
+                        let holdBytes = Self.demuxReadBytes(self.currentMedia)
+                        switch Self.seekHoldAction(polls: self.pendingSeekPolls,
+                                                   readBytes: holdBytes,
+                                                   previousReadBytes: self.seekHoldReadBytes) {
+                        case .hold:
+                            break
+                        case .buffer:
                             self.emitBuffering(positionMs: target)
+                        case .extrapolate:
+                            // Same accessor `pause()` publishes from, so the hold's value and the
+                            // pause beat can never drift apart. The guards above already cleared
+                            // the resume/flush holds, so this resolves to this seek's extrapolation.
+                            self.emitPosition(isPlaying: true, positionMs: self.heldPositionMs)
                         }
+                        self.seekHoldReadBytes = holdBytes
                         continue
                     }
                 }
@@ -1350,6 +1417,74 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         abs(now - target) <= 3_000 || polls >= 10
     }
 
+    /// What an UNSETTLED post-seek poll should publish at the held target.
+    enum SeekHoldAction: Equatable, Sendable {
+        /// Publish nothing this tick: the fetch has stalled, but not for long enough to be
+        /// worth a scrim (the 2-poll floor).
+        case hold
+        /// The scrim at the target: nothing is being consumed at all.
+        case buffer
+        /// A live `.playing` beat at the extrapolated position (see `seekHoldPositionMs`):
+        /// the fetch is healthy and only libvlc's clock is behind.
+        case extrapolate
+    }
+
+    /// Which of those an unsettled post-seek poll is looking at. Two very different things
+    /// fail `seekHasSettled`, and only one of them is a wait:
+    ///  • the clock hasn't republished yet: libvlc still reports the pre-seek position
+    ///    while the input demuxes at the new offset (seconds on wmv/SMB), even though the
+    ///    fetch is healthy and frames are landing. Extrapolate.
+    ///  • the fetch has actually stopped: nothing is being consumed at all. Scrim.
+    /// The demux byte counter separates them (the same signal `StallDetector` trusts;
+    /// libvlc's `position` is length-relative and useless on unresolved media). Any change
+    /// counts as progress, so the counter's UInt32 wrap can't fake a stall. The 2-poll floor
+    /// stays on the SCRIM only: it plus the VM's ~400ms debounce is what keeps a brief
+    /// hiccup off the screen, while a healthy hold reports position from the first tick.
+    /// Pure so the gate is testable without a live decode; mirrors `seekHasSettled`.
+    static func seekHoldAction(polls: Int, readBytes: Int, previousReadBytes: Int) -> SeekHoldAction {
+        guard readBytes == previousReadBytes else { return .extrapolate }
+        return polls >= 2 ? .buffer : .hold
+    }
+
+    /// The position (ms) to publish during a healthy seek hold: the seek target plus the
+    /// wall time the poll has spent holding, scaled by the playback rate. The poll cadence
+    /// is the clock (`polls × pollMs` is deterministic and needs no `Date` read), and the
+    /// rate matters because a 2× session covers 1000ms of media per 500ms tick.
+    ///
+    /// Clamped to the media duration so a seek near the tail can't extrapolate past the end
+    /// and drive the bar to >100%; an unresolved duration (`durationMs <= 0`, incomplete
+    /// media) has no ceiling to clamp to and rides the raw extrapolation. Never below the
+    /// target: this only ever moves the bar forward, and the settle correction is what walks
+    /// it back if libvlc landed short. Pure so the value is testable without a live decode.
+    static func seekHoldPositionMs(
+        targetMs: Int32, polls: Int, pollMs: Int, rate: Float, durationMs: Int32
+    ) -> Int32 {
+        let elapsedMs = Double(polls * pollMs) * Double(max(0, rate))
+        let ceiling = durationMs > 0 ? Double(durationMs) : Double(Int32.max)
+        let extrapolated = min(Double(targetMs) + elapsedMs, ceiling)
+        return Int32(min(max(extrapolated, Double(targetMs)), Double(Int32.max)))
+    }
+
+    /// The value behind the `heldPositionMs` property, hoisted out so the precedence between
+    /// the three holds is testable without a live decode. Order matters: the resume offset
+    /// outranks everything (it hasn't been applied to the clock yet), a rate-flush anchor
+    /// outranks a seek (a flush and a user seek never coexist, but the flush is the one the
+    /// poll is publishing when both are somehow set), and a settling seek reports the same
+    /// extrapolation the poll's hold publishes. With nothing held the raw clock IS the truth,
+    /// including its pre-first-frame -1 sentinel, which `liveBeat` then suppresses.
+    static func heldPositionMs(
+        pendingStartMs: Int32?, rateFlushAnchorMs: Int32?, pendingSeekMs: Int32?,
+        pendingSeekPolls: Int, pollMs: Int, rate: Float, durationMs: Int32, clockMs: Int32
+    ) -> Int32 {
+        if let start = pendingStartMs { return start }
+        if let anchor = rateFlushAnchorMs { return anchor }
+        guard let target = pendingSeekMs else { return clockMs }
+        return seekHoldPositionMs(
+            targetMs: target, polls: pendingSeekPolls, pollMs: pollMs,
+            rate: rate, durationMs: durationMs
+        )
+    }
+
     /// Whether the progress poll should push `desired` onto the live player. libvlc applies
     /// `rate` to the active input, so a rate chosen before the input existed (the re-apply
     /// right after `play()`) never took and must be re-asserted once playing. The epsilon
@@ -1387,6 +1522,18 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// `load()` clears the latch. Pure so the gate is testable without a live decode;
     /// mirrors `shouldReassertPlay`.
     nonisolated static func shouldHonorTransport(audioEnded: Bool) -> Bool { !audioEnded }
+
+    /// Whether the poll's LIVE pass (rate reassert → resume hold → seek settle → stall
+    /// detection → `.playing` beat) should run this tick. `player.isPlaying` alone is not
+    /// enough: after `pause()` it can keep reading true for seconds on a wedged SMB read, and
+    /// the live pass would then climb `pendingSeekPolls` and publish extrapolated `.playing`
+    /// beats against an intended pause, walking `currentPosition` and the persisted resume
+    /// point forward under a paused picture. The poll's contract is to stay silent while
+    /// paused, so the intent has to agree. Closes the inverse of `shouldReassertPlay`, which
+    /// handles `desiredPlaying && !isPlaying`. Pure so the gate is testable without a live decode.
+    nonisolated static func shouldRunLiveTick(desiredPlaying: Bool, isPlaying: Bool) -> Bool {
+        desiredPlaying && isPlaying
+    }
 
     /// Whether the rate-change flush bridge should stop holding and resume live position tracking:
     /// VLC's clock has advanced past the flush anchor (the re-decode produced output at the new

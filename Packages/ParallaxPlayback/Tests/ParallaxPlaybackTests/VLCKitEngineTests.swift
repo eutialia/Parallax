@@ -144,6 +144,84 @@ struct VLCKitEngineTests {
     }
 }
 
+/// `pause()` publishes a beat of its own (the poll stays silent while paused), and WHICH
+/// position it carries is the whole question: `player.time` is stale for as long as a hold
+/// is up, so a pause landing inside one used to republish the pre-seek clock. These drive a
+/// real engine over a media-less player, where `clockMs` reads the pre-first-frame sentinel
+/// (-1), so a beat that survives `liveBeat`'s suppression is proof the HELD position, not
+/// the clock, is what shipped.
+@Suite("VLCKitEngine: pause publishes the held position")
+@MainActor
+struct VLCKitPauseBeatTests {
+
+    /// Everything the engine buffered, in order. `teardown()` finishes the continuation, which
+    /// is what lets the `for await` terminate; the stream's `.bufferingNewest(32)` policy keeps
+    /// the beats emitted before this first iteration.
+    private func drainPositions(_ engine: VLCKitEngine) async -> [Double] {
+        await engine.teardown()
+        var seconds: [Double] = []
+        for await state in engine.state {
+            switch state {
+            case .playing(let position, _, _), .paused(let position, _, _):
+                seconds.append(CMTimeGetSeconds(position))
+            default:
+                break
+            }
+        }
+        return seconds
+    }
+
+    private func loadedEngine(startTime: CMTime? = nil) async throws -> VLCKitEngine {
+        let engine = VLCKitEngine()
+        try await engine.load(.fixture(url: URL(fileURLWithPath: "/dev/null"), startTime: startTime))
+        return engine
+    }
+
+    /// The device-confirmed defect, in its cheapest arrangement: the drag-scrub pauses the
+    /// engine, seeks, and the commit's pause lands while `pendingSeekMs` still holds. The pause
+    /// beat must repeat the target `seek()` already published (a zero-poll hold sits exactly on
+    /// it), not the pre-seek clock libvlc hasn't republished. Two beats at the same position, so
+    /// the dot does not move on the pause press; before the fix the second beat was the stale
+    /// clock (here the -1 sentinel, so it vanished entirely).
+    @Test("pause inside a seek's settle hold republishes the target")
+    func pauseInsideSeekHoldRepublishesTheTarget() async throws {
+        let engine = try await loadedEngine()
+        await engine.seek(to: CMTime(seconds: 75, preferredTimescale: 1_000))
+        await engine.pause()
+        #expect(await drainPositions(engine) == [75.0, 75.0])
+    }
+
+    /// Startup: the resume seek only applies once the demux reports seekable, so a pause during
+    /// that window (a fast close, or the transcode reload's `silence()`) has no clock to read at
+    /// all. It must publish the resume offset, or the persisted resume point is rewritten to 0.
+    @Test("pause before the resume seek applies publishes the pending start offset")
+    func pauseDuringStartupPublishesTheResumeOffset() async throws {
+        let engine = try await loadedEngine(startTime: CMTime(seconds: 90, preferredTimescale: 1_000))
+        await engine.pause()
+        #expect(await drainPositions(engine) == [90.0])
+    }
+
+    /// The fall-through: with no hold armed the raw clock is the truth, sentinel included. A
+    /// synthesized 0 here would be the same defect wearing the other hat, snapping the bar (and
+    /// the saved resume point) to 0:00 on a pause before the first frame.
+    @Test("pause with no hold armed still reports the raw clock, sentinel and all")
+    func pauseWithNoHoldFallsThroughToTheClock() async throws {
+        let engine = try await loadedEngine()
+        await engine.pause()
+        #expect(await drainPositions(engine).isEmpty)
+    }
+
+    /// `silence()` is `pause()` behind a mute, so the transcode reload's freeze inherits the
+    /// same guarantee: it must not persist a stale clock either.
+    @Test("silence inherits the held position through pause")
+    func silenceInheritsTheHeldPosition() async throws {
+        let engine = try await loadedEngine()
+        await engine.seek(to: CMTime(seconds: 120, preferredTimescale: 1_000))
+        await engine.silence()
+        #expect(await drainPositions(engine) == [120.0, 120.0])
+    }
+}
+
 /// Everything below is a pure static seam — the engine's decision logic, testable
 /// without a live decode. The `applyOptions`/transport paths need a real input and stay
 /// device-verified.
@@ -280,6 +358,113 @@ struct VLCKitPollGateTests {
         #expect(VLCKitEngine.seekHasSettled(now: now, target: target, polls: polls) == expected, "\(label)")
     }
 
+    /// The phantom-scrim regression: failing `seekHasSettled` is NOT evidence of a stall.
+    /// libvlc keeps reporting the pre-seek clock until its input republishes time at the new
+    /// offset, which on wmv/SMB outlasts the whole 10-poll budget, so the poll count alone
+    /// rode a buffering scrim over healthy A/V. Demux bytes are the honest signal: climbing =
+    /// the fetch is fine and only the clock is behind (extrapolate off the target); flat =
+    /// genuinely starving (scrim, once past the 2-poll floor).
+    @Test("seekHoldAction", arguments: [
+        ("first poll, bytes flat (under the floor)", 1, 4_000, 4_000, VLCKitEngine.SeekHoldAction.hold),
+        ("first poll, bytes climbing", 1, 4_000, 0, .extrapolate),
+        ("clock not republished but demux climbing (the wmv case)", 2, 262_144, 131_072, .extrapolate),
+        ("still climbing deep into the budget", 9, 9_000_000, 8_500_000, .extrapolate),
+        ("bytes flat at the floor: honest stall, raise it", 2, 131_072, 131_072, .buffer),
+        ("bytes still flat later in the hold", 7, 131_072, 131_072, .buffer),
+        ("a single byte of progress is progress", 2, 131_073, 131_072, .extrapolate),
+        ("UInt32 wrap reads as a change, never as a stall", 3, 12, 4_294_967_290, .extrapolate),
+    ] as [(String, Int, Int, Int, VLCKitEngine.SeekHoldAction)])
+    func seekHoldAction(label: String, polls: Int, readBytes: Int,
+                        previousReadBytes: Int, expected: VLCKitEngine.SeekHoldAction) {
+        #expect(VLCKitEngine.seekHoldAction(
+            polls: polls, readBytes: readBytes, previousReadBytes: previousReadBytes
+        ) == expected, "\(label)")
+    }
+
+    /// The frozen-bar defect: with the scrim gated on flat demux bytes, a HEALTHY hold used
+    /// to publish nothing at all, so the bar sat pinned at the target the `seek()` beat wrote
+    /// until libvlc republished its clock (~2s on wmv) and then jumped forward. The hold now
+    /// walks the bar forward at the poll cadence, scaled by rate and clamped to the duration.
+    /// Target 60_000ms (01:00), 500ms cadence, 7_200_000ms (2h) duration unless stated.
+    @Test("seekHoldPositionMs", arguments: [
+        ("first poll at 1×", Int32(60_000), 1, Float(1.0), Int32(7_200_000), Int32(60_500)),
+        ("second poll at 1×", 60_000, 2, 1.0, 7_200_000, 61_000),
+        ("the wmv case: 4 polls before the clock republishes", 60_000, 4, 1.0, 7_200_000, 62_000),
+        ("budget spent, still 500ms per poll", 60_000, 10, 1.0, 7_200_000, 65_000),
+        ("2× covers 1000ms of media per tick", 60_000, 2, 2.0, 7_200_000, 62_000),
+        ("0.5× covers 250ms per tick", 60_000, 2, 0.5, 7_200_000, 60_500),
+        ("1.25× scales fractionally", 60_000, 4, 1.25, 7_200_000, 62_500),
+        ("clamped to the duration near the tail", 7_199_000, 6, 1.0, 7_200_000, 7_200_000),
+        ("an unresolved duration has no ceiling", 60_000, 4, 1.0, 0, 62_000),
+        ("a zero-poll hold sits exactly on the target", 60_000, 0, 1.0, 7_200_000, 60_000),
+    ] as [(String, Int32, Int, Float, Int32, Int32)])
+    func seekHoldPositionMs(label: String, target: Int32, polls: Int,
+                            rate: Float, durationMs: Int32, expected: Int32) {
+        #expect(VLCKitEngine.seekHoldPositionMs(
+            targetMs: target, polls: polls, pollMs: VLCKitEngine.pollIntervalMs,
+            rate: rate, durationMs: durationMs
+        ) == expected, "\(label)")
+    }
+
+    /// The extrapolation only ever moves the bar forward. The settle correction (the real
+    /// clock, once libvlc republishes it) is what walks it back if the landing was short.
+    @Test("seekHoldPositionMs never extrapolates backwards")
+    func seekHoldPositionNeverGoesBackwards() {
+        // A duration that resolved SHORTER than the target (a read-rate estimate on
+        // incomplete media can under-read) must not clamp the bar behind the seek target.
+        #expect(VLCKitEngine.seekHoldPositionMs(
+            targetMs: 60_000, polls: 3, pollMs: VLCKitEngine.pollIntervalMs,
+            rate: 1.0, durationMs: 50_000
+        ) == 60_000)
+        // A paused-into-negative rate is not a thing libvlc reports, but the value function
+        // must not walk the bar backwards if one ever arrives.
+        #expect(VLCKitEngine.seekHoldPositionMs(
+            targetMs: 60_000, polls: 3, pollMs: VLCKitEngine.pollIntervalMs,
+            rate: -1.0, durationMs: 7_200_000
+        ) == 60_000)
+    }
+
+    /// Which of the three holds wins when several are armed, and that the clock is used only
+    /// when none is. The clock sits deliberately far from every hold value so a wrong branch is
+    /// unmissable; polls 0, so a seek hold reports its bare target.
+    @Test("heldPositionMs precedence", arguments: [
+        ("nothing held: the raw clock", Int32?.none, Int32?.none, Int32?.none, Int32(42_000), Int32(42_000)),
+        ("pre-first-frame sentinel rides through unchanged", nil, nil, nil, -1, -1),
+        ("a settling seek reports its target", nil, nil, 75_000, 42_000, 75_000),
+        ("a rate-flush bridge reports its anchor", nil, 60_000, nil, 42_000, 60_000),
+        ("the resume offset reports itself", 90_000, nil, nil, 42_000, 90_000),
+        ("the resume offset outranks a seek", 90_000, nil, 75_000, 42_000, 90_000),
+        ("the resume offset outranks a flush anchor", 90_000, 60_000, nil, 42_000, 90_000),
+        ("the flush anchor outranks a seek", nil, 60_000, 75_000, 42_000, 60_000),
+        ("a seek to 0:00 is a hold, not an absent one", nil, nil, 0, 42_000, 0),
+    ] as [(String, Int32?, Int32?, Int32?, Int32, Int32)])
+    func heldPositionMsPrecedence(label: String, start: Int32?, anchor: Int32?,
+                                  seek: Int32?, clock: Int32, expected: Int32) {
+        #expect(VLCKitEngine.heldPositionMs(
+            pendingStartMs: start, rateFlushAnchorMs: anchor, pendingSeekMs: seek,
+            pendingSeekPolls: 0, pollMs: VLCKitEngine.pollIntervalMs,
+            rate: 1.0, durationMs: 7_200_000, clockMs: clock
+        ) == expected, "\(label)")
+    }
+
+    /// A pause during a PLAYING hold has to land on the last value the poll extrapolated, or
+    /// the dot snaps back to the seek target on the press. Same function, same arguments: the
+    /// poll and `pause()` read one accessor.
+    @Test("heldPositionMs hands a settling seek to seekHoldPositionMs verbatim",
+          arguments: [0, 1, 4, 10], [Float(1.0), 2.0])
+    func heldPositionMsMatchesTheSeekHold(polls: Int, rate: Float) {
+        let held = VLCKitEngine.heldPositionMs(
+            pendingStartMs: nil, rateFlushAnchorMs: nil, pendingSeekMs: 60_000,
+            pendingSeekPolls: polls, pollMs: VLCKitEngine.pollIntervalMs,
+            rate: rate, durationMs: 7_200_000, clockMs: 42_000
+        )
+        #expect(held == VLCKitEngine.seekHoldPositionMs(
+            targetMs: 60_000, polls: polls, pollMs: VLCKitEngine.pollIntervalMs,
+            rate: rate, durationMs: 7_200_000
+        ))
+        #expect(held == 60_000 + Int32(Double(polls * VLCKitEngine.pollIntervalMs) * Double(rate)))
+    }
+
     /// While VLC's clock sits at the flush anchor the re-decode hasn't produced output at
     /// the new rate yet, so keep publishing the buffering hold rather than resume onto a
     /// frozen counter — but never hold forever.
@@ -342,6 +527,24 @@ struct VLCKitPollGateTests {
     ] as [(Bool, Bool)])
     func shouldHonorTransport(audioEnded: Bool, expected: Bool) {
         #expect(VLCKitEngine.shouldHonorTransport(audioEnded: audioEnded) == expected)
+    }
+
+    /// The poll's live pass needs BOTH the input reporting playing and the user intending it.
+    /// `isPlaying` alone was the bug: it lags a `pause()` by seconds on a wedged SMB read, and
+    /// the live pass then climbs the seek-settle counter and publishes extrapolated `.playing`
+    /// beats that walk the position (and the persisted resume point) forward under a paused
+    /// picture. The `desiredPlaying && !isPlaying` corner belongs to `shouldReassertPlay`, so
+    /// between them the poll has an answer for every combination.
+    @Test("shouldRunLiveTick requires the input AND the intent to agree", arguments: [
+        (true, true, true),
+        (false, true, false),      // paused by intent, isPlaying still lagging true
+        (true, false, false),      // the reassert branch's case, not the live pass's
+        (false, false, false),
+    ] as [(Bool, Bool, Bool)])
+    func shouldRunLiveTick(desiredPlaying: Bool, isPlaying: Bool, expected: Bool) {
+        #expect(VLCKitEngine.shouldRunLiveTick(
+            desiredPlaying: desiredPlaying, isPlaying: isPlaying
+        ) == expected)
     }
 }
 
