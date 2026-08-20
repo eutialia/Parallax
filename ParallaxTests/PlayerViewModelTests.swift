@@ -1716,8 +1716,13 @@ struct PlayerViewModelTests {
         #expect(transport.last == "pause")
     }
 
-    @Test("scrub latch pins isPlaying across the engine's transient pause beats, then honors beats once released")
-    func scrubLatchPinsTransportThenReleases() async throws {
+    /// The transport-glyph half of the exit wave. Every transport surface (the iPad/iPhone play-pause
+    /// button, the tvOS paused overlay, both auto-hide guards) renders `desiredPlaying`, so
+    /// this asserts on it directly. The scrub sandwich a drag performs (engine pause, commit,
+    /// resume), plus every beat the engine emits inside it, must leave the shown state alone.
+    /// This is what replaced the beat-pinning latch: nothing to pin when nothing reads the mirror.
+    @Test("a scrub commit's transient beats never move what the transport surface shows")
+    func scrubBeatsNeverMoveTheShownTransportState() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         let resolved = PlayerFixtures.resolved()
@@ -1725,25 +1730,30 @@ struct PlayerViewModelTests {
         await vm.start(item: PlayerFixtures.movieDetail())
         engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
         try await engine.settle()
-        #expect(vm.isPlaying == true)
+        #expect(vm.desiredPlaying == true)
 
-        // Drag-scrub from playing arms the latch with the pre-scrub state. The drag pauses the
-        // engine + seeks, so the engine emits transient .paused beats — they must NOT flip the
-        // glyph while the latch holds (the flicker the latch exists to kill).
-        vm.beginScrubLatch(resumePlaying: true)
-        engine.push(.paused(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
-        try await engine.settle()
-        #expect(vm.isPlaying == true)   // pinned, not flashed to pause
+        // The drag holds the still frame by pausing the ENGINE (never `setPlaying`), then commits.
+        await vm.engine?.pause()
+        await vm.commitScrubSeek(to: CMTime(seconds: 100, preferredTimescale: 600), resume: true)
+        #expect(vm.desiredPlaying == true)
 
-        // Commit settled → latch released → the next beat drives isPlaying directly again.
-        vm.endScrubLatch()
-        engine.push(.paused(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+        // wmv/VLC settle window: the drag's own `.paused` beat lands after the commit already
+        // replayed play(), and the confirming `.playing` beat is up to ~5s out. The mirror
+        // believes the stale beat; the shown state must not.
+        engine.push(.paused(position: CMTime(seconds: 100, preferredTimescale: 600), duration: resolved.runtime!, buffered: nil))
         try await engine.settle()
-        #expect(vm.isPlaying == false)  // honored once unlatched
+        #expect(vm.isPlaying == false)       // the mirror, mid-lag
+        #expect(vm.desiredPlaying == true)   // what the overlay and the glyph render
+
+        // And a GENUINE pause taken inside that same window shows at once, with no beat to
+        // confirm it. That was the starvation the deleted `scrubResumePending` flag caused: it waited
+        // on a mirror rising edge that wmv never delivered in time.
+        vm.setPlaying(false)
+        #expect(vm.desiredPlaying == false)
     }
 
-    @Test("a remote (Now Playing) command during a scrub commit wins and clears the latch — not swallowed")
-    func remoteCommandDuringScrubClearsLatch() async throws {
+    @Test("a remote (Now Playing) pause during a scrub commit shows immediately, not swallowed")
+    func remoteCommandDuringScrubWins() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         let resolved = PlayerFixtures.resolved()
@@ -1752,23 +1762,220 @@ struct PlayerViewModelTests {
         engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
         try await engine.settle()
 
-        // Scrub commit in flight: the latch is armed to the playing pre-scrub state.
-        vm.beginScrubLatch(resumePlaying: true)
-        #expect(vm.isPlaying == true)
+        // Scrub commit in flight (drag pause, seek issued, resume replayed).
+        await vm.engine?.pause()
+        await vm.commitScrubSeek(to: CMTime(seconds: 100, preferredTimescale: 600), resume: true)
 
-        // The user hits Pause on the lock screen / headset — the Now Playing onPause routes
-        // through setPlaying(false). It must win immediately and clear the latch, NOT be pinned
-        // away by scrubResumeIntent (the regression: it left the glyph stuck on "play").
+        // The user hits Pause on the lock screen / headset, so Now Playing's onPause routes
+        // through setPlaying(false). It must land on the press, and stay landed: AVKit emits
+        // no further beat while paused, so nothing downstream would ever heal a swallowed one.
         vm.setPlaying(false)
-        #expect(vm.isPlaying == false)
+        #expect(vm.desiredPlaying == false)
         try await Task.sleep(for: .milliseconds(50))
         #expect(engine.calls.contains("pause"))
 
-        // Latch cleared: AVKit's single transient .paused beat is now honored (before the fix it
-        // was swallowed and isPlaying stayed pinned to the stale `true`, with no self-heal beat).
-        engine.push(.paused(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+        engine.push(.paused(position: CMTime(seconds: 100, preferredTimescale: 600), duration: resolved.runtime!, buffered: nil))
+        try await engine.settle()
+        #expect(vm.desiredPlaying == false)
+    }
+
+    /// The live bug this wave shipped with: `togglePlayPause` flipped the MIRROR, so a press
+    /// inside the engine's lag window commanded the opposite of what the user asked for.
+    @Test("togglePlayPause flips the user's intent, not the lagging engine mirror")
+    func togglePlayPauseReadsIntentNotTheMirror() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let resolved = PlayerFixtures.resolved()
+        let vm = makePlayerVM(engine: engine, resolved: resolved)
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600), duration: resolved.runtime!, buffered: nil))
+        try await engine.settle()
+
+        // Open the lag window the honest way: a scrub's engine-level pause, whose `.paused`
+        // beat drives the mirror false while the user's intent stays "playing".
+        await vm.engine?.pause()
+        engine.push(.paused(position: CMTime(seconds: 10, preferredTimescale: 600), duration: resolved.runtime!, buffered: nil))
         try await engine.settle()
         #expect(vm.isPlaying == false)
+        #expect(vm.desiredPlaying == true)
+
+        // The press means "pause what I asked to be playing". Off the mirror it meant "play",
+        // so the glyph flipped to pause and playback carried on.
+        let before = engine.calls.count
+        vm.togglePlayPause()
+        #expect(vm.desiredPlaying == false)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(Array(engine.calls.dropFirst(before)) == ["pause"])
+    }
+
+    // MARK: - desiredPlaying: the user's transport intent, immune to the engine's beat lag
+
+    @Test("engine beats drive isPlaying but never the intent: the mirror lags, the intent doesn't")
+    func engineBeatsNeverWriteIntent() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let resolved = PlayerFixtures.resolved()
+        let vm = makePlayerVM(engine: engine, resolved: resolved)
+        await vm.start(item: PlayerFixtures.movieDetail())
+        #expect(vm.desiredPlaying == true)   // loadAndPlay's play() IS the intent to play
+
+        let at = { (s: Double) in CMTime(seconds: s, preferredTimescale: 600) }
+        // The whole transport beat vocabulary a live session emits between user commands.
+        // Each drives the isPlaying MIRROR; none may touch the intent.
+        for beat in [PlaybackState.paused(position: at(10), duration: resolved.runtime!, buffered: nil),
+                     .buffering(position: at(11), duration: resolved.runtime!, buffered: nil),
+                     .playing(position: at(12), duration: resolved.runtime!, buffered: nil)] {
+            engine.push(beat)
+            try await engine.settle()
+            #expect(vm.desiredPlaying == true)
+        }
+        #expect(vm.isPlaying == true)
+
+        // Same in the other direction: an explicit pause sets the intent, and the beats that
+        // follow it (including a stale `.playing` still in flight) leave it alone.
+        vm.setPlaying(false)
+        #expect(vm.desiredPlaying == false)
+        engine.push(.playing(position: at(13), duration: resolved.runtime!, buffered: nil))
+        try await engine.settle()
+        #expect(vm.isPlaying == true)        // mirror believes the stale beat
+        #expect(vm.desiredPlaying == false)  // intent does not
+    }
+
+    @Test("scrub machinery pauses do NOT clear the intent: that's the whole point of surviving them")
+    func scrubMachineryPauseKeepsIntent() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let resolved = PlayerFixtures.resolved()
+        let vm = makePlayerVM(engine: engine, resolved: resolved)
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
+                             duration: resolved.runtime!, buffered: nil))
+        try await engine.settle()
+
+        // The iOS drag's entry pause and the tvOS reducer's `.pause` effect both go straight
+        // to the engine: temporary holds on a still frame, not transport commands.
+        await vm.engine?.pause()
+        #expect(vm.desiredPlaying == true)
+        engine.push(.paused(position: CMTime(seconds: 10, preferredTimescale: 600),
+                            duration: resolved.runtime!, buffered: nil))
+        try await engine.settle()
+        #expect(vm.desiredPlaying == true)
+    }
+
+    @Test("a seek inside the engine's beat lag still resumes: intent outlives the stale isPlaying mirror")
+    func seekPreservingTransportResumesAgainstStalePausedBeat() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let resolved = PlayerFixtures.resolved()
+        let vm = makePlayerVM(engine: engine, resolved: resolved)
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
+                             duration: resolved.runtime!, buffered: nil))
+        try await engine.settle()
+
+        // First scrub: pause on the still frame, commit, resume. The engine's own beats lag
+        // that resume (VLC polls state every 500ms behind a seek-settlement gate; AVKit emits
+        // nothing until the re-buffer ends), so the drag's stale `.paused` lands AFTER the
+        // commit already replayed play(); isPlaying reads false while playback is resuming.
+        await vm.engine?.pause()
+        await vm.commitScrubSeek(to: CMTime(seconds: 100, preferredTimescale: 600), resume: true)
+        engine.push(.paused(position: CMTime(seconds: 100, preferredTimescale: 600),
+                            duration: resolved.runtime!, buffered: nil))
+        try await engine.settle()
+        #expect(vm.isPlaying == false)       // the lag window
+        #expect(vm.desiredPlaying == true)   // the user never asked for a pause
+
+        // The SECOND seek captures intent, not the mirror: it must come back playing.
+        // Reading the mirror here is the stuck-paused bug: resume: false, playback never resumes.
+        let before = engine.calls.count
+        await vm.seekPreservingTransport(to: CMTime(seconds: 200, preferredTimescale: 600))
+        #expect(Array(engine.calls.dropFirst(before)) == ["seek(200.0)", "play"])
+    }
+
+    @Test("an explicit pause is honored across a stale .playing beat: a scrub there must NOT resume")
+    func seekPreservingTransportHonorsExplicitPauseAgainstStalePlayingBeat() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let resolved = PlayerFixtures.resolved()
+        let vm = makePlayerVM(engine: engine, resolved: resolved)
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
+                             duration: resolved.runtime!, buffered: nil))
+        try await engine.settle()
+
+        // User pauses; a `.playing` beat already in flight when the pause landed arrives after
+        // it and re-flips the mirror. Lag in the opposite direction, same fix.
+        vm.setPlaying(false)
+        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
+                             duration: resolved.runtime!, buffered: nil))
+        try await engine.settle()
+        #expect(vm.isPlaying == true)
+        #expect(vm.desiredPlaying == false)
+
+        let before = engine.calls.count
+        await vm.seekPreservingTransport(to: CMTime(seconds: 200, preferredTimescale: 600))
+        #expect(Array(engine.calls.dropFirst(before)) == ["seek(200.0)"])   // seek only, no resume
+    }
+
+    @Test("a re-anchor's force-resume never registers as user intent: a paused scrub stays paused start to finish")
+    func pausedReanchorNeverLeaksResumeIntent() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
+        let reencode = TranscodeDelivery(
+            isVideoDirect: false, isAudioDirect: true,
+            videoCodec: "h264", audioCodec: "ac3",
+            transcodeReasons: ["VideoCodecNotSupported"]
+        )
+        let vm = makePlayerVM(
+            resolve: { _, _, _, _ in resolved },
+            engine: engine,
+            fetchDelivery: { _ in reencode },
+            deliveryProbeSchedule: [.milliseconds(10)]
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
+                             duration: CMTime(seconds: 7200, preferredTimescale: 600), buffered: nil))
+        try await Task.sleep(for: .milliseconds(80))
+
+        // Sidecar overlay up so the out-of-buffer commit takes the re-anchor branch.
+        let text = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(1) })
+        await vm.selectSubtitleTrack(text)
+        vm.setPlaying(false)
+        #expect(vm.desiredPlaying == false)
+        try await Task.sleep(for: .milliseconds(50))   // let setPlaying's own pause reach the engine first
+
+        // `reloadTranscode`'s loadAndPlay force-resumes mechanically. If that resume were
+        // recorded as intent, a second scrub landing during the (multi-second) reload would
+        // capture a resume the paused user never asked for, so watch the flag for the whole
+        // commit, not just its end state.
+        engine.bufferedRange = 0...120
+        let commit = Task { @MainActor in
+            await vm.commitScrubSeek(to: CMTime(seconds: 3000, preferredTimescale: 600), resume: false)
+        }
+        nonisolated(unsafe) var leaked = false
+        let watcher = Task { @MainActor in
+            while !Task.isCancelled {
+                if vm.desiredPlaying { leaked = true }
+                await Task.yield()
+            }
+        }
+        await commit.value
+        watcher.cancel()
+
+        #expect(leaked == false)
+        #expect(vm.desiredPlaying == false)
+        #expect(engine.calls.last == "pause")   // the reload's force-resume was undone
+    }
+
+    @Test("a natural end drops the intent: the next scrub can't resume a finished item")
+    func endedBeatClearsIntent() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let resolved = PlayerFixtures.resolved()
+        let vm = makePlayerVM(engine: engine, resolved: resolved)
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
+                             duration: resolved.runtime!, buffered: nil))
+        try await engine.settle()
+        #expect(vm.desiredPlaying == true)
+
+        engine.push(.ended)
+        try await engine.settle()
+        #expect(vm.desiredPlaying == false)
     }
 
     @Test("buffered beat → bufferedFraction; nil beat (VLC) hides the layer; stop() clears it")

@@ -8,8 +8,8 @@ private let referenceDuration: Double = 100
 /// from the reducer's own step constant, never re-typed as 0.1.
 private let clickStep = PlayerHUDTuning.clickStepSeconds / referenceDuration
 
-private let playingCtx = ReduceContext(liveProgress: 0.5, durationSeconds: referenceDuration, isPlaying: true)
-private let pausedCtx = ReduceContext(liveProgress: 0.5, durationSeconds: referenceDuration, isPlaying: false)
+private let playingCtx = ReduceContext(liveProgress: 0.5, durationSeconds: referenceDuration, desiredPlaying: true)
+private let pausedCtx = ReduceContext(liveProgress: 0.5, durationSeconds: referenceDuration, desiredPlaying: false)
 
 /// One cell of the state × event transition table.
 private struct Transition: Sendable, CustomTestStringConvertible {
@@ -20,7 +20,7 @@ private struct Transition: Sendable, CustomTestStringConvertible {
     let effects: [PlayerEffect]
 
     var testDescription: String {
-        "\(state) + \(event)\(ctx.isPlaying ? "" : " (paused)") → \(expected) \(effects)"
+        "\(state) + \(event)\(ctx.desiredPlaying ? "" : " (paused)") → \(expected) \(effects)"
     }
 }
 
@@ -58,7 +58,7 @@ struct PlayerHUDReducerTests {
     private let paused = pausedCtx
     // Incomplete media whose runtime never resolved: `CMTimeGetSeconds(.indefinite)` is NaN, so
     // `durationSeconds > 0` is false and there's no scrubbable timeline.
-    private let indeterminate = ReduceContext(liveProgress: 0, durationSeconds: .nan, isPlaying: true)
+    private let indeterminate = ReduceContext(liveProgress: 0, durationSeconds: .nan, desiredPlaying: true)
 
     @Test("every deterministic (state, event) cell lands where the table says",
           arguments: transitionTable)
@@ -99,6 +99,16 @@ struct PlayerHUDReducerTests {
         let (state, fx) = reduce(.floor, .swipeHorizontal(deltaProgress: 0.25), playing)
         #expect(state == .swipeScrub(progress: 0.75, wasPlaying: true))
         #expect(fx == [.pause])
+    }
+
+    @Test("floor: the scrub captures the user's transport INTENT, so a swipe inside the engine's beat lag still resumes")
+    func floorSwipeCapturesIntentNotEngineMirror() {
+        // A second scrub lands while the engine is still momentarily paused from
+        // the first commit. The context carries `desiredPlaying` (never touched by beats),
+        // so `wasPlaying` is true and the confirm resumes instead of sticking on pause.
+        let (state, _) = reduce(.floor, .swipeHorizontal(deltaProgress: 0.1), playing)
+        #expect(state == .swipeScrub(progress: 0.6, wasPlaying: true))
+        #expect(reduce(state, .select, playing).1 == [.seek(progress: 0.6), .play])
     }
 
     @Test("floor: horizontal swipe clamps the seeded progress to 0...1")

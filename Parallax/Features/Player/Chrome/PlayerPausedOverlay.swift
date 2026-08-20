@@ -8,7 +8,7 @@ import SwiftUI
 ///
 /// It owns its OWN appear/morph/close lifecycle off `isPaused`, so the parent mounts it
 /// for the whole eligible window (floor playback, not scrubbing/stalling) rather than
-/// toggling it on `!isPlaying`:
+/// toggling it on `!desiredPlaying`:
 ///   nothing → (pause) pause glyph scales in → held while paused →
 ///   (resume) glyph morphs to play, lingers → scrim closes.
 /// A plain show/hide cut straight from "paused" to gone the instant playback resumed,
@@ -18,7 +18,8 @@ struct PlayerPausedOverlay: View {
     /// The floor brings the dim; `.fullHUD` already has the controls scrim, so the
     /// glyph rides alone there (stacked dims read as a brightness glitch).
     var dimmed: Bool = true
-    /// Live pause intent (`!vm.isPlaying`). Drives the lifecycle below.
+    /// Live pause intent (`!vm.desiredPlaying`): the user's transport intent, never the
+    /// engine's lagging mirror. Drives the lifecycle below.
     let isPaused: Bool
 
     @State private var visible = false

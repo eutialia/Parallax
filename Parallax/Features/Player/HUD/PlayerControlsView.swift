@@ -368,10 +368,11 @@ struct PlayerControlsView: View {
         .onChange(of: controlsVisible) { _, visible in
             if !visible { closeAllMenus() }
         }
-        // Pause pins the chrome (see `scheduleHide`); resuming re-arms the timer.
-        // Engine beats flip `isPlaying` async, so the pause path also has to cancel
-        // a hide that `resetHideTimer` armed a beat earlier.
-        .onChange(of: vm.isPlaying) { _, playing in
+        // Pause pins the chrome (see `scheduleHide`); resuming re-arms the timer. Keyed on
+        // INTENT so it agrees with `scheduleHide`'s own guard: the engine mirror lags a
+        // command by up to a poll (seconds on wmv), and a scrub's transient beats move it
+        // without the user ever asking for a pause.
+        .onChange(of: vm.desiredPlaying) { _, playing in
             if playing {
                 if controlsVisible { scheduleHide() }
             } else {
@@ -802,9 +803,12 @@ struct PlayerControlsView: View {
                                       isEnabled: vm.previousEpisode != nil,
                                       accessibilityLabel: "Previous episode") { playPrevious() }
                 }
-                PlayerRoundButton(systemImage: vm.isPlaying ? "pause.fill" : "play.fill", size: m.transportPlay,
+                // Intent, not the engine mirror: it flips on the press frame and no beat can
+                // move it, so the glyph stops flickering through a scrub commit's transient
+                // pause/seek/resume beats without any latch pinning it.
+                PlayerRoundButton(systemImage: vm.desiredPlaying ? "pause.fill" : "play.fill", size: m.transportPlay,
                                   iconScale: 0.46,
-                                  accessibilityLabel: vm.isPlaying ? "Pause" : "Play") { togglePlayPause() }
+                                  accessibilityLabel: vm.desiredPlaying ? "Pause" : "Play") { togglePlayPause() }
                 if vm.supportsEpisodeNavigation {
                     PlayerRoundButton(systemImage: "forward.end.fill", size: m.transportSkip, iconScale: 0.42,
                                       isEnabled: vm.nextEpisode != nil,
@@ -1003,11 +1007,11 @@ struct PlayerControlsView: View {
         guard playbackReady, vm.engine != nil, durSeconds > 0, isScrubbing else { return }
         let gen = scrubGeneration
         let target = CMTime(seconds: scrubProgress * durSeconds, preferredTimescale: 600)
-        // tvOS ±10s scrub never pauses the engine (unlike the touch drag), so `vm.isPlaying`
-        // read right now IS the pre-seek intent — nothing transient has touched it. Routed
-        // through `commitScrubSeek` (not a bare `seek`) so an out-of-buffer re-encode
-        // transcode's force-resuming re-anchor (#15845) can't silently un-pause a paused user.
-        let resume = vm.isPlaying
+        // The user's intent, not the engine mirror: `isPlaying` still reads false while the
+        // previous seek's beats catch up, and capturing that is what stuck playback on a
+        // pause. Routed through `commitScrubSeek` (not a bare `seek`) so an out-of-buffer
+        // re-encode transcode's force-resuming re-anchor (#15845) can't un-pause a paused user.
+        let resume = vm.desiredPlaying
         Task {
             await vm.commitScrubSeek(to: target, resume: resume)
             if scrubGeneration == gen { isScrubbing = false }
@@ -1129,15 +1133,12 @@ struct PlayerControlsView: View {
                 // bar back mid-drag nor resume under the finger.
                 if !dragScrubbing {
                     scrubGeneration += 1
-                    // Capture resume intent only at the start of a CHAIN: during
-                    // an in-flight commit the engine is paused by the scrub
-                    // itself, so re-reading vm.isPlaying here would turn a
-                    // drag-while-fetching into a stuck pause (manual play to fix).
-                    if !isScrubbing { scrubWasPlaying = vm.isPlaying }
-                    // Pin the transport glyph to the pre-scrub play state for the whole commit
-                    // so the engine's transient pause/seek/resume beats can't flash it. Re-armed
-                    // every press; `scrubWasPlaying` (chain-start) is the source of truth.
-                    vm.beginScrubLatch(resumePlaying: scrubWasPlaying)
+                    // The user's transport intent, read fresh on every press. Unlike the
+                    // `isPlaying` mirror it isn't moved by the scrub's own pause or by the
+                    // engine's lagging beats, so a re-drag during an in-flight commit still
+                    // captures "playing", and an explicit pause taken mid-chain
+                    // is honored instead of being overridden by a stale chain-start value.
+                    scrubWasPlaying = vm.desiredPlaying
                     // The ambient `.animation(value: dragScrubbing)` covers this flip
                     // symmetrically with the release; a grab-side "missing" morph on
                     // device was a Debug-build frame drop (the chrome collapse lands
@@ -1157,7 +1158,7 @@ struct PlayerControlsView: View {
                 onScrubActiveChange(false)
                 resetHideTimer()
                 scrubProgress = frac
-                guard playbackReady, vm.engine != nil, durSeconds > 0 else { isScrubbing = false; vm.endScrubLatch(); return }
+                guard playbackReady, vm.engine != nil, durSeconds > 0 else { isScrubbing = false; return }
                 let gen = scrubGeneration
                 let resume = scrubWasPlaying
                 let target = CMTime(seconds: frac * durSeconds, preferredTimescale: 600)
@@ -1165,9 +1166,9 @@ struct PlayerControlsView: View {
                 scrubCommitTask = Task {
                     // Route through the gated commit seek so an out-of-buffer re-encode
                     // transcode RE-ANCHORS (jellyfin#15845) instead of drifting subtitles;
-                    // it also replays `resume` — the scrub latch (armed at drag start) holds
-                    // the glyph on "pause" across the commit, and the engine's resume beat
-                    // both confirms it and is pinned by the latch until released below.
+                    // it also replays `resume`. The glyph needs no protection across this:
+                    // it reads `desiredPlaying`, which the drag's engine-level pause never
+                    // touched.
                     await vm.commitScrubSeek(to: target, resume: resume)
                     // A newer drag owns the bar now — leave the release to its commit.
                     // Cancellation = the player was dismissed mid-seek (onDisappear):
@@ -1176,9 +1177,6 @@ struct PlayerControlsView: View {
                     // Keep the bar pinned at the committed target until the engine's live
                     // position catches up, so it never flashes the stale pre-seek frame.
                     await releaseScrubLatch(at: frac, durSeconds: durSeconds, generation: gen)
-                    // Commit settled — release the transport latch. Generation-guarded so a newer
-                    // drag that took over keeps its own latch (it re-armed it on its first press).
-                    if scrubGeneration == gen { vm.endScrubLatch() }
                 }
             }
         )
@@ -1201,11 +1199,11 @@ struct PlayerControlsView: View {
             let gen = scrubGeneration
             guard vm.engine != nil else { isScrubbing = false; return }
             let seekTarget = CMTime(seconds: target * durSeconds, preferredTimescale: 600)
-            // VoiceOver adjust never pauses the engine, so `vm.isPlaying` read right now IS
-            // the pre-seek intent. Routed through `commitScrubSeek` (not a bare `seek`) so an
-            // out-of-buffer re-encode transcode's force-resuming re-anchor (#15845) can't
-            // silently un-pause a paused user.
-            let resume = vm.isPlaying
+            // The user's intent, not the engine mirror (which lags a previous seek's resume
+            // by a poll or a re-buffer). Routed through `commitScrubSeek` (not a bare
+            // `seek`) so an out-of-buffer re-encode transcode's force-resuming re-anchor
+            // (#15845) can't silently un-pause a paused user.
+            let resume = vm.desiredPlaying
             scrubCommitTask?.cancel()
             scrubCommitTask = Task {
                 await vm.commitScrubSeek(to: seekTarget, resume: resume)
@@ -1349,11 +1347,12 @@ struct PlayerControlsView: View {
     /// tvOS click-seek).
     private func scheduleSeekCommit(to target: Double) {
         seekCoalescer.schedule(target) { target in
-            // The double-tap burst never pauses the engine, so `vm.isPlaying` read now (post
-            // debounce, freshest available) IS the pre-seek intent. Routed through
-            // `commitScrubSeek` (not a bare `seek`) so an out-of-buffer re-encode transcode's
-            // force-resuming re-anchor (#15845) can't silently un-pause a paused user.
-            await vm.commitScrubSeek(to: CMTime(seconds: target, preferredTimescale: 600), resume: vm.isPlaying)
+            // The user's intent, not the engine mirror: this fires 400ms after the last tap,
+            // squarely inside the window where a previous seek's resume beat hasn't landed
+            // yet. Routed through `commitScrubSeek` (not a bare `seek`) so an out-of-buffer
+            // re-encode transcode's force-resuming re-anchor (#15845) can't un-pause a paused user.
+            await vm.commitScrubSeek(to: CMTime(seconds: target, preferredTimescale: 600),
+                                     resume: vm.desiredPlaying)
         }
     }
 
@@ -1379,7 +1378,7 @@ struct PlayerControlsView: View {
 
     private func togglePlayPause() {
         resetHideTimer()
-        // Optimistic + coalescing: vm flips isPlaying synchronously (glyph and
+        // Optimistic + coalescing: vm flips `desiredPlaying` synchronously (glyph and
         // pause-pins-chrome react on the tap frame) and retargets one transport
         // task, so spamming the button only commands the LAST intent.
         vm.togglePlayPause()
@@ -1530,7 +1529,7 @@ struct PlayerControlsView: View {
         // mid-drag would unmount the gesture's view and strand the engine paused),
         // or playback is PAUSED — a paused frame with vanishing chrome reads as a
         // dead player. Loading counts as not-playing: the HUD stays over the scrim.
-        guard !menuOpen, !dragScrubbing, !pullDragging, vm.isPlaying else { return }
+        guard !menuOpen, !dragScrubbing, !pullDragging, vm.desiredPlaying else { return }
         hideTask = Task {
             try? await Task.sleep(for: .seconds(3))
             if !Task.isCancelled { controlsVisible = false }

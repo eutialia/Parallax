@@ -48,7 +48,11 @@ nonisolated enum PlayerEffect: Equatable {
 nonisolated struct ReduceContext: Equatable {
     let liveProgress: Double
     let durationSeconds: Double
-    let isPlaying: Bool
+    /// The user's transport INTENT (`PlayerViewModel.desiredPlaying`), never the engine's
+    /// `isPlaying` mirror. Every scrub entry below seeds `wasPlaying` from it, and the mirror
+    /// lags: a scrub starting inside that lag would capture `false` and confirm without
+    /// resuming, stranding playback on the pause the scrub itself issued.
+    let desiredPlaying: Bool
 }
 
 nonisolated enum PlayerHUDTuning {
@@ -84,7 +88,7 @@ nonisolated func reduce(_ state: PlayerHUDState, _ event: RemoteEvent, _ ctx: Re
     case .floor:
         switch event {
         case .swipeHorizontal(let d):
-            return (.swipeScrub(progress: clamp(ctx.liveProgress + d), wasPlaying: ctx.isPlaying), [.pause])
+            return (.swipeScrub(progress: clamp(ctx.liveProgress + d), wasPlaying: ctx.desiredPlaying), [.pause])
         case .swipeVertical, .click(.up), .click(.down):
             return (.fullHUD, [])
         case .click(.left):
@@ -129,7 +133,7 @@ nonisolated func reduce(_ state: PlayerHUDState, _ event: RemoteEvent, _ ctx: Re
             return (.clickSeek(targetProgress: clamp(target + clickStep)), [])
         case .swipeHorizontal(let d):
             // Fall back to analog scrub from the current target; pause for the preview.
-            return (.swipeScrub(progress: clamp(target + d), wasPlaying: ctx.isPlaying), [.pause])
+            return (.swipeScrub(progress: clamp(target + d), wasPlaying: ctx.desiredPlaying), [.pause])
         case .swipeVertical, .click(.up), .click(.down):
             return (.fullHUD, [])
         case .select, .playPause:
@@ -143,7 +147,7 @@ nonisolated func reduce(_ state: PlayerHUDState, _ event: RemoteEvent, _ ctx: Re
         case .swipeHorizontal(let d):
             // Only arrives while the scrubber holds focus (`PlayerView.onPan` gates it):
             // the chrome collapses into the same analog scrub as a floor swipe.
-            return (.swipeScrub(progress: clamp(ctx.liveProgress + d), wasPlaying: ctx.isPlaying), [.pause])
+            return (.swipeScrub(progress: clamp(ctx.liveProgress + d), wasPlaying: ctx.desiredPlaying), [.pause])
         case .menu, .idle:
             return (.floor, [])
         case .playPause:

@@ -122,11 +122,15 @@ final class PanCatcherView: UIView {
     /// On the Siri Remote a CLICK is a physical press of the trackpad while the finger
     /// is still resting on it, so the indirect-touch pan keeps emitting `.changed` for
     /// the rest of that touch. Without this, a Select that confirms a scrub is followed
-    /// by trailing pan deltas that re-enter `swipeScrub` from the floor — and because the
-    /// engine is mid-seek (isPlaying == false) at that instant, the new scrub captures
-    /// `wasPlaying: false` and its confirm seeks WITHOUT resuming → video stuck paused.
-    /// So once any press fires (`PressSentinel`), swallow the rest of the current pan;
-    /// a genuinely new gesture (`.began`) clears it.
+    /// by trailing pan deltas that re-enter `swipeScrub` from the floor: the video pauses
+    /// again and a scrub surface the user never asked for pops up over the frame it just
+    /// committed to. So once any press fires (`PressSentinel`), swallow the rest of the
+    /// current pan; a genuinely new gesture (`.began`) clears it.
+    ///
+    /// This used to also be the fix for the phantom scrub confirming WITHOUT resuming: it
+    /// captured `wasPlaying` off the mid-seek `isPlaying` mirror. That half is now covered
+    /// generally: `ReduceContext.desiredPlaying` carries the user's intent, which no seek
+    /// moves. The phantom surface is still worth suppressing on its own, so this stays.
     private var panSuppressed = false
 
     private lazy var pan: UIPanGestureRecognizer = {
