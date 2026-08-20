@@ -208,19 +208,17 @@ final class PlaybackLabRunner {
         }
     }
 
-    /// UI-fidelity scrub: the same latch → drag-pause → commit → release
-    /// sandwich `PlayerControlsView`'s scrubber performs. The pause→seek→play
-    /// shape is load-bearing — it reproduces bugs a plain in-stream seek does
-    /// not (the VLCKit 4 alpha flush-loop audio dropout engages on exactly this shape).
+    /// UI-fidelity scrub: the same drag-pause → commit sandwich `PlayerControlsView`'s
+    /// scrubber performs. The pause→seek→play shape is load-bearing: it reproduces bugs
+    /// a plain in-stream seek does not (the VLCKit 4 alpha flush-loop audio dropout engages
+    /// on exactly this shape).
     private func scrub(to seconds: Double) async {
         guard let vm else { return }
-        let wasPlaying = vm.isPlaying
-        vm.beginScrubLatch(resumePlaying: wasPlaying)
+        let wasPlaying = vm.desiredPlaying   // the intent the real scrubber captures, not the lagging mirror
         await vm.engine?.pause()
         // A beat of "drag time" so the pause lands before the commit, like a finger would.
         try? await Task.sleep(for: .milliseconds(300))
         await vm.commitScrubSeek(to: labTime(seconds), resume: wasPlaying)
-        vm.endScrubLatch()
     }
 
     /// Selects an audio track by name substring through the HUD's exact path,
@@ -299,7 +297,11 @@ final class PlaybackLabRunner {
                 await telemetry.record("beat", [
                     "positionMs": milliseconds(vm.currentPosition),
                     "durationMs": milliseconds(vm.currentDuration),
+                    // Both halves: `isPlaying` is the engine mirror, `desiredPlaying` is what
+                    // every transport surface renders. Their divergence IS the lag window the
+                    // wmv transport regressions live in, so a run has to show it.
                     "isPlaying": vm.isPlaying,
+                    "desiredPlaying": vm.desiredPlaying,
                     "phase": phase,
                     "stallScrim": vm.showsStallScrim,
                 ])

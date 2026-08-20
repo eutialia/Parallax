@@ -135,10 +135,31 @@ final class PlayerViewModel {
         guard dur > 0, end.isFinite else { return nil }
         return min(max(end / dur, 0), 1)
     }
-    /// Whether the engine is actively playing (vs paused). `phase` stays `.playing`
-    /// while paused (the video surface stays on screen), so the play/pause button
-    /// must read this — not `phase` — or it shows "pause" forever and can never resume.
+    /// Whether the ENGINE is actively playing (vs paused): a mirror driven by its beats,
+    /// so it necessarily LAGS: VLC polls its transport every 500ms behind a seek-settlement
+    /// gate (measured at ~5s on wmv/SMB), AVKit emits nothing until a re-buffer ends.
+    ///
+    /// NO user-facing surface reads it. Every transport surface (the play/pause glyph, the
+    /// tvOS paused overlay, the chrome auto-hide timers) reads `desiredPlaying` instead:
+    /// intent is synchronous and exact, the mirror is neither, and every attempt to paper
+    /// over the gap in the UI (a scrub-resume suppression flag, a beat-pinning latch) turned
+    /// into its own starvation bug inside a slow engine's settle window. What's left here is
+    /// diagnostics: the Playback Lab dump and the tests that assert the engine's own view.
     private(set) var isPlaying: Bool = false
+
+    /// The user's TRANSPORT INTENT: what playback should be doing once the engine catches
+    /// up. Written only by explicit transport commands (`setPlaying`), by starting playback,
+    /// by the terminal beats that end a session, and by the engine-initiated resumes that
+    /// restore this same intent after a stumble (`fallBackAfterFailedSwitch`, which resumes
+    /// the outgoing stream when a track switch fails to load). Ordinary engine beats never
+    /// touch it, and neither does scrub machinery: the drag's entry pause and the tvOS reducer's `.pause` effect are
+    /// temporary holds on a still frame, and surviving them is exactly the point.
+    ///
+    /// Every scrub surface captures its resume intent from HERE. Capturing `isPlaying`
+    /// instead was the bug: a second scrub inside the mirror's lag window read `false`, so its
+    /// commit seeked without resuming and playback stuck on the pause the scrub itself had
+    /// issued (usually from the second scrub after playback starts, both engines, all platforms).
+    private(set) var desiredPlaying: Bool = false
 
     // MARK: - Player chrome (P4)
 
@@ -394,10 +415,12 @@ final class PlayerViewModel {
         await seekPreservingTransport(to: CMTime(seconds: seconds, preferredTimescale: 600))
     }
 
-    /// Optimistic transport toggle from the play/pause button. Flips to the
-    /// opposite of the current intent via `setPlaying`.
+    /// Optimistic transport toggle from the play/pause button. Flips to the opposite of the
+    /// user's INTENT (`desiredPlaying`), never the engine mirror: inside the mirror's lag
+    /// window (wmv/VLC settles for seconds) `isPlaying` can still read the pre-command value,
+    /// so toggling off it did the exact opposite of what the press asked for.
     func togglePlayPause() {
-        setPlaying(!isPlaying)
+        setPlaying(!desiredPlaying)
     }
 
     /// Drive the transport to an explicit play state NOW so the play/pause glyph swaps on the
@@ -407,10 +430,9 @@ final class PlayerViewModel {
     /// actually flips, hundreds of ms on a transcode).
     ///
     /// Shared by the button (`togglePlayPause`) AND the Now Playing remote commands so EVERY
-    /// explicit transport intent clears the scrub latch and wins: a remote pause/play landing in
-    /// the scrub-commit window must not be swallowed by `scrubResumeIntent` (which pins `isPlaying`
-    /// across the scrub's own transient beats) and strand the glyph on the stale pre-scrub state —
-    /// AVKit emits no further beat while paused, so it wouldn't self-heal.
+    /// explicit transport intent lands the same way: a remote pause/play arriving in the
+    /// scrub-commit window rewrites the intent every transport surface reads, so it shows on
+    /// the press instead of waiting for a beat that AVKit never sends while paused.
     ///
     /// Spam-safe by cancel-previous coalescing: each call retargets ONE `transportTask`, so a
     /// burst flips the glyph with every press (parity — instant, like the system player) but only
@@ -418,10 +440,11 @@ final class PlayerViewModel {
     /// `await`. The synchronous flip happens before any suspension, so intent order can't interleave.
     ///
     /// The scrub and reducer pause/resume paths must KEEP commanding the engine directly: they
-    /// capture `isPlaying` as resume intent, and an optimistic write there would corrupt the capture.
+    /// are transient holds on a still frame, and routing them here would overwrite the very
+    /// intent (`desiredPlaying`) their commit is about to replay.
     func setPlaying(_ playing: Bool) {
         guard engine != nil else { return }
-        scrubResumeIntent = nil   // an explicit transport command overrides any pending scrub latch
+        desiredPlaying = playing
         isPlaying = playing
         transportTask?.cancel()
         transportTask = Task {
@@ -430,33 +453,6 @@ final class PlayerViewModel {
             guard !Task.isCancelled, let engine else { return }
             if playing { await engine.play() } else { await engine.pause() }
         }
-    }
-
-    /// Pins the transport state across a scrub commit. The drag-scrub pauses the engine to hold
-    /// the still frame and re-plays it on release, so the engine emits transient `.paused` beats
-    /// — the drag pause, then `seek()` re-reading the now-paused `isPlaying` — followed by the
-    /// resume `.playing` beat up to a poll (500ms) later. Honoring those beats flashes the glyph
-    /// to "play" for that gap (the bug a one-shot optimistic write couldn't win, since the stale
-    /// `.paused` beat is consumed *after* it). While an intent is latched, `handle()` pins
-    /// `isPlaying` to it and ignores the mismatched transient beats; the scrub commit clears the
-    /// latch (`endScrubLatch`) once it settles. nil = not scrubbing, so beats drive `isPlaying`
-    /// directly. Touch-drag only: the tvOS/VoiceOver seek paths don't pause the engine, so
-    /// `seek()` keeps `isPlaying == true` and they never arm this.
-    private var scrubResumeIntent: Bool?
-
-    /// Arm the scrub transport latch with the user's pre-scrub play state. Re-armed on every
-    /// drag press (with the chain-start play state) so a re-drag mid-commit can't strand it.
-    /// See `scrubResumeIntent`.
-    func beginScrubLatch(resumePlaying: Bool) {
-        scrubResumeIntent = resumePlaying
-        isPlaying = resumePlaying
-    }
-
-    /// Release the scrub transport latch once the commit has settled (seek + optional resume +
-    /// position converged). Explicit — not auto-cleared on a matching beat — so a `.playing` beat
-    /// already queued when the drag began can't drop the latch early and re-expose the flicker.
-    func endScrubLatch() {
-        scrubResumeIntent = nil
     }
 
     private let deviceProfileBuilder: DeviceProfileBuilder
@@ -1407,6 +1403,11 @@ final class PlayerViewModel {
         // Startup-metric anchor: recorded at dispatch, consumed by this session's
         // first `.playing` beat in `handle(_:)` — see `startupMillis`.
         startupClockStart = ContinuousClock.now
+        // Starting playback IS the intent to play, except when this load is a scrub commit's
+        // re-anchor. That reload force-resumes mechanically and `commitScrubSeek` re-pauses it
+        // right after, so recording it as intent would hand a second scrub landing mid-reload a
+        // resume the paused user never asked for.
+        if !isReanchoring { desiredPlaying = true }
         await engine.play()
         // A freshly-built engine starts at 1.0×; re-apply the chosen speed so it
         // survives an engine rebuild (track switch / first play after a speed change).
@@ -1557,7 +1558,7 @@ final class PlayerViewModel {
         adjacentEpisodes = .none
         clearStall()
         isPlaying = false
-        scrubResumeIntent = nil
+        desiredPlaying = false
         mediaSummary = nil
         currentAsset = nil
         didReactivelyReroute = false
@@ -2266,15 +2267,18 @@ final class PlayerViewModel {
     /// `loadAndPlay` UNCONDITIONALLY resumes — so a scrub that began while PAUSED comes
     /// back playing unless we re-pause it. An in-stream seek leaves the drag's pause in
     /// place, so it only needs the resume. `resume` is the chain-start play state
-    /// (`scrubWasPlaying`); the caller owns the scrub latch (`beginScrubLatch` /
-    /// `endScrubLatch`) and the generation-guarded `isScrubbing` release around this call.
-    /// `commitScrubSeek` with the CURRENT play intent — the transport-preserving seek
-    /// for every non-scrub surface (chapter list, Now Playing remote, tvOS effects),
-    /// where no latch pins a pre-gesture state and `isPlaying` IS the user's intent.
-    /// Without it, a paused out-of-buffer seek comes back playing (the re-anchor's
-    /// reload force-resumes) — the same bug `commitScrubSeek` fixes for drags.
+    /// (`scrubWasPlaying`); the caller owns the generation-guarded `isScrubbing` release
+    /// around this call.
+    /// `commitScrubSeek` with the user's CURRENT transport intent: the transport-preserving
+    /// seek for every non-scrub surface (chapter list, Now Playing remote, tvOS effects),
+    /// where no latch pins a pre-gesture state. Without it, a paused out-of-buffer seek comes
+    /// back playing (the re-anchor's reload force-resumes); the same bug `commitScrubSeek`
+    /// fixes for drags.
+    ///
+    /// `desiredPlaying`, not `isPlaying`: the mirror can read paused simply because a scrub or
+    /// a seek fetch is in flight, and resuming off that stale read is the stuck-paused bug.
     func seekPreservingTransport(to target: CMTime) async {
-        await commitScrubSeek(to: target, resume: isPlaying)
+        await commitScrubSeek(to: target, resume: desiredPlaying)
     }
 
     func commitScrubSeek(to target: CMTime, resume: Bool) async {
@@ -2484,6 +2488,7 @@ final class PlayerViewModel {
             return .failed
         }
         phase = .playing
+        desiredPlaying = true
         await engine.play()
         return .fellBack(error)
     }
@@ -2573,10 +2578,7 @@ final class PlayerViewModel {
                 let elapsed = clockStart.duration(to: .now).components
                 startupMillis = Int(elapsed.seconds * 1000 + elapsed.attoseconds / 1_000_000_000_000_000)
             }
-            // A scrub commit pins isPlaying to the user's intent across the engine's transient
-            // pause/seek/resume beats (see scrubResumeIntent); the commit clears the latch when it
-            // settles. nil = honor the beat directly.
-            isPlaying = scrubResumeIntent ?? true
+            isPlaying = true
             clearStall()
             lastPosition = position
             currentPosition = position
@@ -2611,10 +2613,7 @@ final class PlayerViewModel {
             // `commitScrubSeek` and may never emit .playing — a paused AVPlayer still
             // renders the seeked-to frame, so the held frame must release here too.
             unfreezeVideoSurface()
-            // While a scrub latch holds an intent, ignore the transient .paused beats the
-            // drag/seek emit (they'd flash the glyph); the commit clears the latch when it
-            // settles. nil = honor the beat directly. See scrubResumeIntent.
-            isPlaying = scrubResumeIntent ?? false
+            isPlaying = false
             clearStall()
             lastPosition = position
             currentPosition = position
@@ -2659,7 +2658,7 @@ final class PlayerViewModel {
             }
         case .ended:
             isPlaying = false
-            scrubResumeIntent = nil   // a terminal beat drops any pending scrub latch
+            desiredPlaying = false    // nothing left to resume; a terminal beat ends the intent too
             clearStall()
             // Auto-advance: capture the target episode NOW and raise the loading veil
             // synchronously — both before the `await` below can yield. Capturing the id
@@ -2728,7 +2727,7 @@ final class PlayerViewModel {
                 return
             }
             isPlaying = false
-            scrubResumeIntent = nil   // a terminal beat drops any pending scrub latch
+            desiredPlaying = false    // nothing left to resume; a terminal beat ends the intent too
             clearStall()
             // A terminal beat also releases any held frame — no live beat will ever
             // arrive to do it, and a stale snapshot must not sit latched under the
@@ -2759,7 +2758,6 @@ final class PlayerViewModel {
         // scheduled this hop — before the hop, so a burst of failure beats can't
         // schedule twice.
         isPlaying = false
-        scrubResumeIntent = nil
         clearStall()
         unfreezeVideoSurface()
         phase = .loading
@@ -3157,6 +3155,7 @@ extension PlayerViewModel {
         vm.itemTitle = "The Grand Budapest Hotel"
         vm.phase = .playing
         vm.isPlaying = true
+        vm.desiredPlaying = true   // the transport glyph reads intent, so the preview must set it
         vm.currentDuration = CMTime(seconds: 5_460, preferredTimescale: 600)   // 1:31:00
         vm.currentPosition = CMTime(seconds: 1_920, preferredTimescale: 600)   // 0:32:00
         let audio = AudioTrack(id: .jellyfinStream(1), displayName: "English",
