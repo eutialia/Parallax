@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- tvOS twin of Config/Info.plist, selected by INFOPLIST_FILE[sdk=appletvos*].
+	     Identical EXCEPT it declares no UIBackgroundModes.
+
+	     The `audio` background mode on iOS is earned by Picture in Picture: the AVKit
+	     host sets `canStartPictureInPictureAutomaticallyFromInline`, so leaving the app
+	     mid-playback keeps audible content running in a PiP window. tvOS has neither
+	     half of that — `AVKitVideoLayerHost` skips the auto-start flag under
+	     `#if !os(tvOS)`, and the PiP control is compiled out of `PlayerControlsView`'s
+	     top bar — so nothing on tvOS ever plays audio while backgrounded, and the key
+	     claimed a capability the build has no code path for. If tvOS ever grows real
+	     background audio, add the key back WITH the feature, not before it. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_smb._tcp</string>
+	</array>
+</dict>
+</plist>

@@ -446,6 +446,8 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Config/Info.plist;
+				"INFOPLIST_FILE[sdk=appletvos*]" = "Config/Info-tvOS.plist";
+				"INFOPLIST_FILE[sdk=appletvsimulator*]" = "Config/Info-tvOS.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Parallax;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.entertainment";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Parallax finds Jellyfin and SMB media servers on your local network.";
@@ -492,6 +494,8 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Config/Info.plist;
+				"INFOPLIST_FILE[sdk=appletvos*]" = "Config/Info-tvOS.plist";
+				"INFOPLIST_FILE[sdk=appletvsimulator*]" = "Config/Info-tvOS.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = Parallax;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.entertainment";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Parallax finds Jellyfin and SMB media servers on your local network.";
