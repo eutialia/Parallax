@@ -12,11 +12,13 @@ public enum PlaybackState: Sendable {
     case playing(position: CMTime, duration: CMTime, buffered: CMTime?)
     case paused(position: CMTime, duration: CMTime, buffered: CMTime?)
     /// Mid-stream stall: the user's intent is "playing" but the engine is waiting
-    /// for media (AVKit: `timeControlStatus == .waitingToPlayAtSpecifiedRate`) —
+    /// for media (AVKit: `timeControlStatus == .waitingToPlayAtSpecifiedRate`)
     /// after a seek past the buffer, or a network underrun. Distinct from
-    /// `.loading` (no stream yet) and `.paused` (user intent). AVKit-only: VLC's
-    /// `state == .buffering` fires bogusly during normal playback
-    /// (VideoLAN VLCKit#578), so the VLC engine never emits this.
+    /// `.loading` (no stream yet) and `.paused` (user intent). BOTH engines emit it:
+    /// VLC derives it from its own poll (frozen clock plus frozen demux, a seek whose
+    /// fetch stopped, a rate-change re-decode) rather than from `state == .buffering`,
+    /// which fires bogusly during normal playback (VideoLAN VLCKit#578). Only the
+    /// buffered RANGES are AVKit-only; the VLC engine always ships `buffered: nil`.
     case buffering(position: CMTime, duration: CMTime, buffered: CMTime?)
     case ended
     case failed(PlaybackError)

@@ -1063,6 +1063,39 @@ struct PlayerViewModelTests {
         #expect(engine.loadedAssets.count == loadsAfterStart)   // engine not reloaded
     }
 
+    /// The frozen-bar defect (wmv/SMB on VLC): while libvlc's clock is still republishing at
+    /// the new offset the engine's seek hold used to publish nothing, so the bar sat on the
+    /// commit target for ~2s and then jumped. The hold now extrapolates off the target, and
+    /// the VM has to carry those beats straight through. Every one of them is an ordinary
+    /// `.playing`, so nothing here needed a special case; this pins that.
+    @Test("the seek hold's extrapolated beats walk currentPosition forward, never back to the commit target")
+    func scrubCommitExtrapolatedBeatsAdvanceMonotonically() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let vm = makePlayerVM(
+            reporting: reporting,
+            resolve: { _, _, _, _ in PlayerFixtures.resolved() },
+            engine: engine
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+
+        // The commit's own beat pins the bar at the target, then four hold ticks at the
+        // 500ms poll cadence, then the settled real clock (the honest convergence).
+        var observed: [Double] = []
+        for seconds in [3_000.0, 3_000.5, 3_001.0, 3_001.5, 3_002.0, 3_002.3] {
+            engine.push(.playing(position: CMTime(seconds: seconds, preferredTimescale: 600),
+                                 duration: CMTime(seconds: 7_200, preferredTimescale: 600),
+                                 buffered: nil))
+            try await engine.settle()
+            observed.append(CMTimeGetSeconds(vm.currentPosition))
+        }
+
+        #expect(observed == [3_000.0, 3_000.5, 3_001.0, 3_001.5, 3_002.0, 3_002.3])
+        #expect(zip(observed, observed.dropFirst()).allSatisfy { $0 < $1 })
+        #expect(!vm.isStalled)   // a healthy hold raises no scrim
+    }
+
     @Test("scrub commit on direct play while paused: seek only, no resume — a paused scrub stays paused")
     func commitScrubSeekDirectPlayPausedStaysPaused() async throws {
         let reporting = StubPlaybackReporting()
