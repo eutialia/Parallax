@@ -9,11 +9,10 @@ import ParallaxPlayback
 
 /// Hosts VLC's render surface inside a SwiftUI view hierarchy.
 ///
-/// MobileVLCKit 3.x has no Picture-in-Picture API — `VLCDrawable`,
-/// `VLCPictureInPictureDrawable` and `VLCPictureInPictureMediaControlling` are all 4.x
-/// protocols — so the drawable here is the plain `UIView` VLC renders into
-/// (`player.drawable = view`), with no PiP bridge to keep alive. `VLCKitEngine` reports
-/// `supportsPiP: false`, which is what hides the PiP button on this engine.
+/// MobileVLCKit 3.x has no Picture-in-Picture API — the drawable here is the plain
+/// `UIView` VLC renders into (`player.drawable = view`), with no PiP bridge to keep
+/// alive. `VLCKitEngine` reports `supportsPiP: false`, which is what hides the PiP
+/// button on this engine.
 struct VLCVideoHost: UIViewRepresentable {
     let engine: any PlaybackEngine
     /// Pushes freeze/unfreeze actions back to the VM (same shape as `AVKitVideoLayerHost`'s).
@@ -33,8 +32,8 @@ struct VLCVideoHost: UIViewRepresentable {
     // MARK: - Coordinator
 
     /// Owns the attach/detach of the render surface. Plain `NSObject` holding a
-    /// `@MainActor` API only: unlike the 4.x PiP bridge, nothing here is called from
-    /// VLC's own threads, so no `nonisolated(unsafe)` storage is needed.
+    /// `@MainActor` API only: nothing here is called from VLC's own threads, so no
+    /// `nonisolated(unsafe)` storage is needed.
     @MainActor
     final class Coordinator {
 

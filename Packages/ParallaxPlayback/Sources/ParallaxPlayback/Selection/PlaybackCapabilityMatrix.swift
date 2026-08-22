@@ -62,8 +62,8 @@ public enum PlaybackCapabilityMatrix {
     ///
     /// `trueHD` is deliberately ABSENT: no shippable libvlc build carries a TrueHD/MLP
     /// decoder (VideoLAN leaves it out of the build-config allowlist — proven on
-    /// MobileVLCKit 3.7.3 and every VLCKit 4.0 alpha), so advertising it would invite a
-    /// server to hand us a stream that decodes to silence.
+    /// MobileVLCKit 3.7.3), so advertising it would invite a server to hand us a stream
+    /// that decodes to silence.
     public static let vlcAudioCodecs: Set<AudioCodec> = [
         .aac, .ac3, .eac3, .mp3,   // AVKit set
         .dts, .flac, .opus,

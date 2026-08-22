@@ -210,8 +210,8 @@ final class PlaybackLabRunner {
 
     /// UI-fidelity scrub: the same drag-pause → commit sandwich `PlayerControlsView`'s
     /// scrubber performs. The pause→seek→play shape is load-bearing: it reproduces bugs
-    /// a plain in-stream seek does not (the VLCKit 4 alpha flush-loop audio dropout engages
-    /// on exactly this shape).
+    /// a plain in-stream seek does not (VLCKit 3.x's unflushed post-paused-seek aout
+    /// engages on exactly this shape — see `pausedSeekTargetMs`).
     private func scrub(to seconds: Double) async {
         guard let vm else { return }
         let wasPlaying = vm.desiredPlaying   // the intent the real scrubber captures, not the lagging mirror
