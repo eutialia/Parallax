@@ -74,9 +74,8 @@ struct PlaybackCapabilityMatrixTests {
 
     /// TrueHD is the one lossless format neither engine can play: no shippable libvlc
     /// build carries a TrueHD/MLP decoder (VideoLAN's build-config allowlist omits it —
-    /// proven on MobileVLCKit 3.7.3 and every VLCKit 4.0 alpha). Advertising it would ask
-    /// a server to direct-play a stream that decodes to silence, so it must stay out of
-    /// both tiers.
+    /// proven on MobileVLCKit 3.7.3). Advertising it would ask a server to direct-play a
+    /// stream that decodes to silence, so it must stay out of both tiers.
     @Test("neither tier advertises TrueHD — nothing we ship can decode it")
     func trueHDIsAdvertisedNowhere() {
         #expect(!PlaybackCapabilityMatrix.vlcAudioCodecs.contains(.trueHD))

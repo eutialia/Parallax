@@ -97,9 +97,9 @@ public final class VLCThumbnailer {
         // affect thumbnailer callback threading — see the type doc.
         VLCKitEngine.configureVLCEvents()
 
-        // 3.x's `VLCMedia(url:)` is non-failable (4.x's was optional) — libvlc accepts any
-        // URL here and only reports an unusable input during the parse below, which the
-        // `.done` check turns into `.parseTimedOut`.
+        // 3.x's `VLCMedia(url:)` is non-failable — libvlc accepts any URL here and only
+        // reports an unusable input during the parse below, which the `.done` check turns
+        // into `.parseTimedOut`.
         let media = VLCMedia(url: url)
         // Deliberately NOT the engine's 3000ms: that value sizes a smooth-playback
         // read-ahead, and the input pre-fills it before decode starts, so a frame grab
@@ -289,9 +289,9 @@ final class MediaParseAwaiter: NSObject, VLCMediaDelegate {
                 self.continuation = continuation
                 // libvlc enforces the deadline itself (milliseconds; 0 means INFINITE,
                 // hence the ≥1 clamp) and reports `.timeout` through the delegate.
-                // `.parseLocal` is 3.x's zero option — the baseline every parse already does,
-                // which Swift surfaces as unavailable — so `.parseNetwork` alone is the
-                // "parse local files AND network ones" request the 4.x pair spelled out.
+                // `.parseLocal` is 3.x's zero option — the baseline every parse already
+                // does, which Swift surfaces as unavailable — so `.parseNetwork` alone is
+                // the "parse local files AND network ones" request.
                 guard media.parse(options: [.parseNetwork], timeout: Self.milliseconds(timeout)) == 0 else {
                     // Per the header doc, no callback ever comes after a -1 return.
                     finish(.failed)

@@ -14,9 +14,9 @@ import ParallaxPlaybackTestSupport
 @MainActor
 struct VLCKitEngineTests {
 
-    /// PiP is OFF on this engine: MobileVLCKit 3.x ships no Picture-in-Picture API at all
-    /// (the `VLCPictureInPicture*` protocols are 4.x-only), and this flag is what hides the
-    /// button. AVKit still reports `supportsPiP: true`, so the two engines must differ here.
+    /// PiP is OFF on this engine: MobileVLCKit 3.x ships no Picture-in-Picture API at
+    /// all, and this flag is what hides the button. AVKit still reports
+    /// `supportsPiP: true`, so the two engines must differ here.
     @Test("capabilities: Now Playing yes, PiP and video AirPlay no")
     func capabilities() {
         #expect(VLCKitEngine().capabilities == PlaybackEngineCapabilities(
