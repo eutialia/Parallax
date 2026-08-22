@@ -72,13 +72,17 @@ struct SMBBrowseView: View {
     /// Drives the pushed password-recovery form. One level at a time can be in a failure state, so
     /// only one level's binding is ever live.
     @State private var isEnteringPassword = false
-    /// Identity of the top-most visible tile, maintained by `scrollPosition(id:)` — never
-    /// written here. It exists so the system re-anchors the wall to the same tile whenever
-    /// the scroll view's SIZE changes: an iPhone landscape playback session reflows this
-    /// (covered) level at landscape width and back, and a bare point offset doesn't survive
-    /// the round trip — the wall came back scrolled to the top. `AnyHashable` because the
-    /// wall mixes two identity types (folders by entry, videos by `ItemID`).
-    @State private var scrollAnchorID: AnyHashable?
+    /// Programmatic scroll handle for the wall (the iOS 18 `ScrollPosition` struct, NOT the legacy
+    /// `scrollPosition(id:)` binding this replaces). The difference is the whole bug fix: a user
+    /// scroll puts the struct into its user-driven mode and SwiftUI then never spontaneously
+    /// re-applies an identity anchor — whereas the live two-way binding was treated as
+    /// authoritative on every unrelated update, re-anchoring the wall to a tile the lazy grid had
+    /// often ALREADY RECYCLED (fast fling leaves the anchor rows behind). That reconciliation
+    /// fought the finger (the wall shifted up/down mid-scroll) and sometimes failed to locate the
+    /// recycled anchor entirely (snap back to the top). The only write here is the explicit
+    /// width-change restore below; see `SMBBrowseViewModel.visibleFolderIDs` for how the anchor
+    /// identity is tracked.
+    @State private var scrollPosition = ScrollPosition()
 
     var body: some View {
         Group {
@@ -335,6 +339,8 @@ struct SMBBrowseView: View {
                         parentPath: path.path,
                         artworkProvider: deps.mediaArtworkProvider,
                         onMediaTileAppeared: { prefetchWindow(from: $0, model: model) },
+                        onFoldersVisibilityChanged: { model.visibleFolderIDs = $0 },
+                        onMediaVisibilityChanged: { model.visibleMediaIDs = $0 },
                         onPlay: { playback.playSMB($0, ref: path.ref) }
                     )
                     // Stale-while-revalidate dim → crossfade during a foreground re-list (shared
@@ -349,9 +355,18 @@ struct SMBBrowseView: View {
             // The share ROOT keeps the tvOS tab chrome, so it takes the root-chrome bypass to rest
             // at the same y as the chrome-less pushed levels — see `mediaWallContentMargins`.
             .mediaWallContentMargins(iosVertical: Space.s12, tvRootChromeBypass: path.path.isEmpty)
-            // Pairs with the grids' `.scrollTargetLayout()` (see `SMBBrowseGrid`): identity-
-            // anchored scroll restoration across the player's landscape reflow.
-            .scrollPosition(id: $scrollAnchorID)
+            // Programmatic scroll handle, not a live binding — see `scrollPosition` above for why
+            // the legacy `scrollPosition(id:)` form caused mid-scroll jumps. The grids'
+            // `.scrollTargetLayout()` + `onScrollTargetVisibilityChange` keep the topmost visible
+            // tile's identity recorded on the view model; the modifier below re-anchors to it when
+            // the scroll view's WIDTH changes: an iPhone landscape playback session reflows this
+            // (covered) level at landscape width and back, and a bare point offset doesn't survive
+            // the round trip — the wall came back scrolled to the top.
+            .scrollPosition($scrollPosition)
+            .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { oldWidth, newWidth in
+                guard oldWidth != newWidth, let anchor = model.scrollAnchorID else { return }
+                scrollPosition.scrollTo(id: anchor)
+            }
         }
     }
 
@@ -410,6 +425,11 @@ struct SMBBrowseGrid: View {
     /// Fired when a media tile materialises in the lazy grid (its index in `media`) — drives the
     /// owner's viewport-ahead prefetch window. Optional so previews need no prefetch plumbing.
     var onMediaTileAppeared: ((Int) -> Void)? = nil
+    /// Visible-tile identity reports from `onScrollTargetVisibilityChange`, in layout order
+    /// (topmost first): the raw material for the width-change scroll anchor (see the owner's
+    /// `.scrollPosition`). Optional so previews need none of that plumbing.
+    var onFoldersVisibilityChanged: (([SMBDirectoryEntry]) -> Void)? = nil
+    var onMediaVisibilityChanged: (([ItemID]) -> Void)? = nil
     let onPlay: (Item) -> Void
 
     @Environment(\.appIdiom) private var idiom
@@ -432,9 +452,12 @@ struct SMBBrowseGrid: View {
                             .pressableTileButton()
                         }
                     }
-                    // Each tile is a scroll target so the owner's `scrollPosition(id:)`
-                    // can re-anchor the wall by identity when the scroll view resizes.
+                    // Each tile is a scroll target so `onScrollTargetVisibilityChange` below can
+                    // report the topmost visible one for the width-change scroll anchor.
                     .scrollTargetLayout()
+                    .onScrollTargetVisibilityChange(idType: SMBDirectoryEntry.self, threshold: 0) {
+                        onFoldersVisibilityChanged?($0)
+                    }
                     // Each section grid is its own tvOS focus section so entering it (Down from
                     // the centered sort chip, or across the Folders→Videos boundary) diverts to
                     // the NEAREST tile. Without it the engine aims at the middle column, and a
@@ -466,6 +489,9 @@ struct SMBBrowseGrid: View {
                         }
                     }
                     .scrollTargetLayout()
+                    .onScrollTargetVisibilityChange(idType: ItemID.self, threshold: 0) {
+                        onMediaVisibilityChanged?($0)
+                    }
                     // Same nearest-tile entry divert as the Folders grid above.
                     .tvFocusSection()
                 }
