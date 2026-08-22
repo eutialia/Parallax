@@ -28,6 +28,15 @@ import ParallaxJellyfin
 /// alternative (reusing a socket mid-response) is the crash this layer exists to avoid. Failures map
 /// through `SMBFileSource.mapListError` to the same `AppError` `userMessage` the Jellyfin grid
 /// surfaces (`LibraryGridViewModel`), so SMB and Jellyfin errors read in one voice.
+/// The identity-anchored scroll target for an SMB browse wall (see `SMBBrowseViewModel`
+/// `.scrollAnchorID`). File scope and explicitly `nonisolated` — the project defaults to
+/// MainActor isolation, and a main-actor-isolated `Hashable` conformance can't satisfy the
+/// `Sendable` bound of `scrollTo(id:)`.
+nonisolated enum SMBBrowseScrollAnchor: Hashable, Sendable {
+    case folder(SMBDirectoryEntry)
+    case media(ItemID)
+}
+
 @Observable
 @MainActor
 final class SMBBrowseViewModel {
@@ -53,6 +62,27 @@ final class SMBBrowseViewModel {
     /// failure screen keys on this: "Share Unavailable — offline or renamed" is a misdiagnosis
     /// when the actual fix is updating the stored credentials.
     private(set) var errorIsSignInRefusal = false
+
+    // MARK: Scroll anchor (reflow restoration)
+
+    /// Visible-tile identities per section, in layout order (topmost first), maintained by the
+    /// grid's `onScrollTargetVisibilityChange`. Deliberately `@ObservationIgnored`: these mutate
+    /// on every tile boundary crossing while the user scrolls, and nothing may observe that —
+    /// reading them from `body` would put each crossing back on the view's invalidation path.
+    /// Only the width-change restore reads them, outside body evaluation.
+    @ObservationIgnored var visibleFolderIDs: [SMBDirectoryEntry] = []
+    @ObservationIgnored var visibleMediaIDs: [ItemID] = []
+
+    /// The identity to re-anchor the wall to across a width change (device rotation during an
+    /// iPhone playback session): the topmost visible folder if any are on screen, else the
+    /// topmost visible media tile. Folders render above media, so a non-empty folder list wins.
+    /// A dedicated enum rather than `AnyHashable`: `scrollTo(id:)` requires `Sendable`, and
+    /// `AnyHashable`'s own `Sendable` conformance is unavailable (a typeless box can't vouch for
+    /// its payload); both wrapped values here are `Sendable`, so this conforms structurally.
+    var scrollAnchorID: SMBBrowseScrollAnchor? {
+        if let folder = visibleFolderIDs.first { return .folder(folder) }
+        return visibleMediaIDs.first.map { .media($0) }
+    }
 
     /// Showing the blocking full-screen failure with nothing listed (share-root or per-folder
     /// error) — the state an offline→online recovery should re-`load()`. Drives `.recoversFromOffline`.
