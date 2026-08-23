@@ -22,20 +22,19 @@ struct ServerStoreTests {
         #expect(storedToken == "tok-1")
     }
 
-    @Test("Load reconstructs sessions from UserDefaults + Keychain")
+    @Test("Load reconstructs sessions from UserDefaults + Keychain, first-added session stays active")
     func loadAfterRecreate() async throws {
         let harness = JellyfinFixtures.serverStore()
         try await harness.store.add(JellyfinFixtures.session(id: "s1", token: "t1"))
         try await harness.store.add(JellyfinFixtures.session(id: "s2", token: "t2"))
-        try await harness.store.setActive(ServerID(rawValue: "s2"))
 
         // A new store instance pointing at the same backing storage — i.e. the next launch.
         let relaunched = ServerStore(settings: harness.settings, keychain: harness.keychain)
         try await relaunched.load()
 
         #expect(await relaunched.sessions.count == 2)
-        #expect(await relaunched.active?.id == ServerID(rawValue: "s2"))
-        #expect(await relaunched.active?.accessToken == "t2")
+        #expect(await relaunched.active?.id == ServerID(rawValue: "s1"))
+        #expect(await relaunched.active?.accessToken == "t1")
     }
 
     /// The stored active id has to be validated on load: if that server is gone (removed on
@@ -44,9 +43,9 @@ struct ServerStoreTests {
     @Test("A stale persisted active id falls back to a surviving session and is rewritten")
     func staleActiveIDFallsBack() async throws {
         let harness = JellyfinFixtures.serverStore()
-        try await harness.store.add(JellyfinFixtures.session(id: "s1", token: "t1"))
+        // s2 is added first so `add` makes it active without a separate setActive call.
         try await harness.store.add(JellyfinFixtures.session(id: "s2", token: "t2"))
-        try await harness.store.setActive(ServerID(rawValue: "s2"))
+        try await harness.store.add(JellyfinFixtures.session(id: "s1", token: "t1"))
         // s2's token vanishes, so it can't rebuild a session on the next load.
         try await harness.keychain.delete(JellyfinFixtures.tokenKey(forRawID: "s2"))
 
@@ -59,16 +58,6 @@ struct ServerStoreTests {
         let again = ServerStore(settings: harness.settings, keychain: harness.keychain)
         try await again.load()
         #expect(await again.active?.id == ServerID(rawValue: "s1"))
-    }
-
-    @Test("setActive ignores a server with no live session")
-    func setActiveIgnoresUnknownServer() async throws {
-        let harness = JellyfinFixtures.serverStore()
-        try await harness.store.add(JellyfinFixtures.session(id: "s1", token: "t1"))
-
-        try await harness.store.setActive(ServerID(rawValue: "not-a-server"))
-
-        #expect(await harness.store.active?.id == ServerID(rawValue: "s1"))
     }
 
     @Test("Remove deletes both Keychain token and UserDefaults metadata")
@@ -91,7 +80,6 @@ struct ServerStoreTests {
         let harness = JellyfinFixtures.serverStore()
         try await harness.store.add(JellyfinFixtures.session(id: "s1", token: "t1"))
         try await harness.store.add(JellyfinFixtures.session(id: "s2", token: "t2"))
-        try await harness.store.setActive(ServerID(rawValue: "s1"))
 
         try await harness.store.remove(ServerID(rawValue: "s1"))
 

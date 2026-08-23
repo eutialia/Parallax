@@ -518,7 +518,6 @@ struct SMBBrowseGrid: View {
     private var columns: [GridItem] {
         posterGridColumns(
             fixedColumns: AppLayout.landscapeGridColumns(idiom: idiom),
-            columnMinWidth: 0,   // unused: a fixed count is always supplied
             columnSpacing: AppLayout.posterGridColumnSpacing(idiom: idiom)
         )
     }

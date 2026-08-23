@@ -10,8 +10,9 @@ public struct SubtitleTrack: Sendable, Hashable {
     public let detailLabel: String?
     /// A sidecar stream (external file), not muxed into the source container.
     public let isExternal: Bool
-    /// Hearing-impaired (SDH) track. Server wiring is deferred; defaults false so
-    /// the menu can render the badge once `isHearingImpaired` is plumbed through.
+    /// Hearing-impaired (SDH) track. `AVKitEngine` maps this from the media
+    /// selection option's `isHearingImpaired`; defaults false for engines/tracks
+    /// that don't carry the flag.
     public let isSDH: Bool
     /// An image subtitle (PGS/VobSub) offered on the transcode path: picking it
     /// re-resolves the session with the server burning it into the video (no

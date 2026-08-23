@@ -38,13 +38,6 @@ struct ParallaxApp: App {
     /// Whether the Subtitles menu is open — drives the floating preview "lights" overlay.
     @State private var subtitlePreview: SubtitlePreviewState = .init()
 
-    /// Boot into the poster-tile focus spike screen (PosterFocusSpike.swift) instead of
-    /// the app — Debug-only diagnostic for on-device focus A/Bs.
-    private let posterFocusSpike = false
-    /// Boot into the lockup text-nudge spike (same file) — does the `.borderless` style's
-    /// move-text-out-of-the-way work with our label shapes?
-    private let lockupTextSpike = false
-
     /// The dependencies have to exist before the launch gate can be built — the gate's
     /// mode is decided from what's on disk — so both are constructed here rather than in
     /// their property initializers.
@@ -79,17 +72,7 @@ struct ParallaxApp: App {
 
     var body: some Scene {
         WindowGroup {
-            #if DEBUG
-            if posterFocusSpike {
-                PosterFocusSpikeScreen()
-            } else if lockupTextSpike {
-                LockupTextSpikeScreen()
-            } else {
-                appRoot
-            }
-            #else
             appRoot
-            #endif
         }
     }
 

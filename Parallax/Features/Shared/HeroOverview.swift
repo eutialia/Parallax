@@ -31,29 +31,6 @@ enum OverviewFormatting {
 
 // MARK: - Hero
 
-/// Jellyfin overview blurb in the hero foreground, between title and actions.
-/// `.subheadline` auto-ramps on tvOS; only the measure is idiom-managed (HeroMetrics).
-struct HeroOverview: View {
-    let text: String
-
-    @Environment(\.appIdiom) private var idiom
-
-    var body: some View {
-        Text(text)
-            .font(.subheadline)
-            .foregroundStyle(.white)
-            .lineLimit(3)
-            .truncationMode(.tail)
-            .fixedSize(horizontal: false, vertical: true)
-            // Wide band carries no veil — the blurb wears the subtitle-style contour instead.
-            .heroTypeContour(idiom: idiom)
-            .frame(
-                maxWidth: HeroMetrics.overviewMaxWidth(idiom: idiom),
-                alignment: .leading
-            )
-    }
-}
-
 /// Hero overview that shrinks its line count to the space the foreground cap leaves. `ViewThatFits`
 /// tries 5→1 lines and renders the tallest that fits the height the column proposes, so a roomy band
 /// shows more of the blurb and a tight one shows less — the rest truncates with an ellipsis. Used in

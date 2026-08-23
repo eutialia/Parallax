@@ -69,7 +69,4 @@ public actor SettingsStore {
         }
     }
 
-    public func remove<Value>(_ key: SettingKey<Value>) {
-        defaults.removeObject(forKey: key.name)
-    }
 }

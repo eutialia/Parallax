@@ -8,7 +8,7 @@ import SwiftUI
 /// - tvOS: emits the artwork and caption as SIBLING label children — the body is a two-statement
 ///   `@ViewBuilder` (a `TupleView`), so an enclosing `.borderless` button sees two children and
 ///   applies the caption-avoidance nudge. A contained `VStack` here suppresses the nudge and the
-///   focused frame lands on the text (LockupTextSpikeScreen rows B/C, device-verified 2026-07).
+///   focused frame lands on the text (device-verified on Apple TV, 2026-07).
 ///   Nested custom-View layers stay transparent to that walk (the SMB tile already stacks
 ///   `SMBThumbnailTile.Lockup → MediaTile.Lockup → …` and the nudge survives), so wrapping the
 ///   siblings in this shared view changes nothing the engine sees.

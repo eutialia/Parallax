@@ -95,7 +95,7 @@ struct JellyfinSearchResultsView: View, Equatable {
             // clears its neighbours — the same fix `libraryListSpacing` records.
             LazyVGrid(
                 columns: posterGridColumns(
-                    fixedColumns: cols, columnMinWidth: 0,
+                    fixedColumns: cols,
                     columnSpacing: AppLayout.posterGridColumnSpacing(idiom: idiom)
                 ),
                 spacing: AppLayout.posterGridRowSpacing(idiom: idiom)

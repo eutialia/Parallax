@@ -84,7 +84,6 @@ struct ServerStoreInvalidationTests {
         let (store, _, _) = freshStore()
         try await store.add(session(id: "s1", token: "t1"))
         try await store.add(session(id: "s2", token: "t2"))
-        try await store.setActive(ServerID(rawValue: "s1"))
 
         await store.invalidateSession(ServerID(rawValue: "s1"))
 

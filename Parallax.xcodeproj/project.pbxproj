@@ -26,13 +26,6 @@
 			remoteGlobalIDString = DAC3F6642FC652DA00EF06E5;
 			remoteInfo = Parallax;
 		};
-		DAC3F67D2FC652DB00EF06E5 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = DAC3F65D2FC652DA00EF06E5 /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = DAC3F6642FC652DA00EF06E5;
-			remoteInfo = Parallax;
-		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -52,7 +45,6 @@
 /* Begin PBXFileReference section */
 		DAC3F6652FC652DA00EF06E5 /* Parallax.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Parallax.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		DAC3F6722FC652DB00EF06E5 /* ParallaxTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ParallaxTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		DAC3F67C2FC652DB00EF06E5 /* ParallaxUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ParallaxUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		DAC3F7002FC6700000EF06E5 /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = Signing.xcconfig; path = Config/Signing.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -65,11 +57,6 @@
 		DAC3F6752FC652DB00EF06E5 /* ParallaxTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = ParallaxTests;
-			sourceTree = "<group>";
-		};
-		DAC3F67F2FC652DB00EF06E5 /* ParallaxUITests */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = ParallaxUITests;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -97,13 +84,6 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		DAC3F6792FC652DB00EF06E5 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -112,7 +92,6 @@
 			children = (
 				DAC3F6672FC652DA00EF06E5 /* Parallax */,
 				DAC3F6752FC652DB00EF06E5 /* ParallaxTests */,
-				DAC3F67F2FC652DB00EF06E5 /* ParallaxUITests */,
 				DAC3F7002FC6700000EF06E5 /* Signing.xcconfig */,
 				DAC3F6662FC652DA00EF06E5 /* Products */,
 			);
@@ -123,7 +102,6 @@
 			children = (
 				DAC3F6652FC652DA00EF06E5 /* Parallax.app */,
 				DAC3F6722FC652DB00EF06E5 /* ParallaxTests.xctest */,
-				DAC3F67C2FC652DB00EF06E5 /* ParallaxUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -185,27 +163,6 @@
 			productReference = DAC3F6722FC652DB00EF06E5 /* ParallaxTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
-		DAC3F67B2FC652DB00EF06E5 /* ParallaxUITests */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = DAC3F68C2FC652DB00EF06E5 /* Build configuration list for PBXNativeTarget "ParallaxUITests" */;
-			buildPhases = (
-				DAC3F6782FC652DB00EF06E5 /* Sources */,
-				DAC3F6792FC652DB00EF06E5 /* Frameworks */,
-				DAC3F67A2FC652DB00EF06E5 /* Resources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-				DAC3F67E2FC652DB00EF06E5 /* PBXTargetDependency */,
-			);
-			fileSystemSynchronizedGroups = (
-				DAC3F67F2FC652DB00EF06E5 /* ParallaxUITests */,
-			);
-			name = ParallaxUITests;
-			productName = ParallaxUITests;
-			productReference = DAC3F67C2FC652DB00EF06E5 /* ParallaxUITests.xctest */;
-			productType = "com.apple.product-type.bundle.ui-testing";
-		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -220,10 +177,6 @@
 						CreatedOnToolsVersion = 26.5;
 					};
 					DAC3F6712FC652DB00EF06E5 = {
-						CreatedOnToolsVersion = 26.5;
-						TestTargetID = DAC3F6642FC652DA00EF06E5;
-					};
-					DAC3F67B2FC652DB00EF06E5 = {
 						CreatedOnToolsVersion = 26.5;
 						TestTargetID = DAC3F6642FC652DA00EF06E5;
 					};
@@ -252,7 +205,6 @@
 			targets = (
 				DAC3F6642FC652DA00EF06E5 /* Parallax */,
 				DAC3F6712FC652DB00EF06E5 /* ParallaxTests */,
-				DAC3F67B2FC652DB00EF06E5 /* ParallaxUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -266,13 +218,6 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		DAC3F6702FC652DB00EF06E5 /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		DAC3F67A2FC652DB00EF06E5 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -296,13 +241,6 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		DAC3F6782FC652DB00EF06E5 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -310,11 +248,6 @@
 			isa = PBXTargetDependency;
 			target = DAC3F6642FC652DA00EF06E5 /* Parallax */;
 			targetProxy = DAC3F6732FC652DB00EF06E5 /* PBXContainerItemProxy */;
-		};
-		DAC3F67E2FC652DB00EF06E5 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = DAC3F6642FC652DA00EF06E5 /* Parallax */;
-			targetProxy = DAC3F67D2FC652DB00EF06E5 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -573,46 +506,6 @@
 			};
 			name = Release;
 		};
-		DAC3F68D2FC652DB00EF06E5 /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CODE_SIGN_STYLE = Automatic;
-				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.lhdev.ParallaxUITests;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = iphoneos;
-				STRING_CATALOG_GENERATE_SYMBOLS = NO;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
-				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_EMIT_LOC_STRINGS = NO;
-				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_TARGET_NAME = Parallax;
-			};
-			name = Debug;
-		};
-		DAC3F68E2FC652DB00EF06E5 /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CODE_SIGN_STYLE = Automatic;
-				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.lhdev.ParallaxUITests;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = iphoneos;
-				STRING_CATALOG_GENERATE_SYMBOLS = NO;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
-				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_EMIT_LOC_STRINGS = NO;
-				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_TARGET_NAME = Parallax;
-			};
-			name = Release;
-		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -639,15 +532,6 @@
 			buildConfigurations = (
 				DAC3F68A2FC652DB00EF06E5 /* Debug */,
 				DAC3F68B2FC652DB00EF06E5 /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
-		DAC3F68C2FC652DB00EF06E5 /* Build configuration list for PBXNativeTarget "ParallaxUITests" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				DAC3F68D2FC652DB00EF06E5 /* Debug */,
-				DAC3F68E2FC652DB00EF06E5 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

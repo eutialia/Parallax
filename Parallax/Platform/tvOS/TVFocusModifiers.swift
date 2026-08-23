@@ -59,8 +59,8 @@ extension View {
     /// floated above grid siblings, none of which a custom style can fake). Pairs with
     /// `tvPosterHighlight(cornerRadius:)` on the tile INSIDE the label: the system masks
     /// its highlight to a default corner radius that mismatches ours, and the shaped
-    /// content shape is what re-aligns it (device-verified June 2026 — the bare style's
-    /// corner mismatch is reproduced in `PosterFocusSpikeScreen` row B). `.plain` on iOS.
+    /// content shape is what re-aligns it (device-verified June 2026 against the
+    /// bare style, whose corner mismatch is visible on a real Apple TV). `.plain` on iOS.
     /// OWNS the button style — do NOT pair it with a separate `.buttonStyle(.plain)` at
     /// the call site: a nearer (inner) style wins and kills the focus effect, leaving the
     /// tile focus-dead on Apple TV. One style, set here, per control.

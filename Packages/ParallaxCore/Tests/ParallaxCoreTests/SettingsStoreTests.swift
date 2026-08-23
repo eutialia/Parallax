@@ -51,16 +51,6 @@ struct SettingsStoreTests {
         }
     }
 
-    @Test("removing a key restores the default")
-    func removeRestoresDefault() async throws {
-        try await withStore { store in
-            let key = SettingKey(name: "test.removable", defaultValue: 100)
-            try await store.set(7, for: key)
-            await store.remove(key)
-            #expect(await store.value(for: key) == 100)
-        }
-    }
-
     /// `value(for:)` deliberately swallows a decode failure so a migrated/corrupt preference
     /// can't crash launch — the distinction is `tryValue`'s job, tested below.
     @Test("value(for:) falls back to the default when the stored bytes don't decode")
