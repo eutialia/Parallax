@@ -34,8 +34,6 @@ public struct PlaybackDebugInfo: Sendable, Equatable {
     /// AVPlayerItem.status: "unknown" / "ready" / "failed" — whether the item
     /// ever became playable at all, distinct from the transport's state.
     public var itemStatus: String?
-    /// The engine's own audio option list + the one it's actively rendering.
-    public var audibleOptions: [String]
     public var selectedAudible: String?
     /// The engine's own subtitle option list + the one actively rendering.
     /// Ground truth for "selected but doesn't render" — if a user picked a sub
@@ -73,7 +71,6 @@ public struct PlaybackDebugInfo: Sendable, Equatable {
         playheadSeconds: Double? = nil,
         loadedRanges: [String] = [],
         itemStatus: String? = nil,
-        audibleOptions: [String] = [],
         selectedAudible: String? = nil,
         legibleOptions: [String] = [],
         selectedLegible: String? = nil,
@@ -93,7 +90,6 @@ public struct PlaybackDebugInfo: Sendable, Equatable {
         self.playheadSeconds = playheadSeconds
         self.loadedRanges = loadedRanges
         self.itemStatus = itemStatus
-        self.audibleOptions = audibleOptions
         self.selectedAudible = selectedAudible
         self.legibleOptions = legibleOptions
         self.selectedLegible = selectedLegible

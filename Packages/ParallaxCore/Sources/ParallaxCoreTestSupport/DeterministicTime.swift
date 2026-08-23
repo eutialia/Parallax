@@ -16,9 +16,6 @@ public actor ManualSleeper {
 
     public init() {}
 
-    /// How many sleeps are parked right now.
-    public var parkedCount: Int { parked.count }
-
     /// Drop-in for `Task.sleep(for:)`: parks until `releasePending(expecting:)` wakes it.
     /// The requested duration is ignored on purpose — ordering, not wall time, is what the
     /// suites under test care about.

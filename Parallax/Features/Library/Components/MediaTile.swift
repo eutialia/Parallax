@@ -105,8 +105,8 @@ struct MediaTile: View {
     /// The `.borderless` button-label form. On tvOS it emits the thumbnail and metadata row as
     /// SIBLING label children — the lockup layout slides the text out of the lifted image's way
     /// only when the text is its own label child; wrapped in the contained VStack it sat dead
-    /// still and the focused still landed on the title (LockupTextSpikeScreen rows B/C,
-    /// device-verified 2026-07). The style owns the thumbnail↔text gap and its focus motion;
+    /// still and the focused still landed on the title (device-verified on Apple TV,
+    /// 2026-07). The style owns the thumbnail↔text gap and its focus motion;
     /// `metadataGap` remains the iOS/skeleton metric. iOS resolves to the contained form.
     ///
     /// Use ONLY as a Button label: the tvOS multi-view body is Group-transparent, so a modifier

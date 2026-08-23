@@ -110,9 +110,8 @@ public actor ServerStore {
         }
     }
 
-    /// Whether any SMB server is configured. The app's router folds this into its
-    /// login-vs-home decision: an SMB server with no Jellyfin session is still a
-    /// browsable home, not a login dead-end.
+    /// Whether any SMB server is configured. The router doesn't read this directly — it goes
+    /// through `SourceSnapshot.hasAuxiliarySources` below, which this property feeds.
     public var hasSMBServers: Bool {
         persistedServers.contains { if case .smb = $0.kind { return true }; return false }
     }
@@ -432,9 +431,9 @@ public actor ServerStore {
     /// same host reuses the same id, so shares and credentials update in-place
     /// rather than duplicating the row.
     ///
-    /// Does NOT touch `loadedSessions` and does NOT call `setActive` — SMB
-    /// servers have no `Session`, and making one "active" would nil-route the
-    /// Jellyfin-keyed router to the login screen.
+    /// Does NOT touch `loadedSessions` or `activeID` — SMB servers have no
+    /// `Session`, and making one "active" would nil-route the Jellyfin-keyed
+    /// router to the login screen.
     @discardableResult
     public func addSMBServer(_ data: SMBServerData, password: String) async throws -> ServerID {
         let id = ServerID(rawValue: "smb-\(data.host)")
@@ -602,12 +601,6 @@ public actor ServerStore {
         return true
     }
 
-    public func setActive(_ id: ServerID) async throws {
-        guard loadedSessions.contains(where: { $0.id == id }) else { return }
-        activeID = id
-        try await persistActiveID()
-    }
-
     private func rollbackKeychain(key: KeychainKey<String>, previousToken: String?) async {
         do {
             if let previousToken {
@@ -650,10 +643,9 @@ public actor ServerStore {
     }
 
     /// The opaque Keychain account that holds a server's secret — the Jellyfin bearer token
-    /// for `.jellyfin`, the password for `.smb`. Public + static so the app's media-repo
-    /// factory and SMB playback resolver derive the SAME slot instead of re-hardcoding the
-    /// `"token-<id>"` literal (a divergence would silently read an empty password and fail
-    /// SMB auth with no error).
+    /// for `.jellyfin`, the password for `.smb`. Public + static because the app-hosted
+    /// `ParallaxTests/SMBPlaybackResolverTests` derives the keychain slot from it directly;
+    /// production code reads secrets through `smbPassword(for:)` instead.
     public static func tokenAccount(for id: ServerID) -> String {
         "token-\(id.rawValue)"
     }

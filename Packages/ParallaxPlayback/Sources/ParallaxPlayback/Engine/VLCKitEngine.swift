@@ -692,7 +692,6 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
 
         let audio = audioDescriptors()
         let subtitles = subtitleDescriptors()
-        info.audibleOptions = audio.map(\.name)
         info.selectedAudible = audio.first(where: { $0.id == player.currentAudioTrackIndex })?.name
         info.legibleOptions = subtitles.map(\.name)
         info.selectedLegible = subtitles.first(where: { $0.id == player.currentVideoSubTitleIndex })?.name

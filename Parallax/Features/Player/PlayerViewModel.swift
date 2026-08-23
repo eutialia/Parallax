@@ -277,7 +277,6 @@ final class PlayerViewModel {
         let requested: TrackPick
         /// The track playback stayed on. Nil when the previous selection is unknown.
         let fallback: TrackPick?
-        let error: AppError
     }
     private(set) var trackSwitchFailure: TrackSwitchFailure?
 
@@ -298,12 +297,6 @@ final class PlayerViewModel {
 
     /// User-selected playback speed (1.0 = normal). Drives the speed chip.
     private(set) var playbackRate: Float = 1
-
-    /// A concise format summary for the top bar, e.g. "4K · HDR · 7.1".
-    /// Cached, not computed-per-read: `body` re-evaluates ~twice a second off the
-    /// periodic time observer, and the derivation scans `resolved.mediaStreams`.
-    /// Recomputed only when the stream resolves (`recomputeMediaSummary`).
-    private(set) var mediaSummary: String?
 
     /// The just-loaded asset itself — kept so a reactive AVKit→VLC re-route
     /// (`attemptReactiveFallback`) can rebuild it (same url/headers/hints/vlcOptions,
@@ -340,20 +333,6 @@ final class PlayerViewModel {
     /// only AVKit is presently tunable.
     private(set) var startupMillis: Int?
 
-    private func recomputeMediaSummary() {
-        guard let resolved else { mediaSummary = nil; return }
-        var parts: [String] = []
-        if let video = resolved.mediaStreams.first(where: { $0.kind == .video }) {
-            if let q = Self.qualityLabel(width: video.width, height: video.height) { parts.append(q) }
-            if let r = Self.hdrLabel(video.videoRangeType ?? video.videoRange) { parts.append(r) }
-        }
-        let audioIndex = currentAudioStreamIndex ?? resolved.defaultAudioStreamIndex
-        let audio = resolved.mediaStreams.first { $0.kind == .audio && $0.index == audioIndex }
-            ?? resolved.mediaStreams.first { $0.kind == .audio }
-        if let layout = TrackDisplay.channelLayout(audio?.channels) { parts.append(layout) }
-        mediaSummary = parts.isEmpty ? nil : parts.joined(separator: " · ")
-    }
-
     /// Set the playback speed and apply it to the live engine. Persists across
     /// pause/resume; re-applied to a fresh engine in `beginPlayback`.
     func setPlaybackRate(_ rate: Float) async {
@@ -373,8 +352,8 @@ final class PlayerViewModel {
 
     /// Chapter start fractions (0...1) of the current duration — the progress bars'
     /// tick positions on every platform. Empty until the duration is known.
-    /// Cached, not computed-per-read (same reason as `mediaSummary`): the scrubber body
-    /// re-evaluates ~twice a second off the periodic position beat, and this maps every
+    /// Cached, not computed-per-read: the scrubber body re-evaluates ~2 Hz off the
+    /// periodic time observer, and this maps every
     /// chapter through a divide. Recomputed only when the chapter set (`playingItem`) or
     /// the duration actually changes — see `recomputeChapterFractions` / `applyDuration`.
     private(set) var chapterFractions: [Double] = []
@@ -1280,7 +1259,6 @@ final class PlayerViewModel {
             // with the full engine inventory + the same external append.
             availableSubtitleTracks = Self.externalSubtitleTracks(from: resolved)
         }
-        recomputeMediaSummary()
 
         let asset = Self.makeAsset(from: resolved, subtitleFonts: await subtitleFonts)
         try await loadAndPlay(asset, reusingEngine: reusingEngine)
@@ -1597,7 +1575,6 @@ final class PlayerViewModel {
         clearStall()
         isPlaying = false
         desiredPlaying = false
-        mediaSummary = nil
         currentAsset = nil
         didReactivelyReroute = false
         isReactivelyRerouting = false
@@ -1762,14 +1739,13 @@ final class PlayerViewModel {
                 // The reload never ran (re-entrant pick or exit) — quietly restore
                 // the checkmark so the menu doesn't show a track that isn't playing.
                 selectedAudioTrack = previous
-            case .fellBack(let error):
+            case .fellBack:
                 // Playback resumed on the previous track: restore the checkmark and
                 // surface the failure scrim (retry / keep current track).
                 selectedAudioTrack = previous
                 trackSwitchFailure = TrackSwitchFailure(
                     requested: .audio(track),
-                    fallback: previous.map(TrackPick.audio),
-                    error: error
+                    fallback: previous.map(TrackPick.audio)
                 )
             case .failed:
                 break   // phase == .failed — the general error scrim owns the surface
@@ -1900,8 +1876,7 @@ final class PlayerViewModel {
                 }
                 trackSwitchFailure = TrackSwitchFailure(
                     requested: .subtitle(target),
-                    fallback: fallback.map(TrackPick.subtitle),
-                    error: .playback(.unsupportedFormat)
+                    fallback: fallback.map(TrackPick.subtitle)
                 )
                 return
             }
@@ -1910,13 +1885,12 @@ final class PlayerViewModel {
         case .abandoned:
             selectedSubtitleTrack = previous
             restoreSidecarSubtitle(previous)
-        case .fellBack(let error):
+        case .fellBack:
             selectedSubtitleTrack = previous
             restoreSidecarSubtitle(previous)
             trackSwitchFailure = TrackSwitchFailure(
                 requested: .subtitle(target),
-                fallback: previous.map(TrackPick.subtitle),
-                error: error
+                fallback: previous.map(TrackPick.subtitle)
             )
         case .failed:
             break   // phase == .failed — the general error scrim owns the surface
@@ -2913,22 +2887,6 @@ final class PlayerViewModel {
 
         selectedAudioTrack = availableAudioTracks.first { $0.id == currentAudioStreamIndex.map(TrackID.jellyfinStream) }
         selectedSubtitleTrack = availableSubtitleTracks.first { $0.id == currentSubtitleStreamIndex.map(TrackID.jellyfinStream) }
-    }
-
-    /// Resolution bucket. Delegates 4K to the shared `QualityBadge`, keeping the
-    /// player-only sub-4K fallback detail hero metadata omits.
-    private static func qualityLabel(width: Int?, height: Int?) -> String? {
-        if let badge = QualityBadge.resolution(width: width, height: height) { return badge }
-        let h = height ?? 0, w = width ?? 0
-        if h >= 700 || w >= 1200 { return "720p" }
-        if h > 0 { return "\(h)p" }
-        return nil
-    }
-
-    /// HDR label — delegated to `QualityBadge.hdr`, which maps all HDR flavours
-    /// (including `DOVIInvalid`) to `"HDR"`.
-    private static func hdrLabel(_ range: String?) -> String? {
-        QualityBadge.hdr(range)
     }
 
     private static func makeAsset(

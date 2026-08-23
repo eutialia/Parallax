@@ -21,14 +21,14 @@ import SwiftUI
 /// + dark scrim, pinned dark), so the title/actions seated at the bottom stay legible over any
 /// artwork. The fraction is measured off the band, so it scales across device sizes.
 struct HeroBottomFade: View {
-    /// How far up the band the fade rises (0–1 of band height). Higher = taller fade.
-    var coverage: CGFloat = 0.66
+    /// How far up the band the fade rises (0–1 of band height).
+    private static let coverage: CGFloat = 0.66
 
     var body: some View {
         GeometryReader { proxy in
             Color.clear
                 .frame(maxWidth: .infinity)
-                .frame(height: proxy.size.height * coverage)
+                .frame(height: proxy.size.height * Self.coverage)
                 .shelfTileFooterGlass()
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         }

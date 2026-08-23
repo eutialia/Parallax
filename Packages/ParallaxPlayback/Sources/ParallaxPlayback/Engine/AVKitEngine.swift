@@ -515,7 +515,6 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
             let audibleGroup = try? await asset.loadMediaSelectionGroup(for: .audible)
             let legibleGroup = try? await asset.loadMediaSelectionGroup(for: .legible)
             let selection = item.currentMediaSelection
-            info.audibleOptions = audibleGroup?.options.map(\.displayName) ?? []
             info.legibleOptions = legibleGroup?.options.map(\.displayName) ?? []
             info.selectedAudible = audibleGroup.flatMap { selection.selectedMediaOption(in: $0)?.displayName }
             info.selectedLegible = legibleGroup.flatMap { selection.selectedMediaOption(in: $0)?.displayName }

@@ -68,8 +68,6 @@ enum AppLayout {
     /// the surfaces can't drift apart. The logged-out Connect flow now shares this same scaffold.
     #if os(tvOS)
     static let settingsContentWidth: CGFloat = 680
-    /// Per-server detail (`ServerSettingsView`) — the widest reading measure of the settings family.
-    static let settingsDetailWidth: CGFloat = 780
     /// The centered settings/connect column on tvOS — the handoff's `.tv-col` (792px on its 1280 canvas
     /// = 61.9% of width → 1188pt on the 1920 screen). The native `.sidebarAdaptable` tab collapses into
     /// the "Settings" pill in the left gutter and the build tag sits in the right gutter, both flanking
@@ -90,7 +88,6 @@ enum AppLayout {
     static let tvSettingsColumnBottomInset: CGFloat = 80
     #else
     static let settingsContentWidth: CGFloat = 560
-    static let settingsDetailWidth: CGFloat = 720
     #endif
 
     /// Compact is 16 and regular is 20 — the system's own layout margins, which is

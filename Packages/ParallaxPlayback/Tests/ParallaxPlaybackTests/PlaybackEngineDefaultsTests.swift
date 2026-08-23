@@ -147,7 +147,6 @@ struct PlaybackDebugInfoTests {
     func listsAreEmpty() {
         let info = PlaybackDebugInfo.empty
         #expect(info.loadedRanges.isEmpty)
-        #expect(info.audibleOptions.isEmpty)
         #expect(info.legibleOptions.isEmpty)
         #expect(info.errorLogTail.isEmpty)
     }

@@ -178,7 +178,7 @@ struct PosterGridLoadingSkeleton: View {
         // swap now that the loaded side uses the 40pt tvOS focus-clearance tokens.
         LazyVGrid(
             columns: posterGridColumns(
-                fixedColumns: columns, columnMinWidth: 0,
+                fixedColumns: columns,
                 columnSpacing: AppLayout.posterGridColumnSpacing(idiom: idiom)
             ),
             spacing: AppLayout.posterGridRowSpacing(idiom: idiom)
@@ -193,9 +193,8 @@ struct PosterGridLoadingSkeleton: View {
 
 struct AdaptivePosterGridLoadingSkeleton: View {
     let tileCount: Int
-    var columnMinWidth: CGFloat = 140
-    /// Fixed column count; when nil the grid adapts by `columnMinWidth`. Mirrors `MediaGrid`.
-    var fixedColumns: Int? = nil
+    /// Fixed column count. Mirrors `MediaGrid`.
+    var fixedColumns: Int
     /// Tile shape — `.poster` for Jellyfin grids, `.landscape` for SMB frame-grab grids, so the
     /// skeleton matches the loaded tiles and the swap stays shift-free.
     var aspectRatio: CGFloat = MediaImage.poster
@@ -208,7 +207,6 @@ struct AdaptivePosterGridLoadingSkeleton: View {
     var body: some View {
         let columns = posterGridColumns(
             fixedColumns: fixedColumns,
-            columnMinWidth: columnMinWidth,
             columnSpacing: AppLayout.posterGridColumnSpacing(idiom: idiom)
         )
         LazyVGrid(columns: columns, spacing: AppLayout.posterGridRowSpacing(idiom: idiom)) {
@@ -233,7 +231,7 @@ struct SMBBrowseLoadingSkeleton: View {
     var body: some View {
         let columnCount = AppLayout.landscapeGridColumns(idiom: idiom)
         let columns = posterGridColumns(
-            fixedColumns: columnCount, columnMinWidth: 0,
+            fixedColumns: columnCount,
             columnSpacing: AppLayout.posterGridColumnSpacing(idiom: idiom)
         )
         // Chip in a spacing-0 wrapper mirroring the loaded tree (`VStack(spacing: 0) { sortHeader;

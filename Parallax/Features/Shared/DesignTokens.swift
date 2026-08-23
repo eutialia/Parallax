@@ -189,7 +189,6 @@ enum Radius {
     static let card: CGFloat = 18     // cards, list groups, info cards
     static let field: CGFloat = 14    // text fields, form buttons
     static let tile: CGFloat = 12     // posters, thumbs, small tiles
-    static let navItem: CGFloat = 12  // sidebar/tab item pills (panel − 12 inset)
     static let chip: CGFloat = 10     // the library-banner type-glyph chip
     static let badge: CGFloat = 7     // 4K/HDR/CC metadata badges (per handoff)
 }
