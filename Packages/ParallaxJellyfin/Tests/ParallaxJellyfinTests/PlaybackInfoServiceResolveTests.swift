@@ -377,6 +377,157 @@ struct PlaybackInfoServiceResolveTests {
         }
     }
 
+    // MARK: - Client-side default-subtitle fallback
+
+    /// The server only auto-selects a subtitle when its own preference matching
+    /// hits (dashless alpha-3 vs exact culture row — the two never bridge), so a
+    /// `zh-Hans` external sub stays unselected under a stored "zho". These cover
+    /// the client-side rescue.
+    private func fallbackSource(
+        defaultSubtitleIndex: Int? = nil,
+        subtitles: [(index: Int, language: String?, codec: String, forced: Bool)]
+    ) -> MediaSourceInfo {
+        var source = directPlaySource()
+        source.defaultSubtitleStreamIndex = defaultSubtitleIndex
+        var video = MediaStream()
+        video.type = .video
+        video.index = 0
+        video.codec = "h264"
+        source.mediaStreams = [video] + subtitles.map { spec in
+            var stream = MediaStream()
+            stream.type = .subtitle
+            stream.index = spec.index
+            stream.language = spec.language
+            stream.codec = spec.codec
+            stream.isForced = spec.forced
+            return stream
+        }
+        return source
+    }
+
+    private func userConfiguration(
+        preference: String?,
+        mode: SubtitlePlaybackMode?
+    ) -> UserConfiguration {
+        UserConfiguration(subtitleLanguagePreference: preference, subtitleMode: mode)
+    }
+
+    @Test("A nil server default is filled from the user's subtitle preference across tag dialects", arguments: [
+        // Stored alpha-3 bridges to script-tagged streams; first in stream order wins.
+        ("zho", 2),
+        // A script-carrying preference outranks stream order.
+        ("zh-Hans", 3),
+        ("zh-Hant", 2),
+        // A preference nothing matches leaves the choice to the player.
+        ("jpn", nil),
+    ] as [(String, Int?)])
+    func fallbackSubtitlePicked(preference: String, expected: Int?) async throws {
+        let (service, fake) = makeService(source: fallbackSource(subtitles: [
+            (2, "zh-hant", "subrip", false),
+            (3, "zh-hans", "subrip", false),
+        ]))
+        fake.userConfigurationResult = .success(userConfiguration(preference: preference, mode: .always))
+        let resolved = try await service.resolve(
+            item: ItemID(rawValue: "item-1"),
+            capabilities: caps(),
+            startTime: nil
+        )
+        #expect(resolved.defaultSubtitleStreamIndex == expected)
+    }
+
+    /// Only `Always` means "show subtitles by default"; every other mode is the
+    /// user asking us not to.
+    @Test("Any subtitle mode other than Always leaves the default nil", arguments: [
+        SubtitlePlaybackMode.none, .default, .onlyForced, .smart, nil,
+    ] as [SubtitlePlaybackMode?])
+    func fallbackHonorsSubtitleMode(mode: SubtitlePlaybackMode?) async throws {
+        let (service, fake) = makeService(source: fallbackSource(subtitles: [(2, "zho", "subrip", false)]))
+        fake.userConfigurationResult = .success(userConfiguration(preference: "zho", mode: mode))
+        let resolved = try await service.resolve(
+            item: ItemID(rawValue: "item-1"),
+            capabilities: caps(),
+            startTime: nil
+        )
+        #expect(resolved.defaultSubtitleStreamIndex == nil)
+    }
+
+    /// Forced subs are a burned-in-signs substitute, not a track someone asked
+    /// for; image subs would cost a full re-encode to show.
+    @Test("Forced-only and image-only candidates are never auto-selected", arguments: [
+        [(2, "zho", "subrip", true)],
+        [(2, "zho", "pgssub", false)],
+    ] as [[(index: Int, language: String?, codec: String, forced: Bool)]])
+    func fallbackSkipsForcedAndImageSubs(
+        subtitles: [(index: Int, language: String?, codec: String, forced: Bool)]
+    ) async throws {
+        let (service, fake) = makeService(source: fallbackSource(subtitles: subtitles))
+        fake.userConfigurationResult = .success(userConfiguration(preference: "zho", mode: .always))
+        let resolved = try await service.resolve(
+            item: ItemID(rawValue: "item-1"),
+            capabilities: caps(),
+            startTime: nil
+        )
+        #expect(resolved.defaultSubtitleStreamIndex == nil)
+    }
+
+    @Test("An empty preference or a failed configuration fetch leaves the default nil", arguments: [false, true])
+    func fallbackToleratesMissingConfiguration(fetchFails: Bool) async throws {
+        let (service, fake) = makeService(source: fallbackSource(subtitles: [(2, "zho", "subrip", false)]))
+        fake.userConfigurationResult = fetchFails
+            ? .failure(FakeJellyfinPlaybackClient.FakeError.reportFailed)
+            : .success(userConfiguration(preference: "", mode: .always))
+        let resolved = try await service.resolve(
+            item: ItemID(rawValue: "item-1"),
+            capabilities: caps(),
+            startTime: nil
+        )
+        #expect(resolved.defaultSubtitleStreamIndex == nil)
+    }
+
+    /// The extra round-trip is the price of a rescue, so it only runs when there
+    /// is something to rescue.
+    @Test("The configuration is fetched only when the server left the default nil and text subs exist", arguments: [
+        (2, false), (nil, true),
+    ] as [(Int?, Bool)])
+    func fallbackFetchesConfigurationOnlyWhenNeeded(serverDefault: Int?, fetches: Bool) async throws {
+        let (service, fake) = makeService(source: fallbackSource(
+            defaultSubtitleIndex: serverDefault,
+            subtitles: [(2, "zho", "subrip", false)]
+        ))
+        fake.userConfigurationResult = .success(userConfiguration(preference: "zho", mode: .always))
+        let resolved = try await service.resolve(
+            item: ItemID(rawValue: "item-1"),
+            capabilities: caps(),
+            startTime: nil
+        )
+        #expect(resolved.defaultSubtitleStreamIndex == 2)
+        #expect(fake.userConfigurationFetchCount == (fetches ? 1 : 0))
+    }
+
+    @Test("A source with no text subtitles never asks for the configuration")
+    func fallbackSkippedWithoutTextSubs() async throws {
+        let (service, fake) = makeService(source: fallbackSource(subtitles: [(2, "zho", "pgssub", false)]))
+        fake.userConfigurationResult = .success(userConfiguration(preference: "zho", mode: .always))
+        _ = try await service.resolve(
+            item: ItemID(rawValue: "item-1"),
+            capabilities: caps(),
+            startTime: nil
+        )
+        #expect(fake.userConfigurationFetchCount == 0)
+    }
+
+    @Test("The audio default is never invented client-side")
+    func fallbackLeavesAudioAlone() async throws {
+        let (service, fake) = makeService(source: fallbackSource(subtitles: [(2, "zho", "subrip", false)]))
+        fake.userConfigurationResult = .success(userConfiguration(preference: "zho", mode: .always))
+        let resolved = try await service.resolve(
+            item: ItemID(rawValue: "item-1"),
+            capabilities: caps(),
+            startTime: nil
+        )
+        #expect(resolved.defaultAudioStreamIndex == nil)
+    }
+
     @Test("Empty media sources throws an AppError")
     func emptySourcesThrows() async {
         let fake = FakeJellyfinPlaybackClient()

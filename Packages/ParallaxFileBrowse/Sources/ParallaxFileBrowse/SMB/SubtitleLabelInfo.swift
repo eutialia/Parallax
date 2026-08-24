@@ -34,16 +34,31 @@ public struct SubtitleLabelInfo: Sendable, Equatable {
         // "-" is NOT a separator here: a hyphenated component is a BCP-47-shaped
         // unit ("en-gb", "zh-Hant") that must resolve whole — token-splitting it
         // would misread the region GB as the fansub token for Simplified Chinese.
-        let components = label.lowercased().components(separatedBy: Self.separators)
-        for component in components where !component.isEmpty {
+        let components = label.lowercased().components(separatedBy: Self.separators).filter { !$0.isEmpty }
+        var index = 0
+        // "zh_Hans" tokenizes to "zh" + "hans" — the script arrives as its own
+        // component and has to be folded back onto the language it qualifies.
+        // Only hans/hant: every other neighbouring token ("forced", "hi") is a
+        // qualifier in its own right and must survive the look-ahead.
+        func withFollowingScript(_ tag: String) -> String {
+            guard !tag.contains("-"), index < components.count else { return tag }
+            switch components[index] {
+            case "hans": index += 1; return tag + "-Hans"
+            case "hant": index += 1; return tag + "-Hant"
+            default: return tag
+            }
+        }
+        while index < components.count {
+            let component = components[index]
+            index += 1
             if component.contains("-") {
                 // All-or-nothing: either every subtag reads as language+script/
                 // region ("zh-tw") or the component contributes nothing at all —
                 // a release-group tag like "sc-team" must not surface a bogus
                 // "Chinese, Simplified" (with a bogus language code to match).
-                if let tag = Self.bcp47Tag(component) { appendTag(tag) }
+                if let tag = Self.bcp47Tag(component, widened: true) { appendTag(tag) }
             } else if let tag = Self.languageTagByToken[component] {
-                appendTag(tag)
+                appendTag(withFollowingScript(tag))
             } else if let combo = Self.comboLanguageTags[component] {
                 combo.forEach(appendTag)
             } else if Self.sdhTokens.contains(component) {
@@ -52,6 +67,10 @@ public struct SubtitleLabelInfo: Sendable, Equatable {
                 forced = true
             } else if let word = Self.descriptorWords[component] {
                 if !descriptors.contains(word) { descriptors.append(word) }
+            } else if let tag = Self.isoLanguageTag(component) {
+                // Last, so a qualifier token ICU also reads as a language ("hi",
+                // "sdh") keeps its label meaning.
+                appendTag(withFollowingScript(tag))
             }
         }
         self.languageTags = tags
@@ -67,10 +86,15 @@ public struct SubtitleLabelInfo: Sendable, Equatable {
     ///
     /// Internal (not `private`) so `SubtitleMatcher` can probe whether a hyphenated
     /// filename component resolves whole *before* hyphen-splitting it — see the
-    /// language pass in `SubtitleMatcher.NameModel.init`.
-    static func bcp47Tag(_ component: String) -> String? {
+    /// language pass in `SubtitleMatcher.NameModel.init`. The matcher scans full
+    /// stems, so ITS calls keep the curated base vocabulary (default): with the
+    /// widened one, a title token like "So-So" or "Man-GB" would read as a
+    /// language. Only the label parser above opts into `widened`.
+    static func bcp47Tag(_ component: String, widened: Bool = false) -> String? {
         let subtags = component.split(separator: "-").map(String.init)
-        guard let base = subtags.first, var tag = Self.languageTagByToken[base] else { return nil }
+        guard let base = subtags.first,
+              var tag = Self.languageTagByToken[base] ?? (widened ? Self.isoLanguageTag(base) : nil)
+        else { return nil }
         for subtag in subtags.dropFirst() {
             if subtag == "hans" || subtag == "hant" {
                 if !tag.contains("-") { tag += subtag == "hans" ? "-Hans" : "-Hant" }
@@ -87,6 +111,29 @@ public struct SubtitleLabelInfo: Sendable, Equatable {
             }
         }
         return tag
+    }
+
+    /// Any ISO 639-1/639-2 (B or T) code, as the alpha-2 tag when one exists —
+    /// matching the curated table's `en`/`ja` style — else alpha-3. Nil for
+    /// anything ICU doesn't know as a language, which is what keeps release-tag
+    /// words ("raw", "dvd", "web") out.
+    ///
+    /// LABEL CONTEXT ONLY. `SubtitleMatcher` derives its stem-scanning vocabulary
+    /// from `languageTagByToken` and must keep doing so: algorithmic recognition
+    /// over a whole filename would read ordinary title words ("The.Mac.and.Me",
+    /// "War", "Man") as languages. Inside a label the tokens are already known to
+    /// be track qualifiers, so the wider vocabulary is safe — which is why only
+    /// the label parser (and its `widened` `bcp47Tag` calls) reaches this, never
+    /// the matcher's stem probe.
+    static func isoLanguageTag(_ token: String) -> String? {
+        guard (2...3).contains(token.count), token.allSatisfy(\.isLetter),
+              let alpha3 = TrackLanguage.normalized(token),
+              Locale.LanguageCode(alpha3).identifier(.alpha3) != nil
+        else { return nil }
+        if let alpha2 = Locale.LanguageCode(alpha3).identifier(.alpha2), alpha2.count == 2 {
+            return alpha2
+        }
+        return alpha3
     }
 
     /// The menu/chip name this label earns: localized language names (dual-language

@@ -232,6 +232,16 @@ struct MediaStreamInfoHelperTests {
         #expect(TrackDisplay.languageName(nil, locale: en) == nil)
     }
 
+    /// Underscore-separated tags carry the same script information as hyphenated
+    /// ones — compared against the hyphenated rendering so the assertion holds in
+    /// any locale.
+    @Test("A script subtag survives either separator")
+    func languageNameUnderscoreScript() {
+        #expect(TrackDisplay.languageName("zh_Hans", locale: en) == TrackDisplay.languageName("zh-Hans", locale: en))
+        #expect(TrackDisplay.languageName("zh_Hans", locale: en)?.contains("Simplified") == true)
+        #expect(TrackDisplay.languageName("zh_Hant", locale: en) != TrackDisplay.languageName("zh_Hans", locale: en))
+    }
+
     /// Driven by the shared list rather than a re-typed set of strings: the Jellyfin device
     /// profile declares one burn-in entry per identifier here, so anything the flag recognizes
     /// must be something the profile also declares, and vice versa.
@@ -331,5 +341,21 @@ struct TrackLanguageTests {
     func unknownPassThrough() {
         #expect(TrackLanguage.normalized("qaa") == "qaa")
         #expect(TrackLanguage.matches("qaa", "QAA"))
+    }
+
+    /// Jellyfin persists culture rows with either separator ("zh-hans" from the
+    /// server, "zh_Hans" from a muxer), so the primary subtag has to survive both.
+    @Test("Underscore-separated tags normalize like hyphenated ones")
+    func underscoreSeparator() {
+        #expect(TrackLanguage.normalized("zh_Hans") == "zho")
+        #expect(TrackLanguage.matches("zh_Hans", "chi"))
+    }
+
+    @Test("Script subtags are read out in canonical Titlecase", arguments: [
+        ("zh-Hans", "Hans"), ("zh_hans", "Hans"), ("ZH-HANT", "Hant"),
+        ("zh", nil), ("zh-CN", nil), ("en-US", nil), ("", nil), (nil, nil),
+    ] as [(String?, String?)])
+    func scriptSubtag(code: String?, expected: String?) {
+        #expect(TrackLanguage.script(code) == expected)
     }
 }

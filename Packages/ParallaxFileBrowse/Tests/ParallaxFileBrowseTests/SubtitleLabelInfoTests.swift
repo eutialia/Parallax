@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import ParallaxCore
 @testable import ParallaxFileBrowse
 
 /// Label → structured translation, pinned to an explicit locale so the localized
@@ -54,6 +55,18 @@ struct SubtitleLabelInfoTests {
         // translate (all-or-nothing rule for hyphenated components).
         Case("sc-team", tags: [], display: "sc-team"),
         // No recognised tokens → the raw label is already the best name.
+        // "_" is a token separator, so a script suffix arrives as its own
+        // component and has to be folded back onto the language it qualifies.
+        Case("zh_Hans", tags: ["zh-Hans"], display: "Chinese, Simplified"),
+        Case("zh_hant", tags: ["zh-Hant"], display: "Chinese, Traditional"),
+        // The look-ahead only ever eats a script token — flags stay flags.
+        Case("zh_forced", tags: ["zh"], forced: true, display: "Chinese"),
+        Case("zh_hi", tags: ["zh"], sdh: true, display: "Chinese"),
+        // Languages outside the curated fansub table resolve through ISO 639.
+        Case("swe", tags: ["sv"], display: "Swedish"),
+        Case("sv", tags: ["sv"], display: "Swedish"),
+        Case("pol", tags: ["pl"], display: "Polish"),
+        Case("cze", tags: ["cs"], display: "Czech"),
         Case("Default", tags: [], display: "Default"),
         Case("sweetsub", tags: [], display: "sweetsub"),
         Case("ep12", tags: [], display: "ep12"),
@@ -66,6 +79,45 @@ struct SubtitleLabelInfoTests {
         #expect(info.isSDH == c.sdh)
         #expect(info.isForced == c.forced)
         #expect(info.displayName(fallback: c.label, locale: Self.english) == c.display)
+    }
+
+    /// The same file must read the same on both transports: an SMB sidecar named
+    /// `.zh_Hans.` and a Jellyfin stream tagged `zh-Hans` are one language.
+    @Test("SMB label naming matches the Jellyfin-path rendering of the same tag", arguments: [
+        ("zh_Hans", "zh-Hans"), ("cht", "zh-Hant"), ("swe", "sv"), ("eng", "en"),
+    ] as [(String, String)])
+    func namingParityWithStreamTags(label: String, streamTag: String) {
+        let info = SubtitleLabelInfo(label: label)
+        #expect(info.displayName(fallback: label, locale: Self.english)
+                == TrackDisplay.languageName(streamTag, locale: Self.english))
+    }
+
+    /// The algorithmic ISO path is LABEL-only; the matcher's stem scan keeps the
+    /// curated vocabulary so ordinary title words ("The.Mac.and.Me") can't be
+    /// read as languages.
+    @Test("Release-tag words ICU happens to accept never enter the matcher's vocabulary", arguments: [
+        "man", "war", "new", "car", "sun", "fin", "in", "no", "to", "be",
+    ])
+    func matcherVocabularyStaysCurated(word: String) {
+        #expect(SubtitleLabelInfo.languageTagByToken[word] == nil)
+    }
+
+    /// The matcher probes `bcp47Tag` on raw hyphenated STEM tokens, so its
+    /// default (un-widened) entry must also stay curated — "man" is ISO 639-2
+    /// Mandingo and "so" is Somali, but a hyphenated title word must not
+    /// resolve through them.
+    @Test("Hyphenated stem tokens stay out of the matcher's default bcp47 probe", arguments: [
+        "man-gb", "so-so", "se-ri", "mr-dl", "war-us",
+    ])
+    func stemProbeStaysCurated(component: String) {
+        #expect(SubtitleLabelInfo.bcp47Tag(component) == nil)
+    }
+
+    @Test("Label parsing still resolves ISO bases in hyphenated components", arguments: [
+        ("sv-se", "sv"), ("por-br", "pt"),
+    ] as [(String, String)])
+    func widenedLabelComponents(label: String, tag: String) {
+        #expect(SubtitleLabelInfo(label: label).languageTags == [tag])
     }
 
     @Test("matcher language vocabulary stays translatable")
