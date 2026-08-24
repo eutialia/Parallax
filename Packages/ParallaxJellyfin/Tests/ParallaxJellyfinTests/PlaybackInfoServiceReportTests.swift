@@ -212,6 +212,53 @@ struct PlaybackInfoServiceTrackSelectionTests {
         #expect(fake.updatedUserConfigurations.count == 1)
     }
 
+    /// The server matches a script-carrying preference EXACTLY (see
+    /// `JellyfinLanguageTag`), so a `zh-Hans` pick has to persist as `zh-Hans` —
+    /// the alpha-3 "zho" it used to write matches no `zh-Hans`-tagged stream.
+    @Test("A culture-row subtitle pick persists in the server's own tag spelling", arguments: [
+        ("zh-Hans", "zh-Hans"), ("zh_Hans", "zh-Hans"), ("ZH-HANT", "zh-Hant"),
+        ("pt-br", "pt-BR"), ("es-419", "es-419"),
+        ("eng", "eng"), ("en", "eng"), ("zh-CN", "zh-CN"), ("zh", "zho"), ("en-US", "eng"),
+    ] as [(String, String)])
+    func subtitleCultureRowWriteBack(picked: String, persisted: String) async {
+        let fake = FakeJellyfinPlaybackClient()
+        fake.userConfigurationResult = .success(config(subtitleMode: .always))
+        let service = PlaybackInfoService(client: fake)
+        await service.rememberTrackSelection(.subtitles(languageCode: picked))
+        #expect(fake.updatedUserConfigurations.first?.subtitleLanguagePreference == persisted)
+    }
+
+    /// An AUDIO pick keeps writing alpha-3: audio tracks are never script-tagged
+    /// in the wild, and the server expands alpha-3 to the B/T pair for them.
+    @Test("An audio pick stays alpha-3 even for a culture-row tag")
+    func audioIgnoresCultureRows() async {
+        let fake = FakeJellyfinPlaybackClient()
+        fake.userConfigurationResult = .success(config())
+        let service = PlaybackInfoService(client: fake)
+        await service.rememberTrackSelection(.audio(languageCode: "zh-Hans"))
+        #expect(fake.updatedUserConfigurations.first?.audioLanguagePreference == "zho")
+    }
+
+    @Test("The dedupe compares the persisted spelling case-insensitively")
+    func subtitleDedupeOnPersistedForm() async {
+        let fake = FakeJellyfinPlaybackClient()
+        fake.userConfigurationResult = .success(config(subtitleLanguage: "zh-hans", subtitleMode: .always))
+        let service = PlaybackInfoService(client: fake)
+        await service.rememberTrackSelection(.subtitles(languageCode: "zh-Hans"))
+        #expect(fake.updatedUserConfigurations.isEmpty)
+    }
+
+    /// The bug this whole path exists for: a stored alpha-3 "zho" can never match
+    /// a `zh-Hans` stream, so picking one must overwrite it.
+    @Test("A stored alpha-3 is replaced by the culture row it can't match")
+    func subtitleAlpha3ReplacedByCultureRow() async {
+        let fake = FakeJellyfinPlaybackClient()
+        fake.userConfigurationResult = .success(config(subtitleLanguage: "zho", subtitleMode: .always))
+        let service = PlaybackInfoService(client: fake)
+        await service.rememberTrackSelection(.subtitles(languageCode: "zh-Hans"))
+        #expect(fake.updatedUserConfigurations.first?.subtitleLanguagePreference == "zh-Hans")
+    }
+
     @Test("A failed fetch or update is swallowed (never disturbs playback)")
     func failuresSwallowed() async {
         let fake = FakeJellyfinPlaybackClient()

@@ -17,12 +17,15 @@ public enum TrackDisplay {
         guard let code, !code.isEmpty else { return nil }
         let lowered = code.lowercased()
         guard lowered != "und", lowered != "mis", lowered != "zxx" else { return nil }
-        let subtags = lowered.split(separator: "-")
+        // Muxers write either separator ("zh_Hans", "zh-Hans"); ICU only reads the
+        // hyphenated form, so canonicalize before either lookup.
+        let hyphenated = code.replacingOccurrences(of: "_", with: "-")
+        let subtags = lowered.replacingOccurrences(of: "_", with: "-").split(separator: "-")
         if subtags.count > 1, subtags[1].count == 4,
-           let scripted = locale.localizedString(forIdentifier: code) {
+           let scripted = locale.localizedString(forIdentifier: hyphenated) {
             return scripted
         }
-        return locale.localizedString(forLanguageCode: code)
+        return locale.localizedString(forLanguageCode: hyphenated)
     }
 
     /// Audio codec → the name a listener knows it by (Apple's labels where one
@@ -114,15 +117,33 @@ public enum TrackLanguage {
     /// unknown-but-equal tags should still match each other.
     public static func normalized(_ code: String?) -> String? {
         guard let code, !code.isEmpty else { return nil }
-        var base = (code.split(separator: "-").first.map(String.init) ?? code).lowercased()
+        var base = (subtags(of: code).first ?? code.lowercased())
         if let terminologic = bibliographicToTerminologic[base] { base = terminologic }
         let languageCode = Locale.LanguageCode(base)
         return languageCode.identifier(.alpha3)?.lowercased() ?? base
     }
 
+    /// The 4-alpha SCRIPT subtag in canonical Titlecase ("zh-Hans"/"zh_hans" →
+    /// "Hans"), nil when the tag carries none. Scripts are the one subtag that
+    /// changes which subtitle a viewer wants, so callers rank on it.
+    public static func script(_ code: String?) -> String? {
+        guard let code, !code.isEmpty else { return nil }
+        let parts = subtags(of: code)
+        guard parts.count > 1, parts[1].count == 4, parts[1].allSatisfy(\.isLetter) else { return nil }
+        return parts[1].capitalized
+    }
+
     public static func matches(_ a: String?, _ b: String?) -> Bool {
         guard let a = normalized(a), let b = normalized(b) else { return false }
         return a == b
+    }
+
+    /// Lowercased subtags, split on BOTH separators: BCP-47 says "-", but track
+    /// metadata and Jellyfin's own culture rows show up with "_" just as often.
+    private static func subtags(of code: String) -> [String] {
+        code.lowercased()
+            .split(whereSeparator: { $0 == "-" || $0 == "_" })
+            .map(String.init)
     }
 }
 

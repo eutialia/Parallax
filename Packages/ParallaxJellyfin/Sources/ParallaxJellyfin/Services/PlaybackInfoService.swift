@@ -152,10 +152,48 @@ public actor PlaybackInfoService {
             startTime: startTime,
             mediaStreams: streams,
             defaultAudioStreamIndex: source.defaultAudioStreamIndex,
-            defaultSubtitleStreamIndex: source.defaultSubtitleStreamIndex,
+            defaultSubtitleStreamIndex: await defaultSubtitleStreamIndex(source: source, streams: streams),
             subtitleStreamURLs: subtitleURLs,
             transcodeReasons: Self.transcodeReasons(from: source.transcodingURL)
         )
+    }
+
+    /// The server's own default, or a client-side stand-in when it picked none.
+    ///
+    /// Jellyfin resolves `SubtitleLanguagePreference` in two vocabularies that
+    /// never bridge (see `JellyfinLanguageTag`): a stored alpha-3 "zho" only
+    /// matches DASHLESS stream tags, so a library whose externals are tagged
+    /// `zh-Hans` gets no default at all. We re-run the intent client-side across
+    /// dialects. One extra GET, only when there is something to rescue; the
+    /// configuration is read fresh for the same reason the write-back path
+    /// re-reads it (another client may have changed it since).
+    private func defaultSubtitleStreamIndex(
+        source: MediaSourceInfo,
+        streams: [MediaStreamInfo]
+    ) async -> Int? {
+        if let serverDefault = source.defaultSubtitleStreamIndex { return serverDefault }
+        let candidates = streams.filter { $0.kind == .subtitle && !$0.isImageSubtitle && !$0.isForced }
+        guard !candidates.isEmpty else { return nil }
+
+        let configuration: UserConfiguration
+        do {
+            configuration = try await client.currentUserConfiguration()
+        } catch {
+            Log.playback.error("defaultSubtitleStreamIndex config fetch failed: \(error.localizedDescription)")
+            return nil
+        }
+        guard configuration.subtitleMode == .always,
+              let preference = configuration.subtitleLanguagePreference, !preference.isEmpty
+        else { return nil }
+
+        let matching = candidates.filter { TrackLanguage.matches($0.language, preference) }
+        // A script-carrying preference ("zh-Hans") is a Simplified-vs-Traditional
+        // request, not just "Chinese" — honor it before stream order.
+        if let script = TrackLanguage.script(preference),
+           let exact = matching.first(where: { TrackLanguage.script($0.language) == script }) {
+            return exact.index
+        }
+        return matching.first?.index
     }
 
     /// Builds an authed sidecar URL per TEXT subtitle stream. Image subs (PGS/VobSub)
@@ -380,8 +418,8 @@ public actor PlaybackInfoService {
 
             case .subtitles(let languageCode):
                 guard config.isRememberSubtitleSelections ?? true else { return }
-                if let language = TrackLanguage.normalized(languageCode) {
-                    let sameLanguage = TrackLanguage.normalized(config.subtitleLanguagePreference) == language
+                if let language = JellyfinLanguageTag.preferenceValue(for: languageCode) {
+                    let sameLanguage = config.subtitleLanguagePreference?.lowercased() == language.lowercased()
                     // Mode escalates only out of None (subs would otherwise
                     // never auto-show again); an explicit Default/Smart/
                     // OnlyForced stays the user's call.
