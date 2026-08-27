@@ -84,6 +84,6 @@ enum ASSScriptBuilder {
         let cleaned = name
             .replacingOccurrences(of: ",", with: "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return cleaned.isEmpty ? "Helvetica Neue" : cleaned
+        return cleaned.isEmpty ? SubtitleFontBundle.sansFamily : cleaned
     }
 }

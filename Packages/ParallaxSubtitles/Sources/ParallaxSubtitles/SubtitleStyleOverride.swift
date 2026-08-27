@@ -50,14 +50,22 @@ public struct SubtitleStyleOverride: Sendable, Equatable {
     /// also forces the colour override on — see the note above.
     public var opaqueBox: Bool?
 
-    /// Border thickness in SCRIPT units (the synthesized scripts author against
-    /// a 720-line canvas). Nil keeps the synthesized default — a constant, which
-    /// reads proportionally heavier the smaller the text; callers that scale the
-    /// font should scale this with it.
-    public var outlineWidth: Double?
-    /// Drop-shadow offset in script units, boxless look only (the box carries
-    /// its own contrast). Nil keeps the synthesized default.
-    public var shadowOffset: Double?
+    /// The em the cue renders at, as a fraction of the script canvas height —
+    /// the unit border and shadow are measured in. The renderer resolves it into
+    /// script units against a FIXED reference canvas, because libass draws a
+    /// script-unit border to the same pixels whatever the track's own PlayRes
+    /// (measured, see `borderGeometry`). Nil means the synthesized script's own
+    /// em (`convertedScriptFontFraction`).
+    public var emHeightRatio: Double?
+
+    /// Border thickness as a fraction of the rendered em. Nil keeps the
+    /// synthesized default. Expressed against the em rather than in script
+    /// units on purpose: libass does NOT scale borders with the font scale, so
+    /// a constant reads proportionally heavier the smaller the text.
+    public var outlineEmRatio: Double?
+    /// Drop-shadow offset as a fraction of the rendered em, boxless look only
+    /// (the box carries its own contrast). Nil keeps the synthesized default.
+    public var shadowEmRatio: Double?
     /// Shadow opacity for the boxless look. Nil keeps the default half black.
     public var shadowAlpha: Double?
 
@@ -75,8 +83,9 @@ public struct SubtitleStyleOverride: Sendable, Equatable {
         primaryColor: SubtitleColor? = nil,
         outlineColor: SubtitleColor? = nil,
         opaqueBox: Bool? = nil,
-        outlineWidth: Double? = nil,
-        shadowOffset: Double? = nil,
+        emHeightRatio: Double? = nil,
+        outlineEmRatio: Double? = nil,
+        shadowEmRatio: Double? = nil,
         shadowAlpha: Double? = nil,
         marginVertical: Double? = nil,
         marginHorizontal: Double? = nil
@@ -86,8 +95,9 @@ public struct SubtitleStyleOverride: Sendable, Equatable {
         self.primaryColor = primaryColor
         self.outlineColor = outlineColor
         self.opaqueBox = opaqueBox
-        self.outlineWidth = outlineWidth
-        self.shadowOffset = shadowOffset
+        self.emHeightRatio = emHeightRatio
+        self.outlineEmRatio = outlineEmRatio
+        self.shadowEmRatio = shadowEmRatio
         self.shadowAlpha = shadowAlpha
         self.marginVertical = marginVertical
         self.marginHorizontal = marginHorizontal
@@ -103,7 +113,7 @@ public struct SubtitleStyleOverride: Sendable, Equatable {
     /// counts: without this, an outline or shadow set on its own would be
     /// silently ignored (the flag is what makes libass read the fields).
     var overridesBorder: Bool {
-        opaqueBox != nil || outlineWidth != nil || shadowOffset != nil
+        opaqueBox != nil || outlineEmRatio != nil || shadowEmRatio != nil
     }
 
     /// Whether any colour field has to be pushed through. The opaque box counts:
