@@ -19,6 +19,24 @@ This file mirrors the in-app screen at Settings → About Parallax
 ¹ The official Jellyfin Swift SDK currently publishes no license file. The Jellyfin
 project distributes it for building clients, so the practical risk is small.
 
+## Bundled fonts
+
+| Component | License | Role |
+|-----------|---------|------|
+| [Noto Sans / Noto Serif](https://github.com/notofonts/latin-greek-cyrillic) (Regular) | SIL OFL 1.1 | Subtitle typeface — Latin, Greek, Cyrillic (Vietnamese and Latin Extended included) |
+| [Noto Sans CJK / Noto Serif CJK](https://github.com/notofonts/noto-cjk) 2.004 / 2.003 (Regular OTC) | SIL OFL 1.1 | Subtitle typeface — pan-CJK, JP/KR/SC/TC/HK faces (© Adobe) |
+| [Noto per-script faces](https://notofonts.github.io) (Regular) | SIL OFL 1.1 | Subtitle typefaces — Thai, Arabic (Naskh), Hebrew, Devanagari, Bengali, Tamil, Telugu, Kannada, Malayalam, Gujarati, Oriya, Gurmukhi, Sinhala, Khmer, Lao, Myanmar, Georgian, Armenian |
+
+All 39 files are shipped **unmodified** (verified against the upstream git blob hashes).
+They live in the `ParallaxSubtitles` framework's `Fonts/` directory; the one shared OFL
+text — which names every family it covers — ships separately as
+`Parallax/Resources/Licenses/ofl-noto.txt`, because libass scans that font directory and
+would try to open a `.txt` as a typeface.
+
+No single file covers every script, so coverage is a routing problem rather than a
+fallback one: the renderer classifies each run of a cue by Unicode script and names the
+face for it explicitly (`ASS_FONTPROVIDER_NONE` leaves libass nothing to fall back to).
+
 ## Vendored binary frameworks
 
 | Component | License | Role |

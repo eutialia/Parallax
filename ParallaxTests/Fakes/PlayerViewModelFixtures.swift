@@ -48,7 +48,8 @@ func makePlayerVM(
     keepaliveInterval: Duration = .seconds(30),
     fetchDelivery: @escaping @Sendable (String) async -> TranscodeDelivery? = { _ in nil },
     deliveryProbeSchedule: [Duration] = [.seconds(2), .seconds(5)],
-    reloadResolveDeadline: Duration = .seconds(15)
+    reloadResolveDeadline: Duration = .seconds(15),
+    subtitleFontDesign: @escaping @MainActor () -> SubtitleFontDesign = { .sansSerif }
 ) -> PlayerViewModel {
     PlayerViewModel(
         deviceProfileBuilder: makeTestDeviceProfileBuilder(),
@@ -63,7 +64,8 @@ func makePlayerVM(
         keepaliveInterval: keepaliveInterval,
         fetchDelivery: fetchDelivery,
         deliveryProbeSchedule: deliveryProbeSchedule,
-        reloadResolveDeadline: reloadResolveDeadline
+        reloadResolveDeadline: reloadResolveDeadline,
+        subtitleFontDesign: subtitleFontDesign
     )
 }
 
@@ -83,7 +85,8 @@ func makePlayerVM(
     keepaliveInterval: Duration = .seconds(30),
     fetchDelivery: @escaping @Sendable (String) async -> TranscodeDelivery? = { _ in nil },
     deliveryProbeSchedule: [Duration] = [.seconds(2), .seconds(5)],
-    reloadResolveDeadline: Duration = .seconds(15)
+    reloadResolveDeadline: Duration = .seconds(15),
+    subtitleFontDesign: @escaping @MainActor () -> SubtitleFontDesign = { .sansSerif }
 ) -> PlayerViewModel {
     makePlayerVM(
         reporting: reporting,
@@ -97,7 +100,8 @@ func makePlayerVM(
         keepaliveInterval: keepaliveInterval,
         fetchDelivery: fetchDelivery,
         deliveryProbeSchedule: deliveryProbeSchedule,
-        reloadResolveDeadline: reloadResolveDeadline
+        reloadResolveDeadline: reloadResolveDeadline,
+        subtitleFontDesign: subtitleFontDesign
     )
 }
 
@@ -342,6 +346,110 @@ enum PlayerFixtures {
             subtitleStreamURLs: [
                 2: URL(string: "https://jf.example.com/Videos/movie-1/ms-1/Subtitles/2/Stream.vtt?api_key=abc&copyTimestamps=true")!
             ]
+        )
+    }
+
+    /// A direct-play MKV whose subtitles are all EMBEDDED: one text stream (index 2,
+    /// with a sidecar URL, because Jellyfin builds one for every text stream) and one
+    /// image stream (index 3, no URL — the server can only burn those in). The shape
+    /// the "embedded text renders client-side on direct play" contract is about.
+    static func resolvedDirectPlayEmbeddedSubs(
+        textURL: URL = URL(string: "https://jf.example.com/Videos/movie-1/ms-1/Subtitles/2/Stream.srt?api_key=abc")!,
+        secondTextURL: URL = URL(string: "https://jf.example.com/Videos/movie-1/ms-1/Subtitles/4/Stream.srt?api_key=abc")!
+    ) -> ResolvedPlayback {
+        ResolvedPlayback(
+            itemID: "movie-1",
+            url: URL(string: "https://jf.example.com/Videos/movie-1/stream.mkv?api_key=abc")!,
+            method: .directPlay,
+            container: .mkv,
+            videoCodec: .vc1,      // routes to .vlcKit, like a real fansub MKV
+            audioCodec: .aac,
+            mediaSourceID: "ms-1",
+            playSessionID: "ps-1",
+            runtime: CMTime(seconds: 7200, preferredTimescale: 600),
+            startTime: nil,
+            mediaStreams: [
+                MediaStreamInfo(index: 2, kind: .subtitle, displayTitle: "English", language: "eng",
+                                codec: "subrip", channels: nil, isExternal: false,
+                                isForced: false, isDefault: true),
+                MediaStreamInfo(index: 3, kind: .subtitle, displayTitle: "English - PGSSUB", language: "eng",
+                                codec: "pgssub", channels: nil, isExternal: false,
+                                isForced: false, isDefault: false,
+                                subtitleDeliveryMethod: "Encode"),
+                MediaStreamInfo(index: 4, kind: .subtitle, displayTitle: "French", language: "fra",
+                                codec: "subrip", channels: nil, isExternal: false,
+                                isForced: false, isDefault: false),
+            ],
+            defaultAudioStreamIndex: nil,
+            // No server default: the tests below drive the picks explicitly, and an
+            // auto-armed default would fetch once before they start.
+            defaultSubtitleStreamIndex: nil,
+            subtitleStreamURLs: [2: textURL, 4: secondTextURL]
+        )
+    }
+
+    /// A direct-play MKV with an explicit subtitle mix, for the "who renders which
+    /// stream" contract. Every TEXT stream gets a sidecar URL (Jellyfin builds one for
+    /// each) and every IMAGE stream gets none — which is exactly the coverage
+    /// `ResolvedPlayback.clientRendersAllSubtitles` reads. Languages are per-stream so a
+    /// case can make the engine↔stream join unambiguous (or deliberately not).
+    ///
+    /// - Parameters:
+    ///   - text: stream index → language, for the text streams.
+    ///   - image: stream index → language, for the PGS/VobSub streams.
+    static func resolvedDirectPlaySubtitleMix(
+        text: [Int: String] = [:],
+        image: [Int: String] = [:],
+        defaultSubtitleStreamIndex: Int? = nil
+    ) -> ResolvedPlayback {
+        func stream(_ index: Int, _ language: String, image isImage: Bool) -> MediaStreamInfo {
+            MediaStreamInfo(
+                index: index, kind: .subtitle,
+                displayTitle: isImage ? "Image \(index)" : "Text \(index)",
+                language: language, codec: isImage ? "pgssub" : "subrip",
+                channels: nil, isExternal: false, isForced: false, isDefault: false,
+                subtitleDeliveryMethod: isImage ? "Encode" : nil
+            )
+        }
+        let streams = (text.map { (index: $0.key, language: $0.value, image: false) }
+            + image.map { (index: $0.key, language: $0.value, image: true) })
+            .sorted { $0.index < $1.index }
+        return ResolvedPlayback(
+            itemID: "movie-1",
+            url: URL(string: "https://jf.example.com/Videos/movie-1/stream.mkv?api_key=abc")!,
+            method: .directPlay,
+            container: .mkv,
+            videoCodec: .vc1,      // routes to .vlcKit
+            audioCodec: .aac,
+            mediaSourceID: "ms-1",
+            playSessionID: "ps-1",
+            runtime: CMTime(seconds: 7200, preferredTimescale: 600),
+            startTime: nil,
+            mediaStreams: streams.map { stream($0.index, $0.language, image: $0.image) },
+            defaultAudioStreamIndex: nil,
+            // No server default unless a case asks for one: the rest drive the picks
+            // explicitly, and an auto-armed default would move first.
+            defaultSubtitleStreamIndex: defaultSubtitleStreamIndex,
+            subtitleStreamURLs: Dictionary(uniqueKeysWithValues: text.keys.map {
+                ($0, URL(string: "https://jf.example.com/Subtitles/\($0)/Stream.srt?api_key=abc")!)
+            })
+        )
+    }
+
+    /// What a direct-play ENGINE reports for `resolved`: one track per subtitle stream,
+    /// under the engine's own id namespace and its raw container naming. This is the
+    /// inventory the menu builder has to join back to the server's list.
+    static func engineSubtitleInventory(for resolved: ResolvedPlayback) -> TrackInventory {
+        TrackInventory(
+            audio: [],
+            subtitles: resolved.mediaStreams
+                .filter { $0.kind == .subtitle }
+                .map {
+                    SubtitleTrack(id: .vlc("vlc-s\($0.index)"),
+                                  displayName: $0.isImageSubtitle ? "PGS" : "SubRip",
+                                  languageCode: $0.language,
+                                  isForced: false)
+                }
         )
     }
 

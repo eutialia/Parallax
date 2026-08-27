@@ -190,7 +190,7 @@ struct SubtitleControlsList: View {
     }
 
     private var footnote: some View {
-        caption("These settings style the subtitles Parallax renders itself. Subtitles built into the video and image-based tracks always keep their original look.")
+        caption("These settings style the text subtitles Parallax renders itself. Image subtitles — including burned-in ones — and subtitles built into a file on a network share keep their original look.")
             .padding(.top, Space.s8)
     }
 
@@ -257,9 +257,8 @@ struct SubtitleControlsList: View {
     ]
 
     static let fontOptions: [(name: String, design: SubtitleFontDesign)] = [
-        ("System", .sansSerif),
+        ("Sans-Serif", .sansSerif),
         ("Serif", .serif),
-        ("Monospaced", .monospaced),
     ]
 
     static let backgroundOptions: [(name: String, value: SubtitleBackground)] = [

@@ -11,6 +11,7 @@ enum LicenseDoc: String, Hashable {
     case mitGet = "mit-get"
     case ccBySa4 = "cc-by-sa-4.0"
     case iscLibass = "isc-libass"
+    case oflNoto = "ofl-noto"
 
     var displayName: String {
         switch self {
@@ -20,6 +21,7 @@ enum LicenseDoc: String, Hashable {
         case .mitNuke, .mitGet: "MIT License"
         case .ccBySa4: "Creative Commons BY-SA 4.0"
         case .iscLibass: "ISC License"
+        case .oflNoto: "SIL Open Font License 1.1"
         }
     }
 
@@ -125,6 +127,19 @@ struct Acknowledgement: Identifiable, Hashable {
             licenseName: "ISC (+ FTL / MIT / LGPL-2.1 / zlib components)",
             license: .iscLibass,
             url: "github.com/libass/libass"
+        ),
+        Acknowledgement(
+            name: "Noto fonts",
+            // Bundled unmodified inside ParallaxSubtitles (the files ship in the
+            // framework's Fonts/ directory; the license text ships here, because
+            // libass scans that directory and would try to open a .txt as a face).
+            // One entry and one license text: every Noto release is under the same
+            // OFL, and the covered families are named inside that text.
+            packageIdentities: [],
+            role: "Subtitle typefaces — Noto Sans/Serif, Noto Sans/Serif CJK (© Adobe), and per-script faces for 16 more writing systems",
+            licenseName: "SIL OFL 1.1",
+            license: .oflNoto,
+            url: "notofonts.github.io"
         ),
         Acknowledgement(
             name: "VLCKit",

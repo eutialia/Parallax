@@ -50,12 +50,16 @@ private enum MenuMetrics {
     /// Dim for a row that can't be picked (a codec the engine has no decoder for). The
     /// `.plain`/quiet button styles don't dim their own label, so the row draws it.
     static let unavailableOpacity: Double = 0.4
+    /// Indeterminate spinner size for the check column. tvOS renders the column 34pt for
+    /// the 10-foot UI, so the smallest control size would be a speck in it.
     #if os(tvOS)
+    static let spinnerControlSize: ControlSize = .regular
     static let checkColumn: CGFloat = 34
     static let badgeRadius: CGFloat = 9
     static let badgePadX: CGFloat = 10
     static let badgePadY: CGFloat = 5
     #else
+    static let spinnerControlSize: ControlSize = .small
     static let checkColumn: CGFloat = 22
     static let badgeRadius: CGFloat = 6
     static let badgePadX: CGFloat = 7
@@ -67,16 +71,36 @@ private enum MenuMetrics {
 
 private struct MenuCheckColumn: View {
     let isSelected: Bool
+    /// The row's sidecar is being fetched: the column spins instead of ticking. A cold
+    /// embedded Jellyfin stream is extracted server-side on first request, which can take
+    /// seconds.
+    var isLoading: Bool = false
 
     var body: some View {
         ZStack {
-            if isSelected {
+            if isLoading {
+                ProgressView()
+                    // Sized off the column, not `.controlSize(.small)`: tvOS bumps the
+                    // column 22→34pt for the 10-foot UI, and a hardcoded small spinner
+                    // reads as a speck there — the exact metric drift `MenuMetrics` exists
+                    // to prevent.
+                    .controlSize(MenuMetrics.spinnerControlSize)
+                    // An unlabeled indeterminate ProgressView contributes no text, so the
+                    // row's merged VoiceOver label would be byte-identical loading or not.
+                    .accessibilityLabel("Loading")
+                    .accessibilityAddTraits(.updatesFrequently)
+                    .transition(.opacity)
+            } else if isSelected {
                 Image(systemName: "checkmark")
                     .font(.subheadline.weight(.bold))
                     .foregroundStyle(Color.label)
+                    .transition(.opacity)
             }
         }
         .frame(width: MenuMetrics.checkColumn)
+        // Spinner→checkmark is a completion, not a glitch: crossfade it, like every
+        // other state change in this row.
+        .animation(.default, value: isLoading)
     }
 }
 
@@ -249,6 +273,9 @@ struct AudioTrackMenu: View {
 struct SubtitleTrackMenu: View {
     let tracks: [SubtitleTrack]
     let selectedID: TrackID?
+    /// The track whose sidecar is being fetched — its check column spins instead of
+    /// ticking. A cold embedded stream is extracted server-side on first request.
+    var loadingID: TrackID? = nil
     let onSelect: (SubtitleTrack?) -> Void
 
     private var anyExternal: Bool { tracks.contains(where: \.isExternal) }
@@ -278,7 +305,10 @@ struct SubtitleTrackMenu: View {
             MenuRow(focusKey: track.id, isSelected: track.id == selectedID,
                     action: { onSelect(track) }) {
                 HStack(spacing: Space.s12) {
-                    MenuCheckColumn(isSelected: track.id == selectedID)
+                    MenuCheckColumn(
+                        isSelected: track.id == selectedID,
+                        isLoading: track.id == loadingID
+                    )
                     MenuRowTitle(name: track.displayName, detail: track.detailLabel)
                     Spacer(minLength: Space.s8)
                     HStack(spacing: 6) {

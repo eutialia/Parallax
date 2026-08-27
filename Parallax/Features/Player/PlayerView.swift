@@ -51,6 +51,10 @@ struct PlayerView: View {
 
     @Environment(AppDependencies.self) private var deps
     @Environment(PlaybackPresenter.self) private var playback
+    /// Read at view-model construction for the ENGINE-facing font knobs only (VLC's
+    /// libass directory + freetype family). The client overlay takes the same
+    /// preferences live, through `SubtitleOverlayView`.
+    @Environment(SubtitlePreferences.self) private var subtitlePrefs
     #if !os(tvOS)
     /// The host's presentation state (travel + settled flag) the pull gesture
     /// drives — injected by `PlayerPresentationHost`, the only iOS mount point.
@@ -257,7 +261,8 @@ struct PlayerView: View {
                         item: item, ref: ref, duration: duration,
                         captureFramePerformsIO: captureFramePerformsIO, captureFrame: captureFrame
                     )
-                }
+                },
+                subtitleFontDesign: { [subtitlePrefs] in subtitlePrefs.style.fontDesign }
             )
             install(vm)
             #if DEBUG
@@ -295,7 +300,8 @@ struct PlayerView: View {
             // Copy-vs-reencode probe: a thrown transport error and "no session yet"
             // both collapse to nil (the VM's probe retries, then gives up) — the seek
             // strategy stays conservative on nil regardless.
-            fetchDelivery: { (try? await info.transcodingDelivery(playSessionID: $0)) ?? nil }
+            fetchDelivery: { (try? await info.transcodingDelivery(playSessionID: $0)) ?? nil },
+            subtitleFontDesign: { [subtitlePrefs] in subtitlePrefs.style.fontDesign }
         )
         install(vm)
         switch source {

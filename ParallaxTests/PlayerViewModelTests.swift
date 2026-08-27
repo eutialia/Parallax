@@ -808,11 +808,14 @@ struct PlayerViewModelTests {
         // the still-mounted previous stream (the text sidecar) instead of tearing down.
         let pgs = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(7) })
         await vm.selectSubtitleTrack(pgs)
-        try await Task.sleep(for: .milliseconds(50))
+        await vm.debugAwaitSubtitleFetch()
 
         #expect(resolveCalls == 2)
         #expect(vm.selectedSubtitleTrack?.id == .jellyfinStream(1))   // restored to the previous sidecar
-        #expect(fetchedURLs.count == 2)                                // cues re-fetched on restore
+        // Re-armed from the session cache, not the network: the restore is a
+        // RE-selection of a track already fetched, and paying a second server-side
+        // extraction for bytes we still hold is exactly what the cache exists to stop.
+        #expect(fetchedURLs.count == 1)
         #expect(fetchedURLs.allSatisfy { $0 == resolved.subtitleStreamURLs[1] })
         #expect(vm.trackSwitchFailure?.requested.id == .jellyfinStream(7))
         #expect(vm.trackSwitchFailure?.fallback?.id == .jellyfinStream(1))
@@ -879,7 +882,7 @@ struct PlayerViewModelTests {
         await vm.selectSubtitleTrack(text)
         await vm.debugAwaitSubtitleFetch()
         #expect(resolveCalls.count == 2)
-        #expect(fetchedURLs.count == 2)
+        #expect(fetchedURLs.count == 1)   // re-selection is served from the session cache
 
         // With the sidecar UP, an out-of-buffer seek re-anchors: a fresh transcode AT
         // the target, engine reloaded, no in-stream drift seek — and the re-anchor
@@ -1628,6 +1631,287 @@ struct PlayerViewModelTests {
         #expect(fetchedURLs.map(\.lastPathComponent) == ["Stream.ass", "Stream.vtt"])
         #expect(fetchedURLs.last?.query?.contains("api_key") == true)
         #expect(vm.sidecarSubtitleInfo == SidecarSubtitleInfo(format: .vtt, byteCount: vtt.count))
+        #expect(vm.subtitleRenderer != nil)
+    }
+
+    // MARK: - Style policy (who owns the look)
+
+    /// A fully-populated authored appearance, so a filtered result shows up as a
+    /// nil'd group rather than an absence that was never there.
+    private static func authoredAppearance() -> SubtitleStyleOverride {
+        SubtitleStyle.standard.rendererOverride(
+            fontScale: 1.5,
+            fontFamily: SubtitleFontBundle.serifFamily,
+            emHeightRatio: SubtitleRenderer.convertedScriptFontFraction * 1.5,
+            shadowAlpha: 0.55,
+            marginVertical: 36,
+            marginHorizontal: 40
+        )
+    }
+
+    private static func convertedAppearance() -> SubtitleStyleOverride {
+        SubtitleStyle.standard.convertedRendererOverride(
+            surface: CGSize(width: 852, height: 393),
+            canvas: CGRect(x: 0, y: 0, width: 852, height: 393)
+        )
+    }
+
+    @Test("style policy: converted formats always take the user style, authored ones never do by default")
+    func styleOverrideFollowsTheFormatPolicy() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let vm = makePlayerVM(engine: engine, resolved: PlayerFixtures.resolved())
+        let converted = Self.convertedAppearance()
+        let authored = Self.authoredAppearance()
+
+        vm.applySubtitleAppearance(converted: converted, authored: authored, overrideAuthored: false)
+        #expect(vm.debugEffectiveStyleOverride(for: .srt) == converted)
+        #expect(vm.debugEffectiveStyleOverride(for: .vtt) == converted)
+        #expect(vm.debugEffectiveStyleOverride(for: .ass) == nil)
+        #expect(vm.debugEffectiveStyleOverride(for: .ssa) == nil)
+    }
+
+    @Test("style policy: 'Use My Style' hands authored tracks font/size/colour/border but never placement")
+    func authoredOptInIsFilteredToFourGroups() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let vm = makePlayerVM(engine: engine, resolved: PlayerFixtures.resolved())
+        let converted = Self.convertedAppearance()
+        let authored = Self.authoredAppearance()
+
+        vm.applySubtitleAppearance(converted: converted, authored: authored, overrideAuthored: true)
+
+        let assOverride = try #require(vm.debugEffectiveStyleOverride(for: .ass))
+        #expect(assOverride.fontFamily == SubtitleFontBundle.serifFamily)
+        #expect(assOverride.fontScale == 1.5)
+        #expect(assOverride.primaryColor != nil)
+        #expect(assOverride.outlineEmRatio != nil)
+        // Placement stays the creator's: a fansub's positioned signs are typeset
+        // against the picture, and libass has ONE flag for all three margins.
+        #expect(assOverride.marginVertical == nil)
+        #expect(assOverride.marginHorizontal == nil)
+        // The toggle governs authored tracks only — converted ones are unmoved.
+        #expect(vm.debugEffectiveStyleOverride(for: .srt) == converted)
+    }
+
+    /// P3, corrected: `Outline`/`Shadow` are script-unit lengths, and a script
+    /// unit draws the SAME pixels whatever the script's PlayRes — measured on the
+    /// render path in `ParallaxSubtitles`' "Style override borders" suite. The
+    /// rescale that used to live in `authoredOverride` therefore made a 1080p
+    /// fansub's ring 1.5x heavier rather than equal; the override now travels as
+    /// em-relative ratios and must reach the renderer untouched.
+    @Test("style policy: the authored border is NOT rescaled by the script's PlayRes",
+          arguments: [720.0, 1080.0, 2160.0])
+    func authoredBorderIgnoresScriptResolution(playResY: Double) async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let assURL = URL(string: "https://jf.example.com/Videos/movie-1/ms-1/Subtitles/1/Stream.ass?api_key=abc")!
+        let resolved = PlayerFixtures.resolvedMultiTrackTranscode(
+            defaultSubtitleStreamIndex: nil, chineseSidecarURL: assURL
+        )
+        let script = Data(Self.assScript(playResY: Int(playResY)).utf8)
+        let vm = makePlayerVM(
+            resolve: { _, _, _, _ in resolved },
+            engine: engine,
+            subtitleFetch: { _ in script }
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+        let authored = Self.authoredAppearance()
+        vm.applySubtitleAppearance(
+            converted: Self.convertedAppearance(), authored: authored, overrideAuthored: true
+        )
+
+        let track = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(1) })
+        await vm.selectSubtitleTrack(track)
+        await vm.debugAwaitSubtitleFetch()
+
+        #expect(vm.sidecarSubtitleInfo?.format == .ass)
+        // The renderer really did see this script's canvas…
+        #expect(await vm.debugTrackPlayRes?.height == CGFloat(playResY))
+        // …and the override crossed unchanged, at every resolution.
+        let override = try #require(vm.debugEffectiveStyleOverride(for: .ass))
+        #expect(override.outlineEmRatio == authored.outlineEmRatio)
+        #expect(override.shadowEmRatio == authored.shadowEmRatio)
+        #expect(override.emHeightRatio == authored.emHeightRatio)
+        #expect(override.fontScale == 1.5)
+    }
+
+    /// A minimal authored script: one dialogue line, a declared PlayRes, CRLF endings
+    /// (what real fansubs ship, and what the header scan has to survive).
+    private static func assScript(playResY: Int) -> String {
+        """
+        [Script Info]\r
+        ScriptType: v4.00+\r
+        PlayResX: \(playResY * 16 / 9)\r
+        PlayResY: \(playResY)\r
+        \r
+        [V4+ Styles]\r
+        Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\r
+        Style: Default,Arial,48,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,2,1,2,40,40,36,1\r
+        \r
+        [Events]\r
+        Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\r
+        Dialogue: 0,0:00:01.00,0:00:05.00,Default,,0,0,0,,Authored line\r
+        """
+    }
+
+    // MARK: - Embedded text subtitles render client-side on direct play
+
+    @Test("direct play: an embedded TEXT pick installs the client renderer (the engine draws nothing)")
+    func embeddedTextPickInstallsTheClientRenderer() async throws {
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let resolved = PlayerFixtures.resolvedDirectPlayEmbeddedSubs()
+        let srt = Data("1\n00:00:01,000 --> 00:00:03,000\nEmbedded line\n".utf8)
+
+        nonisolated(unsafe) var fetchedURLs: [URL] = []
+        let vm = makePlayerVM(
+            resolve: { _, _, _, _ in resolved },
+            engine: engine,
+            subtitleFetch: { url in fetchedURLs.append(url); return srt }
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+        // The engine's own inventory names the SAME embedded tracks; the server list
+        // must win, so the text one carries a `.jellyfinStream` id and a sidecar URL.
+        engine.push(.ready(duration: resolved.runtime!, tracks: TrackInventory(
+            audio: [],
+            subtitles: [SubtitleTrack(id: .vlc("vlc-s0"), displayName: "Track 1",
+                                      languageCode: "en", isForced: false)]
+        )))
+        try await engine.settle()
+
+        // The item has a PGS stream (index 3) with no sidecar, so the engine's renderer
+        // stays ON for it — blinding it would cost the user that track. The text stream
+        // is still ours: it is the `.jellyfinStream` row picked below.
+        #expect(engine.loadedAssets.first?.engineSubtitlesDisabled == false)
+
+        let text = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(2) })
+        #expect(!text.isBurnedIn)
+        await vm.selectSubtitleTrack(text)
+        await vm.debugAwaitSubtitleFetch()
+
+        #expect(fetchedURLs == [resolved.subtitleStreamURLs[2]])
+        #expect(vm.subtitleRenderer != nil)
+        #expect(vm.sidecarSubtitleInfo?.format == .srt)
+        #expect(vm.selectedSubtitleTrack?.id == .jellyfinStream(2))
+    }
+
+    @Test("direct play: an IMAGE pick burns in server-side — no fetch, no client renderer")
+    func embeddedImagePickDoesNotInstallARenderer() async throws {
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let resolved = PlayerFixtures.resolvedDirectPlayEmbeddedSubs()
+
+        nonisolated(unsafe) var resolveCount = 0
+        nonisolated(unsafe) var fetchCount = 0
+        let vm = makePlayerVM(
+            resolve: { _, _, _, _ in resolveCount += 1; return resolved },
+            engine: engine,
+            subtitleFetch: { _ in fetchCount += 1; return Data() }
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.ready(duration: resolved.runtime!, tracks: .empty))
+        try await engine.settle()
+        let resolvesAfterStart = resolveCount
+
+        let image = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(3) })
+        #expect(image.isBurnedIn)
+        await vm.selectSubtitleTrack(image)
+        await vm.debugAwaitSubtitleFetch()
+
+        #expect(fetchCount == 0)                     // image subs have no sidecar
+        #expect(vm.subtitleRenderer == nil)
+        #expect(resolveCount == resolvesAfterStart + 1)   // re-resolved for the burn-in
+    }
+
+    // MARK: - First-cue latency
+
+    @Test("selecting a new sidecar drops the previous track's cues before the fetch, not after")
+    func activatingASidecarClearsTheOutgoingCuesImmediately() async throws {
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let resolved = PlayerFixtures.resolvedDirectPlayEmbeddedSubs()
+        let srt = Data("1\n00:00:01,000 --> 00:00:03,000\nEnglish line\n".utf8)
+        // The SECOND track's fetch never lands. That window — a cold embedded stream
+        // being extracted server-side — is exactly when the FIRST track's bitmaps
+        // used to keep drawing under a menu that already said "French".
+        let gate = AsyncStream<Void>.makeStream()
+        let vm = makePlayerVM(
+            resolve: { _, _, _, _ in resolved },
+            engine: engine,
+            subtitleFetch: { url in
+                guard url.path.contains("/Subtitles/2/") else {
+                    for await _ in gate.stream {}
+                    return nil
+                }
+                return srt
+            }
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.ready(duration: resolved.runtime!, tracks: .empty))
+        try await engine.settle()
+
+        let english = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(2) })
+        await vm.selectSubtitleTrack(english)
+        await vm.debugAwaitSubtitleFetch()
+        #expect(vm.subtitleRenderer != nil)
+
+        let french = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(4) })
+        await vm.selectSubtitleTrack(french)
+
+        // Mid-fetch: the menu reads French, and the screen shows nothing rather than
+        // the English cues it used to keep.
+        #expect(vm.selectedSubtitleTrack?.id == .jellyfinStream(4))
+        #expect(vm.subtitleRenderer == nil)
+        #expect(vm.sidecarSubtitleInfo == nil)
+        #expect(vm.loadingSubtitleTrackID == .jellyfinStream(4))
+
+        gate.continuation.finish()
+        await vm.debugAwaitSubtitleFetch()
+    }
+
+    @Test("re-selecting a track already fetched this session costs no second request")
+    func sidecarBytesAreCachedForTheSession() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let resolved = PlayerFixtures.resolvedMultiTrackTranscode(defaultSubtitleStreamIndex: nil)
+        let vtt = Data("WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nNi hao".utf8)
+
+        nonisolated(unsafe) var fetchedURLs: [URL] = []
+        let vm = makePlayerVM(
+            resolve: { _, _, _, _ in resolved },
+            engine: engine,
+            subtitleFetch: { url in fetchedURLs.append(url); return vtt }
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+
+        let track = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(1) })
+        for _ in 0..<3 {
+            await vm.selectSubtitleTrack(track)
+            await vm.debugAwaitSubtitleFetch()
+            #expect(vm.subtitleRenderer != nil)
+            await vm.selectSubtitleTrack(nil)
+        }
+        // One request for three selections: the expensive part of the first pick is
+        // the server extracting an embedded stream through ffmpeg.
+        #expect(fetchedURLs.count == 1)
+
+        // A new session drops the cache — stream indices mean something else there.
+        await vm.stop()
+        #expect(vm.debugSubtitleURLs.isEmpty)
+    }
+
+    @Test("the subtitle menu exposes the in-flight fetch as a loading row")
+    func loadingSubtitleTrackIDTracksTheFetch() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let resolved = PlayerFixtures.resolvedMultiTrackTranscode(defaultSubtitleStreamIndex: nil)
+        let vtt = Data("WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nNi hao".utf8)
+        let vm = makePlayerVM(
+            resolve: { _, _, _, _ in resolved },
+            engine: engine,
+            subtitleFetch: { _ in vtt }
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+        #expect(vm.loadingSubtitleTrackID == nil)
+
+        let track = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(1) })
+        await vm.selectSubtitleTrack(track)
+        await vm.debugAwaitSubtitleFetch()
+        // Cleared once the renderer is installed — the row stops spinning.
+        #expect(vm.loadingSubtitleTrackID == nil)
         #expect(vm.subtitleRenderer != nil)
     }
 
@@ -3180,5 +3464,290 @@ struct PlayerViewModelTests {
 
             #expect(await recorder.invocations.first?.duration == nil)
         }
+    }
+}
+
+/// Who renders which subtitle stream on a Jellyfin DIRECT PLAY session. A text stream
+/// has a sidecar URL, so we fetch and draw it ourselves; an image stream has none, so
+/// the only thing that can draw it locally is the engine — and blinding the engine
+/// (`:no-spu`) to protect the sidecars would silently cost the user those tracks.
+@Suite("PlayerViewModel — direct-play subtitle ownership", .serialized)
+@MainActor
+struct DirectPlaySubtitleOwnershipTests {
+
+    /// Starts a session and hands the VM the engine inventory a direct-play demux would
+    /// report — one engine track per subtitle stream, in the engine's own id namespace.
+    private func startedVM(
+        _ resolved: ResolvedPlayback,
+        engine: FakePlaybackEngine,
+        selecting engineSelection: TrackID? = nil
+    ) async throws -> PlayerViewModel {
+        let vm = makePlayerVM(resolve: { _, _, _, _ in resolved }, engine: engine)
+        await vm.start(item: PlayerFixtures.movieDetail())
+        var inventory = PlayerFixtures.engineSubtitleInventory(for: resolved)
+        if let engineSelection {
+            inventory = TrackInventory(audio: inventory.audio, subtitles: inventory.subtitles,
+                                       selectedSubtitleID: engineSelection)
+        }
+        engine.push(.ready(duration: resolved.runtime!, tracks: inventory))
+        try await engine.settle()
+        return vm
+    }
+
+    @Test("an image-only item keeps the ENGINE's row and leaves its SPU renderer on")
+    func imageOnlyKeepsTheEngineRow() async throws {
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let resolved = PlayerFixtures.resolvedDirectPlaySubtitleMix(image: [2: "eng"])
+        let vm = try await startedVM(resolved, engine: engine)
+
+        #expect(resolved.clientRendersAllSubtitles == false)
+        #expect(engine.loadedAssets.first?.engineSubtitlesDisabled == false)
+        #expect(vm.availableSubtitleTracks.count == 1)
+        let row = try #require(vm.availableSubtitleTracks.first)
+        #expect(row.id == .vlc("vlc-s2"))   // the engine draws it — locally, for free
+        #expect(row.isBurnedIn == false)    // no server re-encode earned
+        #expect(row.displayName == "English")   // the server's menu label, not the engine's "PGS"
+    }
+
+    @Test("a text-only item becomes a client-drawn sidecar row and blinds the engine")
+    func textOnlyGoesToTheSidecar() async throws {
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let resolved = PlayerFixtures.resolvedDirectPlaySubtitleMix(text: [2: "eng"])
+        let vm = try await startedVM(resolved, engine: engine)
+
+        #expect(resolved.clientRendersAllSubtitles == true)
+        #expect(engine.loadedAssets.first?.engineSubtitlesDisabled == true)
+        #expect(vm.availableSubtitleTracks.map(\.id) == [.jellyfinStream(2)])
+    }
+
+    @Test("a mixed item routes each stream to the renderer that can actually draw it")
+    func mixedRoutesPerStream() async throws {
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let resolved = PlayerFixtures.resolvedDirectPlaySubtitleMix(
+            text: [2: "eng"], image: [3: "jpn"]
+        )
+        let vm = try await startedVM(resolved, engine: engine)
+
+        #expect(resolved.clientRendersAllSubtitles == false)
+        #expect(engine.loadedAssets.first?.engineSubtitlesDisabled == false)
+        #expect(vm.availableSubtitleTracks.map(\.id) == [.jellyfinStream(2), .vlc("vlc-s3")])
+        #expect(vm.availableSubtitleTracks.allSatisfy { !$0.isBurnedIn })
+    }
+
+    /// Two same-language streams make the engine↔stream join ambiguous, so the image
+    /// one loses its engine row. Degraded (a burn-in costs a full re-encode), never
+    /// wrong — the alternative is offering the SRT's engine track under the PGS's name.
+    @Test("an image stream the engine can't be matched to falls back to server burn-in")
+    func unmatchedImageFallsBackToBurnIn() async throws {
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let resolved = PlayerFixtures.resolvedDirectPlaySubtitleMix(
+            text: [2: "eng"], image: [3: "eng"]
+        )
+        let vm = try await startedVM(resolved, engine: engine)
+
+        #expect(vm.availableSubtitleTracks.map(\.id) == [.jellyfinStream(2), .jellyfinStream(3)])
+        #expect(try #require(vm.availableSubtitleTracks.last).isBurnedIn)
+    }
+
+    @Test("the engine's own pick is adopted when the engine is what draws it")
+    func enginePickIsAdoptedWhenTheEngineDraws() async throws {
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let resolved = PlayerFixtures.resolvedDirectPlaySubtitleMix(image: [2: "eng"])
+        let vm = try await startedVM(resolved, engine: engine, selecting: .vlc("vlc-s2"))
+
+        #expect(vm.selectedSubtitleTrack?.id == .vlc("vlc-s2"))
+        // Nothing was commanded at all — the engine's own pick stands. Matched on the
+        // whole family of calls, not the one literal: a fake that reformats its log
+        // would make a single-string negative pass forever.
+        #expect(engine.calls.contains { $0.hasPrefix("setSubtitleTrack") } == false)
+    }
+
+    /// The one shape `:no-spu` cannot cover: the item has an image sub, so the engine's
+    /// renderer stays on — and VLC then auto-selects a text track we are drawing
+    /// ourselves, painting a second copy under the overlay.
+    @Test("the engine's pick of a stream WE draw is deselected, never adopted")
+    func enginePickOfAClientDrawnStreamIsDeselected() async throws {
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let resolved = PlayerFixtures.resolvedDirectPlaySubtitleMix(
+            text: [2: "eng"], image: [3: "jpn"]
+        )
+        let vm = try await startedVM(resolved, engine: engine, selecting: .vlc("vlc-s2"))
+
+        #expect(vm.selectedSubtitleTrack == nil)
+        #expect(engine.calls.contains("setSubtitleTrack(nil)"))
+    }
+
+    /// The regression: the server's default is a STREAM index, and the row that renders
+    /// an image stream carries the ENGINE's id — so matching `.jellyfinStream(index)`
+    /// found nothing and a PGS default was silently dropped on every first play.
+    @Test("a server default that points at an engine-rendered image sub is selected")
+    func imageDefaultSelectsTheEngineRow() async throws {
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let resolved = PlayerFixtures.resolvedDirectPlaySubtitleMix(
+            image: [2: "eng"], defaultSubtitleStreamIndex: 2
+        )
+        let vm = try await startedVM(resolved, engine: engine)
+
+        #expect(vm.selectedSubtitleTrack?.id == .vlc("vlc-s2"))
+        #expect(engine.selectedSubtitleTrackID == .vlc("vlc-s2"))
+    }
+
+    /// Burn-in stays opt-in. The engine can't be joined to this image stream (two
+    /// same-language streams), so its only delivery is a full server re-encode — which
+    /// a preference must never trigger on its own.
+    @Test("a server default that only server burn-in can deliver is left alone")
+    func burnInDefaultIsNotAutoApplied() async throws {
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let resolved = PlayerFixtures.resolvedDirectPlaySubtitleMix(
+            text: [2: "eng"], image: [3: "eng"], defaultSubtitleStreamIndex: 3
+        )
+        let vm = try await startedVM(resolved, engine: engine)
+
+        #expect(try #require(vm.availableSubtitleTracks.last).isBurnedIn)
+        #expect(vm.selectedSubtitleTrack == nil)
+    }
+
+    /// The sidecar half of the same join, so the fix can't be read as "engine rows only".
+    @Test("a server default that points at a client-drawn text sub still fetches it")
+    func textDefaultStillGoesToTheSidecar() async throws {
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let resolved = PlayerFixtures.resolvedDirectPlaySubtitleMix(
+            text: [2: "eng"], image: [3: "jpn"], defaultSubtitleStreamIndex: 2
+        )
+        let vm = try await startedVM(resolved, engine: engine)
+        await vm.debugAwaitSubtitleFetch()
+
+        #expect(vm.selectedSubtitleTrack?.id == .jellyfinStream(2))
+        // The client draws it, so the engine's own subtitle is held off.
+        #expect(engine.calls.contains("setSubtitleTrack(nil)"))
+    }
+
+    /// The engine-facing font knobs follow the user's design. Both are libvlc MEDIA
+    /// options, fixed for the life of the decoder — hence sampled once, at asset build.
+    @Test("the asset carries the user's subtitle design", arguments: [
+        (SubtitleFontDesign.sansSerif, "Noto Sans"),
+        (SubtitleFontDesign.serif, "Noto Serif"),
+    ])
+    func assetCarriesTheFontDesign(design: SubtitleFontDesign, family: String) async throws {
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let resolved = PlayerFixtures.resolvedDirectPlaySubtitleMix(image: [2: "eng"])
+        let vm = makePlayerVM(
+            resolve: { _, _, _, _ in resolved }, engine: engine,
+            subtitleFontDesign: { design }
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+
+        let asset = try #require(engine.loadedAssets.first)
+        #expect(asset.subtitleFontFamily == family)
+        // Whatever directory it names, it is the one built for THIS design (or the
+        // bundle fallback, which is design-agnostic) — never the other design's.
+        let directory = try #require(asset.subtitleFontsDirectory)
+        #expect(directory.lastPathComponent != (design == .serif ? "sans" : "serif"))
+    }
+}
+
+/// The sidecar fetch can take seconds (a cold embedded Jellyfin stream is extracted by
+/// ffmpeg on first request), and the panel the pick was made from closes on the same
+/// turn as the tap. So the affordance is armed SYNCHRONOUSLY, by its own method, and
+/// these tests call it exactly the way the view does — with no `await` in sight.
+@Suite("PlayerViewModel — sidecar fetch indicator", .serialized)
+@MainActor
+struct SidecarFetchIndicatorTests {
+
+    private func startedVM(_ engine: FakePlaybackEngine) async throws -> PlayerViewModel {
+        let resolved = PlayerFixtures.resolvedDirectPlayEmbeddedSubs()
+        let vm = makePlayerVM(resolve: { _, _, _, _ in resolved }, engine: engine)
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.ready(duration: resolved.runtime!, tracks: TrackInventory(audio: [], subtitles: [])))
+        try await engine.settle()
+        return vm
+    }
+
+    private func row(_ vm: PlayerViewModel, _ id: TrackID) throws -> SubtitleTrack {
+        try #require(vm.availableSubtitleTracks.first { $0.id == id })
+    }
+
+    @Test("arming is synchronous — the state is set with no await in between")
+    func armingIsSynchronous() async throws {
+        let vm = try await startedVM(FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit))
+        let track = try row(vm, .jellyfinStream(2))
+
+        vm.armSubtitleFetchIndicator(for: track)
+
+        #expect(vm.loadingSubtitleTrackID == .jellyfinStream(2))
+    }
+
+    @Test("nothing is armed for Off or for a burn-in pick")
+    func nothingArmedForOffOrBurnIn() async throws {
+        let vm = try await startedVM(FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit))
+
+        vm.armSubtitleFetchIndicator(for: nil)
+        #expect(vm.loadingSubtitleTrackID == nil)
+
+        vm.armSubtitleFetchIndicator(for: try row(vm, .jellyfinStream(3)))   // PGS, burn-in
+        #expect(vm.loadingSubtitleTrackID == nil)
+    }
+
+    @Test("a re-pick of an already-fetched track shows nothing — it is instant")
+    func cachedPickDoesNotArm() async throws {
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let vm = try await startedVM(engine)
+        let track = try row(vm, .jellyfinStream(2))
+
+        await vm.selectSubtitleTrack(track)
+        await vm.debugAwaitSubtitleFetch()
+        await vm.selectSubtitleTrack(nil)
+
+        vm.armSubtitleFetchIndicator(for: track)
+        #expect(vm.loadingSubtitleTrackID == nil)
+    }
+
+    @Test("the indicator clears once the fetch resolves")
+    func indicatorClearsWhenTheFetchLands() async throws {
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let vm = try await startedVM(engine)
+        let track = try row(vm, .jellyfinStream(2))
+
+        vm.armSubtitleFetchIndicator(for: track)
+        #expect(vm.loadingSubtitleTrackID == .jellyfinStream(2))
+
+        await vm.selectSubtitleTrack(track)
+        await vm.debugAwaitSubtitleFetch()
+
+        #expect(vm.loadingSubtitleTrackID == nil)
+    }
+}
+
+/// The subtitle-delay nudge is the USER's intent for an ITEM; the engine's copy is
+/// scoped to the input `load()` just replaced. So the view model holds it and re-pushes
+/// it, and an episode change starts level.
+@Suite("PlayerViewModel — subtitle delay ownership", .serialized)
+@MainActor
+struct SubtitleDelayOwnershipTests {
+
+    @Test("a same-item reload re-applies the delay onto the fresh input")
+    func reloadReappliesTheDelay() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
+        let vm = makePlayerVM(resolve: { _, _, _, _ in resolved }, engine: engine)
+        await vm.start(item: PlayerFixtures.movieDetail())
+        await vm.setSubtitleDelay(ms: -2000)
+        #expect(vm.subtitleDelayMs == -2000)
+
+        // A transcode audio switch reloads the SAME item on the reused engine.
+        await vm.selectAudioTrack(try #require(vm.availableAudioTracks.last))
+
+        #expect(engine.calls.filter { $0 == "setSubtitleDelay(-2000)" }.count == 2)
+    }
+
+    @Test("a fresh session never pushes a delay the user didn't ask for")
+    func freshSessionPushesNothing() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
+        let vm = makePlayerVM(resolve: { _, _, _, _ in resolved }, engine: engine)
+        await vm.start(item: PlayerFixtures.movieDetail())
+
+        #expect(vm.subtitleDelayMs == 0)
+        #expect(engine.calls.contains { $0.hasPrefix("setSubtitleDelay") } == false)
     }
 }

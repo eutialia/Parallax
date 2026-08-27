@@ -30,7 +30,8 @@ struct SMBPlaybackStartTests {
         subtitleFetch: @escaping @Sendable (URL) async -> Data? = { _ in nil },
         // NOT `SMBResumeStore.shared`: that one reads and writes the real `UserDefaults.standard`
         // domain, so every test here that drives a `.playing` beat was writing live app state.
-        smbResumeStore: SMBResumeStore? = nil
+        smbResumeStore: SMBResumeStore? = nil,
+        subtitleFontDesign: @escaping @MainActor () -> SubtitleFontDesign = { .sansSerif }
     ) -> PlayerViewModel {
         return PlayerViewModel(
             deviceProfileBuilder: makeTestDeviceProfileBuilder(),
@@ -42,7 +43,8 @@ struct SMBPlaybackStartTests {
             engineFactory: { _, _ in engine },
             audioSession: audioSession,
             subtitleFetch: subtitleFetch,
-            smbResumeStore: smbResumeStore ?? SMBTestFixtures.inertResumeStore()
+            smbResumeStore: smbResumeStore ?? SMBTestFixtures.inertResumeStore(),
+            subtitleFontDesign: subtitleFontDesign
         )
     }
 
@@ -138,6 +140,52 @@ struct SMBPlaybackStartTests {
 
         #expect(vm.sidecarSubtitleInfo == SidecarSubtitleInfo(format: .srt, byteCount: srt.utf8.count))
         #expect(vm.subtitleRenderer != nil)
+    }
+
+    /// SMB has no subtitle-extraction endpoint, so a track muxed into the container can
+    /// only be drawn by the engine. That is the one direct-play case Jellyfin's
+    /// sidecar takeover does NOT cover, and the asset must leave the engine free to
+    /// render it (`engineSubtitlesDisabled == false`).
+    @Test("SMB: an EMBEDDED pick still goes to the engine, and the asset keeps engine subtitles on")
+    func smbEmbeddedSubtitleStaysWithTheEngine() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let vm = makeVM(reporting: reporting, engine: engine)
+
+        await vm.start(smbItem: smbItem())
+        let asset = try #require(engine.loadedAssets.first)
+        #expect(asset.engineSubtitlesDisabled == false)
+        // The bundled Noto faces, for VLC's own text renderers — in the user's design.
+        #expect(asset.subtitleFontsDirectory == VLCSubtitleFonts.directory(for: .sans))
+        #expect(asset.subtitleFontFamily == SubtitleFontBundle.sansFamily)
+
+        let embedded = SubtitleTrack(id: .vlc("vlc-s0"), displayName: "English",
+                                     languageCode: "en", isForced: false)
+        engine.push(.ready(duration: CMTime(seconds: 3600, preferredTimescale: 600),
+                           tracks: TrackInventory(audio: [], subtitles: [embedded])))
+        try await engine.settle()
+
+        let track = try #require(vm.availableSubtitleTracks.first { $0.id == .vlc("vlc-s0") })
+        await vm.selectSubtitleTrack(track)
+
+        #expect(engine.selectedSubtitleTrackID == .vlc("vlc-s0"))
+        #expect(vm.subtitleRenderer == nil)   // nothing client-side draws an embedded SMB track
+    }
+
+    /// VLC draws SMB embedded text itself, so the design has to reach it through the
+    /// asset — the client renderer's live style push never runs for those tracks.
+    /// Both knobs are libvlc MEDIA options, read once when the decoder is built.
+    @Test("SMB: the asset's font directory and family follow the user's design")
+    func smbAssetFollowsTheFontDesign() async throws {
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let vm = makeVM(reporting: StubPlaybackReporting(), engine: engine,
+                        subtitleFontDesign: { .serif })
+
+        await vm.start(smbItem: smbItem())
+
+        let asset = try #require(engine.loadedAssets.first)
+        #expect(asset.subtitleFontFamily == SubtitleFontBundle.serifFamily)
+        #expect(asset.subtitleFontsDirectory == VLCSubtitleFonts.directory(for: .serif))
     }
 
     /// Counts resolve-closure invocations so a test can prove `retry()` replays it.
