@@ -7,7 +7,7 @@ import Testing
 struct WebVTTToASSConverterTests {
 
     private func script(_ source: String) -> String {
-        WebVTTToASSConverter.script(from: source, fontFamily: "Helvetica Neue")
+        WebVTTToASSConverter.script(from: source, fontFamily: SubtitleFontBundle.sansFamily)
     }
 
     private func cue(body: String, settings: String = "") -> (start: String, end: String, text: String)? {

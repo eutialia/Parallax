@@ -17,10 +17,10 @@ enum SRTFixture {
     }
 }
 
-/// The system CJK font every synthesis/metrics probe exercises: the one whose
-/// outline table (`hvgl`) FreeType cannot read, which is the whole reason
-/// `SystemGlyphFont` exists.
-let pingFangSCRegular = "PingFangSC-Regular"
+/// A family that is installed on every Apple device and is NOT in the bundle —
+/// the probe for "no system font is reachable". With ASS_FONTPROVIDER_NONE a
+/// script naming it must fall through to `default_family`.
+let unreachableSystemFamily = "PingFang SC"
 
 // MARK: - Authored ASS fixtures
 
@@ -37,8 +37,12 @@ enum ASSFixture {
     ///   - outline: border width; zero keeps the probe's pixels purely the fill colour.
     static func script(
         text: String,
+        fontName: String = "Arial",
         primaryColour: String = "&H00FFFFFF",
-        outline: Double = 0
+        outline: Double = 0,
+        playResX: Int = ASSFixture.playResX,
+        playResY: Int = ASSFixture.playResY,
+        fontSize: Int = 28
     ) -> String {
         """
         [Script Info]
@@ -51,7 +55,7 @@ enum ASSFixture {
 
         [V4+ Styles]
         Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-        Style: Default,Helvetica Neue,28,\(primaryColour),&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,\(outline),0,2,20,20,20,1
+        Style: Default,\(fontName),\(fontSize),\(primaryColour),&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,\(outline),0,2,20,20,20,1
 
         [Events]
         Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -60,13 +64,24 @@ enum ASSFixture {
         """
     }
 
-    static func data(text: String, primaryColour: String = "&H00FFFFFF", outline: Double = 0) -> Data {
-        Data(script(text: text, primaryColour: primaryColour, outline: outline).utf8)
+    static func data(
+        text: String,
+        fontName: String = "Arial",
+        primaryColour: String = "&H00FFFFFF",
+        outline: Double = 0,
+        playResX: Int = ASSFixture.playResX,
+        playResY: Int = ASSFixture.playResY,
+        fontSize: Int = 28
+    ) -> Data {
+        Data(script(
+            text: text, fontName: fontName, primaryColour: primaryColour, outline: outline,
+            playResX: playResX, playResY: playResY, fontSize: fontSize
+        ).utf8)
     }
 }
 
 /// A renderer wired to the 640x360 probe canvas.
-func makeProbeRenderer(fontFamily: String = "Helvetica Neue") async -> SubtitleRenderer {
+func makeProbeRenderer(fontFamily: String = SubtitleRenderer.standardFontFamily) async -> SubtitleRenderer {
     let renderer = SubtitleRenderer(defaultFontFamily: fontFamily)
     await renderer.setCanvas(
         size: CGSize(width: ASSFixture.playResX, height: ASSFixture.playResY),
@@ -162,4 +177,18 @@ func cues(_ script: String) -> [(start: String, end: String, text: String)] {
         let fields = line.split(separator: ",", maxSplits: 9, omittingEmptySubsequences: false)
         return (String(fields[1]), String(fields[2]), dialogueText(line))
     }
+}
+
+// MARK: - libass diagnostics
+
+/// The font-selection lines of a captured libass log. Every resolution libass
+/// makes is reported here and nowhere else — a glyph nobody could supply still
+/// renders as a perfectly valid tofu box.
+func fontSelectLines(_ log: [String]) -> [String] {
+    log.filter { $0.contains("fontselect:") }
+}
+
+/// Whether any fontselect line reports a request for `family` being served.
+func selected(_ family: String, in log: [String]) -> Bool {
+    fontSelectLines(log).contains { $0.contains("(\(family),") }
 }

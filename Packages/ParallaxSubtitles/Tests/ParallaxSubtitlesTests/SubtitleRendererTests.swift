@@ -142,7 +142,7 @@ struct SubtitleRendererTests {
                 step.isMultiple(of: 3)
                     ? nil
                     : SubtitleStyleOverride(
-                        fontFamily: step.isMultiple(of: 2) ? "Avenir Next" : "Helvetica Neue",
+                        fontFamily: step.isMultiple(of: 2) ? SubtitleFontBundle.serifFamily : SubtitleFontBundle.sansFamily,
                         fontScale: 1 + Double(step) / 10,
                         primaryColor: SubtitleColor(red: Double(step) / 12, green: 1, blue: 0)
                     )

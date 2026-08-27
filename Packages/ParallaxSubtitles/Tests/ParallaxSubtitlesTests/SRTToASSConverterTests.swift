@@ -7,7 +7,7 @@ import Testing
 struct SRTToASSConverterTests {
 
     private func script(_ source: String) -> String {
-        SRTToASSConverter.script(from: source, fontFamily: "Helvetica Neue")
+        SRTToASSConverter.script(from: source, fontFamily: SubtitleFontBundle.sansFamily)
     }
 
     @Test("comma-millisecond timecodes become centisecond ASS timecodes")

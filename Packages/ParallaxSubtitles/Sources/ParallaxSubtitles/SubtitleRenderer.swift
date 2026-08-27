@@ -5,25 +5,33 @@ import Libass
 
 /// Client-side subtitle rendering on top of libass.
 ///
-/// `ASS_Library`, `ASS_Renderer` and `ASS_Track` are not thread safe and hold
-/// mutable caches keyed on the current frame size, so all three live inside this
-/// actor and never leave it. Only finished frames cross the boundary.
+/// `ASS_Renderer` and `ASS_Track` are not thread safe and hold mutable caches
+/// keyed on the current frame size, so both live inside this actor and never
+/// leave it. Only finished frames cross the boundary. The `ASS_Library` they
+/// hang off is shared by every renderer in the process (`LibassLibrary`) —
+/// registering the ~50 MB font bundle once instead of per pick — so all libass
+/// calls, this actor's included, are serialised on that library's lock.
 public actor SubtitleRenderer {
 
     private var engine: LibassEngine?
 
     private let defaultFontFamily: String
-    private let defaultFontURL: URL?
     private var canvasPixelSize: CGSize = .zero
     private var storagePixelSize: CGSize?
     private var styleOverride: SubtitleStyleOverride?
+    /// The loaded AUTHORED track's own em in script units — the `Fontsize` of
+    /// the style most of its dialogue uses. Nil for converted tracks, whose em
+    /// is the synthesized style's.
+    private var authoredEmScriptUnits: Double?
     /// libass reports "nothing changed" from the second render onwards, so the
     /// first frame after any reconfiguration has to be emitted unconditionally.
     private var hasEmittedFrame = false
 
-    /// The family converted scripts are synthesized against when the caller
-    /// doesn't choose one.
-    public static let standardFontFamily = "Helvetica Neue"
+    /// The family converted scripts are built against when the caller doesn't
+    /// choose one. This is the LATIN face: every other script is reached by
+    /// per-run `\fn` tagging, not by naming a different style font. The only
+    /// other choice is `SubtitleFontBundle.serifFamily`.
+    public static let standardFontFamily = SubtitleFontBundle.sansFamily
 
     /// The synthesized Default style's font size as a fraction of the script
     /// canvas height — what callers remap tuned point sizes against. Exposed so
@@ -45,18 +53,12 @@ public actor SubtitleRenderer {
         CGSize(width: ASSScriptBuilder.playResX, height: ASSScriptBuilder.playResY)
     }
 
-    /// - Parameters:
-    ///   - defaultFontFamily: used when a script names a font that is not
-    ///     installed, and as the font of converted SRT/WebVTT sidecars.
-    ///   - defaultFontURL: an optional font FILE handed to libass as the
-    ///     last-resort face (test seam; production needs none — glyphs the
-    ///     system's own files can't supply are synthesized per track).
-    public init(
-        defaultFontFamily: String = SubtitleRenderer.standardFontFamily,
-        defaultFontURL: URL? = nil
-    ) {
+    /// - Parameter defaultFontFamily: the font of converted SRT/WebVTT
+    ///   sidecars, and libass' fallback family for any name a script requests
+    ///   that the bundle does not carry. Only `SubtitleFontBundle` families
+    ///   resolve to anything — no system font is reachable.
+    public init(defaultFontFamily: String = SubtitleRenderer.standardFontFamily) {
         self.defaultFontFamily = defaultFontFamily
-        self.defaultFontURL = defaultFontURL
     }
 
     // MARK: - Loading
@@ -71,84 +73,104 @@ public actor SubtitleRenderer {
     ) throws {
         let engine = try activeEngine()
 
-        // CJK font choice is planned per line BEFORE libass sees the script —
-        // libass' own per-glyph fallback asks the platform with no language
-        // context, which makes the font (and whether it's even FreeType-
-        // readable) depend on the device's preferred-languages list.
+        // No bundled file covers every script and no system provider is
+        // reachable, so a run libass cannot place draws nothing; and within CJK
+        // every regional face covers the whole Han repertoire, so a wrong pick
+        // is silent. Routing is therefore planned before libass sees the script
+        // and named explicitly, per run.
         var bytes: [UInt8]
-        var subsets: [SystemGlyphFont.Subset] = []
         if format.needsConversion {
-            guard let text = String(data: data, encoding: .utf8) else {
+            guard let text = ASSTextEncoding.utf8(data) else {
                 throw SubtitleError.undecodableText
             }
             var events = switch format {
             case .srt: SRTToASSConverter.events(from: text)
             default: WebVTTToASSConverter.events(from: text)
             }
-            if let plan = SystemGlyphFont.plan(
-                lines: events.flatMap { CJKFontTagger.plainLines(of: $0.text) },
-                baseFamily: defaultFontFamily,
+            // Converted text is ours to write: make the choice explicit with
+            // \fn so libass matches by family, deterministically.
+            let plan = SubtitleFontPlan.build(
+                lines: events.flatMap { SubtitleFontTagger.plainLines(of: $0.text) },
+                styleFamily: defaultFontFamily,
                 languageHint: languageHint
-            ) {
-                subsets = plan.subsets
-                // Converted text is ours to write: make the choice explicit
-                // with \fn so libass matches by family, deterministically.
-                for index in events.indices {
-                    events[index].text = CJKFontTagger.tagged(
-                        events[index].text, plan: plan,
-                        styleFontSize: Double(ASSScriptBuilder.fontSize)
-                    )
-                }
-            }
-            bytes = Array(ASSScriptBuilder.script(events: events, fontFamily: defaultFontFamily).utf8)
-        } else {
-            // Lossy decode is fine here: this string is only scanned for CJK
-            // coverage and font names, and anything the decode mangles wasn't
-            // a renderable scalar to begin with.
-            let scanText = String(decoding: data, as: UTF8.self)
-            let scan = ASSScriptScan.scan(script: scanText)
-            if let plan = SystemGlyphFont.plan(
-                lines: scan.plainLines,
-                baseFamily: defaultFontFamily,
-                languageHint: languageHint
-            ) {
-                // Authored text stays authored — no tags injected. A CJK style
-                // whose font libass cannot serve from disk (not installed, or
-                // installed but FreeType-unreadable, like `PingFang SC` named
-                // directly) gets that name shadowed instead, so the whole style
-                // renders from one coherent font.
-                let covered = Set(plan.subsets.map(\.familyName))
-                let shadows: [SystemGlyphFont.ShadowRequest] = scan.cjkFontNames
-                    .subtracting(covered)
-                    .compactMap { name in
-                        if let unusable = SystemGlyphFont.unusableRequestedFont(named: name) {
-                            // Installed but FreeType-unreadable: its own glyphs.
-                            return SystemGlyphFont.ShadowRequest(name: name, font: unusable)
-                        }
-                        if !SystemGlyphFont.fontFamilyInstalled(name) {
-                            // Missing outright: the plan's dominant font.
-                            return SystemGlyphFont.ShadowRequest(name: name, font: plan.shadowFont)
-                        }
-                        return nil  // a readable installed face — libass serves it
-                    }
-                subsets = plan.subsets + SystemGlyphFont.shadowSubsets(
-                    requests: shadows, scalars: plan.shadowScalars
+            )
+            for index in events.indices {
+                events[index].text = SubtitleFontTagger.tagged(
+                    events[index].text, plan: plan,
+                    styleFontSize: Double(ASSScriptBuilder.fontSize)
                 )
             }
+            bytes = Array(ASSScriptBuilder.script(events: events, fontFamily: defaultFontFamily).utf8)
+        } else if let script = ASSTextEncoding.utf8(data) ?? ASSTextEncoding.decoded(data) {
+            // Legacy fansub encodings (GBK/Big5/Shift_JIS/EUC-KR) are decoded
+            // and re-emitted as UTF-8 rather than handed to libass' iconv path:
+            // raw, the substitution pre-pass cannot parse them, so every style
+            // collapses onto `default_family` and every line onto the bare
+            // Japanese face.
+            let scan = ASSScriptScan.scan(script: script)
+            let plan = SubtitleFontPlan.build(
+                lines: scan.plainLines,
+                styleFamily: defaultFontFamily,
+                languageHint: languageHint
+            )
+            // The author's fonts are not ours and never will be. Their names
+            // are translated onto the bundle — serif intent preserved, every
+            // other field untouched.
+            bytes = Array(
+                AuthoredFontSubstitution.applied(to: script, plan: plan, scan: scan).utf8
+            )
+        } else {
+            // Nothing decoded it: hand libass the raw bytes and let its own
+            // iconv try. It renders through `default_family`, so it loses the
+            // per-style serif routing and every per-run face, but it renders.
             bytes = Array(data)
         }
         guard !bytes.isEmpty else { throw SubtitleError.noCues }
 
-        // Register before loadTrack, so shaping sees the fonts on the first render.
-        engine.addMemoryFonts(
-            subsets.map { ($0.familyName, $0.data) },
-            defaultFamily: defaultFontFamily,
-            defaultFontPath: defaultFontURL?.path
-        )
-
+        registerFonts(for: bytes, format: format, engine: engine)
         try engine.loadTrack(bytes: &bytes)
+        // An authored script's own Fontsize is the em its border is a fraction
+        // of; a converted one's is the synthesized style's, known already.
+        authoredEmScriptUnits = format.needsConversion ? nil : engine.dominantStyleFontSize
         hasEmittedFrame = false
+        // Border and shadow are script-unit lengths resolved against THIS
+        // track's canvas, which only exists now.
+        applyStyleOverride(to: engine)
     }
+
+    /// Registers the bundled files this script's families live in, and re-runs
+    /// `ass_set_fonts` if that added any.
+    ///
+    /// Both halves have to happen BEFORE `ass_read_memory`-then-render: the
+    /// library only copies a font when it is registered, and a renderer's
+    /// `fontselect` only sees what the library held when `ass_set_fonts` last
+    /// ran. The families are read back off the script we are about to hand
+    /// libass, so the set is exactly what `fontselect` will ask for — except on
+    /// the raw-bytes path, where nothing parsed and the whole bundle has to be
+    /// available.
+    private func registerFonts(
+        for bytes: [UInt8], format: SubtitleSourceFormat, engine: LibassEngine
+    ) {
+        let files: [URL]
+        if let script = String(data: Data(bytes), encoding: .utf8) {
+            var families = ASSScriptScan.requestedFamilies(in: script)
+            if let override = styleOverride?.fontFamily { families.insert(override) }
+            families.insert(defaultFontFamily)
+            files = SubtitleFontBundle.files(forFamilies: families)
+        } else {
+            files = SubtitleFontBundle.fileURLs
+        }
+        LibassLibrary.shared.ensureRegistered(files: files, log: engine.messageLog)
+        engine.refreshFontsIfNeeded()
+    }
+
+    /// The loaded script's canvas in script units, with libass' inference for a
+    /// dimension the author left out. Nil until a track is loaded.
+    ///
+    /// The only place an authored script's resolution is known — everything
+    /// expressed in script units (border, shadow, margins) is meaningless
+    /// without it, which is why the override takes ratios and this stays here.
+    public var trackPlayRes: CGSize? { engine?.trackPlayRes }
 
     // MARK: - Canvas
 
@@ -173,16 +195,15 @@ public actor SubtitleRenderer {
 
     private func applyCanvas(to engine: LibassEngine) {
         guard canvasPixelSize != .zero else { return }
-        ass_set_frame_size(
-            engine.renderer,
-            Self.dimension(canvasPixelSize.width),
-            Self.dimension(canvasPixelSize.height)
-        )
-        ass_set_storage_size(
-            engine.renderer,
+        let frame = (Self.dimension(canvasPixelSize.width), Self.dimension(canvasPixelSize.height))
+        let storage = (
             Self.dimension(storagePixelSize?.width ?? 0),
             Self.dimension(storagePixelSize?.height ?? 0)
         )
+        engine.withRenderer { renderer in
+            ass_set_frame_size(renderer, frame.0, frame.1)
+            ass_set_storage_size(renderer, storage.0, storage.1)
+        }
     }
 
     /// Narrows a pixel dimension for libass without trapping.
@@ -209,12 +230,24 @@ public actor SubtitleRenderer {
     }
 
     private func applyStyleOverride(to engine: LibassEngine) {
-        let renderer = engine.renderer
-
         guard let override = styleOverride, !override.isNoOp else {
-            ass_set_selective_style_override_enabled(renderer, Int32(ASS_OVERRIDE_DEFAULT.rawValue))
-            ass_set_font_scale(renderer, 1)
+            engine.withRenderer { renderer in
+                ass_set_selective_style_override_enabled(
+                    renderer, Int32(ASS_OVERRIDE_DEFAULT.rawValue)
+                )
+                ass_set_font_scale(renderer, 1)
+            }
             return
+        }
+
+        // The override names a family past every substitution, and it can be set
+        // after the track loaded — so its file has to be registered here too,
+        // not only from `load`. No-op when it already is.
+        if let family = override.fontFamily {
+            LibassLibrary.shared.ensureRegistered(
+                files: SubtitleFontBundle.files(forFamilies: [family]), log: engine.messageLog
+            )
+            engine.refreshFontsIfNeeded()
         }
 
         // libass DOES copy FontName, so ours is ours to release. It does not copy
@@ -244,9 +277,10 @@ public actor SubtitleRenderer {
             // 3 = opaque box, 1 = outline + shadow. At 3 the Outline field stops
             // being a stroke width and becomes the box's padding, so the same
             // proportion the synthesized style uses carries straight over.
+            let border = borderGeometry(override)
             style.BorderStyle = boxed ? 3 : 1
-            style.Outline = override.outlineWidth ?? ASSScriptBuilder.outlineWidth
-            style.Shadow = boxed ? 0 : (override.shadowOffset ?? ASSScriptBuilder.shadowOffset)
+            style.Outline = border.outline
+            style.Shadow = boxed ? 0 : border.shadow
         }
 
         if override.overridesMargins {
@@ -257,9 +291,58 @@ public actor SubtitleRenderer {
             style.MarginR = Int32((override.marginHorizontal ?? 0).rounded())
         }
 
-        ass_set_selective_style_override(renderer, &style)
-        ass_set_selective_style_override_enabled(renderer, override.overrideBits)
-        ass_set_font_scale(renderer, override.fontScale ?? 1)
+        engine.withRenderer { renderer in
+            ass_set_selective_style_override(renderer, &style)
+            ass_set_selective_style_override_enabled(renderer, override.overrideBits)
+            ass_set_font_scale(renderer, override.fontScale ?? 1)
+        }
+    }
+
+    /// Resolves the override's em-relative border geometry into the script units
+    /// libass wants.
+    ///
+    /// The em is the size the text really renders at, in the track's OWN script
+    /// units — and that is not the same number for the two kinds of track:
+    ///
+    /// - a converted script is ours, authored at `ASSScriptBuilder.fontSize` on
+    ///   a 720-line canvas, so the caller's canvas fraction resolves against it;
+    /// - an authored script's em is its own `Fontsize`. Resolving a ratio
+    ///   against the synthesized 48/720 instead gave a `Fontsize: 20` fansub a
+    ///   ring 2.4x heavier than its glyphs, and a `Fontsize: 72` one a ring a
+    ///   third of what it asked for.
+    ///
+    /// The caller expresses SIZE as a fraction of the synthesized canvas either
+    /// way, so what is taken from `emHeightRatio` for an authored track is the
+    /// user's scale — the ratio over the synthesized default — and the authored
+    /// `Fontsize` supplies the base.
+    private func borderGeometry(_ override: SubtitleStyleOverride) -> (outline: Double, shadow: Double) {
+        let requested = override.emHeightRatio ?? Self.convertedScriptFontFraction
+        let em: Double
+        if let authored = authoredEmScriptUnits, authored > 0 {
+            em = authored * borderUnitScale * (requested / Self.convertedScriptFontFraction)
+        } else {
+            em = requested * Double(ASSScriptBuilder.playResY)
+        }
+        return (
+            outline: override.outlineEmRatio.map { $0 * em } ?? ASSScriptBuilder.outlineWidth,
+            shadow: override.shadowEmRatio.map { $0 * em } ?? ASSScriptBuilder.shadowOffset
+        )
+    }
+
+    /// Border lengths are NOT in the same units as glyph sizes.
+    ///
+    /// A glyph scales by frame/PlayRes; a border scales by frame/storage when a
+    /// storage size is set (libass' `blur_scale`, `init_font_scale` in
+    /// ass_render.c) and by frame/PlayRes when it is not. So an em expressed in
+    /// script units has to be multiplied by storage/PlayRes to become a border
+    /// unit. Measured on this path, not inferred: a 1080-line script at
+    /// `Fontsize: 72` draws exactly the ring a 720-line script at `Fontsize: 48`
+    /// draws, at two thirds the ratio.
+    private var borderUnitScale: Double {
+        guard let storage = storagePixelSize?.height, storage > 0,
+              let playRes = engine?.trackPlayRes?.height, playRes > 0
+        else { return 1 }
+        return storage / playRes
     }
 
     // MARK: - Rendering
@@ -274,11 +357,9 @@ public actor SubtitleRenderer {
         guard let engine, engine.track != nil, canvasPixelSize != .zero else { return nil }
 
         var changed: Int32 = 0
-        let images = ass_render_frame(
-            engine.renderer,
-            engine.track,
-            Int64((seconds * 1000).rounded()),
-            &changed
+        let images = engine.renderFrame(
+            atMilliseconds: Int64((seconds * 1000).rounded()),
+            changed: &changed
         )
         if hasEmittedFrame, changed == 0 { return nil }
         hasEmittedFrame = true
@@ -353,10 +434,7 @@ public actor SubtitleRenderer {
     /// and configured from whatever was set before it existed.
     private func activeEngine() throws -> LibassEngine {
         if let engine { return engine }
-        guard let engine = LibassEngine(
-            defaultFontFamily: defaultFontFamily,
-            defaultFontPath: defaultFontURL?.path
-        ) else {
+        guard let engine = LibassEngine(defaultFontFamily: defaultFontFamily) else {
             throw SubtitleError.engineUnavailable
         }
         self.engine = engine

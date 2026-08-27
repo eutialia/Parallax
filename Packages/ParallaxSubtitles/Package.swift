@@ -33,6 +33,13 @@ let package = Package(
                 "CSubtitleBlend",
                 .product(name: "libass", package: "libass-build"),
             ],
+            // The only fonts subtitles ever render with: unmodified Noto
+            // releases, one family programme across every script. `.copy` keeps
+            // the directory intact so its path can be handed to a second libass
+            // (VLC's) as a fonts dir — which is also why the shared SIL OFL 1.1
+            // text ships in the app's Resources/Licenses/ and not in here:
+            // libass would try to open a .txt as a typeface.
+            resources: [ .copy("Fonts") ],
             swiftSettings: [ .swiftLanguageMode(.v6) ],
             // The prebuilt archives are pure static libraries and declare none of
             // their own system dependencies: libass' CoreText font provider and
