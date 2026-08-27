@@ -48,7 +48,7 @@ final class SubtitleLivePreview {
         guard stageSize.width > 0, stageSize.height > 0, displayScale > 0 else { return }
         // A font-design change rebuilds the renderer around the new family —
         // the font plan is baked at load, exactly like playback's reinstall.
-        let family = style.fontDesign.rendererFamily ?? SubtitleRenderer.standardFontFamily
+        let family = style.fontDesign.resolvedRendererFamily
         if family != rendererFamily {
             rendererFamily = family
             renderer = SubtitleRenderer(defaultFontFamily: family)

@@ -117,6 +117,13 @@ final class PlayerViewModel {
     /// be reused by its replacement, which would silently skip the new canvas push
     /// and leave the fresh renderer with a zero canvas (permanently blank subtitles).
     private(set) var subtitleRendererGeneration = 0
+    /// The subtitle track whose sidecar is being fetched right now, for the menu's
+    /// loading affordance. A cold EMBEDDED Jellyfin stream is extracted by ffmpeg on
+    /// first request, which can take seconds — silence there is what makes the wait
+    /// read as a bug rather than a fetch.
+    var loadingSubtitleTrackID: TrackID? {
+        sidecarFetchStreamIndex.map(TrackID.jellyfinStream)
+    }
     private(set) var currentPosition: CMTime = .zero
     private(set) var currentDuration: CMTime = .zero
 
@@ -297,6 +304,13 @@ final class PlayerViewModel {
 
     /// User-selected playback speed (1.0 = normal). Drives the speed chip.
     private(set) var playbackRate: Float = 1
+
+    /// The user's subtitle-delay nudge (ms) for the item being played. The ENGINE's
+    /// copy is input-scoped and reset by every `load()`, so the intent lives here —
+    /// per item, like the pick itself — and `loadAndPlay` re-applies it after a
+    /// same-item reload (transcode swap, track switch). Cleared when the item changes
+    /// (`replacePlayback`); a retry of the same item keeps it, like `playbackRate`.
+    private(set) var subtitleDelayMs = 0
 
     /// The just-loaded asset itself — kept so a reactive AVKit→VLC re-route
     /// (`attemptReactiveFallback`) can rebuild it (same url/headers/hints/vlcOptions,
@@ -516,6 +530,27 @@ final class PlayerViewModel {
     private var sidecarPayload: (data: Data, format: SubtitleSourceFormat, languageCode: String?)?
     /// The family the current renderer was built around.
     private var sidecarRendererFamily: String?
+    /// Identity of one fetched sidecar. The media source is part of it because a
+    /// transcode reload re-resolves the SAME source (cache still valid) while an
+    /// episode change resolves a different one (stream indices mean something else).
+    private struct SidecarKey: Hashable {
+        let mediaSourceID: String?
+        let streamIndex: Int
+    }
+    /// Session cache of fetched sidecar bytes. The expensive part of a first pick
+    /// is the server extracting an embedded stream through ffmpeg; re-selecting a
+    /// track must never pay that twice. Dropped with the rest of the session state.
+    private var sidecarCache: [SidecarKey: (data: Data, format: SubtitleSourceFormat)] = [:]
+    private func sidecarKey(streamIndex: Int) -> SidecarKey {
+        SidecarKey(mediaSourceID: resolved?.mediaSourceID, streamIndex: streamIndex)
+    }
+
+    /// Whether picking `streamIndex` costs a fetch. The loading affordance reads this so
+    /// a re-pick of an already-fetched track doesn't flash a spinner for a parse.
+    private func sidecarIsCached(streamIndex: Int) -> Bool {
+        sidecarCache[sidecarKey(streamIndex: streamIndex)] != nil
+    }
+
     /// Serializes renderer style pushes: rapid preference edits must land on the actor
     /// in submission order or the renderer can finish on a stale style (the same
     /// discipline as `SubtitlePreferences.writeChain`).
@@ -545,6 +580,11 @@ final class PlayerViewModel {
     /// `.ready` beat — the engine reports only EMBEDDED tracks, so without this the sidecar
     /// subs would be dropped the moment the engine's inventory lands.
     private var smbExternalSubtitleTracks: [SubtitleTrack] = []
+    /// Server subtitle stream index → the id of the published menu row that renders it.
+    /// Written with the menu in the `.ready` inventory beat; the only reader is the
+    /// server-preferred default, which is expressed in STREAM indices while the rows are
+    /// keyed by renderer. Empty on SMB/local and on the transcode path.
+    private var subtitleRowIDsByStream: [Int: TrackID] = [:]
     private var didReportStart = false
     private var didReportStopped = false
     /// Set at `engine.play()` dispatch in `loadAndPlay`, consumed (cleared) by the
@@ -685,6 +725,17 @@ final class PlayerViewModel {
     /// Injectable so tests don't wait wall-clock seconds for it to fire.
     private let backfillDelay: Duration
 
+    /// The user's subtitle typeface, read at asset-construction time. A closure rather
+    /// than a value: `SubtitlePreferences` loads its persisted style asynchronously, so a
+    /// value captured when the view model was built could be the pre-load default.
+    /// Sampled ONCE per session — the two engine-facing knobs it feeds (`:ssa-fontsdir`
+    /// and `:freetype-font`) are libvlc media options, fixed for the life of the decoder.
+    private let subtitleFontDesign: @MainActor () -> SubtitleFontDesign
+
+    /// `subtitleFontDesign` in the bundle's own vocabulary — the one both engine-facing
+    /// knobs are expressed in.
+    private var bundleFontDesign: SubtitleFontBundle.Design { subtitleFontDesign().bundleDesign }
+
     init(
         deviceProfileBuilder: DeviceProfileBuilder,
         playbackInfo: any PlaybackReporting,
@@ -713,7 +764,8 @@ final class PlayerViewModel {
         reloadResolveDeadline: Duration = .seconds(15),
         smbResumeStore: SMBResumeStore = .shared,
         backfillThumbnail: @escaping @Sendable (Duration?, Bool, @escaping @Sendable () async -> Data?) async -> Void = { _, _, _ in },
-        backfillDelay: Duration = .seconds(8)
+        backfillDelay: Duration = .seconds(8),
+        subtitleFontDesign: @escaping @MainActor () -> SubtitleFontDesign = { .sansSerif }
     ) {
         self.deviceProfileBuilder = deviceProfileBuilder
         self.playbackInfo = playbackInfo
@@ -732,6 +784,7 @@ final class PlayerViewModel {
         self.smbResumeStore = smbResumeStore
         self.backfillThumbnail = backfillThumbnail
         self.backfillDelay = backfillDelay
+        self.subtitleFontDesign = subtitleFontDesign
     }
 
     isolated deinit {
@@ -841,6 +894,10 @@ final class PlayerViewModel {
         guard !isAdvancing, !isExiting else { return }
         isAdvancing = true
         defer { isAdvancing = false }
+        // A delay nudge belongs to the item it was tuned against — the next episode
+        // has its own muxing and starts level. (A retry of the SAME item goes through
+        // `resetForReplay` directly and keeps it, like `playbackRate`.)
+        subtitleDelayMs = 0
         await resetForReplay()
         await start(itemID: id)
     }
@@ -900,15 +957,11 @@ final class PlayerViewModel {
         }
     }
 
-    /// `fromBeginning`: the context menu's explicit "Play from Beginning" (Task 4) —
-    /// true starts at 0:00 regardless of any saved resume position. Defaulted so
-    /// every existing tap-to-resume call site is unaffected. Threaded straight into
-    /// `startTime` below: `nil` there already means "no offset" for BOTH direct-play
-    /// (its stream URL defaults `startTimeTicks` to 0) and transcode (the server bakes
-    /// the offset into the transcode session AT RESOLVE TIME from the ticks we send —
-    /// omitting them starts ffmpeg at 0), which is exactly the "build for start 0 up
-    /// front" behavior a restart needs — never seek-after-resume, which would re-anchor
-    /// a running transcode's timeline (the 2026-07-17 subtitle-desync class of bug).
+    /// `fromBeginning`: the context menu's explicit "Play from Beginning" — true
+    /// starts at 0:00 regardless of any saved resume position. Defaulted so every
+    /// existing tap-to-resume call site is unaffected. It threads into `startTime`,
+    /// which every method resumes by SEEKING client-side on `.ready` (see
+    /// `makeAsset`), so a restart is simply a nil start time.
     func start(item: ItemDetail, fromBeginning: Bool = false) async {
         isStartingPlayback = true
         defer { isStartingPlayback = false }
@@ -1079,9 +1132,6 @@ final class PlayerViewModel {
                 urls: smbItem.subtitleURLs, labels: smbItem.subtitleLabels
             )
             availableSubtitleTracks = smbExternalSubtitleTracks
-            // Materialized off-main (the first touch writes font files) so embedded
-            // ASS/SSA subs still render under VLC — same source as the Jellyfin asset.
-            let fonts = await SubtitleFontLocator.resolved()
             let asset = PlayableAsset(
                 url: smbItem.url,
                 headers: nil,
@@ -1092,8 +1142,13 @@ final class PlayerViewModel {
                 mediaStreams: [],
                 defaultAudioStreamIndex: nil,
                 defaultSubtitleStreamIndex: nil,
-                subtitleFontURL: fonts?.primaryFile,
-                subtitleFontsDirectoryURL: fonts?.directory,
+                // The bundled Noto faces, for VLC's own text renderers. SMB
+                // embedded tracks have no extraction endpoint, so the engine keeps
+                // rendering them — `engineSubtitlesDisabled` stays false and the
+                // per-pick deselect in `activateSidecarSubtitle` handles sidecars.
+                subtitleFontsDirectory: VLCSubtitleFonts.directory(for: bundleFontDesign),
+                subtitleFontFamily: SubtitleFontBundle.family(design: bundleFontDesign, script: .common),
+                engineSubtitlesDisabled: false,
                 vlcOptions: smbItem.vlcOptions,
                 vlcLibraryOptions: smbItem.vlcLibraryOptions
             )
@@ -1208,10 +1263,6 @@ final class PlayerViewModel {
         reusingEngine: Bool = false
     ) async throws {
         try checkStillActive()
-        // Kicked off alongside the profile build + network resolve: the first
-        // resolution materializes font files off-main (see SubtitleFontLocator),
-        // so it overlaps the long network call instead of stalling makeAsset.
-        async let subtitleFonts = SubtitleFontLocator.resolved()
         let caps = await deviceProfileBuilder.build()
         let selection = streamSelection(
             for: item,
@@ -1260,7 +1311,7 @@ final class PlayerViewModel {
             availableSubtitleTracks = Self.externalSubtitleTracks(from: resolved)
         }
 
-        let asset = Self.makeAsset(from: resolved, subtitleFonts: await subtitleFonts)
+        let asset = makeAsset(from: resolved)
         try await loadAndPlay(asset, reusingEngine: reusingEngine)
         // The engine now plays a FRESH AVPlayerItem whose timeline mapping derives from
         // this session's own segments — any prior in-stream restart shift is laundered.
@@ -1412,6 +1463,12 @@ final class PlayerViewModel {
         if playbackRate != 1, self.engine === engine {
             await engine.setRate(playbackRate)
         }
+        // Same shape for the subtitle delay: `load()` resets the engine's copy (it is
+        // input-scoped and belongs to the media that was just replaced), so the intent
+        // this view model holds for the item has to be re-pushed onto the fresh input.
+        if subtitleDelayMs != 0, self.engine === engine {
+            await engine.setSubtitleDelay(milliseconds: subtitleDelayMs)
+        }
     }
 
     /// Cancels the engine's state subscription and tears the engine down, clearing
@@ -1558,10 +1615,12 @@ final class PlayerViewModel {
         transcodeDelivery = nil
         availableAudioTracks = []
         availableSubtitleTracks = []
+        subtitleRowIDsByStream = [:]
         selectedAudioTrack = nil
         selectedSubtitleTrack = nil
         trackSwitchFailure = nil
         clearSidecarSubtitle()
+        sidecarCache = [:]
         subtitleURLs = [:]
         smbExternalSubtitleTracks = []
         currentPosition = .zero
@@ -1758,11 +1817,30 @@ final class PlayerViewModel {
         }
     }
 
+    /// Show the loading affordance for a pick that is about to be made.
+    ///
+    /// **Synchronous, and separate from `selectSubtitleTrack` on purpose.** The menu
+    /// dismisses on the tap's own turn, and every path from the tap to the fetch suspends
+    /// first (`engine.setSubtitleTrack(nil)` at minimum), so a state written inside the
+    /// async pick lands after the panel showing it is gone. The view calls this before it
+    /// closes the menu; `selectSubtitleTrack` calls it too, so a programmatic pick arms
+    /// the same way. Idempotent — calling it twice for one pick is one indicator.
+    ///
+    /// Nothing to show for Off, for a burn-in (a re-resolve, with its own scrim), or for
+    /// a track already in the session cache — that pick is instant.
+    func armSubtitleFetchIndicator(for track: SubtitleTrack?) {
+        guard let track, !track.isBurnedIn, let index = track.id.jellyfinStreamIndex,
+              !sidecarIsCached(streamIndex: index)
+        else { return }
+        sidecarFetchStreamIndex = index
+    }
+
     func selectSubtitleTrack(_ track: SubtitleTrack?) async {
         // Same drop-don't-queue rule as selectAudioTrack: mid-switch, `resolved`
         // still points at the outgoing session, so a sidecar fetch would read the
         // old session's subtitle URLs.
         guard !isStartingPlayback, !isSwitchingTracks else { return }
+        armSubtitleFetchIndicator(for: track)
         // A burned-in (image) subtitle has no sidecar to fetch — the server can only
         // deliver it baked into the video, which costs a full re-encode. Route through
         // the same re-resolve `selectAudioTrack` uses instead of the sidecar-fetch
@@ -1906,6 +1984,11 @@ final class PlayerViewModel {
     /// the transcode/AVKit path, which has no in-manifest text track to deselect.
     private func activateSidecarSubtitle(_ track: SubtitleTrack, index: Int) async {
         await engine?.setSubtitleTrack(nil)
+        // Drop the OUTGOING track's cues before the fetch. The menu already reads
+        // the new language, and a cold embedded stream can take seconds to extract
+        // server-side — leaving the old bitmaps up for that window shows one
+        // language while the UI claims another.
+        clearSidecarSubtitle()
         currentSubtitleStreamIndex = index
         selectedSubtitleTrack = track
         loadSidecarSubtitle(streamIndex: index, languageCode: track.languageCode)
@@ -1989,28 +2072,47 @@ final class PlayerViewModel {
         }
 
         // SUBTITLES — only when the server's mode+language logic says one should show.
+        //
+        // The preference is a STREAM index; the menu is keyed by RENDERER. Go through
+        // the join the menu recorded (`subtitleRowIDsByStream`) rather than assuming
+        // `.jellyfinStream(index)`: a PGS/VobSub stream the engine can draw carries the
+        // ENGINE's id, and matching on the stream id alone silently dropped every such
+        // default on the floor.
         guard let index = resolved.defaultSubtitleStreamIndex,
-              let preferred = resolved.mediaStreams.first(where: { $0.kind == .subtitle && $0.index == index })
+              let rowID = subtitleRowIDsByStream[index],
+              let row = availableSubtitleTracks.first(where: { $0.id == rowID })
         else { return }
-        if let external = availableSubtitleTracks.first(where: { $0.id == .jellyfinStream(index) }) {
-            // An external sidecar default is an EXPLICIT server preference, so it overrides the
+        // `!isBurnedIn` mirrors the transcode default: burn-in is opt-in, so a default
+        // that can only be delivered by re-encoding the video never fires on its own.
+        // An image sub the engine renders locally is NOT that — it costs nothing, so it
+        // is honoured like any other.
+        guard !row.isBurnedIn else { return }
+        if let sidecarIndex = row.id.jellyfinStreamIndex {
+            // A sidecar default is an EXPLICIT server preference, so it overrides the
             // engine's own auto-pick. VLC selects a default/forced embedded sub on its own, and the
             // `.ready` inventory seed above adopts it into `selectedSubtitleTrack`; gating this
             // branch on `selectedSubtitleTrack == nil` (as it used to) let that embedded pick win
             // the race and strand the external default while the embedded one rendered THROUGH the
             // overlay (the double-subtitle bug). `activateSidecarSubtitle` holds the engine subtitle
             // off (`setSubtitleTrack(nil)`) so only the client-drawn sidecar shows.
-            await activateSidecarSubtitle(external, index: index)
-        } else if selectedSubtitleTrack == nil, let match = availableSubtitleTracks.first(where: {
-            !$0.isExternal
-                && TrackLanguage.matches($0.languageCode, preferred.language)
-                && $0.isForced == preferred.isForced
-        }) {
-            // An EMBEDDED-language match applies only when the engine didn't already auto-select a
-            // subtitle (AVKit honors the system's accessibility caption setting; never fight that).
-            await engine.setSubtitleTrack(match)
-            selectedSubtitleTrack = match
+            await activateSidecarSubtitle(row, index: sidecarIndex)
+        } else {
+            await activateEngineSubtitle(row)
         }
+    }
+
+    /// The engine-rendered counterpart of `activateSidecarSubtitle`: the row's id IS the
+    /// engine's track, so the pick is a plain `setSubtitleTrack`. Any client-drawn sidecar
+    /// a prior selection left up has to go — two renderers would otherwise stack.
+    ///
+    /// Not routed through `selectSubtitleTrack`, for the same reason the sidecar path
+    /// isn't: this runs from the `.ready` beat, inside the `isStartingPlayback` window
+    /// that method deliberately drops user picks in.
+    private func activateEngineSubtitle(_ track: SubtitleTrack) async {
+        guard let engine else { return }
+        await engine.setSubtitleTrack(track)
+        clearSidecarSubtitle()
+        selectedSubtitleTrack = track
     }
 
     /// Fetches the sidecar subtitle for `streamIndex` and loads it into a fresh
@@ -2025,6 +2127,23 @@ final class PlayerViewModel {
             clearSidecarSubtitle()
             return
         }
+        let key = sidecarKey(streamIndex: streamIndex)
+        if let cached = sidecarCache[key] {
+            sidecarFetchStreamIndex = nil
+            // Already fetched this session: no round trip, and — for an EMBEDDED
+            // Jellyfin stream — no second ffmpeg extraction. Skip the loading state
+            // too; the only cost left is the libass parse.
+            subtitleFetchTask = Task { [weak self] in
+                await self?.installSubtitleRenderer(
+                    data: cached.data, format: cached.format, languageCode: languageCode
+                )
+            }
+            return
+        }
+        // The first request is the only one the happy path pays: the verbatim
+        // ass/ssa URL is what the renderer wants, and the VTT conversion below runs
+        // ONLY when it comes back empty. Re-picking never re-pays either — the
+        // bytes are cached above.
         sidecarFetchStreamIndex = streamIndex
         let fetch = subtitleFetch
         let requestedFormat = SubtitleSourceFormat(sidecarExtension: url.pathExtension)
@@ -2047,6 +2166,7 @@ final class PlayerViewModel {
                 self?.clearSidecarSubtitle()
                 return
             }
+            self?.sidecarCache[key] = (data, format)
             await self?.installSubtitleRenderer(data: data, format: format, languageCode: languageCode)
         }
     }
@@ -2071,8 +2191,8 @@ final class PlayerViewModel {
         languageCode: String?
     ) async {
         // Built around the style's font family so the CJK plan resolves through
-        // ITS cascade — serif must reach Mincho for Japanese lines, which a
-        // Helvetica-based plan would tag right past.
+        // ITS cascade — serif must reach a Mincho face for Japanese lines, which
+        // a sans-based plan would tag right past.
         let family = effectiveSidecarFontFamily(for: format)
         let renderer = SubtitleRenderer(defaultFontFamily: family)
         do {
@@ -2153,10 +2273,22 @@ final class PlayerViewModel {
     }
 
     private func effectiveStyleOverride(for format: SubtitleSourceFormat) -> SubtitleStyleOverride? {
-        switch format {
-        case .srt, .vtt: convertedSubtitleAppearance
-        case .ass, .ssa: overrideAuthoredStyles ? authoredSubtitleAppearance : nil
+        switch format.policy(userOverridesAuthored: overrideAuthoredStyles) {
+        case .userStyle: convertedSubtitleAppearance
+        case .authored(let fields): authoredOverride(fields: fields)
         }
+    }
+
+    /// The authored-track override for the fields the policy yields.
+    ///
+    /// Nothing is rescaled here any more: border and shadow travel as fractions
+    /// of the rendered em and `SubtitleRenderer` resolves them. The PlayResY
+    /// correction that used to live here was measured to be backwards — a
+    /// script-unit border is resolution independent in libass, so scaling it up
+    /// for a 1080p script made that fansub's ring 1.5x too heavy.
+    private func authoredOverride(fields: Set<SubtitleStylePolicy.Field>) -> SubtitleStyleOverride? {
+        guard !fields.isEmpty, let appearance = authoredSubtitleAppearance else { return nil }
+        return appearance.filtered(to: fields)
     }
 
     /// Native video dimensions for the renderer's storage size — what authored `\pos`
@@ -2567,26 +2699,39 @@ final class PlayerViewModel {
             // .loading, or the spinner would reappear over a playing video.
             if resolved?.method != .transcode {
                 availableAudioTracks = tracks.audio
-                // Embedded subs come from the engine; external sidecar subs are appended and
-                // rendered client-side (the engine can't shape sidecar VTT on iOS). Both share
-                // the chip menu. Jellyfin sources the externals from `resolved`; SMB (resolved
-                // nil) uses the pre-built `smbExternalSubtitleTracks` — either way the engine's
-                // embedded inventory can't clobber the sidecar picks.
-                let externalSubs = resolved.map(Self.externalSubtitleTracks) ?? smbExternalSubtitleTracks
-                availableSubtitleTracks = tracks.subtitles.map(Self.normalizedEmbeddedSubtitle) + externalSubs
+                let subtitleMenu = Self.directPlaySubtitleMenu(
+                    engineTracks: tracks.subtitles,
+                    resolved: resolved,
+                    smbExternals: smbExternalSubtitleTracks
+                )
+                availableSubtitleTracks = subtitleMenu.tracks
+                subtitleRowIDsByStream = subtitleMenu.rowIDsByStream
                 // Reflect the engine's default selection so the menus show a
                 // checkmark on the track that's actually playing. Don't clobber
                 // a choice the user already made (a late/duplicate .ready).
                 if selectedAudioTrack == nil {
                     selectedAudioTrack = tracks.audio.first { $0.id == tracks.selectedAudioID }
                 }
-                if selectedSubtitleTrack == nil {
-                    // The normalized copy, not the raw engine track — the chip shows
-                    // `selectedSubtitleTrack.displayName` directly, so an un-normalized
-                    // adoption would flash "SubRip" while the menu row reads "English".
-                    selectedSubtitleTrack = tracks.subtitles
-                        .first { $0.id == tracks.selectedSubtitleID }
-                        .map(Self.normalizedEmbeddedSubtitle)
+                // Adopt the engine's own subtitle pick only when the engine is what
+                // draws — the SAME predicate `directPlaySubtitleTracks` built the menu
+                // from, so the two can never disagree. When we render every subtitle
+                // ourselves (`engineSubtitlesDisabled`) its "selection" is a phantom
+                // that would tick a row nothing is drawing.
+                if Self.engineRendersSubtitles(resolved), let engineID = tracks.selectedSubtitleID {
+                    // Looked up in the PUBLISHED menu, not the raw inventory: the rows
+                    // are already normalized (the chip shows `displayName` directly, so
+                    // a raw adoption would flash "SubRip" while the menu reads
+                    // "English"), and only a row that exists can be ticked.
+                    if let row = availableSubtitleTracks.first(where: { $0.id == engineID }) {
+                        if selectedSubtitleTrack == nil { selectedSubtitleTrack = row }
+                    } else if resolved != nil {
+                        // The engine auto-selected a stream WE draw client-side — its
+                        // menu row carries a `.jellyfinStream` id, so no row matches.
+                        // Left alone it would paint a second copy under our overlay
+                        // (the double-subtitle bug, in the one shape `:no-spu` can't
+                        // cover: an item with image subs keeps the SPU renderer on).
+                        await engine?.setSubtitleTrack(nil)
+                    }
                 }
                 // First inventory only: steer the engine's own picks toward the
                 // user's Jellyfin language preferences (AVKit selects by system
@@ -2804,6 +2949,7 @@ final class PlayerViewModel {
         // lets it re-apply the server-preferred picks on its own first `.ready`.
         availableAudioTracks = []
         availableSubtitleTracks = []
+        subtitleRowIDsByStream = [:]
         selectedAudioTrack = nil
         selectedSubtitleTrack = nil
         didApplyPreferredTracks = false
@@ -2889,14 +3035,11 @@ final class PlayerViewModel {
         selectedSubtitleTrack = availableSubtitleTracks.first { $0.id == currentSubtitleStreamIndex.map(TrackID.jellyfinStream) }
     }
 
-    private static func makeAsset(
-        from resolved: ResolvedPlayback,
-        subtitleFonts: SubtitleFontLocator.Fonts?
-    ) -> PlayableAsset {
+    private func makeAsset(from resolved: ResolvedPlayback) -> PlayableAsset {
         PlayableAsset(
             url: resolved.url,
             headers: nil,
-            hints: deliveredHints(for: resolved),
+            hints: Self.deliveredHints(for: resolved),
             // Every method resumes by SEEKING client-side. Jellyfin's HLS transcode
             // serves a full-timeline VOD playlist (position 0 = media start) and
             // ignores StartTimeTicks for the offset, so — exactly like direct-play —
@@ -2912,12 +3055,140 @@ final class PlayerViewModel {
             mediaStreams: resolved.mediaStreams,
             defaultAudioStreamIndex: resolved.defaultAudioStreamIndex,
             defaultSubtitleStreamIndex: resolved.defaultSubtitleStreamIndex,
-            // System fonts for VLC's text renderers (unused by AVKit). Materialized via
-            // CoreText so we render with the OS fonts instead of bundling one: a font
-            // directory for libass (ASS/SSA) and a single file for the simple renderer.
-            // Resolved off-main by the caller (the first touch writes font files).
-            subtitleFontURL: subtitleFonts?.primaryFile,
-            subtitleFontsDirectoryURL: subtitleFonts?.directory
+            // The bundled Noto faces in the user's chosen design, for VLC's text
+            // renderers (unused by AVKit): a directory for its internal libass — one
+            // that also answers to libass' hardcoded default family, see
+            // `VLCSubtitleFonts` — and a family name for its simple freetype renderer.
+            subtitleFontsDirectory: VLCSubtitleFonts.directory(for: bundleFontDesign),
+            subtitleFontFamily: SubtitleFontBundle.family(design: bundleFontDesign, script: .common),
+            // Blind the engine's SPU renderer only when it has NOTHING left to draw:
+            // every reported subtitle has a sidecar URL we fetch and render ourselves
+            // (`subtitleStreamURLs` covers embedded text streams too). An item with a
+            // PGS/VobSub stream keeps the renderer on — there is no sidecar for an
+            // image sub, and VLC draws it locally for free. Where it does apply the
+            // latch is stronger than a per-pick deselect: VLC keeps discovering text
+            // tracks as the demux runs and auto-selects one.
+            engineSubtitlesDisabled: resolved.clientRendersAllSubtitles
+        )
+    }
+
+    /// The direct-play subtitle menu.
+    ///
+    /// **Jellyfin: the row's renderer decides its id, per stream.**
+    /// `PlaybackInfoService` builds a sidecar URL for every TEXT stream — embedded
+    /// ones included — so those become `.jellyfinStream` rows, fetched and drawn by
+    /// our own libass, taking the user's settings and looking identical on both
+    /// engines. An IMAGE stream has no sidecar, so it keeps the ENGINE's inventory row
+    /// (`.vlc`/`.avKitOption`, joined to the server's metadata by
+    /// `JellyfinTrackMatcher`) and the engine draws the bitmaps locally, for free.
+    /// Only an image stream the engine can't be matched to falls back to a server
+    /// burn-in pick — a full re-encode, so it is the last resort, not the default.
+    ///
+    /// **SMB keeps the engine's inventory**: there is no extraction endpoint for a
+    /// local container, so its embedded tracks can only be engine-rendered. The
+    /// filename-matched sidecars are appended.
+    private static func directPlaySubtitleMenu(
+        engineTracks: [SubtitleTrack],
+        resolved: ResolvedPlayback?,
+        smbExternals: [SubtitleTrack]
+    ) -> DirectPlaySubtitleMenu {
+        let streams = resolved?.mediaStreams.filter { $0.kind == .subtitle } ?? []
+        guard let resolved, !streams.isEmpty else {
+            return DirectPlaySubtitleMenu(
+                tracks: engineTracks.map(normalizedEmbeddedSubtitle)
+                    + (resolved.map(externalSubtitleTracks) ?? smbExternals),
+                rowIDsByStream: [:]
+            )
+        }
+        let engineByStream = engineTracksByStreamIndex(
+            engineTracks: engineTracks,
+            streams: streams,
+            defaultStreamIndex: resolved.defaultSubtitleStreamIndex
+        )
+        let tracks = streams.map { stream in
+            if resolved.subtitleStreamURLs[stream.index] != nil {
+                return subtitleTrack(from: stream)          // text → we draw it
+            }
+            if let engineTrack = engineByStream[stream.index] {
+                return engineRenderedSubtitle(stream: stream, engineTrack: engineTrack)
+            }
+            return subtitleTrack(from: stream)              // no renderer → server burn-in
+        }
+        return DirectPlaySubtitleMenu(
+            tracks: tracks,
+            // First writer wins, for the same reason `engineTracksByStreamIndex` says so:
+            // a server that repeats a stream index is malformed, and the later row is no
+            // better a guess than the first.
+            rowIDsByStream: Dictionary(zip(streams.map(\.index), tracks.map(\.id))) { first, _ in first }
+        )
+    }
+
+    /// The direct-play menu plus the join a *server preference* needs.
+    ///
+    /// A row's id names its RENDERER (`.jellyfinStream` for one we draw, `.vlc` /
+    /// `.avKitOption` for one the engine draws), so nothing in the row itself says
+    /// which server stream it came from. `rowIDsByStream` is that answer, recorded
+    /// where the rows are built rather than re-derived later — a second derivation
+    /// could disagree with the menu, and then a default would tick a row that isn't
+    /// there. Empty on SMB/local, which has no server stream list at all.
+    private struct DirectPlaySubtitleMenu {
+        let tracks: [SubtitleTrack]
+        let rowIDsByStream: [Int: TrackID]
+    }
+
+    /// Whether the ENGINE is what draws this session's subtitles — the read side of
+    /// `PlayableAsset.engineSubtitlesDisabled`. Always true off-Jellyfin (SMB/local:
+    /// the engine's inventory is all there is).
+    private static func engineRendersSubtitles(_ resolved: ResolvedPlayback?) -> Bool {
+        guard let resolved else { return true }
+        return !resolved.clientRendersAllSubtitles
+    }
+
+    /// Joins the engine's own subtitle inventory to the server's stream list, so an
+    /// image stream can be offered under the engine track that actually renders it.
+    ///
+    /// Deliberately matched against ALL subtitle streams, not just the image ones:
+    /// narrowing the candidates would let a text engine track match the lone image
+    /// stream by elimination and hand the menu the wrong id. `JellyfinTrackMatcher`
+    /// returns nil for an ambiguous join (two same-language streams), which costs the
+    /// image sub its engine row and falls it back to burn-in — degraded, never wrong.
+    private static func engineTracksByStreamIndex(
+        engineTracks: [SubtitleTrack],
+        streams: [MediaStreamInfo],
+        defaultStreamIndex: Int?
+    ) -> [Int: SubtitleTrack] {
+        var byStream: [Int: SubtitleTrack] = [:]
+        for track in engineTracks {
+            guard let stream = JellyfinTrackMatcher.matchedSubtitleStream(
+                languageCode: track.languageCode,
+                trackCount: engineTracks.count,
+                streams: streams,
+                defaultStreamIndex: defaultStreamIndex
+            ) else { continue }
+            // First writer wins: two engine tracks resolving to one stream is an
+            // ambiguous join, and the later one is no better a guess than the first.
+            if byStream[stream.index] == nil { byStream[stream.index] = track }
+        }
+        return byStream
+    }
+
+    /// A menu row for a stream the ENGINE renders: the engine's id (that's what
+    /// `setSubtitleTrack` needs) under the server's naming (that's what a person
+    /// picks by). Not `isBurnedIn` — nothing is re-encoded; the bitmaps are composited
+    /// locally.
+    private static func engineRenderedSubtitle(
+        stream: MediaStreamInfo,
+        engineTrack: SubtitleTrack
+    ) -> SubtitleTrack {
+        SubtitleTrack(
+            id: engineTrack.id,
+            displayName: stream.menuLabel,
+            languageCode: stream.language ?? engineTrack.languageCode,
+            isForced: stream.isForced,
+            detailLabel: TrackDisplay.subtitleFormatName(stream.codec),
+            isExternal: stream.isExternal,
+            isSDH: stream.isHearingImpaired,
+            isBurnedIn: false
         )
     }
 
@@ -3126,6 +3397,20 @@ extension PlayerViewModel {
     /// from the item and cleared on `stop()`.
     var debugSubtitleURLs: [Int: URL] { subtitleURLs }
 
+    /// The style policy's verdict for one source format, given the appearances the
+    /// overlay last pushed. Test-only window onto `effectiveStyleOverride` — the
+    /// (A)(B) contract lives entirely in that function and nothing else observes it.
+    func debugEffectiveStyleOverride(for format: SubtitleSourceFormat) -> SubtitleStyleOverride? {
+        effectiveStyleOverride(for: format)
+    }
+
+    /// The loaded script's effective canvas, straight off the renderer's track —
+    /// so a test can prove border geometry was resolved against the creator's own
+    /// PlayRes rather than the synthesized one.
+    var debugTrackPlayRes: CGSize? {
+        get async { await subtitleRenderer?.trackPlayRes }
+    }
+
     /// The active engine's id, for the HUD's engine label.
     var debugEngineID: PlaybackEngineID? { engine?.id }
 
@@ -3154,6 +3439,7 @@ extension PlayerViewModel {
     /// ENGINE-rendered track (VLC retimes; AVKit no-ops). Client-drawn sidecar cues
     /// are matched against the engine clock directly and have no retime path.
     func setSubtitleDelay(ms: Int) async {
+        subtitleDelayMs = ms
         await engine?.setSubtitleDelay(milliseconds: ms)
     }
 }

@@ -128,13 +128,7 @@ struct SubtitleOverlayView: View {
         let style = subtitlePrefs.style
         vm.applySubtitleAppearance(
             converted: style.convertedRendererOverride(surface: surfaceSize, canvas: canvasRect),
-            authored: style.rendererOverride(
-                fontScale: style.fontScale,
-                // Resolved, never nil: the sans bucket's nil mapping would leave
-                // the font-name flag unset and the user's typeface pick would
-                // silently skip authored tracks.
-                fontFamily: style.fontDesign.rendererFamily ?? SubtitleRenderer.standardFontFamily
-            ),
+            authored: style.authoredRendererOverride(),
             overrideAuthored: subtitlePrefs.overrideAuthoredStyles
         )
     }

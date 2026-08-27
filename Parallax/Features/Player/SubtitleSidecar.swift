@@ -1,3 +1,4 @@
+import Foundation
 import CoreGraphics
 import ParallaxPlayback
 import ParallaxSubtitles
@@ -43,17 +44,12 @@ extension SubtitleStyle {
     func convertedRendererOverride(surface: CGSize, canvas: CGRect) -> SubtitleStyleOverride {
         let metrics = PlayerMetrics.forSurface(surface)
         let scriptPt = canvas.height * SubtitleRenderer.convertedScriptFontFraction
-        let family = fontDesign.rendererFamily ?? SubtitleRenderer.standardFontFamily
+        let family = fontDesign.resolvedRendererFamily
         let base = scriptPt > 0 ? (metrics.subtitleFontSize * fontScale) / scriptPt : fontScale
-        // The em the cue actually renders at, in script units — the base for
-        // border and shadow, which libass does NOT scale with the font scale.
-        // Left constant they read heavier the smaller the text (the "tint").
-        let emUnits = SubtitleRenderer.convertedScriptFontSize * base
         let playRes = SubtitleRenderer.convertedScriptPlayRes
         return rendererOverride(
             fontScale: base * SubtitleFontMetrics.emBoxFactor(forFamily: family),
-            outlineWidth: outlineWidthRatio * emUnits,
-            shadowOffset: shadowYOffsetRatio * emUnits,
+            emHeightRatio: SubtitleRenderer.convertedScriptFontFraction * base,
             shadowAlpha: shadowOpacity,
             marginVertical: canvas.height > 0
                 ? metrics.subtitleBottom / canvas.height * playRes.height : nil,
@@ -62,13 +58,41 @@ extension SubtitleStyle {
         )
     }
 
+    /// The authored-track override for "Use My Style" — the creator's script with
+    /// the user's font, size, colour and border swapped in (never their placement;
+    /// see `SubtitleStylePolicy.authoredOptIn`).
+    ///
+    /// Two things this fixes over pushing raw constants:
+    /// - **Border geometry tracks Size.** Outline and shadow are derived from the
+    ///   em the cue renders at, so the ring stays the same proportion of the glyph
+    ///   at 50% as at 200%. libass does not scale them with the font scale.
+    /// - **Size gets the em-box compensation** converted cues get: libass sizes
+    ///   VSFilter-style by dividing the style size by the font's declared win box,
+    ///   so without the factor "150%" renders ~31% smaller than it reads.
+    ///
+    /// Nothing here is in script units: border and shadow are fractions of the
+    /// em, and the em itself is a fraction of the canvas — `SubtitleRenderer`
+    /// turns them into the units libass wants. Measured on the render path, a
+    /// script-unit border draws the same pixels whatever the fansub's PlayRes,
+    /// so the app must NOT "correct" for the script's resolution; doing that
+    /// made 1080p scripts' rings 1.5x heavier.
+    func authoredRendererOverride() -> SubtitleStyleOverride {
+        let family = fontDesign.resolvedRendererFamily
+        return rendererOverride(
+            fontScale: fontScale * SubtitleFontMetrics.emBoxFactor(forFamily: family),
+            fontFamily: family,
+            emHeightRatio: SubtitleRenderer.convertedScriptFontFraction * fontScale,
+            shadowAlpha: shadowOpacity
+        )
+    }
+
     /// The user's overlay style expressed as the renderer's selective override, with
     /// the caller-computed font scale (converted tracks remap the per-device tuned
-    /// size; authored tracks scale the creator's own sizes) and optional script-unit
-    /// border/shadow/margins (converted tracks size them proportional to the cue and
-    /// pin the tuned rest position; authored tracks keep the creator's own). Font-
-    /// family mapping is approximate on purpose: libass resolves real family names
-    /// through CoreText, and the design buckets pick a face every device ships.
+    /// size; authored tracks scale the creator's own sizes), the em the cue renders
+    /// at as a fraction of the script canvas, and — converted tracks only — the
+    /// tuned rest position as script-unit margins. Border and shadow always ride
+    /// along as fractions of that em; the renderer turns them into script units
+    /// against whichever canvas the loaded script declares.
     ///
     /// `fontFamily` nil means the design bucket's own mapping, where the sans
     /// bucket has no libass name override. Authored tracks must pass the
@@ -77,8 +101,7 @@ extension SubtitleStyle {
     func rendererOverride(
         fontScale: Double,
         fontFamily: String? = nil,
-        outlineWidth: Double? = nil,
-        shadowOffset: Double? = nil,
+        emHeightRatio: Double? = nil,
         shadowAlpha: Double? = nil,
         marginVertical: Double? = nil,
         marginHorizontal: Double? = nil
@@ -95,8 +118,9 @@ extension SubtitleStyle {
                 blue: outline.blue, alpha: outline.alpha
             ),
             opaqueBox: background == .opaqueBox,
-            outlineWidth: outlineWidth,
-            shadowOffset: shadowOffset,
+            emHeightRatio: emHeightRatio,
+            outlineEmRatio: outlineWidthRatio,
+            shadowEmRatio: shadowYOffsetRatio,
             shadowAlpha: shadowAlpha,
             marginVertical: marginVertical,
             marginHorizontal: marginHorizontal
@@ -105,12 +129,32 @@ extension SubtitleStyle {
 }
 
 extension SubtitleFontDesign {
-    /// nil = the renderer's default family (Helvetica Neue), matching the sans bucket.
+    /// The bundled Latin face this design bucket renders through; every other
+    /// script is reached from it by the renderer's per-run tagging.
+    /// `nil` for sans: that IS the renderer's default family, and leaving the
+    /// override's font-name field unset keeps libass' FONT_NAME bit off for
+    /// converted cues whose synthesized style already names it.
     var rendererFamily: String? {
         switch self {
         case .sansSerif: nil
-        case .serif: "Times New Roman"
-        case .monospaced: "Courier New"
+        case .serif: SubtitleFontBundle.serifFamily
+        }
+    }
+
+    /// The same mapping with the sans bucket resolved — for callers that need a
+    /// real family name (the CJK font plan, and authored tracks under "Use My
+    /// Style", where a nil would leave the creator's typeface in place).
+    var resolvedRendererFamily: String {
+        rendererFamily ?? SubtitleFontBundle.sansFamily
+    }
+
+    /// The same bucket in the font bundle's vocabulary — for callers that ask the bundle
+    /// for a family per SCRIPT (VLC's own renderers, which take a family name and a font
+    /// directory rather than a style override).
+    var bundleDesign: SubtitleFontBundle.Design {
+        switch self {
+        case .sansSerif: .sans
+        case .serif: .serif
         }
     }
 }

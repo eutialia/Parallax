@@ -314,6 +314,12 @@ struct PlayerControlsView: View {
                 .opacity(controlsVisible ? 1 : 0)
                 .allowsHitTesting(controlsVisible)
 
+            // A SIBLING of `controls`, deliberately: the panel that started the fetch
+            // closes on the tap that started it, and the chrome auto-hides behind it, so
+            // the menu-row spinner is off screen for most of the wait. This is the half
+            // the user actually sees.
+            subtitleFetchIndicator
+
             #if !os(tvOS)
             // The scrub bar riding the double-tap dome — the SAME `PlayerProgressBar(.scrub)`
             // the tvOS seek shows. A safe-area SIBLING (not inside the full-bleed dome
@@ -379,6 +385,26 @@ struct PlayerControlsView: View {
                 hideTask?.cancel()
             }
         }
+    }
+
+    /// The sidecar-subtitle fetch, surfaced where it stays visible: a cold embedded
+    /// Jellyfin stream is extracted by ffmpeg on first request and can take seconds, and
+    /// silence there reads as a bug. Dismisses itself — `loadingSubtitleTrackID` clears
+    /// when the renderer installs AND when the fetch fails.
+    @ViewBuilder
+    private var subtitleFetchIndicator: some View {
+        let loading = vm.loadingSubtitleTrackID != nil
+        ZStack(alignment: .top) {
+            Color.clear
+            if loading {
+                PlayerStatusPill(text: "Loading subtitles…")
+                    .padding(.top, Space.s16)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .allowsHitTesting(false)
+        .animation(.easeOut(duration: 0.22), value: loading)
     }
 
     // MARK: - Root layout
@@ -1404,7 +1430,15 @@ struct PlayerControlsView: View {
     @ViewBuilder
     private var subtitleMenuList: some View {
         trackMenuChrome(.subtitles) {
-            SubtitleTrackMenu(tracks: vm.availableSubtitleTracks, selectedID: vm.selectedSubtitleTrack?.id) { track in
+            SubtitleTrackMenu(
+                tracks: vm.availableSubtitleTracks,
+                selectedID: vm.selectedSubtitleTrack?.id,
+                loadingID: vm.loadingSubtitleTrackID
+            ) { track in
+                // Before `closeMenu()`, and before the Task: both the row spinner and the
+                // HUD indicator have to be armed on this turn, or the panel is already
+                // gone by the time the async pick could arm them.
+                vm.armSubtitleFetchIndicator(for: track)
                 closeMenu(); resetHideTimer()
                 Task { await vm.selectSubtitleTrack(track) }
             }
@@ -1536,6 +1570,50 @@ struct PlayerControlsView: View {
         }
         #endif
     }
+}
+
+// MARK: - Transient status
+
+/// A non-interactive status capsule for work the user started from a panel that has
+/// since closed. The quiet counterpart of `SegmentPromptButton`: same capsule
+/// silhouette, but it wears the track panels' own chrome — `.regular` glass, the white
+/// hairline, pinned dark — because it announces rather than invites.
+private struct PlayerStatusPill: View {
+    let text: String
+
+    var body: some View {
+        let shape = Capsule(style: .continuous)
+        HStack(spacing: Space.s8) {
+            ProgressView()
+            Text(text)
+                .font(.callout.weight(.semibold))
+                .lineLimit(1)
+        }
+        .foregroundStyle(Color.label)
+        .padding(.horizontal, Space.s14)
+        .padding(.vertical, Space.s8)
+        .glassEffect(.regular, in: shape)
+        .overlay { shape.strokeBorder(.white.opacity(0.12), lineWidth: 1) }
+        .environment(\.colorScheme, .dark)
+        // One announcement, not "progress indicator" + a label read separately.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(text)
+        .accessibilityAddTraits(.updatesFrequently)
+    }
+}
+
+#Preview("Status pill", traits: .fixedLayout(width: 700, height: 220)) {
+    ZStack {
+        LinearGradient(colors: [.indigo, .black], startPoint: .topLeading, endPoint: .bottomTrailing)
+            .ignoresSafeArea()
+        VStack(spacing: 24) {
+            PlayerStatusPill(text: "Loading subtitles…")
+            PlayerStatusPill(text: "Loading subtitles…")
+                .environment(\.dynamicTypeSize, .accessibility1)
+        }
+    }
+    .frame(width: 700, height: 220)
+    .environment(\.colorScheme, .dark)
 }
 
 // MARK: - Debug overlay presentation
