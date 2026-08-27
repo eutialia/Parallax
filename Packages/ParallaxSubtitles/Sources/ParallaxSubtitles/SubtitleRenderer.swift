@@ -40,13 +40,6 @@ public actor SubtitleRenderer {
         Double(ASSScriptBuilder.fontSize) / Double(ASSScriptBuilder.playResY)
     }
 
-    /// The synthesized Default style's font size in script units — the base a
-    /// caller multiplies to express other script-unit quantities (border,
-    /// shadow) proportional to the size it asked for.
-    public static var convertedScriptFontSize: Double {
-        Double(ASSScriptBuilder.fontSize)
-    }
-
     /// The synthesized script's PlayRes canvas, for callers converting device
     /// points into script units (margins are authored against this grid).
     public static var convertedScriptPlayRes: CGSize {

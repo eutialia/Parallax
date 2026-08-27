@@ -1823,8 +1823,8 @@ final class PlayerViewModel {
     /// dismisses on the tap's own turn, and every path from the tap to the fetch suspends
     /// first (`engine.setSubtitleTrack(nil)` at minimum), so a state written inside the
     /// async pick lands after the panel showing it is gone. The view calls this before it
-    /// closes the menu; `selectSubtitleTrack` calls it too, so a programmatic pick arms
-    /// the same way. Idempotent — calling it twice for one pick is one indicator.
+    /// closes the menu; the fetch itself re-asserts the same slot once it starts
+    /// (`loadSidecarSubtitle`), which is all a programmatic pick needs. Idempotent.
     ///
     /// Nothing to show for Off, for a burn-in (a re-resolve, with its own scrim), or for
     /// a track already in the session cache — that pick is instant.
@@ -1840,7 +1840,6 @@ final class PlayerViewModel {
         // still points at the outgoing session, so a sidecar fetch would read the
         // old session's subtitle URLs.
         guard !isStartingPlayback, !isSwitchingTracks else { return }
-        armSubtitleFetchIndicator(for: track)
         // A burned-in (image) subtitle has no sidecar to fetch — the server can only
         // deliver it baked into the video, which costs a full re-encode. Route through
         // the same re-resolve `selectAudioTrack` uses instead of the sidecar-fetch

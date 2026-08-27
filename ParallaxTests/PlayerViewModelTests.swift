@@ -1894,27 +1894,6 @@ struct PlayerViewModelTests {
         #expect(vm.debugSubtitleURLs.isEmpty)
     }
 
-    @Test("the subtitle menu exposes the in-flight fetch as a loading row")
-    func loadingSubtitleTrackIDTracksTheFetch() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let resolved = PlayerFixtures.resolvedMultiTrackTranscode(defaultSubtitleStreamIndex: nil)
-        let vtt = Data("WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nNi hao".utf8)
-        let vm = makePlayerVM(
-            resolve: { _, _, _, _ in resolved },
-            engine: engine,
-            subtitleFetch: { _ in vtt }
-        )
-        await vm.start(item: PlayerFixtures.movieDetail())
-        #expect(vm.loadingSubtitleTrackID == nil)
-
-        let track = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(1) })
-        await vm.selectSubtitleTrack(track)
-        await vm.debugAwaitSubtitleFetch()
-        // Cleared once the renderer is installed — the row stops spinning.
-        #expect(vm.loadingSubtitleTrackID == nil)
-        #expect(vm.subtitleRenderer != nil)
-    }
-
     // MARK: - Source-agnostic subtitle URL map
 
     @Test("Jellyfin path populates subtitleURLs from resolved.subtitleStreamURLs (no behavior change)")
@@ -3700,6 +3679,38 @@ struct SidecarFetchIndicatorTests {
 
         vm.armSubtitleFetchIndicator(for: track)
         #expect(vm.loadingSubtitleTrackID == nil)
+    }
+
+    /// The fetch owns the indicator while it runs: a programmatic pick never goes
+    /// through the view's arm, so `loadSidecarSubtitle` has to claim the slot itself.
+    /// A fetch that never returns pins the in-flight window open so the state can be
+    /// observed from outside the call.
+    @Test("an in-flight fetch shows as loading with no renderer installed yet")
+    func inFlightFetchShowsAsLoading() async throws {
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let resolved = PlayerFixtures.resolvedDirectPlayEmbeddedSubs()
+        let fetchEntered = AsyncStream<Void>.makeStream()
+        let vm = makePlayerVM(
+            resolve: { _, _, _, _ in resolved },
+            engine: engine,
+            subtitleFetch: { _ in
+                fetchEntered.continuation.yield()
+                try? await Task.sleep(for: .seconds(60))   // parked for the test's lifetime
+                return nil
+            }
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.ready(duration: resolved.runtime!, tracks: TrackInventory(audio: [], subtitles: [])))
+        try await engine.settle()
+        let track = try row(vm, .jellyfinStream(2))
+
+        let selection = Task { await vm.selectSubtitleTrack(track) }
+        var entered = fetchEntered.stream.makeAsyncIterator()
+        _ = await entered.next()
+
+        #expect(vm.loadingSubtitleTrackID == .jellyfinStream(2))
+        #expect(vm.subtitleRenderer == nil)
+        selection.cancel()
     }
 
     @Test("the indicator clears once the fetch resolves")

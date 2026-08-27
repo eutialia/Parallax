@@ -32,7 +32,6 @@ public final class SpyVLCPlayer: VLCPlayerControlling, @unchecked Sendable {
     public private(set) var rateWrites: [Float] = []
     public private(set) var playCalls = 0
     public private(set) var pauseCalls = 0
-    public private(set) var snapshotRequests: [String] = []
 
     private let lock = NSLock()
     private var _stopCalls = 0
@@ -120,9 +119,7 @@ public final class SpyVLCPlayer: VLCPlayerControlling, @unchecked Sendable {
     public var drawable: Any?
     public weak var delegate: (any VLCMediaPlayerDelegate)?
 
-    public func saveVideoSnapshot(at path: String, withWidth width: Int32, andHeight height: Int32) {
-        snapshotRequests.append(path)
-    }
+    public func saveVideoSnapshot(at path: String, withWidth width: Int32, andHeight height: Int32) {}
 
     public var currentAudioTrackIndex: Int32 = -1 {
         didSet { audioTrackWrites.append(currentAudioTrackIndex) }

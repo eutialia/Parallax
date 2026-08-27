@@ -31,15 +31,7 @@ struct ScriptRenderProbeTests {
 
         let log = await renderer.diagnosticLog
         _ = try requireFontSelections(log)
-        #expect(!log.contains { $0.contains("failed to find any fallback") })
-        // One "selecting one more font" means the per-glyph lottery is back.
-        #expect(!log.contains { $0.contains("selecting one more font") })
-        // Nothing may reach default_family either: every name in a converted
-        // script is one we wrote and one we shipped.
-        #expect(!log.contains { $0.contains("Using default font") })
-        // And the bare {\fn} reset must revert to the STYLE font, not request
-        // an empty family for the Latin tail.
-        #expect(!log.contains { $0.contains("fontselect: (,") })
+        expectNoFallbackLottery(in: log)
     }
 
     /// Every negative log assertion in this suite is worthless if the log is
@@ -77,10 +69,7 @@ struct ScriptRenderProbeTests {
         #expect(try opaqueFraction(of: frame) > 0)
 
         let log = await renderer.diagnosticLog
-        #expect(!log.contains { $0.contains("failed to find any fallback") })
-        #expect(!log.contains { $0.contains("selecting one more font") })
-        #expect(!log.contains { $0.contains("Using default font") })
-        #expect(!log.contains { $0.contains("fontselect: (,") })
+        expectNoFallbackLottery(in: log)
 
         // And the resolutions really are the per-script faces, not one file
         // silently answering for everything.
@@ -291,5 +280,16 @@ struct ScriptRenderProbeTests {
             let decoded = try #require(ASSTextEncoding.decoded(data))
             #expect(decoded.contains(expected), "\(decoded.prefix(200))")
         }
+    }
+}
+
+/// The four lines that mean the per-glyph lottery is back. Every name in a
+/// converted script is one we wrote and one we shipped, so nothing may fall
+/// to `default_family`, ask libass for "one more font", or — via the bare
+/// `{\fn}` reset reverting to an empty family instead of the STYLE font —
+/// request `(,`.
+private func expectNoFallbackLottery(in log: [String], sourceLocation: SourceLocation = #_sourceLocation) {
+    for marker in ["failed to find any fallback", "selecting one more font", "Using default font", "fontselect: (,"] {
+        #expect(!log.contains { $0.contains(marker) }, "log contains \(marker)", sourceLocation: sourceLocation)
     }
 }
