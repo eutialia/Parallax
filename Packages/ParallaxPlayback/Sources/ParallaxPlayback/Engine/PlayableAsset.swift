@@ -14,16 +14,23 @@ public struct PlayableAsset: Sendable {
     /// so the engine can name the one track the manifest carries.
     public let defaultAudioStreamIndex: Int?
     public let defaultSubtitleStreamIndex: Int?
-    /// A font file for VLC's *simple* (SRT) text renderer (`:freetype-font=`). iOS has
-    /// no font provider, so without this that renderer draws nothing. The app
-    /// materializes a system font via CoreText. Nil = let the engine try its default
-    /// (and on AVKit it is unused — AVFoundation renders subtitles itself).
-    public let subtitleFontURL: URL?
     /// A directory of font files for VLC's libass (ASS/SSA) renderer (`:ssa-fontsdir=`).
-    /// libass is a *separate* subsystem from the simple renderer and ignores
+    /// libass is a *separate* subsystem from the simple freetype renderer and ignores
     /// `freetype-font`; on iOS it holds no fonts unless pointed at a directory to scan.
     /// The app materializes the CJK system faces here. Unused by AVKit.
-    public let subtitleFontsDirectoryURL: URL?
+    public let subtitleFontsDirectory: URL?
+    /// The font FAMILY NAME for VLC's *simple* freetype renderer (SRT / plain `text`), passed
+    /// as `:freetype-font=`. libvlc 3.0's option is a family, not a path — a path is a silent
+    /// no-op that falls back to the module's hardcoded Helvetica Neue, which has no CJK
+    /// coverage. Must be the family the app registered its materialized face under. Nil =
+    /// let the module use its default. Unused by AVKit (AVFoundation renders subtitles itself).
+    public let subtitleFontFamily: String?
+    /// The app draws EVERY text subtitle itself (client-side sidecar rendering), so the
+    /// engine must never draw one: `VLCKitEngine` emits `:no-spu` and refuses any
+    /// `setSubtitleTrack(_:)` selection for this asset. Without it libvlc auto-selects a
+    /// default/forced embedded track as the demux discovers it and renders it THROUGH the
+    /// overlay. Ignored by AVKit.
+    public let engineSubtitlesDisabled: Bool
     /// Verbatim libVLC media options (e.g. SMB credentials `:smb-user=…`,
     /// `:smb-pwd=…`), applied via `VLCMedia.addOption` after the engine's own.
     /// The package treats these as opaque — it does not know any are credentials.
@@ -52,8 +59,9 @@ public struct PlayableAsset: Sendable {
             mediaStreams: mediaStreams,
             defaultAudioStreamIndex: defaultAudioStreamIndex,
             defaultSubtitleStreamIndex: defaultSubtitleStreamIndex,
-            subtitleFontURL: subtitleFontURL,
-            subtitleFontsDirectoryURL: subtitleFontsDirectoryURL,
+            subtitleFontsDirectory: subtitleFontsDirectory,
+            subtitleFontFamily: subtitleFontFamily,
+            engineSubtitlesDisabled: engineSubtitlesDisabled,
             vlcOptions: vlcOptions,
             vlcLibraryOptions: vlcLibraryOptions
         )
@@ -67,8 +75,9 @@ public struct PlayableAsset: Sendable {
         mediaStreams: [MediaStreamInfo] = [],
         defaultAudioStreamIndex: Int? = nil,
         defaultSubtitleStreamIndex: Int? = nil,
-        subtitleFontURL: URL? = nil,
-        subtitleFontsDirectoryURL: URL? = nil,
+        subtitleFontsDirectory: URL? = nil,
+        subtitleFontFamily: String? = nil,
+        engineSubtitlesDisabled: Bool = false,
         vlcOptions: [String]? = nil,
         vlcLibraryOptions: [String]? = nil
     ) {
@@ -79,8 +88,9 @@ public struct PlayableAsset: Sendable {
         self.mediaStreams = mediaStreams
         self.defaultAudioStreamIndex = defaultAudioStreamIndex
         self.defaultSubtitleStreamIndex = defaultSubtitleStreamIndex
-        self.subtitleFontURL = subtitleFontURL
-        self.subtitleFontsDirectoryURL = subtitleFontsDirectoryURL
+        self.subtitleFontsDirectory = subtitleFontsDirectory
+        self.subtitleFontFamily = subtitleFontFamily
+        self.engineSubtitlesDisabled = engineSubtitlesDisabled
         self.vlcOptions = vlcOptions
         self.vlcLibraryOptions = vlcLibraryOptions
     }

@@ -10,7 +10,30 @@ import ParallaxCore
 /// `MediaStreamInfo` has the real name. But where the manifest *does* carry a
 /// good one (e.g. "Chinese, Traditional (Taiwan)"), that's kept — the server's
 /// terser "Chinese" would be a regression.
-enum JellyfinTrackMatcher {
+public enum JellyfinTrackMatcher {
+    /// The server subtitle stream an ENGINE-inventoried subtitle track corresponds
+    /// to, when the join is unambiguous. Public because the app needs it on the
+    /// Jellyfin direct-play path: text streams are drawn client-side from their
+    /// sidecar URLs, but an IMAGE stream has no sidecar, so the menu row has to keep
+    /// the engine's own track id (`.vlc`/`.avKitOption`) for the engine to render it.
+    ///
+    /// Subtitle-only facade over `matchedStream(kind:…)` so `AVKitTrackNaming.Kind`
+    /// stays internal to this package.
+    public static func matchedSubtitleStream(
+        languageCode: String?,
+        trackCount: Int,
+        streams: [MediaStreamInfo],
+        defaultStreamIndex: Int?
+    ) -> MediaStreamInfo? {
+        matchedStream(
+            kind: .subtitle,
+            optionLanguage: languageCode,
+            optionCount: trackCount,
+            streams: streams,
+            defaultStreamIndex: defaultStreamIndex
+        )
+    }
+
     static func name(
         kind: AVKitTrackNaming.Kind,
         optionDisplayName: String,

@@ -44,9 +44,20 @@ extension PlayableAsset {
         url: URL = URL(string: "https://example.com/stream.mp4")!,
         headers: [String: String]? = nil,
         hints: PlaybackHints = .fixture(),
-        startTime: CMTime? = nil
+        startTime: CMTime? = nil,
+        subtitleFontsDirectory: URL? = nil,
+        subtitleFontFamily: String? = nil,
+        engineSubtitlesDisabled: Bool = false
     ) -> PlayableAsset {
-        PlayableAsset(url: url, headers: headers, hints: hints, startTime: startTime)
+        PlayableAsset(
+            url: url,
+            headers: headers,
+            hints: hints,
+            startTime: startTime,
+            subtitleFontsDirectory: subtitleFontsDirectory,
+            subtitleFontFamily: subtitleFontFamily,
+            engineSubtitlesDisabled: engineSubtitlesDisabled
+        )
     }
 }
 

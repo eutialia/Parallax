@@ -61,9 +61,8 @@ public struct SubtitleStyle: Sendable, Hashable, Codable {
     /// (`PlayerMetrics.subtitleFontSize`, remapped onto the renderer's script base
     /// by the overlay). 1.0 == the tuned base; the size control scales this 0.5…2.0.
     public let fontScale: Double
-    /// Glyph family for the client renderer, mapped to a real font name ("Times New
-    /// Roman" for serif, "Courier New" for monospaced; `nil`/sans keeps the
-    /// renderer's own default). Engine-native tracks are unaffected (no
+    /// Glyph family for the client renderer, mapped to one of the two bundled
+    /// Noto faces. Engine-native tracks are unaffected (no
     /// font-selection API on iOS).
     public let fontDesign: SubtitleFontDesign
     /// Legibility backing: the canonical outline-ring + shadow, OR an opaque box
@@ -140,16 +139,25 @@ public struct SubtitleStyle: Sendable, Hashable, Codable {
 }
 
 /// Subtitle glyph family for the client renderer. A plain enum here so the package
-/// stays UI-framework-free; the app maps each case to a real font name (`.serif` →
-/// "Times New Roman", `.monospaced` → "Courier New", `.sansSerif` → the renderer's
-/// own default). `.serif` is Latin-only by name, but CJK lines still reach a serif
-/// design: the renderer plans CJK font choice through the SAME family, so a
-/// Japanese line under `.serif` resolves through CoreText's cascade to a Mincho
-/// face instead of falling back to the sans default.
+/// stays UI-framework-free; the app maps each case to one of the two bundled Noto
+/// Latin faces, and the renderer routes every other script to that design's face
+/// for it — so a Japanese line under `.serif` lands on a real Mincho face
+/// (Noto Serif CJK) rather than falling back.
+///
+/// There is no monospaced case: the bundle has no monospaced answer, and a
+/// design bucket that silently rendered as sans would be a lie in the picker.
 public enum SubtitleFontDesign: String, Sendable, Hashable, Codable, CaseIterable {
     case sansSerif
     case serif
-    case monospaced
+
+    /// Unknown raw values decode to `.sansSerif` instead of throwing. The whole
+    /// `SubtitleStyle` is persisted as one JSON blob, so a rejected font design
+    /// would fail the container's decode and silently reset the user's color,
+    /// size and position too. A "monospaced" written by an older build lands here.
+    public init(from decoder: any Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = SubtitleFontDesign(rawValue: raw) ?? .sansSerif
+    }
 }
 
 /// The overlay's legibility backing. `.outlineShadow` is the canonical boxless look
