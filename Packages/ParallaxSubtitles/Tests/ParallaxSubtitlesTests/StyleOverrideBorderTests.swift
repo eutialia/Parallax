@@ -30,8 +30,8 @@ struct StyleOverrideBorderTests {
             outlineColor: SubtitleColor(red: 0, green: 0, blue: 0),
             opaqueBox: false,
             emHeightRatio: Self.em,
-            outlineEmRatio: outlineUnits / SubtitleRenderer.convertedScriptFontSize,
-            shadowEmRatio: shadowUnits / SubtitleRenderer.convertedScriptFontSize
+            outlineEmRatio: outlineUnits / Double(ASSScriptBuilder.fontSize),
+            shadowEmRatio: shadowUnits / Double(ASSScriptBuilder.fontSize)
         ))
         let frame = try #require(await renderer.frame(at: 2.0))
         return frame.imageRect
