@@ -30,7 +30,10 @@ struct AVKitEngineTests {
 /// The engine-agnostic half of the `PlaybackEngine` stream contract, run against both
 /// concrete engines. Previously duplicated verbatim in `AVKitEngineTests` and
 /// `VLCKitEngineTests`.
-@Suite("PlaybackEngine stream contract")
+// `.timeLimit`: `teardownFinishesStream` awaits a terminal nil from a real engine's stream.
+// Swift Testing applies no default timeout, so an engine that never finishes its continuation
+// wedges the whole run instead of failing its own test.
+@Suite("PlaybackEngine stream contract", .timeLimit(.minutes(1)))
 @MainActor
 struct PlaybackEngineStreamContractTests {
 
@@ -105,5 +108,113 @@ struct AVKitLogRedactionTests {
     ])
     func nilWithoutPath(uri: String) {
         #expect(AVKitEngine.redactedTail(of: uri) == nil)
+    }
+}
+
+/// `PlayableAsset.engineSubtitlesDisabled` on the AVKit path. VLC has `:no-spu`;
+/// AVFoundation has no equivalent, so the contract is enforced by deselecting the legible
+/// group (once when the media selection groups load, once at `.ready` — AVPlayer applies
+/// its own automatic selection between the two) and by refusing to select afterwards.
+///
+/// Driven against a real 3-second MP4 carrying two `mov_text` tracks: a fake could not
+/// prove anything here, because the whole question is what AVFoundation does on its own.
+// `.timeLimit`: every test here drains a real AVFoundation state stream until `.ready`. A
+// simulator with a wedged mediaserverd (or a fixture that failed to copy) publishes neither
+// beat, and `await iterator.next()` would suspend forever.
+@Suite("AVKitEngine — assets that render their own subtitles", .serialized, .timeLimit(.minutes(1)))
+@MainActor
+struct AVKitSubtitleSuppressionTests {
+
+    private static var subtitledFixture: URL {
+        get throws {
+            try #require(
+                Bundle.module.url(forResource: "subtitled", withExtension: "mp4", subdirectory: "Fixtures"),
+                "subtitled.mp4 fixture missing from the test bundle"
+            )
+        }
+    }
+
+    /// Loads the fixture and returns the inventory the engine publishes with `.ready`.
+    private func loadAndAwaitReady(_ engine: AVKitEngine, disabled: Bool) async throws -> TrackInventory {
+        var iterator = engine.state.makeAsyncIterator()
+        try await engine.load(.fixture(url: Self.subtitledFixture, engineSubtitlesDisabled: disabled))
+        while let beat = await iterator.next() {
+            if case .ready(_, let tracks) = beat { return tracks }
+            if case .failed(let error) = beat { throw error }
+        }
+        Issue.record("the engine never reached .ready")
+        return .empty
+    }
+
+    @Test("reaches .ready with a legible group present and nothing selected in it")
+    func readyPublishesNoLegibleSelection() async throws {
+        let engine = AVKitEngine()
+        let tracks = try await loadAndAwaitReady(engine, disabled: true)
+        let info = await engine.debugSnapshot()
+
+        // Not a vacuous pass: the asset really does offer legible options.
+        #expect(info.legibleOptions.isEmpty == false)
+        #expect(info.selectedLegible == nil)
+        #expect(tracks.selectedSubtitleID == nil)
+        #expect(tracks.subtitles.isEmpty == false)
+        await engine.teardown()
+    }
+
+    @Test("setSubtitleTrack is refused — the legible group stays empty")
+    func setSubtitleTrackIsRefused() async throws {
+        let engine = AVKitEngine()
+        let tracks = try await loadAndAwaitReady(engine, disabled: true)
+
+        let track = try #require(tracks.subtitles.first)
+        await engine.setSubtitleTrack(track)
+
+        #expect(await engine.debugSnapshot().selectedLegible == nil)
+        await engine.teardown()
+    }
+
+    /// The invariant the app depends on: after the server-preference audio re-point
+    /// (`PlayerViewModel.applyServerPreferredTracks`), nothing legible is selected.
+    /// AVFoundation documents that automatic media selection criteria re-apply when a
+    /// selection is made in ANOTHER group, which would resurrect the system-language
+    /// subtitle the load- and ready-time deselects had cleared; the engine therefore
+    /// deselects again after every audible selection.
+    ///
+    /// **Honest scope:** this is a LOCK, not a reproduction — measured against this local
+    /// MP4 the re-application does not happen even with the criteria set below, so the test
+    /// stays green with the post-audio deselect removed. It pins the observable contract;
+    /// the deselect earns its keep on the HLS transcode path the fixture cannot reach.
+    @Test("selecting an audio track leaves the legible group unselected")
+    func audioSelectionDoesNotResurrectSubtitles() async throws {
+        let engine = AVKitEngine()
+        // Criteria stated rather than inherited: a simulator whose system language matches
+        // neither `eng` nor `fra` would have nothing to re-apply in the first place.
+        engine.avPlayer.setMediaSelectionCriteria(
+            AVPlayerMediaSelectionCriteria(preferredLanguages: ["en"], preferredMediaCharacteristics: nil),
+            forMediaCharacteristic: .legible
+        )
+        let tracks = try await loadAndAwaitReady(engine, disabled: true)
+        let audio = try #require(tracks.audio.first)
+
+        await engine.setAudioTrack(audio)
+
+        let info = await engine.debugSnapshot()
+        #expect(info.legibleOptions.isEmpty == false)   // not a vacuous pass
+        #expect(info.selectedLegible == nil)
+        await engine.teardown()
+    }
+
+    /// The control: the refusal above is the ASSET's intent talking, not a broken selector.
+    @Test("an ordinary asset still selects, and can still be turned off")
+    func ordinaryAssetSelectsNormally() async throws {
+        let engine = AVKitEngine()
+        let tracks = try await loadAndAwaitReady(engine, disabled: false)
+        let track = try #require(tracks.subtitles.first)
+
+        await engine.setSubtitleTrack(track)
+        #expect(await engine.debugSnapshot().selectedLegible != nil)
+
+        await engine.setSubtitleTrack(nil)
+        #expect(await engine.debugSnapshot().selectedLegible == nil)
+        await engine.teardown()
     }
 }

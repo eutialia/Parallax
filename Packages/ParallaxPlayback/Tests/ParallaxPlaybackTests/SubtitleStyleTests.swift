@@ -107,13 +107,13 @@ struct SubtitleStyleBuilderTests {
         let tuned = SubtitleStyle.standard.with {
             $0.foreground = red
             $0.fontScale = 0.5
-            $0.fontDesign = .monospaced
+            $0.fontDesign = .serif
             $0.background = .opaqueBox
             $0.verticalOffsetRatio = 0.12
         }
         #expect(tuned.foreground == red)
         #expect(tuned.fontScale == 0.5)
-        #expect(tuned.fontDesign == .monospaced)
+        #expect(tuned.fontDesign == .serif)
         #expect(tuned.background == .opaqueBox)
         #expect(tuned.verticalOffsetRatio == 0.12)
     }
@@ -152,11 +152,26 @@ struct SubtitleStylePersistenceTests {
     @Test("SubtitleFontDesign raw values are stable", arguments: [
         (SubtitleFontDesign.sansSerif, "sansSerif"),
         (.serif, "serif"),
-        (.monospaced, "monospaced"),
     ])
     func fontDesignRawValues(design: SubtitleFontDesign, raw: String) {
         #expect(design.rawValue == raw)
         #expect(SubtitleFontDesign(rawValue: raw) == design)
+    }
+
+    /// The retired `.monospaced` bucket (the bundle has no monospaced face). A stored
+    /// value from an older build must NOT fail the decode: the whole style is one JSON
+    /// blob, so a throw here would reset the user's colour, size and position too.
+    @Test("a retired font design decodes to sans instead of throwing", arguments: [
+        "monospaced", "someFutureDesign",
+    ])
+    func retiredFontDesignDecodesToSans(raw: String) throws {
+        let json = Data(#"{"foreground":{"red":0.92,"green":0.92,"blue":0.92,"alpha":1},"outline":{"red":0,"green":0,"blue":0,"alpha":1},"outlineWidthRatio":0.06,"shadowOpacity":0.55,"shadowYOffsetRatio":0.04,"fontScale":1.5,"fontDesign":"\#(raw)","background":"opaqueBox","verticalOffsetRatio":0.12}"#.utf8)
+        let decoded = try JSONDecoder().decode(SubtitleStyle.self, from: json)
+        #expect(decoded.fontDesign == .sansSerif)
+        // The rest of the blob survived — that is the whole point of the lenient decode.
+        #expect(decoded.fontScale == 1.5)
+        #expect(decoded.background == .opaqueBox)
+        #expect(decoded.verticalOffsetRatio == 0.12)
     }
 
     @Test("SubtitleBackground raw values are stable", arguments: [
@@ -172,7 +187,7 @@ struct SubtitleStylePersistenceTests {
     /// from the UI.
     @Test("both settings enums enumerate every case they offer")
     func caseIterableCoversTheUI() {
-        #expect(SubtitleFontDesign.allCases.count == 3)
+        #expect(SubtitleFontDesign.allCases.count == 2)
         #expect(SubtitleBackground.allCases.count == 2)
         #expect(Set(SubtitleFontDesign.allCases.map(\.rawValue)).count
                 == SubtitleFontDesign.allCases.count)

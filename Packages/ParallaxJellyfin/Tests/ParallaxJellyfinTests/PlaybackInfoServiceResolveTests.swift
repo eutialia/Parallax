@@ -545,3 +545,45 @@ struct PlaybackInfoServiceResolveTests {
         }
     }
 }
+
+/// `clientRendersAllSubtitles` is the single predicate that decides whether the playback
+/// engine's own subtitle renderer is blinded. It reads SIDECAR COVERAGE — a stream missing
+/// from `subtitleStreamURLs` is, by the server's own answer, one the client cannot draw.
+@Suite("ResolvedPlayback — clientRendersAllSubtitles")
+struct ClientRendersAllSubtitlesTests {
+
+    private func resolved(text: [Int], image: [Int]) -> ResolvedPlayback {
+        func stream(_ index: Int, image isImage: Bool) -> MediaStreamInfo {
+            MediaStreamInfo(index: index, kind: .subtitle, displayTitle: "Sub \(index)",
+                            language: "eng", codec: isImage ? "pgssub" : "subrip",
+                            channels: nil, isExternal: false, isForced: false, isDefault: false)
+        }
+        return ResolvedPlayback(
+            itemID: "i", url: URL(string: "https://x/y.mkv")!, method: .directPlay,
+            container: .mkv, videoCodec: .h264, audioCodec: .aac,
+            mediaSourceID: "ms", playSessionID: "ps", runtime: nil, startTime: nil,
+            mediaStreams: (text.map { stream($0, image: false) } + image.map { stream($0, image: true) })
+                .sorted { $0.index < $1.index },
+            subtitleStreamURLs: Dictionary(uniqueKeysWithValues: text.map {
+                ($0, URL(string: "https://x/sub/\($0).srt")!)
+            })
+        )
+    }
+
+    @Test("true only when every reported subtitle stream has a sidecar to fetch", arguments: [
+        (text: [1], image: [Int](), expected: true),      // text only — we draw it all
+        (text: [Int](), image: [1], expected: false),     // image only — only the engine can
+        (text: [1], image: [2], expected: false),         // mixed — the engine keeps its half
+        (text: [1, 3], image: [Int](), expected: true),
+    ])
+    func coverageDecidesIt(text: [Int], image: [Int], expected: Bool) {
+        #expect(resolved(text: text, image: image).clientRendersAllSubtitles == expected)
+    }
+
+    /// No subtitle streams at all is NOT "we render them all": the engine's own inventory is
+    /// then the only thing there is, and blinding it would strand tracks nothing draws.
+    @Test("false when the server reported no subtitle streams")
+    func emptyIsNotFullCoverage() {
+        #expect(resolved(text: [], image: []).clientRendersAllSubtitles == false)
+    }
+}

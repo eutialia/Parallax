@@ -62,6 +62,19 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     /// AVPlayerItem (and its open network connection) alive after dismissal.
     private var inventoryTask: Task<Void, Never>?
 
+    /// The asset declared that the app draws every subtitle itself
+    /// (`PlayableAsset.engineSubtitlesDisabled`), so AVFoundation must never render a
+    /// legible option. Unlike VLC there is no `:no-spu` equivalent, so enforcement is a
+    /// deselect at each point AVFoundation re-applies its automatic selection criteria —
+    /// when the media selection groups load, on `.ready`, and after any audible selection
+    /// (documented: criteria re-apply on a selection in another group) — plus
+    /// `setSubtitleTrack` refusing to select for the lifetime of the asset. Set on each
+    /// `load()`.
+    private var engineSubtitlesDisabled = false
+    /// The `load()`-time deselect, held so `teardown()`/a reload can cancel it —
+    /// same rationale as `inventoryTask`.
+    private var subtitleDeselectTask: Task<Void, Never>?
+
     // Server-side track metadata for the current asset, used to label tracks a
     // transcode manifest left unnamed.
     private var mediaStreams: [MediaStreamInfo] = []
@@ -142,6 +155,7 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         detachCurrentItem()
         continuation.yield(.loading)
         pendingStartTime = asset.startTime
+        engineSubtitlesDisabled = asset.engineSubtitlesDisabled
         mediaStreams = asset.mediaStreams
         defaultAudioStreamIndex = asset.defaultAudioStreamIndex
         defaultSubtitleStreamIndex = asset.defaultSubtitleStreamIndex
@@ -187,6 +201,16 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
 
 
         player.replaceCurrentItem(with: item)
+
+        // First of the two deselects: the media selection groups resolve well before
+        // `.readyToPlay`, and AVPlayer's automatic selection has already run by then —
+        // waiting for readiness would let the first frames ship with a subtitle burned
+        // over our own overlay.
+        if engineSubtitlesDisabled {
+            subtitleDeselectTask = Task { [weak self] in
+                await self?.deselectLegible(of: item)
+            }
+        }
 
         // The resume seek must land BEFORE readiness, not on .readyToPlay: a
         // pre-ready seek queues against the item and aims the player's FIRST
@@ -307,15 +331,43 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
 
     public func setAudioTrack(_ track: AudioTrack) async {
         await select(trackID: track.id, characteristic: .audible)
+        // AVFoundation re-applies its automatic media selection criteria when a selection is
+        // made in ANOTHER group, so picking the server's preferred audio track resurrects the
+        // system-language legible option the two deselects had just cleared. Turning
+        // `appliesMediaSelectionCriteriaAutomatically` off would stop that at the source, but
+        // it is also what picks the INITIAL audio track: the app only re-points audio when the
+        // Jellyfin preference disagrees with the engine's pick, so automatic selection has to
+        // stay on and the deselect follows the audible selection instead.
+        if engineSubtitlesDisabled, let item = currentItem {
+            await deselectLegible(of: item)
+        }
     }
 
     public func setSubtitleTrack(_ track: SubtitleTrack?) async {
+        // The asset draws its own subtitles; selecting a legible option would render a
+        // second copy under the client overlay. Mirrors `VLCKitEngine`'s refusal, and
+        // like it applies for the lifetime of the asset — deselect (`nil`) still works.
+        if track != nil, engineSubtitlesDisabled {
+            Log.playback.info("setSubtitleTrack ignored: this asset renders subtitles client-side")
+            return
+        }
         guard let group = await legibleGroup() else { return }
         guard let track else {
             currentItem?.select(nil, in: group)
             return
         }
         await select(trackID: track.id, characteristic: .legible)
+    }
+
+    /// Turn AVFoundation's legible rendering off for `item`. Idempotent, and a no-op
+    /// for an asset with no legible group at all.
+    private func deselectLegible(of item: AVPlayerItem) async {
+        guard let asset = item.asset as? AVURLAsset,
+              let group = try? await asset.loadMediaSelectionGroup(for: .legible)
+        else { return }
+        // A reload/teardown between the await and here means this item is superseded.
+        guard !Task.isCancelled, currentItem === item else { return }
+        item.select(nil, in: group)
     }
 
     public func teardown() async {
@@ -325,6 +377,7 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         player.pause()
         player.replaceCurrentItem(with: nil)
         currentItem = nil
+        engineSubtitlesDisabled = false
         mediaStreams = []
         defaultAudioStreamIndex = nil
         defaultSubtitleStreamIndex = nil
@@ -412,6 +465,8 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         stallWatchdog.disarm()  // and any pending mid-stream stall — a reload/teardown supersedes it
         inventoryTask?.cancel()
         inventoryTask = nil
+        subtitleDeselectTask?.cancel()
+        subtitleDeselectTask = nil
         statusObservation?.invalidate()
         statusObservation = nil
         if let token = timeObserverToken {
@@ -649,6 +704,13 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
 
         let audio = audioTracks(from: audibleGroup)
         let subtitles = subtitleTracks(from: legibleGroup)
+        // Second of the two deselects, BEFORE the selection is read: AVPlayer can
+        // re-apply its automatic legible selection between `load()` and readiness, and
+        // a selection read after this is the honest one — the inventory must not ship
+        // a `selectedSubtitleID` for a track nothing renders.
+        if engineSubtitlesDisabled, let legibleGroup {
+            item.select(nil, in: legibleGroup)
+        }
         let selection = item.currentMediaSelection
         logTrackDiagnostics(audible: audibleGroup, legible: legibleGroup, audio: audio, subtitles: subtitles)
         return TrackInventory(

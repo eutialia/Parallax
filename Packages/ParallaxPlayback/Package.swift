@@ -41,6 +41,12 @@ let package = Package(
             dependencies: [
                 "ParallaxPlayback",
                 "ParallaxCore",
+                // SpyVLCPlayer conforms to VLCPlayerControlling, whose requirements are
+                // VLCKit types. SwiftPM's own builds resolve them transitively; Xcode's
+                // explicit-module builds do not, and the app-hosted ParallaxTests bundle
+                // then fails with "cannot find type 'VLCPlayerControlling'".
+                .target(name: "MobileVLCKit", condition: .when(platforms: [.iOS])),
+                .target(name: "TVVLCKit", condition: .when(platforms: [.tvOS])),
                 // Never add ParallaxCoreTestSupport here: it's a SECOND product of the
                 // ParallaxCore package, and a sibling product drags in a duplicate
                 // ParallaxCore target when this reaches the app-hosted ParallaxTests
