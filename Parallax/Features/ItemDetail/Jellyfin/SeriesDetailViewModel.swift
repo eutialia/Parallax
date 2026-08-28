@@ -18,6 +18,11 @@ final class SeriesDetailViewModel {
     /// re-`load()`. Drives `.recoversFromOffline`.
     var isStalled: Bool { if case .failed = state { true } else { false } }
     private(set) var episodesLoading = false
+    /// True once `load()` has RETURNED — successfully, failed, or with an empty series. Not
+    /// `!episodesLoading`, which is also true before the fetch starts. It's the only thing that
+    /// separates "the episodes haven't arrived" from "there are none" for the hero's play pill
+    /// (`SeriesPlayAction.Availability`), so it must be set on every exit path.
+    private(set) var episodesSettled = false
     private(set) var isFavorite = false
     private(set) var resumeEpisode: Episode?
     /// Drives the stale-while-revalidate dim during `refresh()` (re-pull after a
@@ -124,6 +129,11 @@ final class SeriesDetailViewModel {
 
     func load() async {
         state = .loading
+        // Cleared for THIS run (an offline recovery re-loads) and set on the way out of every
+        // branch below — including the two failures, which are exactly when the pill has to
+        // stop claiming the episodes are still coming.
+        episodesSettled = false
+        defer { episodesSettled = true }
         do {
             async let detailTask = repo.detail(for: itemID)
             async let seasonsTask = repo.seasons(of: itemID)

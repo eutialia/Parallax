@@ -105,18 +105,30 @@ func makeSeries(
 }
 
 /// An `Episode` with only the fields the aggregation suites read; `name` defaults to the id.
+/// `season`/`index`/`positionTicks` stay nil/zero for the suites that don't care — the play-CTA
+/// suites vary them, because "Resume S3 E1" and the resume-vs-play decision are derived from
+/// exactly those three fields.
 func makeEpisode(
     _ id: String,
     name: String? = nil,
     seriesID: String = "series",
+    season: Int? = nil,
+    index: Int? = nil,
+    played: Bool = false,
+    positionTicks: Int64 = 0,
     isFavorite: Bool = false
 ) -> Episode {
     Episode(
         id: ItemID(rawValue: id), seriesID: ItemID(rawValue: seriesID),
         seasonID: ItemID(rawValue: "\(seriesID)-s1"), name: name ?? id,
-        seriesName: nil, indexNumber: nil, parentIndexNumber: nil,
+        seriesName: nil, indexNumber: index, parentIndexNumber: season,
         overview: nil, runtime: nil, primaryTag: nil,
-        userData: UserItemData(played: false, playbackPositionTicks: 0, playCount: 0, isFavorite: isFavorite)
+        userData: UserItemData(
+            played: played,
+            playbackPositionTicks: positionTicks,
+            playCount: played ? 1 : 0,
+            isFavorite: isFavorite
+        )
     )
 }
 

@@ -32,7 +32,7 @@ struct MovieDetailView: View {
             if let vm = viewModel {
                 switch vm.state {
                 case .idle, .loading:
-                    DetailLoadingSkeleton()
+                    DetailLoadingSkeleton(reserve: .verbOnly)
                 case .loaded(let md):
                     // Built ONCE and handed to both halves of the hero: the fixed `heroBackdrop`
                     // behind the scroll view paints it, and the in-scroll `HeroBand` reserves its
@@ -71,7 +71,7 @@ struct MovieDetailView: View {
                                     PrimaryPlayButton(
                                         title: ItemPlayButtonLabel.title(for: .movie(md.movie), resumeEpisode: nil),
                                         fillWidth: false,
-                                        layoutReserveTitle: ItemPlayButtonLabel.layoutReserveTitle
+                                        layoutReserveTitle: ItemPlayButtonLabel.layoutReserveTitle(for: .verbOnly)
                                     ) {
                                         playback.play(.movie(md), in: session)
                                     }
@@ -122,7 +122,7 @@ struct MovieDetailView: View {
                     StatusStateView.failure("Couldn't load this title", message: message)
                 }
             } else {
-                DetailLoadingSkeleton()
+                DetailLoadingSkeleton(reserve: .verbOnly)
             }
         }
         // iOS-only crossfade of the whole skeleton→loaded/failed swap; see `crossfadeStateSwap`.

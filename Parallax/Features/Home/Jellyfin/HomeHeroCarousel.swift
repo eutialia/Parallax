@@ -314,7 +314,7 @@ struct HomeHeroCarousel: View {
         let button = PrimaryPlayButton(
             title: entry.playButtonTitle,
             fillWidth: false,
-            layoutReserveTitle: ItemPlayButtonLabel.layoutReserveTitle
+            layoutReserveTitle: ItemPlayButtonLabel.layoutReserveTitle(for: .episodeNumbered)
         ) {
             playback.play(entry.playTarget.id, in: session)
         }

@@ -445,6 +445,12 @@ struct LibraryListLoadingPlaceholder: View {
 /// is a transparent spacer whose picture is mounted OUTSIDE the scroll (`HeroBackdrop`) — the
 /// skeleton has no picture to mount, so it fills the reserved rect instead.
 struct DetailLoadingSkeleton: View {
+    /// The width reserve of the page this stands in for — movie detail's pill reserves "Resume",
+    /// series detail's "Resume S99 E99". Taken from the host rather than hardcoded so the stub
+    /// and the pill that replaces it are the same width on BOTH pages (one shared reserve made
+    /// the movie skeleton two characters wide of its own loaded pill).
+    let reserve: ItemPlayButtonLabel.ReserveKind
+
     @Environment(\.appIdiom) private var idiom
 
     var body: some View {
@@ -505,14 +511,14 @@ struct DetailLoadingSkeleton: View {
     /// footprint from a hidden copy of `PrimaryPlayButton`'s label composition (`.headline` inside
     /// `Space.s22` insets at `ActionRow.controlHeight`), the discs from that same diameter.
     ///
-    /// The pill's copy is `ItemPlayButtonLabel.layoutReserveTitle`, not "Play": both detail pages
-    /// pass that reserve to `PrimaryPlayButton`, which ZStacks it behind the live title — so the
+    /// The pill's copy is the host's `layoutReserveTitle`, not "Play": both detail pages pass
+    /// their reserve to `PrimaryPlayButton`, which ZStacks it behind the live title — so the
     /// shipping pill is ALWAYS the reserve's width, and a "Play"-wide stub slid the two discs right
     /// on load.
     @ViewBuilder
     private var actionStubs: some View {
         let diameter = ActionRow.controlHeight(idiom)
-        Label(ItemPlayButtonLabel.layoutReserveTitle, systemImage: "play.fill")
+        Label(ItemPlayButtonLabel.layoutReserveTitle(for: reserve), systemImage: "play.fill")
             .font(.headline)
             .padding(.horizontal, Space.s22)
             .frame(height: diameter)
@@ -793,13 +799,14 @@ private struct LoadedDetailPage: View {
                             .foregroundStyle(.white)
                     } actions: {
                         // The reserve is what makes this a parity check: both shipping detail
-                        // pages pass it, so the loaded pill is `layoutReserveTitle`-wide no matter
-                        // what the live title says. Dropping it here let a "Play"-wide skeleton
-                        // stub pass a render it should have failed.
+                        // pages pass one, so the loaded pill is reserve-wide no matter what the
+                        // live title says. Dropping it here let a "Play"-wide skeleton stub pass
+                        // a render it should have failed. This fixture is a MOVIE, so it takes
+                        // the movie reserve — the same one the skeleton half is given.
                         PrimaryPlayButton(
                             title: "Play",
                             fillWidth: false,
-                            layoutReserveTitle: ItemPlayButtonLabel.layoutReserveTitle
+                            layoutReserveTitle: ItemPlayButtonLabel.layoutReserveTitle(for: .verbOnly)
                         ) { }
                         CircleGlassButton(systemImage: "heart", accessibilityLabel: "Favorite") { }
                         CircleGlassButton(systemImage: "checkmark", accessibilityLabel: "Mark Watched") { }
@@ -822,7 +829,7 @@ private struct LoadedDetailPage: View {
 
 #Preview("Detail skeleton ↔ hero (compact)", traits: .fixedLayout(width: 786, height: 1000)) {
     SkeletonParity(idiom: .compact, columnWidth: 393) {
-        DetailLoadingSkeleton()
+        DetailLoadingSkeleton(reserve: .verbOnly)
     } loaded: {
         LoadedDetailPage()
     }
@@ -830,7 +837,7 @@ private struct LoadedDetailPage: View {
 
 #Preview("Detail skeleton ↔ hero (regular)", traits: .fixedLayout(width: 2048, height: 1000)) {
     SkeletonParity(idiom: .regular, columnWidth: 1024) {
-        DetailLoadingSkeleton()
+        DetailLoadingSkeleton(reserve: .verbOnly)
     } loaded: {
         LoadedDetailPage()
     }
