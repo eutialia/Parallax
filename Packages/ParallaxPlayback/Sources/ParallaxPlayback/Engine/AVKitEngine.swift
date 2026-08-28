@@ -75,6 +75,57 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     /// same rationale as `inventoryTask`.
     private var subtitleDeselectTask: Task<Void, Never>?
 
+    /// How many `seek(to:)` calls have been issued and not yet returned from
+    /// `await player.seek`. The seek-settle contract's whole state on this engine (see
+    /// `PlaybackState`): while it is non-zero, `player.currentTime()` is the clock the seek is
+    /// moving away from — AVPlayer reports the transitional clock through the periodic observer
+    /// and the `timeControlStatus` KVO with no marker of its own — so every beat those publish
+    /// is `.stale`. The only `.projected` beat this engine makes is `seek()`'s own pre-seek
+    /// target echo, which carries the request rather than the clock.
+    /// A count, not a flag, because overlapping seeks each own one: only the drain back to
+    /// zero (the LATEST seek returning) can produce an `.observed` beat.
+    ///
+    /// `private(set)` rather than private so a test can prove a seek really is outstanding
+    /// before asserting what the beats published inside that window are labelled — otherwise
+    /// a seek that had already completed would pass the assertion vacuously.
+    private(set) var inFlightSeeks = 0
+
+    /// Which BATCH of outstanding seeks a completion belongs to. Every seek — the load-time
+    /// resume one and every ordinary `seek(to:)` — captures this before it awaits, and its
+    /// completion is a no-op unless it still matches. Two events close a whole batch at once
+    /// and bump it: `detachCurrentItem` (the item they were queued against is gone) and a
+    /// seek finishing as the newest one (AVFoundation has superseded every older seek, so
+    /// their slots are dead — see `seek(to:)`).
+    ///
+    /// A generation rather than a flag because a seek's completion outlives the batch it was
+    /// queued in, and AVFoundation promises nothing about resuming one when the item is
+    /// replaced: a `player.seek` left hanging by a reload keeps its slot forever, so
+    /// `inFlightSeeks` never drains and every beat of the NEW stream ships `.stale` — a hold
+    /// on the app side that only its watchdog can end. Zeroing without the stamp is worse
+    /// than not zeroing: the abandoned completion would then drive the count NEGATIVE, and
+    /// `inFlightSeeks == 0` would be false for the rest of the session.
+    ///
+    /// `private(set)` so a test can capture a generation, discard the item, and drive the
+    /// abandoned completion through `seekDidFinish(generation:)` — the race itself is not
+    /// something a test can hold open against real AVFoundation.
+    private(set) var seekGeneration = 0
+
+    /// Issue order for `seek(to:)`, so a completion can tell "I am the newest seek" from "a
+    /// newer one has already been issued". The COUNT alone cannot: it says how many seeks are
+    /// outstanding, not which of them AVFoundation is now honouring.
+    private var latestSeekSerial = 0
+
+    /// Where the position of a CLOCK-READ beat about to ship comes from (see
+    /// `PositionProvenance`). Only two answers exist here: with no seek outstanding
+    /// `player.currentTime()` is `.observed`, and with one outstanding it is `.stale` — never
+    /// `.projected`, because unlike VLC this engine has no extrapolation to publish; the clock
+    /// simply keeps reading the pre-seek value until AVPlayer moves it.
+    ///
+    /// AVKit's `.observed` is the WEAK form — "no seek call is outstanding", i.e. AVPlayer
+    /// returned from the latest one — not VLC's "the clock converged on the target";
+    /// `AVPlayer.seek` reporting `finished` IS the strongest completion signal this engine has.
+    private var clockProvenance: PositionProvenance { inFlightSeeks == 0 ? .observed : .stale }
+
     // Server-side track metadata for the current asset, used to label tracks a
     // transcode manifest left unnamed.
     private var mediaStreams: [MediaStreamInfo] = []
@@ -110,10 +161,12 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         switch player.timeControlStatus {
         case .waitingToPlayAtSpecifiedRate:
             stallWatchdog.arm()   // a mid-stream stall — bound it so a dead socket can't buffer forever
-            continuation.yield(.buffering(position: position, duration: item.duration, buffered: buffered))
+            continuation.yield(.buffering(position: position, duration: item.duration,
+                                          buffered: buffered, provenance: clockProvenance))
         case .playing:
             stallWatchdog.disarm()   // frames are flowing again — the stall cleared
-            continuation.yield(.playing(position: position, duration: item.duration, buffered: buffered))
+            continuation.yield(.playing(position: position, duration: item.duration,
+                                        buffered: buffered, provenance: clockProvenance))
         case .paused:
             stallWatchdog.disarm()   // user/transport paused — not a stall
             break
@@ -227,8 +280,40 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         // start on a mid-GOP stream-copied segment.
         if let start = pendingStartTime {
             pendingStartTime = nil
-            item.seek(to: start, completionHandler: nil)
+            // Counted exactly like `seek(to:)` (see `inFlightSeeks`): until this lands,
+            // `player.currentTime()` reads 0, and the periodic observer starts publishing the
+            // moment the item is ready. Labelled `.observed`, those beats tell a consumer the
+            // resume already happened at 00:00 — which after a transcode re-anchor
+            // (`load(startTime: B)`) is precisely the evidence that drops a held seek target
+            // and snaps the bar to zero.
+            let generation = seekGeneration
+            inFlightSeeks += 1
+            item.seek(to: start) { [weak self] _ in
+                // Delivered on an arbitrary queue; the counter is main-actor state.
+                Task { @MainActor in self?.seekDidFinish(generation: generation) }
+            }
         }
+    }
+
+    /// Closes one seek's slot in `inFlightSeeks`. A completion from a DISCARDED item is
+    /// ignored: `detachCurrentItem` already closed every window that item owned, and the
+    /// count now belongs to the stream playing.
+    ///
+    /// Internal rather than private so the abandoned-completion case is testable at all — see
+    /// `seekGeneration`.
+    func seekDidFinish(generation: Int) {
+        guard generation == seekGeneration else { return }
+        inFlightSeeks -= 1
+    }
+
+    /// Closes EVERY outstanding seek slot and stamps the calls still in flight as superseded,
+    /// so their late completions land on a batch that is no longer theirs (rather than driving
+    /// the count negative). Shared by `detachCurrentItem` — the item they belonged to is gone —
+    /// and by the newest seek finishing, where AVFoundation has demonstrably moved past every
+    /// older request, including a load-time resume that never resolved.
+    private func supersedeOutstandingSeeks() {
+        seekGeneration &+= 1
+        inFlightSeeks = 0
     }
 
     public func play() async {
@@ -264,7 +349,8 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
             continuation.yield(.paused(
                 position: position,
                 duration: item.duration,
-                buffered: Self.bufferedEnd(of: item, at: position)
+                buffered: Self.bufferedEnd(of: item, at: position),
+                provenance: clockProvenance
             ))
         }
     }
@@ -280,7 +366,37 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         }
     }
 
+    /// **Seek-settle contract (see `PlaybackEngine.seek(to:)`).** AVKit's `.observed` is the
+    /// WEAK form: "no `seek(to:)` call is outstanding", i.e. AVPlayer returned
+    /// `finished == true` from the latest one. That is the strongest completion signal this
+    /// engine has — there is no clock-convergence test like VLC's, and AVPlayer's default
+    /// (efficient) tolerance means the landing can sit a segment away from the request. So an
+    /// `.observed` beat here promises the seek RESOLVED, not that `position` equals the target.
+    ///
+    /// The window this opens splits by beat kind. The pre-seek echo below carries the TARGET,
+    /// so it is `.projected` — display-safe, and the only forward guess this engine makes.
+    /// Everything else published inside the window (the periodic observer's ticks, the
+    /// `timeControlStatus` KVO's edges, a `pause()` landing here) carries
+    /// `player.currentTime()`, which still reads the PRE-seek clock: `.stale`, shown nowhere.
+    /// A superseded seek observes nothing: the newest call owns every subsequent beat.
     public func seek(to time: CMTime) async {
+        // The protocol documents this call as a no-op with no item loaded, and without the
+        // guard it was not one: the counter below opened a settle window, and AVFoundation
+        // promises nothing about invoking a seek completion when there is no `currentItem` to
+        // seek — an unresolved one strands the caller (a scrub commit) inside the await AND
+        // leaves the slot open, which labels every later beat `.stale`. (Measured on iOS 26 it
+        // resolves `finished == false`, so the leak self-closes there; that is AVFoundation's
+        // choice on one OS, not a contract to build the commit path on.)
+        guard currentItem != nil else { return }
+        // Counted BEFORE the echo below: that beat carries the target, not an observed
+        // clock, so it is the first `.projected` beat of this seek's window. Stamped with the
+        // batch it is issued in, so a reload that abandons it (`detachCurrentItem`) — or a
+        // newer seek that supersedes it — can reclaim the slot without this call's late return
+        // double-counting. See `seekGeneration`.
+        let generation = seekGeneration
+        latestSeekSerial += 1
+        let serial = latestSeekSerial
+        inFlightSeeks += 1
         // A seek OUTSIDE the buffered range is a real media fetch, but a PAUSED
         // player performs it without ever entering .waitingToPlayAtSpecifiedRate
         // — and the drag-scrub flow always pauses before seeking, so on a
@@ -288,7 +404,8 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         // paused frame (no stall beat, no scrim). Emit the fetch explicitly.
         if let item = currentItem, item.status == .readyToPlay,
            Self.bufferedEnd(of: item, at: time) == nil {
-            continuation.yield(.buffering(position: time, duration: item.duration, buffered: nil))
+            continuation.yield(.buffering(position: time, duration: item.duration,
+                                          buffered: nil, provenance: .projected))
         }
         // Default (efficient) tolerance, not zero. Frame-exact seeking on an HLS
         // transcode is pathologically slow and can stall — it made scrubbing a 4K
@@ -296,14 +413,26 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         // the resume seek: Jellyfin's transcode is a full-timeline playlist, so
         // resume is an ordinary seek — the stream URL carries no start offset.
         let finished = await player.seek(to: time)
-        // A superseded seek must NOT land its post-seek beat. When a newer seek
-        // arrives, AVPlayer resumes THIS call with finished == false — but only
-        // AFTER the newer call already pre-emitted its .buffering, so the stale
-        // .paused beat below would wipe the stall and present a bare paused UI
-        // while the new fetch is still in flight (device-found: drag → buffering
-        // → re-drag before the scrim closed showed paused, no scrim). The newest
-        // seek owns every subsequent beat.
-        guard finished else { return }
+        // The finish rule, and all three arms matter:
+        //  • `finished == false` — AVPlayer cancelled this seek for a newer one. Close only
+        //    this slot; the newer call's window is what the beats belong to. A stale `.paused`
+        //    beat here would wipe the newer call's `.buffering` and present a bare paused UI
+        //    while its fetch is still in flight (device-found: drag → buffering → re-drag
+        //    before the scrim closed showed paused, no scrim).
+        //  • a stale `generation` — the item this was queued against is gone (a reload) or a
+        //    newer seek already resolved. `seekDidFinish` no-ops it: the slot was reclaimed in
+        //    bulk, and decrementing again would drive the count negative.
+        //  • `finished` AND newest — the winner, below.
+        guard finished, generation == seekGeneration, serial == latestSeekSerial else {
+            seekDidFinish(generation: generation)
+            return
+        }
+        // AVFoundation resolved the NEWEST request, which means it has moved past every older
+        // one — including a load-time resume still queued against a not-yet-ready item. Their
+        // slots die with this call's, because gating the beat on `inFlightSeeks == 0` instead
+        // made the winner's beat depend on the LOSER's continuation having been resumed first:
+        // a paused player then published no post-seek beat at all and the scrim never cleared.
+        supersedeOutstandingSeeks()
         // Land the post-seek truth for a paused player: the periodic observer is
         // quiet while paused, so without this beat the stall above never clears
         // until the user resumes. (Playing/waiting outcomes are covered by the
@@ -314,7 +443,8 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
             continuation.yield(.paused(
                 position: position,
                 duration: item.duration,
-                buffered: Self.bufferedEnd(of: item, at: position)
+                buffered: Self.bufferedEnd(of: item, at: position),
+                provenance: .observed
             ))
         }
     }
@@ -461,6 +591,12 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     /// new item on the same player). Deliberately does NOT finish the state stream or
     /// drop the AVPlayer, so a reload keeps the surface — and the layer — alive.
     private func detachCurrentItem() {
+        // The discarded item owns every outstanding seek, and their completions may never
+        // arrive (or may arrive long after the next stream is playing). Close all of those
+        // windows at once — the counter would otherwise never drain and the NEXT stream's
+        // beats would read `.stale` forever — and bump the generation so the abandoned
+        // completions land on a slot that is no longer theirs.
+        supersedeOutstandingSeeks()
         loadWatchdog.disarm()   // teardown or reload — cancel the deadline (play() re-arms on reload)
         stallWatchdog.disarm()  // and any pending mid-stream stall — a reload/teardown supersedes it
         inventoryTask?.cancel()
@@ -645,16 +781,20 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         switch player.timeControlStatus {
         case .paused:
             stallWatchdog.disarm()
-            continuation.yield(.paused(position: time, duration: item.duration, buffered: buffered))
+            continuation.yield(.paused(position: time, duration: item.duration,
+                                       buffered: buffered, provenance: clockProvenance))
         case .waitingToPlayAtSpecifiedRate:
             stallWatchdog.arm()   // periodic tick caught a stall the KVO edge didn't (re-arm resets the clock)
-            continuation.yield(.buffering(position: time, duration: item.duration, buffered: buffered))
+            continuation.yield(.buffering(position: time, duration: item.duration,
+                                          buffered: buffered, provenance: clockProvenance))
         case .playing:
             stallWatchdog.disarm()
-            continuation.yield(.playing(position: time, duration: item.duration, buffered: buffered))
+            continuation.yield(.playing(position: time, duration: item.duration,
+                                        buffered: buffered, provenance: clockProvenance))
         @unknown default:
             stallWatchdog.disarm()
-            continuation.yield(.playing(position: time, duration: item.duration, buffered: buffered))
+            continuation.yield(.playing(position: time, duration: item.duration,
+                                        buffered: buffered, provenance: clockProvenance))
         }
     }
 

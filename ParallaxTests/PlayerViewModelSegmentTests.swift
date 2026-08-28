@@ -21,11 +21,7 @@ private enum OutroAdjacency: String, CaseIterable, CustomTestStringConvertible {
 @MainActor
 struct PlayerViewModelSegmentTests {
     private func playing(_ seconds: Double) -> PlaybackState {
-        .playing(
-            position: CMTime(seconds: seconds, preferredTimescale: 600),
-            duration: CMTime(seconds: 1800, preferredTimescale: 600),
-            buffered: nil
-        )
+        .playing(seconds, duration: .seconds(1800))
     }
 
     /// An episode VM whose resolve echoes a direct-play fixture for whatever id it's

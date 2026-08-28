@@ -81,7 +81,7 @@ struct VLCKitEngineTests {
         await engine.teardown()
         var positions: [Double] = []
         for await state in engine.state {
-            if case .paused(let position, _, _) = state { positions.append(CMTimeGetSeconds(position)) }
+            if case .paused(let position, _, _, _) = state { positions.append(CMTimeGetSeconds(position)) }
         }
         #expect(positions == [42.0])
     }
@@ -162,7 +162,7 @@ struct VLCKitPauseBeatTests {
         var seconds: [Double] = []
         for await state in engine.state {
             switch state {
-            case .playing(let position, _, _), .paused(let position, _, _):
+            case .playing(let position, _, _, _), .paused(let position, _, _, _):
                 seconds.append(CMTimeGetSeconds(position))
             default:
                 break
@@ -297,10 +297,12 @@ struct VLCKitBeatTests {
     @Test("positionState maps isPlaying onto .playing/.paused with converted times",
           arguments: [true, false])
     func positionStateMapsTransport(isPlaying: Bool) {
-        let state = VLCKitEngine.positionState(isPlaying: isPlaying, positionMs: 1_000, durationMs: 4_000)
+        let state = VLCKitEngine.positionState(isPlaying: isPlaying, positionMs: 1_000, durationMs: 4_000,
+                                               provenance: .observed)
         switch (isPlaying, state) {
-        case (true, .playing(let p, let d, let buffered)),
-             (false, .paused(let p, let d, let buffered)):
+        case (true, .playing(let p, let d, let buffered, let provenance)),
+             (false, .paused(let p, let d, let buffered, let provenance)):
+            #expect(provenance == .observed)
             #expect(CMTimeGetSeconds(p) == 1.0)
             #expect(CMTimeGetSeconds(d) == 4.0)
             // libvlc exposes no loaded-range query, so the bar's instant-seek layer is
@@ -316,10 +318,10 @@ struct VLCKitBeatTests {
     /// old guard required `durationMs > 0` and wedged incomplete media forever.
     @Test("an unknown length still produces a beat carrying the real position")
     func beatSurvivesUnknownLength() throws {
-        let direct = VLCKitEngine.positionState(isPlaying: true, positionMs: 5_000, durationMs: 0)
-        let gated = try #require(VLCKitEngine.liveBeat(isPlaying: true, positionMs: 5_000, durationMs: 0))
+        let direct = VLCKitEngine.positionState(isPlaying: true, positionMs: 5_000, durationMs: 0, provenance: .observed)
+        let gated = try #require(VLCKitEngine.liveBeat(isPlaying: true, positionMs: 5_000, durationMs: 0, provenance: .observed))
         for state in [direct, gated] {
-            guard case .playing(let position, let duration, _) = state else {
+            guard case .playing(let position, let duration, _, _) = state else {
                 Issue.record("expected .playing, got \(state)"); continue
             }
             #expect(CMTimeGetSeconds(position) == 5.0)
@@ -332,9 +334,9 @@ struct VLCKitBeatTests {
     /// the guard is on POSITION, not duration.
     @Test("liveBeat suppresses the pre-first-frame sentinel position")
     func liveBeatSuppressesSentinelPosition() {
-        #expect(VLCKitEngine.liveBeat(isPlaying: true, positionMs: -1, durationMs: 4_000) == nil)
-        #expect(VLCKitEngine.liveBeat(isPlaying: false, positionMs: -1, durationMs: 0) == nil)
-        #expect(VLCKitEngine.liveBeat(isPlaying: true, positionMs: 0, durationMs: 4_000) != nil)
+        #expect(VLCKitEngine.liveBeat(isPlaying: true, positionMs: -1, durationMs: 4_000, provenance: .observed) == nil)
+        #expect(VLCKitEngine.liveBeat(isPlaying: false, positionMs: -1, durationMs: 0, provenance: .observed) == nil)
+        #expect(VLCKitEngine.liveBeat(isPlaying: true, positionMs: 0, durationMs: 4_000, provenance: .observed) != nil)
     }
 }
 
@@ -343,22 +345,120 @@ struct VLCKitBeatTests {
 struct VLCKitPollGateTests {
 
     /// Seek target 480_000ms (08:00). ±3s absorbs a keyframe-snapped landing; a far
-    /// transient reading is suppressed until either convergence or the poll budget.
-    @Test("seekHasSettled", arguments: [
-        ("far forward transient", Int32(600_000), Int32(480_000), 1, false),
-        ("far backward transient", 180_000, 300_000, 1, false),
-        ("exact landing", 480_000, 480_000, 2, true),
-        ("-2.5s keyframe snap", 477_500, 480_000, 2, true),
-        ("+2.9s keyframe snap", 482_900, 480_000, 2, true),
-        ("just outside tolerance", 483_100, 480_000, 2, false),
-        ("one poll short of the budget", 600_000, 480_000, 9, false),
-        ("budget spent — resume anyway", 600_000, 480_000, 10, true),
-    ] as [(String, Int32, Int32, Int, Bool)])
-    func seekHasSettled(label: String, now: Int32, target: Int32, polls: Int, expected: Bool) {
-        #expect(VLCKitEngine.seekHasSettled(now: now, target: target, polls: polls) == expected, "\(label)")
+    /// transient reading is not a landing at any poll count.
+    @Test("seekHasConverged", arguments: [
+        ("far forward transient", Int32(600_000), Int32(480_000), false),
+        ("far backward transient", 180_000, 300_000, false),
+        ("exact landing", 480_000, 480_000, true),
+        ("-2.5s keyframe snap", 477_500, 480_000, true),
+        ("+2.9s keyframe snap", 482_900, 480_000, true),
+        ("just outside tolerance", 483_100, 480_000, false),
+    ] as [(String, Int32, Int32, Bool)])
+    func seekHasConverged(label: String, now: Int32, target: Int32, expected: Bool) {
+        #expect(VLCKitEngine.seekHasConverged(now: now, target: target) == expected, "\(label)")
     }
 
-    /// The phantom-scrim regression: failing `seekHasSettled` is NOT evidence of a stall.
+    /// The give-up half, split out of the old `seekHasSettled`: purely a poll budget, and
+    /// on its own it says nothing about where the player landed.
+    @Test("seekHoldExpired", arguments: [
+        ("first poll", 1, false),
+        ("one poll short of the budget", 9, false),
+        ("budget spent", 10, true),
+        ("well past the budget", 25, true),
+    ] as [(String, Int, Bool)])
+    func seekHoldExpired(label: String, polls: Int, expected: Bool) {
+        #expect(VLCKitEngine.seekHoldExpired(polls: polls) == expected, "\(label)")
+    }
+
+    /// The lie the split exists to kill: the budget used to release the hold unconditionally,
+    /// and the poll then published `clockMs` as a landed `.playing`. On a source where libvlc
+    /// never republishes time at the new offset, `clockMs` IS the position the seek started
+    /// from — so the bar silently snapped back to where the user seeked away from, and the
+    /// resume point followed it.
+    ///
+    /// An expired hold may only release onto a clock that is NEARER the target than the
+    /// position the seek started from. Not "moved" and not even "moved toward the target": a
+    /// clock that has not republished is not frozen, it free-runs from the pre-seek position
+    /// while the input demuxes at the new offset — so on a forward seek every stale reading
+    /// has moved, and moved the right way. The two cases in the middle of the table are that
+    /// distinction; they are what a bare `now != preSeek` (and a bare "closed some distance")
+    /// both get wrong.
+    @Test("seekHoldShouldRelease", arguments: [
+        // pre-seek 60_000 (01:00), target 480_000 (08:00) → the midpoint is 270_000
+        ("convergence releases immediately", Int32(480_000), 1, Int32(60_000), true),
+        ("a keyframe snap inside tolerance releases", 478_000, 1, 60_000, true),
+        ("mid-hold, clock still pre-seek: keep holding", 60_000, 4, 60_000, false),
+        ("budget spent, clock still pre-seek: keep holding", 60_000, 10, 60_000, false),
+        ("deep past the budget, clock still pre-seek: keep holding", 60_000, 25, 60_000, false),
+        ("50ms of creep is not a landing", 60_050, 10, 60_000, false),
+        ("interpolated forward for the whole budget, still nowhere near", 65_000, 10, 60_000, false),
+        ("a BACKWARD seek's clock running the wrong way entirely", 905_000, 10, 900_000, false),
+        ("exactly halfway — no nearer the target than the origin", 270_000, 10, 60_000, false),
+        ("moved most of the way to the target: release", 400_000, 10, 60_000, true),
+        ("budget spent, landed far off the target: release", 300_000, 10, 60_000, true),
+        ("overshot past the target: release", 700_000, 10, 60_000, true),
+        ("no clock at seek time — nothing to call stale", 60_000, 10, nil, true),
+        ("no clock at seek time, budget unspent: still holding", 60_000, 9, nil, false),
+    ] as [(String, Int32, Int, Int32?, Bool)])
+    func seekHoldShouldRelease(label: String, now: Int32, polls: Int,
+                               preSeekClockMs: Int32?, expected: Bool) {
+        // `totalPolls` under the cap throughout: this table is the CONDITIONAL rule, and the
+        // hard floor beneath it has its own table below.
+        #expect(VLCKitEngine.seekHoldShouldRelease(
+            now: now, target: 480_000, polls: polls, totalPolls: polls,
+            preSeekClockMs: preSeekClockMs
+        ) == expected, "\(label)")
+    }
+
+    /// The floor under the conditional rule. 30 polls ≈ 15s at the 500ms cadence, and it must
+    /// sit BELOW the app's own 20s `SeekHold.watchdog` so the engine is the one that gives up
+    /// first — the app's watchdog then never has to fire on a projection.
+    @Test("seekHoldAbandoned", arguments: [
+        ("armed", 0, false),
+        ("past the conditional budget, still inside the cap", 10, false),
+        ("one poll short", 29, false),
+        ("the cap, 15s in", 30, true),
+        ("long past it", 120, true),
+    ] as [(String, Int, Bool)])
+    func seekHoldAbandoned(label: String, polls: Int, expected: Bool) {
+        #expect(VLCKitEngine.seekHoldAbandoned(polls: polls) == expected, "\(label)")
+    }
+
+    /// Two shapes hold FOREVER under the conditional rule, and both were live defects:
+    ///  • a BACKWARD seek (08:00 → 01:00) whose clock free-runs forward off the pre-seek
+    ///    position — every reading is further from the target than from the origin, at every
+    ///    poll count, so "nearer the target than the origin" is never satisfiable;
+    ///  • a clock that never republishes at all while the demux keeps climbing — the same
+    ///    unmoved reading forever, with the `.buffer` arm (and so the stall watchdog) never
+    ///    reached because the fetch is healthy.
+    /// The cap releases both, and the reassert escalation's `pendingSeekPolls = 0` cannot buy
+    /// them more time: it is counted on the ORIGINAL seek.
+    @Test("the abandon cap ends the holds the conditional rule would keep forever", arguments: [
+        // A backward seek: pre-seek 480_000 (08:00), target 60_000 (01:00), clock free-running
+        // forward from 08:00. Nearer the ORIGIN at every one of these.
+        ("backward seek, clock free-running forward, mid-budget", Int32(60_000), Int32(485_000), 6, 6, false),
+        ("backward seek, budget spent", 60_000, 495_000, 10, 10, false),
+        ("backward seek, deep into the cap", 60_000, 520_000, 20, 20, false),
+        ("backward seek, one poll short of the cap", 60_000, 540_000, 29, 29, false),
+        ("backward seek, the cap releases it", 60_000, 545_000, 30, 30, true),
+        // A clock that never republished: the same pre-seek reading at every poll.
+        ("never-republishing clock, budget spent", 480_000, 60_000, 10, 10, false),
+        ("never-republishing clock, one poll short", 480_000, 60_000, 29, 29, false),
+        ("never-republishing clock, abandoned at 30", 480_000, 60_000, 30, 30, true),
+        // The reassert escalation re-anchors every 6 ticks and restarts `pendingSeekPolls`.
+        // Counted on THAT, the cap would never arrive; counted on the original seek, it does.
+        ("a reassert reset does not extend the cap", 480_000, 60_000, 1, 30, true),
+        ("nor does one just short of it", 480_000, 60_000, 1, 29, false),
+    ] as [(String, Int32, Int32, Int, Int, Bool)])
+    func abandonCapEndsAnImmortalHold(label: String, target: Int32, now: Int32,
+                                      polls: Int, totalPolls: Int, expected: Bool) {
+        #expect(VLCKitEngine.seekHoldShouldRelease(
+            now: now, target: target, polls: polls, totalPolls: totalPolls,
+            preSeekClockMs: target == 60_000 ? 480_000 : 60_000
+        ) == expected, "\(label)")
+    }
+
+    /// The phantom-scrim regression: failing `seekHasConverged` is NOT evidence of a stall.
     /// libvlc keeps reporting the pre-seek clock until its input republishes time at the new
     /// offset, which on wmv/SMB outlasts the whole 10-poll budget, so the poll count alone
     /// rode a buffering scrim over healthy A/V. Demux bytes are the honest signal: climbing =

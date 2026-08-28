@@ -57,11 +57,7 @@ struct ReactivePlaybackFallbackTests {
         await vm.start(item: PlayerFixtures.movieDetail())
         #expect(vm.engine === avKitEngine)
 
-        avKitEngine.push(.playing(
-            position: CMTime(seconds: 42, preferredTimescale: 600),
-            duration: CMTime(seconds: 7200, preferredTimescale: 600),
-            buffered: nil
-        ))
+        avKitEngine.push(.playing(42))
         try await avKitEngine.settle()
 
         avKitEngine.push(.failed(.assetNotPlayable))
@@ -89,11 +85,7 @@ struct ReactivePlaybackFallbackTests {
         #expect(vlcEngine.calls.contains("play"))
 
         // The VLC leg completes normally.
-        vlcEngine.push(.playing(
-            position: CMTime(seconds: 42, preferredTimescale: 600),
-            duration: CMTime(seconds: 7200, preferredTimescale: 600),
-            buffered: nil
-        ))
+        vlcEngine.push(.playing(42))
         try await vlcEngine.settle()
         #expect(vm.phase == .playing)
     }

@@ -215,11 +215,7 @@ struct SMBPlaybackStartTests {
 
         // The session reaches .playing once the engine reports it — proving the beat
         // handler doesn't drop SMB beats just because `resolved == nil`.
-        engine.push(.playing(
-            position: CMTime(seconds: 5, preferredTimescale: 1),
-            duration: CMTime(seconds: 6000, preferredTimescale: 1),
-            buffered: nil
-        ))
+        engine.push(.playing(5, duration: .seconds(6000)))
         try await engine.settle()
         #expect(vm.phase == .playing)
         #expect(vm.isPlaying == true)
@@ -271,21 +267,9 @@ struct SMBPlaybackStartTests {
         await vm.start(smbItem: smbItem())
 
         // Drive a full play → progress → ended lifecycle.
-        engine.push(.playing(
-            position: CMTime(seconds: 10, preferredTimescale: 1),
-            duration: CMTime(seconds: 6000, preferredTimescale: 1),
-            buffered: nil
-        ))
-        engine.push(.playing(
-            position: CMTime(seconds: 20, preferredTimescale: 1),
-            duration: CMTime(seconds: 6000, preferredTimescale: 1),
-            buffered: nil
-        ))
-        engine.push(.paused(
-            position: CMTime(seconds: 20, preferredTimescale: 1),
-            duration: CMTime(seconds: 6000, preferredTimescale: 1),
-            buffered: nil
-        ))
+        engine.push(.playing(10, duration: .seconds(6000)))
+        engine.push(.playing(20, duration: .seconds(6000)))
+        engine.push(.paused(20, duration: .seconds(6000)))
         engine.push(.ended)
         try await engine.settle()
 
@@ -306,11 +290,7 @@ struct SMBPlaybackStartTests {
 
             let subURL = URL(string: "file:///tmp/Example.en.srt")!
             await vm.start(smbItem: smbItem(subtitleURLs: [0: subURL]))
-            engine.push(.playing(
-                position: CMTime(seconds: 15, preferredTimescale: 1),
-                duration: CMTime(seconds: 6000, preferredTimescale: 1),
-                buffered: nil
-            ))
+            engine.push(.playing(15, duration: .seconds(6000)))
             try await engine.settle()
             #expect(vm.debugSubtitleURLs == [0: subURL])
 
@@ -346,11 +326,7 @@ struct SMBPlaybackStartTests {
             let id = ItemID(rawValue: "smb-duration-trust-\(trustworthy)")
 
             await vm.start(smbItem: smbItem(itemID: id, hasTrustworthyDuration: trustworthy))
-            engine.push(.playing(
-                position: CMTime(seconds: 5_900, preferredTimescale: 1),
-                duration: CMTime(seconds: 6_000, preferredTimescale: 1),
-                buffered: nil
-            ))
+            engine.push(.playing(5_900, duration: .seconds(6_000)))
             try await engine.settle()
 
             // stop()'s final save is unthrottled and inline-awaited — deterministic to assert
@@ -379,11 +355,7 @@ struct SMBPlaybackStartTests {
             // The throttle window is wide open (first beat), so `.playing` spawns the untracked
             // save `.ended` must now await. Before the fix, the save Task's actor hop could lose
             // a race against `.ended`'s clear() — landing after it and resurrecting this position.
-            engine.push(.playing(
-                position: CMTime(seconds: 100, preferredTimescale: 1),
-                duration: CMTime(seconds: 6_000, preferredTimescale: 1),
-                buffered: nil
-            ))
+            engine.push(.playing(100, duration: .seconds(6_000)))
             engine.push(.ended)
             try await engine.settle()
 
@@ -414,11 +386,7 @@ struct SMBPlaybackStartTests {
         #expect(engine.calls.contains("load"))
         #expect(engine.calls.contains("play"))
 
-        engine.push(.playing(
-            position: CMTime(seconds: 5, preferredTimescale: 1),
-            duration: CMTime(seconds: 6000, preferredTimescale: 1),
-            buffered: nil
-        ))
+        engine.push(.playing(5, duration: .seconds(6000)))
         try await engine.settle()
         #expect(vm.phase == .playing)
 

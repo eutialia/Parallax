@@ -85,8 +85,8 @@ struct PlayerViewModelTests {
 
         // Script ready → play → progress → ended through the single consumer.
         engine.push(.ready(duration: resolved.runtime!, tracks: .empty))
-        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
-        engine.push(.playing(position: CMTime(seconds: 20, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+        engine.push(.playing(10, duration: resolved.runtime!))
+        engine.push(.playing(20, duration: resolved.runtime!))
         engine.push(.ended)
         engine.finish()
 
@@ -120,7 +120,7 @@ struct PlayerViewModelTests {
         await vm.start(item: PlayerFixtures.movieDetail())
         #expect(vm.startupMillis == nil)   // not yet — no .playing beat landed
 
-        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+        engine.push(.playing(10, duration: resolved.runtime!))
         try await engine.settle()
 
         let first = try #require(vm.startupMillis)
@@ -128,8 +128,8 @@ struct PlayerViewModelTests {
 
         // A later .playing beat (e.g. resume-from-pause) must NOT overwrite the metric —
         // it belongs to the session's FIRST beat only.
-        engine.push(.paused(position: CMTime(seconds: 15, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
-        engine.push(.playing(position: CMTime(seconds: 16, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+        engine.push(.paused(15, duration: resolved.runtime!))
+        engine.push(.playing(16, duration: resolved.runtime!))
         try await engine.settle()
 
         #expect(vm.startupMillis == first)
@@ -153,11 +153,7 @@ struct PlayerViewModelTests {
         await vm.start(item: PlayerFixtures.movieDetail())
         let engine = try #require(vm.engine as? FakePlaybackEngine)
 
-        engine.push(.playing(
-            position: CMTime(seconds: 100, preferredTimescale: 600),
-            duration: CMTime(seconds: 7200, preferredTimescale: 600),
-            buffered: nil
-        ))
+        engine.push(.playing(100))
         try await engine.settle()
         #expect(vm.startupMillis != nil)
 
@@ -168,11 +164,7 @@ struct PlayerViewModelTests {
         await vm.selectAudioTrack(audio4)
         #expect(vm.startupMillis == nil)
 
-        engine.push(.playing(
-            position: CMTime(seconds: 0, preferredTimescale: 600),
-            duration: CMTime(seconds: 7200, preferredTimescale: 600),
-            buffered: nil
-        ))
+        engine.push(.playing(0))
         try await engine.settle()
         #expect(vm.startupMillis != nil)
     }
@@ -190,7 +182,7 @@ struct PlayerViewModelTests {
         // a live beat with an `.indefinite` duration (instead of suppressing it and wedging the
         // player in `.loading`). The player must become controllable (`phase == .playing`) yet
         // report itself non-seekable — there's no scrubbable timeline without a known length.
-        engine.push(.playing(position: CMTime(seconds: 5, preferredTimescale: 1), duration: .indefinite, buffered: nil))
+        engine.push(.playing(5, duration: .indefinite))
         engine.finish()
         try await engine.settle()
 
@@ -206,7 +198,7 @@ struct PlayerViewModelTests {
         let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
 
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(position: CMTime(seconds: 5, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+        engine.push(.playing(5, duration: resolved.runtime!))
         engine.finish()
         try await engine.settle()
 
@@ -277,7 +269,7 @@ struct PlayerViewModelTests {
 
         let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(position: CMTime(seconds: 30, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+        engine.push(.playing(30, duration: resolved.runtime!))
         try await engine.settle()
 
         await vm.stop()
@@ -300,15 +292,13 @@ struct PlayerViewModelTests {
         // Chapters are known but the duration isn't yet — no fractions to map onto.
         #expect(vm.chapterFractions.isEmpty)
 
-        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1),
-                             duration: CMTime(seconds: 1200, preferredTimescale: 1), buffered: nil))
+        engine.push(.playing(10, duration: .seconds(1200)))
         try await engine.settle()
 
         #expect(vm.chapterFractions == [0, 0.5, 1.0])
 
         // A repeat duration beat must NOT disturb the cached value (the memoization gate).
-        engine.push(.playing(position: CMTime(seconds: 20, preferredTimescale: 1),
-                             duration: CMTime(seconds: 1200, preferredTimescale: 1), buffered: nil))
+        engine.push(.playing(20, duration: .seconds(1200)))
         try await engine.settle()
         #expect(vm.chapterFractions == [0, 0.5, 1.0])
     }
@@ -320,8 +310,7 @@ struct PlayerViewModelTests {
 
         let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: PlayerFixtures.resolved())
         await vm.start(item: PlayerFixtures.movieDetailWithChapters(startsSeconds: [0, 300], runtime: .seconds(600)))
-        engine.push(.playing(position: CMTime(seconds: 5, preferredTimescale: 1),
-                             duration: CMTime(seconds: 600, preferredTimescale: 1), buffered: nil))
+        engine.push(.playing(5, duration: .seconds(600)))
         try await engine.settle()
         #expect(vm.chapterFractions == [0, 0.5])
 
@@ -470,11 +459,7 @@ struct PlayerViewModelTests {
         #expect(vm.availableAudioTracks.first?.transcodeTarget == "AAC")
 
         // Advance playback so the switch resumes at a real position.
-        engine.push(.playing(
-            position: CMTime(seconds: 100, preferredTimescale: 600),
-            duration: CMTime(seconds: 7200, preferredTimescale: 600),
-            buffered: nil
-        ))
+        engine.push(.playing(100))
         try await engine.settle()
 
         // Switch to audio index 4 → re-resolve at the current position with that index.
@@ -538,11 +523,7 @@ struct PlayerViewModelTests {
             subtitleFetch: { url in fetchedURLs.append(url); return Data() }
         )
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(
-            position: CMTime(seconds: 100, preferredTimescale: 600),
-            duration: CMTime(seconds: 7200, preferredTimescale: 600),
-            buffered: nil
-        ))
+        engine.push(.playing(100))
         try await engine.settle()
 
         let pgs = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(7) })
@@ -576,11 +557,7 @@ struct PlayerViewModelTests {
             engine: engine
         )
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(
-            position: CMTime(seconds: 100, preferredTimescale: 600),
-            duration: CMTime(seconds: 7200, preferredTimescale: 600),
-            buffered: nil
-        ))
+        engine.push(.playing(100))
         try await engine.settle()
 
         // First play makes no claim about tracks — the server applies the user's preferences.
@@ -621,11 +598,7 @@ struct PlayerViewModelTests {
             subtitleFetch: { _ in vtt }
         )
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(
-            position: CMTime(seconds: 100, preferredTimescale: 600),
-            duration: CMTime(seconds: 7200, preferredTimescale: 600),
-            buffered: nil
-        ))
+        engine.push(.playing(100))
         try await engine.settle()
 
         // Start from a working text subtitle so the rollback has something to restore.
@@ -663,11 +636,7 @@ struct PlayerViewModelTests {
             engine: engine
         )
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(
-            position: CMTime(seconds: 100, preferredTimescale: 600),
-            duration: CMTime(seconds: 7200, preferredTimescale: 600),
-            buffered: nil
-        ))
+        engine.push(.playing(100))
         try await engine.settle()
 
         // Activate the burn-in first.
@@ -707,11 +676,7 @@ struct PlayerViewModelTests {
             subtitleFetch: { url in fetchedURLs.append(url); return Data() }
         )
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(
-            position: CMTime(seconds: 100, preferredTimescale: 600),
-            duration: CMTime(seconds: 7200, preferredTimescale: 600),
-            buffered: nil
-        ))
+        engine.push(.playing(100))
         try await engine.settle()
 
         // Activate the burn-in first.
@@ -748,11 +713,7 @@ struct PlayerViewModelTests {
             subtitleFetch: { _ in Data() }
         )
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(
-            position: CMTime(seconds: 100, preferredTimescale: 600),
-            duration: CMTime(seconds: 7200, preferredTimescale: 600),
-            buffered: nil
-        ))
+        engine.push(.playing(100))
         try await engine.settle()
         #expect(resolveCalls == 1)
 
@@ -790,11 +751,7 @@ struct PlayerViewModelTests {
             subtitleFetch: { url in fetchedURLs.append(url); return Data() }
         )
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(
-            position: CMTime(seconds: 100, preferredTimescale: 600),
-            duration: CMTime(seconds: 7200, preferredTimescale: 600),
-            buffered: nil
-        ))
+        engine.push(.playing(100))
         try await engine.settle()
 
         // Activate the text sidecar first — the cheap path, no reload.
@@ -845,8 +802,7 @@ struct PlayerViewModelTests {
         await vm.start(item: PlayerFixtures.movieDetail())
         #expect(resolveCalls.count == 1)                         // initial resolve only
         let loadsAfterStart = engine.loadedAssets.count
-        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
-                             duration: CMTime(seconds: 7200, preferredTimescale: 600), buffered: nil))
+        engine.push(.playing(10))
         try await engine.settle()
 
         // Buffer covers 0…120s: a seek to 60s is IN buffer → in-stream seek, no reload,
@@ -929,8 +885,7 @@ struct PlayerViewModelTests {
         )
 
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
-                             duration: CMTime(seconds: 7200, preferredTimescale: 600), buffered: nil))
+        engine.push(.playing(10))
         try await engine.settle()
         let loadsAfterStart = engine.loadedAssets.count
 
@@ -958,8 +913,7 @@ struct PlayerViewModelTests {
         // engine reloaded and playing — not abandoned into a permanent .loading scrim.
         #expect(resolveCalls == 2)
         #expect(engine.loadedAssets.count == loadsAfterStart + 1)
-        engine.push(.playing(position: CMTime(seconds: 5000, preferredTimescale: 600),
-                             duration: CMTime(seconds: 7200, preferredTimescale: 600), buffered: nil))
+        engine.push(.playing(5000))
         try await engine.settle()
         #expect(vm.phase == .playing)
     }
@@ -986,8 +940,7 @@ struct PlayerViewModelTests {
         let loadsAfterStart = engine.loadedAssets.count
 
         // The first .playing beat arms the delivery probe; wait for it to land.
-        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
-                             duration: CMTime(seconds: 7200, preferredTimescale: 600), buffered: nil))
+        engine.push(.playing(10))
         try await Task.sleep(for: .milliseconds(80))
         #expect(vm.transcodeDelivery == delivery)
 
@@ -1034,8 +987,7 @@ struct PlayerViewModelTests {
 
         // Both schedule entries fetch nil — the probe gives up silently, leaving the
         // seek gate conservative (nil delivery) rather than stuck reading "probing…".
-        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
-                             duration: CMTime(seconds: 7200, preferredTimescale: 600), buffered: nil))
+        engine.push(.playing(10))
         try await Task.sleep(for: .milliseconds(80))
 
         #expect(vm.transcodeDelivery == nil)
@@ -1066,13 +1018,17 @@ struct PlayerViewModelTests {
         #expect(engine.loadedAssets.count == loadsAfterStart)   // engine not reloaded
     }
 
-    /// The frozen-bar defect (wmv/SMB on VLC): while libvlc's clock is still republishing at
-    /// the new offset the engine's seek hold used to publish nothing, so the bar sat on the
-    /// commit target for ~2s and then jumped. The hold now extrapolates off the target, and
-    /// the VM has to carry those beats straight through. Every one of them is an ordinary
-    /// `.playing`, so nothing here needed a special case; this pins that.
-    @Test("the seek hold's extrapolated beats walk currentPosition forward, never back to the commit target")
-    func scrubCommitExtrapolatedBeatsAdvanceMonotonically() async throws {
+    /// The wmv/SMB VLC shape, and the whole reason the label is three-valued. While libvlc's
+    /// clock is still republishing at the new offset the engine publishes its own extrapolation
+    /// off the commit target: `.projected` — a guess about *landing*, but an honest statement
+    /// about the PICTURE, which is already running from the target. So the bar follows it, and
+    /// advances with the video for the whole hold instead of freezing at the commit for up to
+    /// ten polls (which is what a single boolean forced, while the libass overlay tracked
+    /// `displayClockMs` and moved anyway). A `.stale` beat in the same window is the opposite
+    /// claim — the engine's clock, still reading pre-seek — and touches nothing. Neither
+    /// releases: only an observed clock does.
+    @Test("projected beats walk the bar forward through the hold; stale beats are ignored; observed releases")
+    func scrubCommitFollowsProjectedBeatsAndIgnoresStaleOnes() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
         let vm = makePlayerVM(
@@ -1083,20 +1039,55 @@ struct PlayerViewModelTests {
         await vm.start(item: PlayerFixtures.movieDetail())
         await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
 
-        // The commit's own beat pins the bar at the target, then four hold ticks at the
-        // 500ms poll cadence, then the settled real clock (the honest convergence).
-        var observed: [Double] = []
-        for seconds in [3_000.0, 3_000.5, 3_001.0, 3_001.5, 3_002.0, 3_002.3] {
-            engine.push(.playing(position: CMTime(seconds: seconds, preferredTimescale: 600),
-                                 duration: CMTime(seconds: 7_200, preferredTimescale: 600),
-                                 buffered: nil))
+        // The seek's target echo, then the hold's extrapolations at the 500ms poll cadence —
+        // `target + polls × pollMs × rate`, which is monotone and never below the target.
+        var shown: [Double] = []
+        for seconds in [3_000.0, 3_000.5, 3_001.0, 3_001.5] {
+            engine.push(.playing(seconds, provenance: .projected))
             try await engine.settle()
-            observed.append(CMTimeGetSeconds(vm.currentPosition))
+            shown.append(CMTimeGetSeconds(vm.currentPosition))
         }
-
-        #expect(observed == [3_000.0, 3_000.5, 3_001.0, 3_001.5, 3_002.0, 3_002.3])
-        #expect(zip(observed, observed.dropFirst()).allSatisfy { $0 < $1 })
+        #expect(shown == [3_000.0, 3_000.5, 3_001.0, 3_001.5])
         #expect(!vm.isStalled)   // a healthy hold raises no scrim
+
+        // A clock that has not caught up with its own seek. Seven minutes back, and it moves
+        // nothing: the bar stays where the projection left it.
+        engine.push(.playing(600, provenance: .stale))
+        try await engine.settle()
+        #expect(CMTimeGetSeconds(vm.currentPosition) == 3_001.5)
+
+        engine.push(.playing(3_002.3))
+        try await engine.settle()
+        #expect(CMTimeGetSeconds(vm.currentPosition) == 3_002.3)
+    }
+
+    /// The other half of the split, on the surface that pays for it. `lastPosition` is what
+    /// `reportStopped` and the SMB resume point are written from, and a projection is a guess
+    /// about how far the seek has run — not a place to resume. So a dismissal mid-hold records
+    /// the COMMITTED target, however far the bar has walked past it, and only an observed clock
+    /// moves the resume point.
+    @Test("projected beats move the bar but never the resume point — that stays the commit target")
+    func projectedBeatsNeverMoveTheResumePoint() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let vm = makePlayerVM(
+            reporting: reporting,
+            resolve: { _, _, _, _ in PlayerFixtures.resolved() },
+            engine: engine
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+
+        for seconds in [3_000.0, 3_002.0, 3_004.0] {
+            engine.push(.playing(seconds, provenance: .projected))
+            try await engine.settle()
+        }
+        #expect(CMTimeGetSeconds(vm.currentPosition) == 3_004)   // the bar followed
+
+        await vm.stop()
+        // …the resume point did not: `reportStopped` carries `lastPosition`, still the commit.
+        let events = await reporting.events
+        #expect(events.contains(.stopped(ticks: 3_000 * 10_000_000, itemID: "movie-1")))
     }
 
     @Test("scrub commit on direct play while paused: seek only, no resume — a paused scrub stays paused")
@@ -1132,8 +1123,7 @@ struct PlayerViewModelTests {
         )
         await vm.start(item: PlayerFixtures.movieDetail())
         let loadsAfterStart = engine.loadedAssets.count
-        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
-                             duration: CMTime(seconds: 7200, preferredTimescale: 600), buffered: nil))
+        engine.push(.playing(10))
         try await Task.sleep(for: .milliseconds(80))
         #expect(vm.transcodeDelivery == delivery)
 
@@ -1159,15 +1149,17 @@ struct PlayerViewModelTests {
     private func makeReanchorVM(
         engine: FakePlaybackEngine,
         at seconds: Double,
+        reporting: StubPlaybackReporting = StubPlaybackReporting(),
+        seekHoldNow: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
         nowPlaying: any NowPlayingUpdating = NowPlayingController(),
         resolve: @escaping PlayerViewModel.ResolveCall = { _, _, _, _ in
             PlayerFixtures.resolvedMultiTrackTranscode()
         }
     ) async throws -> PlayerViewModel {
-        let vm = makePlayerVM(resolve: resolve, engine: engine, nowPlaying: nowPlaying)
+        let vm = makePlayerVM(reporting: reporting, resolve: resolve, engine: engine,
+                              nowPlaying: nowPlaying, seekHoldNow: seekHoldNow)
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(position: CMTime(seconds: seconds, preferredTimescale: 600),
-                             duration: CMTime(seconds: 7_200, preferredTimescale: 600), buffered: nil))
+        engine.push(.playing(seconds))
         try await engine.settle()
         // A precondition, not an assertion: every test below reads "the bar moved OFF A",
         // which proves nothing if the fixture never parked at A. Stop here instead.
@@ -1194,84 +1186,92 @@ struct PlayerViewModelTests {
         #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000)     // …showing B, not A
     }
 
-    @Test("after the hold: the new stream's first near beat takes the position back and later beats flow normally")
-    func seekHoldReleasesOnTheNewStreamsFirstBeat() async throws {
+    /// The reload's own beats still carry the OLD stream's clock, which the engine labels
+    /// `.stale`: its seek is unresolved, so this is the position the user seeked AWAY from.
+    /// Only the first OBSERVED clock takes the bar back, and everything after it flows normally.
+    @Test("stale beats at the pre-seek position hold; the first observed beat releases")
+    func seekHoldReleasesOnTheFirstObservedBeat() async throws {
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         let vm = try await makeReanchorVM(engine: engine, at: 600)
         await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
 
-        engine.push(.playing(position: CMTime(seconds: 3_001, preferredTimescale: 600),
-                             duration: CMTime(seconds: 7_200, preferredTimescale: 600), buffered: nil))
+        for _ in 0..<4 {
+            engine.push(.playing(600, provenance: .stale))
+            try await engine.settle()
+            #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000)
+        }
+
+        engine.push(.playing(3_001))
         try await engine.settle()
         #expect(CMTimeGetSeconds(vm.currentPosition) == 3_001)
 
-        engine.push(.playing(position: CMTime(seconds: 3_005, preferredTimescale: 600),
-                             duration: CMTime(seconds: 7_200, preferredTimescale: 600), buffered: nil))
+        engine.push(.playing(3_005))
         try await engine.settle()
         #expect(CMTimeGetSeconds(vm.currentPosition) == 3_005)
     }
 
-    @Test("the reload's stale BUFFERING beats never move the bar off the target — the scrub snap-back itself")
+    /// The engine is AUTHORITATIVE about an observed beat, even one that landed nowhere near
+    /// the request: AVKit seeks at default (segment) tolerance and only knows that `AVPlayer`
+    /// returned `finished`, and a VLC hold that gave up republishes whatever the clock really
+    /// reads. Pinning the bar at an unreachable target over video that is demonstrably playing
+    /// elsewhere is the worse lie — which is exactly what the old 3s drift tolerance did until
+    /// it had also burned a stale-beat budget.
+    @Test("an observed beat far off the target still releases — onto the engine's position",
+          arguments: [600.0, 2_990.0, 3_060.0])
+    func observedFarOffBeatReleasesOntoTheEnginesPosition(landing: Double) async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let vm = try await makeReanchorVM(engine: engine, at: 600)
+        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+
+        engine.push(.playing(landing))
+        try await engine.settle()
+        #expect(CMTimeGetSeconds(vm.currentPosition) == landing)
+    }
+
+    @Test("the reload's STALE buffering beats never move the bar off the target — the scrub snap-back itself")
     func seekHoldIgnoresStaleBufferingBeats() async throws {
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         let vm = try await makeReanchorVM(engine: engine, at: 600)
         await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
 
         for _ in 0..<3 {
-            engine.push(.buffering(position: CMTime(seconds: 600, preferredTimescale: 600),
-                                   duration: CMTime(seconds: 7_200, preferredTimescale: 600), buffered: nil))
+            engine.push(.buffering(600, provenance: .stale))
             try await engine.settle()
             #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000)
         }
     }
 
-    /// The wedge escape. A seek that never lands must not freeze the bar forever, so the
-    /// hold yields to an engine that INSISTS on a far-off position across
-    /// `SeekHold.staleBeatCeiling` transport beats — and not one beat sooner.
-    @Test("an engine insisting on the pre-seek clock wins on the ceiling beat, never before it")
-    func seekHoldYieldsOnTheStaleBeatCeiling() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let vm = try await makeReanchorVM(engine: engine, at: 600)
-        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
-
-        for _ in 1..<SeekHold.staleBeatCeiling {
-            engine.push(.playing(position: CMTime(seconds: 600, preferredTimescale: 600),
-                                 duration: CMTime(seconds: 7_200, preferredTimescale: 600), buffered: nil))
-            try await engine.settle()
-            #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000)
-        }
-        engine.push(.playing(position: CMTime(seconds: 600, preferredTimescale: 600),
-                             duration: CMTime(seconds: 7_200, preferredTimescale: 600), buffered: nil))
-        try await engine.settle()
-        #expect(CMTimeGetSeconds(vm.currentPosition) == 600)
-    }
-
-    /// The same escape hatch on the PAUSED transport: a paused scrub's re-anchor is
-    /// re-paused by `commitScrubSeek` and may never emit `.playing` at all, so if only
-    /// `.playing` could spend the budget a wedged paused seek would freeze the bar forever.
-    @Test("a wedged PAUSED seek escapes on the ceiling too — .paused is a transport beat")
-    func seekHoldYieldsOnTheStaleBeatCeilingWhilePaused() async throws {
+    /// A paused scrub's re-anchor is re-paused by `commitScrubSeek` and may never emit
+    /// `.playing` at all. On VLC a seek committed while paused keeps projecting until playback
+    /// resumes — its extrapolation freezes ON the target, which IS the correct paused
+    /// position — so a `.projected` `.paused` AT the target is not a wedge, it is the contract
+    /// working; AVKit's `.paused` in the same window carries the pre-seek clock, `.stale`.
+    /// Neither releases. `SeekHold.watchdog` is the only thing that ever ends such a hold, and
+    /// releasing there is a no-op because the beat carries the target anyway.
+    @Test("held .paused beats hold — the stale pre-seek clock and the projected target alike")
+    func heldPausedBeatsHold() async throws {
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         let vm = try await makeReanchorVM(engine: engine, at: 600)
         await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: false)
 
-        for _ in 1..<SeekHold.staleBeatCeiling {
-            engine.push(.paused(position: CMTime(seconds: 600, preferredTimescale: 600),
-                                duration: CMTime(seconds: 7_200, preferredTimescale: 600), buffered: nil))
+        for (seconds, provenance) in [(600.0, PositionProvenance.stale), (3_000.0, .projected),
+                                      (600.0, .stale), (3_000.0, .projected)] {
+            engine.push(.paused(seconds, provenance: provenance))
             try await engine.settle()
             #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000)
         }
-        engine.push(.paused(position: CMTime(seconds: 600, preferredTimescale: 600),
-                            duration: CMTime(seconds: 7_200, preferredTimescale: 600), buffered: nil))
+
+        // The paused landing, once the engine has actually observed it.
+        engine.push(.paused(2_998))
         try await engine.settle()
-        #expect(CMTimeGetSeconds(vm.currentPosition) == 600)
+        #expect(CMTimeGetSeconds(vm.currentPosition) == 2_998)
     }
 
-    /// `AVKitEngine.seek` yields `.buffering(position: target)` BEFORE it awaits the real
-    /// seek. The hold has already moved `currentPosition` to that same target, so the
-    /// position-JUMP heuristic reads a delta of zero and would fall back to the 400 ms
-    /// stall debounce — 400 ms of bare paused glyph on every committed out-of-buffer seek.
-    /// A live hold IS the "a fetch is in flight" signal.
+    /// `AVKitEngine.seek` yields `.buffering(position: target)` BEFORE it awaits the real seek,
+    /// labelled `.projected` — it carries the request, not the clock. The hold has already moved
+    /// `currentPosition` to that same target, so the old position-JUMP heuristic read a delta of
+    /// zero and fell back to the 400 ms stall debounce — 400 ms of bare paused glyph on every
+    /// committed out-of-buffer seek. The label says "a seek is in flight" outright.
     @Test("a committed seek's own buffering echo raises the seek-fetch scrim immediately, debounce skipped")
     func heldCommitRaisesTheSeekFetchScrimOnItsOwnBufferingBeat() async throws {
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
@@ -1280,8 +1280,7 @@ struct PlayerViewModelTests {
             engine: engine
         )
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(position: CMTime(seconds: 600, preferredTimescale: 600),
-                             duration: CMTime(seconds: 7_200, preferredTimescale: 600), buffered: nil))
+        engine.push(.playing(600))
         try await engine.settle()
 
         // Direct play, target outside the buffer → an in-stream `engine.seek`, which is
@@ -1290,23 +1289,278 @@ struct PlayerViewModelTests {
         await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
         #expect(engine.calls.contains("seek(3000.0)"))
 
-        engine.push(.buffering(position: CMTime(seconds: 3_000, preferredTimescale: 600),
-                               duration: CMTime(seconds: 7_200, preferredTimescale: 600), buffered: nil))
+        engine.push(.buffering(3_000, provenance: .projected))
         try await engine.settle()
         #expect(vm.isStalled)                                    // no 400ms of bare paused glyph
         #expect(vm.showsStallScrim)
         #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000)   // and the echo never released the hold
     }
 
+    /// The half the hold could never cover: a seek the VM did not commit (a remote/PiP scrub,
+    /// an engine-internal re-anchor) has no `seekHold`, and if it happens to land on the
+    /// position already shown the old jump test saw a delta of zero and debounced it. The
+    /// engine's own label needs neither.
+    @Test("a stale buffering beat with NO hold armed raises the seek-fetch scrim immediately")
+    func uncommittedSeekRaisesTheScrimWithoutAHold() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let vm = makePlayerVM(resolve: { _, _, _, _ in PlayerFixtures.resolved() }, engine: engine)
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(600))
+        try await engine.settle()
+
+        // Same position the bar already shows: zero jump, no hold — invisible to both of the
+        // heuristics this replaced.
+        engine.push(.buffering(600, provenance: .stale))
+        try await engine.settle()
+        #expect(vm.isStalled)
+        #expect(vm.showsStallScrim)
+    }
+
+    /// The other side of the same line: an OBSERVED buffering beat is a mid-stream underrun (the
+    /// network hiccuped where the player already is), not a fetch the user asked for — so it
+    /// keeps the 400 ms debounce and a brief one never flashes the scrim.
+    @Test("an observed contiguous buffering beat still goes through the 400 ms debounce")
+    func observedBufferingBeatStillDebounces() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let vm = makePlayerVM(resolve: { _, _, _, _ in PlayerFixtures.resolved() }, engine: engine)
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(600))
+        try await engine.settle()
+
+        engine.push(.buffering(600))
+        try await engine.settle()
+        #expect(vm.isStalled == false)   // debounced, not raised
+
+        // Settle on the condition, not a fixed margin past the 400ms debounce: a sleep that
+        // clears it locally is a flake on an oversubscribed runner, and the ceiling here is a
+        // hang detector rather than part of the claim.
+        try await requireEventually({ vm.isStalled }, "the underrun never raised the scrim")
+    }
+
+    /// The AVKit gap the label alone cannot close. PiP and `AVPlayerViewController` scrub the
+    /// AVPlayer DIRECTLY — never through `AVKitEngine.seek(to:)` — so `inFlightSeeks` stays 0
+    /// and the fetch that follows is honestly `.observed`: the engine never learned a seek
+    /// happened. A position discontinuity is the only evidence left, which is why the jump
+    /// test stays as the OR arm beside the label.
+    @Test("an observed buffering beat a jump away raises the seek-fetch scrim immediately")
+    func observedBufferingBeatAfterAJumpRaisesTheScrim() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let vm = makePlayerVM(resolve: { _, _, _, _ in PlayerFixtures.resolved() }, engine: engine)
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(600))
+        try await engine.settle()
+
+        // 30s away, no hold of ours, and the engine calls it observed — a PiP scrub.
+        engine.push(.buffering(630))
+        try await engine.settle()
+        #expect(vm.isStalled)
+        #expect(vm.showsStallScrim)
+    }
+
+    /// `.stale` with NO hold armed. The label is the engine saying "this is where my own
+    /// unresolved seek moved away FROM", and that is true whether or not we were the ones who
+    /// asked for the seek — a PiP/remote scrub, an engine-internal re-anchor. Writing it is
+    /// the scrub snap-back with the hold merely absent, which `PlaybackState`'s contract has
+    /// always said ("a consumer must not show it") and the VM used to do anyway.
+    @Test("a stale beat with no hold armed moves nothing; the next observed beat owns the bar")
+    func staleBeatWithNoHoldIsDropped() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let vm = makePlayerVM(reporting: reporting,
+                              resolve: { _, _, _, _ in PlayerFixtures.resolved() }, engine: engine)
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(600))
+        try await engine.settle()
+
+        engine.push(.playing(30, provenance: .stale))
+        try await engine.settle()
+        #expect(CMTimeGetSeconds(vm.currentPosition) == 600)
+
+        engine.push(.playing(3_000))
+        try await engine.settle()
+        #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000)
+
+        await vm.stop()
+        // …and the resume point never saw the stale one either.
+        let events = await reporting.events
+        #expect(events.contains(.stopped(ticks: 3_000 * 10_000_000, itemID: "movie-1")))
+    }
+
+    /// The watchdog exit is the one release that is NOT the engine handing the position back:
+    /// it fires on whatever beat happens to arrive 20 s in, and on a wedged engine that beat
+    /// carries the pre-seek clock. Ending the hold is right — nothing else can unfreeze the bar
+    /// — but adopting the position it carries performs the exact snap-back the hold existed to
+    /// prevent, and writes it into the resume point on the way out.
+    @Test("the watchdog drops a wedged hold without adopting the stale clock it fired on")
+    func watchdogReleaseNeverAdoptsTheStaleClock() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        nonisolated(unsafe) var now = ContinuousClock.now
+        let vm = try await makeReanchorVM(engine: engine, at: 600, reporting: reporting,
+                                          seekHoldNow: { now })
+
+        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        now = now.advanced(by: SeekHold.watchdog + .seconds(1))
+
+        engine.push(.playing(0, provenance: .stale))
+        try await engine.settle()
+        #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000)   // the bar did not snap back
+
+        await vm.stop()
+        // …and neither did the resume point, which is the half a dismissal would have persisted.
+        let events = await reporting.events
+        #expect(events.contains(.stopped(ticks: 3_000 * 10_000_000, itemID: "movie-1")))
+    }
+
+    /// The other half: the hold really is gone, so the engine's next observed clock owns the
+    /// position outright instead of waiting for a second watchdog.
+    @Test("after the watchdog release the next observed beat owns the position")
+    func watchdogReleasedHoldFollowsTheNextObservedBeat() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        nonisolated(unsafe) var now = ContinuousClock.now
+        let vm = try await makeReanchorVM(engine: engine, at: 600, seekHoldNow: { now })
+
+        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        now = now.advanced(by: SeekHold.watchdog + .seconds(1))
+
+        engine.push(.playing(0, provenance: .stale))
+        try await engine.settle()
+
+        engine.push(.playing(3_001))
+        try await engine.settle()
+        #expect(CMTimeGetSeconds(vm.currentPosition) == 3_001)
+    }
+
+    /// The no-hold route is not a safe place to relax the rule. A `.projected` beat with no
+    /// hold armed is still a guess off a seek target — the VM's own watchdog drops a wedged
+    /// hold at 20s while VLC keeps extrapolating to its 15s abandon cap, and PiP/remote scrubs
+    /// project against seeks this VM never committed. Display-safe, so the bar follows it;
+    /// never a resume point, because "how far the guess has run" is not a place anything
+    /// played. `publish` used to write both here.
+    @Test("a projected beat with no hold armed moves the bar but never the resume point")
+    func projectedBeatWithNoHoldNeverMovesTheResumePoint() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let vm = makePlayerVM(reporting: reporting,
+                              resolve: { _, _, _, _ in PlayerFixtures.resolved() }, engine: engine)
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(600))
+        try await engine.settle()
+        #expect(vm.seekHold == nil)   // the precondition: nothing here is holding
+
+        engine.push(.playing(3_000, provenance: .projected))
+        try await engine.settle()
+        #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000)   // the bar follows the projection
+
+        await vm.stop()
+        // …and the resume point stayed on the last clock anyone actually observed.
+        let events = await reporting.events
+        #expect(events.contains(.stopped(ticks: 600 * 10_000_000, itemID: "movie-1")))
+    }
+
+    /// The hold outliving the re-anchor that was supposed to honour it. A scrub committed
+    /// while a track switch holds the reload gets `.abandoned` from `performTranscodeReload`,
+    /// and `drainReanchorSeeks` then DROPS the target — nothing will ever play there. The hold
+    /// has to go with it (as it already does on `fallBackAfterFailedSwitch`), or the switch's
+    /// own reload has to spend a beat releasing a window nobody is filling.
+    @Test("an abandoned re-anchor drops the hold with the target it dropped")
+    func abandonedReanchorDropsTheHold() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let gate = ResolveGate()
+        let vm = try await makeReanchorVM(engine: engine, at: 600, resolve: { _, _, _, _ in
+            await gate.wait()
+            return PlayerFixtures.resolvedMultiTrackTranscode()
+        })
+        // The switch's re-resolve parks in the gate, which is what keeps `isSwitchingTracks`
+        // up while the scrub commits underneath it — the race, held open.
+        await gate.arm()
+        let audio = try #require(vm.availableAudioTracks.first { $0 != vm.selectedAudioTrack })
+        let switching = Task { @MainActor in await vm.selectAudioTrack(audio) }
+        try await requireEventually({ vm.isSwitchingTracks }, "the switch never reached the reload")
+
+        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        #expect(vm.seekHold == nil, "the abandoned re-anchor left its hold armed")
+
+        await gate.open()
+        await switching.value
+        // The switch's own reload owns the position now: its first observed beat is adopted
+        // outright, with no held target to argue with.
+        engine.push(.playing(600.5))
+        try await engine.settle()
+        #expect(CMTimeGetSeconds(vm.currentPosition) == 600.5)
+    }
+
+    /// The watchdog needs a beat to be evaluated, and `publish` only sees position-carrying
+    /// ones that survive the gates at the top of `handle` — so in exactly the windows it exists
+    /// for (a track switch or a reactive reroute swallowing every beat, an engine that only
+    /// ever emits `.failed`) it could never fire, and the bar stayed pinned at the target with
+    /// nothing left to unpin it. Evaluated at the top of `handle` instead, on every state.
+    @Test("the watchdog fires on a state that carries no position at all")
+    func watchdogFiresOnANonPositionState() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        nonisolated(unsafe) var now = ContinuousClock.now
+        let vm = try await makeReanchorVM(engine: engine, at: 600, seekHoldNow: { now })
+        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        #expect(vm.seekHold != nil)
+
+        now = now.advanced(by: SeekHold.watchdog + .seconds(1))
+        engine.push(.ready(duration: CMTime(seconds: 7_200, preferredTimescale: 600), tracks: .empty))
+        try await engine.settle()
+
+        #expect(vm.seekHold == nil, "the watchdog never saw a beat it could fire on")
+        #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000)   // and it adopted nothing
+    }
+
+    /// A failed session emits no further position beat, so a hold left standing has nothing
+    /// that could ever hand the bar back: it would ride under the error scrim and into the
+    /// retry as a resume point nothing played.
+    @Test("a failed phase drops the hold")
+    func failedPhaseDropsTheHold() async throws {
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let vm = try await makeReanchorVM(engine: engine, at: 600)
+        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        #expect(vm.seekHold != nil)
+
+        engine.push(.failed(.networkStalled))
+        try await engine.settle()
+
+        #expect(vm.seekHold == nil, "the hold outlived the session it was armed in")
+    }
+
+    /// An invalid/indefinite CMTime is not a position: `CMTimeGetSeconds` gives NaN, and every
+    /// consumer downstream (the bar's fraction, the remaining-time label, the resume point)
+    /// inherits it. Dropped in `publish` itself, so no hold state can matter either way.
+    @Test("a non-finite position never reaches currentPosition, hold or no hold",
+          arguments: [CMTime.invalid, CMTime.indefinite,
+                                          CMTime.positiveInfinity, CMTime.negativeInfinity])
+    func nonFinitePositionsAreDropped(position: CMTime) async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let vm = makePlayerVM(resolve: { _, _, _, _ in PlayerFixtures.resolved() }, engine: engine)
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(600))
+        try await engine.settle()
+
+        engine.push(.playing(position: position, duration: .fixtureDuration,
+                             buffered: nil, provenance: .observed))
+        try await engine.settle()
+        #expect(CMTimeGetSeconds(vm.currentPosition) == 600)
+    }
+
     /// The failed re-anchor: the re-resolve throws, `fallBackAfterFailedSwitch` resumes the
     /// OLD stream at A — so the hold's target is now a place nothing will ever play. Left
-    /// armed it pinned the bar at B for the full stale-beat budget (~4 s) over video running
-    /// at A, and left `lastPosition` at B as a bogus resume point.
+    /// armed it pins the bar at B over video running at A and leaves `lastPosition` at B as a
+    /// bogus resume point. `.observed` is what the resumed OLD stream actually publishes — its
+    /// seek was abandoned, not left outstanding, so its clock is its own again — and it is
+    /// still the discriminator: a live hold would have released on it at 600 but so would this
+    /// one, so the claim is pinned on `lastPosition` too, which a live hold would have left
+    /// sitting on the unreachable target.
     @Test("a failed re-anchor drops the hold: the fallback stream's FIRST beat owns the bar again")
     func failedReanchorDropsTheHold() async throws {
+        let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         nonisolated(unsafe) var resolveCalls = 0
-        let vm = try await makeReanchorVM(engine: engine, at: 600, resolve: { _, _, _, _ in
+        let vm = try await makeReanchorVM(engine: engine, at: 600, reporting: reporting,
+                                          resolve: { _, _, _, _ in
             resolveCalls += 1
             if resolveCalls > 1 { throw AppError.playback(.unsupportedFormat) }
             return PlayerFixtures.resolvedMultiTrackTranscode()
@@ -1315,10 +1569,15 @@ struct PlayerViewModelTests {
         await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
         #expect(resolveCalls == 2)   // the re-anchor tried, and failed
 
-        engine.push(.playing(position: CMTime(seconds: 600, preferredTimescale: 600),
-                             duration: CMTime(seconds: 7_200, preferredTimescale: 600), buffered: nil))
+        engine.push(.playing(600))
         try await engine.settle()
         #expect(CMTimeGetSeconds(vm.currentPosition) == 600)
+
+        await vm.stop()
+        // The resume point followed the bar back: with the hold still armed it would have
+        // recorded B, a place nothing ever played.
+        let events = await reporting.events
+        #expect(events.contains(.stopped(ticks: 600 * 10_000_000, itemID: "movie-1")))
     }
 
     /// The lock screen extrapolates its clock from the last `nowPlayingInfo` write, and a
@@ -1342,45 +1601,39 @@ struct PlayerViewModelTests {
         await vm.stop()
     }
 
-    @Test("re-scrubbing during a hold repoints it: the newest target shows, and only a beat near IT releases")
+    @Test("re-scrubbing during a hold repoints it: the newest target shows, and only an OBSERVED beat releases")
     func seekHoldRepointsOnASecondCommit() async throws {
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         let vm = try await makeReanchorVM(engine: engine, at: 600)
 
         func pushStale(_ seconds: Double) async throws {
-            engine.push(.playing(position: CMTime(seconds: seconds, preferredTimescale: 600),
-                                 duration: CMTime(seconds: 7_200, preferredTimescale: 600), buffered: nil))
+            engine.push(.playing(seconds, provenance: .stale))
             try await engine.settle()
         }
 
-        // Burn the FIRST hold's budget down to one beat short of the ceiling…
         await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
-        for _ in 1..<SeekHold.staleBeatCeiling {
+        for _ in 0..<3 {
             try await pushStale(600)
             #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000)
         }
 
-        // …then repoint. A fresh `SeekHold` means a fresh budget, not one spent beat left.
+        // Repoint. A fresh `SeekHold` restarts the watchdog clock, so the second commit gets
+        // the whole budget rather than whatever the first one had left.
         await vm.commitScrubSeek(to: CMTime(seconds: 4_000, preferredTimescale: 600), resume: true)
         #expect(CMTimeGetSeconds(vm.currentPosition) == 4_000)
 
-        // A beat that would have satisfied the SUPERSEDED target is now just a stale beat —
-        // and it, plus every stale beat up to one shy of the ceiling, leaves B' on the bar.
-        // Had the count carried over, the very first of these would have released.
+        // A beat that WOULD have satisfied the superseded target is still just the old clock.
         try await pushStale(3_001)
         #expect(CMTimeGetSeconds(vm.currentPosition) == 4_000)
-        for _ in 2..<SeekHold.staleBeatCeiling {
-            try await pushStale(600)
-            #expect(CMTimeGetSeconds(vm.currentPosition) == 4_000)
-        }
+        try await pushStale(600)
+        #expect(CMTimeGetSeconds(vm.currentPosition) == 4_000)
 
-        engine.push(.playing(position: CMTime(seconds: 4_001, preferredTimescale: 600),
-                             duration: CMTime(seconds: 7_200, preferredTimescale: 600), buffered: nil))
+        engine.push(.playing(4_001))
         try await engine.settle()
         #expect(CMTimeGetSeconds(vm.currentPosition) == 4_001)
     }
 
-    @Test("in-buffer direct play gets the same treatment: the target shows at commit, the first near beat releases")
+    @Test("in-buffer direct play gets the same treatment: the target shows at commit, the first observed beat releases")
     func seekHoldOnDirectPlayInStreamSeek() async throws {
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         let vm = makePlayerVM(
@@ -1388,16 +1641,14 @@ struct PlayerViewModelTests {
             engine: engine
         )
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(position: CMTime(seconds: 600, preferredTimescale: 600),
-                             duration: CMTime(seconds: 7_200, preferredTimescale: 600), buffered: nil))
+        engine.push(.playing(600))
         try await engine.settle()
 
         await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
         #expect(engine.calls.contains("seek(3000.0)"))
         #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000)
 
-        engine.push(.playing(position: CMTime(seconds: 3_000.5, preferredTimescale: 600),
-                             duration: CMTime(seconds: 7_200, preferredTimescale: 600), buffered: nil))
+        engine.push(.playing(3_000.5))
         try await engine.settle()
         #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000.5)
     }
@@ -1415,8 +1666,7 @@ struct PlayerViewModelTests {
         )
         await vm.start(item: PlayerFixtures.movieDetail())
         let first = try #require(engines.first)
-        first.push(.playing(position: CMTime(seconds: 600, preferredTimescale: 600),
-                            duration: CMTime(seconds: 7_200, preferredTimescale: 600), buffered: nil))
+        first.push(.playing(600))
         try await first.settle()
         let text = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(1) })
         await vm.selectSubtitleTrack(text)
@@ -1428,10 +1678,11 @@ struct PlayerViewModelTests {
         // retry() → resetForReplay → stop(), which ends the session AND the hold with it.
         await vm.retry()
         let replayed = try #require(engines.dropFirst().first)
-        replayed.push(.playing(position: CMTime(seconds: 5, preferredTimescale: 600),
-                               duration: CMTime(seconds: 7_200, preferredTimescale: 600), buffered: nil))
+        // A replayed stream's first beat is its own clock, with no seek outstanding: `.observed`.
+        // A live hold would have pinned it at 3_000, so it is still the discriminator.
+        replayed.push(.playing(5))
         try await replayed.settle()
-        #expect(CMTimeGetSeconds(vm.currentPosition) == 5)       // not swallowed as "stale"
+        #expect(CMTimeGetSeconds(vm.currentPosition) == 5)       // not swallowed as a guess
     }
 
     @Test("scrub commit while paused on a re-encode transcode out of buffer: the force-resuming reload is re-paused")
@@ -1454,8 +1705,7 @@ struct PlayerViewModelTests {
         )
         await vm.start(item: PlayerFixtures.movieDetail())
         let loadsAfterStart = engine.loadedAssets.count
-        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
-                             duration: CMTime(seconds: 7200, preferredTimescale: 600), buffered: nil))
+        engine.push(.playing(10))
         try await Task.sleep(for: .milliseconds(80))
 
         // Sidecar overlay up so the out-of-buffer commit takes the re-anchor branch.
@@ -1509,8 +1759,7 @@ struct PlayerViewModelTests {
         )
         await vm.start(item: PlayerFixtures.movieDetail())
         let loadsAfterStart = engine.loadedAssets.count
-        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
-                             duration: CMTime(seconds: 7200, preferredTimescale: 600), buffered: nil))
+        engine.push(.playing(10))
         try await Task.sleep(for: .milliseconds(80))
         #expect(vm.transcodeDelivery?.isVideoDirect == false)
 
@@ -1576,8 +1825,7 @@ struct PlayerViewModelTests {
         )
         await vm.start(item: PlayerFixtures.movieDetail())
         let loadsAfterStart = engine.loadedAssets.count
-        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
-                             duration: CMTime(seconds: 7200, preferredTimescale: 600), buffered: nil))
+        engine.push(.playing(10))
         try await engine.settle()
 
         // Sidecar overlay up so the out-of-buffer commit takes the re-anchor branch.
@@ -1615,8 +1863,7 @@ struct PlayerViewModelTests {
         vm.unfreezeSurfaceAction = { unfreezeCalls += 1 }
 
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
-                             duration: CMTime(seconds: 7200, preferredTimescale: 600), buffered: nil))
+        engine.push(.playing(10))
         try await engine.settle()
         // Ordinary beats never touch the host (`surfaceFrozen` gates the unfreeze side).
         #expect(freezeCalls == 0)
@@ -1630,12 +1877,10 @@ struct PlayerViewModelTests {
         #expect(unfreezeCalls == 0)   // held until the new session actually renders
 
         // First live beat of the swapped-in session releases the frame — once.
-        engine.push(.playing(position: CMTime(seconds: 3000, preferredTimescale: 600),
-                             duration: CMTime(seconds: 7200, preferredTimescale: 600), buffered: nil))
+        engine.push(.playing(3000))
         try await engine.settle()
         #expect(unfreezeCalls == 1)
-        engine.push(.playing(position: CMTime(seconds: 3001, preferredTimescale: 600),
-                             duration: CMTime(seconds: 7200, preferredTimescale: 600), buffered: nil))
+        engine.push(.playing(3001))
         try await engine.settle()
         #expect(unfreezeCalls == 1)
     }
@@ -1657,8 +1902,7 @@ struct PlayerViewModelTests {
         vm.unfreezeSurfaceAction = { unfreezeCalls += 1 }
 
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
-                             duration: CMTime(seconds: 7200, preferredTimescale: 600), buffered: nil))
+        engine.push(.playing(10))
         try await engine.settle()
 
         engine.bufferedRange = 0...120
@@ -1668,8 +1912,7 @@ struct PlayerViewModelTests {
 
         // The re-paused player renders the target frame without ever playing —
         // the .paused beat is the "surface is live again" signal here.
-        engine.push(.paused(position: CMTime(seconds: 3000, preferredTimescale: 600),
-                            duration: CMTime(seconds: 7200, preferredTimescale: 600), buffered: nil))
+        engine.push(.paused(3000))
         try await engine.settle()
         #expect(unfreezeCalls == 1)
     }
@@ -1701,8 +1944,7 @@ struct PlayerViewModelTests {
         await vm.start(item: PlayerFixtures.movieDetail())
 
         // First session's probe lands the remux verdict.
-        engine.push(.playing(position: CMTime(seconds: 100, preferredTimescale: 600),
-                             duration: CMTime(seconds: 7200, preferredTimescale: 600), buffered: nil))
+        engine.push(.playing(100))
         try await Task.sleep(for: .milliseconds(80))
         #expect(vm.transcodeDelivery?.isVideoDirect == true)
 
@@ -1713,8 +1955,7 @@ struct PlayerViewModelTests {
         #expect(vm.transcodeDelivery == nil)
 
         // The new session's first .playing beat re-arms the probe → the fresh verdict.
-        engine.push(.playing(position: CMTime(seconds: 101, preferredTimescale: 600),
-                             duration: CMTime(seconds: 7200, preferredTimescale: 600), buffered: nil))
+        engine.push(.playing(101))
         try await Task.sleep(for: .milliseconds(80))
         #expect(vm.transcodeDelivery?.isVideoDirect == false)
     }
@@ -1743,11 +1984,7 @@ struct PlayerViewModelTests {
 
         // currentPosition is absolute media time (the engine seeked); a switch must
         // resume THERE — not origin(600) + position(900) = 1500.
-        engine.push(.playing(
-            position: CMTime(seconds: 900, preferredTimescale: 600),
-            duration: CMTime(seconds: 7200, preferredTimescale: 600),
-            buffered: nil
-        ))
+        engine.push(.playing(900))
         try await engine.settle()
 
         let audio4 = try #require(vm.availableAudioTracks.first { $0.id == .jellyfinStream(4) })
@@ -1779,11 +2016,7 @@ struct PlayerViewModelTests {
         let engineAfterStart = try #require(vm.engine as? FakePlaybackEngine)
         #expect(createdEngines.count == 1)
 
-        createdEngines[0].push(.playing(
-            position: CMTime(seconds: 100, preferredTimescale: 600),
-            duration: CMTime(seconds: 7200, preferredTimescale: 600),
-            buffered: nil
-        ))
+        createdEngines[0].push(.playing(100))
         try await createdEngines[0].settle()
 
         // Switch audio → the engine is RELOADED in place, not recreated, so its
@@ -1816,11 +2049,7 @@ struct PlayerViewModelTests {
             engine: engine
         )
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(
-            position: CMTime(seconds: 50, preferredTimescale: 600),
-            duration: CMTime(seconds: 7200, preferredTimescale: 600),
-            buffered: nil
-        ))
+        engine.push(.playing(50))
         try await engine.settle()
 
         // Nothing auto-selected at start (the server surfaced no default sub).
@@ -2233,13 +2462,13 @@ struct PlayerViewModelTests {
         let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
 
-        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+        engine.push(.playing(10, duration: resolved.runtime!))
         try await engine.settle()
         #expect(vm.isPlaying == true)
 
         // The bug this guards: phase stays .playing while paused, so a phase-derived
         // button stayed "pause" forever. isPlaying must flip so resume is reachable.
-        engine.push(.paused(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+        engine.push(.paused(10, duration: resolved.runtime!))
         try await engine.settle()
         #expect(vm.isPlaying == false)
         #expect(vm.phase == .playing)   // video surface stays up; only isPlaying flips
@@ -2252,7 +2481,7 @@ struct PlayerViewModelTests {
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+        engine.push(.playing(10, duration: resolved.runtime!))
         try await engine.settle()
         #expect(vm.isPlaying == true)
 
@@ -2277,7 +2506,7 @@ struct PlayerViewModelTests {
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+        engine.push(.playing(10, duration: resolved.runtime!))
         try await engine.settle()
         #expect(vm.isPlaying == true)
 
@@ -2307,7 +2536,7 @@ struct PlayerViewModelTests {
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+        engine.push(.playing(10, duration: resolved.runtime!))
         try await engine.settle()
         #expect(vm.desiredPlaying == true)
 
@@ -2319,7 +2548,7 @@ struct PlayerViewModelTests {
         // wmv/VLC settle window: the drag's own `.paused` beat lands after the commit already
         // replayed play(), and the confirming `.playing` beat is up to ~5s out. The mirror
         // believes the stale beat; the shown state must not.
-        engine.push(.paused(position: CMTime(seconds: 100, preferredTimescale: 600), duration: resolved.runtime!, buffered: nil))
+        engine.push(.paused(100, duration: resolved.runtime!))
         try await engine.settle()
         #expect(vm.isPlaying == false)       // the mirror, mid-lag
         #expect(vm.desiredPlaying == true)   // what the overlay and the glyph render
@@ -2338,7 +2567,7 @@ struct PlayerViewModelTests {
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+        engine.push(.playing(10, duration: resolved.runtime!))
         try await engine.settle()
 
         // Scrub commit in flight (drag pause, seek issued, resume replayed).
@@ -2353,7 +2582,7 @@ struct PlayerViewModelTests {
         try await Task.sleep(for: .milliseconds(50))
         #expect(engine.calls.contains("pause"))
 
-        engine.push(.paused(position: CMTime(seconds: 100, preferredTimescale: 600), duration: resolved.runtime!, buffered: nil))
+        engine.push(.paused(100, duration: resolved.runtime!))
         try await engine.settle()
         #expect(vm.desiredPlaying == false)
     }
@@ -2366,13 +2595,13 @@ struct PlayerViewModelTests {
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600), duration: resolved.runtime!, buffered: nil))
+        engine.push(.playing(10, duration: resolved.runtime!))
         try await engine.settle()
 
         // Open the lag window the honest way: a scrub's engine-level pause, whose `.paused`
         // beat drives the mirror false while the user's intent stays "playing".
         await vm.engine?.pause()
-        engine.push(.paused(position: CMTime(seconds: 10, preferredTimescale: 600), duration: resolved.runtime!, buffered: nil))
+        engine.push(.paused(10, duration: resolved.runtime!))
         try await engine.settle()
         #expect(vm.isPlaying == false)
         #expect(vm.desiredPlaying == true)
@@ -2396,12 +2625,11 @@ struct PlayerViewModelTests {
         await vm.start(item: PlayerFixtures.movieDetail())
         #expect(vm.desiredPlaying == true)   // loadAndPlay's play() IS the intent to play
 
-        let at = { (s: Double) in CMTime(seconds: s, preferredTimescale: 600) }
         // The whole transport beat vocabulary a live session emits between user commands.
         // Each drives the isPlaying MIRROR; none may touch the intent.
-        for beat in [PlaybackState.paused(position: at(10), duration: resolved.runtime!, buffered: nil),
-                     .buffering(position: at(11), duration: resolved.runtime!, buffered: nil),
-                     .playing(position: at(12), duration: resolved.runtime!, buffered: nil)] {
+        for beat in [PlaybackState.paused(10, duration: resolved.runtime!),
+                     .buffering(11, duration: resolved.runtime!),
+                     .playing(12, duration: resolved.runtime!)] {
             engine.push(beat)
             try await engine.settle()
             #expect(vm.desiredPlaying == true)
@@ -2412,7 +2640,7 @@ struct PlayerViewModelTests {
         // follow it (including a stale `.playing` still in flight) leave it alone.
         vm.setPlaying(false)
         #expect(vm.desiredPlaying == false)
-        engine.push(.playing(position: at(13), duration: resolved.runtime!, buffered: nil))
+        engine.push(.playing(13, duration: resolved.runtime!))
         try await engine.settle()
         #expect(vm.isPlaying == true)        // mirror believes the stale beat
         #expect(vm.desiredPlaying == false)  // intent does not
@@ -2424,16 +2652,14 @@ struct PlayerViewModelTests {
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
-                             duration: resolved.runtime!, buffered: nil))
+        engine.push(.playing(10, duration: resolved.runtime!))
         try await engine.settle()
 
         // The iOS drag's entry pause and the tvOS reducer's `.pause` effect both go straight
         // to the engine: temporary holds on a still frame, not transport commands.
         await vm.engine?.pause()
         #expect(vm.desiredPlaying == true)
-        engine.push(.paused(position: CMTime(seconds: 10, preferredTimescale: 600),
-                            duration: resolved.runtime!, buffered: nil))
+        engine.push(.paused(10, duration: resolved.runtime!))
         try await engine.settle()
         #expect(vm.desiredPlaying == true)
     }
@@ -2444,8 +2670,7 @@ struct PlayerViewModelTests {
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
-                             duration: resolved.runtime!, buffered: nil))
+        engine.push(.playing(10, duration: resolved.runtime!))
         try await engine.settle()
 
         // First scrub: pause on the still frame, commit, resume. The engine's own beats lag
@@ -2454,8 +2679,7 @@ struct PlayerViewModelTests {
         // commit already replayed play(); isPlaying reads false while playback is resuming.
         await vm.engine?.pause()
         await vm.commitScrubSeek(to: CMTime(seconds: 100, preferredTimescale: 600), resume: true)
-        engine.push(.paused(position: CMTime(seconds: 100, preferredTimescale: 600),
-                            duration: resolved.runtime!, buffered: nil))
+        engine.push(.paused(100, duration: resolved.runtime!))
         try await engine.settle()
         #expect(vm.isPlaying == false)       // the lag window
         #expect(vm.desiredPlaying == true)   // the user never asked for a pause
@@ -2473,15 +2697,13 @@ struct PlayerViewModelTests {
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
-                             duration: resolved.runtime!, buffered: nil))
+        engine.push(.playing(10, duration: resolved.runtime!))
         try await engine.settle()
 
         // User pauses; a `.playing` beat already in flight when the pause landed arrives after
         // it and re-flips the mirror. Lag in the opposite direction, same fix.
         vm.setPlaying(false)
-        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
-                             duration: resolved.runtime!, buffered: nil))
+        engine.push(.playing(10, duration: resolved.runtime!))
         try await engine.settle()
         #expect(vm.isPlaying == true)
         #expect(vm.desiredPlaying == false)
@@ -2507,8 +2729,7 @@ struct PlayerViewModelTests {
             deliveryProbeSchedule: [.milliseconds(10)]
         )
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
-                             duration: CMTime(seconds: 7200, preferredTimescale: 600), buffered: nil))
+        engine.push(.playing(10))
         try await Task.sleep(for: .milliseconds(80))
 
         // Sidecar overlay up so the out-of-buffer commit takes the re-anchor branch.
@@ -2547,8 +2768,7 @@ struct PlayerViewModelTests {
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
-                             duration: resolved.runtime!, buffered: nil))
+        engine.push(.playing(10, duration: resolved.runtime!))
         try await engine.settle()
         #expect(vm.desiredPlaying == true)
 
@@ -2600,8 +2820,7 @@ struct PlayerViewModelTests {
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
-                             duration: resolved.runtime!, buffered: nil))
+        engine.push(.playing(10, duration: resolved.runtime!))
         try await engine.settle()
 
         vm.beginExit()
@@ -2624,8 +2843,7 @@ struct PlayerViewModelTests {
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
-                             duration: resolved.runtime!, buffered: nil))
+        engine.push(.playing(10, duration: resolved.runtime!))
         try await engine.settle()
 
         // Park the commit inside its engine seek so the fence lands mid-await, deterministically.
@@ -2652,8 +2870,7 @@ struct PlayerViewModelTests {
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
-                             duration: resolved.runtime!, buffered: nil))
+        engine.push(.playing(10, duration: resolved.runtime!))
         try await engine.settle()
 
         vm.beginExit()
@@ -2674,8 +2891,7 @@ struct PlayerViewModelTests {
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
-                             duration: resolved.runtime!, buffered: nil))
+        engine.push(.playing(10, duration: resolved.runtime!))
         try await engine.settle()
         #expect(vm.desiredPlaying == true)
 
@@ -2698,8 +2914,7 @@ struct PlayerViewModelTests {
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
-                             duration: resolved.runtime!, buffered: nil))
+        engine.push(.playing(10, duration: resolved.runtime!))
         try await engine.settle()
 
         vm.beginExit()
@@ -2726,8 +2941,7 @@ struct PlayerViewModelTests {
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
-                             duration: resolved.runtime!, buffered: nil))
+        engine.push(.playing(10, duration: resolved.runtime!))
         try await engine.settle()
         vm.setPlaying(false)
         await waitUntil { engine.calls.last == "pause" }
@@ -2758,8 +2972,7 @@ struct PlayerViewModelTests {
         vm.unfreezeSurfaceAction = { unfreezeCalls += 1 }
 
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
-                             duration: resolved.runtime!, buffered: nil))
+        engine.push(.playing(10, duration: resolved.runtime!))
         try await engine.settle()
         #expect(freezeCalls == 0)
 
@@ -2767,10 +2980,8 @@ struct PlayerViewModelTests {
         #expect(freezeCalls == 1)
 
         let late: PlaybackState = playing
-            ? .playing(position: CMTime(seconds: 11, preferredTimescale: 600),
-                       duration: resolved.runtime!, buffered: nil)
-            : .paused(position: CMTime(seconds: 11, preferredTimescale: 600),
-                      duration: resolved.runtime!, buffered: nil)
+            ? .playing(11, duration: resolved.runtime!)
+            : .paused(11, duration: resolved.runtime!)
         engine.push(late)
         try await engine.settle()
         #expect(unfreezeCalls == 0)
@@ -2805,8 +3016,7 @@ struct PlayerViewModelTests {
         vm.unfreezeSurfaceAction = { unfreezeCalls += 1 }
 
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 600),
-                             duration: CMTime(seconds: 7200, preferredTimescale: 600), buffered: nil))
+        engine.push(.playing(10))
         try await engine.settle()
 
         // Out-of-buffer commit with a sidecar up → re-anchor reload → the frame is held, and
@@ -2831,13 +3041,13 @@ struct PlayerViewModelTests {
         // runtime fixture is the duration; buffer extends to its midpoint.
         let duration = resolved.runtime!
         let half = CMTime(seconds: CMTimeGetSeconds(duration) / 2, preferredTimescale: 600)
-        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: duration, buffered: half))
+        engine.push(.playing(10, duration: duration, buffered: half))
         try await engine.settle()
         let fraction = try #require(vm.bufferedFraction)
         #expect(abs(fraction - 0.5) < 0.001)
 
         // A nil buffered beat (VLC path) must hide the layer, not freeze the last value.
-        engine.push(.paused(position: CMTime(seconds: 10, preferredTimescale: 1), duration: duration, buffered: nil))
+        engine.push(.paused(10, duration: duration))
         try await engine.settle()
         #expect(vm.bufferedFraction == nil)
 
@@ -2853,19 +3063,19 @@ struct PlayerViewModelTests {
         let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
 
-        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+        engine.push(.playing(10, duration: resolved.runtime!))
         try await engine.settle()
 
         // A short blip (healthy in-buffer seek) never shows the scrim.
-        engine.push(.buffering(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+        engine.push(.buffering(10, duration: resolved.runtime!))
         try await engine.settle()
         #expect(vm.isStalled == false)
-        engine.push(.playing(position: CMTime(seconds: 11, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+        engine.push(.playing(11, duration: resolved.runtime!))
         try await Task.sleep(for: .milliseconds(500))
         #expect(vm.isStalled == false)   // debounce was cancelled, not just delayed
 
         // A real stall crosses the debounce: scrim shows, phase + intent untouched.
-        engine.push(.buffering(position: CMTime(seconds: 11, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+        engine.push(.buffering(11, duration: resolved.runtime!))
         try await Task.sleep(for: .milliseconds(600))
         #expect(vm.isStalled == true)
         #expect(vm.showsStallScrim == true)
@@ -2876,20 +3086,19 @@ struct PlayerViewModelTests {
         #expect(vm.isPlaying == true)
 
         // Recovery clears it immediately.
-        engine.push(.playing(position: CMTime(seconds: 12, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+        engine.push(.playing(12, duration: resolved.runtime!))
         try await engine.settle()
         #expect(vm.isStalled == false)
         #expect(vm.showsStallScrim == false)
 
-        // Paused-seek shape (drag-scrub commits pause → seek → play): the engine
-        // surfaces the out-of-buffer fetch as .buffering with a JUMPED position,
-        // which stalls immediately (no debounce — the fetch is real by
-        // construction); the completion's .paused beat clears it, no .playing
-        // required.
-        engine.push(.buffering(position: CMTime(seconds: 300, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+        // Paused-seek shape (drag-scrub commits pause → seek → play): the engine surfaces the
+        // out-of-buffer fetch as a `.projected` .buffering at the target, which stalls
+        // immediately (no debounce — the label says a seek is unresolved, so the fetch is real
+        // by construction); the completion's .paused beat clears it, no .playing required.
+        engine.push(.buffering(300, duration: resolved.runtime!, provenance: .projected))
         try await engine.settle()
         #expect(vm.isStalled == true)
-        engine.push(.paused(position: CMTime(seconds: 300, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+        engine.push(.paused(300, duration: resolved.runtime!))
         try await engine.settle()
         #expect(vm.isStalled == false)
         #expect(vm.isPlaying == false)
@@ -2906,11 +3115,7 @@ struct PlayerViewModelTests {
             engine: engine
         )
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(
-            position: CMTime(seconds: 100, preferredTimescale: 600),
-            duration: CMTime(seconds: 7200, preferredTimescale: 600),
-            buffered: nil
-        ))
+        engine.push(.playing(100))
         try await engine.settle()
 
         let track = try #require(vm.availableAudioTracks.first { $0.id == .jellyfinStream(4) })
@@ -3091,7 +3296,7 @@ struct PlayerViewModelTests {
 
         let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(position: CMTime(seconds: 40, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+        engine.push(.playing(40, duration: resolved.runtime!))
         engine.push(.ended)
         try await engine.settle()
 
@@ -3121,11 +3326,7 @@ struct PlayerViewModelTests {
             engine: engine
         )
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(
-            position: CMTime(seconds: 100, preferredTimescale: 600),
-            duration: CMTime(seconds: 7200, preferredTimescale: 600),
-            buffered: nil
-        ))
+        engine.push(.playing(100))
         try await engine.settle()
 
         // Switch audio → the re-resolve throws → silent fallback (playback resumes).
@@ -3157,11 +3358,7 @@ struct PlayerViewModelTests {
             engine: engine
         )
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(
-            position: CMTime(seconds: 100, preferredTimescale: 600),
-            duration: CMTime(seconds: 7200, preferredTimescale: 600),
-            buffered: nil
-        ))
+        engine.push(.playing(100))
         try await engine.settle()
 
         let track = try #require(vm.availableAudioTracks.first { $0.id == .jellyfinStream(4) })
@@ -3209,11 +3406,7 @@ struct PlayerViewModelTests {
         )
         triggerExit = { vm.beginExit() }
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(
-            position: CMTime(seconds: 100, preferredTimescale: 600),
-            duration: CMTime(seconds: 7200, preferredTimescale: 600),
-            buffered: nil
-        ))
+        engine.push(.playing(100))
         try await engine.settle()
 
         let track = try #require(vm.availableAudioTracks.first { $0.id == .jellyfinStream(4) })
@@ -3249,11 +3442,7 @@ struct PlayerViewModelTests {
             engine: engine
         )
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(
-            position: CMTime(seconds: 100, preferredTimescale: 600),
-            duration: CMTime(seconds: 7200, preferredTimescale: 600),
-            buffered: nil
-        ))
+        engine.push(.playing(100))
         try await engine.settle()
 
         let track = try #require(vm.availableAudioTracks.first { $0.id == .jellyfinStream(4) })
@@ -3268,11 +3457,7 @@ struct PlayerViewModelTests {
 
         // Phase stays .loading (the scrim) until the reloaded stream's first beat.
         #expect(vm.phase == .loading)
-        engine.push(.playing(
-            position: CMTime(seconds: 100, preferredTimescale: 600),
-            duration: CMTime(seconds: 7200, preferredTimescale: 600),
-            buffered: nil
-        ))
+        engine.push(.playing(100))
         try await engine.settle()
         #expect(vm.phase == .playing)
     }
@@ -3294,11 +3479,7 @@ struct PlayerViewModelTests {
             engine: engine
         )
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(
-            position: CMTime(seconds: 100, preferredTimescale: 600),
-            duration: CMTime(seconds: 7200, preferredTimescale: 600),
-            buffered: nil
-        ))
+        engine.push(.playing(100))
         try await engine.settle()
 
         let track = try #require(vm.availableAudioTracks.first { $0.id == .jellyfinStream(4) })
@@ -3319,7 +3500,7 @@ struct PlayerViewModelTests {
         let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
 
-        engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+        engine.push(.playing(10, duration: resolved.runtime!))
         try await engine.settle()
         #expect(vm.isPlaying == true)
 
@@ -3401,7 +3582,7 @@ struct PlayerViewModelTests {
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
         await vm.start(item: PlayerFixtures.movieDetail())
-        engine.push(.playing(position: CMTime(seconds: 30, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+        engine.push(.playing(30, duration: resolved.runtime!))
         try await engine.settle()
 
         // exitPlayer() fires stop() immediately; onDisappear fires it again as the
@@ -3459,7 +3640,7 @@ struct PlayerViewModelTests {
             let nowPlaying = SpyNowPlaying()
             let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved, nowPlaying: nowPlaying)
             await vm.start(item: PlayerFixtures.movieDetail(title: "Fixture Movie"))
-            engine.push(.playing(position: CMTime(seconds: 30, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+            engine.push(.playing(30, duration: resolved.runtime!))
             try await engine.settle()
             let published = try #require(nowPlaying.updates.last)
             #expect(published.title == "Fixture Movie")
@@ -3476,8 +3657,8 @@ struct PlayerViewModelTests {
             let nowPlaying = SpyNowPlaying()
             let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved, nowPlaying: nowPlaying)
             await vm.start(item: PlayerFixtures.movieDetail(title: "Fixture Movie"))
-            engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
-            engine.push(.paused(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+            engine.push(.playing(10, duration: resolved.runtime!))
+            engine.push(.paused(10, duration: resolved.runtime!))
             try await engine.settle()
             let published = try #require(nowPlaying.updates.last)
             #expect(!published.isPlaying)
@@ -3492,7 +3673,7 @@ struct PlayerViewModelTests {
             let nowPlaying = SpyNowPlaying()
             let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved, nowPlaying: nowPlaying)
             await vm.start(item: PlayerFixtures.movieDetail(title: "Fixture Movie"))
-            engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+            engine.push(.playing(10, duration: resolved.runtime!))
             try await engine.settle()
             #expect(nowPlaying.clearCount == 0)
             await vm.stop()
@@ -3629,10 +3810,8 @@ struct PlayerViewModelTests {
             let vm = makeVM(engine: engine, recorder: recorder)
 
             await vm.start(smbItem: smbItem())
-            engine.push(.playing(position: CMTime(seconds: 1, preferredTimescale: 1),
-                                  duration: CMTime(seconds: 6000, preferredTimescale: 1), buffered: nil))
-            engine.push(.playing(position: CMTime(seconds: 2, preferredTimescale: 1),
-                                  duration: CMTime(seconds: 6000, preferredTimescale: 1), buffered: nil))
+            engine.push(.playing(1, duration: .seconds(6000)))
+            engine.push(.playing(2, duration: .seconds(6000)))
             try await engine.settle()
 
             await waitForBackfill(recorder)
@@ -3653,8 +3832,7 @@ struct PlayerViewModelTests {
             let vm = makeVM(engine: engine, recorder: recorder)
 
             await vm.start(smbItem: smbItem())
-            engine.push(.playing(position: CMTime(seconds: 1, preferredTimescale: 1),
-                                  duration: CMTime(seconds: 6000, preferredTimescale: 1), buffered: nil))
+            engine.push(.playing(1, duration: .seconds(6000)))
             try await engine.settle()
 
             await waitForBackfill(recorder)
@@ -3678,8 +3856,7 @@ struct PlayerViewModelTests {
             let vm = makeVM(engine: engine, recorder: recorder, backfillDelay: delay)
 
             await vm.start(smbItem: smbItem())
-            engine.push(.playing(position: CMTime(seconds: 1, preferredTimescale: 1),
-                                  duration: CMTime(seconds: 6000, preferredTimescale: 1), buffered: nil))
+            engine.push(.playing(1, duration: .seconds(6000)))
             try await engine.settle()
 
             // Well within the delay — the pending backfill Task must not survive this.
@@ -3706,7 +3883,7 @@ struct PlayerViewModelTests {
             )
 
             await vm.start(item: PlayerFixtures.movieDetail())
-            engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
+            engine.push(.playing(10, duration: resolved.runtime!))
             try await engine.settle()
 
             // Polls far past the (short) delay, had a backfill been scheduled — the gate is
@@ -3724,8 +3901,7 @@ struct PlayerViewModelTests {
             await vm.start(smbItem: smbItem(hasTrustworthyDuration: false))
             // Numeric, real-looking duration — proving the nil comes from the trust bit, not
             // from `hasKnownDuration` being false too.
-            engine.push(.playing(position: CMTime(seconds: 1, preferredTimescale: 1),
-                                  duration: CMTime(seconds: 6000, preferredTimescale: 1), buffered: nil))
+            engine.push(.playing(1, duration: .seconds(6000)))
             try await engine.settle()
 
             await waitForBackfill(recorder)

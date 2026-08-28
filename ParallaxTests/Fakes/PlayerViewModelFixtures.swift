@@ -74,7 +74,8 @@ func makePlayerVM(
     fetchDelivery: @escaping @Sendable (String) async -> TranscodeDelivery? = { _ in nil },
     deliveryProbeSchedule: [Duration] = [.seconds(2), .seconds(5)],
     reloadResolveDeadline: Duration = .seconds(15),
-    subtitleFontDesign: @escaping @MainActor () -> SubtitleFontDesign = { .sansSerif }
+    subtitleFontDesign: @escaping @MainActor () -> SubtitleFontDesign = { .sansSerif },
+    seekHoldNow: @escaping @Sendable () -> ContinuousClock.Instant = { .now }
 ) -> PlayerViewModel {
     PlayerViewModel(
         deviceProfileBuilder: makeTestDeviceProfileBuilder(),
@@ -91,7 +92,8 @@ func makePlayerVM(
         fetchDelivery: fetchDelivery,
         deliveryProbeSchedule: deliveryProbeSchedule,
         reloadResolveDeadline: reloadResolveDeadline,
-        subtitleFontDesign: subtitleFontDesign
+        subtitleFontDesign: subtitleFontDesign,
+        seekHoldNow: seekHoldNow
     )
 }
 
@@ -113,7 +115,8 @@ func makePlayerVM(
     fetchDelivery: @escaping @Sendable (String) async -> TranscodeDelivery? = { _ in nil },
     deliveryProbeSchedule: [Duration] = [.seconds(2), .seconds(5)],
     reloadResolveDeadline: Duration = .seconds(15),
-    subtitleFontDesign: @escaping @MainActor () -> SubtitleFontDesign = { .sansSerif }
+    subtitleFontDesign: @escaping @MainActor () -> SubtitleFontDesign = { .sansSerif },
+    seekHoldNow: @escaping @Sendable () -> ContinuousClock.Instant = { .now }
 ) -> PlayerViewModel {
     makePlayerVM(
         reporting: reporting,
@@ -129,7 +132,8 @@ func makePlayerVM(
         fetchDelivery: fetchDelivery,
         deliveryProbeSchedule: deliveryProbeSchedule,
         reloadResolveDeadline: reloadResolveDeadline,
-        subtitleFontDesign: subtitleFontDesign
+        subtitleFontDesign: subtitleFontDesign,
+        seekHoldNow: seekHoldNow
     )
 }
 
@@ -498,5 +502,32 @@ enum PlayerFixtures {
             runtime: CMTime(seconds: 3600, preferredTimescale: 600),
             startTime: nil
         )
+    }
+}
+
+/// Parks an injected `resolve` until a test lets it through, so the windows the view model
+/// only opens DURING a re-resolve — `isSwitchingTracks`, the frozen surface, the `.loading`
+/// scrim — become states a test can stand inside and probe rather than races to win.
+///
+/// Armed explicitly (not on construction) because the same closure serves the fixture's own
+/// `start()`: a gate that blocked from the first call would deadlock the setup it is meant to
+/// follow.
+actor ResolveGate {
+    private var armed = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func arm() { armed = true }
+
+    func wait() async {
+        guard armed else { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    /// Disarms and releases everything parked.
+    func open() {
+        armed = false
+        let parked = waiters
+        waiters = []
+        parked.forEach { $0.resume() }
     }
 }
