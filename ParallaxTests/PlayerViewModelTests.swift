@@ -1159,11 +1159,12 @@ struct PlayerViewModelTests {
     private func makeReanchorVM(
         engine: FakePlaybackEngine,
         at seconds: Double,
+        nowPlaying: any NowPlayingUpdating = NowPlayingController(),
         resolve: @escaping PlayerViewModel.ResolveCall = { _, _, _, _ in
             PlayerFixtures.resolvedMultiTrackTranscode()
         }
     ) async throws -> PlayerViewModel {
-        let vm = makePlayerVM(resolve: resolve, engine: engine)
+        let vm = makePlayerVM(resolve: resolve, engine: engine, nowPlaying: nowPlaying)
         await vm.start(item: PlayerFixtures.movieDetail())
         engine.push(.playing(position: CMTime(seconds: seconds, preferredTimescale: 600),
                              duration: CMTime(seconds: 7_200, preferredTimescale: 600), buffered: nil))
@@ -1326,15 +1327,18 @@ struct PlayerViewModelTests {
     @Test("the commit pushes the TARGET to Now Playing, so the lock screen and the bar agree")
     func commitPublishesTheTargetToNowPlaying() async throws {
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let vm = try await makeReanchorVM(engine: engine, at: 600)
-        try #require((MPNowPlayingInfoCenter.default().nowPlayingInfo?[
-            MPNowPlayingInfoPropertyElapsedPlaybackTime] as? Double) == 600)
+        let nowPlaying = SpyNowPlaying()
+        let vm = try await makeReanchorVM(engine: engine, at: 600, nowPlaying: nowPlaying)
+        // A precondition, not an assertion: the parked beat has to have reached Now
+        // Playing at A, or "the commit moved it to B" proves nothing.
+        let parked = try #require(nowPlaying.updates.last)
+        try #require(CMTimeGetSeconds(parked.position) == 600)
 
         await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
 
-        let info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
-        #expect((info[MPNowPlayingInfoPropertyElapsedPlaybackTime] as? Double) == 3_000)
-        #expect((info[MPMediaItemPropertyPlaybackDuration] as? Double) == 7_200)
+        let published = try #require(nowPlaying.updates.last)
+        #expect(CMTimeGetSeconds(published.position) == 3_000)
+        #expect(CMTimeGetSeconds(published.duration) == 7_200)
         await vm.stop()
     }
 
@@ -3439,54 +3443,60 @@ struct PlayerViewModelTests {
 
     // MARK: - NowPlaying (serialized — MPNowPlayingInfoCenter is a process-wide singleton)
 
-    /// All 5 tests that read/write MPNowPlayingInfoCenter.default() are grouped
-    /// here with `.serialized` to prevent concurrent async tests from clobbering
-    /// each other's nowPlayingInfo state.
+    /// The VM-level cases drive a `SpyNowPlaying` — what the VM published is the contract,
+    /// and asserting it through the live `MPNowPlayingInfoCenter` made them answerable by
+    /// whatever else had touched the singleton. Only the two `NowPlayingController` cases
+    /// below still read it, because for them the info center IS the subject under test;
+    /// they are synchronous, and `.serialized` keeps them off each other's write.
     @Suite("NowPlaying", .serialized)
     @MainActor
     struct NowPlayingTests {
-        @Test("PlayerViewModel populates MPNowPlayingInfoCenter on .playing")
+        @Test("PlayerViewModel publishes title/elapsed/rate to Now Playing on .playing")
         func vmPopulatesNowPlayingOnPlaying() async throws {
             let reporting = StubPlaybackReporting()
             let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
             let resolved = PlayerFixtures.resolved()
-            let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
+            let nowPlaying = SpyNowPlaying()
+            let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved, nowPlaying: nowPlaying)
             await vm.start(item: PlayerFixtures.movieDetail(title: "Fixture Movie"))
             engine.push(.playing(position: CMTime(seconds: 30, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
             try await engine.settle()
-            let info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
-            #expect((info[MPMediaItemPropertyTitle] as? String) == "Fixture Movie")
-            #expect(((info[MPNowPlayingInfoPropertyElapsedPlaybackTime] as? Double) ?? 0.0) > 0.0)
-            #expect((info[MPNowPlayingInfoPropertyPlaybackRate] as? Double) == 1.0)
+            let published = try #require(nowPlaying.updates.last)
+            #expect(published.title == "Fixture Movie")
+            #expect(CMTimeGetSeconds(published.position) > 0.0)
+            #expect(published.isPlaying)
             await vm.stop()
         }
 
-        @Test("PlayerViewModel sets rate 0 in MPNowPlayingInfoCenter on .paused")
+        @Test("PlayerViewModel publishes a stopped rate to Now Playing on .paused")
         func vmSetsNowPlayingRateZeroOnPaused() async throws {
             let reporting = StubPlaybackReporting()
             let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
             let resolved = PlayerFixtures.resolved()
-            let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
+            let nowPlaying = SpyNowPlaying()
+            let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved, nowPlaying: nowPlaying)
             await vm.start(item: PlayerFixtures.movieDetail(title: "Fixture Movie"))
             engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
             engine.push(.paused(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
             try await engine.settle()
-            let info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
-            #expect((info[MPNowPlayingInfoPropertyPlaybackRate] as? Double) == 0.0)
+            let published = try #require(nowPlaying.updates.last)
+            #expect(!published.isPlaying)
             await vm.stop()
         }
 
-        @Test("PlayerViewModel clears MPNowPlayingInfoCenter on stop()")
+        @Test("PlayerViewModel clears Now Playing on stop()")
         func vmClearsNowPlayingOnStop() async throws {
             let reporting = StubPlaybackReporting()
             let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
             let resolved = PlayerFixtures.resolved()
-            let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved)
+            let nowPlaying = SpyNowPlaying()
+            let vm = makePlayerVM(reporting: reporting, engine: engine, resolved: resolved, nowPlaying: nowPlaying)
             await vm.start(item: PlayerFixtures.movieDetail(title: "Fixture Movie"))
             engine.push(.playing(position: CMTime(seconds: 10, preferredTimescale: 1), duration: resolved.runtime!, buffered: nil))
             try await engine.settle()
+            #expect(nowPlaying.clearCount == 0)
             await vm.stop()
-            #expect(MPNowPlayingInfoCenter.default().nowPlayingInfo == nil)
+            #expect(nowPlaying.clearCount == 1)
         }
 
         @Test("NowPlayingController.update writes elapsed/duration/rate into MPNowPlayingInfoCenter.default")

@@ -621,7 +621,7 @@ final class PlayerViewModel {
     /// the engine's stale clock, until the engine lands there. See `SeekHold` and
     /// `publish(position:isTransportBeat:)`. Nil whenever no seek is outstanding.
     private var seekHold: SeekHold?
-    private let nowPlaying = NowPlayingController()
+    private let nowPlaying: any NowPlayingUpdating
     private var itemTitle: String = ""
     /// HUD-only episode number prepended to `title` (e.g. `"2. <name>"`); nil for
     /// movies and SMB. Reset on every `start*` so an episode→movie swap clears it.
@@ -746,6 +746,7 @@ final class PlayerViewModel {
         resolve: @escaping ResolveCall,
         engineFactory: @escaping @MainActor @Sendable (PlaybackEngineID, _ vlcLibraryOptions: [String]?) -> any PlaybackEngine,
         audioSession: any AudioSessionControlling,
+        nowPlaying: any NowPlayingUpdating = NowPlayingController(),
         fetchDetail: @escaping @Sendable (ItemID) async throws -> ItemDetail = { _ in
             throw AppError.playback(.unsupportedFormat)
         },
@@ -776,6 +777,7 @@ final class PlayerViewModel {
         self.resolve = resolve
         self.engineFactory = engineFactory
         self.audioSession = audioSession
+        self.nowPlaying = nowPlaying
         self.fetchDetail = fetchDetail
         self.subtitleFetch = subtitleFetch
         self.rememberTrackSelection = rememberTrackSelection

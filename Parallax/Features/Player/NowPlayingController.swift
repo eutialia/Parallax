@@ -1,11 +1,26 @@
 import MediaPlayer
 import CoreMedia
 
+/// The lock-screen seam the view model owns. `MPNowPlayingInfoCenter` and
+/// `MPRemoteCommandCenter` are process-wide system singletons, so tests inject a
+/// recording double here instead of asserting through the live info center — which
+/// answers whatever the last test (or the system) left in it.
+@MainActor
+protocol NowPlayingUpdating: AnyObject {
+    func configure(
+        onSeek: @escaping @MainActor (CMTime) -> Void,
+        onPlay: @escaping @MainActor () -> Void,
+        onPause: @escaping @MainActor () -> Void
+    )
+    func update(position: CMTime, duration: CMTime, isPlaying: Bool, title: String)
+    func clear()
+}
+
 /// Drives `MPNowPlayingInfoCenter` and `MPRemoteCommandCenter` for both engines.
 /// Engine-agnostic: the VM calls `update(...)` on every `PlaybackState` event;
 /// remote-command callbacks forward to the VM via the closures set in `configure(...)`.
 @MainActor
-final class NowPlayingController {
+final class NowPlayingController: NowPlayingUpdating {
     private var seekHandler: ((CMTime) -> Void)?
     private var playHandler: (() -> Void)?
     private var pauseHandler: (() -> Void)?
@@ -15,7 +30,9 @@ final class NowPlayingController {
     /// retains its own reference, so we must call removeTarget explicitly.
     private var registrations: [(MPRemoteCommand, Any)] = []
 
-    init() {}
+    /// `nonisolated` so `PlayerViewModel.init` can name it as a default argument:
+    /// default value expressions are evaluated outside the actor.
+    nonisolated init() {}
 
     isolated deinit {
         removeAllTargets()
