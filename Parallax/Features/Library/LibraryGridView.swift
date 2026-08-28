@@ -283,14 +283,15 @@ private struct LibraryGridLoadingPlaceholder: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 0) {
-                // Match the loaded grid's tvOS in-content header geometry (two centered capsules) so
-                // the swap to the real Genre/Sort controls is shift-free. iPhone/iPad carry those in
-                // the nav bar, not the content, so they skip the placeholder capsules. Horizontal
-                // inset comes from `contentMargins`, like the header itself.
+                // The loaded tvOS header itself, redacted — its chips render as flat capsules over
+                // the hidden real Menus, so the row's geometry is the shipping control's and the
+                // swap is shift-free. iPhone/iPad carry those controls in the nav bar, not the
+                // content, so they skip the row entirely. Horizontal inset comes from
+                // `contentMargins`, like the header itself.
                 if idiom == .tv {
                     LibraryHeaderControlsSkeleton()
                 }
-                AdaptivePosterGridPlaceholderGrid(tileCount: columns * 3, fixedColumns: columns)
+                AdaptivePosterGridLoadingSkeleton(tileCount: columns * 3, fixedColumns: columns, shimmer: false)
             }
             // ONE shimmer clock for the whole placeholder, so the tvOS chip row sweeps with the
             // tiles instead of standing still beside them (hence the un-shimmered grid).

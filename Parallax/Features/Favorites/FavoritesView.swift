@@ -295,13 +295,13 @@ private struct FavoritesLoadingPlaceholder: View {
                 // A stand-in server name: redaction masks the glyphs but keeps the line box, so
                 // this only sets the bar's WIDTH — real names land anywhere near it.
                 GridSection(title: "Media Server", count: nil) {
-                    AdaptivePosterGridPlaceholderGrid(tileCount: columns * 3, fixedColumns: columns)
+                    AdaptivePosterGridLoadingSkeleton(tileCount: columns * 3, fixedColumns: columns, shimmer: false)
                 }
                 .redacted(reason: .placeholder)
             }
             // ONE shimmer clock for the whole placeholder — the header bar and the tvOS chip row
             // sweep with the tiles instead of sitting static beside them, which is why the grid
-            // goes in un-shimmered (`AdaptivePosterGridPlaceholderGrid`).
+            // goes in with `shimmer: false`.
             .skeletonShimmer()
         }
         .scrollDisabled(true)

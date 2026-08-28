@@ -71,6 +71,9 @@ struct SkeletonText: View {
 /// masks are static, so each frame only repositions the one gradient. Static under
 /// Reduce Motion. Apply ONCE at the top of a skeleton screen, never per block.
 struct SkeletonShimmerModifier: ViewModifier {
+    /// Off for a placeholder nested inside a bigger one — the outer screen owns the clock.
+    var enabled = true
+
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// The masked subtree's width, captured via `onGeometryChange` instead of a
     /// `GeometryReader` so the overlay sizes to `content` (not the other way round) and
@@ -80,7 +83,7 @@ struct SkeletonShimmerModifier: ViewModifier {
     @State private var width: CGFloat = 0
 
     func body(content: Content) -> some View {
-        if reduceMotion {
+        if reduceMotion || !enabled {
             content
         } else {
             content.overlay {
@@ -110,8 +113,8 @@ struct SkeletonShimmerModifier: ViewModifier {
 
 extension View {
     /// Apply once at the top of a skeleton screen (not per block) — see `SkeletonShimmerModifier`.
-    func skeletonShimmer() -> some View {
-        modifier(SkeletonShimmerModifier())
+    func skeletonShimmer(enabled: Bool = true) -> some View {
+        modifier(SkeletonShimmerModifier(enabled: enabled))
     }
 }
 
@@ -128,25 +131,76 @@ struct SkeletonItem: Identifiable, Hashable {
 /// tiles with an under-thumbnail caption reserve it by line count so the loading→loaded swap
 /// doesn't shift the grid: 2 = filename + duration (`MediaTile.metadataRow`, the SMB video tiles
 /// and episode shelves), 1 = a lone name line (`FolderBrowseCard`).
+///
+/// The artwork↔caption gap is nobody's constant: on iOS/iPadOS it's `MediaTile.metadataGap` (the
+/// contained `TileContainedStack`), on tvOS the LOADED captioned tile is a `.borderless` button
+/// lockup and the SYSTEM owns the gap — render-measured 14pt wider than the token, which drifted
+/// every captioned tv row by that much (SMB, search episodes, series episode shelves). So the
+/// placeholder doesn't reserve a number: at `.tv` with captions it builds the SAME composition the
+/// loaded tile does and inherits the system's gap.
+///
+/// Reproducing that gap turned out to need two things a placeholder doesn't naturally have, both
+/// isolated in the "tv lockup gap" preview at the bottom of this file:
+///
+/// 1. **A real `MediaThumbnail` as the artwork.** The lockup only nudges the caption when it sees an
+///    IMAGE child; a `SkeletonBlock` is a Shape and gets no nudge (measured: 14pt short). So the
+///    stub is the shipping thumbnail with placeholder artwork, `skeletonStandIn`-ed — the view stays
+///    in the tree for the lockup to recognise, a flat bar is painted over its layout.
+/// 2. **`.focusable(false)`, NOT `.disabled(true)`.** A disabled button gets no lockup either
+///    (measured: the same 14pt short, even with the real thumbnail) — tvOS doesn't lay out an
+///    unfocusable control's content lockup. `focusable(false)` keeps the layout and still keeps the
+///    placeholder out of the focus engine, which is the actual requirement.
 struct MediaTileSkeleton: View {
     var aspectRatio: CGFloat = MediaImage.poster
     var metadataLines: Int = 0
 
+    @Environment(\.appIdiom) private var idiom
+
     var body: some View {
-        VStack(alignment: .leading, spacing: MediaTile.metadataGap) {
-            SkeletonBlock(cornerRadius: Radius.tile)
-                .aspectRatio(aspectRatio, contentMode: .fit)
-            if metadataLines > 0 {
-                // Stub lines reserving the real `MediaTile.metadataRow`'s rendered height so the
-                // loading→loaded swap doesn't shift the grid. Both the spacing AND the two fonts
-                // come from MediaTile's shared statics, and `SkeletonText` derives each bar's
-                // height from its font's line box — so the reserve tracks Dynamic Type and the
-                // tvOS ramp instead of freezing at the iOS default size.
-                VStack(alignment: .leading, spacing: MediaTile.metadataLineSpacing) {
-                    SkeletonText(font: MediaTile.metadataTitleFont)
-                    if metadataLines > 1 {
-                        SkeletonText(font: MediaTile.metadataDetailFont, width: 56)
-                    }
+        if idiom == .tv, metadataLines > 0 {
+            // `TileLockup` is exactly what `MediaTile.Lockup` renders and `pressableTileButton()`
+            // is the style every captioned tv call site wraps it in (`SMBBrowseGrid`,
+            // `SeriesDetailView.seasonShelf`) — so this is the loaded tile's own gap, not a copy.
+            //
+            // Captionless tiles (poster grids, Home shelves) stay contained: with no caption there
+            // is no lockup gap to inherit, and no reason to put a control in a placeholder.
+            Button {} label: {
+                TileLockup(artwork: lockupArtworkStub) { captionStubs }
+            }
+            .pressableTileButton()
+            .focusable(false)
+        } else {
+            // The same container `MediaTile.body` and `TileLockup`'s iOS form render, so the
+            // placeholder can't drift from the loaded tile on the contained path either.
+            TileContainedStack(artwork: thumbnailStub) { captionStubs }
+        }
+    }
+
+    private var thumbnailStub: some View {
+        SkeletonBlock(cornerRadius: Radius.tile)
+            .aspectRatio(aspectRatio, contentMode: .fit)
+    }
+
+    /// The shipping thumbnail, hidden under a flat bar of its own layout — see point 1 above. Same
+    /// footprint and same corner radius as `thumbnailStub`; the difference is that the tvOS lockup
+    /// can see an image here.
+    private var lockupArtworkStub: some View {
+        MediaThumbnail(artwork: .none, aspectRatio: aspectRatio, accessibilityLabel: "")
+            .skeletonStandIn(cornerRadius: Radius.tile)
+    }
+
+    /// Stub lines reserving the real `MediaTile.metadataRow`'s rendered height so the
+    /// loading→loaded swap doesn't shift the grid. Both the spacing AND the two fonts come from
+    /// MediaTile's shared statics, and `SkeletonText` derives each bar's height from its font's
+    /// line box — so the reserve tracks Dynamic Type and the tvOS ramp instead of freezing at the
+    /// iOS default size.
+    @ViewBuilder
+    private var captionStubs: some View {
+        if metadataLines > 0 {
+            VStack(alignment: .leading, spacing: MediaTile.metadataLineSpacing) {
+                SkeletonText(font: MediaTile.metadataTitleFont)
+                if metadataLines > 1 {
+                    SkeletonText(font: MediaTile.metadataDetailFont, width: 56)
                 }
             }
         }
@@ -210,19 +264,31 @@ struct HomeLoadingSkeleton: View {
             // width-derived band the real hero never draws.
             SkeletonBlock(cornerRadius: 0)
                 .heroBandFrame(regularWidth: idiom.usesLandscapeHeroBand)
-            VStack(alignment: .leading, spacing: Space.s30) {
-                // The shelves Home always opens with, at the idiom's real tile width (tv is 220,
-                // not iPhone's 172 — the hardcoded `HomeShelf.tileWidth` here made every tv
-                // skeleton row 72pt short).
-                shelf("Continue Watching")
-                shelf("Next Up")
-            }
-            .tvContentInset()
+            HomeShelvesSkeleton()
         }
         .padding(.bottom, Space.s30)
         .skeletonShimmer()
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Loading")
+    }
+}
+
+/// Home's shelf stack on its own, without the hero band. Its own type because on tvOS the band is
+/// `containerRelativeFrame(.vertical)` — a full viewport — so a parity preview that includes it can
+/// only ever certify the BAND; the shelves fall past the canvas bottom. The tv shelf-ramp check
+/// renders this instead (see the "Home shelves skeleton ↔ loaded (tv)" preview).
+struct HomeShelvesSkeleton: View {
+    @Environment(\.appIdiom) private var idiom
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.s30) {
+            // The shelves Home always opens with, at the idiom's real tile width (tv is 220,
+            // not iPhone's 172 — the hardcoded `HomeShelf.tileWidth` here made every tv
+            // skeleton row 72pt short).
+            shelf("Continue Watching")
+            shelf("Next Up")
+        }
+        .tvContentInset()
     }
 
     private func shelf(_ title: String) -> some View {
@@ -279,11 +345,14 @@ struct PosterGridLoadingSkeleton: View {
     }
 }
 
-/// The poster-grid placeholder WITHOUT a shimmer clock, for screens that wrap it in more
-/// placeholder chrome (a redacted section header, the tvOS chip row). Those hosts apply
-/// `.skeletonShimmer()` once at their own top so the whole screen sweeps under a single clock —
-/// embedding the shimmering variant instead leaves the header as the one static bar on the screen.
-struct AdaptivePosterGridPlaceholderGrid: View {
+/// The poster grid placeholder. It brings its own shimmer clock by default — use it that way
+/// where the grid IS the whole placeholder (a bare first-load wall, a load-more strip under
+/// loaded content).
+///
+/// `shimmer: false` inside a BIGGER placeholder (a redacted section header, the tvOS chip row):
+/// those hosts apply `.skeletonShimmer()` once at their own top so the whole screen sweeps under
+/// a single clock, and a nested clock would leave the header as the one static bar on the screen.
+struct AdaptivePosterGridLoadingSkeleton: View {
     let tileCount: Int
     /// Fixed column count. Mirrors `MediaGrid`.
     var fixedColumns: Int
@@ -293,6 +362,8 @@ struct AdaptivePosterGridPlaceholderGrid: View {
     /// Under-thumbnail caption lines to reserve (SMB grids) so the swap to loaded tiles is
     /// shift-free — see `MediaTileSkeleton.metadataLines`.
     var metadataLines: Int = 0
+    /// See the type doc: false only inside a bigger placeholder that owns the screen's clock.
+    var shimmer: Bool = true
 
     @Environment(\.appIdiom) private var idiom
 
@@ -306,65 +377,48 @@ struct AdaptivePosterGridPlaceholderGrid: View {
                 MediaTileSkeleton(aspectRatio: aspectRatio, metadataLines: metadataLines)
             }
         }
+        // `if shimmer` around two copies of the grid would give the two branches different view
+        // identity; the modifier is a no-op pass-through when it's off.
+        .skeletonShimmer(enabled: shimmer)
     }
 }
 
-/// The grid placeholder as a self-contained skeleton region: the grid plus its own shimmer clock.
-/// Use it where the grid IS the whole placeholder (a bare first-load wall, a load-more strip under
-/// loaded content); inside a bigger placeholder use `AdaptivePosterGridPlaceholderGrid`.
-struct AdaptivePosterGridLoadingSkeleton: View {
-    let tileCount: Int
-    var fixedColumns: Int
-    var aspectRatio: CGFloat = MediaImage.poster
-    var metadataLines: Int = 0
-
-    var body: some View {
-        AdaptivePosterGridPlaceholderGrid(
-            tileCount: tileCount,
-            fixedColumns: fixedColumns,
-            aspectRatio: aspectRatio,
-            metadataLines: metadataLines
-        )
-        .skeletonShimmer()
-    }
-}
-
-/// First-list placeholder for one SMB browse level — the shape of `SMBBrowseGrid` (tvOS sort chip,
-/// a "Folders" row, then a "Videos" wall at the dense landscape column count) instead of the bare
-/// centered spinner every level used to show. The exact loaded geometry depends on the listing
-/// (folder/video counts), so this is an impression of the wall, not a shift-free contract like the
-/// poster-grid skeletons; section stubs + tiles use the same tokens as the real grid so nothing
-/// re-spaces on arrival. Built from raw grids (not `AdaptivePosterGridLoadingSkeleton`) so ONE
+/// First-list placeholder for one SMB browse level, built on the wall's OWN containers: the real
+/// `SMBBrowseSortChipSkeleton` (an `SMBBrowseSortChip` standing in for itself — tvOS only, empty
+/// elsewhere), then
+/// two real `SMBBrowseSection`s at the shared `smbBrowseGridColumns` density, redacted so each
+/// header renders as a bar at its own line box. Nothing here re-implements a header, a gap or a
+/// column count: change `SMBBrowseGrid` and this moves with it.
+///
+/// The CONTRACT, now that it renders the same containers: the chip row's footprint, each section
+/// header's line box and header→grid gap, the section→section gap, the column count and spacing, the
+/// tile aspect and its reserved caption lines are all the loaded wall's by construction — so nothing
+/// re-spaces when the listing lands. What it cannot know is the listing's SHAPE: how many folders
+/// and videos there are (it shows one folder row and two video rows), and whether a level has a
+/// Folders section at all. A level with no folders will therefore lift its Videos section on
+/// arrival; every other metric holds.
+///
+/// Built from the sections directly (not `AdaptivePosterGridLoadingSkeleton`) so ONE
 /// `skeletonShimmer()` clock drives the whole screen.
 struct SMBBrowseLoadingSkeleton: View {
     @Environment(\.appIdiom) private var idiom
 
     var body: some View {
-        let columnCount = AppLayout.landscapeGridColumns(idiom: idiom)
-        let columns = posterGridColumns(
-            fixedColumns: columnCount,
-            columnSpacing: AppLayout.posterGridColumnSpacing(idiom: idiom)
-        )
         // Chip in a spacing-0 wrapper mirroring the loaded tree (`VStack(spacing: 0) { sortHeader;
         // SMBBrowseGrid }`): its own bottom clearance is the ONLY gap under it — parking it inside
         // the section-spaced stack double-gapped the first section 52pt low.
         VStack(alignment: .leading, spacing: 0) {
-            if idiom == .tv {
-                // The lone Sort chip's stand-in, centered like `SMBBrowseView.sortHeader` — same
-                // metrics family as the library header's chip skeleton, same row tokens as the
-                // real chip.
-                Capsule().fill(Color.fill)
-                    .frame(width: LibraryHeaderChip.sortWidth, height: LibraryHeaderChip.height)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.top, AppLayout.chipRowTopPadding)
-                    .padding(.bottom, AppLayout.chipRowBottomClearance)
-            }
+            SMBBrowseSortChipSkeleton()
             VStack(alignment: .leading, spacing: AppLayout.browseSectionGap(idiom: idiom)) {
                 // Folders carry a single name line under the card; videos the filename + duration
                 // pair — mirror both so neither section's rows land short/tall before the swap.
-                browseSectionSkeleton(rows: 1, metadataLines: 1, columnCount: columnCount, columns: columns)
-                browseSectionSkeleton(rows: 2, metadataLines: 2, columnCount: columnCount, columns: columns)
+                section("Folders", rows: 1, metadataLines: 1)
+                section("Videos", rows: 2, metadataLines: 2)
             }
+            // Redaction masks the two headers' glyphs while keeping their line boxes, so each bar
+            // is exactly the height (and, for these known titles, the width) the loaded header
+            // draws. The tiles below are shapes and stand-ins, which redaction leaves alone.
+            .redacted(reason: .placeholder)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .skeletonShimmer()
@@ -372,19 +426,18 @@ struct SMBBrowseLoadingSkeleton: View {
         .accessibilityLabel("Loading contents")
         // A content-less tvOS screen needs a focus target or a Menu press suspends the app —
         // carried IN the skeleton (like `DetailLoadingSkeleton`) so no future host can forget it.
+        // The chip stand-in above is deliberately NOT that target (hidden AND `.disabled`).
         .tvFocusableSurface()
     }
 
-    /// One titled group stub (mirrors `SMBBrowseGrid.browseSection`): a `.sectionHeader`-sized
-    /// line above a landscape tile grid with the under-thumbnail caption reserved.
-    private func browseSectionSkeleton(rows: Int, metadataLines: Int, columnCount: Int, columns: [GridItem]) -> some View {
-        VStack(alignment: .leading, spacing: Space.s8) {
-            // Height IS `.sectionHeader`'s line box (23pt semibold on tvOS, footnote-class on
-            // iOS) — the fixed 28/13 pair it replaces was a hand measurement of exactly that,
-            // and only correct at the default Dynamic Type size.
-            SkeletonText(font: .sectionHeader, width: 88)
-            LazyVGrid(columns: columns, spacing: AppLayout.posterGridRowSpacing(idiom: idiom)) {
-                ForEach(0..<(columnCount * rows), id: \.self) { _ in
+    /// One titled group — the real `SMBBrowseSection` with a placeholder grid inside it.
+    private func section(_ title: String, rows: Int, metadataLines: Int) -> some View {
+        SMBBrowseSection(title) {
+            LazyVGrid(
+                columns: smbBrowseGridColumns(idiom: idiom),
+                spacing: AppLayout.posterGridRowSpacing(idiom: idiom)
+            ) {
+                ForEach(0..<(AppLayout.landscapeGridColumns(idiom: idiom) * rows), id: \.self) { _ in
                     MediaTileSkeleton(aspectRatio: MediaImage.landscape, metadataLines: metadataLines)
                 }
             }
@@ -392,6 +445,23 @@ struct SMBBrowseLoadingSkeleton: View {
     }
 }
 
+/// The library list's first-load placeholder: the loaded grid's column count, gap and all-edge
+/// inset with banner-shaped blocks — but ONE flat run of cards, with no per-server section headers.
+///
+/// That single-section shape is the contract, and it's forced. `LibraryListView` titles its sections
+/// only when the resolution yields more than one group (`[LibraryGroup].needsPerSourceTitles`), and a
+/// group exists only once its source has ANSWERED: a Jellyfin server contributes one iff its live
+/// `collections()` returns something visible. This placeholder is on screen exactly when no Jellyfin
+/// listing is cached — `MergedLibrary.cached` returns `[]` unless one is, so `LibraryHostView` has
+/// nothing to hydrate with and falls through to here — which is precisely the state where the group
+/// count is still a network round trip away. The configured-source count the store hands over
+/// synchronously is only an UPPER bound (a two-server config resolves to two titled sections, or to
+/// one untitled one if a server is unreachable or has every library hidden), so reserving headers
+/// from it would be wrong in exactly the case it exists to fix.
+///
+/// Consequence, made visible by the "Library list skeleton ↔ two servers" parity preview in
+/// `LibraryListView`: a multi-server COLD start drops its first card row one header below the
+/// placeholder's. Single-source configs (no headers at all) and every cached start are shift-free.
 struct LibraryListLoadingSkeleton: View {
     @Environment(\.appIdiom) private var idiom
 
@@ -626,6 +696,7 @@ struct SearchRefiningSkeleton: View {
 #if DEBUG
 import ParallaxJellyfin
 import ParallaxCore
+import ParallaxFileBrowse
 
 // Render-verification asset for `SkeletonShimmerModifier` (GeometryReader →
 // onGeometryChange): confirms the hero band + two shelves lay out and the shimmer
@@ -649,8 +720,9 @@ import ParallaxCore
 // / first tile run starts on the same row (±1pt) in both. Numbers from the script; read the image
 // only for the qualitative "does it read as the same screen" call.
 
-/// Side-by-side host for the parity previews — see the note above.
-private struct SkeletonParity<Skeleton: View, Loaded: View>: View {
+/// Side-by-side host for the parity previews — see the note above. Internal so previews in the
+/// feature files (`LibraryListView`) can measure against the same harness.
+struct SkeletonParity<Skeleton: View, Loaded: View>: View {
     let idiom: AppIdiom
     let columnWidth: CGFloat
     @ViewBuilder var skeleton: () -> Skeleton
@@ -701,17 +773,28 @@ private struct LoadedHomeFeed: View {
     @Environment(\.appIdiom) private var idiom
 
     var body: some View {
-        let tiles = (0..<8).map(SkeletonItem.init)
         VStack(alignment: .leading, spacing: Space.s30) {
             Color.artworkPlaceholder
                 .heroBandFrame(regularWidth: idiom.usesLandscapeHeroBand)
-            VStack(alignment: .leading, spacing: Space.s30) {
-                shelf("Continue Watching", tiles: tiles)
-                shelf("Next Up", tiles: tiles)
-            }
-            .tvContentInset()
+            LoadedHomeShelves()
         }
         .padding(.bottom, Space.s30)
+    }
+}
+
+/// The shelf half of `LoadedHomeFeed`, split off for the same reason `HomeShelvesSkeleton` is: the
+/// tvOS hero band fills the viewport, so the shelf ramp (`.cardHeaderTitle` header, its `Space.s22`
+/// header→row gap, the `Space.s30` shelf→shelf gap) is only measurable with the band out of frame.
+private struct LoadedHomeShelves: View {
+    @Environment(\.appIdiom) private var idiom
+
+    var body: some View {
+        let tiles = (0..<8).map(SkeletonItem.init)
+        VStack(alignment: .leading, spacing: Space.s30) {
+            shelf("Continue Watching", tiles: tiles)
+            shelf("Next Up", tiles: tiles)
+        }
+        .tvContentInset()
     }
 
     private func shelf(_ title: String, tiles: [SkeletonItem]) -> some View {
@@ -741,11 +824,29 @@ private struct ScrollShell<Content: View>: View {
     }
 }
 
+/// BAND parity only — that's all a tv destination can show here. On tvOS `heroBandFrame` is
+/// `containerRelativeFrame(.vertical)`, i.e. the whole viewport, so both halves render the band and
+/// nothing else; the shelves start below the canvas. What it certifies (render-measured: band top
+/// 60.2pt, height 1319.7pt, identical in both halves) is that the placeholder band and the loaded
+/// carousel take the same viewport-measured path. For the shelf ramp use the next preview.
 #Preview("Home skeleton ↔ loaded (tv)", traits: .fixedLayout(width: 1920, height: 1440)) {
     SkeletonParity(idiom: .tv, columnWidth: 960) {
         ScrollShell { HomeLoadingSkeleton() }
     } loaded: {
         ScrollShell { LoadedHomeFeed() }
+    }
+}
+
+/// The shelf half of the tv Home check, with the viewport-filling band out of frame — the only way
+/// to see the tvOS shelf ramp the band otherwise pushes off the canvas. PASS = each shelf's header
+/// bar and its first tile start on the same row in both halves, which is what makes
+/// `MetadataRow`'s tv branch (`.cardHeaderTitle` header, `Space.s22` header→row gap) and the
+/// `Space.s30` shelf→shelf gap a contract rather than an inference.
+#Preview("Home shelves skeleton ↔ loaded (tv)", traits: .fixedLayout(width: 1920, height: 900)) {
+    SkeletonParity(idiom: .tv, columnWidth: 960) {
+        ScrollShell { HomeShelvesSkeleton().skeletonShimmer() }
+    } loaded: {
+        ScrollShell { LoadedHomeShelves() }
     }
 }
 
@@ -847,29 +948,236 @@ private struct LoadedDetailPage: View {
 /// caption stubs, so it's where a double-draw would show (a redaction placeholder painted UNDER
 /// the stub's own bar). Each tile must show exactly two caption bars, and the tile tops must match
 /// the loaded shelf's.
-#Preview("Episode shelves skeleton ↔ loaded", traits: .fixedLayout(width: 1180, height: 900)) {
-    let episodes = (0..<4).map(SkeletonItem.init)
-    return SkeletonParity(idiom: .compact, columnWidth: 590) {
-        ScrollShell { EpisodeListLoadingSkeleton() }
-    } loaded: {
-        ScrollShell {
+/// The loaded season shelves, wrapped exactly as `SeriesDetailView.seasonShelf` wraps them —
+/// `Button { } label: { tile.lockup() }.pressableTileButton()`. The wrapper is the whole point on
+/// tvOS: that `.borderless` style owns the thumbnail↔caption gap there, so an unwrapped `MediaTile`
+/// in the loaded half would measure a tile the app never draws (it resolves to the contained form
+/// on iOS either way, so the compact check is unchanged by it).
+private struct LoadedEpisodeShelves: View {
+    @Environment(\.appIdiom) private var idiom
+
+    var body: some View {
+        let episodes = (0..<4).map(SkeletonItem.init)
         VStack(alignment: .leading, spacing: Space.s22) {
             ForEach(1...2, id: \.self) { season in
                 MetadataRow(
                     title: "Season \(season)",
                     items: episodes,
-                    tileWidth: AppLayout.seriesEpisodeTileWidth(idiom: .compact)
+                    tileWidth: AppLayout.seriesEpisodeTileWidth(idiom: idiom)
                 ) { _ in
-                    MediaTile(
-                        title: "E3 · The One With the Embryos",
-                        artwork: .none,
-                        aspectRatio: MediaImage.landscape,
-                        metadata: .init(leading: "22 min left", trailing: nil)
-                    )
+                    Button {} label: {
+                        MediaTile(
+                            title: "E3 · The One With the Embryos",
+                            artwork: .none,
+                            aspectRatio: MediaImage.landscape,
+                            metadata: .init(leading: "22 min left", trailing: nil)
+                        )
+                        .lockup()
+                    }
+                    .pressableTileButton()
                 }
             }
         }
-        }
     }
+}
+
+#Preview("Episode shelves skeleton ↔ loaded", traits: .fixedLayout(width: 1180, height: 900)) {
+    SkeletonParity(idiom: .compact, columnWidth: 590) {
+        ScrollShell { EpisodeListLoadingSkeleton() }
+    } loaded: {
+        ScrollShell { LoadedEpisodeShelves() }
+    }
+}
+
+/// The tv twin — the second captioned-tile surface (after the SMB wall) where the `.borderless`
+/// lockup, not `MediaTile.metadataGap`, sets the thumbnail↔caption gap. PASS = both shelves' header
+/// bars, first tiles AND second-shelf tops line up, which is only true because
+/// `MediaTileSkeleton` builds its tv placeholder through the same lockup the loaded tile uses.
+#Preview("Episode shelves skeleton ↔ loaded (tv)", traits: .fixedLayout(width: 1920, height: 900)) {
+    SkeletonParity(idiom: .tv, columnWidth: 960) {
+        ScrollShell { EpisodeListLoadingSkeleton() }
+    } loaded: {
+        ScrollShell { LoadedEpisodeShelves() }
+    }
+}
+
+// MARK: - SMB browse wall parity
+
+/// The scroll shell `SMBBrowseView` puts the wall and its skeleton in, so the parity check measures
+/// the screen the app draws rather than a bare grid. `tvRootChromeBypass: true` is the SHARE-ROOT
+/// call site's setting (the level that sits under the tab chrome); a pushed folder level bypasses
+/// nothing, so what this preview certifies is the share root's inset, not both call sites at once.
+private struct SMBWallShell<Content: View>: View {
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        ScrollView { content() }
+            .scrollDisabled(true)
+            .mediaWallContentMargins(iosVertical: Space.s12, tvRootChromeBypass: true)
+    }
+}
+
+/// The loaded browse wall's shape: the shipping `SMBBrowseSortHeader` (tvOS only, empty elsewhere)
+/// over the two `SMBBrowseSection`s the skeleton stands in for, at the idiom's landscape column
+/// count, with the REAL cells — a `FolderBrowseCard` (one caption line) and the `MediaTile` an
+/// `SMBThumbnailTile` resolves to before its frame-grab lands (two caption lines). The real tile is
+/// used rather than `SMBThumbnailTile` itself so the preview needs no `MediaArtworkProvider`
+/// (thumbnailers + a `ServerStore`) to answer a layout question; the tile it composes is identical.
+///
+/// The chip row is not optional dressing: leaving it out landed the tv render's loaded tiles ~104pt
+/// ABOVE the skeleton's and made the preview report a drift the app doesn't have.
+private struct LoadedSMBWall: View {
+    @Environment(\.appIdiom) private var idiom
+
+    var body: some View {
+        let count = AppLayout.landscapeGridColumns(idiom: idiom)
+        // `SMBBrowseView.content`'s own shape: a spacing-0 wrapper so the chip row's bottom
+        // clearance is the only gap under it — the same wrapper `SMBBrowseLoadingSkeleton` uses.
+        VStack(alignment: .leading, spacing: 0) {
+            // Constant bindings — nothing in a preview moves the sort.
+            SMBBrowseSortHeader(
+                field: .constant(SMBBrowseSort.default.field),
+                direction: .constant(SMBBrowseSort.default.direction)
+            )
+            VStack(alignment: .leading, spacing: AppLayout.browseSectionGap(idiom: idiom)) {
+                SMBBrowseSection("Folders") {
+                    smbParityGrid(idiom: idiom, count: count) { _ in
+                        // Wrapped + styled exactly as the wall wraps it (`NavigationLink` there, same
+                        // `pressableTileButton()` style): on tvOS that style is `.borderless`, which
+                        // OWNS the tile↔caption gap, so an unwrapped cell would measure a lockup the
+                        // app never draws.
+                        Button {} label: { FolderBrowseCard(name: "Season 1") }
+                            .pressableTileButton()
+                    }
+                }
+                SMBBrowseSection("Videos") {
+                    smbParityGrid(idiom: idiom, count: count * 2) { _ in
+                        Button {} label: {
+                            MediaTile(
+                                title: "Big Buck Bunny.mkv",
+                                artwork: .none,
+                                aspectRatio: MediaImage.landscape,
+                                metadata: .init(leading: "1.4 GB", trailing: "9 min")
+                            )
+                            .lockup()
+                        }
+                        .pressableTileButton()
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private func smbParityGrid<Cell: View>(
+    idiom: AppIdiom,
+    count: Int,
+    @ViewBuilder cell: @escaping (Int) -> Cell
+) -> some View {
+    LazyVGrid(columns: smbBrowseGridColumns(idiom: idiom), spacing: AppLayout.posterGridRowSpacing(idiom: idiom)) {
+        ForEach(0..<count, id: \.self) { cell($0) }
+    }
+}
+
+/// PASS = the "FOLDERS" header bar and the first folder card start on the same row in both halves,
+/// and the "VIDEOS" header does too (which is what makes the folder section's own height a
+/// contract, not just its top edge). Measure with
+/// `python3 scripts/render-ruler.py --pt-width 1400 --scan-col 0.08,0.58`.
+///
+/// **iOS destination only.** The lockup that owns the tvOS thumbnail↔caption gap is chosen by the
+/// PLATFORM, not by the injected idiom, so rendering this on a tvOS destination gives the loaded
+/// half a gap the `.regular` skeleton branch correctly doesn't reserve (measured there: the Videos
+/// rows sit ~17pt apart). That's the harness disagreeing with itself, not a bug in the skeleton.
+#Preview("SMB browse skeleton ↔ wall (regular)", traits: .fixedLayout(width: 1400, height: 900)) {
+    SkeletonParity(idiom: .regular, columnWidth: 700) {
+        SMBWallShell { SMBBrowseLoadingSkeleton() }
+    } loaded: {
+        SMBWallShell { LoadedSMBWall() }
+    }
+}
+
+/// The tv half of the same check — and two of its metrics are out of reach from an iOS render, so
+/// judge them on a tvOS destination or not at all:
+///
+/// - The sort chip row. `SMBBrowseSortHeader` and its stand-in are both `#if os(tvOS)` inside, so
+///   on iOS the row is simply absent from both halves; what an iOS render shows is the SECTIONS at
+///   the tv idiom's spacing tokens.
+/// - The thumbnail↔caption gap. On tvOS both halves are `.borderless` button lockups whose gap the
+///   system owns (`MediaTileSkeleton` builds the same lockup); on iOS both resolve to the contained
+///   stack, so an iOS render exercises neither the lockup nor its gap.
+#Preview("SMB browse skeleton ↔ wall (tv)", traits: .fixedLayout(width: 1920, height: 1200)) {
+    SkeletonParity(idiom: .tv, columnWidth: 960) {
+        SMBWallShell { SMBBrowseLoadingSkeleton() }
+    } loaded: {
+        SMBWallShell { LoadedSMBWall() }
+    }
+}
+
+// MARK: - tvOS lockup-gap diagnostic
+
+/// The evidence behind `MediaTileSkeleton`'s tv branch, kept as a permanent asset because the two
+/// conditions it isolates are invisible in the source and unguessable from the docs. Render on a
+/// tvOS destination and measure the tile bottoms with
+/// `python3 scripts/render-ruler.py --pt-width 1400 --scan-col 0.07,0.28,0.49,0.70`
+/// (each tile is on a red ground, so its run IS its layout bounds).
+///
+/// Measured 2026-08-28, tvOS destination, 260pt-wide landscape tiles:
+///   A loaded tile, enabled ..................................... bottom y=336px  ← reference
+///   B stand-in `MediaThumbnail` + stubs, `.focusable(false)` ... bottom y=336px  ✅ what ships
+///   C overlaid `MediaThumbnail` + stubs, `.focusable(false)` ... bottom y=336px
+///   D `SkeletonBlock` artwork + stubs, `.focusable(false)` ..... bottom y=321px  ❌ 14pt short
+///
+/// D is the shape the skeleton used to have: no image child, so tvOS applies no caption lockup.
+/// A fifth variant, B with `.disabled(true)` instead of `.focusable(false)`, also lands at 321 —
+/// which is why the placeholder refuses focus rather than disabling itself.
+#Preview("tv lockup gap · skeleton compositions", traits: .fixedLayout(width: 1400, height: 400)) {
+    let stubs = VStack(alignment: .leading, spacing: MediaTile.metadataLineSpacing) {
+        SkeletonText(font: MediaTile.metadataTitleFont)
+        SkeletonText(font: MediaTile.metadataDetailFont, width: 56)
+    }
+    let art = MediaThumbnail(
+        artwork: .none, aspectRatio: MediaImage.landscape, accessibilityLabel: ""
+    )
+    return HStack(alignment: .top, spacing: 20) {
+        // A — the loaded tile: the number the rest have to match.
+        Button {} label: {
+            MediaTile(
+                title: "Big Buck Bunny.mkv", artwork: .none,
+                aspectRatio: MediaImage.landscape,
+                metadata: .init(leading: "1.4 GB", trailing: "9 min")
+            )
+            .lockup()
+        }
+        .pressableTileButton().frame(width: 260).background(.red)
+        // B — what `MediaTileSkeleton` builds.
+        Button {} label: {
+            TileLockup(artwork: art.skeletonStandIn(cornerRadius: Radius.tile)) { stubs }
+        }
+        .pressableTileButton().focusable(false).frame(width: 260).background(.red)
+        // C — the same thumbnail covered rather than hidden (also correct; B reuses the shared
+        // `skeletonStandIn` idiom and paints no chrome through the cover).
+        Button {} label: {
+            TileLockup(
+                artwork: art.overlay {
+                    RoundedRectangle(cornerRadius: Radius.tile, style: .continuous).fill(Color.fill)
+                }
+            ) { stubs }
+        }
+        .pressableTileButton().focusable(false).frame(width: 260).background(.red)
+        // D — a Shape for artwork: the lockup sees no image and the caption doesn't move.
+        Button {} label: {
+            TileLockup(
+                artwork: SkeletonBlock(cornerRadius: Radius.tile)
+                    .aspectRatio(MediaImage.landscape, contentMode: .fit)
+            ) { stubs }
+        }
+        .pressableTileButton().focusable(false).frame(width: 260).background(.red)
+    }
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    .padding(.top, 20)
+    .background(.black)
+    .environment(\.appIdiom, .tv)
+    .preferredColorScheme(.dark)
 }
 #endif

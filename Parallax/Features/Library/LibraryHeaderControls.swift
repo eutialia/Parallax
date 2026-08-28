@@ -1,15 +1,15 @@
 import SwiftUI
 import ParallaxCore
 
-/// Skeleton capsule metrics for the tvOS in-content header's loading state — shared by the live
-/// `LibraryHeaderControls` and the grids' first-load placeholders so the skeleton→real-controls
-/// swap is shift-free. The real Genre/Sort chips are native `.glass` Menus that size themselves
-/// from their labels, so these approximate that footprint; the height reuses the app-wide control
-/// height.
+/// Capsule metrics for the ONE placeholder the live header still draws itself: the Genre slot while
+/// genres are in flight (`genreSlot` below). It's a hand-sized stand-in for a control that doesn't
+/// exist yet — the genre list decides the Menu's label, so there is nothing to measure — and it's
+/// deliberately the only one left. `LibraryHeaderControlsSkeleton` no longer copies these: it
+/// renders THIS view redacted, so the first-load row is the real control's footprint by
+/// construction. (A `sortWidth` sibling used to guess the Sort chip too; it's gone with the copies.)
 enum LibraryHeaderChip {
     static let height: CGFloat = AppLayout.tvControlHeight
     static let genreWidth: CGFloat = 140
-    static let sortWidth: CGFloat = 110
 }
 
 /// The tvOS in-content Genre + Sort control row.
@@ -36,6 +36,9 @@ struct LibraryHeaderControls: View {
     let onSelectGenre: (String?) -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Read, not just inherited: a redacted header swaps each live chip for a flat stand-in
+    /// (`chipOrStandIn`). See `LibraryHeaderControlsSkeleton`.
+    @Environment(\.redactionReasons) private var redactionReasons
 
     var body: some View {
         // No `GlassEffectContainer` here: this row only renders on tvOS, where the container
@@ -51,7 +54,7 @@ struct LibraryHeaderControls: View {
         HStack(spacing: hasGenreSlot ? Space.s12 : 0) {
             genreSlot
                 .frame(maxWidth: hasGenreSlot ? .infinity : 0, alignment: .trailing)
-            sortMenu
+            chipOrStandIn(sortMenu)
                 .frame(maxWidth: .infinity, alignment: hasGenreSlot ? .leading : .center)
         }
         .padding(.top, AppLayout.chipRowTopPadding)
@@ -76,7 +79,25 @@ struct LibraryHeaderControls: View {
         if isLoadingGenres {
             Capsule().fill(Color.fill).frame(width: LibraryHeaderChip.genreWidth, height: LibraryHeaderChip.height)
         } else if !availableGenres.isEmpty {
-            genreMenu
+            chipOrStandIn(genreMenu)
+        }
+    }
+
+    /// A chip as the header draws it, or — under `.placeholder` redaction — as the skeleton does:
+    /// the real Menu `.hidden()` with a flat capsule painted over its layout (`skeletonStandIn`).
+    ///
+    /// Redaction alone isn't enough here. It masks the label's glyphs but leaves the native
+    /// `.glass` capsule ON, and `skeletonShimmer()` masks its sweep with a SECOND copy of the
+    /// content — so the glass composited twice and the placeholder read as a dimmed live control
+    /// instead of the flat bar every other skeleton draws. The stand-in keeps the win that made the
+    /// skeleton render the real header in the first place (the hidden Menu still sizes the slot)
+    /// and drops the material.
+    @ViewBuilder
+    private func chipOrStandIn(_ chip: some View) -> some View {
+        if redactionReasons.contains(.placeholder) {
+            chip.skeletonStandIn(in: Capsule())
+        } else {
+            chip
         }
     }
 
@@ -128,19 +149,46 @@ struct LibraryHeaderControls: View {
     }
 }
 
-/// The tvOS header's loading skeleton — two centered capsules matching `LibraryHeaderControls`'
-/// geometry (both slots present) so the skeleton→real-controls swap stays symmetric and
-/// shift-free, including its padding.
+/// The tvOS header's loading skeleton: the REAL `LibraryHeaderControls`, fed placeholder inputs and
+/// redacted. The row's height, its symmetry about the center axis and its top/bottom padding are
+/// then the shipping control's by construction — where the two hand-guessed capsules it replaces
+/// (140 × 64 and 110 × 64) only approximated a native `.glass` Menu, which sizes itself from its
+/// label and its platform's type ramp.
+///
+/// `isLoadingGenres: true` is what the grid itself passes before the genre list lands, so the Genre
+/// slot stays RESERVED here instead of collapsing to width 0 (the `!isLoadingGenres &&
+/// availableGenres.isEmpty` branch) — the skeleton shows exactly what the loaded header shows while
+/// its genres are still in flight, and the swap moves nothing.
+///
+/// `.redacted(reason: .placeholder)` is the SIGNAL, not the paint: `LibraryHeaderControls` reads it
+/// and swaps each chip for a flat capsule over the hidden real Menu (`chipOrStandIn`), so the bar
+/// carries the shipping control's frame with none of its glass.
+///
+/// `.disabled(true)` is load-bearing on tvOS. A placeholder that takes focus is a bug (Select opens
+/// a menu of nothing), and disabled controls are skipped by the focus engine — the one place its
+/// documented tvOS anti-pattern status is exactly what we want. The hidden Menu inside the stand-in
+/// can't take focus either ("Hidden views are invisible and can't receive or respond to
+/// interactions" — `View.hidden()`; `UIFocusDebugger.checkFocusability` lists `isHidden` among its
+/// blockers), so the two are belt and braces. No `.allowsHitTesting(false)`: `.disabled` already
+/// blocks activation, and the focus-engine reference flags that modifier as unreliable on tvOS.
+///
+/// The row's METRIC comes from the hidden real control, so it tracks whatever the native Menu sizes
+/// itself to. Certifying that on the tvOS type ramp needs a render on a tvOS destination — the
+/// parity preview below reads the iOS ramp when Xcode's destination is a simulator iPhone.
 struct LibraryHeaderControlsSkeleton: View {
     var body: some View {
-        HStack(spacing: Space.s12) {
-            Capsule().fill(Color.fill).frame(width: LibraryHeaderChip.genreWidth, height: LibraryHeaderChip.height)
-                .frame(maxWidth: .infinity, alignment: .trailing)
-            Capsule().fill(Color.fill).frame(width: LibraryHeaderChip.sortWidth, height: LibraryHeaderChip.height)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(.top, AppLayout.chipRowTopPadding)
-        .padding(.bottom, AppLayout.chipRowBottomClearance)
+        LibraryHeaderControls(
+            sortField: ItemSort.defaultForLibrary.field,
+            sortDirection: ItemSort.defaultForLibrary.direction,
+            selectedGenre: nil,
+            availableGenres: [],
+            isLoadingGenres: true,
+            onSelectField: { _ in },
+            onSelectDirection: { _ in },
+            onSelectGenre: { _ in }
+        )
+        .redacted(reason: .placeholder)
+        .disabled(true)
     }
 }
 
@@ -218,5 +266,67 @@ private func libraryHeaderMenu<Content: View>(
     }
     .background(Color.background)
     .tint(Color.label)
+}
+
+/// Skeleton ↔ live header parity, three rows: the redacted placeholder, the live control once
+/// genres have landed, and a chip-metric PROBE.
+///
+/// The probe is the load-bearing part. `.glass` over black is invisible to a luminance scan, so each
+/// probe paints the SAME Sort menu on `Color.fill` — the fill takes the control's own frame, which
+/// the ruler can then read. Live (left) and redacted + disabled (right) must measure the same
+/// height: that is the check that the skeleton's inertness costs no geometry. It stays the right
+/// question after the chips became stand-ins, because the capsule the skeleton paints takes its
+/// frame from a redacted + disabled Menu — this one, `.hidden()`.
+///
+/// `python3 scripts/render-ruler.py --pt-width 900 --scan-col 0.28,0.72` — the two probe runs must
+/// share a top edge and a height.
+///
+/// 420, not the ~270 the three rows need on iOS: at the tvOS ramp's 64pt menus the same stack runs
+/// past 260 and the probe row clips off the canvas, which is the row that carries the check.
+#Preview("Header skeleton ↔ live", traits: .fixedLayout(width: 900, height: 420)) {
+    VStack(spacing: 0) {
+        LibraryHeaderControlsSkeleton()
+        LibraryHeaderControls(
+            sortField: .title,
+            sortDirection: .ascending,
+            selectedGenre: nil,
+            availableGenres: ["Action", "Drama"],
+            isLoadingGenres: false,
+            onSelectField: { _ in },
+            onSelectDirection: { _ in },
+            onSelectGenre: { _ in }
+        )
+        HStack(alignment: .top, spacing: 0) {
+            sortChipProbe(inert: false)
+                .frame(maxWidth: .infinity)
+            sortChipProbe(inert: true)
+                .frame(maxWidth: .infinity)
+        }
+        .padding(.top, Space.s30)
+    }
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    .background(.black)
+    .preferredColorScheme(.dark)
+    .tint(Color.label)
+}
+
+/// One probe chip — the shipping Sort menu on an opaque fill so its frame is measurable, optionally
+/// wearing the skeleton's `.redacted` + `.disabled` pair.
+@ViewBuilder
+private func sortChipProbe(inert: Bool) -> some View {
+    let chip = libraryHeaderMenu(
+        title: "Sort",
+        systemImage: "arrow.up.arrow.down",
+        accessibilityLabel: "Sort"
+    ) {
+        Text("Sort")
+    }
+    .background(Color.fill)
+
+    if inert {
+        chip.redacted(reason: .placeholder).disabled(true)
+    } else {
+        chip
+    }
 }
 #endif
