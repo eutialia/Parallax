@@ -52,7 +52,16 @@ final class PlayerViewModel {
         }
     }
 
-    private(set) var phase: Phase = .idle
+    /// `didSet` rather than a line at each of the ten `phase = .failed` sites: a failed session
+    /// publishes no further position beat, so a seek hold left standing has nothing left that
+    /// could ever hand the bar back — it would ride under the error scrim and into the retry as
+    /// a resume point nothing played. Every route into `.failed` owes that, and a rule the
+    /// property enforces cannot be forgotten by the next one.
+    private(set) var phase: Phase = .idle {
+        didSet {
+            if case .failed = phase { seekHold = nil }
+        }
+    }
     private(set) var engine: (any PlaybackEngine)?
     var isPiPAvailable: Bool { engine?.capabilities.supportsPiP ?? false }
     var isVideoAirPlayAvailable: Bool { engine?.capabilities.supportsVideoAirPlay ?? false }
@@ -617,10 +626,17 @@ final class PlayerViewModel {
     /// play reads "Loading").
     private(set) var isSwitchingTracks = false
     private var lastPosition: CMTime = .zero
-    /// A scrub/seek commit in flight: `currentPosition` reads the committed target, not
-    /// the engine's stale clock, until the engine lands there. See `SeekHold` and
-    /// `publish(position:isTransportBeat:)`. Nil whenever no seek is outstanding.
-    private var seekHold: SeekHold?
+    /// A scrub/seek commit in flight: `currentPosition` reads the committed target (or the
+    /// engine's own forward projection off it), not the engine's stale clock, until the engine
+    /// reports an OBSERVED one. See `SeekHold` and `publish(position:provenance:)`. Nil
+    /// whenever no seek is outstanding.
+    ///
+    /// `private(set)` rather than private for the paths that DROP it — an abandoned re-anchor,
+    /// a failed phase, the `handle` watchdog. Every one of those is invisible from the
+    /// published positions (a hold and no hold treat each provenance identically; only the
+    /// window's END differs), so a test that cannot read it can only assert the defect one
+    /// window later, if at all.
+    private(set) var seekHold: SeekHold?
     private let nowPlaying: any NowPlayingUpdating
     private var itemTitle: String = ""
     /// HUD-only episode number prepended to `title` (e.g. `"2. <name>"`); nil for
@@ -729,6 +745,13 @@ final class PlayerViewModel {
     /// Injectable so tests don't wait wall-clock seconds for it to fire.
     private let backfillDelay: Duration
 
+    /// The clock `SeekHold` is armed and judged against — `commitScrubSeek` stamps `armedAt`
+    /// with it and `publish` passes it as `now`. Injectable for one reason: `SeekHold.watchdog`
+    /// is 20 s, and the branch it guards (an engine that stops observing forever) is otherwise
+    /// only reachable by a test that waits 20 wall-clock seconds. One closure for both reads so
+    /// they can never disagree about what "now" is.
+    private let seekHoldNow: @Sendable () -> ContinuousClock.Instant
+
     /// The user's subtitle typeface, read at asset-construction time. A closure rather
     /// than a value: `SubtitlePreferences` loads its persisted style asynchronously, so a
     /// value captured when the view model was built could be the pre-load default.
@@ -770,7 +793,8 @@ final class PlayerViewModel {
         smbResumeStore: SMBResumeStore = .shared,
         backfillThumbnail: @escaping @Sendable (Duration?, Bool, @escaping @Sendable () async -> Data?) async -> Void = { _, _, _ in },
         backfillDelay: Duration = .seconds(8),
-        subtitleFontDesign: @escaping @MainActor () -> SubtitleFontDesign = { .sansSerif }
+        subtitleFontDesign: @escaping @MainActor () -> SubtitleFontDesign = { .sansSerif },
+        seekHoldNow: @escaping @Sendable () -> ContinuousClock.Instant = { .now }
     ) {
         self.deviceProfileBuilder = deviceProfileBuilder
         self.playbackInfo = playbackInfo
@@ -791,6 +815,7 @@ final class PlayerViewModel {
         self.backfillThumbnail = backfillThumbnail
         self.backfillDelay = backfillDelay
         self.subtitleFontDesign = subtitleFontDesign
+        self.seekHoldNow = seekHoldNow
     }
 
     isolated deinit {
@@ -2459,10 +2484,11 @@ final class PlayerViewModel {
         // Publish the destination BEFORE the seek. An out-of-buffer transcode
         // commit re-anchors, and `performTranscodeReload` raises the `.loading` scrim and
         // drops every engine beat for its whole duration — so without this the bar would
-        // keep reading the pre-scrub clock behind the scrim and snap back to A. The hold
-        // keeps it there until an engine beat lands near the target (or insists otherwise
-        // for `SeekHold.staleBeatCeiling` transport beats).
-        seekHold = SeekHold(target: target)
+        // keep reading the pre-scrub clock behind the scrim and snap back to A. The hold keeps
+        // it there — moving only with the engine's own `.projected` beats — until an
+        // `.observed` one lands: the seek-settle contract's "this is my clock, with no seek of
+        // mine outstanding" (`PositionProvenance`).
+        seekHold = SeekHold(target: target, armedAt: seekHoldNow())
         lastPosition = target
         currentPosition = target
         // Now Playing extrapolates its clock from the last write, and a re-anchor drops
@@ -2551,7 +2577,14 @@ final class PlayerViewModel {
     ) async -> TrackSwitchOutcome {
         // The chips stay mounted through .loading — a second pick (or seek) mid-reload
         // must wait for (not race) the in-flight reload.
-        guard !isSwitchingTracks, let item = playingItem else { return .abandoned }
+        guard !isSwitchingTracks, let item = playingItem else {
+            // The re-anchor is not happening, and `drainReanchorSeeks` drops the target on any
+            // non-`.completed` outcome — so a hold armed at it now points at a place nothing
+            // will play. Same reasoning (and same fix) as `fallBackAfterFailedSwitch`: hand the
+            // bar and the resume point back to whatever stream is actually running.
+            seekHold = nil
+            return .abandoned
+        }
 
         // Keep the engine + its layer alive across the reload (beginPlayback reloads
         // it). Suppress the outgoing stream's trailing beats while we do.
@@ -2681,9 +2714,10 @@ final class PlayerViewModel {
         }
         // The re-anchor never happened: this resumes the OLD stream at the OLD position, so
         // a hold armed at the seek target now points at a place nothing will play. Left
-        // standing it pinned the bar there for the whole stale-beat budget over video
-        // running somewhere else, and left `lastPosition` (the resume/PlaybackStopped point)
-        // on the target. The resumed stream's next beat re-owns both.
+        // standing it pins the bar there until the resumed stream's first beat, and leaves
+        // `lastPosition` (the resume/PlaybackStopped point) on the target in the meantime —
+        // so a dismissal in that window records a place nothing ever played. Dropping it
+        // here hands both back to the resumed stream at once.
         seekHold = nil
         phase = .playing
         desiredPlaying = true
@@ -2704,11 +2738,34 @@ final class PlayerViewModel {
 
     /// The ONE writer of `currentPosition` for engine beats — every `.playing`/`.paused`/
     /// `.buffering` position goes through here so the in-flight `seekHold` can't be
-    /// bypassed by one branch. While a hold stands, a stale beat leaves BOTH published
-    /// positions at the target: `lastPosition` is the final PlaybackStopped/resume point,
-    /// and a dismissal mid-reload must record where the user seeked to, not where the
-    /// dying stream's clock happened to sit. Everything else about the beat (phase,
-    /// duration, buffered, reporting) is the caller's and is unaffected.
+    /// bypassed by one branch. Everything else about the beat (phase, duration, buffered,
+    /// reporting) is the caller's and is unaffected.
+    ///
+    /// While a hold stands the two published positions come apart, along the seam
+    /// `PositionProvenance` cuts:
+    ///  • `.stale` — the engine's clock, still behind its own seek. Written nowhere: it is the
+    ///    pre-seek position, and showing it is the scrub snap-back itself.
+    ///  • `.projected` — the engine's forward estimate off the committed target (VLC's
+    ///    extrapolation while libvlc's clock catches up, either engine's target echo). Written
+    ///    to `currentPosition` ONLY: the picture really is running from the target, so the bar
+    ///    must advance with it instead of freezing for the whole hold. Not to `lastPosition`
+    ///    — the resume point stays the committed target until an observed clock confirms one,
+    ///    so a dismissal mid-reload records where the user seeked TO, not a guess about how
+    ///    far the guess has run.
+    ///  • `.observed` — the engine owns the position again: release, and write both.
+    ///
+    /// **The rule, stated once, and it is the same with or without a hold armed:** `.observed`
+    /// writes both, `.projected` writes `currentPosition` only, `.stale` writes nothing. The
+    /// hold decides who ends the window, never who may be believed — and the no-hold route is
+    /// not a safe place to relax it. A `.projected` beat with no hold is the engine's guess off
+    /// a seek the VM never committed (a PiP/remote scrub, an engine-internal re-anchor, or a
+    /// hold this VM's own watchdog already dropped while the engine is still projecting), and
+    /// writing it to `lastPosition` persists a fabricated extrapolation as the resume point.
+    ///
+    /// `.stale` is dropped on every route for the mirror reason: with no hold armed it is
+    /// still the position an unresolved seek moved away from, and on RELEASE it is the watchdog
+    /// firing on whatever beat happened to arrive — ending the hold is right, adopting that
+    /// position is the snap-back.
     ///
     /// The split the callers must respect: USER-FACING surfaces (the bar, Now Playing) read
     /// the held clock (`currentPosition`), while `playbackInfo.reportStart`/`reportProgress`
@@ -2716,23 +2773,58 @@ final class PlayerViewModel {
     /// while the UI is pinned. `reportStopped` is the exception that proves it: it reports
     /// `lastPosition`, which IS the target while a hold stands, because a dismissal
     /// mid-reload has to resume where the user seeked to.
-    private func publish(position: CMTime, isTransportBeat: Bool) {
-        guard var hold = seekHold else {
-            lastPosition = position
-            currentPosition = position
+    private func publish(position: CMTime, provenance: PositionProvenance) {
+        // An invalid/indefinite CMTime is not a position (AVPlayer before the item's duration
+        // resolves, VLC between media). Dropped HERE, ahead of the hold, so no route reaches
+        // `currentPosition` with a NaN the bar's fraction, the remaining-time label and the
+        // resume point would all inherit.
+        guard CMTimeGetSeconds(position).isFinite else { return }
+        guard let hold = seekHold else {
+            // No hold does not make a beat any more believable than the engine said it was.
+            // `.stale` is the position an unresolved seek moved AWAY from — writing it is the
+            // scrub snap-back with the hold merely absent — and `.projected` is still a guess
+            // off a target: display-safe, so the bar follows it, but never a resume point.
+            switch provenance {
+            case .stale: return
+            case .projected: currentPosition = position
+            case .observed:
+                lastPosition = position
+                currentPosition = position
+            }
             return
         }
-        switch hold.absorb(position: position, isTransportBeat: isTransportBeat) {
+        switch hold.absorb(provenance: provenance, now: seekHoldNow()) {
         case .hold:
-            seekHold = hold   // the mutated stale-beat count
+            // The bar follows the engine's own projection off the target and freezes on a
+            // clock that is still behind it. `lastPosition` follows neither: until an observed
+            // clock lands, the committed target is the only defensible resume point.
+            if provenance == .projected { currentPosition = position }
         case .release:
             seekHold = nil
+            // Dropping the hold and ADOPTING the beat are two decisions, and the watchdog is
+            // where they come apart: it releases on whatever beat happened to arrive, which
+            // can be `.stale`. Ending the hold is right — an engine that never observes again
+            // must not freeze the bar forever — but taking the pre-seek clock it carries is
+            // the snap-back the hold existed to prevent, now performed by the exit itself.
+            guard provenance != .stale else { return }
             lastPosition = position
             currentPosition = position
         }
     }
 
     private func handle(_ state: PlaybackState) async {
+        // The seek hold's watchdog, evaluated on EVERY state and ahead of every gate below.
+        // `publish` is the natural place for it and the wrong one: it needs a position-carrying
+        // beat that reaches it, and the windows the watchdog exists for are exactly the ones
+        // where none does — a track switch or a reactive reroute swallows every beat at the
+        // guards below, and a dead engine emits nothing but `.failed`. The bar would then stay
+        // pinned at the target with nothing left to unpin it.
+        //
+        // It never adopts a position: this is the anti-wedge exit, and the beat that happens to
+        // arrive at the deadline says nothing about where the media is (see `publish`).
+        if let hold = seekHold, seekHoldNow() - hold.armedAt >= SeekHold.watchdog {
+            seekHold = nil
+        }
         // While a transcode track switch reloads the reused engine, ignore the
         // outgoing stream's trailing beats — a stale `.playing` would claim the new
         // session's reportStart and the server would never register it starting.
@@ -2806,7 +2898,7 @@ final class PlayerViewModel {
                     await applyServerPreferredTracks()
                 }
             }
-        case .playing(let position, let duration, let buffered):
+        case .playing(let position, let duration, let buffered, let provenance):
             phase = .playing
             // First live beat after an engine-reusing reload (beats are dropped while
             // `isSwitchingTracks`): the new session is rendering, so release the held frame.
@@ -2823,7 +2915,7 @@ final class PlayerViewModel {
             }
             isPlaying = true
             clearStall()
-            publish(position: position, isTransportBeat: true)
+            publish(position: position, provenance: provenance)
             applyDuration(duration)
             bufferedTo = buffered
             nowPlaying.update(position: currentPosition, duration: duration, isPlaying: true, title: itemTitle)
@@ -2850,7 +2942,7 @@ final class PlayerViewModel {
                 didScheduleThumbnailBackfill = true
                 scheduleThumbnailBackfill()
             }
-        case .paused(let position, let duration, let buffered):
+        case .paused(let position, let duration, let buffered, let provenance):
             // A LIVE beat like .playing: a paused scrub's re-anchor is re-paused by
             // `commitScrubSeek` and may never emit .playing, and a paused AVPlayer still
             // renders the seeked-to frame, so the held frame is released here too. Again
@@ -2859,7 +2951,7 @@ final class PlayerViewModel {
             unfreezeVideoSurface()
             isPlaying = false
             clearStall()
-            publish(position: position, isTransportBeat: true)
+            publish(position: position, provenance: provenance)
             applyDuration(duration)
             bufferedTo = buffered
             nowPlaying.update(position: currentPosition, duration: duration, isPlaying: false, title: itemTitle)
@@ -2875,26 +2967,31 @@ final class PlayerViewModel {
             } else if resolved == nil, smbSession != nil {
                 saveSMBResumeThrottled()
             }
-        case .buffering(let position, let duration, let buffered):
+        case .buffering(let position, let duration, let buffered, let provenance):
             // Phase and isPlaying are untouched: the surface stays up and the
             // user's intent is still "playing" — only the stall flag changes,
             // driving the light scrim. No progress report either: the position
             // isn't advancing, and a beat here could race reportStart.
             //
-            // A seek fetch is real by construction, so its scrim shows immediately (no
-            // 400ms gap with a bare paused glyph). Two ways to know one is in flight:
-            // a live `seekHold` (a commit of ours, whose target `currentPosition` already
-            // reads — so the jump test below sees a delta of ZERO and can't spot it), or a
-            // position JUMP, which is how a seek WE didn't commit announces itself (a
-            // remote/PiP scrub, an engine-internal re-anchor). Contiguous-position beats
-            // with no hold (mid-stream underruns, the momentary evaluating-buffering
-            // flicker after an in-buffer resume) keep the debounce so they can't flash it.
-            let isSeekFetch = seekHold != nil
+            // A seek fetch is real by construction, so its scrim shows immediately (no 400ms
+            // gap with a bare paused glyph). Two independent ways to know one is in flight,
+            // and both are needed:
+            //
+            //  • The LABEL. A beat that is not `.observed` is the engine saying its own seek is
+            //    unresolved — VLC's starvation scrim pinned at the target, AVKit's fetch under
+            //    an open window. This covers a commit of ours without consulting the hold, and
+            //    a seek we never issued but the engine did know about.
+            //  • The JUMP. AVKit's PiP and `AVPlayerViewController` scrub the AVPlayer
+            //    DIRECTLY, never through `seek(to:)`, so `inFlightSeeks` stays 0 and the
+            //    resulting fetch is honestly labelled `.observed` — the engine has no idea a
+            //    seek happened. A position discontinuity is the only evidence left.
+            //
+            // Contiguous `.observed` beats (mid-stream underruns, the momentary
+            // evaluating-buffering flicker after an in-buffer resume) match neither and keep
+            // the debounce, so they can't flash the scrim.
+            let isSeekFetch = provenance != .observed
                 || abs(CMTimeGetSeconds(position) - CMTimeGetSeconds(currentPosition)) > 2
-            // `isTransportBeat: false` — a buffering beat is the engine saying "still
-            // fetching", never evidence that a held seek target is wrong, so it can't
-            // spend the hold's stale-beat budget.
-            publish(position: position, isTransportBeat: false)
+            publish(position: position, provenance: provenance)
             applyDuration(duration)
             bufferedTo = buffered
             if isSeekFetch {
@@ -2982,6 +3079,11 @@ final class PlayerViewModel {
             // retry. Still fenced while exiting, where the freeze is the dismissal's, not
             // this session's.
             unfreezeVideoSurface()
+            // …and any seek hold, for the same reason: a failed session emits no further
+            // position beat, so nothing else would ever hand the bar back. The error scrim
+            // owns the screen from here; a target pinned under it would survive into the
+            // retry as a resume point nothing ever played.
+            seekHold = nil
             phase = .failed(Self.map(error))
         }
     }

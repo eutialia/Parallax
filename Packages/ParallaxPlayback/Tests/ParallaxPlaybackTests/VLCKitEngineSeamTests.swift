@@ -15,33 +15,6 @@ import ParallaxTestScaling
 ///
 /// The spy models 3.x's clock honestly — a `time` write is recorded but does not change what
 /// the getter returns — which is exactly the condition every assertion here turns on.
-/// Waits for the progress poll to produce `condition`. 3.x has no seek-completion or
-/// track-selection callback, so the poll IS the engine's only settle signal — and its 500ms
-/// tick shares the MainActor with every other suite, which makes a fixed sleep a flake.
-@MainActor
-private func waitForPoll(
-    _ condition: () -> Bool, timeout: Duration = CITimeScale.seconds(5)
-) async throws {
-    let deadline = ContinuousClock.now + timeout
-    while !condition(), ContinuousClock.now < deadline {
-        try await Task.sleep(for: .milliseconds(25))
-    }
-}
-
-/// `waitForPoll` where expiry is a FAILURE. The "the reassert stood down" tests assert that
-/// nothing happened, which is indistinguishable from the poll never having been scheduled —
-/// so they first drive a positive control through this, proving the 500 ms tick really ran.
-@MainActor
-private func requirePoll(
-    _ condition: () -> Bool,
-    _ what: Comment,
-    timeout: Duration = CITimeScale.seconds(5),
-    sourceLocation: SourceLocation = #_sourceLocation
-) async throws {
-    try await waitForPoll(condition, timeout: timeout)
-    #expect(condition(), what, sourceLocation: sourceLocation)
-}
-
 /// Drives the progress poll until it has published two distinct clock advances, so a
 /// following "nothing else was written" assertion is a real observation and not a silent poll.
 /// Returns with the engine playing.
@@ -49,9 +22,9 @@ private func requirePoll(
 private func tickThePollTwice(_ engine: VLCKitEngine, _ spy: SpyVLCPlayer) async throws {
     await engine.play()
     spy.advanceClock(toMs: 1_000)
-    try await requirePoll({ CMTimeGetSeconds(engine.currentTime) == 1 }, "the poll never ticked")
+    try await requireEventually({ CMTimeGetSeconds(engine.currentTime) == 1 }, "the poll never ticked")
     spy.advanceClock(toMs: 2_000)
-    try await requirePoll({ CMTimeGetSeconds(engine.currentTime) == 2 }, "the poll ticked only once")
+    try await requireEventually({ CMTimeGetSeconds(engine.currentTime) == 2 }, "the poll ticked only once")
 }
 
 @Suite("VLCKitEngine — the client-facing display clock")
@@ -110,11 +83,11 @@ struct VLCKitDisplayClockTests {
         await engine.seek(to: CMTime(seconds: 60, preferredTimescale: 1_000))
 
         spy.advanceClock(toMs: 60_000)      // libvlc's time-changed event lands
-        try await waitForPoll { CMTimeGetSeconds(engine.currentTime) == 60 }
+        try await pollUntil { CMTimeGetSeconds(engine.currentTime) == 60 }
         #expect(CMTimeGetSeconds(engine.currentTime) == 60)
 
         spy.advanceClock(toMs: 61_000)
-        try await waitForPoll { CMTimeGetSeconds(engine.currentTime) == 61 }
+        try await pollUntil { CMTimeGetSeconds(engine.currentTime) == 61 }
         #expect(CMTimeGetSeconds(engine.currentTime) == 61)
         await engine.teardown()
     }
@@ -222,7 +195,7 @@ struct VLCKitSubtitleControlTests {
         spy.currentVideoSubTitleDelay = 0    // libvlc dropped it
         await engine.play()
 
-        try await waitForPoll { spy.currentVideoSubTitleDelay == -250_000 }
+        try await pollUntil { spy.currentVideoSubTitleDelay == -250_000 }
         #expect(spy.currentVideoSubTitleDelay == -250_000)
         #expect(await engine.debugSnapshot().subtitleDelayMs == -250)
         await engine.teardown()
@@ -365,9 +338,9 @@ struct VLCKitTeardownTests {
         engine.scheduleDetachedStop()                        // stop B, assigned mid-suspension
         spy.releaseHeldStop()                                // A completes; B stays parked
 
-        try await waitForPoll({ spy.stopCalls == 1 })
+        try await pollUntil({ spy.stopCalls == 1 })
         // The bug nils the reference the moment A returns; the fix keeps joining B.
-        try await waitForPoll({ engine.pendingStopTask == nil }, timeout: .milliseconds(500))
+        try await pollUntil({ engine.pendingStopTask == nil }, timeout: .milliseconds(500))
         #expect(engine.pendingStopTask != nil)
 
         spy.stopHolding()
@@ -398,6 +371,267 @@ struct VLCKitEventsConfigurationTests {
     func constructionLeavesTheEventsConfigurationInstalled() async {
         let engine = VLCKitEngine(control: SpyVLCPlayer())
         #expect(VLCLibrary.sharedEventsConfiguration is VLCEventsLegacyConfiguration)
+        await engine.teardown()
+    }
+}
+
+/// The engine half of the seek-settle contract (`PositionProvenance`): a beat is `.observed`
+/// only when its position is the decoder's own clock with no seek outstanding. VLC's holds
+/// publish `.projected` guesses — the seek's target echoed back, then an extrapolation off it —
+/// and used to ship them indistinguishable from a real landing, which is what let an expired
+/// hold republish the PRE-seek clock as `.playing`. Nothing here is ever `.stale`: while a hold
+/// stands the engine publishes the held value, so libvlc's lying clock never reaches the wire.
+@Suite("VLCKitEngine — the seek-settle contract", .timeLimit(.minutes(2)))
+@MainActor
+struct VLCKitSeekSettleTests {
+
+    private func playingEngine(
+        _ spy: SpyVLCPlayer, atMs: Int32, stallDeadline: Duration = .seconds(45)
+    ) async throws -> VLCKitEngine {
+        spy.advanceClock(toMs: atMs)
+        let engine = VLCKitEngine(control: spy, stallDeadline: stallDeadline)
+        try await engine.load(.fixture())
+        await engine.play()
+        return engine
+    }
+
+    @Test("every beat from seek() until convergence is projected; the first converged beat is observed")
+    func holdBeatsAreProjectedUntilTheClockConverges() async throws {
+        let spy = SpyVLCPlayer()
+        let engine = try await playingEngine(spy, atMs: 10_000)
+        let log = PositionBeatLog(engine)
+
+        // Not a vacuous pass: a live beat off the untouched clock IS observed.
+        try await requireEventually({ log.beats.contains(PositionBeat(.playing(
+            10, duration: .indefinite
+        ))!) }, "the poll never published an observed live beat")
+
+        await engine.seek(to: CMTime(seconds: 60, preferredTimescale: 1_000))
+        // The seek echo plus at least two hold beats — libvlc's clock is still at 10s
+        // throughout (the spy models 3.x: a `time` write does not move the getter).
+        try await requireEventually({ log.from(60).count >= 3 }, "the hold never published")
+        #expect(log.from(60).allSatisfy { $0.provenance == .projected })
+        #expect(log.beats.allSatisfy { $0.seconds >= 60 || $0.seconds == 10 })   // never a mid-seek clock
+        // The whole point of three values: VLC suppresses the lying clock rather than shipping
+        // it, so nothing on this engine is ever `.stale`.
+        #expect(log.beats.allSatisfy { $0.provenance != .stale })
+
+        spy.advanceClock(toMs: 60_000)   // libvlc's time-changed event finally lands on the target
+        try await requireEventually({ log.from(60).contains { $0.provenance == .observed } },
+                              "the hold never released")
+
+        let observed = try #require(log.from(60).first { $0.provenance == .observed })
+        #expect(observed.seconds == 60)
+        #expect(observed.isBuffering == false)
+        log.stop()
+        await engine.teardown()
+    }
+
+    /// The lie, end to end. The hold's poll budget runs out after ~5s; releasing there used to
+    /// republish `player.time` as a landed `.playing` — and on a source that never republishes
+    /// time at the new offset that value is the position the user seeked AWAY from, so the bar
+    /// snapped back 7 minutes and the resume point followed. The hold now outlasts its budget
+    /// while the clock is provably behind, and the beat it finally releases on carries the raw
+    /// clock, labelled `.observed`.
+    ///
+    /// Run with `timeWritesMoveTheClock`, which is what makes it an assertion about the SAMPLING
+    /// ORDER rather than about libvlc's timing. The pre-seek clock has to be read BEFORE the
+    /// `setTime`; read after, it is right only while 3.x's cached getter has not taken the
+    /// request yet, and a build that takes it records the TARGET as the pre-seek clock — a value
+    /// no later reading can ever be nearer the target than, so the hold either releases onto the
+    /// stale clock or (with the give-up as it now stands) never releases at all.
+    @Test("an expired hold never republishes the pre-seek clock, and its raw beat is observed")
+    func expiredHoldNeverRepublishesThePreSeekClock() async throws {
+        let spy = SpyVLCPlayer()
+        spy.timeWritesMoveTheClock = true
+        let engine = try await playingEngine(spy, atMs: 10_000)
+        let log = PositionBeatLog(engine)
+
+        await engine.seek(to: CMTime(seconds: 480, preferredTimescale: 1_000))
+        // libvlc's cached clock took the request; the input then republishes what the demux is
+        // REALLY at, which after a seek is still the pre-seek position for seconds on wmv/SMB.
+        // Same MainActor turn as the write — `seek(to:)` has no suspension point — so no poll
+        // can observe the value in between.
+        spy.advanceClock(toMs: 10_000)
+
+        // 10 polls ≈ 5s is the budget; wait past it with the clock still parked at 10s.
+        try await requireEventually({ log.from(480).count >= 12 },
+                              "the hold never outlasted its poll budget",
+                              timeout: CITimeScale.seconds(20))
+        #expect(log.from(480).allSatisfy { $0.provenance == .projected })
+        #expect(log.beats.contains { $0.seconds == 10 && $0.provenance != .observed } == false)
+        // The whole point: not one beat after the seek carries the pre-seek position.
+        #expect(log.from(0).filter { $0.seconds < 480 }.allSatisfy { $0.seconds == 10 })
+
+        // libvlc republishes at last — nowhere near the target (a clamped/keyframe-snapped
+        // landing). That is the decoder's own clock, so it ships as-is, `.observed`.
+        spy.advanceClock(toMs: 300_000)
+        try await requireEventually({ log.beats.contains { $0.provenance == .observed && $0.seconds == 300 } },
+                              "the expired hold never released onto the moved clock",
+                              timeout: CITimeScale.seconds(10))
+        log.stop()
+        await engine.teardown()
+    }
+
+    /// A speed change is NOT a seek, and the flush bridge's anchor is not a guess: it is the
+    /// current clock frozen while libvlc re-decodes at the new rate, so the position is exactly
+    /// where the media is. Labelled `.projected` it read to the app as an unresolved seek, which
+    /// skips the stall debounce — every 1.25× tap threw the buffering scrim up on the spot.
+    @Test("a rate-flush bridge beat is observed — the anchor is the clock, not a projection")
+    func rateFlushBridgeBeatIsObserved() async throws {
+        let spy = SpyVLCPlayer()
+        let engine = try await playingEngine(spy, atMs: 10_000)
+        let log = PositionBeatLog(engine)
+
+        await engine.setRate(1.5)
+
+        try await requireEventually({ log.beats.contains { $0.isBuffering } },
+                              "the flush bridge never published")
+        let bridge = try #require(log.beats.first { $0.isBuffering })
+        #expect(bridge.seconds == 10)          // the anchor: where the clock already was
+        #expect(bridge.provenance == .observed)
+        log.stop()
+        await engine.teardown()
+    }
+
+    /// The hold can now outlast its poll budget (it will not release onto a clock that never
+    /// republished), so nothing below the poll's guard chain bounds a share that dies mid-seek —
+    /// the stall detector never runs while the hold `continue`s. The `.buffer` branch has to arm
+    /// the watchdog itself, or the session buffers forever instead of failing into the retry
+    /// scrim. Flat demux bytes are the starving signal; the deadline is injected so the failure
+    /// is reachable in a test.
+    @Test("a hold whose fetch has stopped fails the session on the stall watchdog")
+    func starvingHoldFailsTheSession() async throws {
+        let spy = SpyVLCPlayer()   // demuxBytesPerPoll == 0: nothing is being consumed at all
+        let engine = try await playingEngine(spy, atMs: 10_000, stallDeadline: .seconds(1))
+        let log = PositionBeatLog(engine)
+
+        await engine.seek(to: CMTime(seconds: 480, preferredTimescale: 1_000))
+
+        try await requireEventually({ log.failure != nil },
+                              "the starving hold never bounded the session",
+                              timeout: CITimeScale.seconds(20))
+        #expect(log.failure == .networkStalled)
+        #expect(log.from(480).contains { $0.isBuffering })   // …behind the honest scrim
+        log.stop()
+        await engine.teardown()
+    }
+
+    /// The other side, and the reason the arm is on BYTES rather than on the hold itself: a
+    /// healthy hold on wmv/SMB routinely outlives its poll budget with the clock parked, because
+    /// libvlc has not republished time at the new offset yet. Frames are landing the whole time.
+    /// Failing that session would kill playback that is working.
+    @Test("a hold whose fetch is still trickling never fails, however long it holds")
+    func tricklingHoldNeverFails() async throws {
+        let spy = SpyVLCPlayer()
+        spy.demuxBytesPerPoll = 1   // one byte per poll: the clock is behind, the fetch is not
+        let engine = try await playingEngine(spy, atMs: 10_000, stallDeadline: .seconds(1))
+        let log = PositionBeatLog(engine)
+
+        await engine.seek(to: CMTime(seconds: 480, preferredTimescale: 1_000))
+
+        // Counted in POLLS, not wall time: 8 of them is ≥4s of holding against a 1s deadline,
+        // and a slow runner makes this negative assertion stronger rather than flakier.
+        try await requireEventually({ log.from(480).count >= 8 }, "the hold never published",
+                              timeout: CITimeScale.seconds(20))
+        #expect(log.failure == nil)
+        #expect(log.from(480).allSatisfy { $0.isBuffering == false })   // and no scrim either
+        log.stop()
+        await engine.teardown()
+    }
+
+    /// A stall armed by the play-intent reassert (the device-observed VideoToolbox post-scrub
+    /// wedge) must outlive whatever the seek hold publishes. The hold used to disarm
+    /// `isStalled` on every healthy tick — its job was to drop its OWN starving-hold arm — and
+    /// took the reassert's with it, so a seek committed into a wedged input lost its 45s
+    /// failure and buffered forever behind a bar that kept extrapolating. The hold decides what
+    /// to publish; the stall flag is not its to touch.
+    @Test("a reassert-armed stall is not disarmed by a healthy hold tick")
+    func reassertArmedStallSurvivesAHealthyHold() async throws {
+        let spy = SpyVLCPlayer()
+        spy.demuxBytesPerPoll = 1   // the fetch is healthy throughout: nothing else can arm a stall
+        let engine = try await playingEngine(spy, atMs: 10_000, stallDeadline: .seconds(2))
+        let log = PositionBeatLog(engine)
+
+        await engine.seek(to: CMTime(seconds: 480, preferredTimescale: 1_000))
+        // The device shape: the input drops the resume and sits paused against play intent
+        // while the seek is still settling. One reassert tick arms the watchdog and re-issues
+        // play() — which the spy honours — so every tick after it is an ordinary healthy hold.
+        spy.stubbedIsPlaying = false
+        spy.stubbedState = .paused
+
+        try await requireEventually({ log.from(480).count >= 4 },
+                                    "the hold never published, so nothing could have disarmed",
+                                    timeout: CITimeScale.seconds(20))
+        #expect(log.from(480).contains { $0.provenance == .projected })   // a healthy hold, extrapolating
+        try await requireEventually({ log.failure != nil },
+                                    "the hold disarmed the reassert's stall: no failure ever landed",
+                                    timeout: CITimeScale.seconds(20))
+        #expect(log.failure == .networkStalled)
+        log.stop()
+        await engine.teardown()
+    }
+
+    /// The hold that never ends. `seekHoldShouldRelease`'s expiry is conditional — it will not
+    /// release onto a clock that never left the pre-seek neighbourhood — and a BACKWARD seek
+    /// satisfies that condition forever: libvlc's clock free-runs FORWARD off the pre-seek
+    /// position, so every reading is further from the target than from the origin, at every
+    /// poll count. The fetch is healthy the whole time, so the `.buffer` arm never fires and
+    /// the stall detector (which needs BOTH axes frozen) never trips either: nothing bounded
+    /// it, and the bar rode an extrapolation off a target the media never reached until the
+    /// app's own 20s watchdog fired on a projection.
+    ///
+    /// The abandon cap is the floor: 30 polls ≈ 15s from the ORIGINAL seek, after which the
+    /// engine gives up and publishes the honest raw clock — labelled `.observed`, because with
+    /// the hold gone there is no seek of the engine's outstanding.
+    @Test("a backward seek on a never-republishing clock releases onto the raw clock at the abandon cap")
+    func abandonedHoldReleasesOntoTheRawClock() async throws {
+        let spy = SpyVLCPlayer()
+        spy.demuxBytesPerPoll = 1   // healthy fetch: neither the `.buffer` arm nor the detector fires
+        let engine = try await playingEngine(spy, atMs: 600_000, stallDeadline: .seconds(120))
+        let log = PositionBeatLog(engine)
+
+        await engine.seek(to: CMTime(seconds: 60, preferredTimescale: 1_000))
+        // The extrapolation off the target (60s, climbing 0.5s a tick); the clock stays parked
+        // at 600s, which is 09:00 the WRONG side of the target.
+        let heldBeats = { log.beats.filter { $0.seconds < 500 } }
+        try await requireEventually({ heldBeats().count >= 6 }, "the hold never published",
+                                    timeout: CITimeScale.seconds(20))
+        #expect(heldBeats().allSatisfy { $0.provenance == .projected })
+
+        // 30 polls ≈ 15s: bounded generously above it, because the claim is "it ends", not
+        // "it ends on this tick".
+        try await requireEventually({
+            log.beats.last.map { $0.seconds == 600 && $0.provenance == .observed } ?? false
+        }, "the hold never abandoned the seek", timeout: CITimeScale.seconds(40))
+
+        // …and it released AFTER holding, not by never having held: the last extrapolation
+        // precedes the release rather than following it.
+        let released = try #require(log.beats.lastIndex { $0.seconds == 600 })
+        let lastHeld = try #require(log.beats.lastIndex { $0.seconds < 500 })
+        #expect(lastHeld < released)
+        #expect(heldBeats().count >= 25, "released well before the cap: \(heldBeats().count) held beats")
+        log.stop()
+        await engine.teardown()
+    }
+
+    /// `pause()` publishes its own beat (the poll is silent while paused) from the same held
+    /// position the hold extrapolates — a forward guess off the target, and it has to say so.
+    @Test("a pause landing inside the hold publishes a projected beat")
+    func pauseInsideTheHoldIsProjected() async throws {
+        let spy = SpyVLCPlayer()
+        let engine = try await playingEngine(spy, atMs: 10_000)
+        let log = PositionBeatLog(engine)
+
+        await engine.seek(to: CMTime(seconds: 60, preferredTimescale: 1_000))
+        await engine.pause()
+        // The seek echo and the pause beat both ride the stream; wait for the collector.
+        try await requireEventually({ log.from(60).count >= 2 }, "the pause beat never landed")
+        let paused = try #require(log.from(60).last)
+        #expect(paused.seconds == 60)
+        #expect(paused.provenance == .projected)
+
+        log.stop()
         await engine.teardown()
     }
 }

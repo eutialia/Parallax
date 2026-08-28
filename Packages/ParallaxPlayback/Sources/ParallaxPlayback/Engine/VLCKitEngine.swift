@@ -133,6 +133,13 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         Self.validClockMs(player.time) ?? -1
     }
 
+    /// libvlc's demux byte counter, through the same seam every other player read goes
+    /// through (`VLCPlayerControlling.demuxReadBytes`). 0 with no media of ours loaded, so a
+    /// counter left over from a detached input can't read as a live fetch.
+    private var demuxReadBytes: Int {
+        currentMedia == nil ? 0 : player.demuxReadBytes
+    }
+
     // MARK: - Playback state tracking
 
     private var currentMedia: VLCMedia?
@@ -176,6 +183,19 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// keyframe-snapped landing a few seconds off the request still resumes live tracking.
     private var pendingSeekMs: Int32?
     private var pendingSeekPolls = 0
+    /// The raw clock (ms) sampled immediately BEFORE the in-flight seek's `setTime`, or nil
+    /// when libvlc had no clock then. The hold's give-up test reads it: after the poll budget
+    /// runs out, a `clockMs` that is still nearer this than the target has not moved off the
+    /// position the seek started from, so releasing the hold would republish the PRE-seek clock
+    /// as a landed position (the bar snaps back to where the user seeked from, and the resume
+    /// point follows). See `seekHoldShouldRelease`. Cleared wherever `pendingSeekMs` is.
+    private var preSeekClockMs: Int32?
+    /// Hold polls counted from the ORIGINAL seek rather than from the current re-anchor, and
+    /// the difference is the whole point: `pendingSeekPolls` is the extrapolation's clock and
+    /// the reassert escalation resets it every 6 ticks, so a budget counted on it can be
+    /// refreshed forever by a wedged input. Only `seek()`, `load()`, `teardown()` and a
+    /// release reset this one. See `seekHoldAbandoned`.
+    private var seekHoldTotalPolls = 0
     /// Demux byte count sampled at the previous seek-hold poll, so the hold can tell a clock
     /// that hasn't republished yet from a fetch that has actually stopped (see
     /// `seekHoldAction`). Reset to 0 wherever a new `pendingSeekMs` is armed, so the first
@@ -206,7 +226,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     private var reassertTicks = 0
 
     /// Read-rate duration estimate (ms) for media whose container length never resolves — see
-    /// `estimateDurationMs`. CAPTURED ONCE (the first settled sample past the floor) and HELD: the
+    /// `estimateDurationMs`. CAPTURED ONCE (the first observed sample past the floor) and HELD: the
     /// read-rate stays representative only before a seek re-reads bytes out of order, and a stable
     /// total is what the scrub bar needs. 0 until captured (→ `.indefinite`, indeterminate bar);
     /// reset on every fresh `load`. Never used once `media.length` resolves to a real value.
@@ -246,10 +266,20 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// intent, not frames (VLCKit#578), so a network death leaves the poll emitting `.playing` over a
     /// frozen clock forever — armed when the stall detector trips, and its expiry yields
     /// `.failed(.networkStalled)`. `lazy` so the `onExpiry` closure can capture `self`. See `StallWatchdog`.
-    private lazy var stallWatchdog = StallWatchdog { [weak self] in self?.handleStallTimeout() }
+    private lazy var stallWatchdog = StallWatchdog(deadline: stallDeadline) { [weak self] in
+        self?.handleStallTimeout()
+    }
 
-    /// Frozen-clock + frozen-demux stall counter, fed once per poll AFTER the guard chain (so a
-    /// seek/rate-flush/resume window never counts). Reset on load/pause/seek. See `StallDetector`.
+    /// `stallWatchdog`'s deadline. `StallWatchdog`'s own 45s default in production; injectable
+    /// through the test seam init because the arming rules (the stall detector, and the
+    /// play-intent reassert's wedge) are only observable through the failure they eventually
+    /// produce, and no suite can wait 45 wall-clock seconds for one.
+    private let stallDeadline: Duration
+
+    /// Frozen-clock + frozen-demux stall counter, fed once per poll ABOVE the seek hold — a seek
+    /// in flight does not suspend a network death, and the hold's `continue` used to hide those
+    /// ticks from it entirely. It owns `isStalled`/`stallWatchdog`: the hold branches decide only
+    /// what to publish. Reset on load/pause/seek. See `StallDetector`.
     private var stallDetector = StallDetector()
 
     /// Whether the poll is currently publishing the honest `.buffering` stall scrim (detector tripped,
@@ -404,8 +434,9 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// Test seam: drives `control` for every command and clock read, while `vlcPlayer` keeps
     /// vending a real (idle, media-less) `VLCMediaPlayer` so the drawable-host contract still
     /// holds. Internal — the app has no reason to substitute a player.
-    convenience init(control: any VLCPlayerControlling) {
-        self.init(mediaPlayer: Self.makePlayer(libraryOptions: nil), control: control)
+    convenience init(control: any VLCPlayerControlling, stallDeadline: Duration = .seconds(45)) {
+        self.init(mediaPlayer: Self.makePlayer(libraryOptions: nil), control: control,
+                  stallDeadline: stallDeadline)
     }
 
     /// **The only place a `VLCMediaPlayer` is ever constructed.** Installing
@@ -424,12 +455,14 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
 
     /// The one designated init. `mediaPlayer` is the drawable handle `vlcPlayer` vends;
     /// `control` is the command seam — the same object in production, a spy in tests.
-    private init(mediaPlayer: VLCMediaPlayer, control: any VLCPlayerControlling) {
+    private init(mediaPlayer: VLCMediaPlayer, control: any VLCPlayerControlling,
+                 stallDeadline: Duration = .seconds(45)) {
         let (stream, cont) = PlaybackStateStream.makeStream()
         self.state = stream
         self.continuation = cont
         self.mediaPlayer = mediaPlayer
         self.player = control
+        self.stallDeadline = stallDeadline
         super.init()
         player.delegate = self
     }
@@ -457,6 +490,8 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         pendingStartMs = Self.startMs(from: asset.startTime)
         publish(positionMs: -1)   // new media → nothing to draw until the first published position
         pendingSeekMs = nil
+        preSeekClockMs = nil
+        seekHoldTotalPolls = 0
         pausedSeekTargetMs = nil  // the new stream's aout starts empty; nothing to flush
         reanchorFlushMs = nil
         reassertTicks = 0
@@ -686,6 +721,38 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         )
     }
 
+    /// Where the position of the beat about to ship comes from (see `PositionProvenance`).
+    ///
+    /// The two holds that make `heldPositionMs` return something other than `clockMs` because
+    /// a SEEK is unresolved — a resume offset that hasn't been applied yet, a user seek still
+    /// settling — are precisely the windows where the published position is a target echo or an
+    /// extrapolation off one, i.e. `.projected`. With neither up, the raw clock IS the beat:
+    /// `.observed`.
+    ///
+    /// `.stale` never appears on this engine, and that is a property of `heldPositionMs` rather
+    /// than a claim about libvlc's clock: while any hold stands, every emitting path publishes
+    /// the held value, so the lying pre-seek clock is suppressed instead of labelled. The paths
+    /// that publish the raw clock during a seek window — an expired hold releasing, or the
+    /// abandon cap ending one — clear `pendingSeekMs` first (`seekHoldShouldRelease`), so by
+    /// the time the clock reaches the wire there is no seek of ours outstanding to make it
+    /// anything but observed.
+    ///
+    /// **`rateFlushAnchorMs` is deliberately NOT here**, though it does hold `heldPositionMs`.
+    /// A speed change is not a seek: the anchor is the CURRENT clock frozen while the re-decode
+    /// runs, so the position is exactly where the media is — observed, and display-safe by
+    /// construction. Labelling it `.projected` made every 1.25× tap read to the app as an
+    /// unresolved seek, which skips the stall debounce and threw the scrim up on the spot.
+    /// It stays in `heldPositionMs`'s precedence: the question there is "which value ships",
+    /// not "is this a guess".
+    ///
+    /// Not in the list either: `pausedSeekTargetMs` and `reanchorFlushMs`. Both are *aout
+    /// re-issue* latches — they say the audio pipeline still owes a flush, not that the
+    /// position is a guess — and both are armed alongside a `pendingSeekMs` that already
+    /// covers the window where it is.
+    private var provenanceNow: PositionProvenance {
+        pendingSeekMs == nil && pendingStartMs == nil ? .observed : .projected
+    }
+
     public func pause() async {
         // Same terminal latch `play()` reads, for the same session. The HUD calls
         // `engine?.pause()` directly (the iOS drag begin, the tvOS reducer's `.pause`
@@ -770,6 +837,20 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         }
     }
 
+    /// **Seek-settle contract (see `PlaybackEngine.seek(to:)`).** VLC's `.observed` is the
+    /// strong form: it means libvlc's own clock converged on the target (±3s, see
+    /// `seekHasConverged`), not merely that a call returned. Every beat from here until then is
+    /// `.projected` — the `seek()` echo below, the hold's extrapolations, its starvation
+    /// `.buffering`, and any `pause()` landing inside the window — because the engine publishes
+    /// the HELD value on all of them (`heldPositionMs`), never the clock that is still lying.
+    /// That is why no VLC beat is ever `.stale`: the stale reading is suppressed, not shipped.
+    /// A hold that spends its poll budget releases onto the raw clock as `.observed` — but only
+    /// once that clock has moved off the pre-seek value, so an expiring seek can never label
+    /// the position it seeked AWAY from as a landing (`seekHoldShouldRelease`). The 15s abandon
+    /// cap under that (`seekHoldAbandoned`) is the one release that does not test the clock at
+    /// all: the engine has given up, and what it publishes from then on is whatever libvlc
+    /// really reads — honest, `.observed`, and never frozen on a guess for the rest of the
+    /// session.
     public func seek(to time: CMTime) async {
         guard !refusedWhileWindingDown("seek") else { return }
         let seconds = CMTimeGetSeconds(time)
@@ -803,11 +884,21 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         // `time` setter reads it as `[[value value] longLongValue]` — nil messages to 0 —
         // so a rewind-to-start still seeks to 0. Only reads have to distinguish the two;
         // see `clockMs`.
+        // Sampled BEFORE the write, and the order is the whole correctness argument. The
+        // hold's give-up compares the live clock against this to tell "libvlc republished at
+        // the new offset" from "libvlc is still reporting where the seek started" — the latter
+        // must never ship as a landing (`seekHoldShouldRelease`). Read AFTER the write it
+        // happens to be right only because 3.x's getter is a cache the input refreshes, so the
+        // target is not visible through it yet; that is libvlc's timing, not a guarantee, and
+        // a build whose cache takes the request would record the TARGET as the pre-seek clock
+        // — a value the comparison can never match, releasing onto the stale clock every time.
+        preSeekClockMs = Self.validClockMs(player.time)
         player.time = VLCTime(int: ms)
         // Gate the poll until VLC's clock settles on this target so its transient
         // post-seek reads can't surface as an overshoot (see pendingSeekMs).
         pendingSeekMs = ms
         pendingSeekPolls = 0
+        seekHoldTotalPolls = 0   // a fresh intent gets the full abandon budget
         seekHoldReadBytes = 0
         // A playing seek flushes the aout natively; a paused one does not on VLCKit 3.x —
         // arm the resume-time in-place re-issue (see pausedSeekTargetMs). Overwrites any
@@ -914,6 +1005,8 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         // it as a failure before nil'ing the delegate (which would otherwise strand it).
         completeSnapshot(success: false)
         pendingSeekMs = nil
+        preSeekClockMs = nil
+        seekHoldTotalPolls = 0
         pausedSeekTargetMs = nil
         reanchorFlushMs = nil
         rateFlushAnchorMs = nil
@@ -1133,7 +1226,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
                 }
                 // Re-emit `.ready` when the track picture or the container length changes.
                 // 3.x reports neither through a delegate, so the poll is where a late embedded
-                // text track, VLC's settled default selection, and a length that only resolves
+                // text track, VLC's stable default selection, and a length that only resolves
                 // once the demux has run all become visible. Also runs before the gates below,
                 // so a still-settling seek can't defer the menus.
                 self.publishInventoryIfChanged()
@@ -1196,8 +1289,14 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
                     if self.reassertTicks % 6 == 0, self.pendingStartMs == nil,
                        let anchor = self.pendingSeekMs ?? Self.validClockMs(self.player.time) {
                         Self.log.warning("play-intent reassert escalation: re-anchoring input at \(anchor)ms")
+                        // Before the write, for the reason spelled out in `seek(to:)`.
+                        self.preSeekClockMs = Self.validClockMs(self.player.time)
                         self.player.time = VLCTime(int: max(0, anchor))
                         self.pendingSeekMs = max(0, anchor)
+                        // `pendingSeekPolls` restarts (it is the extrapolation's clock, and the
+                        // anchor is fresh) but `seekHoldTotalPolls` deliberately does NOT: this
+                        // fires every 6 ticks, so resetting the abandon budget here would let a
+                        // permanently wedged input hold the bar for the whole session.
                         self.pendingSeekPolls = 0
                         self.seekHoldReadBytes = 0
                         self.reanchorFlushMs = max(0, anchor)
@@ -1231,13 +1330,41 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
                 // Hold beats until the resume seek has applied, so the first beat reports
                 // the resume position rather than the pre-seek clock (no 0:00 flash).
                 guard self.pendingStartMs == nil else { continue }
+                // ONE sample of each honest signal per tick, taken ABOVE every hold. Two
+                // reasons: the stall detector has to see every poll (a seek in flight does not
+                // suspend a network death, and the hold's own `continue` used to hide those
+                // ticks from it), and the hold's `seekHoldAction` compares the demux counter
+                // against the previous tick's — sampling it twice in one tick compares it
+                // against itself.
+                let nowMs = self.clockMs
+                let readBytes = self.demuxReadBytes
+                // `stallDetector` OWNS `isStalled`/`stallWatchdog` from here down; the hold
+                // branches below decide only what to PUBLISH and never touch the flag. They
+                // used to disarm it on every healthy tick, which silently cancelled a stall
+                // armed by the play-intent reassert branch (the device-observed VideoToolbox
+                // post-scrub wedge) — a seek committed into a dying share then lost its 45s
+                // failure and buffered forever.
+                let stalled = self.stallDetector.observe(timeMs: nowMs, readBytes: readBytes)
+                if stalled, !self.isStalled {
+                    self.isStalled = true
+                    self.stallWatchdog.arm()   // bound the stall — expiry → .failed(.networkStalled)
+                }
                 // Suppress the transient clock VLC reports right after a user seek until it
                 // converges on the requested target (±3s tolerates a keyframe-snapped
-                // landing); a ~5s fallback resumes live tracking if it never lands exactly.
+                // landing); a ~5s fallback resumes live tracking if it never lands exactly —
+                // unless the clock is still reading its pre-seek value, in which case
+                // releasing would publish that stale clock as a landing — and a hard 15s
+                // abandon cap under both (`seekHoldShouldRelease`).
                 if let target = self.pendingSeekMs {
                     self.pendingSeekPolls += 1
-                    if Self.seekHasSettled(now: self.clockMs, target: target, polls: self.pendingSeekPolls) {
+                    self.seekHoldTotalPolls += 1
+                    if Self.seekHoldShouldRelease(now: nowMs, target: target,
+                                                  polls: self.pendingSeekPolls,
+                                                  totalPolls: self.seekHoldTotalPolls,
+                                                  preSeekClockMs: self.preSeekClockMs) {
                         self.pendingSeekMs = nil
+                        self.preSeekClockMs = nil
+                        self.seekHoldTotalPolls = 0
                     } else {
                         // A seek still filling after ~1s (2 polls) may be a real network wait, and
                         // that surfaces as buffering AT THE TARGET (where the bar is pinned), so a
@@ -1261,15 +1388,18 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
                         // instead: the audio and video are already running at the new offset, so
                         // target + elapsed × rate is the honest position, and the settle below
                         // publishes the real clock and corrects it (≈0 on an accurate landing).
-                        let holdBytes = Self.demuxReadBytes(self.currentMedia)
                         switch Self.seekHoldAction(polls: self.pendingSeekPolls,
-                                                   readBytes: holdBytes,
+                                                   readBytes: readBytes,
                                                    previousReadBytes: self.seekHoldReadBytes) {
                         case .hold:
                             // Nothing worth a beat yet, but the client renderer still needs a
                             // position: the picture is pinned at the target.
                             self.publish(positionMs: target)
                         case .buffer:
+                            // Nothing is being consumed at all — the starvation scrim, pinned at
+                            // the target (where the bar is) rather than at the clock the seek
+                            // moved away from. The 45s bound belongs to the stall detector above,
+                            // which sees this tick like any other.
                             self.emitBuffering(positionMs: target)
                         case .extrapolate:
                             // Same accessor `pause()` publishes from, so the hold's value and the
@@ -1277,25 +1407,18 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
                             // the resume/flush holds, so this resolves to this seek's extrapolation.
                             self.emitPosition(isPlaying: true, positionMs: self.heldPositionMs)
                         }
-                        self.seekHoldReadBytes = holdBytes
+                        self.seekHoldReadBytes = readBytes
                         continue
                     }
                 }
-                // Honest-stall detection — runs AFTER the full guard chain (subtitle latch → rate-flush
-                // → rate reassert → resume hold → seek settle), so by here the player CLAIMS to be
-                // playing (isPlaying) with NO seek/flush/resume settling, and every guarded window is
-                // already excluded. If BOTH the playback clock and the demux byte counter are frozen
-                // across polls it's a genuine network stall — `isPlaying` reflects intent, not frames
-                // (VLCKit#578), so without this the poll emits `.playing` over a dead stream forever.
-                // Bytes advancing = network alive (buffer refilling) and time advancing = playing, both
-                // → not stalled; only BOTH frozen for 6 polls (3s) trips. See `StallDetector`.
-                let nowMs = self.clockMs
-                let readBytes = Self.demuxReadBytes(self.currentMedia)
-                if self.stallDetector.observe(timeMs: nowMs, readBytes: readBytes) {
-                    if !self.isStalled {
-                        self.isStalled = true
-                        self.stallWatchdog.arm()   // bound the stall — expiry → .failed(.networkStalled)
-                    }
+                // The honest-stall SCRIM (the arming itself is above, ahead of the holds). By
+                // here the player CLAIMS to be playing (isPlaying) with NO seek/flush/resume
+                // settling, so a frozen pair really is a dead stream rather than a guarded
+                // window: `isPlaying` reflects intent, not frames (VLCKit#578), so without this
+                // the poll emits `.playing` over it forever. Bytes advancing = network alive
+                // (buffer refilling) and time advancing = playing, both → not stalled; only BOTH
+                // frozen for 6 polls (3s) trips. See `StallDetector`.
+                if stalled {
                     self.emitBuffering(positionMs: nowMs)   // honest scrim; keep polling for recovery
                     continue
                 }
@@ -1320,7 +1443,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         let real = Self.validClockMs(media.length) ?? 0
         if real > 0 { return real }
         // No container length (incomplete/truncated media). Capture the read-rate estimate ONCE,
-        // while settled (no pending seek/resume/flush — a seek re-reads bytes and skews the demux
+        // while observed (no pending seek/resume/flush — a seek re-reads bytes and skews the demux
         // counter), then hold it. `fileSizeBytes` (from the SMB lister) is the only way to a total
         // once `position` is out. Skipped when a resume offset was applied (`estimateAnchoredAtZero`
         // == false): the estimate assumes playback ran from 0, so a resume would divide
@@ -1334,7 +1457,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
            let est = Self.estimateDurationMs(
                fileSizeBytes: size,
                playedMs: clockMs,
-               demuxReadBytes: Self.demuxReadBytes(media)
+               demuxReadBytes: demuxReadBytes
            ) {
             lastEstimateMs = est
         }
@@ -1356,7 +1479,8 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// on `.buffering`).
     private func emitPosition(isPlaying: Bool, positionMs: Int32) {
         let beat = currentMedia == nil ? nil : Self.liveBeat(
-            isPlaying: isPlaying, positionMs: positionMs, durationMs: effectiveDurationMs()
+            isPlaying: isPlaying, positionMs: positionMs, durationMs: effectiveDurationMs(),
+            provenance: provenanceNow
         )
         if beat != nil {
             loadWatchdog.disarm()   // a real position beat = frames are rendering, the load is alive
@@ -1372,7 +1496,8 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
             ? .buffering(
                 position: Self.vlcTimeToCMTime(ms: positionMs),
                 duration: Self.vlcDurationToCMTime(ms: effectiveDurationMs()),
-                buffered: nil
+                buffered: nil,
+                provenance: provenanceNow
             )
             : nil
         publish(positionMs: positionMs, beat)
@@ -1589,13 +1714,6 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         time.value.map { Int32(clamping: $0.int64Value) }
     }
 
-    /// The demux byte counter, widened UNSIGNED. libvlc's counter is a C `int` that wraps
-    /// negative past ~2 GB, which the `> 0` guard in `estimateDurationMs` would otherwise
-    /// reject outright. 0 for a nil media.
-    nonisolated static func demuxReadBytes(_ media: VLCMedia?) -> Int {
-        Int(UInt32(bitPattern: media?.statistics.demuxReadBytes ?? 0))
-    }
-
     /// Clamp a resume `CMTime` to a positive VLC millisecond offset, or nil if there's
     /// nothing to resume to (no time, non-finite, or ≤ 0). The reject-if-≤0 policy is the only
     /// difference from `clampSeekMs`; the floor/overflow clamp itself is shared.
@@ -1667,20 +1785,93 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// is "frames are rendering" (a valid position), not "duration is known", so the beat ships
     /// with an `.indefinite` duration and the player leaves `.loading` even on incomplete media
     /// whose length never resolves. Pure so the gate is testable without a live decode.
-    nonisolated static func liveBeat(isPlaying: Bool, positionMs: Int32, durationMs: Int32) -> PlaybackState? {
+    nonisolated static func liveBeat(
+        isPlaying: Bool, positionMs: Int32, durationMs: Int32, provenance: PositionProvenance
+    ) -> PlaybackState? {
         guard positionMs >= 0 else { return nil }
-        return positionState(isPlaying: isPlaying, positionMs: positionMs, durationMs: durationMs)
+        return positionState(isPlaying: isPlaying, positionMs: positionMs,
+                             durationMs: durationMs, provenance: provenance)
     }
 
-    /// Whether a post-seek poll should resume publishing live position beats: VLC's clock
-    /// has converged on the requested target (±3s, tolerating a keyframe-snapped landing),
-    /// or the fallback poll budget elapsed so live tracking resumes even if it never lands
-    /// exactly. Pure so the seek-overshoot guard can be tested without a live player.
-    static func seekHasSettled(now: Int32, target: Int32, polls: Int) -> Bool {
-        abs(now - target) <= 3_000 || polls >= 10
+    /// Whether libvlc's clock has landed on the requested target — ±3s, which tolerates a
+    /// keyframe-snapped landing. The ONLY positive evidence the engine has that the seek
+    /// completed. Pure so the seek-overshoot guard can be tested without a live player.
+    static func seekHasConverged(now: Int32, target: Int32) -> Bool {
+        // Int arithmetic: `now` is a raw libvlc clock and `target` a clamped Int32 ms, so a
+        // difference at the extremes overflows Int32 and `abs` traps on Int32.min.
+        abs(Int(now) - Int(target)) <= 3_000
     }
 
-    /// What an UNSETTLED post-seek poll should publish at the held target.
+    /// Whether the post-seek hold has spent its poll budget (10 polls ≈ 5s at the 500ms
+    /// cadence). Expiry is a GIVE-UP, not a landing: it exists so a seek that never converges
+    /// exactly (a clamped or keyframe-snapped target far off the request) still resumes live
+    /// tracking instead of holding forever. Mirrors `seekHasConverged`.
+    static func seekHoldExpired(polls: Int) -> Bool {
+        polls >= 10
+    }
+
+    /// Whether the engine has given up on the seek outright: 30 polls ≈ 15s at the 500ms
+    /// cadence, counted from the ORIGINAL seek (`seekHoldTotalPolls`).
+    ///
+    /// `seekHoldExpired`'s budget is CONDITIONAL — a clock that never left the pre-seek
+    /// neighbourhood keeps holding past it, which is what stops an unmoved clock shipping as a
+    /// landing. Two shapes make that condition permanent and the hold immortal:
+    ///  • a BACKWARD seek whose clock free-runs FORWARD off the pre-seek position — every
+    ///    reading is further from the target than from the origin, at every poll count;
+    ///  • a source whose clock never republishes at all while the demux keeps climbing — the
+    ///    `.extrapolate` arm forever, so the `.buffer` arm never fires and the stall detector
+    ///    (which needs BOTH axes frozen) never trips either.
+    /// Neither releases, so the bar rides an extrapolation until the media ends. This is the
+    /// floor under both, and it is unconditional on purpose.
+    ///
+    /// Ordered against the app's own `SeekHold.watchdog` (20s) deliberately: the ENGINE has to
+    /// be the one that gives up first, so the beat that ends the app's hold is an honest
+    /// `.observed` clock rather than whatever the app's watchdog happened to fire on. 15s
+    /// leaves 5s of margin at the 500ms cadence.
+    static func seekHoldAbandoned(polls: Int) -> Bool {
+        polls >= 30
+    }
+
+    /// Whether a post-seek poll should drop the hold and resume publishing the raw clock.
+    ///
+    /// Convergence releases it. The abandon cap releases it too, unconditionally — see
+    /// `seekHoldAbandoned` for the two shapes that would otherwise hold forever; what ships
+    /// then is the honest raw clock, labelled `.observed`, never a re-dressed pre-seek value
+    /// (by then the clock either moved or the seek is unknowable, and freezing the bar on a
+    /// guess for the rest of the session is the worse lie).
+    ///
+    /// Expiry releases as well — but only once the clock is NEARER the
+    /// target than the position the seek started from, and that condition is the whole reason
+    /// this is not just `converged || expired`. Releasing on a clock that never left the
+    /// pre-seek neighbourhood republishes it as a landed `.playing`: the bar silently snaps
+    /// back to where the user seeked FROM, and the resume point follows it. The extrapolation
+    /// the hold publishes instead is a guess, but an honest one.
+    ///
+    /// "Nearer the target than the origin", not the weaker "moved at all" or even "moved
+    /// toward the target": a libvlc clock that has not republished is not FROZEN, it free-runs
+    /// from the pre-seek position while the input demuxes at the new offset. So on a forward
+    /// seek every one of those readings has "moved", and has moved toward the target — 1 ms of
+    /// creep or 5 s of interpolation would both release, which is exactly the snap-back. Past
+    /// the midpoint is the cheapest test the interpolation cannot satisfy, and a real landing
+    /// (a keyframe snap, a clamp near the request) satisfies it trivially.
+    ///
+    /// The bound it accepts: a seek clamped far SHORT of the request — asking for 08:00 of a
+    /// 02:00 file — lands nearer the origin and holds until the abandon cap ends it. No scrub
+    /// surface can request past the duration; only a skip button off the end can.
+    ///
+    /// A nil `preSeekClockMs` (no clock at seek time) has nothing to compare against, so
+    /// expiry releases: an unknown is not evidence of staleness.
+    static func seekHoldShouldRelease(
+        now: Int32, target: Int32, polls: Int, totalPolls: Int, preSeekClockMs: Int32?
+    ) -> Bool {
+        if seekHasConverged(now: now, target: target) { return true }
+        if seekHoldAbandoned(polls: totalPolls) { return true }
+        guard seekHoldExpired(polls: polls) else { return false }
+        guard let preSeekClockMs else { return true }
+        return abs(Int(now) - Int(target)) < abs(Int(now) - Int(preSeekClockMs))
+    }
+
+    /// What a post-seek poll inside the hold should publish at the held target.
     enum SeekHoldAction: Equatable, Sendable {
         /// Publish nothing this tick: the fetch has stalled, but not for long enough to be
         /// worth a scrim (the 2-poll floor).
@@ -1692,8 +1883,8 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         case extrapolate
     }
 
-    /// Which of those an unsettled post-seek poll is looking at. Two very different things
-    /// fail `seekHasSettled`, and only one of them is a wait:
+    /// Which of those a post-seek poll inside the hold is looking at. Two very different things
+    /// fail `seekHasConverged`, and only one of them is a wait:
     ///  • the clock hasn't republished yet: libvlc still reports the pre-seek position
     ///    while the input demuxes at the new offset (seconds on wmv/SMB), even though the
     ///    fetch is healthy and frames are landing. Extrapolate.
@@ -1703,7 +1894,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// counts as progress, so the counter's UInt32 wrap can't fake a stall. The 2-poll floor
     /// stays on the SCRIM only: it plus the VM's ~400ms debounce is what keeps a brief
     /// hiccup off the screen, while a healthy hold reports position from the first tick.
-    /// Pure so the gate is testable without a live decode; mirrors `seekHasSettled`.
+    /// Pure so the gate is testable without a live decode; mirrors `seekHasConverged`.
     static func seekHoldAction(polls: Int, readBytes: Int, previousReadBytes: Int) -> SeekHoldAction {
         guard readBytes == previousReadBytes else { return .extrapolate }
         return polls >= 2 ? .buffer : .hold
@@ -1802,19 +1993,21 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// VLC's clock has advanced past the flush anchor (the re-decode produced output at the new
     /// rate), or the poll budget elapsed (resume even if it never cleanly advances, so the counter
     /// can't hold forever). The +200ms margin tolerates clock jitter at the hold point; 8 ticks ≈
-    /// 4s at the 500ms poll. Pure so the gate is testable without a live decode. Mirrors `seekHasSettled`.
+    /// 4s at the 500ms poll. Pure so the gate is testable without a live decode. Mirrors `seekHasConverged`.
     static func flushBridgeShouldResume(now: Int32, anchor: Int32, ticks: Int) -> Bool {
         now > anchor + 200 || ticks >= 8
     }
 
-    nonisolated static func positionState(isPlaying: Bool, positionMs: Int32, durationMs: Int32) -> PlaybackState {
+    nonisolated static func positionState(
+        isPlaying: Bool, positionMs: Int32, durationMs: Int32, provenance: PositionProvenance
+    ) -> PlaybackState {
         let position = vlcTimeToCMTime(ms: positionMs)
         let duration = vlcDurationToCMTime(ms: durationMs)
         // buffered: nil — libvlc exposes no loaded-range query; its small network
         // cache wouldn't meaningfully feed the bar's instant-seek layer anyway.
         return isPlaying
-            ? .playing(position: position, duration: duration, buffered: nil)
-            : .paused(position: position, duration: duration, buffered: nil)
+            ? .playing(position: position, duration: duration, buffered: nil, provenance: provenance)
+            : .paused(position: position, duration: duration, buffered: nil, provenance: provenance)
     }
 
     /// `id` is VLC's own `trackId` string; it is tagged `.vlc` so it can never be

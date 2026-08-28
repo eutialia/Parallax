@@ -1,10 +1,17 @@
 import CoreMedia
+import ParallaxPlayback
 import Testing
 @testable import Parallax
 
 /// `SeekHold` is the pure core of the seek-hold fix: given a committed seek target and the
-/// engine's beats, decide when the engine gets the position back. Every rule below is
-/// exercised without a player, an engine, or a clock.
+/// engine's beats, decide when the engine gets the published position back. Since the
+/// seek-settle contract landed (`PositionProvenance`), that decision is no longer a heuristic —
+/// the engine labels every beat, and the hold just obeys the label. Everything below runs
+/// without a player, an engine, or a real clock.
+///
+/// One axis the hold deliberately does NOT have: display-safety. `.projected` and `.stale`
+/// both hold, and whether the beat may be drawn is the view model's call — see
+/// `PlayerViewModelTests`' hold suite.
 @Suite("SeekHold — the committed seek target's grip on the published position")
 struct SeekHoldTests {
 
@@ -13,106 +20,85 @@ struct SeekHoldTests {
     }
 
     private static let target = time(3_000)
+    private static let armedAt = ContinuousClock.now
 
-    /// Both signs of the drift, and the boundary itself: a keyframe-snapped landing is
-    /// the engine agreeing, not a stale beat, so `toleranceSeconds` is INCLUSIVE.
-    @Test("a beat within tolerance releases immediately, on either side and exactly at the boundary",
-          arguments: [3_000.0, 3_002.9, 3_003.0, 2_997.0, 2_999.5])
-    func withinToleranceReleases(seconds: Double) {
-        var hold = SeekHold(target: Self.target)
-        #expect(hold.absorb(position: Self.time(seconds), isTransportBeat: true) == .release)
-        #expect(hold.staleBeats == 0)
+    private static func hold(armedAt: ContinuousClock.Instant = SeekHoldTests.armedAt) -> SeekHold {
+        SeekHold(target: target, armedAt: armedAt)
     }
 
-    /// Only a TRANSPORT beat can end the hold — including one that lands ON the target.
-    /// `AVKitEngine.seek` yields a `.buffering(position: target)` echo BEFORE it awaits the
-    /// real seek, so a near buffering beat is the engine restating the request, not the
-    /// engine arriving: releasing on it would make the hold a no-op on every out-of-buffer
-    /// in-stream seek and hand the bar back to the periodic observer mid-seek.
-    @Test("a buffering beat near the target still HOLDS — the pre-seek echo is not an arrival",
-          arguments: [3_000.0, 3_001.0, 2_999.0])
-    func withinToleranceBufferingHolds(seconds: Double) {
-        var hold = SeekHold(target: Self.target)
-        #expect(hold.absorb(position: Self.time(seconds), isTransportBeat: false) == .hold)
-        #expect(hold.staleBeats == 0)
+    /// The whole rule. Neither non-observed provenance is evidence about where the media is:
+    /// `.projected` is the engine guessing forward off its own target, `.stale` is the engine's
+    /// clock still reading the pre-seek position — so both hold. `.observed` is the engine's own
+    /// clock with no seek outstanding, so it releases even when it landed nowhere near the
+    /// request: AVKit's landing is only segment-accurate and a VLC hold that gave up republishes
+    /// a clamped position, and pinning the bar at an unreachable target over video that is
+    /// demonstrably playing elsewhere is the worse lie.
+    ///
+    /// Two axes the old heuristic had are simply GONE from the signature, which is the point:
+    /// `absorb` sees no position (the old drift tolerance) and no beat kind (the old
+    /// transport-vs-buffering gate). `.playing`, `.paused` and `.buffering` are judged by the
+    /// same label at any distance; the VM-level suite covers all three arriving for real.
+    @Test("the verdict is the label, and nothing else",
+          arguments: [(PositionProvenance.projected, SeekHold.Verdict.hold),
+                      (.stale, .hold),
+                      (.observed, .release)])
+    func theVerdictIsTheLabel(provenance: PositionProvenance, expected: SeekHold.Verdict) {
+        let hold = Self.hold()
+        #expect(hold.absorb(provenance: provenance,
+                            now: Self.armedAt.advanced(by: .seconds(1))) == expected)
     }
 
-    /// An engine can publish an invalid/indefinite CMTime (AVPlayer before the item's
-    /// duration resolves, VLC between media). `abs(NaN - x)` is NaN, which fails every
-    /// comparison — pre-guard that read as "far off" and quietly burned the budget.
-    @Test("a non-finite position is not evidence of anything: hold, and spend no budget",
-          arguments: [CMTime.invalid, CMTime.indefinite, CMTime.positiveInfinity, CMTime.negativeInfinity])
-    func nonFinitePositionsHoldWithoutCounting(position: CMTime) {
-        var hold = SeekHold(target: Self.target)
-        #expect(hold.absorb(position: position, isTransportBeat: true) == .hold)
-        #expect(hold.staleBeats == 0)
-        #expect(hold.absorb(position: position, isTransportBeat: false) == .hold)
-        #expect(hold.staleBeats == 0)
+    /// The anti-wedge floor, and nothing more: an engine that never reports an observed clock
+    /// again (a dead seek, a crashed session) must not freeze the bar forever. It is not a
+    /// timeout on the seek — a healthy session never reaches it.
+    @Test("the watchdog releases a held-open hold, and not one instant early", arguments: [
+        ("armed", Duration.zero, SeekHold.Verdict.hold),
+        ("mid-flight", .seconds(5), .hold),
+        ("past the reload resolve deadline", .seconds(15), .hold),
+        ("a millisecond short of the watchdog", SeekHold.watchdog - .milliseconds(1), .hold),
+        ("exactly the watchdog", SeekHold.watchdog, .release),
+        ("long past it", SeekHold.watchdog + .seconds(60), .release),
+    ] as [(String, Duration, SeekHold.Verdict)])
+    func watchdogReleasesAWedgedHold(label: String, elapsed: Duration, expected: SeekHold.Verdict) {
+        let hold = Self.hold()
+        #expect(hold.absorb(provenance: .stale, now: Self.armedAt.advanced(by: elapsed)) == expected, "\(label)")
     }
 
-    /// The re-anchor window: the reload's scrim is up and every beat still carries the
-    /// pre-seek clock. Those are never evidence the target is wrong, so they must not
-    /// spend the budget — however many arrive.
-    @Test("far-off buffering beats hold forever and never count")
-    func bufferingBeatsHoldWithoutCounting() {
-        var hold = SeekHold(target: Self.target)
-        for _ in 0..<(SeekHold.staleBeatCeiling * 3) {
-            #expect(hold.absorb(position: Self.time(600), isTransportBeat: false) == .hold)
-        }
-        #expect(hold.staleBeats == 0)
+    /// A paused VLC seek keeps projecting until playback resumes (the extrapolation freezes on
+    /// the target, which IS the correct paused position), so the watchdog can legitimately
+    /// fire on a user who paused mid-scrub and walked away. Harmless: the beat it releases on
+    /// carries the held target anyway, so the bar does not move.
+    @Test("the watchdog fires on a legitimately-parked paused seek — and releases onto the target")
+    func watchdogOnAPausedHoldReleasesOntoTheTarget() {
+        let hold = Self.hold()
+        #expect(hold.absorb(provenance: .projected, now: Self.armedAt.advanced(by: SeekHold.watchdog)) == .release)
     }
 
-    /// The wedge escape: VLC's settle fallback gives up after 10 polls and republishes the
-    /// raw pre-seek clock as ordinary transport beats. The hold must yield rather than
-    /// freeze the bar — but only after the engine has insisted `staleBeatCeiling` times.
-    @Test("far-off transport beats hold until the ceiling beat, which releases — stale either side of the target",
-          arguments: [600.0, 6_000.0])
-    func transportBeatsHoldUntilCeiling(stale: Double) {
-        var hold = SeekHold(target: Self.target)
-        for beat in 1..<SeekHold.staleBeatCeiling {
-            #expect(hold.absorb(position: Self.time(stale), isTransportBeat: true) == .hold)
-            #expect(hold.staleBeats == beat)
-        }
-        #expect(hold.absorb(position: Self.time(stale), isTransportBeat: true) == .release)
-        #expect(hold.staleBeats == SeekHold.staleBeatCeiling)
+    /// Re-scrubbing during a hold builds a NEW hold, which restarts the watchdog: the second
+    /// commit gets the full budget, not whatever the first one had left.
+    @Test("a re-arm resets the watchdog clock")
+    func reArmResetsTheWatchdog() {
+        let first = Self.hold()
+        let reArmedAt = Self.armedAt.advanced(by: SeekHold.watchdog - .seconds(1))
+        let second = SeekHold(target: Self.time(4_000), armedAt: reArmedAt)
+
+        let now = reArmedAt.advanced(by: .seconds(2))   // past the FIRST hold's deadline
+        #expect(first.absorb(provenance: .stale, now: now) == .release)
+        #expect(second.absorb(provenance: .stale, now: now) == .hold)
     }
 
-    @Test("a mix: interleaved buffering beats neither reset nor advance the transport count")
-    func bufferingBeatsDoNotDisturbTheCount() {
-        var hold = SeekHold(target: Self.target)
-        for _ in 1..<SeekHold.staleBeatCeiling {
-            #expect(hold.absorb(position: Self.time(600), isTransportBeat: true) == .hold)
-            #expect(hold.absorb(position: Self.time(600), isTransportBeat: false) == .hold)
-            #expect(hold.absorb(position: Self.time(601), isTransportBeat: false) == .hold)
-        }
-        #expect(hold.staleBeats == SeekHold.staleBeatCeiling - 1)
-        // The next TRANSPORT beat is the ceiling — the buffering ones bought no ground.
-        #expect(hold.absorb(position: Self.time(600), isTransportBeat: true) == .release)
+    /// Bounded well clear of `reloadResolveDeadline` (15 s): a re-anchor that spends its whole
+    /// resolve budget and then loads is the longest hold a healthy session produces, and the
+    /// watchdog must never be what ends it.
+    @Test("the watchdog outlives the slowest healthy re-anchor")
+    func watchdogClearsTheReloadResolveDeadline() {
+        #expect(SeekHold.watchdog > .seconds(15))
     }
 
-    @Test("a near beat arriving before the ceiling releases and leaves the count where it was")
-    func nearBeatShortCircuitsTheCount() {
-        var hold = SeekHold(target: Self.target)
-        #expect(hold.absorb(position: Self.time(600), isTransportBeat: true) == .hold)
-        #expect(hold.absorb(position: Self.time(3_001), isTransportBeat: true) == .release)
-        #expect(hold.staleBeats == 1)
-    }
-
-    @Test("value semantics: equal targets and equal stale counts compare equal, a spent beat does not")
+    @Test("value semantics: the target and the arming instant are the whole identity")
     func equality() {
-        let fresh = SeekHold(target: Self.target)
-        #expect(fresh == SeekHold(target: Self.target))
-        #expect(fresh != SeekHold(target: Self.time(4_000)))
-
-        var spent = SeekHold(target: Self.target)
-        #expect(spent.absorb(position: Self.time(600), isTransportBeat: true) == .hold)
-        #expect(spent != fresh)
-
-        // A copy taken before the beat is untouched by it — the hold is a value, so the
-        // view model's `seekHold = hold` write-back is what carries the count forward.
-        var copy = fresh
-        #expect(copy.absorb(position: Self.time(600), isTransportBeat: true) == .hold)
-        #expect(copy == spent)
-        #expect(fresh.staleBeats == 0)
+        #expect(Self.hold() == Self.hold())
+        #expect(Self.hold() != SeekHold(target: Self.time(4_000), armedAt: Self.armedAt))
+        #expect(Self.hold() != Self.hold(armedAt: Self.armedAt.advanced(by: .seconds(1))))
     }
 }

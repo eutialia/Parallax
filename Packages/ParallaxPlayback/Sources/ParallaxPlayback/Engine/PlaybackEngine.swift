@@ -51,6 +51,22 @@ public protocol PlaybackEngine: AnyObject, Sendable {
     func endAudio() async
 
     /// Seek to an arbitrary position. No-op if no item is loaded.
+    ///
+    /// **The seek-settle contract.** From the moment this is called until the engine resolves
+    /// the seek, no position-carrying beat it publishes is `.observed` (see
+    /// `PositionProvenance`): each one is labelled either `.projected` — the engine's own
+    /// forward estimate off this target, safe to draw — or `.stale` — the engine's clock,
+    /// still describing where the media was before the seek, safe to draw nowhere. The first
+    /// `.observed` beat after this call carries a clock at or after the LATEST target:
+    /// overlapping seeks yield nothing observed until the newest resolves, and a superseded
+    /// one never yields any. An engine that gives up on a seek publishes the honest raw clock
+    /// as `.observed` — it never republishes the pre-seek clock as if the seek had landed.
+    /// See `PlaybackState`.
+    ///
+    /// What "resolved" means is per-engine and documented on each `seek(to:)` override:
+    /// `VLCKitEngine` tests the clock's convergence on the target, `AVKitEngine` only knows
+    /// that `AVPlayer` returned `finished == true` (weaker). An engine that can tell neither
+    /// must report `.stale`.
     func seek(to time: CMTime) async
 
     /// Whether `time` lies within the engine's buffered media, so a seek there

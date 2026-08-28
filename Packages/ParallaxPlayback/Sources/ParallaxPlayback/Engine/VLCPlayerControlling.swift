@@ -50,6 +50,21 @@ public protocol VLCPlayerControlling: AnyObject {
     var audioTrackNames: [Any] { get }
     var videoSubTitlesIndexes: [Any] { get }
     var videoSubTitlesNames: [Any] { get }
+
+    // MARK: Fetch health
+
+    /// libvlc's DEMUX byte counter for the loaded media, widened UNSIGNED — the counter is a
+    /// C `int` that wraps negative past ~2 GB. Bytes actually consumed into frames, NOT the
+    /// input `readBytes` (that counts the network read-ahead cache).
+    ///
+    /// On the seam because it is the engine's only HONEST liveness signal in exactly the
+    /// windows where the clock lies — the post-seek hold and the stall detector both gate on
+    /// it — so a spy that cannot move it cannot exercise either. 0 with no media.
+    var demuxReadBytes: Int { get }
 }
 
-extension VLCMediaPlayer: VLCPlayerControlling {}
+extension VLCMediaPlayer: VLCPlayerControlling {
+    public var demuxReadBytes: Int {
+        Int(UInt32(bitPattern: media?.statistics.demuxReadBytes ?? 0))
+    }
+}
