@@ -21,6 +21,11 @@ struct PlayerGlassChip: View {
     /// is retained as `accessibilityLabel`, so VoiceOver is unaffected. `chipRow`'s
     /// `ViewThatFits` selects this only when the labeled row can't fit the width.
     var iconOnly: Bool = false
+    /// Work the chip already committed to is still in flight (a sidecar subtitle being
+    /// fetched — a cold embedded Jellyfin stream is extracted server-side and can take
+    /// seconds). The glyph slot spins, the label keeps naming the TARGET, and the button
+    /// stays live: picking a different track from the menu cancels the pending fetch.
+    var isLoading: Bool = false
     let metrics: PlayerMetrics
     let accessibilityLabel: String
     let action: () -> Void
@@ -35,7 +40,8 @@ struct PlayerGlassChip: View {
             }
         }
         .tvChipButton()
-        .accessibilityLabel(accessibilityLabel)
+        .accessibilityLabel(loadingAccessibilityLabel)
+        .accessibilityAddTraits(loadingTraits)
         #else
         // iOS: glass OUTSIDE the button (the split pill's architecture). Bisect
         // renders proved `.interactive()` glass inside a Button paints an armed,
@@ -57,9 +63,18 @@ struct PlayerGlassChip: View {
         )
         .contentShape(.hoverEffect, Capsule())
         .hoverEffect(.highlight)
-        .accessibilityLabel(accessibilityLabel)
+        .accessibilityLabel(loadingAccessibilityLabel)
+        .accessibilityAddTraits(loadingTraits)
         #endif
     }
+
+    /// An indeterminate spinner contributes no text, so without this VoiceOver reads a
+    /// chip that swapped its glyph as byte-identical to a resting one.
+    private var loadingAccessibilityLabel: String {
+        isLoading ? "\(accessibilityLabel), loading" : accessibilityLabel
+    }
+
+    private var loadingTraits: AccessibilityTraits { isLoading ? .updatesFrequently : [] }
 
     #if !os(tvOS)
     /// Vertical transparent padding that lifts the chip's tap target to the 44pt HIG minimum without
@@ -94,6 +109,18 @@ struct PlayerGlassChip: View {
         return HStack(spacing: metrics.chipGap) {
             Image(systemName: systemImage)
                 .font(.system(size: metrics.chipIconSize, weight: .semibold))
+                .opacity(isLoading ? 0 : 1)
+                // The spinner rides in an OVERLAY, so it contributes no width: the chip
+                // measures the same loading or not and the row can't shift under a fetch.
+                // Always mounted and crossfaded for the platter's reason — a structural
+                // swap inside the glass container snaps instead of fading.
+                .overlay {
+                    ProgressView()
+                        .controlSize(metrics.chipSpinnerSize)
+                        .tint(fg)
+                        .opacity(isLoading ? 1 : 0)
+                }
+                .animation(.default, value: isLoading)
             if !iconOnly {
                 Text(label)
                     .font(.system(size: metrics.chipFontSize, weight: .semibold))
@@ -151,6 +178,10 @@ struct PlayerGlassChip: View {
 // glass reads — checks the chip set doesn't crowd horizontally and the pill height is
 // the intended ~36pt (see `PlayerMetrics.phoneChip*`). `.fixedLayout` pins the canvas to
 // an iPhone-landscape-width slice so it renders without a portrait device frame.
+//
+// The two subtitle chips are the width-parity check: identical labels, one resting and
+// one mid-fetch. Their capsules must measure the same, and the chips after them must
+// start at the same x — a spinner that grew the glyph slot shows up as a shove right.
 #Preview("iPhone chip row", traits: .fixedLayout(width: 852, height: 150)) {
     ZStack {
         LinearGradient(colors: [.black.opacity(0.2), .black], startPoint: .top, endPoint: .bottom)
@@ -159,12 +190,12 @@ struct PlayerGlassChip: View {
                             metrics: .phone, accessibilityLabel: "Audio") {}
             PlayerGlassChip(systemImage: "captions.bubble", label: "Chinese (Simplified)",
                             metrics: .phone, accessibilityLabel: "Subtitles") {}
+            PlayerGlassChip(systemImage: "captions.bubble", label: "Chinese (Simplified)",
+                            isLoading: true, metrics: .phone, accessibilityLabel: "Subtitles") {}
             PlayerGlassChip(systemImage: "timer", label: "1×",
                             metrics: .phone, accessibilityLabel: "Speed") {}
             PlayerGlassChip(systemImage: "list.bullet", label: "Chapters",
                             metrics: .phone, accessibilityLabel: "Chapters") {}
-            PlayerGlassChip(systemImage: "ladybug", label: "Debug",
-                            metrics: .phone, accessibilityLabel: "Debug") {}
             Spacer(minLength: 0)
         }
         .padding(.horizontal, PlayerMetrics.phonePadX)
@@ -174,14 +205,18 @@ struct PlayerGlassChip: View {
     .environment(\.colorScheme, .dark)
 }
 
-#Preview("Track chips · tv", traits: .fixedLayout(width: 820, height: 220)) {
+// Same width-parity pair as the phone row, at the 10-foot scale where the spinner is
+// `.regular` instead of `.small`: the two "French" chips must be the same width.
+#Preview("Track chips · tv", traits: .fixedLayout(width: 1180, height: 220)) {
     ZStack {
         LinearGradient(colors: [.indigo, .black], startPoint: .top, endPoint: .bottom)
         HStack(spacing: 14) {
             PlayerGlassChip(systemImage: "waveform", label: "English", sub: "5.1",
                             metrics: .tv, accessibilityLabel: "Audio") {}
-            PlayerGlassChip(systemImage: "captions.bubble", label: "Subtitles", sub: "Off",
+            PlayerGlassChip(systemImage: "captions.bubble", label: "French",
                             metrics: .tv, accessibilityLabel: "Subtitles") {}
+            PlayerGlassChip(systemImage: "captions.bubble", label: "French",
+                            isLoading: true, metrics: .tv, accessibilityLabel: "Subtitles") {}
             PlayerGlassChip(systemImage: "timer", label: "1.0×",
                             isActive: true, metrics: .tv, accessibilityLabel: "Speed") {}
         }
