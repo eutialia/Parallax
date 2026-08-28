@@ -194,12 +194,12 @@ struct PlayerControlsView: View {
     private var menuOpen: Bool { openMenu != nil || debugHUD }
 
     #if os(tvOS)
-    /// The open panel's row focus, keyed by each row's `focusKey` (threaded to the
-    /// rows via `trackMenuRowFocus` in the environment). Driven PROGRAMMATICALLY on
-    /// panel open so first focus lands on the SELECTED row like the system menus —
+    /// The open panel's row focus, keyed by each row's `rowID` (threaded to the rows
+    /// via `trackMenuRowFocus` in the environment). Driven PROGRAMMATICALLY on panel
+    /// open so first focus lands on the SELECTED row like the system menus —
     /// `prefersDefaultFocus` never applied here (it only matters when nothing has
     /// focus, and opening a panel relocates focus from the just-disabled chip).
-    @FocusState private var menuRowFocus: AnyHashable?
+    @FocusState private var menuRowFocus: TrackMenuRowID?
     /// The scrubber's frame in the "hud" space — the playhead-dot x for `playheadChip`.
     @State private var scrubberFrame: CGRect = .zero
     #endif
@@ -547,6 +547,10 @@ struct PlayerControlsView: View {
             y: chip.maxY / hudSize.height
         ) : .bottomLeading
         panelMenu(kind)
+            // Keyed per kind so switching menus REPLACES the panel instead of morphing it.
+            // Without this, re-opening menu B during menu A's 0.35s removal spring hands B
+            // the outgoing panel's view — and its scroll offset, mid-flight.
+            .id(kind)
             .frame(width: width)
             .frame(height: height)
             .offset(x: x, y: chip.maxY - height)
@@ -576,7 +580,7 @@ struct PlayerControlsView: View {
         #endif
     }
 
-    /// Content-sized (measured per kind in `trackMenuChrome`), capped at a fixed
+    /// Content-sized (measured per kind in `TrackMenuPanel`), capped at a fixed
     /// ceiling and at the room above the chip; a 320 fallback covers each kind's
     /// first open before its measurement lands.
     private func panelHeight(_ kind: TrackMenuKind, anchoredTo chip: CGRect) -> CGFloat {
@@ -599,31 +603,43 @@ struct PlayerControlsView: View {
             }
         }
         #if os(tvOS)
-        // First focus lands on the SELECTED row: assigned programmatically on mount
-        // (the chrome's disable relocates focus into the panel, and a declarative
-        // preference alone loses that race), with `defaultFocus` re-targeting any
-        // later evaluation while the panel is up. Back is handled at the HUD root.
+        // First focus lands on the SELECTED row: assigned programmatically once the panel
+        // has seated its scroll (see `panelSeatFocus`) — the chrome's disable relocates
+        // focus into the panel, and a declarative preference alone loses that race.
+        // `defaultFocus` re-targets any later evaluation while the panel is up. Back is
+        // handled at the HUD root.
         .environment(\.trackMenuRowFocus, $menuRowFocus)
-        .defaultFocus($menuRowFocus, panelDefaultFocusKey(kind), priority: .userInitiated)
-        .task { menuRowFocus = panelDefaultFocusKey(kind) }
+        .defaultFocus($menuRowFocus, panelFocusRowID(kind), priority: .userInitiated)
+        #endif
+    }
+
+    /// The panel's `onSeated` hook: on tvOS, land first focus on the row the panel just
+    /// scrolled to. Nil on touch platforms — no focus engine in the inline panel — which
+    /// keeps this the only place the tvOS fork lives.
+    private func panelSeatFocus(_ kind: TrackMenuKind) -> (() -> Void)? {
+        #if os(tvOS)
+        { menuRowFocus = panelFocusRowID(kind) }
+        #else
+        nil
         #endif
     }
 
     #if os(tvOS)
-    /// The row the panel should land first focus on — each menu owns its key scheme.
-    private func panelDefaultFocusKey(_ kind: TrackMenuKind) -> AnyHashable? {
+    /// The row the panel should land first focus on: its leading row, except in audio,
+    /// where the unsupported rows are `.disabled` and can't take focus.
+    private func panelFocusRowID(_ kind: TrackMenuKind) -> TrackMenuRowID? {
         switch kind {
         case .audio:
-            AudioTrackMenu.defaultFocusKey(tracks: vm.availableAudioTracks,
-                                           selectedID: vm.selectedAudioTrack?.id)
+            AudioTrackMenu.focusableLeadingRowID(tracks: vm.availableAudioTracks,
+                                                 selectedID: vm.selectedAudioTrack?.id)
         case .subtitles:
-            SubtitleTrackMenu.defaultFocusKey(tracks: vm.availableSubtitleTracks,
-                                              selectedID: vm.selectedSubtitleTrack?.id)
+            SubtitleTrackMenu.leadingRowID(tracks: vm.availableSubtitleTracks,
+                                           selectedID: vm.selectedSubtitleTrack?.id)
         case .speed:
-            SpeedMenu.defaultFocusKey(options: speedOptions, selected: Double(vm.playbackRate))
+            SpeedMenu.leadingRowID(options: speedOptions, selected: Double(vm.playbackRate))
         case .chapters:
-            ChapterMenu.defaultFocusKey(chapters: vm.chapters,
-                                        atSeconds: CMTimeGetSeconds(vm.currentPosition))
+            ChapterMenu.leadingRowID(chapters: vm.chapters,
+                                     atSeconds: CMTimeGetSeconds(vm.currentPosition))
         }
     }
     #endif
@@ -1005,7 +1021,7 @@ struct PlayerControlsView: View {
     #if DEBUG
     /// The live debug panel — the one chip still presented as a sheet/popover
     /// (`trackPresentation`); the track menus moved to `inlineTrackPanel`. Brings
-    /// its own glass: DebugInfoOverlay owns a ScrollView, so `trackMenuChrome`'s
+    /// its own glass: DebugInfoOverlay owns a ScrollView, so `TrackMenuPanel`'s
     /// outer ScrollView would nest-scroll.
     @ViewBuilder
     private var debugMenuList: some View {
@@ -1416,7 +1432,13 @@ struct PlayerControlsView: View {
 
     @ViewBuilder
     private var audioMenuList: some View {
-        trackMenuChrome(.audio) {
+        TrackMenuPanel(
+            kind: .audio,
+            leadingRowID: AudioTrackMenu.leadingRowID(tracks: vm.availableAudioTracks,
+                                                      selectedID: vm.selectedAudioTrack?.id),
+            onContentHeightChange: { panelContentHeights[.audio] = $0 },
+            onSeated: panelSeatFocus(.audio)
+        ) {
             AudioTrackMenu(tracks: vm.availableAudioTracks, selectedID: vm.selectedAudioTrack?.id) { track in
                 closeMenu(); resetHideTimer()
                 #if !os(tvOS)
@@ -1429,7 +1451,13 @@ struct PlayerControlsView: View {
 
     @ViewBuilder
     private var subtitleMenuList: some View {
-        trackMenuChrome(.subtitles) {
+        TrackMenuPanel(
+            kind: .subtitles,
+            leadingRowID: SubtitleTrackMenu.leadingRowID(tracks: vm.availableSubtitleTracks,
+                                                         selectedID: vm.selectedSubtitleTrack?.id),
+            onContentHeightChange: { panelContentHeights[.subtitles] = $0 },
+            onSeated: panelSeatFocus(.subtitles)
+        ) {
             SubtitleTrackMenu(
                 tracks: vm.availableSubtitleTracks,
                 selectedID: vm.selectedSubtitleTrack?.id,
@@ -1447,7 +1475,13 @@ struct PlayerControlsView: View {
 
     @ViewBuilder
     private var chapterMenuList: some View {
-        trackMenuChrome(.chapters) {
+        TrackMenuPanel(
+            kind: .chapters,
+            leadingRowID: ChapterMenu.leadingRowID(chapters: vm.chapters,
+                                                  atSeconds: CMTimeGetSeconds(vm.currentPosition)),
+            onContentHeightChange: { panelContentHeights[.chapters] = $0 },
+            onSeated: panelSeatFocus(.chapters)
+        ) {
             ChapterMenu(chapters: vm.chapters) { chapter in
                 closeMenu(); resetHideTimer()
                 #if !os(tvOS)
@@ -1460,44 +1494,18 @@ struct PlayerControlsView: View {
 
     @ViewBuilder
     private var speedMenuList: some View {
-        trackMenuChrome(.speed) {
+        TrackMenuPanel(
+            kind: .speed,
+            leadingRowID: SpeedMenu.leadingRowID(options: speedOptions,
+                                                 selected: Double(vm.playbackRate)),
+            onContentHeightChange: { panelContentHeights[.speed] = $0 },
+            onSeated: panelSeatFocus(.speed)
+        ) {
             SpeedMenu(options: speedOptions, selected: Double(vm.playbackRate)) { rate in
                 closeMenu(); resetHideTimer()
                 Task { await vm.setPlaybackRate(Float(rate)) }
             }
         }
-    }
-
-    /// Scrollable Liquid Glass panel (same `.regular` + white hairline as the chips),
-    /// dark-pinned so design tokens resolve to the immersive palette. The content
-    /// measurement feeds the inline panel's content-sized height, keyed per kind;
-    /// width and height are the panel's to set (`panelWidth`/`panelHeight`).
-    @ViewBuilder
-    private func trackMenuChrome<Content: View>(
-        _ kind: TrackMenuKind, @ViewBuilder _ content: () -> Content
-    ) -> some View {
-        let shape = RoundedRectangle(cornerRadius: Radius.panel, style: .continuous)
-        ScrollView {
-            // No in-panel title: the chip that opened this already names the menu. Just the rows,
-            // clipped to `shape` (below) so they scroll cleanly under the panel's rounded corners.
-            LazyVStack(alignment: .leading, spacing: 2) {
-                content()
-            }
-            .padding(Space.s8)
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { panelContentHeights[kind] = $0 }
-        }
-        .scrollIndicators(.hidden)
-        .scrollBounceBehavior(.basedOnSize)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .clipShape(shape)
-        .glassEffect(.regular, in: shape)
-        .overlay { shape.strokeBorder(.white.opacity(0.12), lineWidth: 1) }
-        .preferredColorScheme(.dark)
-        .environment(\.colorScheme, .dark)
-        // The in-panel MenuHeader was removed; name the panel container for VoiceOver so the
-        // opened menu still announces which list it is (the opening chip is hidden while open).
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(kind.accessibilityTitle)
     }
 
     // MARK: - Auto-hide

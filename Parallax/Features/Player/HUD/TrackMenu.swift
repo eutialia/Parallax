@@ -3,6 +3,26 @@ import ParallaxPlayback
 import ParallaxJellyfin
 import ParallaxCore
 
+/// A track-menu row's identity — ONE value that serves as both the scroll-target id
+/// (`.id(_:)` under `TrackMenuPanel`'s `scrollTargetLayout`) and the tvOS focus key, so
+/// the row a panel scrolls to and the row it focuses can't drift apart.
+///
+/// A dedicated enum rather than `AnyHashable`: `ScrollPosition.scrollTo(id:)` requires
+/// `Sendable`, and a typeless box can't vouch for its payload — the same constraint that
+/// produced `SMBBrowseScrollAnchor`. It also collapses four key schemes (a `TrackID`, a
+/// `Double` rate, a chapter index, and the Off sentinel) into one id type, which is what
+/// `scrollTargetLayout` needs to resolve a row across menus.
+// nonisolated: `ScrollPosition` hashes this off the main actor, and the resolver tests
+// build values outside it — the app target's default-MainActor mode would otherwise
+// isolate the conformance.
+nonisolated enum TrackMenuRowID: Hashable, Sendable {
+    /// The subtitle menu's "Off" row — it has no `TrackID`.
+    case subtitlesOff
+    case track(TrackID)
+    case rate(Double)
+    case chapter(Chapter.ID)
+}
+
 // MARK: - tvOS row-focus plumbing
 
 #if os(tvOS)
@@ -13,14 +33,14 @@ extension EnvironmentValues {
     /// menus' behavior): `prefersDefaultFocus` was a no-op here — it only applies when
     /// no view has focus, and opening a panel RELOCATES focus (the chip just disabled),
     /// which left first focus wherever the engine's geometry put it.
-    @Entry var trackMenuRowFocus: FocusState<AnyHashable?>.Binding? = nil
+    @Entry var trackMenuRowFocus: FocusState<TrackMenuRowID?>.Binding? = nil
 }
 #endif
 
 /// Binds a row to the panel's focus state under its key; inert on touch platforms
 /// (no focus engine in the inline panel).
 private struct TrackMenuRowFocus: ViewModifier {
-    let key: AnyHashable
+    let key: TrackMenuRowID
     #if os(tvOS)
     @Environment(\.trackMenuRowFocus) private var binding
     #endif
@@ -43,7 +63,7 @@ private struct TrackMenuRowFocus: ViewModifier {
 /// own glyphs there (the "funky" audio badge).
 private enum MenuMetrics {
     /// Selected / focused row platter radius, CONCENTRIC with the panel: `Radius.panel` minus
-    /// `trackMenuChrome`'s `Space.s8` content inset. At the first/last row the platter sits in the
+    /// `TrackMenuPanel`'s `Space.s8` content inset. At the first/last row the platter sits in the
     /// panel's rounded corner, so its corner has to curve parallel to the panel's — a smaller radius
     /// balls up a wider gap at the diagonal (the corners look mismatched).
     static let platterRadius = Radius.panel - Space.s8
@@ -168,9 +188,10 @@ private struct MenuFootnote: View {
 }
 
 private struct MenuRow<Trailing: View>: View {
-    /// The row's identity in the panel's focus state — what the panel assigns to land
-    /// first focus here, and what `defaultFocus` re-targets on later evaluations.
-    let focusKey: AnyHashable
+    /// The row's one identity: the panel's scroll target (`.id` below, under its
+    /// `scrollTargetLayout`) AND — on tvOS — its focus key, what the panel assigns to
+    /// land first focus here and what `defaultFocus` re-targets later.
+    let rowID: TrackMenuRowID
     let isSelected: Bool
     /// The row is shown but can't be picked. On tvOS this also drops it out of the focus
     /// order, which is the honest 10-foot equivalent of a greyed-out row.
@@ -184,7 +205,7 @@ private struct MenuRow<Trailing: View>: View {
             // Flipping the row's colorScheme to .light does the content inversion for free —
             // every token inside (label / secondaryLabel / fill) already defines its light
             // value, so checkmarks and badges turn ink-on-white without per-view branches.
-            // iOS never focuses, so it keeps the dark-pinned palette from `trackMenuChrome`.
+            // iOS never focuses, so it keeps the dark-pinned palette from `TrackMenuPanel`.
             TVFocusReader { focused in
                 content()
                     .padding(.horizontal, Space.s12)
@@ -210,7 +231,12 @@ private struct MenuRow<Trailing: View>: View {
         .tvMenuRowButton()
         .disabled(isUnavailable)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
-        .modifier(TrackMenuRowFocus(key: focusKey))
+        // Outermost, past the focus modifier: `TrackMenuRowFocus` wraps the row in an
+        // `if let binding` branch, and an `.id` applied inside that branch is attached to
+        // whichever arm the branch produced — the scroll target has to sit on the row the
+        // `scrollTargetLayout` actually sees.
+        .modifier(TrackMenuRowFocus(key: rowID))
+        .id(rowID)
     }
 }
 
@@ -224,12 +250,18 @@ struct AudioTrackMenu: View {
     private var anyTranscode: Bool { tracks.contains { $0.isTranscode } }
     private var anyUnsupported: Bool { tracks.contains(where: \.isUnsupported) }
 
-    /// First-focus row key for the presenting panel (tvOS): the selected track,
-    /// falling back to the first row. Unsupported tracks aren't focusable, so they
-    /// can't be the landing row either.
-    static func defaultFocusKey(tracks: [AudioTrack], selectedID: TrackID?) -> AnyHashable? {
-        let selectable = tracks.filter { !$0.isUnsupported }
-        return (selectable.first { $0.id == selectedID } ?? selectable.first)?.id
+    /// The row the panel opens scrolled to: the selected track, falling back to the
+    /// first. Unfiltered — a track the engine can't decode is still shown, so it still
+    /// gets to lead the list when it's the one selected.
+    nonisolated static func leadingRowID(tracks: [AudioTrack], selectedID: TrackID?) -> TrackMenuRowID? {
+        (tracks.first { $0.id == selectedID } ?? tracks.first).map { .track($0.id) }
+    }
+
+    /// First-focus row for the presenting panel (tvOS): the same pick over the SUPPORTED
+    /// rows only — the unsupported ones are `.disabled`, so the focus engine can't land
+    /// there. The one menu whose focus target can differ from its scroll target.
+    nonisolated static func focusableLeadingRowID(tracks: [AudioTrack], selectedID: TrackID?) -> TrackMenuRowID? {
+        leadingRowID(tracks: tracks.filter { !$0.isUnsupported }, selectedID: selectedID)
     }
 
     /// The detail line says what the track is made of; for a codec the engine can't
@@ -246,7 +278,7 @@ struct AudioTrackMenu: View {
 
     var body: some View {
         ForEach(tracks, id: \.id) { track in
-            MenuRow(focusKey: track.id, isSelected: track.id == selectedID,
+            MenuRow(rowID: .track(track.id), isSelected: track.id == selectedID,
                     isUnavailable: track.isUnsupported,
                     action: { onSelect(track) }) {
                 HStack(spacing: Space.s12) {
@@ -281,17 +313,16 @@ struct SubtitleTrackMenu: View {
     private var anyExternal: Bool { tracks.contains(where: \.isExternal) }
     private var anyBurnedIn: Bool { tracks.contains(where: \.isBurnedIn) }
 
-    /// The Off row's focus key — it has no `TrackID`.
-    static let offFocusKey: AnyHashable = "subtitles-off"
-
-    /// First-focus row key for the presenting panel (tvOS): the selected track, or Off.
-    static func defaultFocusKey(tracks: [SubtitleTrack], selectedID: TrackID?) -> AnyHashable {
-        tracks.first { $0.id == selectedID }.map { AnyHashable($0.id) } ?? offFocusKey
+    /// The row the panel opens scrolled to — and, on tvOS, focuses: the selected track,
+    /// or the Off row. Every row here is pickable, so scroll and focus can't diverge
+    /// (only the audio menu needs a second, filtered resolver).
+    nonisolated static func leadingRowID(tracks: [SubtitleTrack], selectedID: TrackID?) -> TrackMenuRowID {
+        tracks.first { $0.id == selectedID }.map { .track($0.id) } ?? .subtitlesOff
     }
 
     var body: some View {
         // Off row
-        MenuRow(focusKey: Self.offFocusKey, isSelected: selectedID == nil,
+        MenuRow(rowID: .subtitlesOff, isSelected: selectedID == nil,
                 action: { onSelect(nil) }) {
             HStack(spacing: Space.s12) {
                 MenuCheckColumn(isSelected: selectedID == nil)
@@ -302,7 +333,7 @@ struct SubtitleTrackMenu: View {
             }
         }
         ForEach(tracks, id: \.id) { track in
-            MenuRow(focusKey: track.id, isSelected: track.id == selectedID,
+            MenuRow(rowID: .track(track.id), isSelected: track.id == selectedID,
                     action: { onSelect(track) }) {
                 HStack(spacing: Space.s12) {
                     MenuCheckColumn(
@@ -335,17 +366,22 @@ struct ChapterMenu: View {
     let chapters: [Chapter]
     let onSelect: (Chapter) -> Void
 
-    /// First-focus row key for the presenting panel (tvOS): no row is "selected",
-    /// so land on the chapter containing the playhead.
-    static func defaultFocusKey(chapters: [Chapter], atSeconds seconds: Double) -> AnyHashable? {
-        (chapters.last { $0.start <= .seconds(seconds) } ?? chapters.first)?.id
+    /// The row the panel opens scrolled to (and focuses on tvOS): no row is "selected",
+    /// so lead with the chapter containing the playhead.
+    ///
+    /// A non-finite position leads with the first chapter: `CMTimeGetSeconds` answers NaN
+    /// for an invalid/indefinite time — which is what the engine reports before the first
+    /// frame lands — and `Duration.seconds(_:)` traps on it.
+    nonisolated static func leadingRowID(chapters: [Chapter], atSeconds seconds: Double) -> TrackMenuRowID? {
+        guard seconds.isFinite else { return chapters.first.map { .chapter($0.id) } }
+        return (chapters.last { $0.start <= .seconds(seconds) } ?? chapters.first).map { .chapter($0.id) }
     }
 
     var body: some View {
-        // The outer `LazyVStack` in `trackMenuChrome` realizes these rows lazily, so a 30–60 chapter
+        // The outer `LazyVStack` in `TrackMenuPanel` realizes these rows lazily, so a 30–60 chapter
         // movie defers off-screen rows (no build+measure hang on present).
         ForEach(chapters) { chapter in
-            MenuRow(focusKey: chapter.id, isSelected: false, action: { onSelect(chapter) }) {
+            MenuRow(rowID: .chapter(chapter.id), isSelected: false, action: { onSelect(chapter) }) {
                 HStack(spacing: Space.s12) {
                     Text("\(chapter.index + 1)")
                         .font(.caption.weight(.semibold).monospacedDigit())
@@ -381,14 +417,15 @@ struct SpeedMenu: View {
     let selected: Double
     let onSelect: (Double) -> Void
 
-    /// First-focus row key for the presenting panel (tvOS): the active rate.
-    static func defaultFocusKey(options: [Double], selected: Double) -> AnyHashable? {
-        options.contains(selected) ? selected : options.first
+    /// The row the panel opens scrolled to (and focuses on tvOS): the active rate,
+    /// falling back to the first.
+    nonisolated static func leadingRowID(options: [Double], selected: Double) -> TrackMenuRowID? {
+        (options.contains(selected) ? selected : options.first).map { .rate($0) }
     }
 
     var body: some View {
         ForEach(options, id: \.self) { rate in
-            MenuRow(focusKey: rate, isSelected: rate == selected, action: { onSelect(rate) }) {
+            MenuRow(rowID: .rate(rate), isSelected: rate == selected, action: { onSelect(rate) }) {
                 HStack(spacing: Space.s12) {
                     MenuCheckColumn(isSelected: rate == selected)
                     Text(Self.label(rate))
@@ -405,6 +442,74 @@ struct SpeedMenu: View {
     static func label(_ rate: Double) -> String {
         let s = rate.formatted(.number.precision(.fractionLength(0...2)))
         return s + "×"
+    }
+}
+
+// MARK: - Panel chrome
+
+/// The scrollable Liquid Glass panel every track menu is presented in (same `.regular`
+/// glass + white hairline as the chips), dark-pinned so the design tokens resolve to the
+/// immersive palette.
+///
+/// It opens SCROLLED TO `leadingRowID` — the selected track / rate / current chapter
+/// pinned to the top of the visible region — instead of at the top of the list. When that
+/// row is near the end the scroll view's own clamp pins the list bottom; no manual math.
+/// Width and height are the presenting panel's to set (`panelWidth`/`panelHeight`), fed by
+/// the content-height report.
+struct TrackMenuPanel<Content: View>: View {
+    let kind: PlayerControlsView.TrackMenuKind
+    let leadingRowID: TrackMenuRowID?
+    let onContentHeightChange: (CGFloat) -> Void
+    /// Run once the panel has seated its scroll position, in the SAME task — tvOS lands
+    /// first focus here. Two independent `.task`s (one per concern) race with no defined
+    /// order, and focusing a row the scroll hasn't seated yet drags the offset back.
+    var onSeated: (() -> Void)? = nil
+    @ViewBuilder let content: () -> Content
+    @State private var position = ScrollPosition(idType: TrackMenuRowID.self)
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: Radius.panel, style: .continuous)
+        ScrollView {
+            // No in-panel title: the chip that opened this already names the menu. Just the rows,
+            // clipped to `shape` (below) so they scroll cleanly under the panel's rounded corners.
+            LazyVStack(alignment: .leading, spacing: 2) {
+                content()
+            }
+            .scrollTargetLayout()
+            .padding(.horizontal, Space.s8)
+            // The vertical inset is the SCROLL VIEW's margin, not the stack's padding: as
+            // padding it scrolls, so `anchor: .top` parked the target row against the panel's
+            // bare top edge — its platter corner colliding with the panel's — and a first-row
+            // target opened 8pt scrolled down. As a content margin it's a fixed inset the
+            // offset can't eat. It's outside the measured content, so add it back below.
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
+                onContentHeightChange($0 + Space.s8 * 2)
+            }
+        }
+        .contentMargins(.vertical, Space.s8, for: .scrollContent)
+        .scrollPosition($position, anchor: .top)
+        // Seeding `ScrollPosition(id:anchor:)` in `init` renders at the top of the list and
+        // stays there — the lazy stack hasn't realized the target row when the scroll view
+        // takes its first offset, so the position has nothing to resolve against. Scrolling
+        // from `.task` (after that first layout) is what actually lands it, and it still
+        // beats the first frame the user sees: the panel grows in from the chip's corner.
+        // Rows past the end clamp themselves, so there's no math here.
+        .task {
+            if let leadingRowID { position.scrollTo(id: leadingRowID, anchor: .top) }
+            onSeated?()
+        }
+        .scrollIndicators(.hidden)
+        .scrollBounceBehavior(.basedOnSize)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .clipShape(shape)
+        .glassEffect(.regular, in: shape)
+        .overlay { shape.strokeBorder(.white.opacity(0.12), lineWidth: 1) }
+        .preferredColorScheme(.dark)
+        .environment(\.colorScheme, .dark)
+        // The in-panel MenuHeader was removed; name the panel container for VoiceOver so the
+        // opened menu still announces which list it is (the opening chip is hidden while open).
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(kind.accessibilityTitle)
     }
 }
 
@@ -524,35 +629,106 @@ struct SpeedMenu: View {
     .environment(\.marqueeEnabled, false)
 }
 
-/// A menu in its real panel chrome — mirrors `PlayerControlsView.trackMenuChrome` (ScrollView +
-/// `LazyVStack` + `Space.s8` inset + `Radius.panel` glass, clipped, no scroll indicator). Renders on
-/// iOS to confirm there's no in-panel title and the first row sits cleanly under the panel's rounded
-/// top (rows clip to the corners when scrolled). A short frame forces overflow so the bottom clip
-/// shows too.
+/// The real panel at a height that forces overflow: confirms there is no in-panel title, the
+/// first row sits under the rounded top with its inset intact, and the bottom clip shows.
 #Preview("Track panel · no header", traits: .sizeThatFitsLayout) {
-    let shape = RoundedRectangle(cornerRadius: Radius.panel, style: .continuous)
-    return ScrollView {
-        LazyVStack(alignment: .leading, spacing: 2) {
-            AudioTrackMenu(
-                tracks: [
-                    AudioTrack(id: .jellyfinStream(1), displayName: "English", languageCode: "eng",
-                               detailLabel: "TrueHD · 7.1", isTranscode: true, transcodeTarget: "AAC"),
-                    AudioTrack(id: .jellyfinStream(2), displayName: "English", languageCode: "eng",
-                               detailLabel: "AAC · Stereo", isTranscode: false, transcodeTarget: nil),
-                    AudioTrack(id: .jellyfinStream(3), displayName: "Commentary", languageCode: "eng",
-                               detailLabel: "AC3 · 5.1", isTranscode: false, transcodeTarget: nil),
-                ],
-                selectedID: .jellyfinStream(1),
-                onSelect: { _ in }
-            )
-        }
-        .padding(Space.s8)
+    TrackMenuPanel(kind: .audio,
+                   leadingRowID: .track(.jellyfinStream(1)),
+                   onContentHeightChange: { _ in }) {
+        AudioTrackMenu(
+            tracks: [
+                AudioTrack(id: .jellyfinStream(1), displayName: "English", languageCode: "eng",
+                           detailLabel: "TrueHD · 7.1", isTranscode: true, transcodeTarget: "AAC"),
+                AudioTrack(id: .jellyfinStream(2), displayName: "English", languageCode: "eng",
+                           detailLabel: "AAC · Stereo", isTranscode: false, transcodeTarget: nil),
+                AudioTrack(id: .jellyfinStream(3), displayName: "Commentary", languageCode: "eng",
+                           detailLabel: "AC3 · 5.1", isTranscode: false, transcodeTarget: nil),
+            ],
+            selectedID: .jellyfinStream(1),
+            onSelect: { _ in }
+        )
     }
-    .scrollIndicators(.hidden)
     .frame(width: 320, height: 200)
-    .clipShape(shape)
-    .glassEffect(.regular, in: shape)
-    .overlay { shape.strokeBorder(.white.opacity(0.12), lineWidth: 1) }
+    .padding(40)
+    .background(Color.background)
+    .preferredColorScheme(.dark)
+}
+
+/// 30 tracks — deeper than any panel is tall — so the opening scroll position is visible
+/// rather than inferred. Shared by the two panel-position specimens below.
+private func previewSubtitleTracks() -> [SubtitleTrack] {
+    (0..<30).map {
+        SubtitleTrack(id: .jellyfinStream($0),
+                      displayName: String(format: "Track %02d", $0),
+                      languageCode: "eng",
+                      isForced: false)
+    }
+}
+
+/// The seat fix, in pixels: the panel must open with the SELECTED row flush against its
+/// top edge, not at the top of the list. Track 10 of 30 is deep enough that a top-scrolled
+/// panel can't be mistaken for a seated one, and far enough from the end that seating it
+/// at the top doesn't hit the clamp (that case is the next preview — at this panel height
+/// anything past Track 18 clamps instead).
+#Preview("Subtitle panel · selected at top", traits: .sizeThatFitsLayout) {
+    TrackMenuPanel(kind: .subtitles,
+                   leadingRowID: .track(.jellyfinStream(10)),
+                   onContentHeightChange: { _ in }) {
+        SubtitleTrackMenu(tracks: previewSubtitleTracks(),
+                          selectedID: .jellyfinStream(10),
+                          onSelect: { _ in })
+    }
+    .frame(width: 256, height: 520)
+    .padding(40)
+    .background(Color.background)
+    .preferredColorScheme(.dark)
+}
+
+/// The clamp half: a selection close enough to the end that seating it at the top would
+/// scroll past the content. The scroll view's own clamp wins — the list bottom is pinned,
+/// with no empty space under the last row.
+#Preview("Subtitle panel · clamped to bottom", traits: .sizeThatFitsLayout) {
+    TrackMenuPanel(kind: .subtitles,
+                   leadingRowID: .track(.jellyfinStream(28)),
+                   onContentHeightChange: { _ in }) {
+        SubtitleTrackMenu(tracks: previewSubtitleTracks(),
+                          selectedID: .jellyfinStream(28),
+                          onSelect: { _ in })
+    }
+    .frame(width: 256, height: 520)
+    .padding(40)
+    .background(Color.background)
+    .preferredColorScheme(.dark)
+}
+
+/// The regression guard: a list shorter than the panel must not shift at all, even with a
+/// non-first row targeted. Content smaller than the container has nowhere to scroll, so 2.0×
+/// sits where it always did — last row, bottom of the stack.
+#Preview("Speed panel · short list", traits: .sizeThatFitsLayout) {
+    TrackMenuPanel(kind: .speed,
+                   leadingRowID: .rate(2.0),
+                   onContentHeightChange: { _ in }) {
+        SpeedMenu(options: [0.5, 0.75, 1.0, 1.25, 1.5, 2.0], selected: 2.0, onSelect: { _ in })
+    }
+    .frame(width: 160, height: 520)
+    .padding(40)
+    .background(Color.background)
+    .preferredColorScheme(.dark)
+}
+
+/// The zero-offset case, which the old scrolling `Space.s8` padding broke: targeting the
+/// FIRST row of an overflowing list must leave the panel at rest, with the full 8pt inset
+/// above the Off platter. When the inset scrolled, `anchor: .top` pulled the row up to the
+/// panel's bare edge and the list opened 8pt down from its own start.
+#Preview("Subtitle panel · Off selected, overflowing", traits: .sizeThatFitsLayout) {
+    TrackMenuPanel(kind: .subtitles,
+                   leadingRowID: .subtitlesOff,
+                   onContentHeightChange: { _ in }) {
+        SubtitleTrackMenu(tracks: previewSubtitleTracks(),
+                          selectedID: nil,
+                          onSelect: { _ in })
+    }
+    .frame(width: 256, height: 520)
     .padding(40)
     .background(Color.background)
     .preferredColorScheme(.dark)

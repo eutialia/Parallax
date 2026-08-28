@@ -209,7 +209,7 @@ struct PlayerView: View {
         // mode the large bottom scrubber panel picks up the light glass variant while
         // the small circle buttons barely show it, so they read as different palettes.
         // Outermost so `.overlay(...)` content (loading scrim, debug HUD) inherits it;
-        // matches the dark pin already on the track menus (`trackMenuChrome`).
+        // matches the dark pin already on the track menus (`TrackMenuPanel`).
         .environment(\.colorScheme, .dark)
     }
 
