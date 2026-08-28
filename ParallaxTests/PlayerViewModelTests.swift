@@ -4178,6 +4178,57 @@ struct SidecarFetchIndicatorTests {
         selection.cancel()
     }
 
+    /// The chip never disables while it spins, so the user can reopen the menu and pick
+    /// again mid-fetch. That second pick has to WIN: cancel the cold extract still in
+    /// flight (a stale sidecar landing later would draw the wrong language over the new
+    /// pick) and take the loading slot for itself.
+    @Test("a pick made mid-fetch cancels the first fetch and takes the loading slot")
+    func secondPickCancelsTheInFlightFetch() async throws {
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let resolved = PlayerFixtures.resolvedDirectPlayEmbeddedSubs()
+        let slowEntered = AsyncStream<Void>.makeStream()
+        let slowCancelled = AsyncStream<Void>.makeStream()
+        // The second fetch parks on a gate the test opens by hand: without it, its own
+        // completion could clear the loading slot before the assertion reads it.
+        let secondGate = AsyncStream<Void>.makeStream()
+        let vm = makePlayerVM(
+            resolve: { _, _, _, _ in resolved },
+            engine: engine,
+            subtitleFetch: { url in
+                guard url.path.contains("/Subtitles/2/") else {
+                    var gate = secondGate.stream.makeAsyncIterator()
+                    _ = await gate.next()
+                    return Data()
+                }
+                slowEntered.continuation.yield()
+                try? await Task.sleep(for: .seconds(60))
+                if Task.isCancelled { slowCancelled.continuation.yield() }
+                return nil
+            }
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.ready(duration: resolved.runtime!, tracks: TrackInventory(audio: [], subtitles: [])))
+        try await engine.settle()
+        let slow = try row(vm, .jellyfinStream(2))
+        let second = try row(vm, .jellyfinStream(4))
+
+        await vm.selectSubtitleTrack(slow)
+        var entered = slowEntered.stream.makeAsyncIterator()
+        _ = await entered.next()
+        #expect(vm.loadingSubtitleTrackID == .jellyfinStream(2))
+
+        await vm.selectSubtitleTrack(second)
+        var cancelled = slowCancelled.stream.makeAsyncIterator()
+        _ = await cancelled.next()
+        // The chip's label and its spinner agree on the SECOND track, not the abandoned one.
+        #expect(vm.selectedSubtitleTrack == second)
+        #expect(vm.loadingSubtitleTrackID == .jellyfinStream(4))
+
+        secondGate.continuation.yield()
+        await vm.debugAwaitSubtitleFetch()
+        #expect(vm.loadingSubtitleTrackID == nil)
+    }
+
     @Test("the indicator clears once the fetch resolves")
     func indicatorClearsWhenTheFetchLands() async throws {
         let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)

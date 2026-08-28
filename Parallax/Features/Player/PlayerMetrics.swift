@@ -145,6 +145,10 @@ struct PlayerMetrics: Equatable {
     var chipGap: CGFloat { deviceClass == .phone ? Self.phoneChipGap : 9 * u }
     var chipFontSize: CGFloat { deviceClass == .phone ? Self.phoneChipFontSize : 25 * u }
     var chipIconSize: CGFloat { deviceClass == .phone ? Self.phoneChipIconSize : 28 * u }
+    /// Indeterminate spinner size for the chip's glyph slot. Mirrors the track menu's
+    /// check column: the 10-foot chip carries a 28pt glyph the smallest control size
+    /// would read as a speck in, the phone's 15pt one can only take the small spinner.
+    var chipSpinnerSize: ControlSize { deviceClass == .tv ? .regular : .small }
 
     // Split pill — height matches `chipHeight` so the pill rows with the chips.
     var splitPillHeight: CGFloat { 72 * u }
