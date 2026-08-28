@@ -127,7 +127,10 @@ struct PlayerControlsView: View {
             }
         }
     }
-    @State private var openMenu: TrackMenuKind? = nil
+    /// The open panel, IDENTITY AND ALL (`nil` = none). Not a bare kind beside a generation
+    /// counter: those two could only ever be written together, and a write that set one
+    /// without the other would silently recycle a panel.
+    @State private var openMenu: PanelIdentity?
     /// Chip frames in the "hud" coordinate space — the inline panel's anchors.
     @State private var chipFrames: [TrackMenuKind: CGRect] = [:]
     /// Measured content height PER MENU KIND; the inline panel sizes to it. Keyed
@@ -461,8 +464,8 @@ struct PlayerControlsView: View {
                     .accessibilityLabel("Dismiss menu")
             }
             #endif
-            if let kind = openMenu, let chip = chipFrames[kind] {
-                inlineTrackPanel(kind, chip: chip)
+            if let panel = openMenu, let chip = chipFrames[panel.kind] {
+                inlineTrackPanel(panel.kind, chip: chip)
             }
         }
         .coordinateSpace(name: "hud")
@@ -528,6 +531,17 @@ struct PlayerControlsView: View {
     }
     #endif
 
+    /// A panel's identity: which menu, and WHICH OPEN of it. Kind alone is stable across a
+    /// close/reopen, which is exactly the case that has to produce a new view, so every value
+    /// mints a fresh `token` — construction IS the generation bump, with no counter a future
+    /// caller can forget to advance.
+    private struct PanelIdentity: Hashable {
+        let kind: TrackMenuKind
+        private let token = UUID()
+
+        init(kind: TrackMenuKind) { self.kind = kind }
+    }
+
     /// The TV-app corner-aligned track panel (every platform): the panel's
     /// bottom-left corner sits exactly on the (vacated) chip's bottom-left corner —
     /// replace, not popover, so there's no arrow. When a narrow screen can't fit the
@@ -547,10 +561,12 @@ struct PlayerControlsView: View {
             y: chip.maxY / hudSize.height
         ) : .bottomLeading
         panelMenu(kind)
-            // Keyed per kind so switching menus REPLACES the panel instead of morphing it.
-            // Without this, re-opening menu B during menu A's 0.35s removal spring hands B
-            // the outgoing panel's view — and its scroll offset, mid-flight.
-            .id(kind)
+            // Keyed per OPEN, not per kind, so every open REPLACES the panel instead of
+            // morphing it. Kind alone leaked the outgoing panel — and its scroll offset,
+            // mid-flight — into a menu opened during the previous one's 0.35s removal
+            // spring; for a same-kind reopen it also handed back a panel that had already
+            // seated, so the seat and its `onSeated` first focus never ran again.
+            .id(openMenu)
             .frame(width: width)
             .frame(height: height)
             .offset(x: x, y: chip.maxY - height)
@@ -604,34 +620,42 @@ struct PlayerControlsView: View {
         }
         #if os(tvOS)
         // First focus lands on the SELECTED row: assigned programmatically once the panel
-        // has seated its scroll (see `panelSeatFocus`) — the chrome's disable relocates
-        // focus into the panel, and a declarative preference alone loses that race.
-        // `defaultFocus` re-targets any later evaluation while the panel is up. Back is
-        // handled at the HUD root.
+        // has seated (see `panelSeatFocus`) — the chrome's disable relocates focus into the
+        // panel, and a declarative preference alone loses that race. That seat resolves
+        // against the 320pt placeholder viewport only on a kind's FIRST open per
+        // `PlayerControlsView` lifetime, since `panelContentHeights` keeps the measurement
+        // after that — but on tvOS the controls unmount with the HUD, so every summon is a
+        // first open. `defaultFocus` is the fallback that seeds the panel; observed on
+        // device it evaluates on first appearance and never re-targets afterwards, contra
+        // the doc, which says `.userInitiated` widens evaluation to "user-driven focus
+        // navigation as well as automatic changes". Back is handled at the HUD root.
         .environment(\.trackMenuRowFocus, $menuRowFocus)
         .defaultFocus($menuRowFocus, panelFocusRowID(kind), priority: .userInitiated)
         #endif
     }
 
     /// The panel's `onSeated` hook: on tvOS, land first focus on the row the panel just
-    /// scrolled to. Nil on touch platforms — no focus engine in the inline panel — which
-    /// keeps this the only place the tvOS fork lives.
+    /// scrolled to — `panelSeatRowID` resolves to this same row there, for every kind.
+    /// Nil on touch platforms — no focus engine in the inline panel — which keeps this the
+    /// only place the tvOS fork lives.
     private func panelSeatFocus(_ kind: TrackMenuKind) -> (() -> Void)? {
         #if os(tvOS)
-        { menuRowFocus = panelFocusRowID(kind) }
+        // Never write a nil dismiss into a panel with no focusable row at all (every audio
+        // track unsupported): the chrome is disabled and nothing in the panel can take
+        // focus, so Back would fire with no focused environment to peel back from.
+        { if let id = panelFocusRowID(kind) { menuRowFocus = id } }
         #else
         nil
         #endif
     }
 
-    #if os(tvOS)
-    /// The row the panel should land first focus on: its leading row, except in audio,
-    /// where the unsupported rows are `.disabled` and can't take focus.
-    private func panelFocusRowID(_ kind: TrackMenuKind) -> TrackMenuRowID? {
+    /// The row a panel's list opens SELECTED-at-top on: the selected track / rate, or the
+    /// chapter playing now.
+    private func panelLeadingRowID(_ kind: TrackMenuKind) -> TrackMenuRowID? {
         switch kind {
         case .audio:
-            AudioTrackMenu.focusableLeadingRowID(tracks: vm.availableAudioTracks,
-                                                 selectedID: vm.selectedAudioTrack?.id)
+            AudioTrackMenu.leadingRowID(tracks: vm.availableAudioTracks,
+                                        selectedID: vm.selectedAudioTrack?.id)
         case .subtitles:
             SubtitleTrackMenu.leadingRowID(tracks: vm.availableSubtitleTracks,
                                            selectedID: vm.selectedSubtitleTrack?.id)
@@ -641,6 +665,28 @@ struct PlayerControlsView: View {
             ChapterMenu.leadingRowID(chapters: vm.chapters,
                                      atSeconds: CMTimeGetSeconds(vm.currentPosition))
         }
+    }
+
+    /// The row the panel actually seats its scroll on. tvOS seats the row it will FOCUS:
+    /// audio's unsupported rows are `.disabled` and unfocusable, so the selected row can
+    /// differ from the focus target there, and pinning a row focus can't reach leaves the
+    /// engine's reveal pulling the offset off the seat. The other three kinds resolve the
+    /// same either way; touch platforms have no focus to reconcile and keep the selected row.
+    private func panelSeatRowID(_ kind: TrackMenuKind) -> TrackMenuRowID? {
+        #if os(tvOS)
+        panelFocusRowID(kind)
+        #else
+        panelLeadingRowID(kind)
+        #endif
+    }
+
+    #if os(tvOS)
+    /// The row the panel should land first focus on: its leading row, except in audio,
+    /// where the unsupported rows are `.disabled` and can't take focus.
+    private func panelFocusRowID(_ kind: TrackMenuKind) -> TrackMenuRowID? {
+        guard kind == .audio else { return panelLeadingRowID(kind) }
+        return AudioTrackMenu.focusableLeadingRowID(tracks: vm.availableAudioTracks,
+                                                    selectedID: vm.selectedAudioTrack?.id)
     }
     #endif
 
@@ -909,7 +955,7 @@ struct PlayerControlsView: View {
     /// The chip has handed its spot to the open inline panel (see
     /// `PlayerGlassChip.isVacated`).
     private func isVacated(_ kind: TrackMenuKind) -> Bool {
-        openMenu == kind
+        openMenu?.kind == kind
     }
 
     /// Pure playhead-nearest pick over the measured chip frames — `playheadChip`'s
@@ -972,9 +1018,9 @@ struct PlayerControlsView: View {
                             // Channels promoted onto the chip ("English 7.1"); the codec
                             // stays on the menu detail line (channelLabel strips it).
                             sub: vm.selectedAudioTrack?.channelLabel,
-                            isActive: openMenu == .audio, isVacated: isVacated(.audio), iconOnly: iconOnly, metrics: m,
+                            isActive: openMenu?.kind == .audio, isVacated: isVacated(.audio), iconOnly: iconOnly, metrics: m,
                             accessibilityLabel: "Audio, \(vm.selectedAudioTrack?.displayName ?? "default")") {
-                resetHideTimer(); openMenu = .audio
+                openPanel(.audio)
             }
             .modifier(TrackChipAnchor(kind: .audio, frames: $chipFrames))
             .tvFocused($chipFocus, equals: .audio)
@@ -984,17 +1030,17 @@ struct PlayerControlsView: View {
             // category, Apple-player style); VoiceOver still says "Subtitles, <lang>".
             PlayerGlassChip(systemImage: "captions.bubble",
                             label: vm.selectedSubtitleTrack?.displayName ?? "Off",
-                            isActive: openMenu == .subtitles, isVacated: isVacated(.subtitles), iconOnly: iconOnly, metrics: m,
+                            isActive: openMenu?.kind == .subtitles, isVacated: isVacated(.subtitles), iconOnly: iconOnly, metrics: m,
                             accessibilityLabel: "Subtitles, \(vm.selectedSubtitleTrack?.displayName ?? "Off")") {
-                resetHideTimer(); openMenu = .subtitles
+                openPanel(.subtitles)
             }
             .modifier(TrackChipAnchor(kind: .subtitles, frames: $chipFrames))
             .tvFocused($chipFocus, equals: .subtitles)
         }
         PlayerGlassChip(systemImage: "timer", label: SpeedMenu.label(Double(vm.playbackRate)),
-                        isActive: openMenu == .speed, isVacated: isVacated(.speed), iconOnly: iconOnly, metrics: m,
+                        isActive: openMenu?.kind == .speed, isVacated: isVacated(.speed), iconOnly: iconOnly, metrics: m,
                         accessibilityLabel: "Playback speed, \(SpeedMenu.label(Double(vm.playbackRate)))") {
-            resetHideTimer(); openMenu = .speed
+            openPanel(.speed)
         }
         .modifier(TrackChipAnchor(kind: .speed, frames: $chipFrames))
         .tvFocused($chipFocus, equals: .speed)
@@ -1002,9 +1048,9 @@ struct PlayerControlsView: View {
             // The whole row only mounts once `playbackReady` (see `chips`), so the
             // engine is live by the time this shows — no mid-load dimming needed.
             PlayerGlassChip(systemImage: "list.bullet", label: "Chapters",
-                            isActive: openMenu == .chapters, isVacated: isVacated(.chapters), iconOnly: iconOnly, metrics: m,
+                            isActive: openMenu?.kind == .chapters, isVacated: isVacated(.chapters), iconOnly: iconOnly, metrics: m,
                             accessibilityLabel: "Chapters") {
-                resetHideTimer(); openMenu = .chapters
+                openPanel(.chapters)
             }
             .modifier(TrackChipAnchor(kind: .chapters, frames: $chipFrames))
             .tvFocused($chipFocus, equals: .chapters)
@@ -1410,15 +1456,26 @@ struct PlayerControlsView: View {
 
     private let speedOptions: [Double] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
 
+    /// Every track panel is the same wiring around a different list: the seat row, the
+    /// height report and the seat-focus hook all derive from the kind alone. Filled here so
+    /// the four builders below carry only their content — and so a fifth menu can't be added
+    /// with one of the three quietly missing.
+    private func trackMenuPanel(
+        _ kind: TrackMenuKind,
+        @ViewBuilder content: @escaping () -> some View
+    ) -> some View {
+        TrackMenuPanel(
+            kind: kind,
+            leadingRowID: panelSeatRowID(kind),
+            onContentHeightChange: { panelContentHeights[kind] = $0 },
+            onSeated: panelSeatFocus(kind),
+            content: content
+        )
+    }
+
     @ViewBuilder
     private var audioMenuList: some View {
-        TrackMenuPanel(
-            kind: .audio,
-            leadingRowID: AudioTrackMenu.leadingRowID(tracks: vm.availableAudioTracks,
-                                                      selectedID: vm.selectedAudioTrack?.id),
-            onContentHeightChange: { panelContentHeights[.audio] = $0 },
-            onSeated: panelSeatFocus(.audio)
-        ) {
+        trackMenuPanel(.audio) {
             AudioTrackMenu(tracks: vm.availableAudioTracks, selectedID: vm.selectedAudioTrack?.id) { track in
                 closeMenu(); resetHideTimer()
                 #if !os(tvOS)
@@ -1431,13 +1488,7 @@ struct PlayerControlsView: View {
 
     @ViewBuilder
     private var subtitleMenuList: some View {
-        TrackMenuPanel(
-            kind: .subtitles,
-            leadingRowID: SubtitleTrackMenu.leadingRowID(tracks: vm.availableSubtitleTracks,
-                                                         selectedID: vm.selectedSubtitleTrack?.id),
-            onContentHeightChange: { panelContentHeights[.subtitles] = $0 },
-            onSeated: panelSeatFocus(.subtitles)
-        ) {
+        trackMenuPanel(.subtitles) {
             SubtitleTrackMenu(
                 tracks: vm.availableSubtitleTracks,
                 selectedID: vm.selectedSubtitleTrack?.id,
@@ -1455,13 +1506,7 @@ struct PlayerControlsView: View {
 
     @ViewBuilder
     private var chapterMenuList: some View {
-        TrackMenuPanel(
-            kind: .chapters,
-            leadingRowID: ChapterMenu.leadingRowID(chapters: vm.chapters,
-                                                  atSeconds: CMTimeGetSeconds(vm.currentPosition)),
-            onContentHeightChange: { panelContentHeights[.chapters] = $0 },
-            onSeated: panelSeatFocus(.chapters)
-        ) {
+        trackMenuPanel(.chapters) {
             ChapterMenu(chapters: vm.chapters) { chapter in
                 closeMenu(); resetHideTimer()
                 #if !os(tvOS)
@@ -1474,13 +1519,7 @@ struct PlayerControlsView: View {
 
     @ViewBuilder
     private var speedMenuList: some View {
-        TrackMenuPanel(
-            kind: .speed,
-            leadingRowID: SpeedMenu.leadingRowID(options: speedOptions,
-                                                 selected: Double(vm.playbackRate)),
-            onContentHeightChange: { panelContentHeights[.speed] = $0 },
-            onSeated: panelSeatFocus(.speed)
-        ) {
+        trackMenuPanel(.speed) {
             SpeedMenu(options: speedOptions, selected: Double(vm.playbackRate)) { rate in
                 closeMenu(); resetHideTimer()
                 Task { await vm.setPlaybackRate(Float(rate)) }
@@ -1501,6 +1540,13 @@ struct PlayerControlsView: View {
         if controlsVisible { scheduleHide() }
     }
 
+    /// Open a track panel: re-arm the auto-hide, then mint a fresh identity for this open
+    /// (see `inlineTrackPanel`).
+    private func openPanel(_ kind: TrackMenuKind) {
+        resetHideTimer()
+        openMenu = PanelIdentity(kind: kind)
+    }
+
     /// Close the open track panel, handing focus back to the chip that opened it on
     /// tvOS (row picks and Back alike — focus must never strand in the vacated spot).
     /// The opening chip can be unfocusable by close time (`chipIsFocusable`: a
@@ -1508,10 +1554,15 @@ struct PlayerControlsView: View {
     /// to the speed chip rather than dropping the focus write.
     private func closeMenu() {
         #if os(tvOS)
-        if let kind = openMenu {
+        if let kind = openMenu?.kind {
             chipFocus = chipIsFocusable(kind) ? kind : .speed
         }
         #endif
+        // No `menuRowFocus = nil` here: it would land in the SAME update as the chip claim
+        // above with no defined order between them, and a dismiss landing last drops the
+        // peel-back to the opening chip onto the playhead-nearest `defaultFocus`. Clearing
+        // it is also redundant — `openMenu = nil` takes the panel, and SwiftUI drops a
+        // `FocusState` whose focused view is gone.
         openMenu = nil
     }
 
