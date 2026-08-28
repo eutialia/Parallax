@@ -151,14 +151,24 @@ enum CueMarkup {
         }
     }
 
-    /// `{` opens an override block in ASS and `\` starts an escape, so raw text
-    /// carrying either would silently swallow the rest of the line.
+    /// Makes raw cue text safe to drop into a Dialogue Text field.
+    ///
+    /// libass gives meaning to exactly five sequences in event text — `\N`,
+    /// `\n`, `\h`, `\{` and `\}` — and has NO escape for the backslash itself:
+    /// any other `\x` is a literal backslash followed by `x`, so doubling one
+    /// draws two. A source backslash is therefore emitted once and followed by
+    /// a WORD JOINER, which is zero-width, non-breaking and default-ignorable:
+    /// it draws nothing and it guarantees the author's next character cannot
+    /// complete an escape (`C:\New`, `\{`, `\h`).
+    ///
+    /// `{` still has to be escaped — unescaped it opens an override block and
+    /// swallows the rest of the line — and a hard newline becomes `\N`.
     static func escape(_ text: String) -> String {
         var out = ""
         out.reserveCapacity(text.count)
         for character in text {
             switch character {
-            case "\\": out += "\\\\"
+            case "\\": out += "\\\u{2060}"
             case "{": out += "\\{"
             case "}": out += "\\}"
             case "\n": out += "\\N"

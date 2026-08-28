@@ -18,8 +18,9 @@ enum SubtitleFontTagger {
     enum Token: Equatable {
         /// A `{...}` override block, passed through verbatim.
         case override(String)
-        /// A two-character backslash escape (`\\`, `\{`, `\h`, …), passed
-        /// through verbatim; its rendered character carries no script.
+        /// One of libass' escapes whose rendered character carries no script:
+        /// `\{`, `\}` (literal braces) and `\h` (a hard space). Passed through
+        /// verbatim.
         case escaped(String)
         /// A literal character.
         case character(Character)
@@ -27,6 +28,11 @@ enum SubtitleFontTagger {
         case lineBreak(String)
     }
 
+    /// libass reads exactly `\N`, `\n`, `\h`, `\{` and `\}` specially in event
+    /// text; every other `\x` is a literal backslash followed by an ordinary
+    /// `x`, and there is no escape for the backslash itself. Treating any pair
+    /// as an escape would hide the `x` from run segmentation — a `\喵` would
+    /// keep its CJK glyph out of the CJK face.
     static func tokenize(_ text: String) -> [Token] {
         var tokens: [Token] = []
         var index = text.startIndex
@@ -37,20 +43,26 @@ enum SubtitleFontTagger {
                 index = text.index(after: close)
                 continue
             }
-            if character == "\\" {
-                let nextIndex = text.index(after: index)
-                if nextIndex < text.endIndex {
-                    let next = text[nextIndex]
-                    let pair = String([character, next])
-                    tokens.append(next == "N" || next == "n" ? .lineBreak(pair) : .escaped(pair))
-                    index = text.index(after: nextIndex)
-                    continue
-                }
+            let nextIndex = text.index(after: index)
+            if character == "\\", nextIndex < text.endIndex, let token = escape(text[nextIndex]) {
+                tokens.append(token)
+                index = text.index(after: nextIndex)
+                continue
             }
             tokens.append(.character(character))
-            index = text.index(after: index)
+            index = nextIndex
         }
         return tokens
+    }
+
+    /// The token a backslash followed by `next` forms, or nil when the pair is
+    /// not one of libass' escapes.
+    private static func escape(_ next: Character) -> Token? {
+        switch next {
+        case "N", "n": .lineBreak("\\\(next)")
+        case "{", "}", "h": .escaped("\\\(next)")
+        default: nil
+        }
     }
 
     /// The visual lines of an ASS Text field as plain text: override blocks and
@@ -231,6 +243,10 @@ enum SubtitleFontTagger {
                     runClass = resolved
                 }
                 if openTags == nil, let wanted = tags(plain, runClass) {
+                    // libass reads `\{` as a literal brace, so a block opened
+                    // straight after a backslash would become text. The word
+                    // joiner in between draws nothing and breaks the pair.
+                    if out.last == "\\" { out += "\u{2060}" }
                     out += wanted.open
                     openTags = wanted
                 }

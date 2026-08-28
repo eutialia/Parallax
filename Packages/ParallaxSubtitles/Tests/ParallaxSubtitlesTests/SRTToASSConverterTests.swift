@@ -82,12 +82,14 @@ struct SRTToASSConverterTests {
     }
 
     /// A stray brace would otherwise open an override block and swallow the rest
-    /// of the line; a stray backslash would eat the character after it.
+    /// of the line. A stray backslash cannot be doubled — libass has no escape
+    /// for it — so it keeps a word joiner after it instead, which stops the next
+    /// character completing one of the five escapes libass does read.
     @Test("braces and backslashes that are not overrides get escaped", arguments: [
         ("stray open brace", "a {b c", "a \\{b c"),
         ("stray close brace", "a} b", "a\\} b"),
-        ("non-alignment override text", "{\\fs40}Big", "\\{\\\\fs40\\}Big"),
-        ("windows path", "C:\\Users", "C:\\\\Users"),
+        ("non-alignment override text", "{\\fs40}Big", "\\{\\\u{2060}fs40\\}Big"),
+        ("windows path", "C:\\Users", "C:\\\u{2060}Users"),
     ] as [(String, String, String)])
     func escaping(label: String, body: String, expected: String) {
         let converted = cues(script("1\n00:00:01,000 --> 00:00:02,000\n\(body)\n\n"))
