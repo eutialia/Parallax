@@ -249,7 +249,7 @@ final class PlayerViewModel {
         /// `nil` is Off — leaving an active burn-in for Off now re-resolves like any
         /// other subtitle pick (see `reloadSubtitleTranscode`), so its failure needs a
         /// representable "requested" pick too. Off has no `TrackID` (the menu's Off row
-        /// carries none either — `SubtitleTrackMenu.offFocusKey`), hence `id` below.
+        /// carries none either — `TrackMenuRowID.subtitlesOff`), hence `id` below.
         case subtitle(SubtitleTrack?)
 
         var id: TrackID? {
