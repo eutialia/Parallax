@@ -23,6 +23,30 @@ struct ThrowingAudioSession: AudioSessionControlling {
     func deactivate() async {}
 }
 
+/// Records every Now Playing write the VM makes, so a test can assert on what the lock
+/// screen would show without touching `MPNowPlayingInfoCenter` — a process-wide system
+/// service whose contents outlive (and leak between) test cases.
+@MainActor
+final class SpyNowPlaying: NowPlayingUpdating {
+    private(set) var configureCount = 0
+    private(set) var updates: [(position: CMTime, duration: CMTime, isPlaying: Bool, title: String)] = []
+    private(set) var clearCount = 0
+
+    func configure(
+        onSeek: @escaping @MainActor (CMTime) -> Void,
+        onPlay: @escaping @MainActor () -> Void,
+        onPause: @escaping @MainActor () -> Void
+    ) {
+        configureCount += 1
+    }
+
+    func update(position: CMTime, duration: CMTime, isPlaying: Bool, title: String) {
+        updates.append((position, duration, isPlaying, title))
+    }
+
+    func clear() { clearCount += 1 }
+}
+
 /// The device profile every player suite builds its view model on: no HDR, stereo out.
 func makeTestDeviceProfileBuilder() -> DeviceProfileBuilder {
     DeviceProfileBuilder(probe: FakeCapabilityProbe(hdr: .none, audioOutput: .stereo))
@@ -39,6 +63,7 @@ func makePlayerVM(
     resolve: @escaping PlayerViewModel.ResolveCall,
     engineFactory: @escaping @MainActor @Sendable (PlaybackEngineID, _ vlcLibraryOptions: [String]?) -> any PlaybackEngine,
     audioSession: any AudioSessionControlling = NoopAudioSession(),
+    nowPlaying: any NowPlayingUpdating = NowPlayingController(),
     fetchDetail: @escaping @Sendable (ItemID) async throws -> ItemDetail = { _ in
         throw AppError.playback(.unsupportedFormat)
     },
@@ -57,6 +82,7 @@ func makePlayerVM(
         resolve: resolve,
         engineFactory: engineFactory,
         audioSession: audioSession,
+        nowPlaying: nowPlaying,
         fetchDetail: fetchDetail,
         subtitleFetch: subtitleFetch,
         fetchSegments: fetchSegments,
@@ -76,6 +102,7 @@ func makePlayerVM(
     resolve: @escaping PlayerViewModel.ResolveCall,
     engine: FakePlaybackEngine,
     audioSession: any AudioSessionControlling = NoopAudioSession(),
+    nowPlaying: any NowPlayingUpdating = NowPlayingController(),
     fetchDetail: @escaping @Sendable (ItemID) async throws -> ItemDetail = { _ in
         throw AppError.playback(.unsupportedFormat)
     },
@@ -93,6 +120,7 @@ func makePlayerVM(
         resolve: resolve,
         engineFactory: { _, _ in engine },
         audioSession: audioSession,
+        nowPlaying: nowPlaying,
         fetchDetail: fetchDetail,
         subtitleFetch: subtitleFetch,
         fetchSegments: fetchSegments,
@@ -113,6 +141,7 @@ func makePlayerVM(
     engine: FakePlaybackEngine,
     resolved: ResolvedPlayback,
     audioSession: any AudioSessionControlling = NoopAudioSession(),
+    nowPlaying: any NowPlayingUpdating = NowPlayingController(),
     capturedItem: @escaping @Sendable (ItemID) -> Void = { _ in }
 ) -> PlayerViewModel {
     makePlayerVM(
@@ -122,7 +151,8 @@ func makePlayerVM(
             return resolved
         },
         engine: engine,
-        audioSession: audioSession
+        audioSession: audioSession,
+        nowPlaying: nowPlaying
     )
 }
 
