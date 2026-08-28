@@ -1039,7 +1039,9 @@ struct PlayerControlsView: View {
 
     #if os(tvOS)
     /// tvOS Select on the focused scrubber: commit the pending ±10s scrub head as ONE
-    /// engine seek, then drop `isScrubbing` so the bar tracks live playback again.
+    /// engine seek, then drop `isScrubbing` so the bar tracks live playback again — safe
+    /// immediately because the VM's `SeekHold` already publishes the target as
+    /// `currentPosition` and pins it there until the engine lands.
     /// Generation-guarded so a newer scrub (or a dismissal) can't clear the flag out from
     /// under the live one. `playbackReady` matters beyond the engine-nil case: during a
     /// track-switch re-buffer `currentDuration` is stale-positive (handle() is muted by
@@ -1058,28 +1060,6 @@ struct PlayerControlsView: View {
             await vm.commitScrubSeek(to: target, resume: resume)
             if scrubGeneration == gen { isScrubbing = false }
         }
-    }
-    #endif
-
-    #if !os(tvOS)
-    /// Hold the scrub latch (`isScrubbing`) until the engine's reported position reaches the
-    /// committed target, so the displayed fraction (`isScrubbing ? scrubProgress : liveProgress`)
-    /// never flips to a STALE pre-seek `liveProgress` for a frame on release — the scrub-release
-    /// "jump" (the dot snaps to the old time, then animates back to the let-go point; playback
-    /// itself was always correct). The engine publishes the seek's target position immediately
-    /// (VLCKitEngine.seek / AVKitEngine) but the VM consumes that beat on a separate task, so
-    /// clearing the latch the instant `seek()` returns races that beat; polling the live fraction
-    /// converges in ~one beat, and the ~1s cap keeps the bar from ever freezing if none lands.
-    /// Generation-guarded so a newer drag owns the release.
-    private func releaseScrubLatch(at frac: Double, durSeconds: Double, generation: Int) async {
-        guard durSeconds > 0 else { isScrubbing = false; return }
-        for _ in 0..<20 {
-            if scrubGeneration != generation { return }
-            if abs(liveProgressFraction - frac) * durSeconds < 3 { break }
-            try? await Task.sleep(for: .milliseconds(50))
-        }
-        guard scrubGeneration == generation, !Task.isCancelled else { return }
-        isScrubbing = false
     }
     #endif
 
@@ -1212,13 +1192,15 @@ struct PlayerControlsView: View {
                     // it reads `desiredPlaying`, which the drag's engine-level pause never
                     // touched.
                     await vm.commitScrubSeek(to: target, resume: resume)
+                    // Release the moment the commit returns — `vm.currentPosition` already
+                    // reads the target (the VM's `SeekHold` publishes it at commit time and
+                    // pins it there through the reload scrim), so handing the bar back to
+                    // live playback can no longer flash the stale pre-seek position.
                     // A newer drag owns the bar now — leave the release to its commit.
                     // Cancellation = the player was dismissed mid-seek (onDisappear):
                     // don't touch a torn-down engine on the way out.
                     guard !Task.isCancelled, scrubGeneration == gen else { return }
-                    // Keep the bar pinned at the committed target until the engine's live
-                    // position catches up, so it never flashes the stale pre-seek frame.
-                    await releaseScrubLatch(at: frac, durSeconds: durSeconds, generation: gen)
+                    isScrubbing = false
                 }
             }
         )
@@ -1249,10 +1231,9 @@ struct PlayerControlsView: View {
             scrubCommitTask?.cancel()
             scrubCommitTask = Task {
                 await vm.commitScrubSeek(to: seekTarget, resume: resume)
+                // Same generation-guarded, hold-backed release as the drag path.
                 guard !Task.isCancelled, scrubGeneration == gen else { return }
-                // Same settle-then-release as the drag path, so a VoiceOver/Switch-Control
-                // adjust never flashes the stale frame either.
-                await releaseScrubLatch(at: target, durSeconds: durSeconds, generation: gen)
+                isScrubbing = false
             }
         }
         #endif
@@ -1341,10 +1322,9 @@ struct PlayerControlsView: View {
     /// engine seek is debounced — the whole burst lands as ONE seek.
     private func seekStep(_ direction: PlayerSeekFlash.Direction, at location: CGPoint, durSeconds: Double, now: Date) {
         let delta: Double = direction == .forward ? 10 : -10
-        // While a scrub's commit is still in flight (`isScrubbing` holds until the
-        // engine seek lands), the bar's target is the truth — `vm.currentPosition`
-        // only catches up on the next engine beat, so a double-tap right after a
-        // drag would accumulate from the pre-scrub position.
+        // While a scrub's commit is still in flight the bar's own target is the truth:
+        // the finger can have moved past the last committed target, which is all
+        // `vm.currentPosition` knows about.
         let livePosition = isScrubbing ? scrubProgress * durSeconds : CMTimeGetSeconds(vm.currentPosition)
         let base = seekCoalescer.pending ?? livePosition
         let target = min(max(base + delta, 0), durSeconds)

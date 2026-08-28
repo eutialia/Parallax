@@ -617,6 +617,10 @@ final class PlayerViewModel {
     /// play reads "Loading").
     private(set) var isSwitchingTracks = false
     private var lastPosition: CMTime = .zero
+    /// A scrub/seek commit in flight: `currentPosition` reads the committed target, not
+    /// the engine's stale clock, until the engine lands there. See `SeekHold` and
+    /// `publish(position:isTransportBeat:)`. Nil whenever no seek is outstanding.
+    private var seekHold: SeekHold?
     private let nowPlaying = NowPlayingController()
     private var itemTitle: String = ""
     /// HUD-only episode number prepended to `title` (e.g. `"2. <name>"`); nil for
@@ -865,7 +869,10 @@ final class PlayerViewModel {
     /// Seek just past the active intro/recap and keep playing.
     func skipActiveSegment() async {
         guard let segment = activeSegment, segment.kind.playerAction == .skip else { return }
-        await seek(to: CMTime(seconds: segment.endSeconds, preferredTimescale: 600))
+        // Same commit path as the chapter jump: transport-preserving (an out-of-buffer
+        // re-anchor's reload force-resumes) and it arms the seek hold, so the bar shows
+        // the skip destination instead of the intro's clock behind the reload scrim.
+        await seekPreservingTransport(to: CMTime(seconds: segment.endSeconds, preferredTimescale: 600))
     }
 
     /// Play the next episode now (the outro button, or the prev/next transport).
@@ -1624,6 +1631,11 @@ final class PlayerViewModel {
         subtitleURLs = [:]
         smbExternalSubtitleTracks = []
         currentPosition = .zero
+        // The session is over, so any outstanding scrub target is too — a `retry()`/
+        // `resetForReplay` restart must publish the NEW stream's beats, not a dead
+        // seek's destination. (Deliberately NOT cleared in the transcode re-anchor
+        // reload: that window is exactly what the hold exists to cover.)
+        seekHold = nil
         currentDuration = .zero
         chapterFractions = []
         bufferedTo = nil
@@ -2442,6 +2454,20 @@ final class PlayerViewModel {
         // `engine.play()`, unmuting and restarting the audio the exit just ended. The
         // engine's own latch refuses that play; this refuses to issue it at all.
         guard !isExiting else { return }
+        // Publish the destination BEFORE the seek. An out-of-buffer transcode
+        // commit re-anchors, and `performTranscodeReload` raises the `.loading` scrim and
+        // drops every engine beat for its whole duration — so without this the bar would
+        // keep reading the pre-scrub clock behind the scrim and snap back to A. The hold
+        // keeps it there until an engine beat lands near the target (or insists otherwise
+        // for `SeekHold.staleBeatCeiling` transport beats).
+        seekHold = SeekHold(target: target)
+        lastPosition = target
+        currentPosition = target
+        // Now Playing extrapolates its clock from the last write, and a re-anchor drops
+        // every engine beat for seconds — so without this the lock screen counts on from
+        // the PRE-scrub position while the in-app bar sits on the target.
+        nowPlaying.update(position: target, duration: currentDuration,
+                          isPlaying: desiredPlaying, title: itemTitle)
         let didReanchor = await seek(to: target)
         // Re-check: `beginExit()` is synchronous MainActor work and can land while this
         // commit is suspended inside the seek above, whose fenced return (`false`) is
@@ -2651,6 +2677,12 @@ final class PlayerViewModel {
             await audioSession.deactivate()
             return .failed
         }
+        // The re-anchor never happened: this resumes the OLD stream at the OLD position, so
+        // a hold armed at the seek target now points at a place nothing will play. Left
+        // standing it pinned the bar there for the whole stale-beat budget over video
+        // running somewhere else, and left `lastPosition` (the resume/PlaybackStopped point)
+        // on the target. The resumed stream's next beat re-owns both.
+        seekHold = nil
         phase = .playing
         desiredPlaying = true
         await engine.play()
@@ -2665,6 +2697,36 @@ final class PlayerViewModel {
             for await state in stream {
                 await self?.handle(state)
             }
+        }
+    }
+
+    /// The ONE writer of `currentPosition` for engine beats — every `.playing`/`.paused`/
+    /// `.buffering` position goes through here so the in-flight `seekHold` can't be
+    /// bypassed by one branch. While a hold stands, a stale beat leaves BOTH published
+    /// positions at the target: `lastPosition` is the final PlaybackStopped/resume point,
+    /// and a dismissal mid-reload must record where the user seeked to, not where the
+    /// dying stream's clock happened to sit. Everything else about the beat (phase,
+    /// duration, buffered, reporting) is the caller's and is unaffected.
+    ///
+    /// The split the callers must respect: USER-FACING surfaces (the bar, Now Playing) read
+    /// the held clock (`currentPosition`), while `playbackInfo.reportStart`/`reportProgress`
+    /// report the engine's RAW position — the server's session clock must stay honest even
+    /// while the UI is pinned. `reportStopped` is the exception that proves it: it reports
+    /// `lastPosition`, which IS the target while a hold stands, because a dismissal
+    /// mid-reload has to resume where the user seeked to.
+    private func publish(position: CMTime, isTransportBeat: Bool) {
+        guard var hold = seekHold else {
+            lastPosition = position
+            currentPosition = position
+            return
+        }
+        switch hold.absorb(position: position, isTransportBeat: isTransportBeat) {
+        case .hold:
+            seekHold = hold   // the mutated stale-beat count
+        case .release:
+            seekHold = nil
+            lastPosition = position
+            currentPosition = position
         }
     }
 
@@ -2759,11 +2821,10 @@ final class PlayerViewModel {
             }
             isPlaying = true
             clearStall()
-            lastPosition = position
-            currentPosition = position
+            publish(position: position, isTransportBeat: true)
             applyDuration(duration)
             bufferedTo = buffered
-            nowPlaying.update(position: position, duration: duration, isPlaying: true, title: itemTitle)
+            nowPlaying.update(position: currentPosition, duration: duration, isPlaying: true, title: itemTitle)
             // Jellyfin: report to the server session. SMB: persist the position locally —
             // same beat, same ~10s throttle discipline as the progress report.
             if let resolved {
@@ -2796,11 +2857,10 @@ final class PlayerViewModel {
             unfreezeVideoSurface()
             isPlaying = false
             clearStall()
-            lastPosition = position
-            currentPosition = position
+            publish(position: position, isTransportBeat: true)
             applyDuration(duration)
             bufferedTo = buffered
-            nowPlaying.update(position: position, duration: duration, isPlaying: false, title: itemTitle)
+            nowPlaying.update(position: currentPosition, duration: duration, isPlaying: false, title: itemTitle)
             // Never report progress for a session that never reported start (a remote/PiP
             // pause can land during buffering, before the first .playing beat) — Jellyfin
             // expects PlaybackStart before any Progress. Mirrors the .playing branch's gate.
@@ -2819,15 +2879,20 @@ final class PlayerViewModel {
             // driving the light scrim. No progress report either: the position
             // isn't advancing, and a beat here could race reportStart.
             //
-            // A position JUMP marks a seek fetch — the engine only emits those
-            // when the target is outside the buffer, so the wait is real and the
-            // scrim shows immediately (no 400ms gap with a bare paused glyph).
-            // Contiguous-position beats (mid-stream underruns, the momentary
-            // evaluating-buffering flicker after an in-buffer resume) keep the
-            // debounce so they can't flash the scrim.
-            let isSeekFetch = abs(CMTimeGetSeconds(position) - CMTimeGetSeconds(currentPosition)) > 2
-            lastPosition = position
-            currentPosition = position
+            // A seek fetch is real by construction, so its scrim shows immediately (no
+            // 400ms gap with a bare paused glyph). Two ways to know one is in flight:
+            // a live `seekHold` (a commit of ours, whose target `currentPosition` already
+            // reads — so the jump test below sees a delta of ZERO and can't spot it), or a
+            // position JUMP, which is how a seek WE didn't commit announces itself (a
+            // remote/PiP scrub, an engine-internal re-anchor). Contiguous-position beats
+            // with no hold (mid-stream underruns, the momentary evaluating-buffering
+            // flicker after an in-buffer resume) keep the debounce so they can't flash it.
+            let isSeekFetch = seekHold != nil
+                || abs(CMTimeGetSeconds(position) - CMTimeGetSeconds(currentPosition)) > 2
+            // `isTransportBeat: false` — a buffering beat is the engine saying "still
+            // fetching", never evidence that a held seek target is wrong, so it can't
+            // spend the hold's stale-beat budget.
+            publish(position: position, isTransportBeat: false)
             applyDuration(duration)
             bufferedTo = buffered
             if isSeekFetch {

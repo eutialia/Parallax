@@ -1151,6 +1151,285 @@ struct PlayerViewModelTests {
         #expect(!engine.calls.contains("seek(3000.0)"))            // no in-stream drift seek
     }
 
+    // MARK: - The seek hold — the bar shows the target from commit until the engine catches up
+
+    /// Builds a transcode VM parked at `A` with a text sidecar up (the re-anchor gate) and
+    /// a buffer that ends before any scrub target — every commit below takes the slow
+    /// `reloadTranscode` path, which is the window the snap-back lives in.
+    private func makeReanchorVM(
+        engine: FakePlaybackEngine,
+        at seconds: Double,
+        resolve: @escaping PlayerViewModel.ResolveCall = { _, _, _, _ in
+            PlayerFixtures.resolvedMultiTrackTranscode()
+        }
+    ) async throws -> PlayerViewModel {
+        let vm = makePlayerVM(resolve: resolve, engine: engine)
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(position: CMTime(seconds: seconds, preferredTimescale: 600),
+                             duration: CMTime(seconds: 7_200, preferredTimescale: 600), buffered: nil))
+        try await engine.settle()
+        // A precondition, not an assertion: every test below reads "the bar moved OFF A",
+        // which proves nothing if the fixture never parked at A. Stop here instead.
+        try #require(CMTimeGetSeconds(vm.currentPosition) == seconds)
+
+        // Sidecar overlay up: the one consumer that reads the clock absolutely, so an
+        // out-of-buffer seek re-anchors instead of seeking in-stream.
+        let text = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(1) })
+        await vm.selectSubtitleTrack(text)
+        engine.bufferedRange = 0...(seconds + 60)
+        return vm
+    }
+
+    @Test("a commit that re-anchors shows the TARGET while the reload scrim is up — never the pre-scrub position")
+    func commitScrubSeekHoldsTargetThroughReanchor() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let vm = try await makeReanchorVM(engine: engine, at: 600)
+
+        // The reload lands `.loading` and drops every engine beat while it runs, so this
+        // returns with the OLD clock still the newest thing the engine ever published.
+        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+
+        #expect(vm.phase == .loading)                              // still behind the scrim
+        #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000)     // …showing B, not A
+    }
+
+    @Test("after the hold: the new stream's first near beat takes the position back and later beats flow normally")
+    func seekHoldReleasesOnTheNewStreamsFirstBeat() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let vm = try await makeReanchorVM(engine: engine, at: 600)
+        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+
+        engine.push(.playing(position: CMTime(seconds: 3_001, preferredTimescale: 600),
+                             duration: CMTime(seconds: 7_200, preferredTimescale: 600), buffered: nil))
+        try await engine.settle()
+        #expect(CMTimeGetSeconds(vm.currentPosition) == 3_001)
+
+        engine.push(.playing(position: CMTime(seconds: 3_005, preferredTimescale: 600),
+                             duration: CMTime(seconds: 7_200, preferredTimescale: 600), buffered: nil))
+        try await engine.settle()
+        #expect(CMTimeGetSeconds(vm.currentPosition) == 3_005)
+    }
+
+    @Test("the reload's stale BUFFERING beats never move the bar off the target — the scrub snap-back itself")
+    func seekHoldIgnoresStaleBufferingBeats() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let vm = try await makeReanchorVM(engine: engine, at: 600)
+        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+
+        for _ in 0..<3 {
+            engine.push(.buffering(position: CMTime(seconds: 600, preferredTimescale: 600),
+                                   duration: CMTime(seconds: 7_200, preferredTimescale: 600), buffered: nil))
+            try await engine.settle()
+            #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000)
+        }
+    }
+
+    /// The wedge escape. A seek that never lands must not freeze the bar forever, so the
+    /// hold yields to an engine that INSISTS on a far-off position across
+    /// `SeekHold.staleBeatCeiling` transport beats — and not one beat sooner.
+    @Test("an engine insisting on the pre-seek clock wins on the ceiling beat, never before it")
+    func seekHoldYieldsOnTheStaleBeatCeiling() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let vm = try await makeReanchorVM(engine: engine, at: 600)
+        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+
+        for _ in 1..<SeekHold.staleBeatCeiling {
+            engine.push(.playing(position: CMTime(seconds: 600, preferredTimescale: 600),
+                                 duration: CMTime(seconds: 7_200, preferredTimescale: 600), buffered: nil))
+            try await engine.settle()
+            #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000)
+        }
+        engine.push(.playing(position: CMTime(seconds: 600, preferredTimescale: 600),
+                             duration: CMTime(seconds: 7_200, preferredTimescale: 600), buffered: nil))
+        try await engine.settle()
+        #expect(CMTimeGetSeconds(vm.currentPosition) == 600)
+    }
+
+    /// The same escape hatch on the PAUSED transport: a paused scrub's re-anchor is
+    /// re-paused by `commitScrubSeek` and may never emit `.playing` at all, so if only
+    /// `.playing` could spend the budget a wedged paused seek would freeze the bar forever.
+    @Test("a wedged PAUSED seek escapes on the ceiling too — .paused is a transport beat")
+    func seekHoldYieldsOnTheStaleBeatCeilingWhilePaused() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let vm = try await makeReanchorVM(engine: engine, at: 600)
+        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: false)
+
+        for _ in 1..<SeekHold.staleBeatCeiling {
+            engine.push(.paused(position: CMTime(seconds: 600, preferredTimescale: 600),
+                                duration: CMTime(seconds: 7_200, preferredTimescale: 600), buffered: nil))
+            try await engine.settle()
+            #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000)
+        }
+        engine.push(.paused(position: CMTime(seconds: 600, preferredTimescale: 600),
+                            duration: CMTime(seconds: 7_200, preferredTimescale: 600), buffered: nil))
+        try await engine.settle()
+        #expect(CMTimeGetSeconds(vm.currentPosition) == 600)
+    }
+
+    /// `AVKitEngine.seek` yields `.buffering(position: target)` BEFORE it awaits the real
+    /// seek. The hold has already moved `currentPosition` to that same target, so the
+    /// position-JUMP heuristic reads a delta of zero and would fall back to the 400 ms
+    /// stall debounce — 400 ms of bare paused glyph on every committed out-of-buffer seek.
+    /// A live hold IS the "a fetch is in flight" signal.
+    @Test("a committed seek's own buffering echo raises the seek-fetch scrim immediately, debounce skipped")
+    func heldCommitRaisesTheSeekFetchScrimOnItsOwnBufferingBeat() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let vm = makePlayerVM(
+            resolve: { _, _, _, _ in PlayerFixtures.resolved() },
+            engine: engine
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(position: CMTime(seconds: 600, preferredTimescale: 600),
+                             duration: CMTime(seconds: 7_200, preferredTimescale: 600), buffered: nil))
+        try await engine.settle()
+
+        // Direct play, target outside the buffer → an in-stream `engine.seek`, which is
+        // exactly the path whose pre-seek echo lands AT the target.
+        engine.bufferedRange = 0...660
+        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        #expect(engine.calls.contains("seek(3000.0)"))
+
+        engine.push(.buffering(position: CMTime(seconds: 3_000, preferredTimescale: 600),
+                               duration: CMTime(seconds: 7_200, preferredTimescale: 600), buffered: nil))
+        try await engine.settle()
+        #expect(vm.isStalled)                                    // no 400ms of bare paused glyph
+        #expect(vm.showsStallScrim)
+        #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000)   // and the echo never released the hold
+    }
+
+    /// The failed re-anchor: the re-resolve throws, `fallBackAfterFailedSwitch` resumes the
+    /// OLD stream at A — so the hold's target is now a place nothing will ever play. Left
+    /// armed it pinned the bar at B for the full stale-beat budget (~4 s) over video running
+    /// at A, and left `lastPosition` at B as a bogus resume point.
+    @Test("a failed re-anchor drops the hold: the fallback stream's FIRST beat owns the bar again")
+    func failedReanchorDropsTheHold() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        nonisolated(unsafe) var resolveCalls = 0
+        let vm = try await makeReanchorVM(engine: engine, at: 600, resolve: { _, _, _, _ in
+            resolveCalls += 1
+            if resolveCalls > 1 { throw AppError.playback(.unsupportedFormat) }
+            return PlayerFixtures.resolvedMultiTrackTranscode()
+        })
+
+        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        #expect(resolveCalls == 2)   // the re-anchor tried, and failed
+
+        engine.push(.playing(position: CMTime(seconds: 600, preferredTimescale: 600),
+                             duration: CMTime(seconds: 7_200, preferredTimescale: 600), buffered: nil))
+        try await engine.settle()
+        #expect(CMTimeGetSeconds(vm.currentPosition) == 600)
+    }
+
+    /// The lock screen extrapolates its clock from the last `nowPlayingInfo` write, and a
+    /// re-anchor drops every engine beat for seconds — so if the commit doesn't push the
+    /// target itself, the Control Center clock counts on from A while the in-app bar shows B.
+    @Test("the commit pushes the TARGET to Now Playing, so the lock screen and the bar agree")
+    func commitPublishesTheTargetToNowPlaying() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let vm = try await makeReanchorVM(engine: engine, at: 600)
+        try #require((MPNowPlayingInfoCenter.default().nowPlayingInfo?[
+            MPNowPlayingInfoPropertyElapsedPlaybackTime] as? Double) == 600)
+
+        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+
+        let info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+        #expect((info[MPNowPlayingInfoPropertyElapsedPlaybackTime] as? Double) == 3_000)
+        #expect((info[MPMediaItemPropertyPlaybackDuration] as? Double) == 7_200)
+        await vm.stop()
+    }
+
+    @Test("re-scrubbing during a hold repoints it: the newest target shows, and only a beat near IT releases")
+    func seekHoldRepointsOnASecondCommit() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let vm = try await makeReanchorVM(engine: engine, at: 600)
+
+        func pushStale(_ seconds: Double) async throws {
+            engine.push(.playing(position: CMTime(seconds: seconds, preferredTimescale: 600),
+                                 duration: CMTime(seconds: 7_200, preferredTimescale: 600), buffered: nil))
+            try await engine.settle()
+        }
+
+        // Burn the FIRST hold's budget down to one beat short of the ceiling…
+        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        for _ in 1..<SeekHold.staleBeatCeiling {
+            try await pushStale(600)
+            #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000)
+        }
+
+        // …then repoint. A fresh `SeekHold` means a fresh budget, not one spent beat left.
+        await vm.commitScrubSeek(to: CMTime(seconds: 4_000, preferredTimescale: 600), resume: true)
+        #expect(CMTimeGetSeconds(vm.currentPosition) == 4_000)
+
+        // A beat that would have satisfied the SUPERSEDED target is now just a stale beat —
+        // and it, plus every stale beat up to one shy of the ceiling, leaves B' on the bar.
+        // Had the count carried over, the very first of these would have released.
+        try await pushStale(3_001)
+        #expect(CMTimeGetSeconds(vm.currentPosition) == 4_000)
+        for _ in 2..<SeekHold.staleBeatCeiling {
+            try await pushStale(600)
+            #expect(CMTimeGetSeconds(vm.currentPosition) == 4_000)
+        }
+
+        engine.push(.playing(position: CMTime(seconds: 4_001, preferredTimescale: 600),
+                             duration: CMTime(seconds: 7_200, preferredTimescale: 600), buffered: nil))
+        try await engine.settle()
+        #expect(CMTimeGetSeconds(vm.currentPosition) == 4_001)
+    }
+
+    @Test("in-buffer direct play gets the same treatment: the target shows at commit, the first near beat releases")
+    func seekHoldOnDirectPlayInStreamSeek() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let vm = makePlayerVM(
+            resolve: { _, _, _, _ in PlayerFixtures.resolved() },
+            engine: engine
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(position: CMTime(seconds: 600, preferredTimescale: 600),
+                             duration: CMTime(seconds: 7_200, preferredTimescale: 600), buffered: nil))
+        try await engine.settle()
+
+        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        #expect(engine.calls.contains("seek(3000.0)"))
+        #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000)
+
+        engine.push(.playing(position: CMTime(seconds: 3_000.5, preferredTimescale: 600),
+                             duration: CMTime(seconds: 7_200, preferredTimescale: 600), buffered: nil))
+        try await engine.settle()
+        #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000.5)
+    }
+
+    @Test("a restart drops the hold: the replayed session's first beat owns the position again")
+    func seekHoldClearedByRestart() async throws {
+        nonisolated(unsafe) var engines: [FakePlaybackEngine] = []
+        let vm = makePlayerVM(
+            resolve: { _, _, _, _ in PlayerFixtures.resolvedMultiTrackTranscode() },
+            engineFactory: { _, _ in
+                let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+                engines.append(engine)
+                return engine
+            }
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+        let first = try #require(engines.first)
+        first.push(.playing(position: CMTime(seconds: 600, preferredTimescale: 600),
+                            duration: CMTime(seconds: 7_200, preferredTimescale: 600), buffered: nil))
+        try await first.settle()
+        let text = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(1) })
+        await vm.selectSubtitleTrack(text)
+        first.bufferedRange = 0...660
+
+        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000)   // hold armed and holding
+
+        // retry() → resetForReplay → stop(), which ends the session AND the hold with it.
+        await vm.retry()
+        let replayed = try #require(engines.dropFirst().first)
+        replayed.push(.playing(position: CMTime(seconds: 5, preferredTimescale: 600),
+                               duration: CMTime(seconds: 7_200, preferredTimescale: 600), buffered: nil))
+        try await replayed.settle()
+        #expect(CMTimeGetSeconds(vm.currentPosition) == 5)       // not swallowed as "stale"
+    }
+
     @Test("scrub commit while paused on a re-encode transcode out of buffer: the force-resuming reload is re-paused")
     func commitScrubSeekReEncodePausedRepauses() async throws {
         let reporting = StubPlaybackReporting()
