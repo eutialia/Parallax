@@ -386,21 +386,12 @@ struct SMBBrowseView: View {
     // MARK: - tvOS sort header
 
     #if os(tvOS)
-    /// tvOS in-content sort control, centered above the grid: toolbar items can't join the tvOS
-    /// focus engine, so Sort rides inside the focusable scroll (iPhone/iPad keep it in the nav bar).
-    /// Mirrors `LibraryGridView.headerControls` in its lone-chip case — SMB browse has no genre, so
-    /// the chip centers alone. `tvFocusSection` makes the full-width row one focus target so pressing
-    /// Up from any poster column diverts to the chip; the 30pt bottom gap clears the first poster row's
-    /// focus lift. The `@Bindable` lens lives only here, so iOS carries no unused binding.
+    /// The shipping sort row (`SMBBrowseSortHeader` — spacing, focus section and chip all live
+    /// there, shared with the parity preview's loaded half). This wrapper exists only to open the
+    /// `@Bindable` lens onto the view model, and only on tvOS, so iOS carries no unused binding.
     private func sortHeader(model: SMBBrowseViewModel) -> some View {
         @Bindable var model = model
-        return SMBBrowseSortChip(field: $model.sortField, direction: $model.sortDirection)
-            .frame(maxWidth: .infinity, alignment: .center)
-            // The shared chip-row tokens (not raw Space values): `SMBBrowseLoadingSkeleton`'s
-            // chip stub reads the same pair, so the skeleton→chip swap stays coupled by compiler.
-            .padding(.top, AppLayout.chipRowTopPadding)
-            .padding(.bottom, AppLayout.chipRowBottomClearance)
-            .tvFocusSection()
+        return SMBBrowseSortHeader(field: $model.sortField, direction: $model.sortDirection)
     }
     #endif
 }
@@ -440,7 +431,7 @@ struct SMBBrowseGrid: View {
         // (an incomplete folder row otherwise just reads as ragged empty space).
         VStack(alignment: .leading, spacing: AppLayout.browseSectionGap(idiom: idiom)) {
             if !folders.isEmpty {
-                browseSection("Folders") {
+                SMBBrowseSection("Folders") {
                     LazyVGrid(columns: columns, spacing: AppLayout.posterGridRowSpacing(idiom: idiom)) {
                         ForEach(folders, id: \.self) { folder in
                             NavigationLink(value: childPath(folder.name)) {
@@ -467,7 +458,7 @@ struct SMBBrowseGrid: View {
                 }
             }
             if !media.isEmpty {
-                browseSection("Videos") {
+                SMBBrowseSection("Videos") {
                     LazyVGrid(columns: columns, spacing: AppLayout.posterGridRowSpacing(idiom: idiom)) {
                         // Indexed so a cell's materialisation can report its position for the
                         // prefetch window; identity stays the item's own id (not the offset), so
@@ -500,11 +491,31 @@ struct SMBBrowseGrid: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// A titled group (Folders / Videos). Reuses the Settings section-header vocabulary
-    /// (`.sectionHeader`, uppercase, secondary label) so the browse wall reads in the same voice as
-    /// the rest of the app and the header sits flush above its grid's leading card.
-    @ViewBuilder
-    private func browseSection(_ title: String, @ViewBuilder content: () -> some View) -> some View {
+    private var columns: [GridItem] { smbBrowseGridColumns(idiom: idiom) }
+
+    private func childPath(_ name: String) -> SMBBrowsePath {
+        let child = parentPath.isEmpty ? name : "\(parentPath)/\(name)"
+        return SMBBrowsePath(ref: ref, share: share, path: child)
+    }
+}
+
+/// A titled group in the SMB browse wall (Folders / Videos). Reuses the Settings section-header
+/// vocabulary (`.sectionHeader`, uppercase, secondary label) so the browse wall reads in the same
+/// voice as the rest of the app and the header sits flush above its grid's leading card.
+///
+/// Its own view (not a method on `SMBBrowseGrid`) because `SMBBrowseLoadingSkeleton` renders the
+/// SAME container with placeholder leaves — the header type, its `Space.s8` gap and the stack's
+/// alignment are then one definition instead of two that drift (the skeleton rule).
+struct SMBBrowseSection<Content: View>: View {
+    let title: String
+    let content: () -> Content
+
+    init(_ title: String, @ViewBuilder content: @escaping () -> Content) {
+        self.title = title
+        self.content = content
+    }
+
+    var body: some View {
         VStack(alignment: .leading, spacing: Space.s8) {
             Text(title)
                 .font(.sectionHeader)
@@ -514,18 +525,15 @@ struct SMBBrowseGrid: View {
             content()
         }
     }
+}
 
-    private var columns: [GridItem] {
-        posterGridColumns(
-            fixedColumns: AppLayout.landscapeGridColumns(idiom: idiom),
-            columnSpacing: AppLayout.posterGridColumnSpacing(idiom: idiom)
-        )
-    }
-
-    private func childPath(_ name: String) -> SMBBrowsePath {
-        let child = parentPath.isEmpty ? name : "\(parentPath)/\(name)"
-        return SMBBrowsePath(ref: ref, share: share, path: child)
-    }
+/// The browse wall's tile columns — dense 16:9 landscape cells at the idiom's column count.
+/// Shared by `SMBBrowseGrid` and the loading skeleton so the two can't lay out different walls.
+func smbBrowseGridColumns(idiom: AppIdiom) -> [GridItem] {
+    posterGridColumns(
+        fixedColumns: AppLayout.landscapeGridColumns(idiom: idiom),
+        columnSpacing: AppLayout.posterGridColumnSpacing(idiom: idiom)
+    )
 }
 
 /// A folder cell sized to match the media tiles in the same wall: a 16:9 glyph card (a folder symbol
@@ -533,7 +541,10 @@ struct SMBBrowseGrid: View {
 /// layout so subfolders and videos align column-for-column. The big `LibraryBannerCard` is reserved
 /// for the handful of top-level library banners; a directory of season folders wants this denser
 /// tile, not a wall of two-up banners.
-private struct FolderBrowseCard: View {
+///
+/// Internal (not private) so the skeleton ↔ wall parity preview in `LoadingSkeleton.swift` can
+/// render the real folder cell in its loaded half.
+struct FolderBrowseCard: View {
     let name: String
 
     var body: some View {

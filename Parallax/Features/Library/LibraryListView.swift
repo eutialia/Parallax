@@ -126,7 +126,28 @@ private struct LibrarySectionHeader: View {
 /// legibly in the same column. Jellyfin banner art needs a live server, so both groups here are
 /// SMB-sourced (self-painted cards) — the layout question is the headers and rhythm, not the art.
 private struct LibraryListSectionsPreview: View {
-    private func group(host: String, shares: [String]) -> LibraryGroup {
+    var body: some View {
+        NavigationStack {
+            LibraryListSectionsGrid()
+                .navigationTitle("Library")
+        }
+        .screenFloor()
+    }
+}
+
+/// The two-server list itself, without a nav stack or floor — shared by the preview above and the
+/// skeleton parity check below, which supplies its own shell.
+private struct LibraryListSectionsGrid: View {
+    var body: some View {
+        LibraryListView(
+            groups: [
+                Self.group(host: "attic.local", shares: ["Films", "Series"]),
+                Self.group(host: "basement.local", shares: ["Films", "Archive"]),
+            ]
+        )
+    }
+
+    private static func group(host: String, shares: [String]) -> LibraryGroup {
         let ref = SMBServerRef(
             id: ServerID(rawValue: "smb-\(host)"),
             data: SMBServerData(host: host, username: "guest", domain: "", shares: shares)
@@ -146,24 +167,34 @@ private struct LibraryListSectionsPreview: View {
             }
         )
     }
-
-    var body: some View {
-        NavigationStack {
-            LibraryListView(
-                groups: [
-                    group(host: "attic.local", shares: ["Films", "Series"]),
-                    group(host: "basement.local", shares: ["Films", "Archive"]),
-                ]
-            )
-            .navigationTitle("Library")
-        }
-        .screenFloor()
-    }
 }
 
 #Preview("Library list — two servers", traits: .fixedLayout(width: 393, height: 852)) {
     LibraryListSectionsPreview()
         .environment(\.appIdiom, .compact)
+}
+
+/// Makes `LibraryListLoadingSkeleton`'s single-section contract VISIBLE: placeholder left, the
+/// two-server list right. The card grid's columns, gap and inset match; the placeholder deliberately
+/// reserves no per-server header, because when it is on screen the group count is still a network
+/// answer away (the full reasoning lives on `LibraryListLoadingSkeleton`). So the right half's first
+/// card sits one `LibrarySectionHeader` lower — that delta is the documented cost of NOT guessing,
+/// and this preview is where it stays honest. A single-source config, which is the common one, has
+/// no header on either side.
+///
+/// `python3 scripts/render-ruler.py --pt-width 786 --scan-col 0.25,0.75`.
+///
+/// Both halves are exactly ONE scroll deep: `LibraryListView.body` IS a `ScrollView`, and the
+/// placeholder's shell (`LibraryListLoadingPlaceholder`) is one too. Wrapping the loaded half in a
+/// second `ScrollView` measured a nesting the app never draws.
+#Preview("Library list skeleton ↔ two servers", traits: .fixedLayout(width: 786, height: 700)) {
+    NavigationStack {
+        SkeletonParity(idiom: .compact, columnWidth: 393) {
+            LibraryListLoadingPlaceholder()
+        } loaded: {
+            LibraryListSectionsGrid()
+        }
+    }
 }
 #endif
 

@@ -6,7 +6,7 @@ import SwiftUI
 /// Shared by the search results (Shows / Movies / Episodes) and the Favorites wall (one section per
 /// server). Title-cased rather than uppercased, because Favorites' headings are server names the
 /// user typed: shouting "LIVING ROOM" back at them is wrong in a way that "FOLDERS" isn't. That's
-/// also why `SMBBrowseView` keeps its own uppercase `browseSection` — those headings are category
+/// also why `SMBBrowseView` keeps its own uppercase `SMBBrowseSection` — those headings are category
 /// labels, a different kind of word, and folding them in here would only serve tidiness.
 ///
 /// Takes plain content rather than owning a grid: the two callers need different column counts per
