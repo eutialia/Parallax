@@ -126,10 +126,10 @@ final class PlayerViewModel {
     /// be reused by its replacement, which would silently skip the new canvas push
     /// and leave the fresh renderer with a zero canvas (permanently blank subtitles).
     private(set) var subtitleRendererGeneration = 0
-    /// The subtitle track whose sidecar is being fetched right now, for the menu's
-    /// loading affordance. A cold EMBEDDED Jellyfin stream is extracted by ffmpeg on
-    /// first request, which can take seconds — silence there is what makes the wait
-    /// read as a bug rather than a fetch.
+    /// The subtitle track whose sidecar is being fetched right now — the subtitle chip
+    /// spins on its own glyph, and the menu row's check column with it. A cold EMBEDDED
+    /// Jellyfin stream is extracted by ffmpeg on first request, which can take seconds —
+    /// silence there is what makes the wait read as a bug rather than a fetch.
     var loadingSubtitleTrackID: TrackID? {
         sidecarFetchStreamIndex.map(TrackID.jellyfinStream)
     }
