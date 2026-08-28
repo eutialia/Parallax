@@ -34,7 +34,7 @@ struct SeriesDetailView: View {
             if let vm = viewModel {
                 switch vm.state {
                 case .idle, .loading:
-                    DetailLoadingSkeleton()
+                    DetailLoadingSkeleton(reserve: .episodeNumbered)
                 case .loaded(let sd, let seasons):
                     // Built ONCE and handed to both halves of the hero: the fixed `heroBackdrop`
                     // behind the scroll view paints it, and the in-scroll `HeroBand` reserves its
@@ -68,29 +68,40 @@ struct SeriesDetailView: View {
                                         DetailHeroMetadataRow(metadata: meta)
                                     }
                                 } actions: {
-                                    // Play never disappears: a fully-watched series gets no
-                                    // /Shows/NextUp episode (Jellyfin treats finished — and empty —
-                                    // series as watched), so the row falls back to the first episode.
-                                    // Mid-series adds the prominent Resume beside a from-the-beginning Play.
-                                    let resume = vm.resumeEpisode
-                                    let showsResume = resume.map(ItemPlayButtonLabel.shouldResumeSeries) ?? false
-                                    if showsResume, let ep = resume {
-                                        PrimaryPlayButton(
-                                            title: resumeLabel(ep),
-                                            fillWidth: false,
-                                            layoutReserveTitle: ItemPlayButtonLabel.layoutReserveTitle
-                                        ) {
-                                            playback.play(ep.id, in: session)
-                                        }
-                                    } else if let target = resume ?? vm.firstEpisode {
-                                        PrimaryPlayButton(
-                                            title: "Play",
-                                            fillWidth: false,
-                                            layoutReserveTitle: ItemPlayButtonLabel.layoutReserveTitle
-                                        ) {
-                                            playback.play(target.id, in: session)
-                                        }
+                                    // Play never disappears — and is never CONDITIONAL. A
+                                    // fully-watched series gets no /Shows/NextUp episode (Jellyfin
+                                    // treats finished — and empty — series as watched), so the
+                                    // target falls back to the first episode; mid-series the same
+                                    // pill reads "Resume S# E#". One `PrimaryPlayButton`, always
+                                    // emitted, one identity: it carries the row's default-focus
+                                    // pin, and `load()` reaches `.loaded` before the episodes do,
+                                    // so an `if` here hands the tvOS landing to Favorite for good
+                                    // (see `SeriesPlayAction`). The ACTION is what's
+                                    // gated; `.disabled()` would drop the pill from the focus
+                                    // chain and reproduce the bug.
+                                    let playAction = SeriesPlayAction.resolve(
+                                        resume: vm.resumeEpisode,
+                                        first: vm.firstEpisode,
+                                        episodesSettled: vm.episodesSettled
+                                    )
+                                    PrimaryPlayButton(
+                                        title: playAction.title,
+                                        fillWidth: false,
+                                        layoutReserveTitle: ItemPlayButtonLabel.layoutReserveTitle(for: .episodeNumbered)
+                                    ) {
+                                        guard let target = playAction.target else { return }
+                                        playback.play(target, in: session)
                                     }
+                                    // The pill stays focusable and enabled in both target-less
+                                    // states (see above), so the hint is VoiceOver's only honest
+                                    // signal that activating it is currently inert. It says which
+                                    // one: still loading, or nothing to play.
+                                    .accessibilityHint(playAction.accessibilityHint)
+                                    // A settled series with no episodes gets a dimmed pill — the
+                                    // load is over, so "looks normal, does nothing" would just be
+                                    // a lie. Opacity, NOT `.disabled()`: disabling drops it out of
+                                    // the tvOS focus chain, which is the focus bug all over again.
+                                    .opacity(playAction.availability == .unavailable ? 0.5 : 1)
                                     FavoriteActionButton(isFavorite: vm.isFavorite) {
                                         Task { await vm.toggleFavorite() }
                                     }
@@ -135,7 +146,7 @@ struct SeriesDetailView: View {
                     StatusStateView.failure("Couldn't load this series", message: message)
                 }
             } else {
-                DetailLoadingSkeleton()
+                DetailLoadingSkeleton(reserve: .episodeNumbered)
             }
         }
         // iOS-only crossfade of the whole skeleton→loaded/failed swap; see `crossfadeStateSwap`.
@@ -277,10 +288,5 @@ struct SeriesDetailView: View {
             // Time left-aligned under the title: "22 min left" mid-watch, else the full runtime.
             metadata: .init(leading: episode.timeCaption(), trailing: nil)
         )
-    }
-
-    private func resumeLabel(_ ep: Episode) -> String {
-        if let s = ep.parentIndexNumber, let e = ep.indexNumber { return "Resume S\(s) E\(e)" }
-        return "Resume"
     }
 }

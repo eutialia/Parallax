@@ -59,6 +59,8 @@ struct HeroForeground<Title: View, Subtitle: View, Actions: View>: View {
             // depends on the row's control count — movie's three controls (Play/Favorite/Watched)
             // landed Favorite while series's two landed Play. Default-focus evaluation only:
             // user-directed presses (Home's accepted chevron landing on Up) are untouched.
+            // INVARIANT: the claimant must be STRUCTURALLY unconditional — an `if` (or a
+            // `.disabled()`) around `PrimaryPlayButton` silently disarms this pin.
             .environment(\.heroActionRowFocusScope, actionRowNamespace)
             .tvFocusScope(actionRowNamespace)
             // One focus group so the row is a single traversal unit instead of scattered geometry

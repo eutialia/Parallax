@@ -15,7 +15,9 @@ struct PrimaryPlayButton: View {
     /// inline in the hero's action row, beside the circle buttons).
     var fillWidth: Bool = true
     /// When set, an invisible wider label reserves width so the pill stays one size as the copy
-    /// changes ("Play" → "Resume S9 E9") and doesn't reflow.
+    /// changes ("Play" → "Resume", or "Play" → "Resume S12 E34" on a series) and doesn't reflow.
+    /// Hosts pass `ItemPlayButtonLabel.layoutReserveTitle(for:)` for the widest copy THEIR
+    /// surface can produce — a movie pill reserving season numbers is just dead width.
     var layoutReserveTitle: String? = nil
     let action: () -> Void
 
@@ -87,11 +89,12 @@ struct PrimaryPlayButton: View {
     VStack(spacing: Space.s22) {
         PrimaryPlayButton(title: "Play") {}
         PrimaryPlayButton(title: "Resume · 1h 02m left") {}
-        PrimaryPlayButton(title: "Play", fillWidth: false, layoutReserveTitle: ItemPlayButtonLabel.layoutReserveTitle) {}
+        PrimaryPlayButton(title: "Play", fillWidth: false,
+                          layoutReserveTitle: ItemPlayButtonLabel.layoutReserveTitle(for: .episodeNumbered)) {}
         PrimaryPlayButton(
             title: "Resume S3 E1",
             fillWidth: false,
-            layoutReserveTitle: ItemPlayButtonLabel.layoutReserveTitle
+            layoutReserveTitle: ItemPlayButtonLabel.layoutReserveTitle(for: .episodeNumbered)
         ) {}
     }
     .padding(Space.s40)
