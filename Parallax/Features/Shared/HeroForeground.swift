@@ -8,12 +8,15 @@ import SwiftUI
 /// the tvOS focus grouping so the three call sites can't drift. It does NOT place itself in the
 /// readable column or size the band — that's `heroForegroundPlacement` (applied by `HeroBand`)
 /// and `heroBandFrame`. Content only; chrome lives one layer out.
-struct HeroForeground<Subtitle: View, Actions: View>: View {
+struct HeroForeground<Title: View, Subtitle: View, Actions: View>: View {
     /// Uppercase kicker (FEATURED / CONTINUE WATCHING …) rendered as a capsule — Home only; `nil`
     /// on detail headers, which lead with the title.
     let eyebrow: String?
-    /// Title/logo treatment — built by the caller so each side picks its own `Scale`.
-    let title: HeroTitle
+    /// Title/logo treatment — built by the caller so each side picks its own `Scale`. Generic over
+    /// the view rather than pinned to `HeroTitle` so `DetailLoadingSkeleton` can hang a stub in the
+    /// same slot and inherit this column's rhythm instead of re-rolling it; the three
+    /// shipping call sites still pass a `HeroTitle` and infer it.
+    let title: Title
     /// Overview blurb / metadata line (Home) or the `DetailHeroMetadataRow` badge strip (detail).
     /// `@MainActor`: the slot builds view content on the main actor (and may touch main-actor VM
     /// state, e.g. `DetailMetadata`) — function types don't inherit the view's default isolation.

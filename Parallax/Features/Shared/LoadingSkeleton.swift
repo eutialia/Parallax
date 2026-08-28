@@ -17,6 +17,54 @@ struct SkeletonBlock: View {
     }
 }
 
+extension View {
+    /// Paints a skeleton block over this view's LAYOUT and hides the view itself — the stub then
+    /// measures whatever the real thing measures (a text line box, a control's frame) instead of a
+    /// hand-copied number that's only right at one Dynamic Type size on one platform.
+    func skeletonStandIn<S: Shape>(in shape: S) -> some View {
+        hidden()
+            .overlay { shape.fill(Color.fill) }
+            .accessibilityHidden(true)
+    }
+
+    func skeletonStandIn(cornerRadius: CGFloat) -> some View {
+        skeletonStandIn(in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+    }
+}
+
+/// A stub whose height IS the line box of `font` at the current Dynamic Type size and on the
+/// current platform's type ramp — the fix for the whole family of hardcoded `height: 14` stubs that
+/// only lined up with the real text at the iOS default size (render-measured: 30pt short at AX3).
+/// Pass the SAME font the real line uses; `width` pins the bar's length, otherwise it fills.
+///
+/// The height source is a blank `Text` in that font, so it tracks `@ScaledMetric`/`.scaledFont`
+/// call sites too — apply the modifier to the `SkeletonText` and leave `font` nil to inherit it.
+struct SkeletonText: View {
+    /// nil inherits the enclosing font (the `.scaledFont` hero-title case).
+    var font: Font? = nil
+    var width: CGFloat? = nil
+    var cornerRadius: CGFloat = 4
+
+    var body: some View {
+        lineBox
+            .lineLimit(1)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(width: width)
+            .skeletonStandIn(cornerRadius: cornerRadius)
+    }
+
+    // `.font(nil)` would CLEAR an inherited font rather than pass it through, so the two cases
+    // are separate views instead of one optional argument.
+    @ViewBuilder
+    private var lineBox: some View {
+        if let font {
+            Text(verbatim: " ").font(font)
+        } else {
+            Text(verbatim: " ")
+        }
+    }
+}
+
 /// One shimmer sweep for an entire skeleton screen: a single `TimelineView` clock drives
 /// one light band masked to the whole placeholder subtree. This replaces a per-block
 /// `TimelineView` (a 12-tile grid otherwise ran 12 display-link drivers); the blocks it
@@ -69,6 +117,13 @@ extension View {
 
 // MARK: - Tiles & rows
 
+/// Placeholder identity. Skeletons feed the REAL layout containers (`MetadataRow`, `MediaGrid`)
+/// rather than re-implementing them, and those are generic over `Identifiable & Hashable` items —
+/// this is the nothing-item that lets a placeholder row through them.
+struct SkeletonItem: Identifiable, Hashable {
+    let id: Int
+}
+
 /// Tile placeholder — mirrors `MediaTile`. Poster grids show the bare artwork block (0 lines);
 /// tiles with an under-thumbnail caption reserve it by line count so the loading→loaded swap
 /// doesn't shift the grid: 2 = filename + duration (`MediaTile.metadataRow`, the SMB video tiles
@@ -82,15 +137,15 @@ struct MediaTileSkeleton: View {
             SkeletonBlock(cornerRadius: Radius.tile)
                 .aspectRatio(aspectRatio, contentMode: .fit)
             if metadataLines > 0 {
-                // Stub lines reserving the real MediaTile.metadataRow's rendered height (a
-                // .subheadline title line + gap + a .caption2 line) so the loading→loaded swap
-                // doesn't shift the grid. Sizes come from MediaTile's shared statics — compiler-
-                // coupled to the real row, not comment-coupled, so the two can't silently drift.
+                // Stub lines reserving the real `MediaTile.metadataRow`'s rendered height so the
+                // loading→loaded swap doesn't shift the grid. Both the spacing AND the two fonts
+                // come from MediaTile's shared statics, and `SkeletonText` derives each bar's
+                // height from its font's line box — so the reserve tracks Dynamic Type and the
+                // tvOS ramp instead of freezing at the iOS default size.
                 VStack(alignment: .leading, spacing: MediaTile.metadataLineSpacing) {
-                    SkeletonBlock(cornerRadius: 4, height: MediaTile.metadataTitleStubHeight)
+                    SkeletonText(font: MediaTile.metadataTitleFont)
                     if metadataLines > 1 {
-                        SkeletonBlock(cornerRadius: 4, height: MediaTile.metadataDetailStubHeight)
-                            .frame(width: 56)
+                        SkeletonText(font: MediaTile.metadataDetailFont, width: 56)
                     }
                 }
             }
@@ -98,9 +153,24 @@ struct MediaTileSkeleton: View {
     }
 }
 
-struct MetadataRowSkeleton: View {
+/// A shelf placeholder that IS the real shelf: `MetadataRow` with placeholder items and
+/// `MediaTileSkeleton` for content, redacted so the header renders as a bar.
+///
+/// It renders the shipping container rather than a copy of it, which is the whole point — the copy
+/// this replaced had drifted on every metric the tv branch later added (header→row gap 8 vs 22,
+/// header type, inter-tile gap 12 vs 40), landing the tv skeleton's second shelf 95pt off the
+/// loaded one (render-measured). Redaction masks the title's glyphs while "maintaining
+/// their original size and shape" (`RedactionReasons.placeholder`), so the header keeps the exact
+/// line box the loaded shelf's does; the tile blocks are shapes, which redaction leaves alone.
+///
+/// Pass the title the shelf will actually show — Home's two shelves and a season row are all known
+/// strings, so the bar even lands at the right width.
+struct ShelfSkeleton: View {
+    let title: String
     let tileWidth: CGFloat
     var aspectRatio: CGFloat = MediaImage.landscape
+    /// Under-thumbnail caption lines to reserve — see `MediaTileSkeleton.metadataLines`.
+    var metadataLines: Int = 0
 
     @Environment(\.appIdiom) private var idiom
     @State private var rowWidth: CGFloat = 0
@@ -110,29 +180,19 @@ struct MetadataRowSkeleton: View {
     /// rather than a fixed count, so it fits any screen: a fixed 7 underfills an iPad in
     /// landscape and overflows an iPhone. `.up + 1` errs toward overflow, which the disabled
     /// ScrollView clips, so the row never falls short of the edge.
-    private var tileCount: Int {
-        guard rowWidth > 0 else { return 4 }
-        return Int((rowWidth / (tileWidth + Space.s12)).rounded(.up)) + 1
+    private var tiles: [SkeletonItem] {
+        guard rowWidth > 0 else { return (0..<4).map(SkeletonItem.init) }
+        let gap = AppLayout.shelfTileGap(idiom: idiom)
+        let count = Int((rowWidth / (tileWidth + gap)).rounded(.up)) + 1
+        return (0..<count).map(SkeletonItem.init)
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Space.s8) {
-            // Matches MetadataRow's `.title2.bold` header height so the loading→loaded
-            // swap doesn't jolt the shelf down.
-            SkeletonBlock(cornerRadius: 6, height: 26)
-                .frame(width: 168)
-                .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(alignment: .top, spacing: Space.s12) {
-                    ForEach(0..<tileCount, id: \.self) { _ in
-                        MediaTileSkeleton(aspectRatio: aspectRatio)
-                            .frame(width: tileWidth)
-                    }
-                }
-                .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
-            }
-            .scrollDisabled(true)
+        MetadataRow(title: title, items: tiles, tileWidth: tileWidth) { _ in
+            MediaTileSkeleton(aspectRatio: aspectRatio, metadataLines: metadataLines)
         }
+        .redacted(reason: .placeholder)
+        .scrollDisabled(true)
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { rowWidth = $0 }
     }
 }
@@ -145,27 +205,45 @@ struct HomeLoadingSkeleton: View {
     var body: some View {
         LazyVStack(alignment: .leading, spacing: Space.s30) {
             // Hero placeholder bleeds full-width like the real carousel; shelves stay title-safe.
+            // `heroBandFrame` rather than a bare aspect ratio: it's the same modifier the loaded
+            // carousel uses, so tvOS takes the viewport-MEASURED height path there instead of a
+            // width-derived band the real hero never draws.
             SkeletonBlock(cornerRadius: 0)
-                .aspectRatio(
-                    HeroMetrics.bandAspectRatio(regularWidth: idiom.usesLandscapeHeroBand),
-                    contentMode: .fit
-                )
+                .heroBandFrame(regularWidth: idiom.usesLandscapeHeroBand)
             VStack(alignment: .leading, spacing: Space.s30) {
-                MetadataRowSkeleton(tileWidth: HomeShelf.tileWidth, aspectRatio: MediaImage.poster)
-                MetadataRowSkeleton(tileWidth: HomeShelf.tileWidth, aspectRatio: MediaImage.poster)
+                // The shelves Home always opens with, at the idiom's real tile width (tv is 220,
+                // not iPhone's 172 — the hardcoded `HomeShelf.tileWidth` here made every tv
+                // skeleton row 72pt short).
+                shelf("Continue Watching")
+                shelf("Next Up")
             }
             .tvContentInset()
         }
         .padding(.bottom, Space.s30)
         .skeletonShimmer()
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Loading")
+    }
+
+    private func shelf(_ title: String) -> some View {
+        ShelfSkeleton(
+            title: title,
+            tileWidth: AppLayout.shelfTileWidth(idiom: idiom),
+            aspectRatio: MediaImage.poster
+        )
     }
 }
 
-/// The search screen's first-load grid skeleton. Draws the tiles ONLY — its enclosing ScrollView
+/// The search screen's first-load grid skeleton. Draws the SECTION ONLY — its enclosing ScrollView
 /// (`JellyfinSearchView.content` on iOS/iPadOS, `TVSearchScopeSurface` on tvOS) owns the insets via
 /// `contentMargins`, exactly as the loaded `JellyfinSearchResultsView` does, so the two surfaces
 /// can't inset differently and the swap stays shift-free. (It used to apply its own `.padding`,
 /// which had to be kept in sync by hand with the loaded grid's.)
+///
+/// The section HEADER is the load-bearing part: results always arrive inside a `GridSection`
+/// (Shows / Movies / Episodes), and a bare grid here dropped the first tile row 37pt higher than
+/// the results that replaced it — the single biggest jump the parity audit found. One section is enough:
+/// the header is the offset, the section count isn't.
 struct PosterGridLoadingSkeleton: View {
     let columns: Int
     let rows: Int
@@ -173,25 +251,39 @@ struct PosterGridLoadingSkeleton: View {
     @Environment(\.appIdiom) private var idiom
 
     var body: some View {
-        // Same idiom-aware gaps as the loaded search grid (JellyfinSearchResultsView) —
-        // hardcoded 12/18 here would visibly re-space the whole grid on the skeleton→results
-        // swap now that the loaded side uses the 40pt tvOS focus-clearance tokens.
-        LazyVGrid(
-            columns: posterGridColumns(
-                fixedColumns: columns,
-                columnSpacing: AppLayout.posterGridColumnSpacing(idiom: idiom)
-            ),
-            spacing: AppLayout.posterGridRowSpacing(idiom: idiom)
-        ) {
-            ForEach(0..<(columns * rows), id: \.self) { _ in
-                MediaTileSkeleton()
+        // The real section container, redacted — same header type, same `focusSafeHeaderGap`, no
+        // second copy of either to drift. `count: nil` because a placeholder has no number to
+        // report (the count rides a smaller type tier and doesn't set the header's height).
+        GridSection(title: "Results", count: nil) {
+            // Same idiom-aware gaps as the loaded search grid (JellyfinSearchResultsView) —
+            // hardcoded 12/18 here would visibly re-space the whole grid on the skeleton→results
+            // swap now that the loaded side uses the 40pt tvOS focus-clearance tokens.
+            LazyVGrid(
+                columns: posterGridColumns(
+                    fixedColumns: columns,
+                    columnSpacing: AppLayout.posterGridColumnSpacing(idiom: idiom)
+                ),
+                spacing: AppLayout.posterGridRowSpacing(idiom: idiom)
+            ) {
+                ForEach(0..<(columns * rows), id: \.self) { _ in
+                    MediaTileSkeleton()
+                }
             }
         }
+        .redacted(reason: .placeholder)
         .skeletonShimmer()
+        // The redacted header still carries `GridSection`'s header trait, so fold the whole
+        // placeholder into one element rather than letting VoiceOver announce a stand-in title.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Loading results")
     }
 }
 
-struct AdaptivePosterGridLoadingSkeleton: View {
+/// The poster-grid placeholder WITHOUT a shimmer clock, for screens that wrap it in more
+/// placeholder chrome (a redacted section header, the tvOS chip row). Those hosts apply
+/// `.skeletonShimmer()` once at their own top so the whole screen sweeps under a single clock —
+/// embedding the shimmering variant instead leaves the header as the one static bar on the screen.
+struct AdaptivePosterGridPlaceholderGrid: View {
     let tileCount: Int
     /// Fixed column count. Mirrors `MediaGrid`.
     var fixedColumns: Int
@@ -214,6 +306,25 @@ struct AdaptivePosterGridLoadingSkeleton: View {
                 MediaTileSkeleton(aspectRatio: aspectRatio, metadataLines: metadataLines)
             }
         }
+    }
+}
+
+/// The grid placeholder as a self-contained skeleton region: the grid plus its own shimmer clock.
+/// Use it where the grid IS the whole placeholder (a bare first-load wall, a load-more strip under
+/// loaded content); inside a bigger placeholder use `AdaptivePosterGridPlaceholderGrid`.
+struct AdaptivePosterGridLoadingSkeleton: View {
+    let tileCount: Int
+    var fixedColumns: Int
+    var aspectRatio: CGFloat = MediaImage.poster
+    var metadataLines: Int = 0
+
+    var body: some View {
+        AdaptivePosterGridPlaceholderGrid(
+            tileCount: tileCount,
+            fixedColumns: fixedColumns,
+            aspectRatio: aspectRatio,
+            metadataLines: metadataLines
+        )
         .skeletonShimmer()
     }
 }
@@ -268,10 +379,10 @@ struct SMBBrowseLoadingSkeleton: View {
     /// line above a landscape tile grid with the under-thumbnail caption reserved.
     private func browseSectionSkeleton(rows: Int, metadataLines: Int, columnCount: Int, columns: [GridItem]) -> some View {
         VStack(alignment: .leading, spacing: Space.s8) {
-            // `.sectionHeader` is 23pt semibold on tvOS (~28pt line box) vs footnote-class on
-            // iOS — a fixed 12 landed every tvOS section ~16pt high before the swap.
-            SkeletonBlock(cornerRadius: 4, height: idiom == .tv ? 28 : 13)
-                .frame(width: 88)
+            // Height IS `.sectionHeader`'s line box (23pt semibold on tvOS, footnote-class on
+            // iOS) — the fixed 28/13 pair it replaces was a hand measurement of exactly that,
+            // and only correct at the default Dynamic Type size.
+            SkeletonText(font: .sectionHeader, width: 88)
             LazyVGrid(columns: columns, spacing: AppLayout.posterGridRowSpacing(idiom: idiom)) {
                 ForEach(0..<(columnCount * rows), id: \.self) { _ in
                     MediaTileSkeleton(aspectRatio: MediaImage.landscape, metadataLines: metadataLines)
@@ -317,42 +428,47 @@ struct LibraryListLoadingPlaceholder: View {
     }
 }
 
+/// The movie/series detail placeholder, built on the SAME containers the loaded page uses —
+/// `HeroBand` + `heroBandFrame` for the band, `HeroForeground` for the bottom-anchored title/action
+/// column, `HeroMetrics.floorTextClearance` for the band→ledger gap. The band and the ledger below
+/// it are shift-free by construction (same frame modifier, same clearance token). INSIDE the
+/// bottom-anchored column the stubs only approximate the real heights — one title line vs
+/// `HeroTitle`'s two-line limit or a logo box, one subtitle bar vs the badge strip — which is
+/// harmless because the column grows UPWARD from the band floor: the action row and everything
+/// below it stay put while a taller real title takes the extra height. Don't over-reserve here;
+/// reserving two title lines would push the action row down on every one-line title.
+///
+/// It used to re-implement all three by hand and had drifted off every one: an `Space.s18` gap
+/// where the page uses 30/34/48, 44pt action stubs where `ActionRow.controlHeight` is 50/52/76, and
+/// a magic `.padding(.top, -Space.s60)` standing in for the foreground's real bottom-anchored
+/// placement. The band's own artwork rides `.background` because on iPhone/iPad the shipping band
+/// is a transparent spacer whose picture is mounted OUTSIDE the scroll (`HeroBackdrop`) — the
+/// skeleton has no picture to mount, so it fills the reserved rect instead.
 struct DetailLoadingSkeleton: View {
     @Environment(\.appIdiom) private var idiom
-    @Environment(\.horizontalSizeClass) private var hSize
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: Space.s18) {
-                SkeletonBlock(cornerRadius: 0)
-                    .aspectRatio(
-                        HeroMetrics.bandAspectRatio(regularWidth: idiom.usesLandscapeHeroBand),
-                        contentMode: .fit
-                    )
-                VStack(alignment: .leading, spacing: Space.s12) {
-                    SkeletonBlock(cornerRadius: 8, height: hSize == .regular ? 36 : 28)
-                        .padding(.trailing, Space.s40)
-                    SkeletonBlock(cornerRadius: 6, height: 16)
-                        .frame(width: 200)
-                    HStack(spacing: Space.s12) {
-                        SkeletonBlock(cornerRadius: Radius.field, height: 44)
-                            .frame(width: 108)
-                        SkeletonBlock(cornerRadius: 22, height: 44)
-                            .frame(width: 44)
-                        SkeletonBlock(cornerRadius: 22, height: 44)
-                            .frame(width: 44)
+            VStack(alignment: .leading, spacing: HeroMetrics.floorTextClearance(idiom: idiom)) {
+                HeroBand {
+                    // tvOS only — the band paints its own picture there.
+                    SkeletonBlock(cornerRadius: 0)
+                } foreground: {
+                    HeroForeground(eyebrow: nil, title: titleStub) {
+                        // The metadata badge strip's tier (`DetailHeroMetadataRow` is `.subheadline`).
+                        SkeletonText(font: .subheadline, width: 200)
+                    } actions: {
+                        actionStubs
                     }
                 }
-                // The loaded hero foreground insets by HeroMetrics, not the
-                // content margin — match it so the title/play block lands
-                // where the real hero's does.
-                .padding(.horizontal, HeroMetrics.foregroundHorizontalInset(idiom: idiom))
-                .padding(.top, -Space.s60)
-                .tvContentInset()
+                .heroBandFrame(regularWidth: idiom.usesLandscapeHeroBand)
+                .background { SkeletonBlock(cornerRadius: 0) }
 
                 VStack(alignment: .leading, spacing: Space.s8) {
                     ForEach(0..<4, id: \.self) { i in
-                        SkeletonBlock(cornerRadius: 6, height: 14)
+                        // The ledger opens with the overview paragraph — reserve ITS line box
+                        // (`.detailProse`), not a fixed 14.
+                        SkeletonText(font: .detailProse)
                             .padding(.trailing, CGFloat(40 + i * 18))
                     }
                 }
@@ -372,34 +488,57 @@ struct DetailLoadingSkeleton: View {
         // stack instead of suspending the app (see `tvFocusableSurface()`).
         .tvFocusableSurface()
     }
+
+    /// The hero title's own line box: `HeroTitle` sizes its text with `scaledFont` at the idiom's
+    /// detail point size, so the stub inherits that font rather than naming a height.
+    private var titleStub: some View {
+        SkeletonText()
+            .scaledFont(
+                HeroTitle.Scale.detail.pointSize(idiom: idiom),
+                relativeTo: .largeTitle,
+                weight: .heavy
+            )
+            .padding(.trailing, Space.s40)
+    }
+
+    /// Play pill + two circle actions at the row's real control metrics — the pill takes its
+    /// footprint from a hidden copy of `PrimaryPlayButton`'s label composition (`.headline` inside
+    /// `Space.s22` insets at `ActionRow.controlHeight`), the discs from that same diameter.
+    ///
+    /// The pill's copy is `ItemPlayButtonLabel.layoutReserveTitle`, not "Play": both detail pages
+    /// pass that reserve to `PrimaryPlayButton`, which ZStacks it behind the live title — so the
+    /// shipping pill is ALWAYS the reserve's width, and a "Play"-wide stub slid the two discs right
+    /// on load.
+    @ViewBuilder
+    private var actionStubs: some View {
+        let diameter = ActionRow.controlHeight(idiom)
+        Label(ItemPlayButtonLabel.layoutReserveTitle, systemImage: "play.fill")
+            .font(.headline)
+            .padding(.horizontal, Space.s22)
+            .frame(height: diameter)
+            .skeletonStandIn(in: Capsule())
+        Circle().fill(Color.fill).frame(width: diameter, height: diameter)
+        Circle().fill(Color.fill).frame(width: diameter, height: diameter)
+    }
 }
 
+/// The season shelves' placeholder — the real `MetadataRow` per season (see `ShelfSkeleton`), at
+/// the idiom's episode tile width, with the tile's title + time row reserved below the still.
 struct EpisodeListLoadingSkeleton: View {
     @Environment(\.appIdiom) private var idiom
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.s22) {
-            ForEach(0..<2, id: \.self) { _ in
-                VStack(alignment: .leading, spacing: Space.s8) {
-                    SkeletonBlock(cornerRadius: 6, height: 22)
-                        .frame(width: 120)
-                        .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        // `metadataLines: 2`: the season-row tiles carry a title + time row BELOW the
-                        // still (the one-text-region law moved the caption there), so the skeleton must
-                        // reserve those lines or the load→loaded swap jumps. `.top`-aligned like the
-                        // real `MetadataRow`.
-                        HStack(alignment: .top, spacing: Space.s12) {
-                            ForEach(0..<5, id: \.self) { _ in
-                                MediaTileSkeleton(aspectRatio: MediaImage.landscape, metadataLines: 2)
-                                    // Idiom-aware, like the loaded shelf: the tv tile is 280pt, and a
-                                    // 240pt skeleton would make the whole row reflow on load there.
-                                    .frame(width: AppLayout.seriesEpisodeTileWidth(idiom: idiom))
-                            }
-                        }
-                        .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
-                    }
-                }
+            ForEach(1...2, id: \.self) { season in
+                // `metadataLines: 2`: the season-row tiles carry a title + time row BELOW the
+                // still (the one-text-region law moved the caption there), so the skeleton must
+                // reserve those lines or the load→loaded swap jumps.
+                ShelfSkeleton(
+                    title: "Season \(season)",
+                    tileWidth: AppLayout.seriesEpisodeTileWidth(idiom: idiom),
+                    aspectRatio: MediaImage.landscape,
+                    metadataLines: 2
+                )
             }
         }
         .skeletonShimmer()
@@ -478,6 +617,10 @@ struct SearchRefiningSkeleton: View {
     }
 }
 
+#if DEBUG
+import ParallaxJellyfin
+import ParallaxCore
+
 // Render-verification asset for `SkeletonShimmerModifier` (GeometryReader →
 // onGeometryChange): confirms the hero band + two shelves lay out and the shimmer
 // overlay masks to the blocks without breaking the skeleton geometry. The sweep is
@@ -486,3 +629,240 @@ struct SearchRefiningSkeleton: View {
     HomeLoadingSkeleton()
         .environment(\.appIdiom, .compact)
 }
+
+// MARK: - Skeleton ↔ loaded parity harness
+//
+// The parity guard. Every preview below puts the PLACEHOLDER in the left column and the
+// REAL screen in the right, at the same width and with the same idiom injected into BOTH halves —
+// a missing injection silently renders compact gaps on one side and the render certifies nothing
+// (see JellyfinSearchResultsView's idiom note). Judge them with
+//
+//     python3 scripts/render-ruler.py --pt-width <canvas> --scan-col 0.25,0.75
+//
+// which prints the vertical run-lengths down one column inside each half: PASS = the first header
+// / first tile run starts on the same row (±1pt) in both. Numbers from the script; read the image
+// only for the qualitative "does it read as the same screen" call.
+
+/// Side-by-side host for the parity previews — see the note above.
+private struct SkeletonParity<Skeleton: View, Loaded: View>: View {
+    let idiom: AppIdiom
+    let columnWidth: CGFloat
+    @ViewBuilder var skeleton: () -> Skeleton
+    @ViewBuilder var loaded: () -> Loaded
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 0) {
+            column { skeleton() }
+            column { loaded() }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        // Pure black, not `Color.background`: the floor token's dark face lands one luminance
+        // step above `render-ruler.py`'s background threshold, so every gap read as content and
+        // the run-lengths merged. On black the gaps drop out and each header/tile edge is its
+        // own run. Judge color elsewhere; this canvas exists to be measured.
+        .background(.black)
+        .preferredColorScheme(.dark)
+    }
+
+    private func column<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        content()
+            .frame(width: columnWidth)
+            .frame(maxHeight: .infinity, alignment: .top)
+            .environment(\.appIdiom, idiom)
+            .clipped()
+    }
+}
+
+/// Poster fixtures for the loaded halves — placeholder artwork (the `.invalid` preview session
+/// fails fast), which is exactly what a shelf/grid shows before its images resolve.
+private func parityMovies(_ count: Int) -> [SourcedItem] {
+    (1...count).map { i in
+        SourcedItem(
+            item: .movie(Movie(
+                id: ItemID(rawValue: "m\(i)"), title: "Movie \(i)", overview: nil, year: 2019,
+                runtime: .seconds(6000), communityRating: nil, officialRating: nil, genres: [],
+                primaryTag: nil, backdropTags: [], logoTag: nil, thumbTag: nil,
+                userData: UserItemData(played: false, playbackPositionTicks: 0, playCount: 0, isFavorite: false)
+            )),
+            source: .jellyfin(.preview)
+        )
+    }
+}
+
+/// The loaded Home feed's shape: the hero band, then the two poster shelves at the idiom's
+/// shelf tile width — the exact containers `HomeLoadingSkeleton` has to stand in for.
+private struct LoadedHomeFeed: View {
+    @Environment(\.appIdiom) private var idiom
+
+    var body: some View {
+        let tiles = (0..<8).map(SkeletonItem.init)
+        VStack(alignment: .leading, spacing: Space.s30) {
+            Color.artworkPlaceholder
+                .heroBandFrame(regularWidth: idiom.usesLandscapeHeroBand)
+            VStack(alignment: .leading, spacing: Space.s30) {
+                shelf("Continue Watching", tiles: tiles)
+                shelf("Next Up", tiles: tiles)
+            }
+            .tvContentInset()
+        }
+        .padding(.bottom, Space.s30)
+    }
+
+    private func shelf(_ title: String, tiles: [SkeletonItem]) -> some View {
+        MetadataRow(title: title, items: tiles, tileWidth: AppLayout.shelfTileWidth(idiom: idiom)) { _ in
+            MediaTile(title: "Title", imageRef: nil, session: .preview, aspectRatio: MediaImage.poster)
+        }
+    }
+}
+
+/// The plain scroll shell the real screens put both states in (`HomeView`, `SeriesDetailView`),
+/// and it matters here: outside a scroll the fixed canvas under-proposes, which silently
+/// compresses the aspect-ratio hero band and stretches a shelf's inner scroll — measuring a
+/// layout the app never draws.
+private struct ScrollShell<Content: View>: View {
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        ScrollView { content() }.scrollDisabled(true)
+    }
+}
+
+#Preview("Home skeleton ↔ loaded (compact)", traits: .fixedLayout(width: 786, height: 1320)) {
+    SkeletonParity(idiom: .compact, columnWidth: 393) {
+        ScrollShell { HomeLoadingSkeleton() }
+    } loaded: {
+        ScrollShell { LoadedHomeFeed() }
+    }
+}
+
+#Preview("Home skeleton ↔ loaded (tv)", traits: .fixedLayout(width: 1920, height: 1440)) {
+    SkeletonParity(idiom: .tv, columnWidth: 960) {
+        ScrollShell { HomeLoadingSkeleton() }
+    } loaded: {
+        ScrollShell { LoadedHomeFeed() }
+    }
+}
+
+/// Both halves in the SEARCH screen's own scroll shell — `JellyfinSearchView` owns the margins for
+/// the skeleton and the results alike, so the parity check has to include them.
+private struct SearchShell<Content: View>: View {
+    @Environment(\.appIdiom) private var idiom
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        ScrollView { content() }
+            .scrollDisabled(true)
+            .contentMargins(.horizontal, AppLayout.contentHMargin(idiom: idiom), for: .scrollContent)
+            .contentMargins(.vertical, AppLayout.searchContentVMargin(idiom: idiom), for: .scrollContent)
+    }
+}
+
+#Preview("Search skeleton ↔ results", traits: .fixedLayout(width: 786, height: 700)) {
+    NavigationStack {
+        SkeletonParity(idiom: .compact, columnWidth: 393) {
+            SearchShell { PosterGridLoadingSkeleton(columns: 3, rows: 2) }
+        } loaded: {
+            SearchShell {
+                JellyfinSearchResultsView(results: AggregatedSearchResults(movies: parityMovies(6)))
+            }
+        }
+    }
+    .environment(PlaybackPresenter())
+}
+
+/// The detail page's loaded shape, staged like `HeroBand`'s "floor clearance" previews: band,
+/// bottom-anchored hero foreground, then the ledger's first text a `floorTextClearance` below.
+private struct LoadedDetailPage: View {
+    @Environment(\.appIdiom) private var idiom
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: HeroMetrics.floorTextClearance(idiom: idiom)) {
+                HeroBand {
+                    Color.artworkPlaceholder
+                } foreground: {
+                    HeroForeground(
+                        eyebrow: nil,
+                        title: HeroTitle(
+                            title: "Orbital", logoRef: nil, session: .preview,
+                            idiom: idiom, usesLogo: false, scale: .detail
+                        )
+                    ) {
+                        Text("2024 · 1h 52m · PG-13")
+                            .font(.subheadline)
+                            .foregroundStyle(.white)
+                    } actions: {
+                        // The reserve is what makes this a parity check: both shipping detail
+                        // pages pass it, so the loaded pill is `layoutReserveTitle`-wide no matter
+                        // what the live title says. Dropping it here let a "Play"-wide skeleton
+                        // stub pass a render it should have failed.
+                        PrimaryPlayButton(
+                            title: "Play",
+                            fillWidth: false,
+                            layoutReserveTitle: ItemPlayButtonLabel.layoutReserveTitle
+                        ) { }
+                        CircleGlassButton(systemImage: "heart", accessibilityLabel: "Favorite") { }
+                        CircleGlassButton(systemImage: "checkmark", accessibilityLabel: "Mark Watched") { }
+                    }
+                }
+                .heroBandFrame(regularWidth: idiom.usesLandscapeHeroBand)
+                .background { Color.artworkPlaceholder }
+
+                Text("A crew on humanity's last orbital station races to prevent a cascade failure before re-entry, rationing oxygen while the ground crew fights to reach them in time.")
+                    .font(.detailProse)
+                    .foregroundStyle(Color.label)
+                    .padding(.horizontal, AppLayout.contentHMargin(idiom: idiom))
+                    .tvContentInset()
+            }
+            .padding(.bottom, Space.s30)
+        }
+        .scrollDisabled(true)
+    }
+}
+
+#Preview("Detail skeleton ↔ hero (compact)", traits: .fixedLayout(width: 786, height: 1000)) {
+    SkeletonParity(idiom: .compact, columnWidth: 393) {
+        DetailLoadingSkeleton()
+    } loaded: {
+        LoadedDetailPage()
+    }
+}
+
+#Preview("Detail skeleton ↔ hero (regular)", traits: .fixedLayout(width: 2048, height: 1000)) {
+    SkeletonParity(idiom: .regular, columnWidth: 1024) {
+        DetailLoadingSkeleton()
+    } loaded: {
+        LoadedDetailPage()
+    }
+}
+
+/// The season shelves — the ONLY skeleton that combines the redacted header with `SkeletonText`
+/// caption stubs, so it's where a double-draw would show (a redaction placeholder painted UNDER
+/// the stub's own bar). Each tile must show exactly two caption bars, and the tile tops must match
+/// the loaded shelf's.
+#Preview("Episode shelves skeleton ↔ loaded", traits: .fixedLayout(width: 1180, height: 900)) {
+    let episodes = (0..<4).map(SkeletonItem.init)
+    return SkeletonParity(idiom: .compact, columnWidth: 590) {
+        ScrollShell { EpisodeListLoadingSkeleton() }
+    } loaded: {
+        ScrollShell {
+        VStack(alignment: .leading, spacing: Space.s22) {
+            ForEach(1...2, id: \.self) { season in
+                MetadataRow(
+                    title: "Season \(season)",
+                    items: episodes,
+                    tileWidth: AppLayout.seriesEpisodeTileWidth(idiom: .compact)
+                ) { _ in
+                    MediaTile(
+                        title: "E3 · The One With the Embryos",
+                        artwork: .none,
+                        aspectRatio: MediaImage.landscape,
+                        metadata: .init(leading: "22 min left", trailing: nil)
+                    )
+                }
+            }
+        }
+        }
+    }
+}
+#endif

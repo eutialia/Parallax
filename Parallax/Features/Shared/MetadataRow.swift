@@ -33,8 +33,9 @@ struct MetadataRow<Item: Identifiable & Hashable, Content: View>: View {
                 // Display content shelves: `ScrollView(.horizontal) { LazyHStack(spacing: 40) }
                 // .scrollClipDisabled()`), which the lift below (`tvScrollClipDisabled`) matches.
                 // 40pt inter-tile gap on tvOS (Apple's canonical focusable-tile spacing) so a
-                // focused poster's lift doesn't crowd its neighbours.
-                LazyHStack(alignment: .top, spacing: idiom == .tv ? Space.s40 : Space.s12) {
+                // focused poster's lift doesn't crowd its neighbours. The token is shared with
+                // the shelf skeleton, which sizes its placeholder row from it.
+                LazyHStack(alignment: .top, spacing: AppLayout.shelfTileGap(idiom: idiom)) {
                     ForEach(items) { item in
                         content(item)
                             .frame(width: tileWidth)
