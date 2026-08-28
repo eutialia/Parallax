@@ -290,8 +290,11 @@ private struct LibraryGridLoadingPlaceholder: View {
                 if idiom == .tv {
                     LibraryHeaderControlsSkeleton()
                 }
-                AdaptivePosterGridLoadingSkeleton(tileCount: columns * 3, fixedColumns: columns)
+                AdaptivePosterGridPlaceholderGrid(tileCount: columns * 3, fixedColumns: columns)
             }
+            // ONE shimmer clock for the whole placeholder, so the tvOS chip row sweeps with the
+            // tiles instead of standing still beside them (hence the un-shimmered grid).
+            .skeletonShimmer()
         }
         .scrollDisabled(true)
         // The IDENTICAL margins + root-chrome bypass as the loaded grid (`gridContent`), so the

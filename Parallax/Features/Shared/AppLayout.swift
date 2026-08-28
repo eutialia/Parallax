@@ -185,6 +185,17 @@ enum AppLayout {
         }
     }
 
+    /// Inter-tile gap inside a horizontal shelf (`MetadataRow`). 40pt is Apple's canonical
+    /// focusable-tile spacing on tvOS, so a focused poster's lift doesn't crowd its neighbours;
+    /// iPhone/iPad have no lift and keep the tight gap. Read by `MetadataRow` itself and by the
+    /// shelf skeleton, which needs it to work out how many placeholder tiles fill a row.
+    static func shelfTileGap(idiom: AppIdiom) -> CGFloat {
+        switch idiom {
+        case .compact, .regular: Space.s12
+        case .tv: Space.s40
+        }
+    }
+
     static func shelfTileWidth(idiom: AppIdiom) -> CGFloat {
         switch idiom {
         case .compact, .regular: HomeShelf.tileWidth

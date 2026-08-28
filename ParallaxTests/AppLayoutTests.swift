@@ -13,6 +13,7 @@ struct IdiomMetrics: Sendable, CustomTestStringConvertible {
     let posterRowSpacing: CGFloat
     let landscapeColumns: Int
     let shelfTileWidth: CGFloat
+    let shelfTileGap: CGFloat
     let libraryListColumns: Int
     let focusSafeHeaderGap: CGFloat
     let focusSafeSectionGap: CGFloat
@@ -29,21 +30,23 @@ private let idiomMetrics: [IdiomMetrics] = [
     IdiomMetrics(
         idiom: .compact, contentHMargin: 16, posterColumns: 3,
         posterColumnSpacing: Space.s12, posterRowSpacing: Space.s16,
-        landscapeColumns: 2, shelfTileWidth: HomeShelf.tileWidth, libraryListColumns: 1,
+        landscapeColumns: 2, shelfTileWidth: HomeShelf.tileWidth, shelfTileGap: Space.s12,
+        libraryListColumns: 1,
         focusSafeHeaderGap: Space.s12, focusSafeSectionGap: Space.s26,
         searchContentVMargin: Space.s18
     ),
     IdiomMetrics(
         idiom: .regular, contentHMargin: 20, posterColumns: 5,
         posterColumnSpacing: Space.s12, posterRowSpacing: Space.s16,
-        landscapeColumns: 4, shelfTileWidth: HomeShelf.tileWidth, libraryListColumns: 2,
+        landscapeColumns: 4, shelfTileWidth: HomeShelf.tileWidth, shelfTileGap: Space.s12,
+        libraryListColumns: 2,
         focusSafeHeaderGap: Space.s12, focusSafeSectionGap: Space.s26,
         searchContentVMargin: Space.s18
     ),
     IdiomMetrics(
         idiom: .tv, contentHMargin: 40, posterColumns: 6,
         posterColumnSpacing: 40, posterRowSpacing: 40,
-        landscapeColumns: 5, shelfTileWidth: 220, libraryListColumns: 3,
+        landscapeColumns: 5, shelfTileWidth: 220, shelfTileGap: 40, libraryListColumns: 3,
         focusSafeHeaderGap: 40, focusSafeSectionGap: 40, searchContentVMargin: 40
     ),
 ]
@@ -61,6 +64,9 @@ struct AppLayoutTests {
         #expect(AppLayout.posterGridRowSpacing(idiom: idiom) == expected.posterRowSpacing)
         #expect(AppLayout.landscapeGridColumns(idiom: idiom) == expected.landscapeColumns)
         #expect(AppLayout.shelfTileWidth(idiom: idiom) == expected.shelfTileWidth)
+        // `MetadataRow` spaces its tiles by this, and `ShelfSkeleton` divides the row width
+        // by it to decide how many placeholders fill the row — one token, two readers.
+        #expect(AppLayout.shelfTileGap(idiom: idiom) == expected.shelfTileGap)
         #expect(AppLayout.libraryListColumns(idiom: idiom) == expected.libraryListColumns)
         // Lift arithmetic: see `AppLayout.focusSafeHeaderGap`'s doc comment.
         #expect(AppLayout.focusSafeHeaderGap(idiom: idiom) == expected.focusSafeHeaderGap)

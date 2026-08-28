@@ -239,10 +239,48 @@ private struct SectionFailureRow: View {
     .contentMargins(.horizontal, AppLayout.contentHMargin(idiom: .compact), for: .scrollContent)
     .screenFloor()
 }
+
+/// Parity guard: the first-load placeholder (left) beside the loaded two-server wall
+/// (right), same fixtures as the preview above. The placeholder has to open with a section
+/// header, or the wall's first tile row jumps down by the header's height on arrival. Measure
+/// with `render-ruler.py --pt-width 1080 --scan-col 0.25,0.75` — the first tile run must start
+/// on the same row in both halves. (Lives here, not in `LoadingSkeleton.swift`, because
+/// `FavoritesLoadingPlaceholder` is this screen's private view.)
+#Preview("Favorites skeleton ↔ wall", traits: .fixedLayout(width: 1080, height: 980)) {
+    HStack(alignment: .top, spacing: 0) {
+        FavoritesLoadingPlaceholder(columns: 3)
+            .frame(width: 540)
+            .environment(\.appIdiom, .compact)
+        ScrollView {
+            VStack(alignment: .leading, spacing: AppLayout.focusSafeSectionGap(idiom: .compact)) {
+                GridSection(title: "Living Room", count: 6) {
+                    AdaptivePosterGridLoadingSkeleton(tileCount: 6, fixedColumns: 3)
+                }
+                GridSection(title: "Basement NAS", count: 3) {
+                    AdaptivePosterGridLoadingSkeleton(tileCount: 3, fixedColumns: 3)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .scrollDisabled(true)
+        .mediaWallContentMargins(tvRootChromeBypass: true)
+        .frame(width: 540)
+        .environment(\.appIdiom, .compact)
+    }
+    .frame(maxHeight: .infinity, alignment: .top)
+    // Black so the ruler script's run-lengths separate (see `SkeletonParity`).
+    .background(.black)
+    .preferredColorScheme(.dark)
+}
 #endif
 
 /// First-load placeholder: one section header + poster skeleton, laid out to match a loaded section
 /// so content doesn't shift when it arrives.
+///
+/// It renders the wall's real containers — the same `focusSafeSectionGap` stack and a real
+/// `GridSection`, redacted so the server-name header reads as a bar. Without the header the first
+/// tile row sat 37pt above where the wall put it (render-measured); the wall's own preview
+/// had shown the correct shape all along.
 private struct FavoritesLoadingPlaceholder: View {
     let columns: Int
 
@@ -250,17 +288,26 @@ private struct FavoritesLoadingPlaceholder: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: AppLayout.focusSafeSectionGap(idiom: idiom)) {
                 if idiom == .tv {
                     LibraryHeaderControlsSkeleton()
                 }
-                AdaptivePosterGridLoadingSkeleton(tileCount: columns * 3, fixedColumns: columns)
+                // A stand-in server name: redaction masks the glyphs but keeps the line box, so
+                // this only sets the bar's WIDTH — real names land anywhere near it.
+                GridSection(title: "Media Server", count: nil) {
+                    AdaptivePosterGridPlaceholderGrid(tileCount: columns * 3, fixedColumns: columns)
+                }
+                .redacted(reason: .placeholder)
             }
+            // ONE shimmer clock for the whole placeholder — the header bar and the tvOS chip row
+            // sweep with the tiles instead of sitting static beside them, which is why the grid
+            // goes in un-shimmered (`AdaptivePosterGridPlaceholderGrid`).
+            .skeletonShimmer()
         }
         .scrollDisabled(true)
-        // The IDENTICAL margins + root-chrome bypass as the loaded wall. (The placeholder still
-        // omits the wall's header→section gap — a pre-existing, ledgered deviation; margins are
-        // what this call keeps in lockstep.)
+        // The IDENTICAL margins + root-chrome bypass as the loaded wall.
         .mediaWallContentMargins(tvRootChromeBypass: true)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Loading favorites")
     }
 }

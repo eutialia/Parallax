@@ -80,13 +80,16 @@ struct MediaTile: View {
     /// loading→loaded swap doesn't shift the grid.
     static let metadataGap: CGFloat = Space.s8
 
-    /// Metadata-row line geometry, shared with `MediaTileSkeleton` (compiler-coupled now, not
-    /// comment-coupled) so the skeleton reserves the exact rendered line boxes and the loading→loaded
-    /// swap doesn't shift: the `.subheadline` title line, the inter-line gap, and the `.caption2`
-    /// detail line. Heights are the rendered line boxes, not font points.
-    static let metadataTitleStubHeight: CGFloat = 19
-    static let metadataDetailStubHeight: CGFloat = 12
+    /// Gap between the row's two lines, shared with `MediaTileSkeleton`. The LINE HEIGHTS used to
+    /// live here too, as hand-measured constants (19 / 12) — right only at the default Dynamic Type
+    /// size, and wrong by 30pt at AX3 (render-measured). The skeleton takes its line boxes from
+    /// `metadataTitleFont` / `metadataDetailFont` now, so nothing here has a size to drift.
     static let metadataLineSpacing: CGFloat = 2
+
+    /// The row's two type tiers, named so `MediaTileSkeleton` reserves the SAME line boxes at every
+    /// Dynamic Type size and on the tvOS ramp — the fonts are the contract, not a measurement of them.
+    static let metadataTitleFont: Font = .subheadline.weight(.medium)
+    static let metadataDetailFont: Font = .caption2
 
     var body: some View {
         // The tvOS focus highlight + zoom transition live on the thumbnail (inside MediaThumbnail),
@@ -177,7 +180,7 @@ struct MediaTile: View {
         let trailing = metadata.trailing.flatMap { $0.isEmpty ? nil : $0 }
         VStack(alignment: .leading, spacing: Self.metadataLineSpacing) {
             Text(title)
-                .font(.subheadline.weight(.medium))
+                .font(Self.metadataTitleFont)
                 .foregroundStyle(Color.label)
                 .lineLimit(1)
             if leading != nil || trailing != nil {
@@ -192,7 +195,7 @@ struct MediaTile: View {
                         Text(trailing).lineLimit(1).layoutPriority(1)
                     }
                 }
-                .font(.caption2)
+                .font(Self.metadataDetailFont)
                 .foregroundStyle(Color.secondaryLabel)
             }
         }
@@ -295,5 +298,31 @@ struct MediaTile: View {
     }
     .padding()
     .background(Color.background)
+}
+
+/// The same pair at **AX3**, which is where hand-measured stub heights break: a fixed 19/12pt
+/// reserve is only ever right at the default Dynamic Type size, so the accessibility ramp (and
+/// tvOS's own ramp) slid the skeleton's text band under the real row's. The stubs take their
+/// height from the REAL fonts now, so the two thumbnail bottoms AND the two text bands below them
+/// must still line up here. Measure with
+/// `render-ruler.py --pt-width 620 --scan-col 0.25,0.75`.
+#Preview("SMB skeleton ↔ loaded parity · AX3", traits: .fixedLayout(width: 620, height: 320)) {
+    HStack(alignment: .top, spacing: 16) {
+        MediaTileSkeleton(aspectRatio: MediaImage.landscape, metadataLines: 2)
+            .frame(width: 280)
+        MediaTile(
+            title: "The Grand Budapest Hotel (2014)",
+            artwork: .none,
+            aspectRatio: MediaImage.landscape,
+            metadata: .init(leading: "1.4 GB", trailing: "1h 39m")
+        )
+        .frame(width: 280)
+    }
+    .padding()
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    // Black so the ruler script's run-lengths separate (see `SkeletonParity`).
+    .background(.black)
+    .environment(\.dynamicTypeSize, .accessibility3)
+    .preferredColorScheme(.dark)
 }
 #endif

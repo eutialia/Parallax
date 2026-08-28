@@ -13,6 +13,10 @@ Typical loop (ONE render, many measurements):
   2. RenderPreview (dark mode gives the best platter/edge contrast).
   3. python3 scripts/render-ruler.py --pt-width 393              # summary + rulers
   4. python3 scripts/render-ruler.py --pt-width 393 --scan-row auto   # run-lengths
+     python3 scripts/render-ruler.py --pt-width 786 --scan-col 0.25,0.75
+                                                    # VERTICAL run-lengths down two
+                                                    # columns — the skeleton↔loaded
+                                                    # parity question (same top edge?)
   5. Only if the question is qualitative ("does it READ right"), crop for eyes:
      python3 scripts/render-ruler.py --crop tr --size 320x440 --zoom 3 --out /tmp/look.png
 
@@ -145,6 +149,37 @@ def scan_row(bm: Bitmap, y: int, scale: float, x0: int, x1: int):
         )
 
 
+def scan_col(bm: Bitmap, x: int, scale: float, y0: int, y1: int):
+    """Vertical twin of `scan_row` — the run-lengths DOWN one column.
+
+    Vertical alignment ("does the skeleton's first header land on the same row as
+    the loaded one's") is the question `scan_row` can't answer, and it's the whole
+    subject of a skeleton↔loaded parity preview: scan one column inside each half
+    and compare the first content run's top.
+    """
+    runs, prev = [], None
+    for y in range(y0, y1):
+        r, g, b = bm.px(x, y)
+        lum = (r + g + b) // 3
+        bd = band(lum)
+        if bd != prev:
+            runs.append([bd, y, y])
+            prev = bd
+        else:
+            runs[-1][2] = y
+    print(f"col {x} (x={pt(x, scale)}), y∈[{y0},{y1}):")
+    print("  runs ≥4px (band, span, height, top edge):")
+    for b, a, c in runs:
+        if b == " " or c - a < 3:
+            continue
+        print(f"    {b} y={a}-{c}  h={pt(c - a + 1, scale)}  top@{pt(a, scale)}")
+
+
+def resolve_axis(value: str, extent: int) -> int:
+    v = float(value)
+    return int(v * extent) if 0 < v < 1 else int(v)
+
+
 def auto_glyph_row(bm: Bitmap, x_frac: float = 0.55) -> int:
     """Median row with bright pixels in the right part of the top quarter."""
     rows = []
@@ -161,20 +196,30 @@ def pt(v: float, scale: float) -> str:
 
 
 def crop(args, src: str):
+    """Corner crop, cut from our own pixel buffer.
+
+    NOT `sips -c … --cropOffset`: that crops CENTERED and treats the offset as a displacement of
+    the centered rect, not a top-left origin — and it rejects negative values, so a top-left corner
+    is unreachable through it. Every corner used to come back as the middle of the image (measured
+    on a parity render: `--crop tl` returned mid-grid). Reading the rect here also keeps the
+    bottom-up BMP handling in one place.
+    """
     w, h = (int(v) for v in args.size.split("x"))
     bm = Bitmap(src)
-    offsets = {
-        "tl": (0, 0),
-        "tr": (0, bm.width - w),
-        "bl": (bm.height - h, 0),
-        "br": (bm.height - h, bm.width - w),
-    }
-    oy, ox = offsets[args.crop]
-    out = args.out or "/tmp/render-crop.png"
-    subprocess.run(
-        ["sips", "-c", str(h), str(w), "--cropOffset", str(oy), str(ox), src, "--out", out],
-        capture_output=True,
+    w, h = min(w, bm.width), min(h, bm.height)
+    y0 = 0 if args.crop[0] == "t" else bm.height - h
+    x0 = 0 if args.crop[1] == "l" else bm.width - w
+    pixels = b"".join(
+        bytes(bm.px(x, y)) for y in range(y0, y0 + h) for x in range(x0, x0 + w)
     )
+    out = args.out or "/tmp/render-crop.png"
+    with tempfile.NamedTemporaryFile(suffix=".ppm", delete=False) as tf:
+        ppm = tf.name
+        tf.write(b"P6\n%d %d\n255\n" % (w, h) + pixels)
+    try:
+        subprocess.run(["sips", "-s", "format", "png", ppm, "--out", out], capture_output=True)
+    finally:
+        os.unlink(ppm)
     if args.zoom > 1:
         subprocess.run(["sips", "-z", str(h * args.zoom), str(w * args.zoom), out], capture_output=True)
     print(out)
@@ -186,6 +231,8 @@ def main():
     p.add_argument("--pt-width", type=float, help="preview canvas width in pt (.fixedLayout width) → enables pt output")
     p.add_argument("--scan-row", help="'auto' (find toolbar glyphs), a pixel row, or a 0–1 height fraction")
     p.add_argument("--scan-from", type=float, default=0.5, help="left bound of the scan as width fraction (default 0.5)")
+    p.add_argument("--scan-col", help="comma-separated columns to scan DOWN: pixel x or 0–1 width fractions")
+    p.add_argument("--scan-col-from", type=float, default=0.0, help="top bound of a column scan as height fraction (default 0)")
     p.add_argument("--crop", choices=["tl", "tr", "bl", "br"], help="write a corner crop instead of measuring")
     p.add_argument("--size", default="320x440", help="crop WxH in px (default 320x440)")
     p.add_argument("--zoom", type=int, default=3, help="crop upscale factor (default 3)")
@@ -211,12 +258,13 @@ def main():
         print("no red rulers found (add .previewRuler(...) to the preview)")
 
     if args.scan_row:
-        if args.scan_row == "auto":
-            y = auto_glyph_row(bm)
-        else:
-            v = float(args.scan_row)
-            y = int(v * bm.height) if 0 < v < 1 else int(v)
+        y = auto_glyph_row(bm) if args.scan_row == "auto" else resolve_axis(args.scan_row, bm.height)
         scan_row(bm, y, scale, int(bm.width * args.scan_from), bm.width)
+
+    if args.scan_col:
+        y0 = int(bm.height * args.scan_col_from)
+        for raw in args.scan_col.split(","):
+            scan_col(bm, resolve_axis(raw, bm.width), scale, y0, bm.height)
 
 
 if __name__ == "__main__":
