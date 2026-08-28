@@ -189,8 +189,9 @@ private struct MenuFootnote: View {
 
 private struct MenuRow<Trailing: View>: View {
     /// The row's one identity: the panel's scroll target (`.id` below, under its
-    /// `scrollTargetLayout`) AND — on tvOS — its focus key, what the panel assigns to
-    /// land first focus here and what `defaultFocus` re-targets later.
+    /// `scrollTargetLayout`) AND — on tvOS — its focus key, what the panel assigns to land
+    /// first focus here and what `defaultFocus` seeds (observed on device: that evaluation
+    /// happens on the panel's first appearance and doesn't re-target afterwards).
     let rowID: TrackMenuRowID
     let isSelected: Bool
     /// The row is shown but can't be picked. On tvOS this also drops it out of the focus
@@ -452,20 +453,36 @@ struct SpeedMenu: View {
 /// immersive palette.
 ///
 /// It opens SCROLLED TO `leadingRowID` — the selected track / rate / current chapter
-/// pinned to the top of the visible region — instead of at the top of the list. When that
-/// row is near the end the scroll view's own clamp pins the list bottom; no manual math.
+/// pinned to the top of the visible region — instead of at the top of the list. A row near
+/// the end resolves to an offset past the end, which the scroll view clamps to its own
+/// maximum; no manual math. The seat runs ONCE; a separate re-clamp keeps that maximum
+/// honest as the geometry settles under it (both below).
 /// Width and height are the presenting panel's to set (`panelWidth`/`panelHeight`), fed by
 /// the content-height report.
 struct TrackMenuPanel<Content: View>: View {
     let kind: PlayerControlsView.TrackMenuKind
+    /// The row seated flush against the panel's top edge. On tvOS this is also the row
+    /// first focus lands on (`PlayerControlsView.panelSeatRowID`) — scroll and focus have
+    /// to aim at the same row, or the engine's reveal drags the offset off the seat.
     let leadingRowID: TrackMenuRowID?
     let onContentHeightChange: (CGFloat) -> Void
-    /// Run once the panel has seated its scroll position, in the SAME task — tvOS lands
-    /// first focus here. Two independent `.task`s (one per concern) race with no defined
-    /// order, and focusing a row the scroll hasn't seated yet drags the offset back.
+    /// Called from the seating task, in the SAME turn as the `scrollTo` above it — not
+    /// after the scroll has been applied, which nothing here can observe. tvOS lands first
+    /// focus from this: the focus write targets the row the seat just scrolled to, so the
+    /// focus engine's own reveal has nothing left to do. Two independent `.task`s (one per
+    /// concern) would race with no defined order, and focusing a row the scroll hasn't
+    /// seated yet drags the offset back. That the two agree is `panelSeatRowID`'s job, and
+    /// it holds for every kind including audio. Fires ONCE per panel — see `didSeat`.
     var onSeated: (() -> Void)? = nil
     @ViewBuilder let content: () -> Content
     @State private var position = ScrollPosition(idType: TrackMenuRowID.self)
+    /// The scroll view has a laid-out viewport, so `scrollTo(id:)` has something to resolve
+    /// the target row against. A Bool, not the height: the seat wants ONE trigger, not one
+    /// per re-measurement.
+    @State private var viewportReady = false
+    /// The seat is a one-shot. Latched rather than shaped as `.onAppear` because its
+    /// trigger is the first non-zero layout, which lands after the view appears.
+    @State private var didSeat = false
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: Radius.panel, style: .continuous)
@@ -488,14 +505,59 @@ struct TrackMenuPanel<Content: View>: View {
         }
         .contentMargins(.vertical, Space.s8, for: .scrollContent)
         .scrollPosition($position, anchor: .top)
+        // The panel has a laid-out viewport for the seat below to resolve against.
+        .onGeometryChange(for: Bool.self) { $0.size.height > 0 } action: { viewportReady = $0 }
+        // RE-CLAMP, never re-anchor. `PlayerControlsView.panelHeight` serves a
+        // 320pt placeholder until the kind's content measurement lands, so on a kind's
+        // FIRST open this panel's viewport GROWS after the seat (later opens read the kept
+        // measurement; on tvOS the controls unmount with the HUD, so every summon is a
+        // first open). A taller viewport LOWERS the maximum offset under an offset already
+        // taken: the list hangs lifted, top row clipped and a blank band under the last
+        // one. The system's own adjustment is not enough — it re-clamps a growing container
+        // but leaves the bottom `contentMargins` out of the maximum, so a measured 8pt of
+        // the strand survives it (see the "viewport grows after seat" preview), and on tvOS
+        // there is no scroll gesture to shake it out.
+        //
+        // So compute the bound from the geometry rather than depending on a `scrollTo`
+        // round trip to clamp it: `contentInsets` are OUTSIDE `contentSize` (doc: adding
+        // them to the content size gives the total scrollable space) and `contentOffset` is
+        // in that inset-inclusive space (doc: it "may extend before zero ... when the
+        // content insets ... are non-zero"), so the last reachable offset is
+        // `contentSize + bottom inset − containerSize`. A top-rested or in-range offset is
+        // never touched — only an offset STRANDED above that maximum snaps down to it, so
+        // this can never re-anchor: wherever the user scrolled to stays put.
+        //
+        // The maximum has a FLOOR: content shorter than the viewport has nothing to scroll,
+        // and the resting offset there is `−contentInsets.top` (the top margin sits before
+        // zero). Without the `max`, the raw formula goes further negative than that resting
+        // offset — the 264pt speed list in a 320pt panel computes −48 against a −8 rest — and
+        // every short menu's first layout issued a `scrollTo` it didn't need. Harmless (the
+        // scroll view clamps) but a lie about the bound, so clamp it here.
+        //
+        // Only a SHRINKING offset range can strand an offset, hence the guard — and it
+        // reads geometry, not the offset, so an iOS rubber-band mid-drag is never fought.
+        //
+        // Seat-then-clamp is the same answer as seating against the settled geometry:
+        // seating `rowTop` against the 320 placeholder and clamping at 840 gives
+        // `min(rowTop, content − 840)`, which is what seating against 840 resolves to. The
+        // seat rule (selected row at top, else list bottom pinned) holds by construction.
+        .onScrollGeometryChange(for: ScrollGeometry.self) { $0 } action: { old, new in
+            guard new.containerSize.height > old.containerSize.height
+                    || new.contentSize.height < old.contentSize.height else { return }
+            let maxY = max(-new.contentInsets.top,
+                           new.contentSize.height + new.contentInsets.bottom - new.containerSize.height)
+            guard new.contentOffset.y > maxY else { return }
+            position.scrollTo(y: maxY)
+        }
         // Seeding `ScrollPosition(id:anchor:)` in `init` renders at the top of the list and
         // stays there — the lazy stack hasn't realized the target row when the scroll view
         // takes its first offset, so the position has nothing to resolve against. Scrolling
-        // from `.task` (after that first layout) is what actually lands it, and it still
+        // from a task (after that first layout) is what actually lands it, and it still
         // beats the first frame the user sees: the panel grows in from the chip's corner.
-        // Rows past the end clamp themselves, so there's no math here.
-        .task {
+        .task(id: viewportReady) {
+            guard viewportReady, !didSeat else { return }
             if let leadingRowID { position.scrollTo(id: leadingRowID, anchor: .top) }
+            didSeat = true
             onSeated?()
         }
         .scrollIndicators(.hidden)
@@ -732,4 +794,79 @@ private func previewSubtitleTracks() -> [SubtitleTrack] {
     .padding(40)
     .background(Color.background)
     .preferredColorScheme(.dark)
+}
+
+/// The re-clamp in pixels. Every specimen above pins a FIXED viewport, which is the one shape the
+/// live panel never has: `PlayerControlsView.panelHeight` serves a 320pt placeholder until
+/// the kind's content measurement lands, then grows to the cap. An offset resolved against
+/// the placeholder is past the taller panel's maximum, and the list hangs lifted — the top
+/// row clipped by the panel edge, a blank band under the last one.
+///
+/// The host reproduces that ordering with no timer to race the snapshot: the height it
+/// grows TO is the panel's own content report (the real `panelHeight` input), and it
+/// applies it one turn after `onSeated` — the hop is what makes the seat provably resolve
+/// against 320 first, since a same-turn write coalesces into the seat's own update and the
+/// scroll then resolves against the final height (which is why this had to be measured,
+/// not reasoned about).
+///
+/// The strand it leaves is exactly the panel's bottom content margin, 8pt: iOS re-clamps a
+/// growing container itself but doesn't count `contentMargins` in the maximum. Small, and
+/// visible — Track 18 loses its glyph tops to the panel's top edge. With the re-clamp the
+/// Track 28 platter lands at 466.8pt on this canvas, the same as the fixed-viewport control
+/// above ("clamped to bottom"); without it, 458.8pt.
+private struct GrowingViewportPanelPreview: View {
+    /// The row the panel seats on, and the selection it belongs to — the two cases that
+    /// have to survive the growth: an offset AT the maximum, and one resting at the top.
+    let leadingRowID: TrackMenuRowID
+    var selectedID: TrackID? = nil
+    /// The panel's measured content height — what `panelContentHeights` holds live.
+    @State private var content: CGFloat?
+    /// The seat has run, so the viewport may now settle to its real height.
+    @State private var seated = false
+
+    /// The live panel height. Overlaid on the panel below so a snapshot taken before the
+    /// growth reads an obvious "320pt" instead of passing as a clean specimen.
+    private var height: CGFloat { seated ? min(content ?? 320, 520) : 320 }
+
+    var body: some View {
+        TrackMenuPanel(kind: .subtitles,
+                       leadingRowID: leadingRowID,
+                       onContentHeightChange: { content = $0 },
+                       onSeated: { Task { seated = true } }) {
+            SubtitleTrackMenu(tracks: previewSubtitleTracks(),
+                              selectedID: selectedID,
+                              onSelect: { _ in })
+        }
+        .frame(width: 256, height: height)
+        // Trailing corner and yellow on purpose: the platter measurements scan a LEFT
+        // column, and `render-ruler.py`'s rules are pure red — the label is in neither.
+        .overlay(alignment: .bottomTrailing) {
+            Text("\(Int(height))pt")
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.yellow)
+                .padding(4)
+        }
+    }
+}
+
+#Preview("Subtitle panel · viewport grows after seat",
+         traits: .fixedLayout(width: 336, height: 600)) {
+    GrowingViewportPanelPreview(leadingRowID: .track(.jellyfinStream(28)),
+                                selectedID: .jellyfinStream(28))
+        .padding(40)
+        .background(Color.background)
+        .preferredColorScheme(.dark)
+}
+
+/// The other half of the growth case: an offset RESTING at the top (Off selected, so the
+/// seat resolves to the negative top-inset offset) must come through the growth untouched.
+/// It is the re-clamp's no-op proof — the Off platter still sits at the panel's 8pt inset
+/// after the viewport grows, exactly where the fixed-viewport "Off selected, overflowing"
+/// specimen puts it.
+#Preview("Subtitle panel · viewport grows after seat, Off",
+         traits: .fixedLayout(width: 336, height: 600)) {
+    GrowingViewportPanelPreview(leadingRowID: .subtitlesOff)
+        .padding(40)
+        .background(Color.background)
+        .preferredColorScheme(.dark)
 }
