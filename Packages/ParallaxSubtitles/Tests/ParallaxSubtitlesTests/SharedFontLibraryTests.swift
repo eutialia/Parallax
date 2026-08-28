@@ -37,9 +37,13 @@ struct SharedFontLibraryTests {
     /// any one measurement past the bound (126 ms observed) with nothing wrong.
     /// A per-renderer library would blow the bound on all N.
     ///
-    /// For the same reason this cannot claim to be the process' first renderer:
-    /// the bootstrap cost is read off the library and printed, not asserted
-    /// against, because whoever paid it may have been another suite.
+    /// No bound relative to this test's own first renderer: suites share the
+    /// process, so whoever paid the bootstrap may have been another suite, in
+    /// which case that "first" renderer is already a warm one (10 ms observed on
+    /// CI against a 6 ms fastest) and no ratio between the two says anything.
+    /// The library's font generation is no better a witness — concurrent suites
+    /// legitimately register their own files mid-loop. The absolute bound is the
+    /// guard: a library per renderer pays the bootstrap on every sample.
     @Test("a renderer built after the first one costs a fraction of the bundle")
     func secondRendererSkipsFontRegistration() async throws {
         let first = try await timeToFirstFrame(text: "First renderer")
@@ -59,18 +63,14 @@ struct SharedFontLibraryTests {
             """
         )
 
-        // Registration happened, exactly once, and is already behind us. Two
-        // bounds, because either alone is weak: the RELATIVE one (a later
-        // renderer costs a fraction of the first) is what a regression to a
-        // library per renderer breaks, and it needs no calibration to a
-        // machine; the absolute one catches a first renderer that was already
-        // fast because nothing was registered at all. CI slack is the same ×12
-        // the other packages take from `CITimeScale`.
+        // Registration happened (the library measured a bootstrap) and is behind
+        // us (a later renderer stays under the absolute bound — the ×12 CI slack
+        // is the same the other packages take from `CITimeScale`). A library per
+        // renderer fails the second.
         let bound: Duration = ProcessInfo.processInfo.environment["CI"] == nil
             ? .milliseconds(100) : .milliseconds(1200)
         #expect(bootstrap != nil)
-        #expect(fastest < first / 3, "first \(first), fastest \(fastest)")
-        #expect(fastest < bound)
+        #expect(fastest < bound, "first \(first), fastest \(fastest)")
     }
 
     /// Two live renderers is the shipping configuration: the player overlay and
