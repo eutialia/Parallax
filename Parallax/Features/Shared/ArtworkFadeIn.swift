@@ -9,17 +9,31 @@ import ParallaxJellyfin
 /// reads as a broken, laggy scroll. Pure opacity: no scale or movement, so it stays put under
 /// Reduce Motion (non-vestibular, kept by convention) and never touches the focus tree on tvOS —
 /// the tile is already focusable; only its image content cross-fades.
+///
+/// An opacity ramp only exists if the layer was **committed at opacity 0 first**: Core Animation
+/// interpolates from the last committed value, so a reveal written inside the same transaction that
+/// inserts the view has nothing to ramp from and hard-cuts. `onAppear` + `withAnimation` is exactly
+/// that race — on iOS the insertion usually commits before the state write lands, on tvOS the
+/// focus-driven `LazyVGrid` materialises rows ahead of time and coalesces the write into the
+/// insertion transaction, so the tile's first committed frame is already opaque. Deferring the write
+/// past one run-loop turn (`.task` + a 1ms sleep) makes the hidden frame's commit a precondition
+/// rather than a coincidence, on both platforms.
 private struct ArtworkFadeIn: ViewModifier {
     let isMemoryHit: Bool
     @State private var shown = false
 
     func body(content: Content) -> some View {
         content
-            // A memory hit is opaque from the first frame it renders (before `onAppear` even runs),
-            // so there is no placeholder flash; everything else starts hidden and eases up.
+            // A memory hit is opaque from the first frame it renders (before the reveal task even
+            // runs), so there is no placeholder flash; everything else starts hidden and eases up.
             .opacity(shown || isMemoryHit ? 1 : 0)
-            .onAppear {
-                guard !isMemoryHit else { return }
+            .task {
+                // `shown` already true = re-appearance after the fade; don't replay it.
+                guard !isMemoryHit, !shown else { return }
+                // Resumes on a later run-loop turn, after the opacity-0 frame's CA commit.
+                // Disappearing cancels the sleep; bail so `shown` stays false and a re-appearance
+                // re-fades (a swallowed `try?` would fall through and flip it off-screen).
+                guard (try? await Task.sleep(for: .milliseconds(1))) != nil else { return }
                 withAnimation(.artworkReveal) { shown = true }
             }
     }
