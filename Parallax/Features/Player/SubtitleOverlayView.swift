@@ -16,15 +16,15 @@ import ParallaxSubtitles
 ///   them to the engine.
 ///
 /// Authored ASS/SSA renders with its creator styling and positioning (9-cell
-/// alignment, `\pos` signs); SRT/VTT is converted to ASS events and takes the user's
-/// `SubtitleStyle`. Embedded subs (rendered by the engine itself — AVKit legible /
+/// alignment, `\pos` signs) — only its typefaces are swapped for bundled ones, at
+/// load; SRT/VTT is converted to ASS events and takes the user's `SubtitleStyle`. Embedded subs (rendered by the engine itself — AVKit legible /
 /// VLC's internal libass) leave `subtitleRenderer` nil, so this overlay draws nothing
 /// for them.
 struct SubtitleOverlayView: View {
     let vm: PlayerViewModel
-    /// User subtitle appearance + the authored-override toggle. Pushed into the
-    /// renderer via `PlayerViewModel.applySubtitleAppearance` (format-aware policy
-    /// lives there). Injected at the app root, inherited here through both the iOS
+    /// User subtitle appearance. Pushed into the renderer via
+    /// `PlayerViewModel.applySubtitleAppearance`, which drops it for authored
+    /// tracks. Injected at the app root, inherited here through both the iOS
     /// player overlay host and the tvOS `fullScreenCover`.
     @Environment(SubtitlePreferences.self) private var subtitlePrefs
     @Environment(\.displayScale) private var displayScale
@@ -68,14 +68,12 @@ struct SubtitleOverlayView: View {
         // long-running task.
         .task(id: displayScale) { await drive() }
         .onChange(of: subtitlePrefs.style) { pushAppearance() }
-        .onChange(of: subtitlePrefs.overrideAuthoredStyles) { pushAppearance() }
     }
 
     /// Whether the loaded track is one WE author (converted SRT/VTT) as opposed
     /// to creator-authored ASS/SSA.
     private var isConvertedFormat: Bool {
-        let format = vm.sidecarSubtitleInfo?.format
-        return format == .srt || format == .vtt
+        vm.sidecarSubtitleInfo?.format.needsConversion == true
     }
 
     /// The libass canvas, chosen by who authored the track:
@@ -125,11 +123,10 @@ struct SubtitleOverlayView: View {
     }
 
     private func pushAppearance() {
-        let style = subtitlePrefs.style
         vm.applySubtitleAppearance(
-            converted: style.convertedRendererOverride(surface: surfaceSize, canvas: canvasRect),
-            authored: style.authoredRendererOverride(),
-            overrideAuthored: subtitlePrefs.overrideAuthoredStyles
+            converted: subtitlePrefs.style.convertedRendererOverride(
+                surface: surfaceSize, canvas: canvasRect
+            )
         )
     }
 

@@ -455,6 +455,32 @@ struct SubtitleFontPlanTests {
         #expect(out.contains(",&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,"))
     }
 
+    /// The typeface is the ONLY thing we take from an authored script, and the
+    /// AUTHOR picks it: their serif intent decides, not the user's Sans/Serif
+    /// setting — the plan here is built on the sans family (what the app always
+    /// hands an authored track) and the Mincho style still lands on Noto Serif.
+    /// Every other line of the script has to come back byte-identical.
+    @Test("an authored style keeps every field and every other line; only its font name moves")
+    func authoredSubstitutionTouchesNothingButTheFontName() throws {
+        let script = ASSFixture.script(text: "Hello, world", fontName: "MS Mincho")
+        let plan = SubtitleFontPlan.build(
+            lines: ["Hello, world"], styleFamily: SubtitleFontBundle.sansFamily, languageHint: nil
+        )
+        let out = AuthoredFontSubstitution.applied(to: script, plan: plan)
+
+        func styleFields(_ text: String) throws -> [String] {
+            let line = try #require(text.split(separator: "\n").first { $0.hasPrefix("Style: ") })
+            return line.split(separator: ",", omittingEmptySubsequences: false).map(String.init)
+        }
+        let before = try styleFields(script)
+        let after = try styleFields(out)
+        #expect(after[1] == SubtitleFontBundle.serifFamily)
+        #expect(before.indices.filter { before[$0] != after[$0] } == [1])
+
+        let others = { (text: String) in text.split(separator: "\n").filter { !$0.hasPrefix("Style: ") } }
+        #expect(others(out) == others(script))
+    }
+
     @Test("a serif style keeps its design when a divergent line gets a region face")
     func regionTagsPreserveStyleDesign() {
         let script = ASSFixture.script(text: "こんにちは", fontName: "MS Mincho")

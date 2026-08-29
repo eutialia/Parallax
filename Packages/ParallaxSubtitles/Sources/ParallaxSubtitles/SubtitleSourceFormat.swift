@@ -9,8 +9,11 @@ public enum SubtitleSourceFormat: Sendable, CaseIterable {
     case srt
     case vtt
 
-    /// Whether the bytes have to go through a converter before libass sees them.
-    var needsConversion: Bool {
+    /// Whether the bytes have to go through a converter before libass sees them —
+    /// and therefore whether the resulting script is OURS. A converted source
+    /// carries no styling of its own, so the user's settings own every field of
+    /// it; an authored one arrives with a creator's typesetting and keeps it.
+    public var needsConversion: Bool {
         switch self {
         case .ass, .ssa: false
         case .srt, .vtt: true

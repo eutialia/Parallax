@@ -406,41 +406,6 @@ final class LibassEngine {
         return ASSPlayRes.effective(x: Int(track.pointee.PlayResX), y: Int(track.pointee.PlayResY))
     }
 
-    /// The `Fontsize` of the style most of the track's dialogue is written in —
-    /// the em an authored caption really renders at, and therefore the only
-    /// honest reference for a border expressed as a fraction of the em.
-    ///
-    /// Ties and empty tracks fall back to the style named `Default`, then to the
-    /// first style, which is the order libass itself resolves a missing style
-    /// in. Nil when nothing parsed.
-    var dominantStyleFontSize: Double? {
-        guard let track else { return nil }
-        let styles = track.pointee.styles
-        let count = Int(track.pointee.n_styles)
-        guard let styles, count > 0 else { return nil }
-
-        var uses = [Int](repeating: 0, count: count)
-        if let events = track.pointee.events {
-            for index in 0..<Int(track.pointee.n_events) {
-                let style = Int(events[index].Style)
-                if uses.indices.contains(style) { uses[style] += 1 }
-            }
-        }
-
-        var bestIndex = 0
-        var bestCount = 0
-        for index in uses.indices where uses[index] > bestCount {
-            bestIndex = index
-            bestCount = uses[index]
-        }
-        if bestCount > 0 { return styles[bestIndex].FontSize }
-
-        let fallback = (0..<count).first {
-            styles[$0].Name.flatMap { String(validatingCString: $0) } == "Default"
-        }
-        return styles[fallback ?? 0].FontSize
-    }
-
     /// Parses a script and, only if it yielded events, swaps it in for the current one.
     func loadTrack(bytes: inout [UInt8]) throws {
         // ass_read_memory takes a mutable buffer and copies whatever it keeps.
