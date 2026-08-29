@@ -279,6 +279,15 @@ public enum SubtitleFontBundle {
         facesByFamily[family]?.metrics
     }
 
+    /// The family name of every face in `url`, in file order — a collection's faces
+    /// included, so an index into this addresses a face inside a `.ttc`.
+    ///
+    /// Public for the app's VLC font directory, which renames one face of a pan-CJK
+    /// collection and has to say WHICH; the file it asks about is always one of these.
+    public static func faceFamilyNames(in url: URL) -> [String] {
+        SFNTFace.faces(of: url).map(\.familyName)
+    }
+
     // MARK: - Coverage
 
     /// Whether `family` can draw `scalar`, from that face's own `cmap`. False
