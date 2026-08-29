@@ -136,8 +136,13 @@ struct SubtitleControlsList: View {
     /// The one place the scope is stated, now that nothing above it varies: these
     /// lists reach plain subtitles only, and a subtitle that arrived with its own
     /// look keeps it.
+    ///
+    /// Position is called out on its own because it is the one control that cannot
+    /// travel. A plain subtitle inside a network-share file is drawn by the engine,
+    /// which takes size, colour, typeface and background from here but has no
+    /// placement knob.
     private var footnote: some View {
-        caption("These settings style the plain subtitles Parallax renders itself. Subtitles that arrive with their own styling keep it — the colors, sizes and placement stay the creator's, and only the typeface changes, to one that ships with Parallax. Image subtitles, including burned-in ones, and subtitles built into a file on a network share keep their original look.")
+        caption("These settings style plain subtitles. Subtitles that come with their own styling keep it: the colors, sizes and placement stay the creator's, and only the typeface is swapped for one that ships with Parallax. Image subtitles keep their original look. Position applies only where Parallax draws the subtitle itself.")
             .padding(.top, Space.s8)
     }
 
