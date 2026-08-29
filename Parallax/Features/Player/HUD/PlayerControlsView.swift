@@ -382,6 +382,11 @@ struct PlayerControlsView: View {
                 hideTask?.cancel()
             }
         }
+        // The fetch pinned the chrome open (see `scheduleHide`); its landing re-arms the
+        // timer, so the row doesn't sit there for the rest of the film.
+        .onChange(of: vm.loadingSubtitleTrackID) { _, loading in
+            if loading == nil, controlsVisible { scheduleHide() }
+        }
     }
 
     // MARK: - Root layout
@@ -1580,7 +1585,11 @@ struct PlayerControlsView: View {
         // mid-drag would unmount the gesture's view and strand the engine paused),
         // or playback is PAUSED — a paused frame with vanishing chrome reads as a
         // dead player. Loading counts as not-playing: the HUD stays over the scrim.
-        guard !menuOpen, !dragScrubbing, !pullDragging, vm.desiredPlaying else { return }
+        // Nor while a subtitle is being fetched: the chip's spinner is the ONLY thing
+        // reporting that wait, and a cold embedded track takes seconds to extract —
+        // hiding the row mid-fetch is how the wait starts reading as a dead pick.
+        guard !menuOpen, !dragScrubbing, !pullDragging, vm.desiredPlaying,
+              vm.loadingSubtitleTrackID == nil else { return }
         hideTask = Task {
             try? await Task.sleep(for: .seconds(3))
             if !Task.isCancelled { controlsVisible = false }
