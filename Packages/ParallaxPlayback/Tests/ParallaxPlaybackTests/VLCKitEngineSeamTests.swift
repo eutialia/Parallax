@@ -106,27 +106,29 @@ struct VLCKitMediaOptionTests {
         #expect(options.contains(":no-spu") == disabled)
     }
 
-    /// D2: two renderers, two option *semantics*. `ssa-fontsdir` is a directory libass scans;
-    /// `freetype-font` is a font FAMILY NAME. Handing the latter a path is a silent no-op that
-    /// falls back to the module's hardcoded Helvetica Neue — which is why embedded CJK SRT
-    /// rendered as tofu while the ASS path was fine.
-    @Test("the fonts directory and the font family go to their own renderers")
-    func fontOptionsMatchTheirRenderers() {
+    /// D2 and its real cause. `ssa-fontsdir` is read by libvlc's libass DECODER
+    /// (`var_InheritString(p_dec, …)`), whose inheritance chain runs through the input item —
+    /// so a media option reaches it. The freetype text renderer is built by the video output
+    /// (`SpuRenderCreateAndLoadText`), which inherits from the libvlc INSTANCE and never sees
+    /// an input's variables: every `:freetype-*` media option was a silent no-op that left the
+    /// module on its built-in "Helvetica Neue" and rendered CJK as tofu.
+    @Test("the fonts directory rides the media, and nothing freetype does")
+    func fontsDirectoryIsTheOnlyMediaScopedFontOption() {
         let options = VLCKitEngine.mediaOptions(for: .fixture(
             subtitleFontsDirectory: URL(fileURLWithPath: "/tmp/parallax-fonts"),
-            subtitleFontFamily: "PingFang SC"
+            subtitleFontFamily: "PingFang SC",
+            subtitleTextStyle: EngineSubtitleTextStyle(style: .standard, relativeFontSize: 20)
         ))
         #expect(options.contains(":ssa-fontsdir=/tmp/parallax-fonts"))
-        #expect(options.contains(":freetype-font=PingFang SC"))
+        #expect(options.contains(where: { $0.contains("freetype") }) == false)
     }
 
-    /// Neither option is invented when the app has nothing to offer: an empty `freetype-font`
-    /// would match no family at all.
-    @Test("no font options at all when the asset carries neither")
-    func fontOptionsAreOmittedWhenAbsent() {
+    /// No directory to name, nothing to say.
+    @Test("no fonts directory option when the asset carries none")
+    func fontsDirectoryIsOmittedWhenAbsent() {
         let options = VLCKitEngine.mediaOptions(for: .fixture())
         #expect(options.contains(where: { $0.hasPrefix(":ssa-fontsdir") }) == false)
-        #expect(options.contains(where: { $0.hasPrefix(":freetype-font=") }) == false)
+        #expect(options.contains(where: { $0.contains("freetype") }) == false)
     }
 
     /// Caller-supplied options are applied LAST so they can override the engine's defaults.
@@ -137,6 +139,110 @@ struct VLCKitMediaOptionTests {
             startTime: nil, vlcOptions: [":smb-user=someone"]
         )
         #expect(VLCKitEngine.mediaOptions(for: asset).last == ":smb-user=someone")
+    }
+}
+
+@Suite("VLCKitEngine — library (instance) options")
+struct VLCKitLibraryOptionTests {
+
+    /// The fix. The freetype renderer belongs to the video output, so its whole option set has
+    /// to arrive as libvlc instance arguments — `--`, not `:`. `.opaqueBox` is the other half
+    /// of the user's border choice: box on, ring and shadow off.
+    @Test("the font family and the style become the `--freetype-*` argument set",
+          arguments: [SubtitleBackground.outlineShadow, .opaqueBox])
+    func freetypeArgumentsCarryTheAssetStyle(background: SubtitleBackground) {
+        let boxed = background == .opaqueBox
+        let style = SubtitleStyle.standard.with { $0.background = background }
+        let options = VLCKitEngine.libraryOptions(for: .fixture(
+            subtitleFontFamily: "Noto Sans CJK SC",
+            subtitleTextStyle: EngineSubtitleTextStyle(style: style, relativeFontSize: 20)
+        ))
+
+        #expect(options == [
+            "--freetype-font=Noto Sans CJK SC",
+            // em = output height / 20 — the divisor the app computed from its own cue size.
+            "--freetype-rel-fontsize=20",
+            // 0.92 white, fully opaque.
+            "--freetype-color=15461355",     // 0xEBEBEB
+            "--freetype-opacity=255",
+            "--freetype-outline-color=0",
+            // The ring is 6% of the font size (the option is a percent, not one of the
+            // None/Thin/Normal/Thick presets its labels suggest); a box turns it off by
+            // thickness, which is the module's real off switch — STYLE_OUTLINE is always set.
+            "--freetype-outline-opacity=\(boxed ? 0 : 255)",
+            "--freetype-outline-thickness=\(boxed ? 0 : 6)",
+            // 0.55 × 255 = 140.25, and the 0.04 VERTICAL offset rides the hypotenuse of the
+            // module's default −45° shadow angle: 0.04 × √2 = 0.0566.
+            "--freetype-shadow-opacity=\(boxed ? 0 : 140)",
+            "--freetype-shadow-distance=0.0566",
+            "--freetype-background-color=0",
+            "--freetype-background-opacity=\(boxed ? 255 : 0)",
+        ])
+    }
+
+    /// The order is load-bearing: `PlayerViewModel` compares this array against the one the
+    /// live engine was built with to decide whether it can reuse the player, so equal inputs
+    /// must produce an equal array rather than merely an equal SET.
+    @Test("equal assets produce an identical array, element for element")
+    func orderingIsStable() {
+        func build() -> [String]? {
+            VLCKitEngine.libraryOptions(for: .fixture(
+                subtitleFontFamily: "Noto Serif CJK JP",
+                subtitleTextStyle: EngineSubtitleTextStyle(style: .standard, relativeFontSize: 18),
+                vlcLibraryOptions: ["--no-drop-late-frames"]
+            ))
+        }
+        #expect(build() == build())
+    }
+
+    /// The pre-existing instance arguments (the timing-repair vout flags) keep their place at
+    /// the head — they were always instance-scoped; the subtitle look simply joined them.
+    @Test("caller library options pass through, ahead of the subtitle set")
+    func callerLibraryOptionsComeFirst() {
+        let options = VLCKitEngine.libraryOptions(for: .fixture(
+            subtitleFontFamily: "Noto Sans CJK SC",
+            vlcLibraryOptions: ["--no-drop-late-frames", "--no-skip-frames"]
+        ))
+        #expect(options == [
+            "--no-drop-late-frames", "--no-skip-frames", "--freetype-font=Noto Sans CJK SC",
+        ])
+    }
+
+    /// Nothing to say → nil, which is what keeps a bare asset on the shared `VLCLibrary`
+    /// instead of minting a private one that differs from it in nothing.
+    @Test("nil when the asset carries no family, no style and no library options")
+    func nilWhenTheAssetCarriesNothing() {
+        #expect(VLCKitEngine.libraryOptions(for: .fixture()) == nil)
+    }
+}
+
+/// The vendored `VLCLibrary.h` says the framework does not support multiple `VLCLibrary`
+/// instances, and `VLCMediaPlayer(options:)` mints one per call. Now that every VLC session
+/// carries instance arguments (the subtitle look), that would be one libvlc per playback —
+/// so `makePlayer` interns them by option array instead.
+@Suite("VLCKitEngine — the private VLCLibrary cache")
+@MainActor
+struct VLCKitLibraryCacheTests {
+
+    @Test("equal option arrays share one library instance, different ones do not")
+    func librariesAreInternedByTheirOptions() {
+        let sans = ["--freetype-font=Noto Sans CJK SC"]
+        let serif = ["--freetype-font=Noto Serif CJK SC"]
+
+        let first = VLCKitEngine.makePlayer(libraryOptions: sans)
+        let second = VLCKitEngine.makePlayer(libraryOptions: sans)
+        let other = VLCKitEngine.makePlayer(libraryOptions: serif)
+
+        #expect(first.libraryInstance === second.libraryInstance)
+        #expect(first.libraryInstance !== other.libraryInstance)
+    }
+
+    /// No options → the shared library, untouched. A private instance for an argument set
+    /// identical to the default one would be pure cost.
+    @Test("no options keeps the player on the shared library")
+    func noOptionsUsesTheSharedLibrary() {
+        let player = VLCKitEngine.makePlayer(libraryOptions: nil)
+        #expect(player.libraryInstance === VLCLibrary.shared())
     }
 }
 

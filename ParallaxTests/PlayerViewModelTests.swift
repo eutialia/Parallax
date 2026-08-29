@@ -2031,6 +2031,48 @@ struct PlayerViewModelTests {
         #expect(engineAfterStart.calls.contains("silence"))                      // frame frozen + audio killed at selection
     }
 
+    /// libvlc instance arguments are fixed when the player is built, so the reload guard
+    /// has to compare them — but only for the engine that is actually built with them.
+    /// AVFoundation draws its own subtitles and the factory drops the arguments for it, so
+    /// a transcode reload must keep reusing the AVKit engine even across a restyle:
+    /// rebuilding would tear down the AVPlayer, and with it the held frame the reuse path
+    /// exists to preserve.
+    @Test("a transcode reload keeps its AVKit engine across a subtitle restyle",
+          arguments: [SubtitleFontDesign.sansSerif, .serif])
+    func transcodeReloadKeepsTheEngineAcrossARestyle(switchedTo design: SubtitleFontDesign) async throws {
+        let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
+
+        nonisolated(unsafe) var style = SubtitleStyle.standard.with { $0.fontDesign = .sansSerif }
+        nonisolated(unsafe) var createdEngines: [FakePlaybackEngine] = []
+        nonisolated(unsafe) var factoryOptions: [[String]?] = []
+        let vm = makePlayerVM(
+            reporting: StubPlaybackReporting(),
+            resolve: { _, _, _, _ in resolved },
+            engineFactory: { _, options in
+                factoryOptions.append(options)
+                let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+                createdEngines.append(engine)
+                return engine
+            },
+            subtitleStyle: { style }
+        )
+        await vm.start(item: PlayerFixtures.movieDetail())
+        let engineAfterStart = try #require(vm.engine as? FakePlaybackEngine)
+        #expect(createdEngines.count == 1)
+        // Nothing VLC-shaped is handed to an engine that cannot read it.
+        #expect(factoryOptions.first ?? nil == nil)
+
+        createdEngines[0].push(.playing(100))
+        try await createdEngines[0].settle()
+
+        style = SubtitleStyle.standard.with { $0.fontDesign = design }
+        let audio4 = try #require(vm.availableAudioTracks.first { $0.id == .jellyfinStream(4) })
+        await vm.selectAudioTrack(audio4)
+
+        #expect(createdEngines.count == 1)
+        #expect((vm.engine as? FakePlaybackEngine) === engineAfterStart)
+    }
+
     @Test("transcode: subtitle selection is isolated — an explicit sub survives an audio switch; none stays none")
     func transcodeSubtitleIsolation() async throws {
         let reporting = StubPlaybackReporting()
@@ -4033,21 +4075,18 @@ struct DirectPlaySubtitleOwnershipTests {
 
     /// The engine-facing font knobs follow the user's design. Both are libvlc MEDIA
     /// options, fixed for the life of the decoder — hence sampled once, at asset build.
-    @Test("the asset carries the user's subtitle design", arguments: [
-        (SubtitleFontDesign.sansSerif, "Noto Sans"),
-        (SubtitleFontDesign.serif, "Noto Serif"),
-    ])
-    func assetCarriesTheFontDesign(design: SubtitleFontDesign, family: String) async throws {
+    @Test("the asset carries the user's subtitle design", arguments: SubtitleFontDesign.allCases)
+    func assetCarriesTheFontDesign(design: SubtitleFontDesign) async throws {
         let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
         let resolved = PlayerFixtures.resolvedDirectPlaySubtitleMix(image: [2: "eng"])
         let vm = makePlayerVM(
             resolve: { _, _, _, _ in resolved }, engine: engine,
-            subtitleFontDesign: { design }
+            subtitleStyle: { .standard.with { $0.fontDesign = design } }
         )
         await vm.start(item: PlayerFixtures.movieDetail())
 
         let asset = try #require(engine.loadedAssets.first)
-        #expect(asset.subtitleFontFamily == family)
+        #expect(asset.subtitleFontFamily == VLCSubtitleFonts.freetypeFamily(for: design.bundleDesign))
         // Whatever directory it names, it is the one built for THIS design (or the
         // bundle fallback, which is design-agnostic) — never the other design's.
         let directory = try #require(asset.subtitleFontsDirectory)

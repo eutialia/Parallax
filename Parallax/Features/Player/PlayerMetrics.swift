@@ -58,6 +58,24 @@ struct PlayerMetrics: Equatable {
         #endif
     }
 
+    /// The surface to assume when the real one hasn't been measured yet — the player's
+    /// geometry lands long before an asset resolves, so this only covers a cold start
+    /// that raced it. Landscape everywhere: iPhone plays in no other orientation, and
+    /// the iPad figure is the 11" landscape window. iPad accuracy barely matters for
+    /// the one consumer (`SubtitleStyle.freetypeRelativeFontSize`) — both the cue size
+    /// and the video rect ride the window width, so the ratio is near-invariant across
+    /// iPad sizes (1194×834 and 1366×1024 both land on 34).
+    @MainActor
+    static var defaultSurface: CGSize {
+        #if os(tvOS)
+        CGSize(width: 1920, height: 1080)
+        #else
+        UIDevice.current.userInterfaceIdiom == .pad
+            ? CGSize(width: 1194, height: 834)
+            : CGSize(width: 852, height: 393)
+        #endif
+    }
+
     // Layout (big screens; phone resolves to the fixed `phone*` statics so ONE
     // metric-parameterized HUD builder serves both layouts — see `PlayerControlsView`).
     /// 80 at u=1.0 — the documented tvOS side safe-area inset; the full-width track

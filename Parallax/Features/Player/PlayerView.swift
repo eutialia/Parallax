@@ -51,9 +51,10 @@ struct PlayerView: View {
 
     @Environment(AppDependencies.self) private var deps
     @Environment(PlaybackPresenter.self) private var playback
-    /// Read at view-model construction for the ENGINE-facing font knobs only (VLC's
-    /// libass directory + freetype family). The client overlay takes the same
-    /// preferences live, through `SubtitleOverlayView`.
+    /// Read at view-model construction for the ENGINE-facing knobs only (VLC's libass
+    /// directory, freetype family, and the `--freetype-*` look an embedded SRT renders
+    /// with). The client overlay takes the same preferences live, through
+    /// `SubtitleOverlayView`.
     @Environment(SubtitlePreferences.self) private var subtitlePrefs
     #if !os(tvOS)
     /// The host's presentation state (travel + settled flag) the pull gesture
@@ -61,6 +62,11 @@ struct PlayerView: View {
     @Environment(PlayerPresentation.self) private var presentation
     #endif
     @State private var viewModel: PlayerViewModel?
+    /// The player's full-bleed size, measured off the black floor (the one child that
+    /// always lays out at the surface's true extent — the chrome is safe-area-bounded and
+    /// the video host mounts only once the view model exists). Read at asset construction
+    /// for the engine's subtitle sizing; `.zero` means geometry hasn't landed yet.
+    @State private var surfaceSize: CGSize = .zero
     /// Chrome visibility, owned here so the status bar can hide with the controls.
     /// On tvOS this mirrors `hudState == .fullHUD` (driven by `send`).
     @State private var chromeVisible = true
@@ -112,7 +118,9 @@ struct PlayerView: View {
 
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
+            Color.black
+                .ignoresSafeArea()
+                .onGeometryChange(for: CGSize.self) { $0.size } action: { surfaceSize = $0 }
 
             playbackSurface
         }
@@ -262,7 +270,8 @@ struct PlayerView: View {
                         captureFramePerformsIO: captureFramePerformsIO, captureFrame: captureFrame
                     )
                 },
-                subtitleFontDesign: { [subtitlePrefs] in subtitlePrefs.style.fontDesign }
+                subtitleStyle: subtitleStyleProvider,
+                playerSurface: playerSurfaceProvider
             )
             install(vm)
             #if DEBUG
@@ -301,7 +310,8 @@ struct PlayerView: View {
             // both collapse to nil (the VM's probe retries, then gives up) — the seek
             // strategy stays conservative on nil regardless.
             fetchDelivery: { (try? await info.transcodingDelivery(playSessionID: $0)) ?? nil },
-            subtitleFontDesign: { [subtitlePrefs] in subtitlePrefs.style.fontDesign }
+            subtitleStyle: subtitleStyleProvider,
+            playerSurface: playerSurfaceProvider
         )
         install(vm)
         switch source {
@@ -309,6 +319,19 @@ struct PlayerView: View {
         case .unresolved(let id, let fromBeginning): await vm.start(itemID: id, fromBeginning: fromBeginning)
         case .smb: break   // handled above
         }
+    }
+
+    /// The subtitle appearance the view model samples once, at asset construction. A
+    /// closure, not a value: `SubtitlePreferences` loads its persisted style
+    /// asynchronously, so a value read here could still be the pre-load default.
+    private var subtitleStyleProvider: @MainActor () -> SubtitleStyle {
+        { [subtitlePrefs] in subtitlePrefs.style }
+    }
+
+    /// The measured surface for the same sampling — nil until the floor's geometry has
+    /// landed, which normally beats the resolve it races.
+    private var playerSurfaceProvider: @MainActor () -> CGSize? {
+        { [size = $surfaceSize] in size.wrappedValue == .zero ? nil : size.wrappedValue }
     }
 
     /// Publish the session's view model AND hand the presenter its exit sequence, so the

@@ -57,6 +57,37 @@ extension SubtitleStyle {
         )
     }
 
+    /// THE one place the two subtitle paths' sizes are related: the divisor for VLC's
+    /// `--freetype-rel-fontsize`, which sizes an embedded SRT the engine draws itself so
+    /// it matches the cue the client renderer would have drawn for the same style.
+    ///
+    /// The freetype module stores `100/N` as a percentage of the video output height,
+    /// so `em = outputHeight / N` — relative on purpose: `freetype-fontsize` is absolute
+    /// pixels and VLC 3.0 renders the SPU at `max(source, placed)` resolution, so a 4K
+    /// source would halve an absolute size.
+    ///
+    /// `videoRectHeight` assumes a 16:9 picture aspect-fitted into the surface. The real
+    /// video dimensions are unknown at load (the library instance is built before the
+    /// demux reports them), and 16:9 bounds the error for the aspects that aren't.
+    func freetypeRelativeFontSize(surface: CGSize, metrics: PlayerMetrics) -> Int {
+        let em = metrics.subtitleFontSize * fontScale
+        guard em > 0 else { return Self.freetypeRelativeFontSizeFloor }
+        let videoRectHeight = min(surface.height, surface.width * 9 / 16)
+        return max(Self.freetypeRelativeFontSizeFloor, Int((videoRectHeight / em).rounded()))
+    }
+
+    /// The same divisor for a surface whose device class hasn't been resolved yet.
+    @MainActor
+    func freetypeRelativeFontSize(surface: CGSize) -> Int {
+        freetypeRelativeFontSize(surface: surface, metrics: .forSurface(surface))
+    }
+
+    /// Floor for the divisor: below ~4 the cue is a quarter of the picture tall, which is
+    /// a broken render rather than a large one — and 0 is freetype's "Auto", which is not
+    /// "unscaled" but its own baked-in 6.25 (an em of 1/16th of the output height), i.e.
+    /// exactly the oversize this whole path exists to fix.
+    static let freetypeRelativeFontSizeFloor = 4
+
     /// The user's overlay style expressed as the renderer's selective override,
     /// with the caller-computed font scale, the em the cue renders at as a
     /// fraction of the script canvas, and the tuned rest position as script-unit

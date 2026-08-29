@@ -74,7 +74,8 @@ func makePlayerVM(
     fetchDelivery: @escaping @Sendable (String) async -> TranscodeDelivery? = { _ in nil },
     deliveryProbeSchedule: [Duration] = [.seconds(2), .seconds(5)],
     reloadResolveDeadline: Duration = .seconds(15),
-    subtitleFontDesign: @escaping @MainActor () -> SubtitleFontDesign = { .sansSerif },
+    subtitleStyle: @escaping @MainActor () -> SubtitleStyle = { .standard },
+    playerSurface: @escaping @MainActor () -> CGSize? = { nil },
     seekHoldNow: @escaping @Sendable () -> ContinuousClock.Instant = { .now }
 ) -> PlayerViewModel {
     PlayerViewModel(
@@ -92,7 +93,8 @@ func makePlayerVM(
         fetchDelivery: fetchDelivery,
         deliveryProbeSchedule: deliveryProbeSchedule,
         reloadResolveDeadline: reloadResolveDeadline,
-        subtitleFontDesign: subtitleFontDesign,
+        subtitleStyle: subtitleStyle,
+        playerSurface: playerSurface,
         seekHoldNow: seekHoldNow
     )
 }
@@ -115,7 +117,8 @@ func makePlayerVM(
     fetchDelivery: @escaping @Sendable (String) async -> TranscodeDelivery? = { _ in nil },
     deliveryProbeSchedule: [Duration] = [.seconds(2), .seconds(5)],
     reloadResolveDeadline: Duration = .seconds(15),
-    subtitleFontDesign: @escaping @MainActor () -> SubtitleFontDesign = { .sansSerif },
+    subtitleStyle: @escaping @MainActor () -> SubtitleStyle = { .standard },
+    playerSurface: @escaping @MainActor () -> CGSize? = { nil },
     seekHoldNow: @escaping @Sendable () -> ContinuousClock.Instant = { .now }
 ) -> PlayerViewModel {
     makePlayerVM(
@@ -132,7 +135,8 @@ func makePlayerVM(
         fetchDelivery: fetchDelivery,
         deliveryProbeSchedule: deliveryProbeSchedule,
         reloadResolveDeadline: reloadResolveDeadline,
-        subtitleFontDesign: subtitleFontDesign,
+        subtitleStyle: subtitleStyle,
+        playerSurface: playerSurface,
         seekHoldNow: seekHoldNow
     )
 }

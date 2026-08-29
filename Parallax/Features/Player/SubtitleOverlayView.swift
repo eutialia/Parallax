@@ -17,9 +17,9 @@ import ParallaxSubtitles
 ///
 /// Authored ASS/SSA renders with its creator styling and positioning (9-cell
 /// alignment, `\pos` signs) — only its typefaces are swapped for bundled ones, at
-/// load; SRT/VTT is converted to ASS events and takes the user's `SubtitleStyle`. Embedded subs (rendered by the engine itself — AVKit legible /
-/// VLC's internal libass) leave `subtitleRenderer` nil, so this overlay draws nothing
-/// for them.
+/// load; SRT/VTT is converted to ASS events and takes the user's `SubtitleStyle`.
+/// Embedded subs (rendered by the engine itself — AVKit legible / VLC's internal
+/// libass) leave `subtitleRenderer` nil, so this overlay draws nothing for them.
 struct SubtitleOverlayView: View {
     let vm: PlayerViewModel
     /// User subtitle appearance. Pushed into the renderer via

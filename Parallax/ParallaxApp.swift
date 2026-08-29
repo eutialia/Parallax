@@ -50,7 +50,7 @@ struct ParallaxApp: App {
         AppDiagnostics.lifecycle.mark("launch")
 
         // Both subtitle renderers learn the bundled fonts ahead of the first pick: libvlc's
-        // Darwin text renderer resolves `:freetype-font=<family>` through CoreText, which
+        // Darwin text renderer resolves `--freetype-font=<family>` through CoreText, which
         // cannot see a font that only sits in the bundle, and our libass pays its one-time
         // `ass_add_font` bootstrap wherever it is first asked. Both are idempotent and off
         // the main thread; nothing awaits them — the first subtitle draw is a session away.

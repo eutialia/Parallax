@@ -47,7 +47,10 @@ extension PlayableAsset {
         startTime: CMTime? = nil,
         subtitleFontsDirectory: URL? = nil,
         subtitleFontFamily: String? = nil,
-        engineSubtitlesDisabled: Bool = false
+        subtitleTextStyle: EngineSubtitleTextStyle? = nil,
+        engineSubtitlesDisabled: Bool = false,
+        vlcOptions: [String]? = nil,
+        vlcLibraryOptions: [String]? = nil
     ) -> PlayableAsset {
         PlayableAsset(
             url: url,
@@ -56,7 +59,10 @@ extension PlayableAsset {
             startTime: startTime,
             subtitleFontsDirectory: subtitleFontsDirectory,
             subtitleFontFamily: subtitleFontFamily,
-            engineSubtitlesDisabled: engineSubtitlesDisabled
+            subtitleTextStyle: subtitleTextStyle,
+            engineSubtitlesDisabled: engineSubtitlesDisabled,
+            vlcOptions: vlcOptions,
+            vlcLibraryOptions: vlcLibraryOptions
         )
     }
 }
