@@ -181,6 +181,69 @@ struct VLCKitSubtitleControlTests {
         await engine.teardown()
     }
 
+    /// libvlc demuxes only SELECTED streams, so the cue on screen at the moment of the
+    /// pick was already read and dropped — nothing shows until the next dialogue line.
+    /// VLC's MKV demuxer indexes every subtitle block as a seekpoint and rewinds each
+    /// selected track to the greatest one ≤ the target, so a seek to where we already are
+    /// re-emits the live cue. It has to come AFTER the selection, or it re-reads packets
+    /// for a stream libvlc is still dropping.
+    @Test("selecting a track re-seeks to the current position, after the write")
+    func selectingATrackReseeksToTheLiveCue() async throws {
+        let spy = spyOfferingOneTrack()
+        let engine = VLCKitEngine(control: spy)
+        try await engine.load(.fixture())
+        await engine.play()
+        spy.advanceClock(toMs: 42_000)
+        try await requireEventually(
+            { CMTimeGetSeconds(engine.currentTime) == 42 }, "the poll never ticked"
+        )
+
+        await engine.setSubtitleTrack(
+            VLCKitEngine.buildSubtitleTrack(id: "3", name: "English", language: nil)
+        )
+
+        #expect(spy.orderedWrites == [.subtitleTrack(3), .seek(42_000)])
+        await engine.teardown()
+    }
+
+    /// Off selects nothing, so there is no dropped cue to recover — and a seek there would
+    /// be a re-buffer the user asked for by turning subtitles OFF.
+    @Test("turning subtitles off does not re-seek")
+    func turningSubtitlesOffDoesNotReseek() async throws {
+        let spy = spyOfferingOneTrack()
+        let engine = VLCKitEngine(control: spy)
+        try await engine.load(.fixture())
+        await engine.play()
+        spy.advanceClock(toMs: 42_000)
+        try await requireEventually(
+            { CMTimeGetSeconds(engine.currentTime) == 42 }, "the poll never ticked"
+        )
+
+        await engine.setSubtitleTrack(nil)
+
+        #expect(spy.orderedWrites == [.subtitleTrack(-1)])
+        await engine.teardown()
+    }
+
+    /// The resume seek has not reached the input yet, so there is no position worth
+    /// re-seeking to — and issuing one would cancel the resume (`seek(to:)` clears
+    /// `pendingStartMs` by design). `currentTime` is `.invalid` for exactly that window,
+    /// which is why it is the gate.
+    @Test("a selection inside the resume window leaves the pending resume seek alone")
+    func selectingATrackDuringResumeDoesNotReseek() async throws {
+        let spy = spyOfferingOneTrack()
+        spy.stubbedIsSeekable = false   // hold the resume seek in its readiness window
+        let engine = VLCKitEngine(control: spy)
+        try await engine.load(.fixture(startTime: CMTime(seconds: 90, preferredTimescale: 1_000)))
+
+        await engine.setSubtitleTrack(
+            VLCKitEngine.buildSubtitleTrack(id: "3", name: "English", language: nil)
+        )
+
+        #expect(spy.orderedWrites == [.subtitleTrack(3)])
+        await engine.teardown()
+    }
+
     /// `currentVideoSubTitleDelay` is scoped to the ACTIVE INPUT, and libvlc drops a write
     /// issued before that input is up. The engine re-asserts until it sticks — same
     /// command-drop family as the rate.
