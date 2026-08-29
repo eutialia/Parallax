@@ -48,18 +48,19 @@ final class VLCAudioDiagnosticsLogger: NSObject, VLCLogging, @unchecked Sendable
 
     func handleMessage(_ message: String, logLevel level: VLCLogLevel, context: VLCLogContext?) {
         let module = context?.module ?? ""
-        // Errors and warnings pass unfiltered — a decoder/aout open failure is
-        // the "no audio at all" case. Info/debug only when audio-related.
-        if level == .debug || level == .info {
+        let isAudioModule = Self.audioModules.contains { module.contains($0) }
+        // ERRORS pass unfiltered from any module — a decoder/aout open failure is the
+        // "no audio at all" case, and a hard failure anywhere is worth seeing. Warnings
+        // only do so from the audio modules: the text renderer warns ONCE PER CODEPOINT
+        // it cannot place, including control characters no font maps (a subtitle carrying
+        // CRLF asks for U+000D on every cue), which buries this tap's own signal.
+        if level != .error, !isAudioModule {
             // The lowercased copy is deferred behind the module check: libvlc invokes this
             // for EVERY log line on its own input/decode threads, and a per-message String
             // allocation there is exactly the overhead an audio-timing investigation must
             // not add to the pipeline it measures.
-            let isAudioModule = Self.audioModules.contains { module.contains($0) }
-            if !isAudioModule {
-                let lowered = message.lowercased()
-                guard Self.keywords.contains(where: { lowered.contains($0) }) else { return }
-            }
+            let lowered = message.lowercased()
+            guard Self.keywords.contains(where: { lowered.contains($0) }) else { return }
         }
         switch level {
         case .error:
