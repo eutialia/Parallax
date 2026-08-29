@@ -940,6 +940,34 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
               subtitleDescriptors().contains(where: { $0.id == vlcID }) else { return }
         subtitlesDisabled = false
         player.currentVideoSubTitleIndex = vlcID
+        await reshowCueAtCurrentPosition()
+    }
+
+    /// Re-emit the cue that is active RIGHT NOW after a track selection.
+    ///
+    /// libvlc demuxes only selected elementary streams, so the cue already on screen when
+    /// the user picks a track was read and dropped before the ES existed: nothing appears
+    /// until the next dialogue line (AVKit has no such gap). A seek is what puts it back.
+    /// VLC 3.0's MKV demuxer indexes EVERY subtitle block as its own seekpoint
+    /// (`matroska_segment.cpp`, the `SPU_ES` branch of `BlockGetHandler_l3`), and `Seek()`
+    /// rewinds each ES the es_out reports as SELECTED to its greatest seekpoint ≤ the
+    /// target (`i_skip_until_fpos`) — so a seek issued AFTER the write re-reads the active
+    /// cue's block. The SPU decoder then exempts it from the accurate-seek preroll drop
+    /// ("Preroll does not work very well with subtitle", `src/input/decoder.c`), which is
+    /// what makes it draw rather than get swallowed for being older than the seek target.
+    ///
+    /// Through the engine's own `seek(to:)`, not a bare `setTime`: that is what keeps the
+    /// position beat labelled, the settle hold armed, and — when the engine is paused —
+    /// the aout flush latch armed the way a user seek's is.
+    ///
+    /// **This costs a re-buffer**: an audible/visible hiccup on every subtitle switch, the
+    /// same one any seek makes on this path. `currentTime` is `.invalid` before the first
+    /// frame and for the whole resume-seek window (exactly where a re-seek would fight the
+    /// resume), so that gate is the precondition rather than an extra latch.
+    private func reshowCueAtCurrentPosition() async {
+        let time = currentTime
+        guard currentMedia != nil, time.isValid else { return }
+        await seek(to: time)
     }
 
     public func debugSnapshot() async -> PlaybackDebugInfo {

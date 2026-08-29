@@ -29,6 +29,17 @@ public final class SpyVLCPlayer: VLCPlayerControlling, @unchecked Sendable {
     public private(set) var seekWritesMs: [Int32?] = []
     public private(set) var audioTrackWrites: [Int32] = []
     public private(set) var subtitleTrackWrites: [Int32] = []
+
+    /// A seek or a subtitle selection, for the one assertion the per-command arrays above
+    /// cannot make: their INTERLEAVING. Selecting a subtitle ES has to be FOLLOWED by the
+    /// re-seek that re-emits the cue already on screen — issued the other way round it
+    /// re-reads packets for a stream libvlc is still dropping, and the defect is back.
+    public enum OrderedWrite: Equatable, Sendable {
+        case seek(Int32?)
+        case subtitleTrack(Int32)
+    }
+
+    public private(set) var orderedWrites: [OrderedWrite] = []
     /// Every `currentVideoSubTitleDelay` write, in microseconds.
     public private(set) var subtitleDelayWrites: [Int] = []
     public private(set) var rateWrites: [Float] = []
@@ -97,7 +108,9 @@ public final class SpyVLCPlayer: VLCPlayerControlling, @unchecked Sendable {
     public var time: VLCTime {
         get { stubbedTime }
         set {
-            seekWritesMs.append(newValue.value.map { Int32(clamping: $0.int64Value) })
+            let ms = newValue.value.map { Int32(clamping: $0.int64Value) }
+            seekWritesMs.append(ms)
+            orderedWrites.append(.seek(ms))
             if timeWritesMoveTheClock { stubbedTime = newValue }
         }
     }
@@ -161,7 +174,10 @@ public final class SpyVLCPlayer: VLCPlayerControlling, @unchecked Sendable {
     }
 
     public var currentVideoSubTitleIndex: Int32 = -1 {
-        didSet { subtitleTrackWrites.append(currentVideoSubTitleIndex) }
+        didSet {
+            subtitleTrackWrites.append(currentVideoSubTitleIndex)
+            orderedWrites.append(.subtitleTrack(currentVideoSubTitleIndex))
+        }
     }
 
     public var currentVideoSubTitleDelay: Int = 0 {
