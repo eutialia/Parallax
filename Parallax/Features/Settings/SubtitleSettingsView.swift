@@ -14,12 +14,7 @@ struct SubtitleSettingsView: View {
 
     var body: some View {
         SettingsScaffold(showsBrand: false) {
-            SubtitleControlsList(
-                style: prefs.style,
-                onChange: { prefs.update($0) },
-                overrideAuthored: prefs.overrideAuthoredStyles,
-                onOverrideAuthoredChange: { prefs.setOverrideAuthoredStyles($0) }
-            )
+            SubtitleControlsList(style: prefs.style, onChange: { prefs.update($0) })
         }
         .navigationTitle("Subtitles")
         #if !os(tvOS)
@@ -47,18 +42,15 @@ struct SubtitleSettingsView: View {
     }
 }
 
-/// The subtitle selection lists — the Styled Subtitles scope toggle, then Size, Color,
-/// Font, Background, Position, each captioned for the chosen scope — plus the closing
-/// footnote. A pure view (`SubtitleStyle` in, `onChange` out) so it renders in a
+/// The subtitle selection lists — Size, Color, Font, Background, Position, each
+/// captioned with what it does — plus the closing footnote, which says who the
+/// lists reach. A pure view (`SubtitleStyle` in, `onChange` out) so it renders in a
 /// `#Preview` with plain `@State`. Each control is the grouped-row idiom
 /// (`Button + SettingsRowLabel(accessory: .checkmark)`), the one tappable-selection
 /// pattern that's tvOS-focus-safe here (no native Form/Picker).
 struct SubtitleControlsList: View {
     let style: SubtitleStyle
     let onChange: (SubtitleStyle) -> Void
-    /// Whether the user's style also replaces AUTHORED ASS/SSA styling.
-    let overrideAuthored: Bool
-    let onOverrideAuthoredChange: (Bool) -> Void
 
     var body: some View {
         #if os(tvOS)
@@ -67,38 +59,13 @@ struct SubtitleControlsList: View {
         let spacing = Space.s22
         #endif
         VStack(spacing: spacing) {
-            // Scope first: the toggle decides WHO the style below applies to,
-            // so it reads before the style itself — and every section's caption
-            // restates its own effect for the chosen scope.
-            authoredSection
-            section(sizeGroup, scoped(
-                off: "Plain subtitles render at this size in every video and orientation.",
-                on: "Plain subtitles render at this size. Styled tracks scale their authored sizes by it."
-            ))
-            section(colorGroup, scoped(
-                off: "The fill color for plain subtitles.",
-                on: "The fill color for plain and styled subtitles."
-            ))
-            section(fontGroup, scoped(
-                off: "The typeface for plain subtitles.",
-                on: "The typeface for plain and styled subtitles."
-            ))
-            section(backgroundGroup, scoped(
-                off: "The outline or box that keeps plain subtitles readable.",
-                on: "The outline or box that keeps plain and styled subtitles readable. It replaces authored borders."
-            ))
-            section(positionGroup, scoped(
-                off: "Raises plain subtitles from the bottom of the screen.",
-                on: "Plain subtitles only. Styled tracks keep their authored placement."
-            ))
+            section(sizeGroup, "Plain subtitles render at this size in every video and orientation.")
+            section(colorGroup, "The fill color for plain subtitles.")
+            section(fontGroup, "The typeface for plain subtitles.")
+            section(backgroundGroup, "The outline or box that keeps plain subtitles readable.")
+            section(positionGroup, "Raises plain subtitles from the bottom of the screen.")
             footnote
         }
-        .animation(.default, value: overrideAuthored)
-    }
-
-    /// The caption matching the toggle's current scope.
-    private func scoped(off: String, on: String) -> String {
-        overrideAuthored ? on : off
     }
 
     private func section(_ group: some View, _ captionText: String) -> some View {
@@ -154,9 +121,6 @@ struct SubtitleControlsList: View {
         }
     }
 
-    /// Position is the one control that never reaches styled tracks — their
-    /// placement is authored (the full 9-cell spec, margins, signs), and the
-    /// override maps style, not placement. Its scoped caption says so.
     private var positionGroup: some View {
         SettingsGroup(title: "Position") {
             ForEach(Self.positionOptions, id: \.ratio) { option in
@@ -169,28 +133,11 @@ struct SubtitleControlsList: View {
         }
     }
 
-    /// Styled (ASS) tracks carry their creators' colors, fonts and placement. Default
-    /// is to show that as authored; the user can opt into their own style instead.
-    private var authoredSection: some View {
-        VStack(spacing: Space.s8) {
-            SettingsGroup(title: "Styled Subtitles") {
-                SettingsListRow(
-                    title: "Keep Creator Styling",
-                    accessory: overrideAuthored ? .none : .checkmark,
-                    action: { onOverrideAuthoredChange(false) }
-                )
-                SettingsListRow(
-                    title: "Use My Style",
-                    accessory: overrideAuthored ? .checkmark : .none,
-                    action: { onOverrideAuthoredChange(true) }
-                )
-            }
-            caption("Styled tracks, like anime fan subs, carry their creators' colors, fonts, and placement.")
-        }
-    }
-
+    /// The one place the scope is stated, now that nothing above it varies: these
+    /// lists reach plain subtitles only, and a subtitle that arrived with its own
+    /// look keeps it.
     private var footnote: some View {
-        caption("These settings style the text subtitles Parallax renders itself. Image subtitles — including burned-in ones — and subtitles built into a file on a network share keep their original look.")
+        caption("These settings style the plain subtitles Parallax renders itself. Subtitles that arrive with their own styling keep it — the colors, sizes and placement stay the creator's, and only the typeface changes, to one that ships with Parallax. Image subtitles, including burned-in ones, and subtitles built into a file on a network share keep their original look.")
             .padding(.top, Space.s8)
     }
 

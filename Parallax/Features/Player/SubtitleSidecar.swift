@@ -4,9 +4,8 @@ import ParallaxPlayback
 import ParallaxSubtitles
 
 /// What the sidecar renderer was loaded with. The debug panel shows it, and the
-/// style policy keys off `format`: SRT/VTT carry no authored look, so the user's
-/// style always applies; ASS/SSA keeps its creator styling unless the user opted
-/// into overriding it.
+/// style push keys off `format`: SRT/VTT carry no authored look, so the user's
+/// style always applies; ASS/SSA keeps its creator's, always.
 struct SidecarSubtitleInfo: Equatable {
     let format: SubtitleSourceFormat
     let byteCount: Int
@@ -58,56 +57,24 @@ extension SubtitleStyle {
         )
     }
 
-    /// The authored-track override for "Use My Style" — the creator's script with
-    /// the user's font, size, colour and border swapped in (never their placement;
-    /// see `SubtitleStylePolicy.authoredOptIn`).
+    /// The user's overlay style expressed as the renderer's selective override,
+    /// with the caller-computed font scale, the em the cue renders at as a
+    /// fraction of the script canvas, and the tuned rest position as script-unit
+    /// margins. Border and shadow ride along as fractions of that em; the
+    /// renderer turns them into script units.
     ///
-    /// Two things this fixes over pushing raw constants:
-    /// - **Border geometry tracks Size.** Outline and shadow are derived from the
-    ///   em the cue renders at, so the ring stays the same proportion of the glyph
-    ///   at 50% as at 200%. libass does not scale them with the font scale.
-    /// - **Size gets the em-box compensation** converted cues get: libass sizes
-    ///   VSFilter-style by dividing the style size by the font's declared win box,
-    ///   so without the factor "150%" renders ~31% smaller than it reads.
-    ///
-    /// Nothing here is in script units: border and shadow are fractions of the
-    /// em, and the em itself is a fraction of the canvas — `SubtitleRenderer`
-    /// turns them into the units libass wants. Measured on the render path, a
-    /// script-unit border draws the same pixels whatever the fansub's PlayRes,
-    /// so the app must NOT "correct" for the script's resolution; doing that
-    /// made 1080p scripts' rings 1.5x heavier.
-    func authoredRendererOverride() -> SubtitleStyleOverride {
-        let family = fontDesign.resolvedRendererFamily
-        return rendererOverride(
-            fontScale: fontScale * SubtitleFontMetrics.emBoxFactor(forFamily: family),
-            fontFamily: family,
-            emHeightRatio: SubtitleRenderer.convertedScriptFontFraction * fontScale,
-            shadowAlpha: shadowOpacity
-        )
-    }
-
-    /// The user's overlay style expressed as the renderer's selective override, with
-    /// the caller-computed font scale (converted tracks remap the per-device tuned
-    /// size; authored tracks scale the creator's own sizes), the em the cue renders
-    /// at as a fraction of the script canvas, and — converted tracks only — the
-    /// tuned rest position as script-unit margins. Border and shadow always ride
-    /// along as fractions of that em; the renderer turns them into script units
-    /// against whichever canvas the loaded script declares.
-    ///
-    /// `fontFamily` nil means the design bucket's own mapping, where the sans
-    /// bucket has no libass name override. Authored tracks must pass the
-    /// resolved family instead: without it the override's font-name flag stays
-    /// unset and the creator's typeface silently survives "Use My Style".
+    /// The family stays the design bucket's own mapping, where the sans bucket
+    /// has no libass name override — the synthesized script already names that
+    /// family in its style.
     func rendererOverride(
         fontScale: Double,
-        fontFamily: String? = nil,
         emHeightRatio: Double? = nil,
         shadowAlpha: Double? = nil,
         marginVertical: Double? = nil,
         marginHorizontal: Double? = nil
     ) -> SubtitleStyleOverride {
         SubtitleStyleOverride(
-            fontFamily: fontFamily ?? fontDesign.rendererFamily,
+            fontFamily: fontDesign.rendererFamily,
             fontScale: fontScale,
             primaryColor: SubtitleColor(
                 red: foreground.red, green: foreground.green,
@@ -142,8 +109,7 @@ extension SubtitleFontDesign {
     }
 
     /// The same mapping with the sans bucket resolved — for callers that need a
-    /// real family name (the CJK font plan, and authored tracks under "Use My
-    /// Style", where a nil would leave the creator's typeface in place).
+    /// real family name, which is what the CJK font plan is built around.
     var resolvedRendererFamily: String {
         rendererFamily ?? SubtitleFontBundle.sansFamily
     }

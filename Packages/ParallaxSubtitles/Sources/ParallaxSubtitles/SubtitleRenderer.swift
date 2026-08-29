@@ -19,10 +19,6 @@ public actor SubtitleRenderer {
     private var canvasPixelSize: CGSize = .zero
     private var storagePixelSize: CGSize?
     private var styleOverride: SubtitleStyleOverride?
-    /// The loaded AUTHORED track's own em in script units — the `Fontsize` of
-    /// the style most of its dialogue uses. Nil for converted tracks, whose em
-    /// is the synthesized style's.
-    private var authoredEmScriptUnits: Double?
     /// libass reports "nothing changed" from the second render onwards, so the
     /// first frame after any reconfiguration has to be emitted unconditionally.
     private var hasEmittedFrame = false
@@ -122,13 +118,7 @@ public actor SubtitleRenderer {
 
         registerFonts(for: bytes, format: format, engine: engine)
         try engine.loadTrack(bytes: &bytes)
-        // An authored script's own Fontsize is the em its border is a fraction
-        // of; a converted one's is the synthesized style's, known already.
-        authoredEmScriptUnits = format.needsConversion ? nil : engine.dominantStyleFontSize
         hasEmittedFrame = false
-        // Border and shadow are script-unit lengths resolved against THIS
-        // track's canvas, which only exists now.
-        applyStyleOverride(to: engine)
     }
 
     /// Registers the bundled files this script's families live in, and re-runs
@@ -212,8 +202,12 @@ public actor SubtitleRenderer {
 
     // MARK: - Style override
 
-    /// - Parameter override: nil leaves the script's own styling untouched, which
-    ///   is the default and the right choice for authored ASS.
+    /// - Parameter override: nil leaves the script's own styling untouched. That
+    ///   is the only correct answer for an AUTHORED script: its colours, sizes,
+    ///   borders and placement are someone else's typesetting, and the one thing
+    ///   we change about it — the typeface, whose files we do not have — is
+    ///   already done at load by `AuthoredFontSubstitution`. An override belongs
+    ///   to converted SRT/WebVTT, whose script we synthesized ourselves.
     public func setStyleOverride(_ override: SubtitleStyleOverride?) {
         styleOverride = override
         hasEmittedFrame = false
@@ -294,48 +288,17 @@ public actor SubtitleRenderer {
     /// Resolves the override's em-relative border geometry into the script units
     /// libass wants.
     ///
-    /// The em is the size the text really renders at, in the track's OWN script
-    /// units — and that is not the same number for the two kinds of track:
-    ///
-    /// - a converted script is ours, authored at `ASSScriptBuilder.fontSize` on
-    ///   a 720-line canvas, so the caller's canvas fraction resolves against it;
-    /// - an authored script's em is its own `Fontsize`. Resolving a ratio
-    ///   against the synthesized 48/720 instead gave a `Fontsize: 20` fansub a
-    ///   ring 2.4x heavier than its glyphs, and a `Fontsize: 72` one a ring a
-    ///   third of what it asked for.
-    ///
-    /// The caller expresses SIZE as a fraction of the synthesized canvas either
-    /// way, so what is taken from `emHeightRatio` for an authored track is the
-    /// user's scale — the ratio over the synthesized default — and the authored
-    /// `Fontsize` supplies the base.
+    /// The em is the size the text really renders at, in the script's own units.
+    /// Only CONVERTED scripts are ever overridden and those are ours, authored
+    /// at `ASSScriptBuilder.fontSize` on a 720-line canvas — so the caller's
+    /// canvas fraction resolves straight against that canvas.
     private func borderGeometry(_ override: SubtitleStyleOverride) -> (outline: Double, shadow: Double) {
-        let requested = override.emHeightRatio ?? Self.convertedScriptFontFraction
-        let em: Double
-        if let authored = authoredEmScriptUnits, authored > 0 {
-            em = authored * borderUnitScale * (requested / Self.convertedScriptFontFraction)
-        } else {
-            em = requested * Double(ASSScriptBuilder.playResY)
-        }
+        let em = (override.emHeightRatio ?? Self.convertedScriptFontFraction)
+            * Double(ASSScriptBuilder.playResY)
         return (
             outline: override.outlineEmRatio.map { $0 * em } ?? ASSScriptBuilder.outlineWidth,
             shadow: override.shadowEmRatio.map { $0 * em } ?? ASSScriptBuilder.shadowOffset
         )
-    }
-
-    /// Border lengths are NOT in the same units as glyph sizes.
-    ///
-    /// A glyph scales by frame/PlayRes; a border scales by frame/storage when a
-    /// storage size is set (libass' `blur_scale`, `init_font_scale` in
-    /// ass_render.c) and by frame/PlayRes when it is not. So an em expressed in
-    /// script units has to be multiplied by storage/PlayRes to become a border
-    /// unit. Measured on this path, not inferred: a 1080-line script at
-    /// `Fontsize: 72` draws exactly the ring a 720-line script at `Fontsize: 48`
-    /// draws, at two thirds the ratio.
-    private var borderUnitScale: Double {
-        guard let storage = storagePixelSize?.height, storage > 0,
-              let playRes = engine?.trackPlayRes?.height, playRes > 0
-        else { return 1 }
-        return storage / playRes
     }
 
     // MARK: - Rendering

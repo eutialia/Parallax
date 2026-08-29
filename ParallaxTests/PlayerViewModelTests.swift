@@ -2146,113 +2146,79 @@ struct PlayerViewModelTests {
         #expect(vm.subtitleRenderer != nil)
     }
 
-    // MARK: - Style policy (who owns the look)
+    // MARK: - Style scope (who owns the look)
 
-    /// A fully-populated authored appearance, so a filtered result shows up as a
-    /// nil'd group rather than an absence that was never there.
-    private static func authoredAppearance() -> SubtitleStyleOverride {
-        SubtitleStyle.standard.rendererOverride(
-            fontScale: 1.5,
-            fontFamily: SubtitleFontBundle.serifFamily,
-            emHeightRatio: SubtitleRenderer.convertedScriptFontFraction * 1.5,
-            shadowAlpha: 0.55,
-            marginVertical: 36,
-            marginHorizontal: 40
-        )
-    }
-
-    private static func convertedAppearance() -> SubtitleStyleOverride {
-        SubtitleStyle.standard.convertedRendererOverride(
+    private static func convertedAppearance(_ style: SubtitleStyle) -> SubtitleStyleOverride {
+        style.convertedRendererOverride(
             surface: CGSize(width: 852, height: 393),
             canvas: CGRect(x: 0, y: 0, width: 852, height: 393)
         )
     }
 
-    @Test("style policy: converted formats always take the user style, authored ones never do by default")
-    func styleOverrideFollowsTheFormatPolicy() async throws {
+    /// The whole rule, with no user switch left to consult: an SRT/VTT script is
+    /// one WE synthesized, so the user's settings own every field of it; an ASS/SSA
+    /// script is its creator's typesetting and is handed nothing, whatever the user
+    /// picked. Its typefaces are still substituted, but that happens at load inside
+    /// the renderer — never through an override.
+    @Test("the user's style reaches converted tracks only, whatever they picked",
+          arguments: [
+            SubtitleStyle.standard,
+            SubtitleStyle.standard.with {
+                $0.fontScale = 2
+                $0.fontDesign = .serif
+                $0.background = .opaqueBox
+                $0.foreground = .init(red: 1, green: 0.93, blue: 0.30)
+                $0.verticalOffsetRatio = 0.18
+            },
+          ])
+    func styleReachesConvertedTracksOnly(style: SubtitleStyle) async throws {
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         let vm = makePlayerVM(engine: engine, resolved: PlayerFixtures.resolved())
-        let converted = Self.convertedAppearance()
-        let authored = Self.authoredAppearance()
+        let converted = Self.convertedAppearance(style)
 
-        vm.applySubtitleAppearance(converted: converted, authored: authored, overrideAuthored: false)
+        vm.applySubtitleAppearance(converted: converted)
+
         #expect(vm.debugEffectiveStyleOverride(for: .srt) == converted)
         #expect(vm.debugEffectiveStyleOverride(for: .vtt) == converted)
         #expect(vm.debugEffectiveStyleOverride(for: .ass) == nil)
         #expect(vm.debugEffectiveStyleOverride(for: .ssa) == nil)
     }
 
-    @Test("style policy: 'Use My Style' hands authored tracks font/size/colour/border but never placement")
-    func authoredOptInIsFilteredToFourGroups() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let vm = makePlayerVM(engine: engine, resolved: PlayerFixtures.resolved())
-        let converted = Self.convertedAppearance()
-        let authored = Self.authoredAppearance()
-
-        vm.applySubtitleAppearance(converted: converted, authored: authored, overrideAuthored: true)
-
-        let assOverride = try #require(vm.debugEffectiveStyleOverride(for: .ass))
-        #expect(assOverride.fontFamily == SubtitleFontBundle.serifFamily)
-        #expect(assOverride.fontScale == 1.5)
-        #expect(assOverride.primaryColor != nil)
-        #expect(assOverride.outlineEmRatio != nil)
-        // Placement stays the creator's: a fansub's positioned signs are typeset
-        // against the picture, and libass has ONE flag for all three margins.
-        #expect(assOverride.marginVertical == nil)
-        #expect(assOverride.marginHorizontal == nil)
-        // The toggle governs authored tracks only — converted ones are unmoved.
-        #expect(vm.debugEffectiveStyleOverride(for: .srt) == converted)
-    }
-
-    /// P3, corrected: `Outline`/`Shadow` are script-unit lengths, and a script
-    /// unit draws the SAME pixels whatever the script's PlayRes — measured on the
-    /// render path in `ParallaxSubtitles`' "Style override borders" suite. The
-    /// rescale that used to live in `authoredOverride` therefore made a 1080p
-    /// fansub's ring 1.5x heavier rather than equal; the override now travels as
-    /// em-relative ratios and must reach the renderer untouched.
-    @Test("style policy: the authored border is NOT rescaled by the script's PlayRes",
-          arguments: [720.0, 1080.0, 2160.0])
-    func authoredBorderIgnoresScriptResolution(playResY: Double) async throws {
+    /// The same rule end to end, on a real fansub-shaped script: it fetches, it
+    /// loads, the overlay pushes the user's style at it, and the renderer is still
+    /// given nothing for it.
+    @Test("an authored sidecar loads and is never given a style override")
+    func authoredSidecarTakesNoOverride() async throws {
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         let assURL = URL(string: "https://jf.example.com/Videos/movie-1/ms-1/Subtitles/1/Stream.ass?api_key=abc")!
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode(
             defaultSubtitleStreamIndex: nil, chineseSidecarURL: assURL
         )
-        let script = Data(Self.assScript(playResY: Int(playResY)).utf8)
+        let script = Data(Self.assScript.utf8)
         let vm = makePlayerVM(
             resolve: { _, _, _, _ in resolved },
             engine: engine,
             subtitleFetch: { _ in script }
         )
         await vm.start(item: PlayerFixtures.movieDetail())
-        let authored = Self.authoredAppearance()
-        vm.applySubtitleAppearance(
-            converted: Self.convertedAppearance(), authored: authored, overrideAuthored: true
-        )
+        vm.applySubtitleAppearance(converted: Self.convertedAppearance(.standard))
 
         let track = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(1) })
         await vm.selectSubtitleTrack(track)
         await vm.debugAwaitSubtitleFetch()
 
         #expect(vm.sidecarSubtitleInfo?.format == .ass)
-        // The renderer really did see this script's canvas…
-        #expect(await vm.debugTrackPlayRes?.height == CGFloat(playResY))
-        // …and the override crossed unchanged, at every resolution.
-        let override = try #require(vm.debugEffectiveStyleOverride(for: .ass))
-        #expect(override.outlineEmRatio == authored.outlineEmRatio)
-        #expect(override.shadowEmRatio == authored.shadowEmRatio)
-        #expect(override.emHeightRatio == authored.emHeightRatio)
-        #expect(override.fontScale == 1.5)
+        #expect(vm.subtitleRenderer != nil)
+        #expect(vm.debugEffectiveStyleOverride(for: .ass) == nil)
     }
 
     /// A minimal authored script: one dialogue line, a declared PlayRes, CRLF endings
     /// (what real fansubs ship, and what the header scan has to survive).
-    private static func assScript(playResY: Int) -> String {
-        """
+    private static let assScript = """
         [Script Info]\r
         ScriptType: v4.00+\r
-        PlayResX: \(playResY * 16 / 9)\r
-        PlayResY: \(playResY)\r
+        PlayResX: 1920\r
+        PlayResY: 1080\r
         \r
         [V4+ Styles]\r
         Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\r
@@ -2262,7 +2228,6 @@ struct PlayerViewModelTests {
         Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\r
         Dialogue: 0,0:00:01.00,0:00:05.00,Default,,0,0,0,,Authored line\r
         """
-    }
 
     // MARK: - Embedded text subtitles render client-side on direct play
 

@@ -525,13 +525,10 @@ final class PlayerViewModel {
     /// the new selection, and nothing would ever fetch the picked one.
     private var sidecarFetchStreamIndex: Int?
     /// Last appearance pushed by the overlay (`applySubtitleAppearance`) — replayed
-    /// onto every freshly loaded renderer so a track switch keeps the user's style.
-    /// Two variants because the fontScale means different things per format: converted
-    /// SRT/VTT remaps the tuned per-device size onto the synthesized script's base,
-    /// while authored ASS scales relative to the creator's own sizes.
+    /// onto every freshly loaded CONVERTED renderer so a track switch keeps the
+    /// user's style. Its fontScale remaps the tuned per-device size onto the
+    /// synthesized script's base, which only means anything for a script we wrote.
     private var convertedSubtitleAppearance: SubtitleStyleOverride?
-    private var authoredSubtitleAppearance: SubtitleStyleOverride?
-    private var overrideAuthoredStyles = false
     /// The current sidecar's raw payload, kept so a font-design change can
     /// REBUILD the renderer: the CJK `\fn` tags and font plan are baked at load
     /// against the style family, so a new family needs a fresh load, not a
@@ -2272,18 +2269,13 @@ final class PlayerViewModel {
         subtitleRendererGeneration &+= 1
     }
 
-    /// The user's subtitle style + the authored-override toggle, pushed by the overlay
-    /// whenever preferences or the render geometry change. Applied per format policy:
-    /// converted SRT/VTT (no authored look of their own) always take the user style;
-    /// ASS/SSA keeps its creator styling unless the user opted into overriding it.
-    func applySubtitleAppearance(
-        converted: SubtitleStyleOverride?,
-        authored: SubtitleStyleOverride?,
-        overrideAuthored: Bool
-    ) {
+    /// The user's subtitle style, pushed by the overlay whenever preferences or the
+    /// render geometry change. It reaches converted SRT/VTT only: those scripts are
+    /// ours, synthesized field by field. An authored ASS/SSA track is someone else's
+    /// typesetting and keeps all of it — the one thing we change, its typefaces
+    /// (whose files we don't have), is already done at load inside the renderer.
+    func applySubtitleAppearance(converted: SubtitleStyleOverride?) {
         convertedSubtitleAppearance = converted
-        authoredSubtitleAppearance = authored
-        overrideAuthoredStyles = overrideAuthored
         guard let renderer = subtitleRenderer, let info = sidecarSubtitleInfo else { return }
         // A font-FAMILY change can't be pushed onto a loaded track: the CJK
         // font plan and \fn tags were baked at load against the previous
@@ -2311,22 +2303,7 @@ final class PlayerViewModel {
     }
 
     private func effectiveStyleOverride(for format: SubtitleSourceFormat) -> SubtitleStyleOverride? {
-        switch format.policy(userOverridesAuthored: overrideAuthoredStyles) {
-        case .userStyle: convertedSubtitleAppearance
-        case .authored(let fields): authoredOverride(fields: fields)
-        }
-    }
-
-    /// The authored-track override for the fields the policy yields.
-    ///
-    /// Nothing is rescaled here any more: border and shadow travel as fractions
-    /// of the rendered em and `SubtitleRenderer` resolves them. The PlayResY
-    /// correction that used to live here was measured to be backwards — a
-    /// script-unit border is resolution independent in libass, so scaling it up
-    /// for a 1080p script made that fansub's ring 1.5x too heavy.
-    private func authoredOverride(fields: Set<SubtitleStylePolicy.Field>) -> SubtitleStyleOverride? {
-        guard !fields.isEmpty, let appearance = authoredSubtitleAppearance else { return nil }
-        return appearance.filtered(to: fields)
+        format.needsConversion ? convertedSubtitleAppearance : nil
     }
 
     /// Native video dimensions for the renderer's storage size — what authored `\pos`
@@ -3565,18 +3542,11 @@ extension PlayerViewModel {
     /// from the item and cleared on `stop()`.
     var debugSubtitleURLs: [Int: URL] { subtitleURLs }
 
-    /// The style policy's verdict for one source format, given the appearances the
-    /// overlay last pushed. Test-only window onto `effectiveStyleOverride` — the
-    /// (A)(B) contract lives entirely in that function and nothing else observes it.
+    /// What one source format is actually handed, given the appearance the overlay
+    /// last pushed. Test-only window onto `effectiveStyleOverride` — the whole
+    /// converted-vs-authored rule lives in that function and nothing else observes it.
     func debugEffectiveStyleOverride(for format: SubtitleSourceFormat) -> SubtitleStyleOverride? {
         effectiveStyleOverride(for: format)
-    }
-
-    /// The loaded script's effective canvas, straight off the renderer's track —
-    /// so a test can prove border geometry was resolved against the creator's own
-    /// PlayRes rather than the synthesized one.
-    var debugTrackPlayRes: CGSize? {
-        get async { await subtitleRenderer?.trackPlayRes }
     }
 
     /// The active engine's id, for the HUD's engine label.

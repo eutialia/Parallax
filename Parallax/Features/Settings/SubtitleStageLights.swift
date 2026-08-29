@@ -97,10 +97,7 @@ struct SubtitleStageLights: View {
 #Preview("Subtitle stage lights — over menu", traits: .fixedLayout(width: 393, height: 852)) {
     ZStack {
         BackgroundField.style
-        SubtitleControlsList(
-            style: .standard, onChange: { _ in },
-            overrideAuthored: false, onOverrideAuthoredChange: { _ in }
-        )
+        SubtitleControlsList(style: .standard, onChange: { _ in })
             .frame(maxWidth: 540)
             .frame(maxHeight: .infinity, alignment: .top)
             .padding(.top, 60)
