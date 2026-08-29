@@ -37,22 +37,52 @@ import ParallaxSubtitles
 /// whatever the system provider offers — the device-dependent fallback the bundled faces
 /// exist to eliminate.
 ///
-/// ## The minimal correct thing
+/// ## The default family has to be a PAN-CJK face
 ///
-/// Since the family string is the only lever, we make it resolve to Noto: a copy of
-/// `NotoSans-Regular.ttf` / `NotoSerif-Regular.ttf` with its `name` table rewritten so it
-/// reports family "Helvetica Neue", dropped into a cache directory alongside links to the
-/// rest of the bundle. `:ssa-fontsdir` points there, libass finds the renamed face in its
-/// own database before it ever consults CoreText, and an unknown author font renders in
-/// the design the user picked.
+/// Fansub scripts name author fonts nothing bundles — that is the normal case, not the
+/// edge one — so the face answering to "Helvetica Neue" is what most of a Chinese or
+/// Japanese track actually renders from. A Latin face there covers none of it: every CJK
+/// glyph falls through to libass' per-glyph SYSTEM fallback, which on iOS resolves kana,
+/// hangul, Thai and Arabic but NOT Han. That is the tofu.
+///
+/// So the renamed face is the design's pan-CJK collection instead: Han, kana, hangul,
+/// Latin, Greek and Cyrillic all come out of one bundled file, and the system fallback is
+/// never consulted.
+///
+/// ## What is in a design directory
+///
+/// A symlink to every bundled face, except the design's own CJK collection, which is a
+/// **copy** with exactly one face renamed. The collections are OTCs
+/// (`NotoSansCJK-Regular.ttc` carries ten faces, `NotoSerifCJK-Regular.ttc` five), each
+/// face with its own `name` table over shared glyph data — so renaming one face leaves the
+/// others untouched, and the rewrite is a table append plus a 16-byte directory patch
+/// rather than a 20 MB reassembly.
+///
+/// Which face: the region from `Locale.preferredLanguages` (`fallbackLanguage`). 直 and 令
+/// are drawn differently per region and both faces cover both, so this is a choice, not a
+/// coverage question — the device's own language order is the best guess available before
+/// a single cue is parsed. It is part of the cache path, so changing the language list
+/// yields a fresh directory and `pruneStaleRoots` drops the old one.
+///
+/// **Cost.** ~20 MB (sans) / ~26 MB (serif) of Caches per design directory, each replacing
+/// a symlink. Memory-neutral for VLC by construction: libass reads every file in the
+/// directory into the library either way, and this is the same file it would have read.
+///
+/// **Trade.** "Noto Sans CJK SC" (or whichever region wins) no longer exists under its own
+/// name in that directory — an explicit `\fnNoto Sans CJK SC` in a VLC-rendered script now
+/// resolves through the default family, which is the same face. Nothing else changes.
 ///
 /// **Licensing.** The Noto faces are under the SIL Open Font License 1.1, which permits
 /// modified copies provided they are not distributed under the Reserved Font Name. "Noto"
-/// is that name, so the rewritten face carries neither it nor any other Noto string: its
-/// family is "Helvetica Neue" (the string VLC asks for) and its PostScript name is
-/// `ParallaxSubtitleFallback-Regular`. The copy is generated **on the device, at runtime,
-/// into the app's own cache** — it is never shipped, never distributed, and dies with the
-/// app's data.
+/// is that name, so the rewritten face's name RECORDS carry neither it nor any other Noto
+/// string: family "Helvetica Neue" (the string VLC asks for), PostScript name
+/// `ParallaxSubtitleFallback-Regular`. The CFF table's own internal font name is left
+/// alone — it is not a name libass or FreeType matches faces on, and reaching it would
+/// mean rebuilding the one table this design exists to avoid touching. Every other face in
+/// the copy keeps its original
+/// names — they are unmodified bytes of a file that already ships under the same licence.
+/// The copy is generated **on the device, at runtime, into the app's own cache** — it is
+/// never shipped, never distributed, and dies with the app's data.
 ///
 /// ## Design is fixed at load
 ///
@@ -72,12 +102,9 @@ enum VLCSubtitleFonts {
     /// Name — see the licensing note above.
     static let fallbackPostScriptName = "ParallaxSubtitleFallback-Regular"
 
-    /// File name of the rewritten face inside each design directory.
-    static let fallbackFileName = "ParallaxSubtitleFallback-Regular.ttf"
-
     /// Bump when the directory layout or the rewrite changes — it is part of the cache
     /// path, so a bump makes the old build's directories unreachable and prunable.
-    private static let layoutVersion = "v1"
+    private static let layoutVersion = "v2"
 
     /// The directory to hand VLC for `design`. Falls back to the bundle's own font
     /// directory if the cache could not be built: the author-font fallback is then wrong
@@ -92,48 +119,72 @@ enum VLCSubtitleFonts {
     /// initialization *is* the deduplication (the same discipline as
     /// `SubtitleFontRegistration.registerIfNeeded()`).
     ///
-    /// Call this off the main thread at launch: the first touch copies ~700 KB, rewrites a
-    /// name table and creates a few dozen symlinks.
+    /// Call this off the main thread at launch: the first touch copies both pan-CJK
+    /// collections (~46 MB together), rewrites one `name` table in each, and creates a few
+    /// dozen symlinks.
     static func prepareIfNeeded() {
         _ = prepared
     }
 
     private static let prepared: [SubtitleFontBundle.Design: URL] = build()
 
+    // MARK: - Region
+
+    /// The regional CJK face that answers to `libassDefaultFamily`.
+    ///
+    /// First hit in the device's own language order wins; a list naming no CJK writing
+    /// system takes Japanese, which is the bundle's own default elsewhere
+    /// (`symbolFallbackOrder`) and the largest share of the ASS content this path serves.
+    /// `preferredLanguages` is a parameter so the choice is testable without touching the
+    /// device's real preferences.
+    static func fallbackLanguage(
+        preferredLanguages: [String] = Locale.preferredLanguages
+    ) -> CJKFontPlan.Language {
+        preferredLanguages.lazy.compactMap { CJKFontPlan.Language(hintTag: $0) }.first ?? .japanese
+    }
+
     // MARK: - Building
 
     private static func build() -> [SubtitleFontBundle.Design: URL] {
-        guard let root = versionedRoot() else { return [:] }
+        let language = fallbackLanguage()
+        guard let root = versionedRoot(language: language) else { return [:] }
         pruneStaleRoots(keeping: root)
-        return buildDirectories(in: root)
+        return buildDirectories(in: root, language: language)
     }
 
     /// The build step with its root injected, so a test can drive it against a temp
     /// directory instead of the process' real Caches.
-    static func buildDirectories(in root: URL) -> [SubtitleFontBundle.Design: URL] {
+    static func buildDirectories(
+        in root: URL, language: CJKFontPlan.Language = fallbackLanguage()
+    ) -> [SubtitleFontBundle.Design: URL] {
         var built: [SubtitleFontBundle.Design: URL] = [:]
         for design in SubtitleFontBundle.Design.allCases {
-            if let url = buildDirectory(for: design, in: root) { built[design] = url }
+            if let url = buildDirectory(for: design, language: language, in: root) {
+                built[design] = url
+            }
         }
         return built
     }
 
-    /// `Caches/parallax-vlc-fonts/<build>-<layout>/`. Keyed by the bundle's build number
-    /// as well as the layout tag so a new binary — which may ship different faces — never
-    /// reads the previous one's directory.
-    private static func versionedRoot() -> URL? {
+    /// `Caches/parallax-vlc-fonts/<build>-<layout>-<region>/`. Keyed by the bundle's build
+    /// number as well as the layout tag so a new binary — which may ship different faces —
+    /// never reads the previous one's directory, and by the region so a changed language
+    /// list rebuilds instead of keeping the wrong Han shapes.
+    private static func versionedRoot(language: CJKFontPlan.Language) -> URL? {
         guard let caches = try? FileManager.default.url(
             for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true
         ) else { return nil }
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0"
         return caches
             .appending(path: cacheDirectoryName, directoryHint: .isDirectory)
-            .appending(path: "\(build)-\(layoutVersion)", directoryHint: .isDirectory)
+            .appending(
+                path: "\(build)-\(layoutVersion)-\(language.rawValue)", directoryHint: .isDirectory
+            )
     }
 
     static let cacheDirectoryName = "parallax-vlc-fonts"
 
-    /// Every sibling of the live root is a previous build's copy of the same ~700 KB —
+    /// Every sibling of the live root is a previous build's copy of the same tens of MB —
     /// `ssa-fontsdir` never looks at them again, so they are pure leakage.
     static func pruneStaleRoots(keeping root: URL) {
         let parent = root.deletingLastPathComponent()
@@ -145,34 +196,42 @@ enum VLCSubtitleFonts {
         }
     }
 
-    /// One design's directory: links to every bundled face, plus the renamed default.
+    /// One design's directory: links to every bundled face, with the design's own CJK
+    /// collection replaced by a copy whose regional face answers to libass' default family.
     /// A `.complete` marker is written LAST and checked FIRST, so a directory left
     /// half-built by a kill is rebuilt rather than handed to libass.
     private static func buildDirectory(
-        for design: SubtitleFontBundle.Design, in root: URL
+        for design: SubtitleFontBundle.Design, language: CJKFontPlan.Language, in root: URL
     ) -> URL? {
         let fm = FileManager.default
         let dir = root.appending(path: design.rawValue, directoryHint: .isDirectory)
-        let marker = root.appending(path: ".\(design.rawValue)-complete", directoryHint: .notDirectory)
+        let marker = root.appending(
+            path: ".\(design.rawValue)-complete", directoryHint: .notDirectory
+        )
         if fm.fileExists(atPath: marker.path) { return dir }
+        let family = SubtitleFontBundle.family(design: design, script: .cjk(language))
         do {
             try? fm.removeItem(at: dir)
             try fm.createDirectory(at: dir, withIntermediateDirectories: true)
-            for url in SubtitleFontBundle.fileURLs {
-                let link = dir.appending(path: url.lastPathComponent, directoryHint: .notDirectory)
-                try fm.createSymbolicLink(at: link, withDestinationURL: url)
-            }
-            guard let source = latinFileURL(design) else {
-                Log.playback.error("VLC fonts: no Latin face for \(design.rawValue, privacy: .public)")
+            guard let source = collectionFileURL(design: design, language: language),
+                  let faceIndex = SubtitleFontBundle.faceFamilyNames(in: source).firstIndex(of: family)
+            else {
+                Log.playback.error("VLC fonts: no \(family, privacy: .public) face to rename")
                 return nil
             }
             let renamed = try SFNTNameRewrite.renamed(
-                Data(contentsOf: source),
+                Data(contentsOf: source, options: .mappedIfSafe),
+                faceIndex: faceIndex,
                 family: libassDefaultFamily,
                 postScriptName: fallbackPostScriptName
             )
+            for url in SubtitleFontBundle.fileURLs
+            where url.lastPathComponent != source.lastPathComponent {
+                let link = dir.appending(path: url.lastPathComponent, directoryHint: .notDirectory)
+                try fm.createSymbolicLink(at: link, withDestinationURL: url)
+            }
             try renamed.write(
-                to: dir.appending(path: fallbackFileName, directoryHint: .notDirectory),
+                to: dir.appending(path: source.lastPathComponent, directoryHint: .notDirectory),
                 options: .atomic
             )
             try Data().write(to: marker, options: .atomic)
@@ -185,13 +244,17 @@ enum VLCSubtitleFonts {
         }
     }
 
-    /// The bundle's Latin face for a design, found by the family's own name rather than a
-    /// hardcoded file name — the bundle table is the single source for both.
-    private static func latinFileURL(_ design: SubtitleFontBundle.Design) -> URL? {
+    /// The pan-CJK collection carrying `language` in `design`, found through the family's
+    /// own name rather than a hardcoded file name — the bundle table is the single source
+    /// for both. "Noto Sans CJK SC" → the file whose name starts "NotoSansCJK-": the
+    /// regional suffix names a FACE, the rest names the collection it lives in.
+    private static func collectionFileURL(
+        design: SubtitleFontBundle.Design, language: CJKFontPlan.Language
+    ) -> URL? {
         let stem = SubtitleFontBundle
-            .family(design: design, script: .common)
-            .replacingOccurrences(of: " ", with: "")
-        return SubtitleFontBundle.table[.common]?.fileURLs
+            .family(design: design, script: .cjk(language))
+            .split(separator: " ").dropLast().joined()
+        return SubtitleFontBundle.table[.cjk(language)]?.fileURLs
             .first { $0.lastPathComponent.hasPrefix("\(stem)-") }
     }
 }
@@ -229,55 +292,84 @@ extension VLCSubtitleFonts {
 
 // MARK: - sfnt name-table rewrite
 
-/// Rewrites an sfnt's `name` table so the face reports a different family.
+/// Rewrites ONE face's `name` table so it reports a different family.
 ///
 /// The one thing libass' font matcher reads off a face is its family name
 /// (`matches_family_name`, case-insensitive, from the **Microsoft-platform** name records
 /// decoded as UTF-16BE), so replacing that table — and nothing else — is enough to make a
-/// bundled Noto face answer to the family VLC asks for. Glyphs, metrics and layout tables
-/// are copied through byte for byte; only the directory offsets and per-table checksums
-/// are recomputed.
+/// bundled Noto face answer to the family VLC asks for.
+///
+/// **Append, don't reassemble.** The new table goes at the end of the file and the face's
+/// 16-byte table-directory record is patched in place (checksum, offset, length). Every
+/// other byte — every other face's directory, the shared glyph data — is untouched, which
+/// is what makes this affordable on a 26 MB OpenType collection and what makes a
+/// collection and a single sfnt the same code: a single sfnt is a collection of one, and
+/// its table offsets are file-absolute in exactly the same way. The old table's bytes are
+/// left orphaned; nothing references them.
+///
+/// `head.checkSumAdjustment` is left as the source wrote it: it is a whole-file checksum
+/// no rasterizer we ship to validates (FreeType ignores it outright), and recomputing it
+/// would buy nothing a font validator we never run would notice.
 enum SFNTNameRewrite {
     enum Failure: Error {
         case notAnSFNT
         case truncated
         case noNameTable
+        case noSuchFace
     }
 
     private static let nameTag: UInt32 = 0x6E61_6D65  // 'name'
 
-    /// `data` with its `name` table replaced by a minimal one naming `family`.
-    ///
-    /// Single-face sfnts only — a TrueType *collection* (`ttcf`) shares tables between
-    /// faces and would need every face's directory rewritten, which nothing here needs
-    /// (the default-family fallback is a Latin face, and both are plain `.ttf`).
-    static func renamed(_ data: Data, family: String, postScriptName: String) throws -> Data {
-        let bytes = [UInt8](data)
-        guard bytes.count >= 12 else { throw Failure.truncated }
-        let version = be32(bytes, 0)
-        guard version == 0x0001_0000 || version == 0x4F54_544F else { throw Failure.notAnSFNT }
-        let tableCount = Int(be16(bytes, 4))
-        guard bytes.count >= 12 + 16 * tableCount else { throw Failure.truncated }
-
-        var tables: [(tag: UInt32, body: [UInt8])] = []
-        tables.reserveCapacity(tableCount)
-        for i in 0..<tableCount {
-            let entry = 12 + 16 * i
-            let tag = be32(bytes, entry)
-            let offset = Int(be32(bytes, entry + 8))
-            let length = Int(be32(bytes, entry + 12))
-            guard offset >= 0, length >= 0, offset + length <= bytes.count else { throw Failure.truncated }
-            tables.append((tag, Array(bytes[offset..<(offset + length)])))
-        }
-        guard let nameIndex = tables.firstIndex(where: { $0.tag == nameTag }) else {
+    /// `data` with face `faceIndex`'s `name` table replaced by a minimal one naming
+    /// `family`.
+    static func renamed(
+        _ data: Data, faceIndex: Int = 0, family: String, postScriptName: String
+    ) throws -> Data {
+        var bytes = data
+        let faces = try faceOffsets(bytes)
+        guard faces.indices.contains(faceIndex) else { throw Failure.noSuchFace }
+        guard let record = nameRecordOffset(bytes, faceOffset: faces[faceIndex]) else {
             throw Failure.noNameTable
         }
-        tables[nameIndex].body = nameTable(family: family, postScriptName: postScriptName)
-        // The directory must be sorted by tag; a rewrite in place keeps whatever order
-        // the source had, which is already sorted for every real font — sort anyway so a
-        // sloppy source can't produce a file FreeType rejects.
-        tables.sort { $0.tag < $1.tag }
-        return assemble(version: version, tables: tables)
+
+        let table = nameTable(family: family, postScriptName: postScriptName)
+        // sfnt table offsets must be long-aligned, so the append starts on a 4-byte
+        // boundary and the table is padded out to one.
+        bytes.append(contentsOf: repeatElement(UInt8(0), count: (4 - bytes.count % 4) % 4))
+        let offset = bytes.count
+        bytes.append(contentsOf: table)
+        bytes.append(contentsOf: repeatElement(UInt8(0), count: (4 - table.count % 4) % 4))
+
+        write(&bytes, at: record + 4, checksum(table))
+        write(&bytes, at: record + 8, UInt32(offset))
+        write(&bytes, at: record + 12, UInt32(table.count))
+        return bytes
+    }
+
+    /// Where each face's table directory starts. A `ttcf` header lists them; a bare sfnt is
+    /// one face at 0.
+    private static func faceOffsets(_ bytes: Data) throws -> [Int] {
+        guard bytes.count >= 12 else { throw Failure.truncated }
+        let tag = be32(bytes, 0)
+        guard tag == 0x7474_6366 else {  // 'ttcf'
+            guard tag == 0x0001_0000 || tag == 0x4F54_544F || tag == 0x7472_7565 else {
+                throw Failure.notAnSFNT
+            }
+            return [0]
+        }
+        let count = Int(be32(bytes, 8))
+        guard count > 0, count < 256, bytes.count >= 12 + 4 * count else { throw Failure.truncated }
+        return (0..<count).map { Int(be32(bytes, 12 + 4 * $0)) }
+    }
+
+    /// Offset of the 16-byte directory record for that face's `name` table.
+    private static func nameRecordOffset(_ bytes: Data, faceOffset: Int) -> Int? {
+        guard faceOffset >= 0, bytes.count >= faceOffset + 12 else { return nil }
+        let tableCount = Int(be16(bytes, faceOffset + 4))
+        guard bytes.count >= faceOffset + 12 + 16 * tableCount else { return nil }
+        return (0..<tableCount)
+            .map { faceOffset + 12 + 16 * $0 }
+            .first { be32(bytes, $0) == nameTag }
     }
 
     /// A format-0 `name` table with the four records libass and FreeType actually read,
@@ -318,37 +410,6 @@ enum SFNTNameRewrite {
         return table
     }
 
-    private static func assemble(version: UInt32, tables: [(tag: UInt32, body: [UInt8])]) -> Data {
-        let n = tables.count
-        var pow2 = 1, exponent = 0
-        while pow2 * 2 <= n { pow2 *= 2; exponent += 1 }
-
-        var header: [UInt8] = []
-        appendBE(&header, version)
-        appendBE(&header, UInt16(n))
-        appendBE(&header, UInt16(pow2 * 16))          // searchRange
-        appendBE(&header, UInt16(exponent))           // entrySelector
-        appendBE(&header, UInt16(n * 16 - pow2 * 16)) // rangeShift
-
-        var directory: [UInt8] = []
-        var body: [UInt8] = []
-        var offset = 12 + 16 * n
-        for table in tables {
-            appendBE(&directory, table.tag)
-            appendBE(&directory, checksum(table.body))
-            appendBE(&directory, UInt32(offset))
-            appendBE(&directory, UInt32(table.body.count))
-            body.append(contentsOf: table.body)
-            let padded = (table.body.count + 3) & ~3
-            body.append(contentsOf: repeatElement(0, count: padded - table.body.count))
-            offset += padded
-        }
-        // `head.checkSumAdjustment` is left as the source wrote it: it is a whole-file
-        // checksum no rasterizer we ship to validates (FreeType ignores it outright), and
-        // recomputing it would buy nothing a font validator we never run would notice.
-        return Data(header + directory + body)
-    }
-
     private static func checksum(_ bytes: [UInt8]) -> UInt32 {
         var sum: UInt32 = 0
         var i = 0
@@ -363,20 +424,24 @@ enum SFNTNameRewrite {
         return sum
     }
 
-    private static func be32(_ bytes: [UInt8], _ i: Int) -> UInt32 {
-        UInt32(bytes[i]) << 24 | UInt32(bytes[i + 1]) << 16 | UInt32(bytes[i + 2]) << 8 | UInt32(bytes[i + 3])
+    private static func be32(_ bytes: Data, _ i: Int) -> UInt32 {
+        UInt32(be16(bytes, i)) << 16 | UInt32(be16(bytes, i + 2))
     }
 
-    private static func be16(_ bytes: [UInt8], _ i: Int) -> UInt16 {
-        UInt16(bytes[i]) << 8 | UInt16(bytes[i + 1])
+    private static func be16(_ bytes: Data, _ i: Int) -> UInt16 {
+        let base = bytes.startIndex
+        return UInt16(bytes[base + i]) << 8 | UInt16(bytes[base + i + 1])
+    }
+
+    private static func write(_ bytes: inout Data, at i: Int, _ value: UInt32) {
+        let base = bytes.startIndex
+        bytes[base + i] = UInt8((value >> 24) & 0xFF)
+        bytes[base + i + 1] = UInt8((value >> 16) & 0xFF)
+        bytes[base + i + 2] = UInt8((value >> 8) & 0xFF)
+        bytes[base + i + 3] = UInt8(value & 0xFF)
     }
 
     private static func appendBE(_ out: inout [UInt8], _ value: UInt16) {
         out.append(UInt8(value >> 8)); out.append(UInt8(value & 0xFF))
-    }
-
-    private static func appendBE(_ out: inout [UInt8], _ value: UInt32) {
-        out.append(UInt8((value >> 24) & 0xFF)); out.append(UInt8((value >> 16) & 0xFF))
-        out.append(UInt8((value >> 8) & 0xFF)); out.append(UInt8(value & 0xFF))
     }
 }
