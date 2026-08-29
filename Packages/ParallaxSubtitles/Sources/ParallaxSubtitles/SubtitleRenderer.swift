@@ -147,14 +147,6 @@ public actor SubtitleRenderer {
         engine.refreshFontsIfNeeded()
     }
 
-    /// The loaded script's canvas in script units, with libass' inference for a
-    /// dimension the author left out. Nil until a track is loaded.
-    ///
-    /// The only place an authored script's resolution is known — everything
-    /// expressed in script units (border, shadow, margins) is meaningless
-    /// without it, which is why the override takes ratios and this stays here.
-    public var trackPlayRes: CGSize? { engine?.trackPlayRes }
-
     // MARK: - Canvas
 
     /// - Parameters:

@@ -398,14 +398,6 @@ final class LibassEngine {
         }
     }
 
-    /// The loaded track's canvas, with libass' own inference for a dimension the
-    /// script left out (`ASSPlayRes`). Nil until a track parses. Script-unit
-    /// lengths — border, shadow, margins — only mean anything against this.
-    var trackPlayRes: CGSize? {
-        guard let track else { return nil }
-        return ASSPlayRes.effective(x: Int(track.pointee.PlayResX), y: Int(track.pointee.PlayResY))
-    }
-
     /// Parses a script and, only if it yielded events, swaps it in for the current one.
     func loadTrack(bytes: inout [UInt8]) throws {
         // ass_read_memory takes a mutable buffer and copies whatever it keeps.
