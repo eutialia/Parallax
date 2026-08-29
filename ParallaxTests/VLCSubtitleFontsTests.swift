@@ -150,6 +150,23 @@ struct VLCSubtitleFallbackRegionTests {
     ) {
         #expect(VLCSubtitleFonts.fallbackLanguage(preferredLanguages: languages) == expected)
     }
+
+    /// The freetype family is that same region's pan-CJK face in the user's design —
+    /// never the Latin-only face, whose Han glyphs would go to a CoreText fallback
+    /// FreeType cannot open on iOS.
+    @Test(
+        "the freetype family is the region's pan-CJK face in the user's design",
+        arguments: [
+            (SubtitleFontBundle.Design.sans, ["zh-Hans"], "Noto Sans CJK SC"),
+            (SubtitleFontBundle.Design.serif, ["zh-TW"], "Noto Serif CJK TC"),
+            (SubtitleFontBundle.Design.sans, ["en"], "Noto Sans CJK JP"),
+        ]
+    )
+    func freetypeFamilyIsThePanCJKFace(
+        design: SubtitleFontBundle.Design, languages: [String], expected: String
+    ) {
+        #expect(VLCSubtitleFonts.freetypeFamily(for: design, preferredLanguages: languages) == expected)
+    }
 }
 
 @Suite("VLC subtitle fonts — directories")

@@ -31,7 +31,8 @@ struct SMBPlaybackStartTests {
         // NOT `SMBResumeStore.shared`: that one reads and writes the real `UserDefaults.standard`
         // domain, so every test here that drives a `.playing` beat was writing live app state.
         smbResumeStore: SMBResumeStore? = nil,
-        subtitleFontDesign: @escaping @MainActor () -> SubtitleFontDesign = { .sansSerif }
+        subtitleStyle: @escaping @MainActor () -> SubtitleStyle = { .standard },
+        observeLibraryOptions: @escaping @MainActor @Sendable ([String]?) -> Void = { _ in }
     ) -> PlayerViewModel {
         return PlayerViewModel(
             deviceProfileBuilder: makeTestDeviceProfileBuilder(),
@@ -40,11 +41,11 @@ struct SMBPlaybackStartTests {
                 Issue.record("SMB playback must not call the Jellyfin resolve")
                 throw AppError.playback(.unsupportedFormat)
             },
-            engineFactory: { _, _ in engine },
+            engineFactory: { _, options in observeLibraryOptions(options); return engine },
             audioSession: audioSession,
             subtitleFetch: subtitleFetch,
             smbResumeStore: smbResumeStore ?? SMBTestFixtures.inertResumeStore(),
-            subtitleFontDesign: subtitleFontDesign
+            subtitleStyle: subtitleStyle
         )
     }
 
@@ -157,7 +158,7 @@ struct SMBPlaybackStartTests {
         #expect(asset.engineSubtitlesDisabled == false)
         // The bundled Noto faces, for VLC's own text renderers — in the user's design.
         #expect(asset.subtitleFontsDirectory == VLCSubtitleFonts.directory(for: .sans))
-        #expect(asset.subtitleFontFamily == SubtitleFontBundle.sansFamily)
+        #expect(asset.subtitleFontFamily == VLCSubtitleFonts.freetypeFamily(for: .sans))
 
         let embedded = SubtitleTrack(id: .vlc("vlc-s0"), displayName: "English",
                                      languageCode: "en", isForced: false)
@@ -179,13 +180,34 @@ struct SMBPlaybackStartTests {
     func smbAssetFollowsTheFontDesign() async throws {
         let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
         let vm = makeVM(reporting: StubPlaybackReporting(), engine: engine,
-                        subtitleFontDesign: { .serif })
+                        subtitleStyle: { .standard.with { $0.fontDesign = .serif } })
 
         await vm.start(smbItem: smbItem())
 
         let asset = try #require(engine.loadedAssets.first)
-        #expect(asset.subtitleFontFamily == SubtitleFontBundle.serifFamily)
+        #expect(asset.subtitleFontFamily == VLCSubtitleFonts.freetypeFamily(for: .serif))
         #expect(asset.subtitleFontsDirectory == VLCSubtitleFonts.directory(for: .serif))
+    }
+
+    /// The whole point of the instance-argument move: VLC's freetype renderer belongs to
+    /// the video output, whose variables inherit from the libvlc INSTANCE — so the family
+    /// and the look have to be arguments the player is BUILT with. A media option here is
+    /// read by nobody, which is how the renderer sat on its own `Helvetica Neue` default.
+    @Test("SMB: the subtitle look reaches the engine as libvlc instance arguments")
+    func smbSubtitleLookRidesInstanceArguments() async throws {
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        nonisolated(unsafe) var handed: [String]?
+        let vm = makeVM(reporting: StubPlaybackReporting(), engine: engine,
+                        observeLibraryOptions: { handed = $0 })
+
+        await vm.start(smbItem: smbItem())
+
+        let options = try #require(handed)
+        #expect(options.contains("--freetype-font=\(VLCSubtitleFonts.freetypeFamily(for: .sans))"))
+        #expect(options.contains { $0.hasPrefix("--freetype-rel-fontsize=") })
+        // The credentials this item carries are MEDIA options and must not be promoted to
+        // instance arguments, where they would outlive the input.
+        #expect(options.contains { $0.contains("smb-pwd") } == false)
     }
 
     /// Counts resolve-closure invocations so a test can prove `retry()` replays it.

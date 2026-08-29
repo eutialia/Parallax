@@ -45,27 +45,30 @@ public struct SubtitleStyle: Sendable, Hashable, Codable {
     public let outline: RGBA
     /// Border thickness as a fraction of the font size (resolution-independent).
     public let outlineWidthRatio: Double
-    /// Soft drop shadow under the border, for separation on busy scenes. Only the
-    /// overlay can honor these (AVKit's uniform edge and VLC's shadow defaults are
-    /// not parameterized here), but they're part of the one canonical look — tune
-    /// them with the palette, not in a view file. Black, at this opacity:
+    /// Soft drop shadow under the border, for separation on busy scenes. The overlay
+    /// and VLC's freetype renderer both honor it (AVKit's uniform edge does not) —
+    /// tune it with the palette, not in a view file. Black, at this opacity:
     public let shadowOpacity: Double
     /// Shadow vertical offset as a fraction of the font size.
     public let shadowYOffsetRatio: Double
 
-    // MARK: User-configurable (v1 subtitle settings) — client-renderer-only.
-    // These four are honored by the client sidecar renderer for PLAIN-TEXT
-    // sources it converted itself; ENGINE-native renderers (VLC's internal libass
-    // for embedded tracks / AVKit legible) read `.standard` and ignore them, and
-    // an authored ASS/SSA track is never restyled at all.
+    // MARK: User-configurable (v1 subtitle settings).
+    // These style the PLAIN-TEXT subtitles we draw ourselves. The client sidecar
+    // renderer honors all four, live. VLC's simple freetype renderer (embedded plain
+    // text) honors size, family, colour and border too — via `EngineSubtitleTextStyle`
+    // on the asset, so they are fixed for the life of the decoder and a change applies
+    // from the next item; `verticalOffsetRatio` is client-only. An AUTHORED ASS/SSA
+    // track is never restyled by any of them: its creator's colours, sizes and
+    // placement stand, and only its font family is mapped onto a bundled face.
 
     /// Cue size multiplier on the proven per-device base size
     /// (`PlayerMetrics.subtitleFontSize`, remapped onto the renderer's script base
     /// by the overlay). 1.0 == the tuned base; the size control scales this 0.5…2.0.
     public let fontScale: Double
-    /// Glyph family for the client renderer, mapped to one of the two bundled
-    /// Noto faces. Engine-native tracks are unaffected (no
-    /// font-selection API on iOS).
+    /// Glyph family, mapped to one of the two bundled Noto faces. The client renderer
+    /// takes it as a style override; VLC's own renderers take it as the `:ssa-fontsdir`
+    /// media option plus the `--freetype-font` instance argument the app materializes
+    /// it under.
     public let fontDesign: SubtitleFontDesign
     /// Legibility backing: the canonical outline-ring + shadow, OR an opaque box
     /// (mutually exclusive — a box carries its own contrast, so no ring/shadow).

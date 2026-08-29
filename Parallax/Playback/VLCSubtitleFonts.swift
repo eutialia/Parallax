@@ -143,6 +143,22 @@ enum VLCSubtitleFonts {
         preferredLanguages.lazy.compactMap { CJKFontPlan.Language(hintTag: $0) }.first ?? .japanese
     }
 
+    /// The family for VLC's *simple* freetype renderer (`--freetype-font`, embedded SRT):
+    /// the same regional pan-CJK face libass' default resolves to. It carries Latin, Greek
+    /// and Cyrillic as well, and the module's own per-glyph fallback is not an option for
+    /// Han: on iOS CoreText answers with `PingFangUI.ttc` inside a private framework,
+    /// which FreeType cannot open (`LoadFace: Error creating face`), so a Latin-only
+    /// family here loses every Han glyph.
+    static func freetypeFamily(
+        for design: SubtitleFontBundle.Design,
+        preferredLanguages: [String] = Locale.preferredLanguages
+    ) -> String {
+        SubtitleFontBundle.family(
+            design: design,
+            script: .cjk(fallbackLanguage(preferredLanguages: preferredLanguages))
+        )
+    }
+
     // MARK: - Building
 
     private static func build() -> [SubtitleFontBundle.Design: URL] {

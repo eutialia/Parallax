@@ -399,32 +399,28 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
 
     // MARK: - Init
 
-    /// `libraryOptions`: raw libvlc instance arguments (e.g. `--no-drop-late-frames`) for
-    /// defects per-media options can't reach — the vout's `is_late_dropped` flag reads off
-    /// the OWNING libvlc instance, not a per-media variable (proven on device), and
-    /// `VLCMediaPlayer(options:)` is the only surface that can set instance-scoped flags.
+    /// `libraryOptions`: raw libvlc instance arguments — everything per-media options
+    /// cannot reach, because the object that reads them inherits from the OWNING libvlc
+    /// instance rather than from the input item. Two families qualify: the vout's
+    /// `is_late_dropped` flag (`--no-drop-late-frames`, proven on device) and the whole
+    /// `--freetype-*` subtitle look, whose renderer the vout builds. See
+    /// `libraryOptions(for:)`, which is what the app builds this argument from.
     /// Decided at CONSTRUCTION so exactly one player ever exists per engine: a mid-`load`
     /// player swap would race the SwiftUI host, which binds `vlcPlayer.drawable` as soon
     /// as the engine is published. Nil = the shared library instance.
     ///
     /// The vendored `VLCLibrary.h` states the framework does not support multiple
-    /// `VLCLibrary` instances. `VLCMediaPlayer(options:)` creates one anyway (it's the only
-    /// surface that can set instance-scoped options), so this is knowingly off the
-    /// documented path — device-exercised, though (playback + delegate events verified),
-    /// and the only way to reach per-player library flags.
+    /// `VLCLibrary` instances, and `VLCMediaPlayer(options:)` mints a fresh one on every
+    /// call. Since the subtitle look moved here, EVERY VLC session carries options, so that
+    /// would be one libvlc per playback. `privateLibrary(for:)` interns them instead: equal
+    /// option arrays share one `VLCLibrary`, built via `initWithOptions:` and handed to
+    /// `initWithLibrary:`. Still off the documented path (there is more than one instance in
+    /// the process once the user changes typeface mid-session), but bounded by the number of
+    /// distinct option sets rather than by the number of items played.
     public convenience init(libraryOptions: [String]? = nil) {
         let privateOptions = libraryOptions?.isEmpty == false ? libraryOptions : nil
         let mediaPlayer = Self.makePlayer(libraryOptions: privateOptions)
         self.init(mediaPlayer: mediaPlayer, control: mediaPlayer)
-        // `_eventsConfigured` only attaches the audio diagnostics logger to
-        // `VLCLibrary.shared()` — a private instance (exactly the defect files this is
-        // tracing) never gets it. `player.libraryInstance` is the player's own library,
-        // so attach it here too.
-        #if DEBUG
-        if privateOptions != nil {
-            mediaPlayer.libraryInstance.loggers = [VLCAudioDiagnosticsLogger()]
-        }
-        #endif
         // NOTE: 3.x exposes no time-update cadence knobs. `player.time` here is the cached
         // value libvlc's own time-changed event refreshes, which fires as the input advances
         // rather than on a coarse 1s quantum — so the counter is fine-grained by default
@@ -450,7 +446,36 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     static func makePlayer(libraryOptions: [String]?) -> VLCMediaPlayer {
         _ = _eventsConfigured
         guard let libraryOptions, !libraryOptions.isEmpty else { return VLCMediaPlayer() }
-        return VLCMediaPlayer(options: libraryOptions)
+        return VLCMediaPlayer(library: privateLibrary(for: libraryOptions))
+    }
+
+    /// The most recent private `VLCLibrary` and the options it was built with — ONE slot,
+    /// not a table. These options carry the user's subtitle look and a surface-derived
+    /// size, so the distinct sets a single run can produce are unbounded (every size,
+    /// colour, typeface and window geometry is another one) and a map would strand a
+    /// libvlc instance per combination for the life of the process.
+    ///
+    /// A slot still gives the case that matters — consecutive items with unchanged
+    /// settings share one library — and bounds what stays alive to the players actually
+    /// holding one: `VLCMediaPlayer` retains its library, so a superseded entry is
+    /// released here and dies with the last player using it.
+    ///
+    /// `@MainActor` (the class's isolation, inherited by every static member that doesn't
+    /// opt out) is what makes this safe without a lock — `makePlayer` is only ever reached
+    /// from an init on this actor.
+    private static var privateLibrary: (options: [String], library: VLCLibrary)?
+
+    private static func privateLibrary(for options: [String]) -> VLCLibrary {
+        if let cached = privateLibrary, cached.options == options { return cached.library }
+        let library = VLCLibrary(options: options)
+        // `_eventsConfigured` only attaches the audio diagnostics logger to
+        // `VLCLibrary.shared()`; a private instance — exactly the sessions with a defect
+        // worth tracing — never gets it.
+        #if DEBUG
+        library.loggers = [VLCAudioDiagnosticsLogger()]
+        #endif
+        privateLibrary = (options, library)
+        return library
     }
 
     /// The one designated init. `mediaPlayer` is the drawable handle `vlcPlayer` vends;
@@ -1182,28 +1207,20 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
             options.append(":no-spu")
         }
         // libass (ASS/SSA) and the simple freetype renderer (SRT / plain `text`) are separate
-        // subsystems with separate options AND DIFFERENT VALUE SEMANTICS: `ssa-fontsdir` is a
-        // DIRECTORY libass scans, `freetype-font` is a font FAMILY NAME ("Font family for the
-        // font you want to use" — libvlc 3.0's freetype module). Handing the latter a file
-        // path is a silent no-op that falls back to the module's hardcoded Helvetica Neue, so
-        // the app passes the family it registered the face under.
+        // subsystems, and the split that matters here is SCOPE, not vocabulary. libvlc's libass
+        // module is a DECODER: it reads its fonts directory with `var_InheritString(p_dec,
+        // "ssa-fontsdir")`, and a decoder's inheritance chain runs through the input item — so
+        // `:ssa-fontsdir` as a media option is exactly right (device-verified: embedded ASS
+        // renders in the bundled faces). The freetype text renderer is NOT a decoder. The video
+        // output builds it (`SpuRenderCreateAndLoadText` → `vlc_custom_create(spu, …)`), so its
+        // chain is filter → spu → vout → … → libvlc INSTANCE and never touches the input's
+        // variables: every `:freetype-*` media option is a silent no-op and the module falls
+        // back to its built-in `SYSTEM_DEFAULT_FAMILY` ("Helvetica Neue" on Apple platforms),
+        // which cannot shape CJK. That whole set therefore ships as instance arguments — see
+        // `libraryOptions(for:)`.
         if let fontsDirectory = asset.subtitleFontsDirectory?.path {
             options.append(":ssa-fontsdir=\(fontsDirectory)")
         }
-        if let fontFamily = asset.subtitleFontFamily {
-            options.append(":freetype-font=\(fontFamily)")
-        }
-        // VLC's freetype renderer (embedded plain-text subs), pinned to the boxless
-        // black-outline look of `SubtitleStyle.standard`. The fill dim is the real
-        // change — the default 0xFFFFFF reads as peak white next to tone-mapped HDR
-        // video. Background/outline match VLC's *desktop* defaults, but are set
-        // explicitly because the iOS build's defaults have never been device-verified
-        // (a dim fill WITHOUT a border would be worse than the old pure white).
-        // ASS/SSA keep their authored styles (libass ignores freetype-*).
-        options.append(":freetype-color=\(SubtitleStyle.standard.foreground.rgb24)")
-        options.append(":freetype-background-opacity=0")
-        options.append(":freetype-outline-color=\(SubtitleStyle.standard.outline.rgb24)")
-        options.append(":freetype-outline-thickness=4")
         if let headers = asset.headers {
             // Header values originate from the trusted Jellyfin server response and
             // are interpolated verbatim into VLC option strings (no delimiter sanitization).
@@ -1219,6 +1236,34 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         // NEVER logged — an entry here can carry a password.
         options.append(contentsOf: asset.vlcOptions ?? [])
         return options
+    }
+
+    /// Every libvlc **instance** argument this asset needs, or nil when it needs none.
+    ///
+    /// Two families live here, for the same reason: neither is reachable from an input
+    /// item's variables. `vlcLibraryOptions` carries the vout flags the app already knew
+    /// about (`--no-drop-late-frames`); the `--freetype-*` set carries the subtitle look,
+    /// because the freetype text renderer is owned by the video output rather than by a
+    /// decoder (see `mediaOptions(for:)`).
+    ///
+    /// Instance-scoped means these are fixed when the player is built, so the app compares
+    /// this result against what the live engine was constructed with before it reuses one.
+    /// The order is therefore load-bearing: same asset shape in, same array out.
+    /// Pure, so the argument strings are testable without a live decode.
+    public nonisolated static func libraryOptions(for asset: PlayableAsset) -> [String]? {
+        var options = asset.vlcLibraryOptions ?? []
+        if let fontFamily = asset.subtitleFontFamily {
+            // A font FAMILY NAME ("Font family for the font you want to use" — libvlc 3.0's
+            // freetype module), never a path: a path matches no family and drops the module
+            // back onto its built-in default.
+            options.append("--freetype-font=\(fontFamily)")
+        }
+        // The user's look AND the em the app's own renderer would have drawn at
+        // (`EngineSubtitleTextStyle`), so an embedded SRT the ENGINE draws matches an
+        // external one the CLIENT draws. ASS/SSA keep their authored styles either way
+        // (libass ignores freetype-*).
+        options.append(contentsOf: asset.subtitleTextStyle?.freetypeSettings.map { "--\($0)" } ?? [])
+        return options.isEmpty ? nil : options
     }
 
     /// Progress poll cadence (ms), matching `AVKitEngine`'s periodic observer. Named because

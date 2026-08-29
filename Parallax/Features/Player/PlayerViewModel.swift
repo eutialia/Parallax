@@ -63,6 +63,16 @@ final class PlayerViewModel {
         }
     }
     private(set) var engine: (any PlaybackEngine)?
+
+    /// The libvlc instance arguments `engine` was BUILT with, so `loadAndPlay` can tell a
+    /// reusable engine from a stale one. Instance-scoped options are fixed at construction
+    /// (`VLCKitEngine.init(libraryOptions:)`), and every VLC asset now carries some — the
+    /// subtitle look moved there — so "reuse only when the asset has none" would never reuse
+    /// again and every episode change would rebuild the player. Tracked here rather than on
+    /// the `PlaybackEngine` protocol: it is an app-side reuse policy, and AVKit has no such
+    /// concept. Only ever read next to a live `engine` (the reuse test binds one first), and
+    /// rewritten by every construction, so a teardown has nothing to clear here.
+    private var engineLibraryOptions: [String]?
     var isPiPAvailable: Bool { engine?.capabilities.supportsPiP ?? false }
     var isVideoAirPlayAvailable: Bool { engine?.capabilities.supportsVideoAirPlay ?? false }
 
@@ -749,16 +759,34 @@ final class PlayerViewModel {
     /// they can never disagree about what "now" is.
     private let seekHoldNow: @Sendable () -> ContinuousClock.Instant
 
-    /// The user's subtitle typeface, read at asset-construction time. A closure rather
+    /// The user's subtitle appearance, read at asset-construction time. A closure rather
     /// than a value: `SubtitlePreferences` loads its persisted style asynchronously, so a
     /// value captured when the view model was built could be the pre-load default.
-    /// Sampled ONCE per session — the two engine-facing knobs it feeds (`:ssa-fontsdir`
-    /// and `:freetype-font`) are libvlc media options, fixed for the life of the decoder.
-    private let subtitleFontDesign: @MainActor () -> SubtitleFontDesign
+    /// Sampled ONCE per session — `:ssa-fontsdir` is a media option read when libvlc builds
+    /// the decoder, and the `--freetype-font`/`--freetype-*` look is an instance argument
+    /// fixed when the player's library is built. Neither can change under a live player.
+    private let subtitleStyle: @MainActor () -> SubtitleStyle
 
-    /// `subtitleFontDesign` in the bundle's own vocabulary — the one both engine-facing
-    /// knobs are expressed in.
-    private var bundleFontDesign: SubtitleFontBundle.Design { subtitleFontDesign().bundleDesign }
+    /// The player's measured surface, for the one asset field that needs a size at load
+    /// (`EngineSubtitleTextStyle.relativeFontSize`). Nil until the player's geometry has
+    /// landed — which normally beats the resolve it races, so the fallback is a cold-start
+    /// guard, not the usual path.
+    private let playerSurface: @MainActor () -> CGSize?
+
+    /// The subtitle typeface in the font bundle's own vocabulary — the one both
+    /// engine-facing font knobs are expressed in.
+    private var bundleFontDesign: SubtitleFontBundle.Design { subtitleStyle().fontDesign.bundleDesign }
+
+    /// The user's style as VLC's freetype renderer takes it, sized against the live
+    /// surface. Rides every asset so an embedded SRT the ENGINE draws matches the cue
+    /// the client renderer draws for an external one.
+    private var engineSubtitleTextStyle: EngineSubtitleTextStyle {
+        let style = subtitleStyle()
+        let surface = playerSurface() ?? PlayerMetrics.defaultSurface
+        return EngineSubtitleTextStyle(
+            style: style, relativeFontSize: style.freetypeRelativeFontSize(surface: surface)
+        )
+    }
 
     init(
         deviceProfileBuilder: DeviceProfileBuilder,
@@ -790,7 +818,8 @@ final class PlayerViewModel {
         smbResumeStore: SMBResumeStore = .shared,
         backfillThumbnail: @escaping @Sendable (Duration?, Bool, @escaping @Sendable () async -> Data?) async -> Void = { _, _, _ in },
         backfillDelay: Duration = .seconds(8),
-        subtitleFontDesign: @escaping @MainActor () -> SubtitleFontDesign = { .sansSerif },
+        subtitleStyle: @escaping @MainActor () -> SubtitleStyle = { .standard },
+        playerSurface: @escaping @MainActor () -> CGSize? = { nil },
         seekHoldNow: @escaping @Sendable () -> ContinuousClock.Instant = { .now }
     ) {
         self.deviceProfileBuilder = deviceProfileBuilder
@@ -811,7 +840,8 @@ final class PlayerViewModel {
         self.smbResumeStore = smbResumeStore
         self.backfillThumbnail = backfillThumbnail
         self.backfillDelay = backfillDelay
-        self.subtitleFontDesign = subtitleFontDesign
+        self.subtitleStyle = subtitleStyle
+        self.playerSurface = playerSurface
         self.seekHoldNow = seekHoldNow
     }
 
@@ -1178,7 +1208,8 @@ final class PlayerViewModel {
                 // rendering them — `engineSubtitlesDisabled` stays false and the
                 // per-pick deselect in `activateSidecarSubtitle` handles sidecars.
                 subtitleFontsDirectory: VLCSubtitleFonts.directory(for: bundleFontDesign),
-                subtitleFontFamily: SubtitleFontBundle.family(design: bundleFontDesign, script: .common),
+                subtitleFontFamily: VLCSubtitleFonts.freetypeFamily(for: bundleFontDesign),
+                subtitleTextStyle: engineSubtitleTextStyle,
                 engineSubtitlesDisabled: false,
                 vlcOptions: smbItem.vlcOptions,
                 vlcLibraryOptions: smbItem.vlcLibraryOptions
@@ -1427,15 +1458,26 @@ final class PlayerViewModel {
         // mounted, so the surface holds the last frame through the swap instead of
         // tearing down to black. A fresh play (or an engine-type change) builds a new
         // engine and wires up its state subscription + Now Playing handlers. Also
-        // excluded when the new asset carries library options the existing engine
-        // wasn't built with — those are instance-scoped at construction (VLCKitEngine.init),
-        // so reusing would silently keep serving the OLD options.
+        // excluded when the new asset's libvlc INSTANCE arguments differ from the ones the
+        // existing engine was built with — those are fixed at construction
+        // (VLCKitEngine.init), so reusing would silently keep serving the OLD ones. Equality
+        // and not mere presence: every VLC asset carries the subtitle look here now, and a
+        // presence test would retire engine reuse entirely.
+        //
+        // Computed for the engine being BUILT, which is what makes the comparison honest:
+        // the factory's AVKit branch drops these (AVFoundation draws its own subtitles), so
+        // an AVKit engine is never built with them and must not be retired over them — a
+        // mid-session subtitle restyle would otherwise tear down the AVPlayer, and with it
+        // the held frame that transcode track switches exist to preserve.
+        let libraryOptions = id == .vlcKit ? VLCKitEngine.libraryOptions(for: asset) : nil
         let engine: any PlaybackEngine
-        if reusingEngine, let existing = self.engine, existing.id == id, asset.vlcLibraryOptions == nil {
+        if reusingEngine, let existing = self.engine, existing.id == id,
+           libraryOptions == engineLibraryOptions {
             engine = existing
         } else {
-            engine = engineFactory(id, asset.vlcLibraryOptions)
+            engine = engineFactory(id, libraryOptions)
             self.engine = engine
+            engineLibraryOptions = libraryOptions
             subscribe(to: engine)
             nowPlaying.configure(
                 // Transport-preserving: a paused lock-screen scrub must not come back
@@ -3205,7 +3247,10 @@ final class PlayerViewModel {
             // that also answers to libass' hardcoded default family, see
             // `VLCSubtitleFonts` — and a family name for its simple freetype renderer.
             subtitleFontsDirectory: VLCSubtitleFonts.directory(for: bundleFontDesign),
-            subtitleFontFamily: SubtitleFontBundle.family(design: bundleFontDesign, script: .common),
+            subtitleFontFamily: VLCSubtitleFonts.freetypeFamily(for: bundleFontDesign),
+            // The same style the client renderer draws external subs with, so a VLC-drawn
+            // embedded SRT matches it instead of falling back to freetype's own defaults.
+            subtitleTextStyle: engineSubtitleTextStyle,
             // Blind the engine's SPU renderer only when it has NOTHING left to draw:
             // every reported subtitle has a sidecar URL we fetch and render ourselves
             // (`subtitleStreamURLs` covers embedded text streams too). An item with a
