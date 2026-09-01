@@ -1547,7 +1547,23 @@ final class PlayerViewModel {
             // The load's return value IS the boundary: from here on this is the only session
             // whose beats this view model adopts, and everything the media it replaced still
             // has in flight is stamped with a session that no longer matches.
-            activeSession = try await engine.load(asset)
+            let opened = try await engine.load(asset)
+            // The re-anchor trail, and the only place it is emitted: a session transition is
+            // the one event every silent failure in this path has in common, and it is a fact
+            // about the load rather than about whatever beat happens to arrive later. A
+            // re-anchor that never reloads never prints one — which is the whole point of
+            // putting the line here instead of at a beat that may or may not come.
+            Log.playback.info(
+                """
+                playback session \(self.activeSession?.description ?? "none", privacy: .public) → \
+                \(opened.description, privacy: .public) \
+                origin=\(isFreshSession ? "fresh" : (reusingEngine ? "reload" : "reroute"), privacy: .public) \
+                engine=\(rebuilt ? "rebuilt" : "reused", privacy: .public) \
+                at=\(CMTimeGetSeconds(asset.startTime ?? .zero), format: .fixed(precision: 1), privacy: .public)s \
+                playSession=\(self.resolved?.playSessionID ?? "—", privacy: .public)
+                """
+            )
+            activeSession = opened
             // A frozen surface at the session boundary IS the reload: `performTranscodeReload`
             // froze the outgoing frame under the cover, and only this session's first live beat
             // can take it back down.
@@ -2582,6 +2598,15 @@ final class PlayerViewModel {
         nowPlaying.update(position: target, duration: currentDuration,
                           isPlaying: desiredPlaying, title: itemTitle)
         let didReanchor = await seek(to: target)
+        // The head of the trail. Everything downstream (the session transition, that session's
+        // first live beat) is only readable against the commit that asked for it: where the
+        // user went, whether it rebuilt the transcode, and what transport it owes them back.
+        Log.playback.info(
+            """
+            scrub commit: target=\(CMTimeGetSeconds(target), format: .fixed(precision: 1), privacy: .public)s \
+            reanchor=\(didReanchor, privacy: .public) resume=\(resume, privacy: .public)
+            """
+        )
         // Re-check: `beginExit()` is synchronous MainActor work and can land while this
         // commit is suspended inside the seek above, whose fenced return (`false`) is
         // indistinguishable from an ordinary in-stream seek.
@@ -2699,6 +2724,15 @@ final class PlayerViewModel {
         // resumes the old stream on a dead encoding — it plays out its buffer
         // and may stall into the failure scrim, which is still strictly better
         // than every successful reload livelocking.
+        //
+        // The other cost of this order, and why it stays anyway: the outgoing item is still
+        // attached for the whole re-resolve, playing a playlist whose ffmpeg job just died —
+        // so it can fail on its own (device-confirmed: `CoreMediaErrorDomain -19602` on the
+        // session's `master.m3u8`). Deferring the kill until after the resolve would trade a
+        // cosmetic failure for the encode contention the comment above was written for, which
+        // is device-diagnosed and unrecoverable. So the failure is silenced where it is
+        // produced instead: it carries the session this reload is about to replace, and
+        // nothing downstream adopts a beat from a session that is no longer live.
         await stopEncodingIfNeeded()
         await reportStoppedIfNeeded()
         didReportStart = false
@@ -2940,6 +2974,17 @@ final class PlayerViewModel {
         reloadAwaitingFirstLiveBeat = false
         unfreezeVideoSurface()
         if framesMoving || firstAfterReload { phase = .playing }
+        if firstAfterReload {
+            // Closes the trail the session transition opened: which transport the reloaded
+            // session came back on, and what the surface did with it. A reload that never
+            // happened has nothing armed here, so it cannot print a line about one.
+            Log.playback.info(
+                """
+                reload's first live beat: \(framesMoving ? "playing" : "paused", privacy: .public) \
+                phase=\(String(describing: self.phase), privacy: .public)
+                """
+            )
+        }
         return firstAfterReload
     }
 
