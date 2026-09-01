@@ -1376,6 +1376,150 @@ struct PlayerViewModelTests {
                 "the abandoned reload left something armed that swallows the live session's beats")
     }
 
+    // MARK: - The reload window — from "we are reloading" to "the new session is open"
+
+    /// Parks the RELOAD's re-resolve, so a test can act inside the window between the app
+    /// committing to a reload (the standing session's encode job is already dead) and
+    /// `engine.load()` opening the replacement. That window is multi-second on device, and it
+    /// is where the abandoned item's own beats land.
+    private final class ReloadResolveGate: @unchecked Sendable {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<Void, Never>?
+        private var isReleased = false
+        private var isParked = false
+        private var calls = 0
+
+        /// True while the re-resolve is suspended here — `waitUntil`-friendly proof that the
+        /// test really is inside the window, rather than a guess about scheduling.
+        var parked: Bool { lock.withLock { isParked } }
+
+        /// Parks the SECOND resolve only: the first is the fixture's own `start()`.
+        func parkIfReload() async {
+            let shouldPark = lock.withLock { () -> Bool in
+                calls += 1
+                return calls == 2 && !isReleased
+            }
+            guard shouldPark else { return }
+            await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                let resumeNow = lock.withLock { () -> Bool in
+                    guard !isReleased else { return true }
+                    continuation = c
+                    isParked = true
+                    return false
+                }
+                if resumeNow { c.resume() }
+            }
+        }
+
+        func release() {
+            let due = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+                isReleased = true
+                isParked = false
+                defer { continuation = nil }
+                return continuation
+            }
+            due?.resume()
+        }
+    }
+
+    /// The device-observed decode scrim over a reload that went on to succeed. The engine's
+    /// stamp only advances inside `engine.load()`, seconds after the reload killed the outgoing
+    /// ffmpeg job — so for that whole window the ABANDONED item is still the active session, and
+    /// its `-19602` on the yanked playlist passed the session gate and became the failure
+    /// overlay. The app decides the session is over when it decides to reload; the beat has to
+    /// be dropped from that moment, not from the load.
+    @Test("a dead playlist's failure inside the reload window never reaches the scrim")
+    func deadPlaylistFailureInsideTheReloadWindowIsDropped() async throws {
+        let gate = ReloadResolveGate()
+        let (vm, engines) = try await makeReanchorVM(at: 600, resolve: { _, _, _, _ in
+            await gate.parkIfReload()
+            return PlayerFixtures.resolvedMultiTrackTranscode()
+        })
+        let engine = engines.live
+        let standing = engine.session
+
+        let commit = Task {
+            await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        }
+        await waitUntil("the reload never reached its re-resolve") { gate.parked }
+
+        // The item the reload left mounted, failing on the playlist whose job it just killed.
+        engine.push(.failed(.assetNotPlayable), from: standing)
+        try await engine.settle()
+        #expect(vm.phase == .loading, "the abandoned item's failure took the reload's scrim")
+
+        gate.release()
+        await commit.value
+
+        #expect(engine.session != standing, "the reload never opened a new session")
+        #expect(vm.phase == .loading, "the reload finished behind a decode scrim it never earned")
+        #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000)
+
+        // …and the reload really does complete: its own first live beat lifts the cover.
+        engine.push(.playing(3_000))
+        try await engine.settle()
+        #expect(vm.phase == .playing)
+        #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000)
+    }
+
+    /// The second half of the same window, and the one the user watches: the abandoned stream
+    /// keeps publishing ordinary `.observed` beats at the pre-scrub clock until its item is
+    /// detached. An observed beat RELEASES the seek hold by contract, so each one dragged the
+    /// dot from the destination back to where the scrub started — before the loading scrim even
+    /// appeared. The beat is not the hold's to judge; it belongs to a session that is over.
+    @Test("a standing-session beat inside the reload window cannot move the clock")
+    func standingSessionBeatsInsideTheReloadWindowCannotMoveTheClock() async throws {
+        let gate = ReloadResolveGate()
+        let (vm, engines) = try await makeReanchorVM(at: 600, resolve: { _, _, _, _ in
+            await gate.parkIfReload()
+            return PlayerFixtures.resolvedMultiTrackTranscode()
+        })
+        let engine = engines.live
+        let standing = engine.session
+
+        let commit = Task {
+            await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        }
+        await waitUntil("the reload never reached its re-resolve") { gate.parked }
+
+        engine.push(.playing(600, provenance: .observed), from: standing)
+        try await engine.settle()
+
+        #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000,
+                "the dot jumped back to where the scrub started")
+        #expect(vm.seekHold != nil, "the abandoned stream's observed beat released the hold")
+        #expect(vm.phase == .loading)
+
+        gate.release()
+        await commit.value
+        #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000)
+    }
+
+    /// The rule's other half: closing the session at the decision point is only correct because
+    /// the one path that puts the OLD stream back on screen puts its session back with it.
+    /// Without the restore, `fallBackAfterFailedSwitch` would resume a stream whose every beat
+    /// the view model drops — a clock frozen over playing video.
+    @Test("a failed re-resolve restores the standing session, and its beats move the clock again")
+    func failedReloadRestoresTheStandingSession() async throws {
+        nonisolated(unsafe) var calls = 0
+        let (vm, engines) = try await makeReanchorVM(at: 600, resolve: { _, _, _, _ in
+            calls += 1
+            if calls == 2 { throw AppError.playback(.resourceUnavailable) }
+            return PlayerFixtures.resolvedMultiTrackTranscode()
+        })
+        let engine = engines.live
+        let standing = engine.session
+
+        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        #expect(engine.session == standing, "the failed reload opened a session anyway")
+        #expect(engine.calls.last == "play", "the fallback never resumed the old stream")
+
+        engine.push(.playing(640))
+        try await engine.settle()
+        #expect(CMTimeGetSeconds(vm.currentPosition) == 640,
+                "the resumed stream is playing with every beat dropped")
+    }
+
     /// A paused scrub's re-anchor is re-paused by `commitScrubSeek` and may never emit
     /// `.playing` at all. On VLC a seek committed while paused keeps projecting until playback
     /// resumes — its extrapolation freezes ON the target, which IS the correct paused
