@@ -1248,6 +1248,81 @@ struct PlayerViewModelTests {
         }
     }
 
+    // MARK: - The session stamp — which media a beat is about
+
+    /// The device-diagnosed defect in one beat, with no ordering to arrange. A re-anchor kills
+    /// the outgoing encode job before the replacement resolves, so the item it left behind
+    /// fails on its yanked playlist (`-19602`); that `.failed` can take its MainActor turn long
+    /// after the reload finished, because the stream buffers. It carries the session the reload
+    /// replaced, and that is the whole test — a flag raised for the duration of the reload was
+    /// cleared on the RELOAD's timeline, while the beat is drained on the consumer's.
+    @Test("a beat stamped with the session a reload replaced never reaches the view model")
+    func supersededSessionBeatIsDropped() async throws {
+        let (vm, engines) = try await makeReanchorVM(at: 600)
+        let engine = engines.live
+        let outgoing = engine.session
+
+        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        #expect(engine.session != outgoing, "the reload never opened a new session")
+
+        engine.push(.failed(.assetNotPlayable), from: outgoing)
+        try await engine.settle()
+
+        #expect(vm.phase == .loading, "the dead session's failure landed on the live one")
+        #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000)
+    }
+
+    /// The sequence a `.loading`/`.ready` marker in the stream could not survive: the outgoing
+    /// item's inventory load — spawned at its own `.readyToPlay`, and only cancelled inside the
+    /// next `load()`, seconds into the re-anchor — lands `.ready` first, and the item then fails
+    /// on its yanked playlist. A boundary that any `.ready` may lift is disarmed by the first
+    /// beat and walked through by the second. A stamp is not liftable by the session it excludes.
+    @Test("a superseded session's late .ready lifts nothing for the failure behind it")
+    func supersededReadyOpensNothing() async throws {
+        let (vm, engines) = try await makeReanchorVM(at: 600)
+        let engine = engines.live
+        let outgoing = engine.session
+        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+
+        engine.push(.ready(duration: CMTime(seconds: 7_200, preferredTimescale: 600),
+                           tracks: TrackInventory(audio: [], subtitles: [],
+                                                  selectedAudioID: nil, selectedSubtitleID: nil)),
+                    from: outgoing)
+        engine.push(.failed(.assetNotPlayable), from: outgoing)
+        try await engine.settle()
+
+        #expect(vm.phase == .loading)
+        #expect(vm.availableAudioTracks.count == 3, "the dead session's inventory replaced the menus")
+    }
+
+    /// An exit landing inside the reload's re-resolve abandons it, and the OLD session is still
+    /// the one mounted. Nothing may be left armed that swallows its beats: the reload never
+    /// opened a session, so the standing one is still the live one.
+    @Test("an abandoned reload leaves the standing session's beats flowing")
+    func abandonedReloadArmsNothing() async throws {
+        nonisolated(unsafe) var callCount = 0
+        nonisolated(unsafe) var triggerExit: (@MainActor () -> Void)? = nil
+        let (vm, engines) = try await makeReanchorVM(at: 600, resolve: { _, _, _, _ in
+            callCount += 1
+            if callCount == 2 {
+                await MainActor.run { triggerExit?() }
+                throw AppError.playback(.resourceUnavailable)
+            }
+            return PlayerFixtures.resolvedMultiTrackTranscode()
+        })
+        let engine = engines.live
+        triggerExit = { vm.beginExit() }
+        let standing = engine.session
+
+        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        #expect(engine.session == standing, "the abandoned reload opened a session anyway")
+
+        engine.push(.playing(640))
+        try await engine.settle()
+        #expect(CMTimeGetSeconds(vm.currentPosition) == 640,
+                "the abandoned reload left something armed that swallows the live session's beats")
+    }
+
     /// A paused scrub's re-anchor is re-paused by `commitScrubSeek` and may never emit
     /// `.playing` at all. On VLC a seek committed while paused keeps projecting until playback
     /// resumes — its extrapolation freezes ON the target, which IS the correct paused

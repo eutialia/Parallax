@@ -1,7 +1,8 @@
 import Foundation
 
 /// The `(stream, continuation)` pair every `PlaybackEngine` publishes its beats on,
-/// pre-seeded with `.idle`. Both `AVKitEngine` and `VLCKitEngine` construct their
+/// pre-seeded with an `.idle` stamped `PlaybackSessionID.none` — no session has been opened
+/// yet, so no consumer holding one adopts it. Both `AVKitEngine` and `VLCKitEngine` construct their
 /// `state`/`continuation` stored properties from this single factory — the buffering
 /// policy and its rationale used to be duplicated verbatim in each engine's `init`.
 enum PlaybackStateStream {
@@ -12,11 +13,11 @@ enum PlaybackStateStream {
     /// MainActor consumer ever queues. It only sheds stale intermediate positions
     /// under a real stall, which the next beat supersedes anyway.
     static func makeStream() -> (
-        stream: AsyncStream<PlaybackState>,
-        continuation: AsyncStream<PlaybackState>.Continuation
+        stream: AsyncStream<PlaybackBeat>,
+        continuation: AsyncStream<PlaybackBeat>.Continuation
     ) {
-        let (stream, continuation) = AsyncStream<PlaybackState>.makeStream(bufferingPolicy: .bufferingNewest(32))
-        continuation.yield(.idle)
+        let (stream, continuation) = AsyncStream<PlaybackBeat>.makeStream(bufferingPolicy: .bufferingNewest(32))
+        continuation.yield(PlaybackBeat(session: .none, state: .idle))
         return (stream, continuation)
     }
 }

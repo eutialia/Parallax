@@ -15,31 +15,34 @@ import Foundation
 ///
 /// No SwiftUI/Combine (package rule): a bare `Task` + `Duration`, `@MainActor` because the engines are
 /// and `onExpiry` mutates engine state. Shape mirrors `LoadWatchdog`; unlike it, `onExpiry` is bound at
-/// `init` (the wiring calls bare `arm()`/`disarm()` from several transport sites without re-passing it).
+/// `init` (the wiring calls bare `arm(for:)`/`disarm()` from several transport sites without re-passing
+/// it) — so the SESSION travels through `arm(for:)` instead, and the expiry is handed back the session
+/// whose stall it was armed on. A watchdog armed for media a reload has already replaced must not fail
+/// the media that replaced it.
 @MainActor
 final class StallWatchdog {
     private var task: Task<Void, Never>?
     private let deadline: Duration
-    private let onExpiry: @MainActor () -> Void
+    private let onExpiry: @MainActor (PlaybackSessionID) -> Void
 
     /// 45s default — the single source both engines share (each constructs `StallWatchdog { … }` with
     /// the default). Longer than `LoadWatchdog`'s 30s first-frame budget: a mid-stream stall gets more
     /// patience because a transient LAN/NAS hiccup or a Jellyfin transcode catching up can legitimately
     /// pause frames for tens of seconds before recovering on its own, and a false failure mid-movie is
     /// more disruptive than one at load. Wants a slow-network device pass.
-    init(deadline: Duration = .seconds(45), onExpiry: @escaping @MainActor () -> Void) {
+    init(deadline: Duration = .seconds(45), onExpiry: @escaping @MainActor (PlaybackSessionID) -> Void) {
         self.deadline = deadline
         self.onExpiry = onExpiry
     }
 
-    /// Start (or restart) the deadline. Idempotent: a prior armed timer is superseded so only the
-    /// latest fires — re-arming on each `.buffering` beat resets the clock.
-    func arm() {
+    /// Start (or restart) the deadline for `session`. Idempotent: a prior armed timer is superseded
+    /// so only the latest fires — re-arming on each `.buffering` beat resets the clock.
+    func arm(for session: PlaybackSessionID) {
         task?.cancel()
         task = Task { [deadline, onExpiry] in
             try? await Task.sleep(for: deadline)
             guard !Task.isCancelled else { return }
-            onExpiry()
+            onExpiry(session)
         }
     }
 

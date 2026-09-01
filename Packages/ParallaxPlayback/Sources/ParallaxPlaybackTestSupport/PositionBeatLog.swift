@@ -37,9 +37,9 @@ public final class PositionBeatLog {
     public init(_ engine: any PlaybackEngine) {
         let stream = engine.state
         task = Task { @MainActor [weak self] in
-            for await state in stream {
-                if case .failed(let error) = state { self?.failure = error }
-                guard let beat = PositionBeat(state) else { continue }
+            for await published in stream {
+                if case .failed(let error) = published.state { self?.failure = error }
+                guard let beat = PositionBeat(published.state) else { continue }
                 self?.beats.append(beat)
             }
         }

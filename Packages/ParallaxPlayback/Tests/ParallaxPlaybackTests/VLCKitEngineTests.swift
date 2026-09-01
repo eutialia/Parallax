@@ -80,8 +80,8 @@ struct VLCKitEngineTests {
 
         await engine.teardown()
         var positions: [Double] = []
-        for await state in engine.state {
-            if case .paused(let position, _, _, _) = state { positions.append(CMTimeGetSeconds(position)) }
+        for await beat in engine.state {
+            if case .paused(let position, _, _, _) = beat.state { positions.append(CMTimeGetSeconds(position)) }
         }
         #expect(positions == [42.0])
     }
@@ -160,8 +160,8 @@ struct VLCKitPauseBeatTests {
     private func drainPositions(_ engine: VLCKitEngine) async -> [Double] {
         await engine.teardown()
         var seconds: [Double] = []
-        for await state in engine.state {
-            switch state {
+        for await beat in engine.state {
+            switch beat.state {
             case .playing(let position, _, _, _), .paused(let position, _, _, _):
                 seconds.append(CMTimeGetSeconds(position))
             default:

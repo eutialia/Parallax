@@ -89,9 +89,9 @@ private final class NonHostingEngine: PlaybackEngine {
     nonisolated let capabilities = PlaybackEngineCapabilities(
         supportsPiP: true, supportsVideoAirPlay: true, supportsNowPlayingIntegration: true
     )
-    nonisolated let state = AsyncStream<PlaybackState> { $0.finish() }
+    nonisolated let state = AsyncStream<PlaybackBeat> { $0.finish() }
 
-    func load(_ asset: PlayableAsset) async throws {}
+    func load(_ asset: PlayableAsset) async throws -> PlaybackSessionID { .none }
     func play() async {}
     func pause() async {}
     func seek(to time: CMTime) async {}

@@ -80,7 +80,7 @@ struct PlaybackEngineStreamContractTests {
         let engine = kind.make()
         var iterator = engine.state.makeAsyncIterator()
         let first = await iterator.next()
-        guard case .idle = first else {
+        guard case .idle = first?.state else {
             Issue.record("expected .idle, got \(String(describing: first))")
             return
         }
@@ -95,7 +95,7 @@ struct PlaybackEngineStreamContractTests {
         await engine.teardown()
         // Any further buffered beats are allowed; the stream MUST terminate.
         while let value = await iterator.next() {
-            if case .idle = value { continue }
+            if case .idle = value.state { continue }
             break
         }
         let terminal = await iterator.next()
@@ -165,8 +165,8 @@ struct AVKitSubtitleSuppressionTests {
         var iterator = engine.state.makeAsyncIterator()
         try await engine.load(.fixture(url: Self.subtitledFixture, engineSubtitlesDisabled: disabled))
         while let beat = await iterator.next() {
-            if case .ready(_, let tracks) = beat { return tracks }
-            if case .failed(let error) = beat { throw error }
+            if case .ready(_, let tracks) = beat.state { return tracks }
+            if case .failed(let error) = beat.state { throw error }
         }
         Issue.record("the engine never reached .ready")
         return .empty
@@ -270,8 +270,8 @@ struct AVKitSeekSettleTests {
         var iterator = engine.state.makeAsyncIterator()
         try await engine.load(.fixture(url: AVKitFixtures.subtitled))
         while let beat = await iterator.next() {
-            if case .ready = beat { return engine }
-            if case .failed(let error) = beat { throw error }
+            if case .ready = beat.state { return engine }
+            if case .failed(let error) = beat.state { throw error }
         }
         Issue.record("the engine never reached .ready")
         return engine
@@ -501,13 +501,13 @@ struct AVKitWatchdogExpiryTests {
     func loadTimeoutIsItsOwnFailure() async throws {
         let engine = AVKitEngine()
         var iterator = engine.state.makeAsyncIterator()
-        try await engine.load(.fixture(url: AVKitFixtures.tiny))
+        let session = try await engine.load(.fixture(url: AVKitFixtures.tiny))
 
-        engine.handleLoadTimeout()
+        engine.handleLoadTimeout(from: session)
 
         var reported: PlaybackError?
         while let beat = await iterator.next() {
-            if case .failed(let error) = beat { reported = error; break }
+            if case .failed(let error) = beat.state { reported = error; break }
         }
         #expect(reported == .loadTimedOut)
         await engine.teardown()
@@ -519,13 +519,13 @@ struct AVKitWatchdogExpiryTests {
     func stallTimeoutKeepsItsCase() async throws {
         let engine = AVKitEngine()
         var iterator = engine.state.makeAsyncIterator()
-        try await engine.load(.fixture(url: AVKitFixtures.tiny))
+        let session = try await engine.load(.fixture(url: AVKitFixtures.tiny))
 
-        engine.handleStallTimeout()
+        engine.handleStallTimeout(from: session)
 
         var reported: PlaybackError?
         while let beat = await iterator.next() {
-            if case .failed(let error) = beat { reported = error; break }
+            if case .failed(let error) = beat.state { reported = error; break }
         }
         #expect(reported == .networkStalled)
         await engine.teardown()
@@ -540,12 +540,12 @@ struct AVKitWatchdogExpiryTests {
     func watchdogSnapshotIsTakenBeforeTheFailure() async throws {
         let engine = AVKitEngine()
         var iterator = engine.state.makeAsyncIterator()
-        try await engine.load(.fixture(url: AVKitFixtures.tiny))
+        let session = try await engine.load(.fixture(url: AVKitFixtures.tiny))
         while let beat = await iterator.next() {
-            if case .ready = beat { break }
+            if case .ready = beat.state { break }
         }
 
-        let snapshot = engine.handleLoadTimeout()
+        let snapshot = engine.handleLoadTimeout(from: session)
         await engine.teardown()
 
         let info = try #require(snapshot, "the watchdog logged nothing at all")
@@ -559,20 +559,112 @@ struct AVKitWatchdogExpiryTests {
     @Test("a watchdog that fires after teardown publishes nothing")
     func expiryAfterTeardownIsANoOp() async throws {
         let engine = AVKitEngine()
-        try await engine.load(.fixture(url: AVKitFixtures.tiny))
+        let session = try await engine.load(.fixture(url: AVKitFixtures.tiny))
         await engine.teardown()
 
-        engine.handleLoadTimeout()
-        engine.handleStallTimeout()
+        engine.handleLoadTimeout(from: session)
+        engine.handleStallTimeout(from: session)
 
         // The stream is finished, so a beat published here could only arrive as a buffered
         // leftover ahead of the terminal nil.
         var iterator = engine.state.makeAsyncIterator()
         while let beat = await iterator.next() {
-            if case .failed(let error) = beat {
+            if case .failed(let error) = beat.state {
                 Issue.record("a torn-down engine published \(error)")
                 break
             }
+        }
+    }
+}
+
+/// Which of the engine's item-scoped callbacks is being driven from a session the reload has
+/// already replaced. Every one of them is live for seconds after a re-anchor arms: KVO and
+/// notification blocks sit on the main run loop, the inventory load is only cancelled inside the
+/// NEXT `load()`, and both watchdogs are timers with their own deadline.
+enum SupersededCallback: String, CaseIterable, CustomTestStringConvertible {
+    case statusKVO
+    case endNotification
+    case periodicTick
+    case trackInventory
+    case loadWatchdog
+    case stallWatchdog
+
+    var testDescription: String { rawValue }
+}
+
+/// A reload keeps the AVPlayer (so the surface holds its last frame) and swaps only the item,
+/// which leaves every callback the OUTGOING media installed in flight. On a transcode re-anchor
+/// the outgoing HLS playlist has been yanked out from under that item by then — the encode job is
+/// killed before the replacement resolves — so what those callbacks run with is a failure, and a
+/// `.failed` adopted as the live session's is the "Couldn't decode this file" scrim over a reload
+/// that is buffering perfectly well.
+///
+/// The race cannot be held open against real AVFoundation, so the superseded session is captured
+/// and its callbacks delivered by hand. Everything around them is the real engine.
+// `.timeLimit`: each case drains a real AVFoundation stream until the new item is `.ready`.
+@Suite("AVKitEngine — a superseded session publishes nothing", .serialized, .timeLimit(.minutes(2)))
+@MainActor
+struct AVKitSupersededSessionTests {
+
+    @Test("no callback of a superseded session reaches the stream",
+          arguments: SupersededCallback.allCases)
+    func supersededSessionPublishesNothing(callback: SupersededCallback) async throws {
+        let engine = AVKitEngine()
+        var iterator = engine.state.makeAsyncIterator()
+
+        // Session A, driven to the state this callback needs. `.statusKVO` wants an item that
+        // really failed — nothing here stubs `status`, AVFoundation owns it.
+        let staleURL = callback == .statusKVO
+            ? URL(fileURLWithPath: "/dev/null/not-a-movie.mp4")
+            : try AVKitFixtures.tiny
+        let stale = try await engine.load(.fixture(url: staleURL))
+        while let beat = await iterator.next() {
+            if case .failed = beat.state { break }
+            if case .ready = beat.state { break }
+        }
+        let staleItem = try #require(engine.currentItem)
+        // The inventory load is spawned while the session is still live and only cancelled
+        // inside the NEXT `load()` — seconds into a re-anchor. That is the race, so it starts
+        // here rather than being driven after the boundary.
+        if callback == .trackInventory {
+            engine.handleStatusChange(staleItem, from: stale)
+        }
+
+        // Session B: the reload. Everything above is superseded from this line on.
+        let live = try await engine.load(.fixture(url: AVKitFixtures.tiny))
+        #expect(live != stale, "the reload never opened a new session")
+
+        switch callback {
+        case .statusKVO:
+            engine.handleStatusChange(staleItem, from: stale)
+        case .endNotification:
+            engine.handleEnded(from: stale)
+        case .periodicTick:
+            engine.emitTimeUpdate(at: CMTime(seconds: 1, preferredTimescale: 600),
+                                  of: staleItem, from: stale)
+        case .trackInventory:
+            break   // already in flight, and awaiting a real media-selection load
+        case .loadWatchdog:
+            engine.handleLoadTimeout(from: stale)
+        case .stallWatchdog:
+            engine.handleStallTimeout(from: stale)
+        }
+
+        // The live session's own `.ready` is the sync point for every synchronous callback:
+        // `yield` is synchronous, so anything they published is already ahead of it in the
+        // buffer.
+        while let beat = await iterator.next() {
+            #expect(beat.session != stale,
+                    "a superseded \(callback.rawValue) beat reached the stream: \(beat.state)")
+            if case .ready = beat.state, beat.session == live { break }
+        }
+        // …and a breath for the one callback that lands asynchronously, before the teardown
+        // closes the stream on it.
+        try await Task.sleep(for: .milliseconds(300))
+        await engine.teardown()
+        while let beat = await iterator.next() {
+            #expect(beat.session != stale,
+                    "a superseded \(callback.rawValue) beat reached the stream late: \(beat.state)")
         }
     }
 }

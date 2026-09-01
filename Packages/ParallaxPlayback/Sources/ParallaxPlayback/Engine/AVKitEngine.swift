@@ -12,8 +12,18 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         supportsNowPlayingIntegration: true
     )
 
-    public nonisolated let state: AsyncStream<PlaybackState>
-    private nonisolated let continuation: AsyncStream<PlaybackState>.Continuation
+    public nonisolated let state: AsyncStream<PlaybackBeat>
+    private nonisolated let continuation: AsyncStream<PlaybackBeat>.Continuation
+
+    /// The session `load()` last opened. Every beat is stamped with the session of the
+    /// callback that produced it and `yield(_:from:)` drops anything that is not this one —
+    /// which is what a reload needs, since it keeps the player, the stream and the
+    /// continuation and swaps only the item underneath them.
+    ///
+    /// `private(set)` so a test can capture a session, reload past it, and drive that
+    /// session's callbacks by hand; the race itself (a run-loop block already enqueued when
+    /// `load()` replaced the item) is not one a test can hold open against real AVFoundation.
+    private(set) var session: PlaybackSessionID = .none
 
     private let player = AVPlayer()
     public nonisolated var avPlayer: AVPlayer { player }
@@ -31,7 +41,10 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     /// Live playback clock for the client-side subtitle overlay.
     public nonisolated var currentTime: CMTime { player.currentTime() }
 
-    private var currentItem: AVPlayerItem?
+    /// The item the player is playing right now. `private(set)` rather than private so a test
+    /// can hold a SUPERSEDED item across a reload and drive its callbacks against the session
+    /// they were installed for.
+    private(set) var currentItem: AVPlayerItem?
     private var pendingStartTime: CMTime?
     /// The user-selected playback speed. Stored so `play()` (which resumes at
     /// `defaultRate`) honors it, and so a mid-playback change applies immediately.
@@ -56,7 +69,9 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     /// disarmed by any transport beat / terminal state / detach; expiry yields
     /// `.failed(.networkStalled)`. `lazy` so the
     /// `onExpiry` closure can capture `self`. See `StallWatchdog`.
-    private lazy var stallWatchdog = StallWatchdog { [weak self] in self?.handleStallTimeout() }
+    private lazy var stallWatchdog = StallWatchdog { [weak self] session in
+        self?.handleStallTimeout(from: session)
+    }
     /// Loads the media-selection inventory off the actor. Held so `teardown()`
     /// can cancel it — otherwise a slow `loadMediaSelectionGroup` keeps the
     /// AVPlayerItem (and its open network connection) alive after dismissal.
@@ -148,6 +163,17 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         }
     }
 
+    /// The ONE way a beat leaves this engine. A callback publishes with the session it was
+    /// INSTALLED for, so a KVO block, a notification, a periodic tick, an inventory load or an
+    /// armed watchdog left over from media a reload replaced yields into the void instead of
+    /// onto the live session's stream. Every ad-hoc staleness test this engine used to carry
+    /// (`item === currentItem`, `Task.isCancelled` on the inventory, `currentItem != nil` in
+    /// the watchdogs, and nothing at all on the periodic observer) collapses into this.
+    private func yield(_ state: PlaybackState, from session: PlaybackSessionID) {
+        guard session == self.session else { return }
+        continuation.yield(PlaybackBeat(session: session, state: state))
+    }
+
     /// Emits the beat matching the player's transport state the moment it flips:
     /// `.waitingToPlayAtSpecifiedRate` → `.buffering` (mid-stream stall — a seek
     /// past the buffer or a network underrun), `.playing` → `.playing` (snappy
@@ -155,18 +181,19 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     /// owned by `pause()` and the periodic observer.
     private func handleTimeControlChange() {
         guard let item = currentItem, item.status == .readyToPlay else { return }
+        let session = self.session
         loadWatchdog.disarm()   // transport is responding — the load is alive
         let position = player.currentTime()
         let buffered = Self.bufferedEnd(of: item, at: position)
         switch player.timeControlStatus {
         case .waitingToPlayAtSpecifiedRate:
-            stallWatchdog.arm()   // a mid-stream stall — bound it so a dead socket can't buffer forever
-            continuation.yield(.buffering(position: position, duration: item.duration,
-                                          buffered: buffered, provenance: clockProvenance))
+            stallWatchdog.arm(for: session)   // a mid-stream stall — bound it so a dead socket can't buffer forever
+            yield(.buffering(position: position, duration: item.duration,
+                             buffered: buffered, provenance: clockProvenance), from: session)
         case .playing:
             stallWatchdog.disarm()   // frames are flowing again — the stall cleared
-            continuation.yield(.playing(position: position, duration: item.duration,
-                                        buffered: buffered, provenance: clockProvenance))
+            yield(.playing(position: position, duration: item.duration,
+                           buffered: buffered, provenance: clockProvenance), from: session)
         case .paused:
             stallWatchdog.disarm()   // user/transport paused — not a stall
             break
@@ -199,14 +226,17 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         return AVTextStyleRule(textMarkupAttributes: attributes).map { [$0] }
     }()
 
-    public func load(_ asset: PlayableAsset) async throws {
+    @discardableResult
+    public func load(_ asset: PlayableAsset) async throws -> PlaybackSessionID {
         // Reload-safe: a transcode track switch loads a NEW asset into this same
         // engine, keeping the AVPlayer + its mounted layer (so the swap holds the
         // last frame instead of blinking to black). Detach the previous item's
         // observers first — otherwise the periodic-time observer leaks and the KVO /
-        // end observers double-fire.
+        // end observers double-fire. That is also where the new session is opened, which is
+        // what makes everything the outgoing item still has in flight stale from here on.
         detachCurrentItem()
-        continuation.yield(.loading)
+        let session = self.session
+        yield(.loading, from: session)
         pendingStartTime = asset.startTime
         engineSubtitlesDisabled = asset.engineSubtitlesDisabled
         mediaStreams = asset.mediaStreams
@@ -228,7 +258,7 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         statusObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
             // KVO delivers on the main run loop for an AVPlayerItem created here.
             MainActor.assumeIsolated {
-                self?.handleStatusChange(item)
+                self?.handleStatusChange(item, from: session)
             }
         }
 
@@ -238,7 +268,7 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
             queue: .main
         ) { [weak self] time in
             MainActor.assumeIsolated {
-                self?.emitTimeUpdate(at: time)
+                self?.emitTimeUpdate(at: time, of: item, from: session)
             }
         }
 
@@ -248,7 +278,7 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                self?.handleEnded()
+                self?.handleEnded(from: session)
             }
         }
 
@@ -293,6 +323,7 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
                 Task { @MainActor in self?.seekDidFinish(generation: generation) }
             }
         }
+        return session
     }
 
     /// Closes one seek's slot in `inFlightSeeks`. A completion from a DISCARDED item is
@@ -317,37 +348,40 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     }
 
     public func play() async {
+        let session = self.session
         player.playImmediately(atRate: desiredRate)
         // Deadline the load: a URL that never reaches `.readyToPlay` (dead mount, stuck segment)
         // can't strand the player on the scrim. Disarmed by the first beat / `.ready` / terminal /
         // detach.
-        loadWatchdog.arm { [weak self] in self?.handleLoadTimeout() }
+        loadWatchdog.arm { [weak self, session] in
+            self?.handleLoadTimeout(from: session)
+        }
     }
 
     /// The item never became playable within the watchdog deadline — surface `.failed` so the
-    /// error scrim takes over instead of an endless spinner. Guarded by `currentItem` so a beat
-    /// that already disarmed makes this a no-op.
+    /// error scrim takes over instead of an endless spinner. Scoped to the session the deadline
+    /// was armed for, so a reload's own `play()` cannot be failed by the deadline of the media
+    /// it replaced.
     ///
     /// `.loadTimedOut`, not `.assetNotPlayable`: nothing here says the asset is broken, and
     /// borrowing that case put "Couldn't decode this file" on a server that was merely slow.
     /// Internal so a test can drive the expiry without waiting out the real deadline.
     @discardableResult
-    func handleLoadTimeout() -> PlaybackDebugInfo? {
-        guard let item = currentItem else { return nil }
+    func handleLoadTimeout(from session: PlaybackSessionID) -> PlaybackDebugInfo? {
+        guard session == self.session, let item = currentItem else { return nil }
         let snapshot = logWatchdogExpiry("load", of: item)
-        continuation.yield(.failed(.loadTimedOut))
+        yield(.failed(.loadTimedOut), from: session)
         return snapshot
     }
 
     /// A mid-playback stall (`.buffering`) never recovered within the watchdog deadline — surface
     /// `.failed(.networkStalled)` so the "stream stalled and didn't recover" scrim + manual retry
-    /// take over instead of an eternal spinner. Guarded by `currentItem` so a beat that already
-    /// disarmed makes this a no-op (mirrors `handleLoadTimeout`).
+    /// take over instead of an eternal spinner. Session-scoped exactly like `handleLoadTimeout`.
     @discardableResult
-    func handleStallTimeout() -> PlaybackDebugInfo? {
-        guard let item = currentItem else { return nil }
+    func handleStallTimeout(from session: PlaybackSessionID) -> PlaybackDebugInfo? {
+        guard session == self.session, let item = currentItem else { return nil }
         let snapshot = logWatchdogExpiry("stall", of: item)
-        continuation.yield(.failed(.networkStalled))
+        yield(.failed(.networkStalled), from: session)
         return snapshot
     }
 
@@ -373,16 +407,17 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     }
 
     public func pause() async {
+        let session = self.session
         player.pause()
         stallWatchdog.disarm()   // an explicit pause is never a stall
         if let item = currentItem, item.status == .readyToPlay {
             let position = player.currentTime()
-            continuation.yield(.paused(
+            yield(.paused(
                 position: position,
                 duration: item.duration,
                 buffered: Self.bufferedEnd(of: item, at: position),
                 provenance: clockProvenance
-            ))
+            ), from: session)
         }
     }
 
@@ -419,6 +454,7 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         // resolves `finished == false`, so the leak self-closes there; that is AVFoundation's
         // choice on one OS, not a contract to build the commit path on.)
         guard currentItem != nil else { return }
+        let session = self.session
         // Counted BEFORE the echo below: that beat carries the target, not an observed
         // clock, so it is the first `.projected` beat of this seek's window. Stamped with the
         // batch it is issued in, so a reload that abandons it (`detachCurrentItem`) — or a
@@ -435,8 +471,8 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         // paused frame (no stall beat, no scrim). Emit the fetch explicitly.
         if let item = currentItem, item.status == .readyToPlay,
            Self.bufferedEnd(of: item, at: time) == nil {
-            continuation.yield(.buffering(position: time, duration: item.duration,
-                                          buffered: nil, provenance: .projected))
+            yield(.buffering(position: time, duration: item.duration,
+                             buffered: nil, provenance: .projected), from: session)
         }
         // Default (efficient) tolerance, not zero. Frame-exact seeking on an HLS
         // transcode is pathologically slow and can stall — it made scrubbing a 4K
@@ -471,12 +507,12 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         if player.timeControlStatus == .paused,
            let item = currentItem, item.status == .readyToPlay {
             let position = player.currentTime()
-            continuation.yield(.paused(
+            yield(.paused(
                 position: position,
                 duration: item.duration,
                 buffered: Self.bufferedEnd(of: item, at: position),
                 provenance: .observed
-            ))
+            ), from: session)
         }
     }
 
@@ -622,6 +658,11 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     /// new item on the same player). Deliberately does NOT finish the state stream or
     /// drop the AVPlayer, so a reload keeps the surface — and the layer — alive.
     private func detachCurrentItem() {
+        // Everything below belongs to media on its way out, and everything it still has in
+        // flight — a KVO block already on the run loop, an inventory load mid-await, an armed
+        // watchdog, a seek completion — carries the session it was installed for. Opening the
+        // next session here is what makes all of it stale at once.
+        session = session.next()
         // The discarded item owns every outstanding seek, and their completions may never
         // arrive (or may arrive long after the next stream is playing). Close all of those
         // windows at once — the counter would otherwise never drain and the NEXT stream's
@@ -757,9 +798,21 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
 
     // MARK: - Private
 
-    private func handleStatusChange(_ item: AVPlayerItem) {
+    /// KVO on the item's `status`. Internal, not private, so a test can drive it with a
+    /// superseded session — see `session`.
+    ///
+    /// The stamp is the whole reason a reload can't poison the new session: KVO blocks are
+    /// delivered on the main run loop, so one queued against the OUTGOING item still runs after
+    /// `load()` replaced it, and a transcode re-anchor kills the outgoing encode job seconds
+    /// before the replacement is attached — which is exactly when that item fails on its yanked
+    /// playlist (`CoreMediaErrorDomain -19602` on the session's `master.m3u8`,
+    /// device-confirmed). Published from the session this observer was installed for, that dead
+    /// item's `.failed` never leaves the engine; without it the app shows "Couldn't decode this
+    /// file" over a reload that is buffering perfectly well.
+    func handleStatusChange(_ item: AVPlayerItem, from session: PlaybackSessionID) {
         switch item.status {
         case .readyToPlay:
+            guard session == self.session else { break }   // a dead item disarms nothing
             loadWatchdog.disarm()   // item is playable — the load succeeded
             // (The resume seek already happened at load time, pre-ready — see
             // load(). Seeking here re-targeted an already-position-0 player.)
@@ -772,11 +825,10 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
             inventoryTask = Task { [weak self] in
                 guard let self else { return }
                 let tracks = await self.loadTrackInventory(of: item)
-                // A reload/teardown cancels this task (see line ~271). If that
-                // happened while loadTrackInventory was awaiting, a superseded
-                // item must not publish a stale `.ready`.
-                if Task.isCancelled { return }
-                self.continuation.yield(.ready(duration: duration, tracks: tracks))
+                // The stamp, not `Task.isCancelled`: this task is spawned at `.readyToPlay`
+                // and only cancelled inside the NEXT `load()` — seconds into a re-anchor —
+                // so the outgoing item's inventory can land long after the reload armed.
+                self.yield(.ready(duration: duration, tracks: tracks), from: session)
             }
         case .failed:
             // The item never became playable. Capture the concrete failure so a
@@ -797,9 +849,10 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
                 url=\((item.asset as? AVURLAsset)?.url.absoluteString ?? "<no-url>", privacy: .private(mask: .hash))
                 """
             )
+            guard session == self.session else { break }   // a dead item disarms nothing
             loadWatchdog.disarm()   // the item surfaced its own failure; don't also time out
             stallWatchdog.disarm()
-            continuation.yield(.failed(.assetNotPlayable))
+            yield(.failed(.assetNotPlayable), from: session)
         case .unknown:
             break
         @unknown default:
@@ -807,14 +860,25 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         }
     }
 
-    private func handleEnded() {
+    /// `didPlayToEndTimeNotification`, stamped like the status KVO and for the same reason: the
+    /// observer is removed by `detachCurrentItem`, but a block already enqueued on the main
+    /// queue still runs — and a stale `.ended` would end the app's session (stop report,
+    /// auto-advance to the next episode) on top of a reload that is still buffering.
+    /// Internal so a test can deliver a superseded session's notification by hand.
+    func handleEnded(from session: PlaybackSessionID) {
+        guard session == self.session else { return }
         loadWatchdog.disarm()
         stallWatchdog.disarm()
-        continuation.yield(.ended)
+        yield(.ended, from: session)
     }
 
-    private func emitTimeUpdate(at time: CMTime) {
-        guard let item = currentItem, item.status == .readyToPlay else { return }
+    /// The periodic observer, scoped to the item it was installed on and stamped with that
+    /// item's session. The readiness test that remains is NOT an identity check — the stamp is
+    /// that — it is what keeps a pre-ready tick's 00:00 clock and indefinite duration off the
+    /// stream. Internal so a test can deliver a superseded session's tick by hand.
+    func emitTimeUpdate(at time: CMTime, of item: AVPlayerItem, from session: PlaybackSessionID) {
+        guard item.status == .readyToPlay else { return }
+        guard session == self.session else { return }   // a dead item disarms no watchdog
         loadWatchdog.disarm()   // a periodic beat = the item is live; without this a redundant
                                 // play() while already playing (lock-screen/Bluetooth) re-arms the
                                 // watchdog with no timeControlStatus KVO to disarm it → false timeout
@@ -822,20 +886,20 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         switch player.timeControlStatus {
         case .paused:
             stallWatchdog.disarm()
-            continuation.yield(.paused(position: time, duration: item.duration,
-                                       buffered: buffered, provenance: clockProvenance))
+            yield(.paused(position: time, duration: item.duration,
+                          buffered: buffered, provenance: clockProvenance), from: session)
         case .waitingToPlayAtSpecifiedRate:
-            stallWatchdog.arm()   // periodic tick caught a stall the KVO edge didn't (re-arm resets the clock)
-            continuation.yield(.buffering(position: time, duration: item.duration,
-                                          buffered: buffered, provenance: clockProvenance))
+            stallWatchdog.arm(for: session)   // periodic tick caught a stall the KVO edge didn't (re-arm resets the clock)
+            yield(.buffering(position: time, duration: item.duration,
+                             buffered: buffered, provenance: clockProvenance), from: session)
         case .playing:
             stallWatchdog.disarm()
-            continuation.yield(.playing(position: time, duration: item.duration,
-                                        buffered: buffered, provenance: clockProvenance))
+            yield(.playing(position: time, duration: item.duration,
+                           buffered: buffered, provenance: clockProvenance), from: session)
         @unknown default:
             stallWatchdog.disarm()
-            continuation.yield(.playing(position: time, duration: item.duration,
-                                        buffered: buffered, provenance: clockProvenance))
+            yield(.playing(position: time, duration: item.duration,
+                           buffered: buffered, provenance: clockProvenance), from: session)
         }
     }
 
