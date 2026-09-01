@@ -370,6 +370,20 @@ final class PlayerViewModel {
     /// Nil before the first load and after a teardown: nothing to adopt.
     private(set) var activeSession: PlaybackSessionID?
 
+    /// The session a RELOAD opened has not published a live beat yet. Armed at the session
+    /// transition, and only where the outgoing frame is frozen under the reload cover — a cold
+    /// start and the auto-advance veil hold no frame — then consumed by that session's first
+    /// `.playing`/`.paused` beat.
+    ///
+    /// That beat carries two decisions a re-anchor cannot make any other way. It takes the
+    /// cover down: the reload force-resumes and `commitScrubSeek` re-pauses it, so a scrub
+    /// committed while PAUSED can go its whole life without ever publishing `.playing`, and the
+    /// heavy cover then sits over a rendered, healthy frame forever. And it opens the session
+    /// for reporting: the reload reset `didReportStart`, so with only `.playing` allowed to
+    /// report a start, Jellyfin never learned the new session at all — no progress, no stop
+    /// report, and the position the user re-anchored to was never persisted.
+    private var reloadAwaitingFirstLiveBeat = false
+
     /// The reactive-fallback hop `.failed` spawns (`attemptReactiveFallback`), stored so
     /// `stop()` can cancel it — closing the window where `retry()`/`resetForReplay` tear
     /// the session down while a pending hop is still in flight and would otherwise build
@@ -1534,6 +1548,10 @@ final class PlayerViewModel {
             // whose beats this view model adopts, and everything the media it replaced still
             // has in flight is stamped with a session that no longer matches.
             activeSession = try await engine.load(asset)
+            // A frozen surface at the session boundary IS the reload: `performTranscodeReload`
+            // froze the outgoing frame under the cover, and only this session's first live beat
+            // can take it back down.
+            reloadAwaitingFirstLiveBeat = surfaceFrozen
             // Last fence before audio starts: an exit that landed during load must
             // not be answered with play() on a player that's already dismissed.
             try checkStillActive()
@@ -2907,6 +2925,47 @@ final class PlayerViewModel {
         }
     }
 
+    /// The shared half of the two LIVE beats: a beat that proves the surface is rendering,
+    /// playing or not. Releases the held frame, and decides whether the surface may leave
+    /// `.loading` — `.playing` always may (frames are moving), a `.paused` beat only when it is
+    /// the reload's first, which is a SESSION question and belongs here rather than smuggled
+    /// out of a rendering helper's return value.
+    ///
+    /// Returns whether this was the reload's first live beat.
+    @discardableResult
+    private func noteLiveBeat(framesMoving: Bool) -> Bool {
+        // The exit fence is `unfreezeVideoSurface()`'s and it belongs there — while dismissing,
+        // the frozen frame is the card's, not this session's, and nothing may uncover it.
+        let firstAfterReload = reloadAwaitingFirstLiveBeat && !isExiting
+        reloadAwaitingFirstLiveBeat = false
+        unfreezeVideoSurface()
+        if framesMoving || firstAfterReload { phase = .playing }
+        return firstAfterReload
+    }
+
+    /// The reporting half of a live beat. `opensSession` — whether this beat may be the one
+    /// that reports PlaybackStart: every `.playing` beat may, and so may a re-anchor's first
+    /// live beat, which is a paused one whenever the user scrubbed while paused. Jellyfin
+    /// expects a start before any progress, so a `.paused` beat that is neither (a remote/PiP
+    /// pause landing during a cold start's buffering) still reports nothing.
+    private func reportLiveBeat(position: CMTime, isPaused: Bool, opensSession: Bool) async {
+        guard let resolved else {
+            // SMB/local: no server session, so the beat persists the position locally instead
+            // (same throttle; a pause right before dismissal is covered by stop()'s final save,
+            // gated only on a nonzero position — see stop()).
+            if smbSession != nil { saveSMBResumeThrottled() }
+            return
+        }
+        if didReportStart {
+            await playbackInfo.reportProgress(beat(position: position, isPaused: isPaused, from: resolved))
+        } else if opensSession {
+            didReportStart = true
+            await playbackInfo.reportStart(beat(position: position, isPaused: isPaused, from: resolved))
+            // The session is live: ffmpeg is running, so probe what it's actually doing to the video.
+            startDeliveryProbe(for: resolved)
+        }
+    }
+
     /// Every beat here has already proved it belongs to the live engine AND the live session
     /// (`handle(_:from:)`), so there is nothing left to gate on: a reload's outgoing beats, a
     /// dying engine's trailing ones and a superseded item's late callbacks never arrive.
@@ -2978,12 +3037,7 @@ final class PlayerViewModel {
                 }
             }
         case .playing(let position, let duration, let buffered, let provenance):
-            phase = .playing
-            // First live beat after an engine-reusing reload (beats are dropped while
-            // `isSwitchingTracks`): the new session is rendering, so release the held frame.
-            // Not unconditionally: `unfreezeVideoSurface()` fences itself while exiting, where
-            // the freeze belongs to the dismissal and has to outlive the session.
-            unfreezeVideoSurface()
+            noteLiveBeat(framesMoving: true)
             // First `.playing` beat of this session: land the startup metric and consume
             // the anchor so a later `.playing` (resume-from-pause, post-stall) never
             // overwrites it. `nil` when this beat isn't the first (already consumed).
@@ -3000,19 +3054,7 @@ final class PlayerViewModel {
             nowPlaying.update(position: currentPosition, duration: duration, isPlaying: true, title: itemTitle)
             // Jellyfin: report to the server session. SMB: persist the position locally —
             // same beat, same ~10s throttle discipline as the progress report.
-            if let resolved {
-                if !didReportStart {
-                    didReportStart = true
-                    await playbackInfo.reportStart(beat(position: position, isPaused: false, from: resolved))
-                    // First playing beat of this (fresh or track-switched) session: ffmpeg
-                    // is now running, so probe what it's actually doing to the video.
-                    startDeliveryProbe(for: resolved)
-                } else {
-                    await playbackInfo.reportProgress(beat(position: position, isPaused: false, from: resolved))
-                }
-            } else if smbSession != nil {
-                saveSMBResumeThrottled()
-            }
+            await reportLiveBeat(position: position, isPaused: false, opensSession: true)
             // One-shot SMB thumbnail backfill: first `.playing` only (the flag is consumed
             // here; resume-from-pause / post-stall beats skip it). Schedules an 8s-delayed
             // low-priority capture so startup churn and an often-black first frame don't
@@ -3022,30 +3064,19 @@ final class PlayerViewModel {
                 scheduleThumbnailBackfill()
             }
         case .paused(let position, let duration, let buffered, let provenance):
-            // A LIVE beat like .playing: a paused scrub's re-anchor is re-paused by
-            // `commitScrubSeek` and may never emit .playing, and a paused AVPlayer still
-            // renders the seeked-to frame, so the held frame is released here too. Again
-            // through the exit fence inside `unfreezeVideoSurface()`, which is exactly what
-            // stops `endAudio()`'s synchronous `.paused` beat from uncovering a closing vout.
-            unfreezeVideoSurface()
+            // A LIVE beat like `.playing`: a paused AVPlayer still renders the frame it seeked
+            // to, so this releases the held frame — and when it is the re-anchor's first live
+            // beat it also takes the cover down and opens the session for reporting. `.playing`
+            // as a phase means "the surface is live", not "frames are moving": the transport
+            // glyph reads `desiredPlaying`.
+            let firstAfterReload = noteLiveBeat(framesMoving: false)
             isPlaying = false
             clearStall()
             publish(position: position, provenance: provenance)
             applyDuration(duration)
             bufferedTo = buffered
             nowPlaying.update(position: currentPosition, duration: duration, isPlaying: false, title: itemTitle)
-            // Never report progress for a session that never reported start (a remote/PiP
-            // pause can land during buffering, before the first .playing beat) — Jellyfin
-            // expects PlaybackStart before any Progress. Mirrors the .playing branch's gate.
-            // The `if let resolved` also skips the SMB path, which has no server session —
-            // it persists the pause point locally instead (same throttle; a pause right
-            // before dismissal is covered by stop()'s final save, gated only on a nonzero
-            // position — see stop()).
-            if let resolved, didReportStart {
-                await playbackInfo.reportProgress(beat(position: position, isPaused: true, from: resolved))
-            } else if resolved == nil, smbSession != nil {
-                saveSMBResumeThrottled()
-            }
+            await reportLiveBeat(position: position, isPaused: true, opensSession: firstAfterReload)
         case .buffering(let position, let duration, let buffered, let provenance):
             // Phase and isPlaying are untouched: the surface stays up and the
             // user's intent is still "playing" — only the stall flag changes,

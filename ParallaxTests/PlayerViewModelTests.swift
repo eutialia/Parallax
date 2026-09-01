@@ -1248,6 +1248,59 @@ struct PlayerViewModelTests {
         }
     }
 
+    // MARK: - The re-anchor's first live beat
+
+    /// A scrub committed while PAUSED re-anchors, and `commitScrubSeek` re-pauses the reload the
+    /// instant it force-resumes — so that session can go its whole life without ever publishing
+    /// `.playing`. Its first `.paused` beat is the only live beat it will ever have, and it has
+    /// to carry both jobs: take the reload cover down (it used to sit over a rendered, healthy
+    /// frame forever), and report PlaybackStart, which the reload's own `didReportStart = false`
+    /// made mandatory — without it Jellyfin never learns the session exists, so no progress and
+    /// no stop report land, and the position the user re-anchored to is never persisted.
+    @Test("a re-anchor that lands paused lifts the cover AND reports its start")
+    func pausedFirstLiveBeatAfterReloadOpensTheSession() async throws {
+        let reporting = StubPlaybackReporting()
+        let (vm, engines) = try await makeReanchorVM(at: 600, reporting: reporting)
+        let engine = engines.live
+
+        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: false)
+        #expect(vm.phase == .loading)   // the reload cover, over the frozen frame
+
+        // The reloaded session's ONLY live beat: paused, at the target, and observed.
+        engine.push(.paused(3_000))
+        try await engine.settle()
+
+        #expect(vm.phase == .playing, "the reload cover outlived the session that was to lift it")
+        let started = (await reporting.events).filter {
+            if case .start = $0 { return true } else { return false }
+        }
+        #expect(started.count == 2, "the re-anchored session never reported a start")
+
+        await vm.stop()
+        let stopped = (await reporting.events).filter {
+            if case .stopped = $0 { return true } else { return false }
+        }
+        #expect(stopped.count == 2, "a session that never started can never stop")
+    }
+
+    /// The control: a `.paused` beat that is NOT a reload's first live beat changes neither the
+    /// veil nor the reporting state. A cold start's veil holds no frame, and Jellyfin must not
+    /// see a start for a session that has not rendered anything.
+    @Test("a paused beat during a cold start neither lifts the veil nor opens the session")
+    func pausedBeatDuringColdStartOpensNothing() async throws {
+        let reporting = StubPlaybackReporting()
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let vm = makePlayerVM(reporting: reporting, engine: engine,
+                              resolved: PlayerFixtures.resolvedTranscodedMKV())
+        await vm.start(item: PlayerFixtures.movieDetail())
+
+        engine.push(.paused(30))
+        try await engine.settle()
+
+        #expect(vm.phase == .loading)
+        #expect(await reporting.events.isEmpty)
+    }
+
     // MARK: - The session stamp — which media a beat is about
 
     /// The device-diagnosed defect in one beat, with no ordering to arrange. A re-anchor kills
