@@ -113,12 +113,12 @@ struct PlayerViewModelSegmentTests {
     /// `fetchDetail` echoing an episode detail for whatever id is requested.
     private func successionVM(
         resolvedIDs: @escaping @Sendable (ItemID) -> Void,
-        engines: FakeEngineSink,
+        engines: EngineLedger,
         adjacent: @escaping @Sendable (ItemID, ItemID) async -> AdjacentEpisodes
     ) -> PlayerViewModel {
         makePlayerVM(
             resolve: { id, _, _, _ in resolvedIDs(id); return PlayerFixtures.resolvedEpisode(id: id.rawValue) },
-            engineFactory: { _, _ in engines.make() },
+            engineFactory: { id, _ in engines.make(id) },
             fetchDetail: { id in PlayerFixtures.episodeDetail(id: id.rawValue) },
             fetchAdjacent: adjacent
         )
@@ -127,7 +127,7 @@ struct PlayerViewModelSegmentTests {
     @Test("end-of-video auto-advances to the next episode when one exists")
     func endAutoAdvancesToNext() async throws {
         let ids = IDRecorder()
-        let engines = FakeEngineSink()
+        let engines = EngineLedger()
         let vm = successionVM(
             resolvedIDs: { ids.append($0) },
             engines: engines,
@@ -153,7 +153,7 @@ struct PlayerViewModelSegmentTests {
     @Test("end-of-video on a finale (no next) does not auto-advance")
     func endOnFinaleDoesNotAdvance() async throws {
         let ids = IDRecorder()
-        let engines = FakeEngineSink()
+        let engines = EngineLedger()
         let vm = successionVM(resolvedIDs: { ids.append($0) }, engines: engines, adjacent: { _, _ in .none })
         await vm.start(item: PlayerFixtures.episodeDetail(id: "ep-9"))
         await vm.debugAwaitSegmentsLoad()
@@ -170,7 +170,7 @@ struct PlayerViewModelSegmentTests {
     @Test("playPreviousEpisode replays the previous neighbor")
     func playPreviousReplaysPrevious() async throws {
         let ids = IDRecorder()
-        let engines = FakeEngineSink()
+        let engines = EngineLedger()
         let vm = successionVM(
             resolvedIDs: { ids.append($0) },
             engines: engines,
@@ -198,17 +198,3 @@ private final class IDRecorder: @unchecked Sendable {
     func append(_ id: ItemID) { values.append(id) }
 }
 
-/// A factory sink that mints a distinct FakePlaybackEngine per call and keeps the
-/// list — episode swaps tear the old engine's stream down, so each item needs its
-/// own engine (a single shared instance's finished stream would starve the next).
-@MainActor
-private final class FakeEngineSink {
-    private(set) var engines: [FakePlaybackEngine] = []
-    var first: FakePlaybackEngine? { engines.first }
-    var count: Int { engines.count }
-    func make() -> FakePlaybackEngine {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        engines.append(engine)
-        return engine
-    }
-}
