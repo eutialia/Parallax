@@ -949,7 +949,7 @@ struct PlayerControlsView: View {
     /// display math and `playheadChip` so the clamp can't drift between them.
     private var liveProgressFraction: Double {
         guard vm.hasKnownDuration else { return 0 }   // canonical "is the runtime usable?" predicate
-        return min(max(CMTimeGetSeconds(vm.currentPosition) / CMTimeGetSeconds(vm.currentDuration), 0), 1)
+        return (CMTimeGetSeconds(vm.currentPosition) / CMTimeGetSeconds(vm.currentDuration)).unitClamped
     }
 
     #if os(tvOS)
@@ -1120,7 +1120,8 @@ struct PlayerControlsView: View {
         } label: {
             // No bubble on tvOS — the focusable bar is its own indicator.
             PlayerProgressBar(scrubbingTo: displayed, vm: vm, metrics: m,
-                              mode: scrubberFocused ? .focused : .normal, showsBubble: false)
+                              mode: scrubberFocused ? .focused : .normal, showsBubble: false,
+                              accent: vm.scrubAccent)
         }
         .buttonStyle(TVQuietButtonStyle(pressedOpacity: 0.9))
         // A VoiceOver user landing on the focusable bar otherwise hears no position; announce it.
@@ -1169,9 +1170,12 @@ struct PlayerControlsView: View {
         // The bubble shows only while the finger's down (`.scrub`); at rest it's the
         // plain `.normal` dot. Same shared readout as the seek bar — only the driver
         // (this DragGesture) and the `.normal`↔`.scrub` morph are this caller's.
+        // The drag's preview (`vm.beginPreview`) splits the head in two for its length: the
+        // pill stays on the frame the entry pause is holding and a ghost of it rides the finger,
+        // so the played fill never claims a position the video isn't at.
         PlayerProgressBar(
             scrubbingTo: displayed, vm: vm, metrics: m,
-            mode: dragScrubbing ? .scrub : .normal, showsBubble: dragScrubbing,
+            mode: dragScrubbing ? .scrub : .normal, playhead: .line, showsBubble: dragScrubbing,
             onScrubChanged: { frac in
                 // playbackReady: during a track-switch re-buffer the duration is
                 // stale-positive — entering a drag then would pause + seek the
@@ -1203,13 +1207,23 @@ struct PlayerControlsView: View {
                     Task { await vm.engine?.pause() }
                 }
                 scrubProgress = frac
+                // The gesture is the model's to know: the split head, the ghost and the bubble
+                // are all one published flight, so nothing has to infer "a finger is down" from
+                // a view flag a commit could outlive.
+                vm.beginPreview(at: CMTime(seconds: frac * durSeconds, preferredTimescale: 600))
             },
             onScrubEnded: { frac in
                 dragScrubbing = false
                 onScrubActiveChange(false)
                 resetHideTimer()
                 scrubProgress = frac
-                guard playbackReady, vm.engine != nil, durSeconds > 0 else { isScrubbing = false; return }
+                guard playbackReady, vm.engine != nil, durSeconds > 0 else {
+                    // Nothing to commit — hand the bar back rather than leaving it split on a
+                    // preview no seek will ever convert.
+                    vm.cancelPreview()
+                    isScrubbing = false
+                    return
+                }
                 let gen = scrubGeneration
                 let resume = scrubWasPlaying
                 let target = CMTime(seconds: frac * durSeconds, preferredTimescale: 600)
@@ -1231,7 +1245,8 @@ struct PlayerControlsView: View {
                     guard !Task.isCancelled, scrubGeneration == gen else { return }
                     isScrubbing = false
                 }
-            }
+            },
+            accent: vm.scrubAccent
         )
         // VoiceOver/Switch Control can't drive the drag gesture; expose the bar as an
         // adjustable element so seeking survives the loss of the old UIKit Slider.
@@ -1387,7 +1402,8 @@ struct PlayerControlsView: View {
             let fade = reduceMotion ? 1.0 : PlayerSeekFlash.envelope(
                 sinceBurstStart: context.date.timeIntervalSince(flash.burstStart),
                 sinceLastTap: context.date.timeIntervalSince(flash.lastTap))
-            PlayerScrubBar(metrics: m, vm: vm, progress: flash.targetFraction)
+            PlayerScrubBar(metrics: m, vm: vm, progress: flash.targetFraction,
+                           accent: vm.scrubAccent)
                 .opacity(fade)
         }
         .allowsHitTesting(false)

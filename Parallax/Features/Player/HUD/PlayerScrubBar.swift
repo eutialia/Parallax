@@ -26,6 +26,10 @@ struct PlayerScrubBar: View {
     /// glides discrete ±steps (click-seek, double-tap). The bubble's digit roll always runs
     /// on `scrubSpring`, so even a 1:1 head keeps its "aliveness".
     var positionAnimation: Animation? = scrubSpring
+    /// The artwork accent every provisional element of the bar is painted in — see
+    /// `PlayerProgressBar.accent`. `.white` is the monochrome bar, which is what every caller
+    /// gets until it opts in with `vm.scrubAccent`.
+    var accent: Color = .white
 
     var body: some View {
         // The timestamp keeps rolling on its OWN transaction (scrubDigitRoll) even when
@@ -36,15 +40,16 @@ struct PlayerScrubBar: View {
         // reporting the exclusion zone would re-declare the preference on every animation
         // tick — see `PullExclusionReporter`.
         PlayerProgressBar(scrubbingTo: progress, vm: vm, metrics: metrics,
-                          mode: .scrub, showsBubble: true, scrubDigitRoll: Self.scrubSpring,
-                          reportsPullExclusion: false)
+                          mode: .scrub, playhead: .line, showsBubble: true,
+                          scrubDigitRoll: Self.scrubSpring,
+                          reportsPullExclusion: false, accent: accent)
             // Position: a discrete ±step glides to its target; analog swipe tracks the head
             // 1:1 so the displayed position == the value Select commits. A follow spring
             // desyncs them — worst on the 23.976/24Hz panel Match-Frame-Rate pins for 24p
             // film, where its settle spans ~6 frames (felt as "trails my finger"). Keyed on
             // the CLAMPED value (the displayed head) so an out-of-range delta that doesn't
             // move the head can't fire a spurious transaction.
-            .animation(positionAnimation, value: min(max(progress, 0), 1))
+            .animation(positionAnimation, value: progress.unitClamped)
             // Pinned to the EXACT spot the full-HUD scrubber rests at (shared
             // `scrubberInsetX`/`scrubberBottom`) so a seek bar and the HUD bar never sit at
             // different heights/widths. Caller mounts this in a safe-area-respecting context
@@ -65,12 +70,19 @@ extension PlayerProgressBar {
     /// *packaging* (placement, gestures, focus) stay with each caller; only this readout
     /// derivation is shared. Lives in an extension so `PlayerProgressBar`'s value-only
     /// memberwise init — what the previews and tests use — is preserved.
+    /// The concrete/virtual split is the view model's to declare, not the caller's: a
+    /// `.previewing` flight means a gesture owns the bar, so `fraction` is the VIRTUAL indicator
+    /// (ghost + bubble + readout) and the position the picture is actually held on — the scrub's
+    /// entry pause froze it there — is the concrete one that keeps the played fill honest. Every
+    /// scrub surface reads the same flight, so the two bars can't drift apart on what "the video
+    /// is actually at X" means, and the split can't outlive the gesture that opened it.
     init(scrubbingTo fraction: Double, vm: PlayerViewModel, metrics: PlayerMetrics,
-         mode: Mode, showsBubble: Bool,
+         mode: Mode, playhead: Playhead = .dot, showsBubble: Bool,
          scrubDigitRoll: Animation? = nil,
          onScrubChanged: ((Double) -> Void)? = nil,
          onScrubEnded: ((Double) -> Void)? = nil,
-         reportsPullExclusion: Bool = true) {
+         reportsPullExclusion: Bool = true,
+         accent: Color = .white) {
         // Incomplete media plays with an `.indefinite` duration that never resolves (`dur` is NaN).
         // Without a known runtime there's no scrubbable timeline: show the LIVE elapsed position
         // only (no fraction, no total/remaining, no bubble, no scrub handlers), and let the bar
@@ -78,12 +90,24 @@ extension PlayerProgressBar {
         // such check reads. (`formatPlaybackTime` already maps a NaN to "0:00" defensively.)
         let known = vm.hasKnownDuration
         let dur = CMTimeGetSeconds(vm.currentDuration)
-        let p = min(max(fraction, 0), 1)
+        let previewing = vm.flight?.stage == .previewing
+        let p = fraction.unitClamped
         let shown = known ? p * dur : CMTimeGetSeconds(vm.currentPosition)
         let remaining = max(0, dur - shown)
+        // `concretePosition`, not `currentPosition`: dragging again over a seek that hasn't
+        // landed must keep the solid indicator on the position the first commit jumped away
+        // from. `currentPosition` is that commit's promised destination, and parking the
+        // concrete indicator on it would claim the video is somewhere it has never been.
+        let live = known && dur > 0 ? (CMTimeGetSeconds(vm.concretePosition) / dur).unitClamped : 0
         self.init(
-            metrics: metrics, mode: mode, indeterminate: !known,
-            played: known ? p : 0, buffered: known ? vm.bufferedFraction : nil,
+            metrics: metrics, mode: mode, playhead: playhead, indeterminate: !known,
+            played: known ? p : 0,
+            concrete: previewing && known ? live : nil,
+            buffered: known ? vm.bufferedFraction : nil,
+            // Every scrub surface gets the pulse from the one place the readout is derived.
+            // The flight itself is the newest-wins gate: a gesture supersedes what it
+            // interrupts, and a `.previewing` stage publishes no span at all.
+            flight: known ? vm.seekSpan : nil,
             elapsed: formatPlaybackTime(shown),
             remaining: known ? (remaining > 0 ? "-\(formatPlaybackTime(remaining))" : formatPlaybackTime(dur)) : "",
             elapsedSeconds: shown, remainingSeconds: known ? remaining : 0,
@@ -93,7 +117,8 @@ extension PlayerProgressBar {
             onScrubChanged: known ? onScrubChanged : nil,
             onScrubEnded: known ? onScrubEnded : nil,
             scrubDigitRoll: scrubDigitRoll,
-            reportsPullExclusion: reportsPullExclusion
+            reportsPullExclusion: reportsPullExclusion,
+            accent: accent
         )
     }
 }
