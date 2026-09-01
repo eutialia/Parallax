@@ -1460,6 +1460,15 @@ final class PlayerViewModel {
         // sees the override. Every other call site leaves it nil and gets the ordinary
         // hint-driven routing.
         let id = forcedEngine ?? EngineSelector.select(hints: asset.hints)
+        // Who owns `desiredPlaying`. Only a FRESH session — the user opening an item —
+        // makes starting playback the intent to play. A reload (`reusingEngine`: the
+        // scrub commit's re-anchor and the transcode track switch) and the reactive
+        // AVKit->VLC reroute (`forcedEngine`) are mechanical: they resume because the
+        // decoder has to be told to run, not because anyone asked. Those inherit the
+        // standing intent, and the engine they come up on is commanded from it below —
+        // so a lock-screen pause issued while the engine was being rebuilt survives the
+        // rebuild instead of being overwritten by it.
+        let isFreshSession = !reusingEngine && forcedEngine == nil
 
         // Reuse the live engine when a transcode track switch keeps the same engine
         // type: reloading the asset on the existing AVPlayer keeps its video layer
@@ -1479,10 +1488,13 @@ final class PlayerViewModel {
         // the held frame that transcode track switches exist to preserve.
         let libraryOptions = id == .vlcKit ? VLCKitEngine.libraryOptions(for: asset) : nil
         let engine: any PlaybackEngine
+        let rebuilt: Bool
         if reusingEngine, let existing = self.engine, existing.id == id,
            libraryOptions == engineLibraryOptions {
             engine = existing
+            rebuilt = false
         } else {
+            rebuilt = true
             // The replacement is built BEFORE the outgoing engine is retired, and the slot
             // installs it in the same tick the old one leaves: the host view stays mounted
             // over the frozen frame, and `attachIfNeeded` re-points the drawable in place.
@@ -1539,11 +1551,7 @@ final class PlayerViewModel {
         // Startup-metric anchor: recorded at dispatch, consumed by this session's
         // first `.playing` beat in `handle(_:)` — see `startupMillis`.
         startupClockStart = ContinuousClock.now
-        // Starting playback IS the intent to play, except when this load is a scrub commit's
-        // re-anchor. That reload force-resumes mechanically and `commitScrubSeek` re-pauses it
-        // right after, so recording it as intent would hand a second scrub landing mid-reload a
-        // resume the paused user never asked for.
-        if !isReanchoring { desiredPlaying = true }
+        if isFreshSession { desiredPlaying = true }
         await engine.play()
         // A freshly-built engine starts at 1.0×; re-apply the chosen speed so it
         // survives an engine rebuild (track switch / first play after a speed change).
@@ -1558,6 +1566,15 @@ final class PlayerViewModel {
         // this view model holds for the item has to be re-pushed onto the fresh input.
         if subtitleDelayMs != 0, self.engine === engine {
             await engine.setSubtitleDelay(milliseconds: subtitleDelayMs)
+        }
+        // The rebuilt engine is commanded from the standing intent, not from the load's
+        // own mechanical `play()`: a pause issued while the engine was being replaced
+        // (lock screen, Now Playing, the transport button) landed on the OUTGOING engine,
+        // and without this the replacement comes up playing against it.
+        // Rebuilds only: an engine-REUSING reload is the re-anchor, whose paused-user
+        // re-pause belongs to `commitScrubSeek`, which sequences it against the seek.
+        if rebuilt, !desiredPlaying, self.engine === engine {
+            await engine.pause()
         }
     }
 
