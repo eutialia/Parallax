@@ -3705,6 +3705,24 @@ struct PlayerViewModelTests {
         #expect(vm.phase == .failed(.playback(.decodeFailed)))
     }
 
+    /// The load watchdog's expiry used to arrive as `.assetNotPlayable` and read "Couldn't
+    /// decode this file" — an accusation against the file for what is almost always a slow
+    /// server or a cold transcode, and the one message that sends the user looking in the
+    /// wrong place. Same retryable scrim, honest sentence.
+    @Test("a load timeout reads as a slow server, not a broken file")
+    func loadTimeoutMapsToItsOwnMessage() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let resolved = PlayerFixtures.resolvedTranscodedMKV()
+        let vm = makePlayerVM(engine: engine, resolved: resolved)
+        await vm.start(item: PlayerFixtures.movieDetail())
+
+        engine.push(.failed(.loadTimedOut))
+        try await engine.settle()
+
+        #expect(vm.phase == .failed(.playback(.startupTimedOut)))
+        #expect(vm.phase != .failed(.playback(.decodeFailed)))
+    }
+
     @Test("start(itemID:) fetches the detail first, then plays it")
     func startByItemIDFetchesThenPlays() async {
         let reporting = StubPlaybackReporting()

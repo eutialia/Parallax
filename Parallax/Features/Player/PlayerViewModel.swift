@@ -3614,6 +3614,8 @@ final class PlayerViewModel {
             return .playback(.decodeFailed)
         case .networkStalled:
             return .playback(.resourceUnavailable)
+        case .loadTimedOut:
+            return .playback(.startupTimedOut)
         case .unknown:
             return .playback(.decodeFailed)
         }

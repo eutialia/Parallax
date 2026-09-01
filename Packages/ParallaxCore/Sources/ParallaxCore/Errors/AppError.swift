@@ -107,6 +107,11 @@ public enum PlaybackFailure: Sendable {
     case unsupportedFormat
     case resourceUnavailable
     case audioSessionFailed
+    /// The stream never produced a first frame inside the engine's load deadline. Distinct
+    /// from `decodeFailed`, which the engine's own load watchdog used to borrow: a slow
+    /// server, a cold transcode or a wedged segment fetch is not a broken file, and telling
+    /// the user it is sends them looking in the wrong place.
+    case startupTimedOut
 
     public var userMessage: String {
         switch self {
@@ -118,6 +123,8 @@ public enum PlaybackFailure: Sendable {
             return "The stream stalled and didn't recover. Check your connection."
         case .audioSessionFailed:
             return "Couldn't start audio playback. Try again."
+        case .startupTimedOut:
+            return "The server took too long to start this stream. Try again."
         }
     }
 }
