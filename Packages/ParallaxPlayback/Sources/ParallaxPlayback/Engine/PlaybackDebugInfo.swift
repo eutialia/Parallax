@@ -101,4 +101,30 @@ public struct PlaybackDebugInfo: Sendable, Equatable {
     }
 
     public static let empty = PlaybackDebugInfo()
+
+    /// One line naming what the engine was doing — the fields that answer "why did this never
+    /// start / never recover" when a watchdog gives up: item status, transport, where the
+    /// playhead sits versus what is actually buffered. Every field here is a number or a
+    /// closed vocabulary the engine itself produced, so it logs `.public`. The HLS error log
+    /// is deliberately NOT part of it — see `errorLogDetail`.
+    public var logSummary: String {
+        func number(_ value: Double?) -> String { value.map { String(format: "%.1f", $0) } ?? "—" }
+        return """
+            item=\(itemStatus ?? "—") transport=\(transportState ?? "—") \
+            playhead=\(number(playheadSeconds)) buffered=\(number(bufferedSeconds)) \
+            ranges=[\(loadedRanges.joined(separator: ", "))] \
+            bitrate=\(number(observedBitrate))/\(number(indicatedBitrate)) \
+            bytes=\(bytesTransferred.map(String.init) ?? "—") stalls=\(stallCount.map(String.init) ?? "—")
+            """
+    }
+
+    /// The HLS error log tail — the field that usually holds the actual diagnosis (a yanked
+    /// playlist, a 401, a segment that never arrived). Split out of `logSummary` because it is
+    /// the one field the app does not author: each entry appends CoreMedia's own
+    /// `errorComment`, free text that can echo the request it failed on. URIs are already
+    /// reduced to a trailing path (`AVKitEngine.redactedTail`), but the comment is not, so a
+    /// log site must emit THIS at `.private` and the summary above at `.public`.
+    public var errorLogDetail: String {
+        errorLogTail.isEmpty ? "none" : errorLogTail.joined(separator: " | ")
+    }
 }

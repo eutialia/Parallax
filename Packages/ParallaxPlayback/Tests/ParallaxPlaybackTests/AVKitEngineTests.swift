@@ -531,6 +531,29 @@ struct AVKitWatchdogExpiryTests {
         await engine.teardown()
     }
 
+    /// The diagnosis has to be captured BEFORE the failure is published. The `.failed` beat is
+    /// what tears the engine down — a `.loadTimedOut` on an MP4 reroutes to VLC, which retires
+    /// this engine outright — so a snapshot deferred into a `Task` was read after `currentItem`
+    /// had been nil'd and logged a line of dashes, empty in exactly the case it was written
+    /// for. The teardown here stands in for that: same turn, straight after the expiry.
+    @Test("the watchdog's diagnosis survives a teardown in the same turn")
+    func watchdogSnapshotIsTakenBeforeTheFailure() async throws {
+        let engine = AVKitEngine()
+        var iterator = engine.state.makeAsyncIterator()
+        try await engine.load(.fixture(url: AVKitFixtures.tiny))
+        while let beat = await iterator.next() {
+            if case .ready = beat { break }
+        }
+
+        let snapshot = engine.handleLoadTimeout()
+        await engine.teardown()
+
+        let info = try #require(snapshot, "the watchdog logged nothing at all")
+        #expect(info.itemStatus == "ready", "the snapshot never named the item's status")
+        #expect(info.transportState != nil)
+        #expect(info.logSummary.contains("item=ready"))
+    }
+
     /// Both expiries are a no-op once the item is gone — the guard that stops a teardown
     /// racing a fired timer into a phantom failure.
     @Test("a watchdog that fires after teardown publishes nothing")
