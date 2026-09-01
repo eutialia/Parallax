@@ -11,13 +11,4 @@ public enum PlaybackError: Error, Sendable, Equatable {
     /// An engine-specific failure outside the cases above; the string is a log-safe
     /// summary, not user-facing copy.
     case unknown(String)
-
-    public static func == (lhs: PlaybackError, rhs: PlaybackError) -> Bool {
-        switch (lhs, rhs) {
-        case (.assetNotPlayable, .assetNotPlayable): return true
-        case (.networkStalled, .networkStalled): return true
-        case (.unknown(let l), .unknown(let r)): return l == r
-        default: return false
-        }
-    }
 }
