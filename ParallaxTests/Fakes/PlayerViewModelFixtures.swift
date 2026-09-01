@@ -47,6 +47,32 @@ final class SpyNowPlaying: NowPlayingUpdating {
     func clear() { clearCount += 1 }
 }
 
+/// The engine factory's ledger: one distinct `FakePlaybackEngine` per call, tagged with the
+/// id the view model ASKED for, kept in build order.
+///
+/// The alternative every player suite used to reach for — one fake handed back for every
+/// factory call — silently masks engine rebuilds: the reload's reuse test compares the live
+/// engine's id against the requested one, so a mis-tagged single instance reads as an engine
+/// change and the test then asserts against one object replaying two sessions' calls. Here a
+/// rebuild is simply a second entry.
+@MainActor
+final class EngineLedger {
+    private(set) var engines: [FakePlaybackEngine] = []
+    var count: Int { engines.count }
+    var first: FakePlaybackEngine? { engines.first }
+
+    /// The engine the view model is driving now — the newest one built. Traps on an empty
+    /// ledger: every caller reads it after a `start()` that built one, so empty means a
+    /// broken fixture rather than a case worth branching on.
+    var live: FakePlaybackEngine { engines.last! }
+
+    func make(_ id: PlaybackEngineID) -> FakePlaybackEngine {
+        let engine = FakePlaybackEngine(id: id, capabilities: id == .avKit ? .avKit : .vlcKit)
+        engines.append(engine)
+        return engine
+    }
+}
+
 /// The device profile every player suite builds its view model on: no HDR, stereo out.
 func makeTestDeviceProfileBuilder() -> DeviceProfileBuilder {
     DeviceProfileBuilder(probe: FakeCapabilityProbe(hdr: .none, audioOutput: .stereo))

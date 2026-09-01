@@ -1146,8 +1146,12 @@ struct PlayerViewModelTests {
     /// Builds a transcode VM parked at `A` with a text sidecar up (the re-anchor gate) and
     /// a buffer that ends before any scrub target — every commit below takes the slow
     /// `reloadTranscode` path, which is the window the snap-back lives in.
+    ///
+    /// Engines come from an `EngineLedger`, so each one carries the id the view model asked
+    /// for and a reload that RE-BUILDS shows up as a second entry — the caller's `engine`
+    /// local then still points at the outgoing engine, which is a legible failure instead of
+    /// one instance replaying two sessions' calls.
     private func makeReanchorVM(
-        engine: FakePlaybackEngine,
         at seconds: Double,
         reporting: StubPlaybackReporting = StubPlaybackReporting(),
         seekHoldNow: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
@@ -1155,10 +1159,13 @@ struct PlayerViewModelTests {
         resolve: @escaping PlayerViewModel.ResolveCall = { _, _, _, _ in
             PlayerFixtures.resolvedMultiTrackTranscode()
         }
-    ) async throws -> PlayerViewModel {
-        let vm = makePlayerVM(reporting: reporting, resolve: resolve, engine: engine,
+    ) async throws -> (vm: PlayerViewModel, engines: EngineLedger) {
+        let engines = EngineLedger()
+        let vm = makePlayerVM(reporting: reporting, resolve: resolve,
+                              engineFactory: { id, _ in engines.make(id) },
                               nowPlaying: nowPlaying, seekHoldNow: seekHoldNow)
         await vm.start(item: PlayerFixtures.movieDetail())
+        let engine = engines.live
         engine.push(.playing(seconds))
         try await engine.settle()
         // A precondition, not an assertion: every test below reads "the bar moved OFF A",
@@ -1170,13 +1177,13 @@ struct PlayerViewModelTests {
         let text = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(1) })
         await vm.selectSubtitleTrack(text)
         engine.bufferedRange = 0...(seconds + 60)
-        return vm
+        return (vm, engines)
     }
 
     @Test("a commit that re-anchors shows the TARGET while the reload scrim is up — never the pre-scrub position")
     func commitScrubSeekHoldsTargetThroughReanchor() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let vm = try await makeReanchorVM(engine: engine, at: 600)
+        let (vm, engines) = try await makeReanchorVM(at: 600)
+        let engine = engines.live
 
         // The reload lands `.loading` and drops every engine beat while it runs, so this
         // returns with the OLD clock still the newest thing the engine ever published.
@@ -1191,8 +1198,8 @@ struct PlayerViewModelTests {
     /// Only the first OBSERVED clock takes the bar back, and everything after it flows normally.
     @Test("stale beats at the pre-seek position hold; the first observed beat releases")
     func seekHoldReleasesOnTheFirstObservedBeat() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let vm = try await makeReanchorVM(engine: engine, at: 600)
+        let (vm, engines) = try await makeReanchorVM(at: 600)
+        let engine = engines.live
         await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
 
         for _ in 0..<4 {
@@ -1219,8 +1226,8 @@ struct PlayerViewModelTests {
     @Test("an observed beat far off the target still releases — onto the engine's position",
           arguments: [600.0, 2_990.0, 3_060.0])
     func observedFarOffBeatReleasesOntoTheEnginesPosition(landing: Double) async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let vm = try await makeReanchorVM(engine: engine, at: 600)
+        let (vm, engines) = try await makeReanchorVM(at: 600)
+        let engine = engines.live
         await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
 
         engine.push(.playing(landing))
@@ -1230,8 +1237,8 @@ struct PlayerViewModelTests {
 
     @Test("the reload's STALE buffering beats never move the bar off the target — the scrub snap-back itself")
     func seekHoldIgnoresStaleBufferingBeats() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let vm = try await makeReanchorVM(engine: engine, at: 600)
+        let (vm, engines) = try await makeReanchorVM(at: 600)
+        let engine = engines.live
         await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
 
         for _ in 0..<3 {
@@ -1250,8 +1257,8 @@ struct PlayerViewModelTests {
     /// releasing there is a no-op because the beat carries the target anyway.
     @Test("held .paused beats hold — the stale pre-seek clock and the projected target alike")
     func heldPausedBeatsHold() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let vm = try await makeReanchorVM(engine: engine, at: 600)
+        let (vm, engines) = try await makeReanchorVM(at: 600)
+        let engine = engines.live
         await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: false)
 
         for (seconds, provenance) in [(600.0, PositionProvenance.stale), (3_000.0, .projected),
@@ -1394,10 +1401,10 @@ struct PlayerViewModelTests {
     @Test("the watchdog drops a wedged hold without adopting the stale clock it fired on")
     func watchdogReleaseNeverAdoptsTheStaleClock() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         nonisolated(unsafe) var now = ContinuousClock.now
-        let vm = try await makeReanchorVM(engine: engine, at: 600, reporting: reporting,
-                                          seekHoldNow: { now })
+        let (vm, engines) = try await makeReanchorVM(at: 600, reporting: reporting,
+                                                     seekHoldNow: { now })
+        let engine = engines.live
 
         await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
         now = now.advanced(by: SeekHold.watchdog + .seconds(1))
@@ -1416,9 +1423,9 @@ struct PlayerViewModelTests {
     /// position outright instead of waiting for a second watchdog.
     @Test("after the watchdog release the next observed beat owns the position")
     func watchdogReleasedHoldFollowsTheNextObservedBeat() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         nonisolated(unsafe) var now = ContinuousClock.now
-        let vm = try await makeReanchorVM(engine: engine, at: 600, seekHoldNow: { now })
+        let (vm, engines) = try await makeReanchorVM(at: 600, seekHoldNow: { now })
+        let engine = engines.live
 
         await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
         now = now.advanced(by: SeekHold.watchdog + .seconds(1))
@@ -1465,12 +1472,12 @@ struct PlayerViewModelTests {
     /// own reload has to spend a beat releasing a window nobody is filling.
     @Test("an abandoned re-anchor drops the hold with the target it dropped")
     func abandonedReanchorDropsTheHold() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         let gate = ResolveGate()
-        let vm = try await makeReanchorVM(engine: engine, at: 600, resolve: { _, _, _, _ in
+        let (vm, engines) = try await makeReanchorVM(at: 600, resolve: { _, _, _, _ in
             await gate.wait()
             return PlayerFixtures.resolvedMultiTrackTranscode()
         })
+        let engine = engines.live
         // The switch's re-resolve parks in the gate, which is what keeps `isSwitchingTracks`
         // up while the scrub commits underneath it — the race, held open.
         await gate.arm()
@@ -1497,9 +1504,9 @@ struct PlayerViewModelTests {
     /// nothing left to unpin it. Evaluated at the top of `handle` instead, on every state.
     @Test("the watchdog fires on a state that carries no position at all")
     func watchdogFiresOnANonPositionState() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         nonisolated(unsafe) var now = ContinuousClock.now
-        let vm = try await makeReanchorVM(engine: engine, at: 600, seekHoldNow: { now })
+        let (vm, engines) = try await makeReanchorVM(at: 600, seekHoldNow: { now })
+        let engine = engines.live
         await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
         #expect(vm.seekHold != nil)
 
@@ -1516,8 +1523,8 @@ struct PlayerViewModelTests {
     /// retry as a resume point nothing played.
     @Test("a failed phase drops the hold")
     func failedPhaseDropsTheHold() async throws {
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
-        let vm = try await makeReanchorVM(engine: engine, at: 600)
+        let (vm, engines) = try await makeReanchorVM(at: 600)
+        let engine = engines.live
         await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
         #expect(vm.seekHold != nil)
 
@@ -1557,14 +1564,14 @@ struct PlayerViewModelTests {
     @Test("a failed re-anchor drops the hold: the fallback stream's FIRST beat owns the bar again")
     func failedReanchorDropsTheHold() async throws {
         let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         nonisolated(unsafe) var resolveCalls = 0
-        let vm = try await makeReanchorVM(engine: engine, at: 600, reporting: reporting,
-                                          resolve: { _, _, _, _ in
+        let (vm, engines) = try await makeReanchorVM(at: 600, reporting: reporting,
+                                                     resolve: { _, _, _, _ in
             resolveCalls += 1
             if resolveCalls > 1 { throw AppError.playback(.unsupportedFormat) }
             return PlayerFixtures.resolvedMultiTrackTranscode()
         })
+        let engine = engines.live
 
         await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
         #expect(resolveCalls == 2)   // the re-anchor tried, and failed
@@ -1585,9 +1592,9 @@ struct PlayerViewModelTests {
     /// target itself, the Control Center clock counts on from A while the in-app bar shows B.
     @Test("the commit pushes the TARGET to Now Playing, so the lock screen and the bar agree")
     func commitPublishesTheTargetToNowPlaying() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         let nowPlaying = SpyNowPlaying()
-        let vm = try await makeReanchorVM(engine: engine, at: 600, nowPlaying: nowPlaying)
+        let (vm, engines) = try await makeReanchorVM(at: 600, nowPlaying: nowPlaying)
+        let engine = engines.live
         // A precondition, not an assertion: the parked beat has to have reached Now
         // Playing at A, or "the commit moved it to B" proves nothing.
         let parked = try #require(nowPlaying.updates.last)
@@ -1603,8 +1610,8 @@ struct PlayerViewModelTests {
 
     @Test("re-scrubbing during a hold repoints it: the newest target shows, and only an OBSERVED beat releases")
     func seekHoldRepointsOnASecondCommit() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let vm = try await makeReanchorVM(engine: engine, at: 600)
+        let (vm, engines) = try await makeReanchorVM(at: 600)
+        let engine = engines.live
 
         func pushStale(_ seconds: Double) async throws {
             engine.push(.playing(seconds, provenance: .stale))
