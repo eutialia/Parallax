@@ -1369,9 +1369,18 @@ final class PlayerViewModel {
             // armed yet (see `reloadResolveDeadline`) — bound it, so a wedged
             // negotiation becomes the ordinary fallback (old stream resumes, the
             // failure is loud, the next scrub retries) instead of a stuck scrim.
+            let resolveStart = ContinuousClock.now
             resolved = try await Self.withDeadline(reloadResolveDeadline) { [resolve] in
                 try await resolve(item.id, caps, startTime, selection)
             }
+            // The second leg of the boundary trail (see `performTranscodeReload`): how long the
+            // server took to hand back a replacement stream, and which play session it opened.
+            Log.playback.info(
+                """
+                reload resolve: \(Self.millis(since: resolveStart), privacy: .public)ms \
+                playSession=\(resolved.playSessionID, privacy: .public)
+                """
+            )
         } else {
             resolved = try await resolve(item.id, caps, startTime, selection)
         }
@@ -1441,6 +1450,14 @@ final class PlayerViewModel {
             subtitleStreamIndex: subtitleStreamIndex,
             burnsInSubtitle: burnsIn
         )
+    }
+
+    /// Whole milliseconds since `start`. The reload's trace is a sequence of durations —
+    /// encode kill, re-resolve, engine load — and a device log answers "which step was slow"
+    /// only if each one is measured the same way.
+    private static func millis(since start: ContinuousClock.Instant) -> Int {
+        let elapsed = start.duration(to: .now).components
+        return Int(elapsed.seconds * 1000 + elapsed.attoseconds / 1_000_000_000_000_000)
     }
 
     /// Races `operation` against a wall-clock deadline; a miss throws
@@ -1553,6 +1570,7 @@ final class PlayerViewModel {
             // The load's return value IS the boundary: from here on this is the only session
             // whose beats this view model adopts, and everything the media it replaced still
             // has in flight is stamped with a session that no longer matches.
+            let loadStart = ContinuousClock.now
             let opened = try await engine.load(asset)
             // The re-anchor trail, and the only place it is emitted: a session transition is
             // the one event every silent failure in this path has in common, and it is a fact
@@ -1566,6 +1584,7 @@ final class PlayerViewModel {
                 origin=\(isFreshSession ? "fresh" : (reusingEngine ? "reload" : "reroute"), privacy: .public) \
                 engine=\(rebuilt ? "rebuilt" : "reused", privacy: .public) \
                 at=\(CMTimeGetSeconds(asset.startTime ?? .zero), format: .fixed(precision: 1), privacy: .public)s \
+                load=\(Self.millis(since: loadStart), privacy: .public)ms \
                 playSession=\(self.resolved?.playSessionID ?? "—", privacy: .public)
                 """
             )
@@ -2726,6 +2745,7 @@ final class PlayerViewModel {
         // it back.
         let superseded = activeSession
         activeSession = nil
+        let closingPlaySession = resolved?.playSessionID
 
         // Freeze the current frame at the moment of the swap — the frosted cover
         // frosts over it while the new transcode buffers, and silencing stops the
@@ -2760,8 +2780,22 @@ final class PlayerViewModel {
         // was closed above: that failure — and every ordinary beat the abandoned item keeps
         // publishing at the pre-scrub clock — carries a session no longer active, so `handle`
         // drops it.
+        let boundary = ContinuousClock.now
         await stopEncodingIfNeeded()
         await reportStoppedIfNeeded()
+        // The boundary the whole re-anchor trail hangs off: after this line the outgoing
+        // ffmpeg job is dead and nothing has replaced it yet. The play session is named in
+        // clear so a later failure log can be read against the URL it carries — the abandoned
+        // stream and its replacement differ by nothing else — and the elapsed time is what
+        // separates "the kill was slow" from "the re-resolve was".
+        Log.playback.info(
+            """
+            reload boundary: superseded=\(superseded?.description ?? "none", privacy: .public) \
+            playSession=\(closingPlaySession ?? "—", privacy: .public) \
+            killed+reported in \(Self.millis(since: boundary), privacy: .public)ms, \
+            re-resolving at \(CMTimeGetSeconds(resume), format: .fixed(precision: 1), privacy: .public)s
+            """
+        )
         didReportStart = false
         didReportStopped = false
         didStopEncoding = false
@@ -3129,8 +3163,7 @@ final class PlayerViewModel {
             // overwrites it. `nil` when this beat isn't the first (already consumed).
             if let clockStart = startupClockStart {
                 startupClockStart = nil
-                let elapsed = clockStart.duration(to: .now).components
-                startupMillis = Int(elapsed.seconds * 1000 + elapsed.attoseconds / 1_000_000_000_000_000)
+                startupMillis = Self.millis(since: clockStart)
             }
             isPlaying = true
             clearStall()
