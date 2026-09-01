@@ -1353,7 +1353,8 @@ final class PlayerViewModel {
         startTime: CMTime?,
         audioStreamIndex: Int?,
         subtitleStreamIndex: Int?,
-        reusingEngine: Bool = false
+        reusingEngine: Bool = false,
+        superseding: PlaybackSessionID? = nil
     ) async throws {
         try checkStillActive()
         let caps = await deviceProfileBuilder.build()
@@ -1405,7 +1406,7 @@ final class PlayerViewModel {
         }
 
         let asset = makeAsset(from: resolved)
-        try await loadAndPlay(asset, reusingEngine: reusingEngine)
+        try await loadAndPlay(asset, reusingEngine: reusingEngine, superseding: superseding)
         // The engine now plays a FRESH AVPlayerItem whose timeline mapping derives from
         // this session's own segments — any prior in-stream restart shift is laundered.
         transcodeTimelineDirty = false
@@ -1473,7 +1474,12 @@ final class PlayerViewModel {
     /// `start(smbItem:)` (SMB) both end here, so the engine lifecycle (subscription,
     /// Now Playing wiring, tvOS display-mode match, load-failure teardown, rate
     /// re-apply) lives in exactly one place.
-    private func loadAndPlay(_ asset: PlayableAsset, reusingEngine: Bool, forcedEngine: PlaybackEngineID? = nil) async throws {
+    private func loadAndPlay(
+        _ asset: PlayableAsset,
+        reusingEngine: Bool,
+        forcedEngine: PlaybackEngineID? = nil,
+        superseding: PlaybackSessionID? = nil
+    ) async throws {
         // Recorded up front (before the engine even attempts the load) so a reactive
         // fallback (`attemptReactiveFallback`) can rebuild this exact asset off it
         // without threading a duplicate copy through every play path.
@@ -1555,7 +1561,7 @@ final class PlayerViewModel {
             // putting the line here instead of at a beat that may or may not come.
             Log.playback.info(
                 """
-                playback session \(self.activeSession?.description ?? "none", privacy: .public) → \
+                playback session \(superseding?.description ?? self.activeSession?.description ?? "none", privacy: .public) → \
                 \(opened.description, privacy: .public) \
                 origin=\(isFreshSession ? "fresh" : (reusingEngine ? "reload" : "reroute"), privacy: .public) \
                 engine=\(rebuilt ? "rebuilt" : "reused", privacy: .public) \
@@ -2680,6 +2686,19 @@ final class PlayerViewModel {
         }.value
     }
 
+    /// **The standing session ends where the app decides to reload, not where the engine
+    /// gets around to it.** The engine's stamp can only advance inside `load()`, which is
+    /// several awaits and (on device) several seconds away: the encode kill, the stop
+    /// report, the whole re-resolve. For that entire window the OUTGOING `AVPlayerItem` is
+    /// still mounted and still publishing — beats at the pre-scrub clock, and its own
+    /// failure on the playlist whose ffmpeg job this reload just killed. Both were adopted,
+    /// because both carried the session that was still active.
+    ///
+    /// So the rule is the app's to state: `activeSession` goes to nil here, at the decision
+    /// (nil already means "nothing published is ours" — `stop()` uses it that way), and
+    /// `loadAndPlay` installs the replacement when `load()` returns. The only path that puts
+    /// the OLD stream back on screen — `fallBackAfterFailedSwitch`, after a failed
+    /// re-resolve — puts its session back with it; an exit through this window is `stop()`'s.
     private func performTranscodeReload(
         resumeAt resume: CMTime,
         audioStreamIndex: Int?,
@@ -2700,6 +2719,13 @@ final class PlayerViewModel {
         // it). Suppress the outgoing stream's trailing beats while we do.
         isSwitchingTracks = true
         defer { isSwitchingTracks = false }
+
+        // The decision point — see the doc above. Everything the outgoing media publishes
+        // from here on describes a stream this player has already walked away from, and the
+        // id is kept so the trace can still name what was superseded and the fallback can put
+        // it back.
+        let superseded = activeSession
+        activeSession = nil
 
         // Freeze the current frame at the moment of the swap — the frosted cover
         // frosts over it while the new transcode buffers, and silencing stops the
@@ -2730,9 +2756,10 @@ final class PlayerViewModel {
         // so it can fail on its own (device-confirmed: `CoreMediaErrorDomain -19602` on the
         // session's `master.m3u8`). Deferring the kill until after the resolve would trade a
         // cosmetic failure for the encode contention the comment above was written for, which
-        // is device-diagnosed and unrecoverable. So the failure is silenced where it is
-        // produced instead: it carries the session this reload is about to replace, and
-        // nothing downstream adopts a beat from a session that is no longer live.
+        // is device-diagnosed and unrecoverable. It costs nothing instead, because the session
+        // was closed above: that failure — and every ordinary beat the abandoned item keeps
+        // publishing at the pre-scrub clock — carries a session no longer active, so `handle`
+        // drops it.
         await stopEncodingIfNeeded()
         await reportStoppedIfNeeded()
         didReportStart = false
@@ -2762,7 +2789,8 @@ final class PlayerViewModel {
                 startTime: resume,
                 audioStreamIndex: audioStreamIndex,
                 subtitleStreamIndex: subtitleStreamIndex,
-                reusingEngine: true
+                reusingEngine: true,
+                superseding: superseded
             )
             return .completed
         } catch is CancellationError {
@@ -2773,16 +2801,18 @@ final class PlayerViewModel {
             guard isExiting else {
                 return await fallBackAfterFailedSwitch(
                     .unexpected("transcode reload cancelled mid-flight",
-                                underlying: AnySendableError(CancellationError()))
+                                underlying: AnySendableError(CancellationError())),
+                    restoring: superseded
                 )
             }
             return .abandoned
         } catch let error as AppError {
-            return await fallBackAfterFailedSwitch(error)
+            return await fallBackAfterFailedSwitch(error, restoring: superseded)
         } catch {
             Log.playback.error("transcode reload failed: \(error.networkDiagnostic)")
             return await fallBackAfterFailedSwitch(
-                .unexpected("transcode reload failed", underlying: AnySendableError(error))
+                .unexpected("transcode reload failed", underlying: AnySendableError(error)),
+                restoring: superseded
             )
         }
     }
@@ -2816,7 +2846,18 @@ final class PlayerViewModel {
     /// If the failure hit at/after `engine.load`, `beginPlayback` already tore the
     /// engine down — nothing left to resume, so surface the fatal overlay exactly
     /// like before.
-    private func fallBackAfterFailedSwitch(_ error: AppError) async -> TrackSwitchOutcome {
+    ///
+    /// `restoring` is the session `performTranscodeReload` closed when it decided to reload.
+    /// Wherever the old engine is still mounted — the resume below, and the exit that leaves it
+    /// on screen for the slide-out — that session goes back with the stream, or it would play on
+    /// with every beat dropped: a frozen clock over moving video. A nil engine is the other
+    /// case: `beginPlayback` already tore it down and `tearDownEngine` closed the session for
+    /// good, so there is nothing to restore it to.
+    private func fallBackAfterFailedSwitch(
+        _ error: AppError,
+        restoring standing: PlaybackSessionID?
+    ) async -> TrackSwitchOutcome {
+        if engine != nil { activeSession = standing }
         // Exit can race the failed switch: beginExit() lands while the re-resolve is
         // suspended, and a real (non-cancellation) error then skips beginPlayback's
         // checkStillActive guards entirely. Resuming here would restart audio under
