@@ -1,5 +1,6 @@
 import SwiftUI
 import CoreMedia
+import Nuke
 import ParallaxCore
 import ParallaxJellyfin
 import ParallaxPlayback
@@ -311,7 +312,20 @@ struct PlayerView: View {
             // strategy stays conservative on nil regardless.
             fetchDelivery: { (try? await info.transcodingDelivery(playSessionID: $0)) ?? nil },
             subtitleStyle: subtitleStyleProvider,
-            playerSurface: playerSurfaceProvider
+            playerSurface: playerSurfaceProvider,
+            // Poster bytes for the scrub bar's accent hue. Through the session's own image
+            // pipeline, not a bare URLSession: the image endpoints reject anonymous reads on an
+            // auth-required server, and the pipeline is the one thing that carries the token —
+            // it also means this shares the disk cache every poster tile already fills.
+            // `thumbnailMaxPixel` is the whole request: an accent needs a hue, not a picture.
+            fetchArtwork: { [factory = deps.imagePipelineFactory] item in
+                guard let ref = item.accentImageRef,
+                      let url = ImageURLBuilder.url(serverURL: session.serverURL, ref: ref,
+                                                    maxWidth: ArtworkAccent.thumbnailMaxPixel)
+                else { return nil }
+                return try? await factory.pipeline(for: session)
+                    .data(for: ImageRequest(url: url)).0
+            }
         )
         install(vm)
         switch source {
@@ -650,6 +664,8 @@ struct PlayerView: View {
     /// chrome in `.fullHUD`. All input flows adapter → `send` → reducer → `apply`.
     @ViewBuilder
     private func tvPlaybackSurface(_ vm: PlayerViewModel) -> some View {
+        // One evaluation: the mount decision below and the fade's key are the same question.
+        let scrubProgress = scrubBarProgress(vm)
         ZStack {
             // Analog pans are captured at the window level in EVERY state (one
             // recognizer for the surface's lifetime, so an in-flight pan keeps
@@ -689,15 +705,21 @@ struct PlayerView: View {
                     .transition(.opacity)
             }
 
-            switch hudState {
-            case .floor:
-                EmptyView()
-            // One pattern, one view identity: swipeScrub↔clickSeek must NOT cross-fade
-            // two bars — the shared bar just retargets its progress (animated below).
-            case .swipeScrub(let progress, _), .clickSeek(targetProgress: let progress):
-                PlayerScrubBar(metrics: .tv, vm: vm, progress: progress,
-                               positionAnimation: isAnalogScrubbing ? nil : PlayerScrubBar.scrubSpring)
+            // One pattern, one view identity across every state that shows it: swipeScrub↔
+            // clickSeek↔the landing floor must NOT cross-fade separate bars — the shared bar
+            // just retargets its progress (animated below). Hoisted out of the switch for
+            // exactly that reason: a per-case bar would hand the commit a fade-out where the
+            // concrete indicator is supposed to be crossing.
+            if let scrubProgress {
+                PlayerScrubBar(metrics: .tv, vm: vm, progress: scrubProgress,
+                               positionAnimation: isAnalogScrubbing ? nil : PlayerScrubBar.scrubSpring,
+                               accent: vm.scrubAccent)
                     .transition(.opacity)
+            }
+
+            switch hudState {
+            case .floor, .swipeScrub, .clickSeek:
+                EmptyView()
             case .fullHUD:
                 // Back handling lives INSIDE the controls (one root handler that
                 // closes an open panel before folding); `onExitHUD` is the no-menu
@@ -728,6 +750,11 @@ struct PlayerView: View {
         // `isFullHUD`), and swipeScrub↔clickSeek shares one bar identity above, so it
         // needs no transition at all.
         .animation(.playerStateCrossfade, value: isScrubbing)
+        // The lone bar now outlives `isScrubbing` — it stays for the landing on the floor —
+        // so its own fade needs its own key. A Bool, not the progress: the value changes on
+        // every swipe delta, and keying the ease on that is what made the bar chase each
+        // frame the last time this cross-fade was over-keyed.
+        .animation(.playerStateCrossfade, value: scrubProgress != nil)
         // Fast ease-out so a Menu press mid-reveal feels instant — the chrome is
         // opacity-driven and the animation retargets from its current value.
         .animation(.chromeToggle, value: isFullHUD)
@@ -777,9 +804,35 @@ struct PlayerView: View {
             } else {
                 cancelClickSeek()
                 idleTask?.cancel()
-                if isScrubbing { hudState = .floor }
+                // Folding to the floor here bypasses the reducer, so the preview it strands has
+                // to be dropped by hand — a swipe scrub that a re-buffer interrupted commits
+                // nothing.
+                if isScrubbing { vm.cancelPreview(); hudState = .floor }
             }
             chromeVisible = isFullHUD
+        }
+    }
+
+    /// What the lone scrub bar should be showing, or nil to take it away.
+    ///
+    /// The floor case is the whole reason this isn't just a `switch` inside the body: a
+    /// no-HUD swipe auto-commits back to `.floor`, and unmounting the bar there would fade
+    /// out the one surface the concrete indicator's A→B crossing (and the pulse behind it)
+    /// plays on. So the floor keeps it for exactly the flight's lifetime — the seek is still
+    /// landing, and a bar saying so is the point of the feature. The flight also covers a
+    /// floor-state seek nobody scrubbed for (a Now Playing scrub, a debounced click-seek that
+    /// already left `clickSeek`), which is the same fact and deserves the same bar. And it
+    /// spans the hop between the reducer leaving `.swipeScrub` and the commit landing — the
+    /// preview IS a flight, so there is no frame in which the bar has nothing to show.
+    ///
+    /// `.loading` is the one exception: a re-anchor raises the frosted cover over the whole
+    /// screen, and the bar has no business painting on top of it for the several seconds that
+    /// takes. The flight outlives the cover, so the bar comes back for the landing.
+    private func scrubBarProgress(_ vm: PlayerViewModel) -> Double? {
+        switch hudState {
+        case .swipeScrub(let progress, _), .clickSeek(targetProgress: let progress): progress
+        case .floor: vm.phase == .loading ? nil : vm.seekSpan?.delta.to
+        case .fullHUD: nil
         }
     }
 
@@ -893,6 +946,7 @@ struct PlayerView: View {
             }
         }
 
+        syncScrubPreview(from: hudState, to: next, effects: effects, vm)
         hudState = next
         // The focus mirror only matters in `.fullHUD`; clear it on the way out because
         // unmounting the HUD may never fire the focus callback with `false`, and a
@@ -905,6 +959,27 @@ struct PlayerView: View {
 
         chromeVisible = isFullHUD
         restartIdleTimer()
+    }
+
+    /// Keep the view model's flight in step with the reducer's analog-scrub state, so the split
+    /// head, the bubble and the bar's own mount all read one published fact instead of three
+    /// view flags.
+    ///
+    /// A commit is deliberately NOT a cancel: the reducer emits its `.seek` effect one hop
+    /// before `commitScrubSeek` converts the preview into a committed flight, and cancelling in
+    /// that hop is what used to unmount the bar for a frame at exactly the moment the crossing
+    /// should start.
+    private func syncScrubPreview(from current: PlayerHUDState, to next: PlayerHUDState,
+                                  effects: [PlayerEffect], _ vm: PlayerViewModel) {
+        let dur = CMTimeGetSeconds(vm.currentDuration)
+        guard dur > 0 else { return }
+        if case .swipeScrub(let progress, _) = next {
+            vm.beginPreview(at: CMTime(seconds: progress * dur, preferredTimescale: 600))
+            return
+        }
+        guard case .swipeScrub = current else { return }
+        let commits = effects.contains { if case .seek = $0 { return true } else { return false } }
+        if !commits { vm.cancelPreview() }
     }
 
     private func scheduleClickSeek(to target: Double, _ vm: PlayerViewModel) {
@@ -937,7 +1012,7 @@ struct PlayerView: View {
     private func tvProgress(of vm: PlayerViewModel) -> Double {
         let dur = CMTimeGetSeconds(vm.currentDuration)
         guard dur > 0 else { return 0 }
-        return min(max(CMTimeGetSeconds(vm.currentPosition) / dur, 0), 1)
+        return (CMTimeGetSeconds(vm.currentPosition) / dur).unitClamped
     }
 
     /// Apply a transition's effects **in order, in a single task**, so an ordered pair

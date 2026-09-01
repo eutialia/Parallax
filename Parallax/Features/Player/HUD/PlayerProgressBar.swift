@@ -15,19 +15,40 @@ import SwiftUI
 struct PlayerProgressBar: View {
     enum Mode: Equatable { case normal, focused, scrub }
 
+    /// The playhead's form while scrubbing — and with it the form of the virtual indicator
+    /// that ghosts it, since a ghost is only legible as a ghost of something. Every scrub
+    /// surface uses the tall pill (`.line`): the iOS drag and the mini bar (`PlayerScrubBar`,
+    /// the read-only dome-riding one) both morph into it, which is the grammar the bar shipped
+    /// with. `.dot` keeps the bead through the scrub, and is what the diagnostic previews use
+    /// to show the two side by side. Only `.scrub` reads this at all: `.normal` and `.focused`
+    /// are the dot everywhere.
+    enum Playhead: Equatable { case dot, line }
+
     let metrics: PlayerMetrics
     var mode: Mode = .normal
+    var playhead: Playhead = .dot
     /// No known runtime (incomplete media playing with an `.indefinite` duration): the timeline
     /// isn't scrubbable, so suppress the draggable handle and the played fill — the bar becomes a
     /// dim track carrying only the live elapsed label. The caller also blanks `remaining` and the
     /// scrub handlers. Derived once from `vm.hasKnownDuration` in `init(scrubbingTo:vm:)`.
     var indeterminate: Bool = false
     let played: Double
+    /// The honest playback position while a scrub previews somewhere ELSE on the bar — the
+    /// CONCRETE indicator. Nil is the single-indicator bar, where `played` is both the fill
+    /// and the handle. Non-nil splits them: the fill and the solid handle stay here, on where
+    /// the (scrub-paused) video actually is, and `played` becomes the VIRTUAL position the
+    /// gesture is aiming at — the ghost handle, the bubble, and the time readout.
+    var concrete: Double? = nil
     /// 0...1 fraction the buffer extends to — the spec's middle layer (track
     /// `white 0.20` → buffered `white 0.36` → played `#fff`). Seeks inside it are
     /// instant (no server round-trip), so it doubles as the scrub affordance.
     /// Nil hides the layer (VLC path, or nothing buffered around the playhead).
     var buffered: Double? = nil
+    /// The in-flight seek (`PlayerViewModel.seekSpan`) — the A→B stretch `ScrubDeltaPulse`
+    /// sweeps and the concrete indicator crosses while the engine is still landing, plus the
+    /// flight id every one of those animations is keyed on. Nil at rest, and nil while a
+    /// gesture is still previewing: nothing is in flight until a commit.
+    var flight: SeekSpan? = nil
     let elapsed: String
     let remaining: String
     /// Seconds behind `elapsed`/`remaining` (and the bubble). They drive the
@@ -60,6 +81,15 @@ struct PlayerProgressBar: View {
     /// from inside it re-declared the preference on every seek-flash tick and tripped SwiftUI's
     /// "PullExclusionZonesKey tried to update multiple times per frame".
     var reportsPullExclusion: Bool = true
+    /// The hue every PROVISIONAL element of the bar is painted in — the ghost handle, the span
+    /// band, the comet and its breath, the arrival bloom, the scrub bubble. The concrete half
+    /// (played fill, solid handle, time labels, chapter ticks) stays white: those state facts,
+    /// and a fact shouldn't change colour with the poster.
+    ///
+    /// Derived from the item's artwork (`ArtworkAccent`), which is why it arrives as a plain
+    /// value rather than an environment key: the bar is a value type with a memberwise init the
+    /// previews and tests build directly, and `.white` — the default — is the monochrome bar.
+    var accent: Color = .white
 
     private var trackH: CGFloat { metrics.trackHeight }
     private var labelSize: CGFloat { metrics.timeLabelSize }
@@ -70,7 +100,10 @@ struct PlayerProgressBar: View {
         max(trackH + 22 * metrics.u, metrics.handleDiameterFocused + 6 * metrics.u)
     }
 
-    private func clamp(_ v: Double) -> Double { min(max(v, 0), 1) }
+    /// The scrub handle's tall-pill form: `.scrub` on a line-grammar surface, where the
+    /// playhead is a vertical sliver rather than a bead. Three geometry properties asked the
+    /// same question; this is the answer, once.
+    private var isScrubLine: Bool { mode == .scrub && playhead == .line }
 
     var body: some View {
         VStack(spacing: 6 * metrics.u) {
@@ -93,12 +126,12 @@ struct PlayerProgressBar: View {
 
             GeometryReader { geo in
                 let w = geo.size.width
-                let p = clamp(played)
+                let p = played.unitClamped
                 ZStack(alignment: .leading) {
                     Capsule().fill(.white.opacity(0.20)).frame(height: trackH)
                     if let buffered {
                         Capsule().fill(.white.opacity(0.36))
-                            .frame(width: w * clamp(buffered), height: trackH)
+                            .frame(width: w * buffered.unitClamped, height: trackH)
                     }
                     // No played fill / handle without a known runtime — there's no fraction to
                     // show and nothing to grab. The dim track + live elapsed label carry it.
@@ -107,16 +140,62 @@ struct PlayerProgressBar: View {
                     // one-time pop, accepted (a crossfade here fights the normal↔scrub morph and the
                     // reserved-geometry invariant, and the estimate makes the flip a once-per-item event).
                     if !indeterminate {
-                        Capsule().fill(.white).frame(width: w * p, height: trackH)
+                        ScrubIndicators(concrete: concrete?.unitClamped,
+                                        flight: flight,
+                                        width: w) { indicators in
+                            // The concrete indicator's drawn x. At rest the travel offset is
+                            // exactly 0, so this collapses to `w * played` and the caller's
+                            // own position animation still owns the playhead.
+                            let cx = min(max(w * (concrete ?? played).unitClamped
+                                             + indicators.travelOffset, 0), w)
+                            let cf = w > 0 ? cx / w : 0
 
-                        ForEach(chapters, id: \.self) { c in
-                            Rectangle()
-                                .fill(c <= p ? Color.playerInk.opacity(0.5) : .white.opacity(0.5))
-                                .frame(width: metrics.chapterTickWidth, height: trackH)
-                                .offset(x: w * clamp(c) - metrics.chapterTickWidth / 2)
+                            Capsule().fill(.white).frame(width: cx, height: trackH)
+
+                            // The gap the gesture has opened up, differentiated but kept well
+                            // under the pulse's strength — the scrub bubble sits directly over
+                            // this stretch and must stay the loudest thing on the bar.
+                            if let concrete {
+                                ScrubSpanBand(span: SeekDelta(from: concrete.unitClamped, to: p),
+                                              fillEdge: cf, width: w, height: trackH,
+                                              unit: metrics.u, intensity: 0.6, accent: accent)
+                            }
+
+                            ScrubDeltaPulse(flight: flight, fillEdge: cf, width: w,
+                                            height: trackH, unit: metrics.u, accent: accent)
+
+                            ForEach(chapters, id: \.self) { c in
+                                Rectangle()
+                                    .fill(c <= cf ? Color.playerInk.opacity(0.5) : .white.opacity(0.5))
+                                    .frame(width: metrics.chapterTickWidth, height: trackH)
+                                    .offset(x: w * c.unitClamped - metrics.chapterTickWidth / 2)
+                            }
+
+                            // Drawn at the virtual position always — invisible (opacity 0) on
+                            // the single-indicator bar, so nothing structural changes when a
+                            // gesture summons it.
+                            handle(ghost: true)
+                                .opacity(indicators.ghostOpacity)
+                                // The dissolve is the crossing's second beat and runs on its
+                                // own curve, so it can't ride the travel's transaction. A nil
+                                // animation is the ghost APPEARING (a gesture summoning it, and
+                                // Reduce Motion's instant hand-back), which must not fade in.
+                                .animation(indicators.ghostFade, value: indicators.ghostOpacity)
+                                .offset(x: w * p - handleWidth / 2)
+
+                            handle(ghost: false)
+                                // Behind the head, so the flare reads as the bead landing IN a
+                                // pool of its own light rather than as a second disc over it.
+                                .background {
+                                    // Off the handle's LONG side, so the line grammar's flare is
+                                    // a pool around a tall sliver rather than a 7pt-wide dab.
+                                    ScrubArrivalBloom(
+                                        accent: accent,
+                                        diameter: max(handleWidth, handleHeight) * 1.9,
+                                        opacity: indicators.bloom)
+                                }
+                                .offset(x: cx - handleWidth / 2)
                         }
-
-                        handle.offset(x: w * p - handleWidth / 2)
                     }
 
                     if !indeterminate, mode == .scrub, let bubbleTime {
@@ -158,7 +237,7 @@ struct PlayerProgressBar: View {
         switch mode {
         case .normal: metrics.handleDiameter
         case .focused: metrics.handleDiameterFocused
-        case .scrub: metrics.scrubHandleWidth
+        case .scrub: isScrubLine ? metrics.scrubHandleWidth : metrics.handleDiameter
         }
     }
 
@@ -167,16 +246,31 @@ struct PlayerProgressBar: View {
     /// this replaces ghosted during the normal↔scrub transition: the outgoing dot
     /// froze at its removal-time offset while the incoming pill tracked the finger,
     /// reading as a misaligned dot beside the scrub line (device-caught).
-    private var handle: some View {
+    ///
+    /// `ghost` is the same silhouette hollowed out: a translucent fill under a bright outline,
+    /// so the virtual indicator reads as an unfilled copy of the concrete one rather than as a
+    /// second, weaker playhead. Both are FLAT — one tint each, no gradient, no specular, no
+    /// bevel. A material here reads as a button, and the bar is a bar.
+    ///
+    /// Colour splits the pair: the hollow form is provisional, so it wears the artwork accent
+    /// and the soft light that goes with it; the solid one is the honest position, so it stays
+    /// plain white and never glows.
+    private func handle(ghost: Bool) -> some View {
         RoundedRectangle(cornerRadius: handleCornerRadius, style: .continuous)
-            .fill(.white)
+            .fill(ghost ? accent.opacity(0.22) : .white)
             .frame(width: handleWidth, height: handleHeight)
+            .overlay {
+                RoundedRectangle(cornerRadius: handleCornerRadius, style: .continuous)
+                    .strokeBorder(accent.opacity(0.9), lineWidth: 2 * metrics.u)
+                    .opacity(ghost ? 1 : 0)
+            }
+            .modifier(ScrubGhostGlow(color: accent, radius: ghost ? 7 * metrics.u : 0))
             .overlay {
                 Circle().strokeBorder(.white.opacity(0.55), lineWidth: 3 * metrics.u)
                     .padding(-3 * metrics.u)
-                    .opacity(mode == .focused ? 1 : 0)
+                    .opacity(!ghost && mode == .focused ? 1 : 0)
             }
-            .shadow(color: .black.opacity(0.5),
+            .shadow(color: .black.opacity(ghost ? 0.35 : 0.5),
                     radius: (mode == .scrub ? 5 : 2) * metrics.u, y: 1)
     }
 
@@ -184,12 +278,12 @@ struct PlayerProgressBar: View {
         switch mode {
         case .normal: metrics.handleDiameter
         case .focused: metrics.handleDiameterFocused
-        case .scrub: trackH + 22 * metrics.u
+        case .scrub: isScrubLine ? trackH + 22 * metrics.u : metrics.handleDiameter
         }
     }
 
     private var handleCornerRadius: CGFloat {
-        mode == .scrub ? 5 * metrics.u : handleWidth / 2
+        isScrubLine ? 5 * metrics.u : handleWidth / 2
     }
 
     /// Approximate so the bubble floats just above the handle; `.position` only needs the
@@ -211,15 +305,162 @@ struct PlayerProgressBar: View {
                 .font(.system(size: metrics.scrubBubbleSize, weight: .bold).monospacedDigit())
                 .contentTransition(.numericText(value: elapsedSeconds))
                 .modifier(OptionalDigitRoll(animation: scrubDigitRoll, value: elapsedSeconds))
-                .foregroundStyle(.white)
+                // The bubble belongs to the GHOST — it reads out where the gesture is aiming,
+                // not where the video is — so it wears the provisional colour with it.
+                .foregroundStyle(accent)
                 .shadow(color: .black.opacity(0.6), radius: 20 * metrics.u, y: 2)
                 .fixedSize()
             if let bubbleChapter {
                 Text(bubbleChapter)
                     .font(.system(size: metrics.scrubChapterSize, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.74))
+                    .foregroundStyle(accent.opacity(0.74))
                     .lineLimit(1)
             }
+        }
+    }
+}
+
+/// What the bar draws for the concrete/virtual pair this frame. One value rather than three
+/// anonymous `Double`s, because the ghost's fade needs its own curve: the crossing and the
+/// dissolve are two beats, and the second one cannot ride the first one's transaction.
+private struct ScrubIndicatorState {
+    /// The concrete indicator's displacement from where the bar's own inputs place it. Exactly
+    /// 0 at rest, which is what keeps the resting bar a pure function of its inputs.
+    let travelOffset: CGFloat
+    let ghostOpacity: Double
+    /// The curve the ghost's opacity change runs on, or nil for an instant one.
+    let ghostFade: Animation?
+    let bloom: Double
+}
+
+/// Owns the only two things in the concrete/virtual model that need MEMORY: the concrete
+/// indicator's commit-time travel to the virtual one, and the arrival flare that lights as it
+/// touches down. It draws nothing — it hands the bar a `ScrubIndicatorState` and leaves every
+/// point of geometry where it already lived.
+///
+/// Both are "which flight have I launched", an integer compare against `SeekFlight.id`, and
+/// that shape is load-bearing three times over. The first frame of a commit is already correct
+/// (a mirror updated from `onChange` would flash the destination before jumping back to the
+/// origin). The resting values are exactly 0 and 0, so the callers' own position animations
+/// (the mini bar's click-seek spring, the tvOS analog 1:1 pin) keep owning the playhead. And a
+/// duration republish mid-flight — a re-anchor's `applyDuration` moving every fraction by a
+/// frame's worth — cannot restart a crossing, because no animation here is keyed on a fraction.
+///
+/// There is no state for "the gesture ended but the commit hasn't arrived": the view model
+/// publishes `.previewing` → `.committed` on the beat the finger lifts, so there is no gap to
+/// sleep through and nothing to remember across it.
+///
+/// It's a separate view because `PlayerProgressBar` must stay a pure value type: a private
+/// `@State` on the struct would make its memberwise init file-private, and the
+/// `init(scrubbingTo:vm:)` convenience in `PlayerScrubBar.swift` is built on that init.
+private struct ScrubIndicators<Content: View>: View {
+    /// The concrete indicator's fraction while a gesture previews a seek; nil on the
+    /// single-indicator bar. Already clamped.
+    let concrete: Double?
+    /// The committed jump and its identity, or nil when nothing is in flight.
+    let flight: SeekSpan?
+    /// The track's full span in points.
+    let width: CGFloat
+    @ViewBuilder let content: (ScrubIndicatorState) -> Content
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.seekPulsePreview) private var preview
+
+    /// The flight whose crossing has been LAUNCHED. While it isn't the live one, the concrete
+    /// indicator is held back at A; flipping it inside `withAnimation` is what makes the
+    /// crossing a crossing.
+    @State private var launched: UInt64?
+    /// The flight whose arrival flare is lit. An id rather than a flag so a cancelled sleep can
+    /// never put out a flare that belongs to a newer crossing.
+    @State private var blooming: UInt64?
+
+    var body: some View {
+        ZStack(alignment: .leading) {
+            content(ScrubIndicatorState(travelOffset: travelOffset, ghostOpacity: ghostOpacity,
+                                        ghostFade: ghostFade, bloom: bloomOpacity))
+        }
+        .task(id: flight?.id) { await land() }
+    }
+
+    /// Hands the concrete indicator (and the ghost it was aiming at) to the flight's
+    /// destination, one animated step, then lights and lets go of the arrival flare. Everything
+    /// before that step is derived, so the frame a commit lands on is already drawn at A — a
+    /// mirror updated from a change handler would flash the destination first and jump back.
+    private func land() async {
+        guard preview == nil else { return }
+        // A flare belongs to the crossing that lit it. Put out anything still burning before
+        // this flight decides what it is, so two landings can't overlap into one long glow.
+        if blooming != nil { withAnimation(ScrubTravel.bloomFall) { blooming = nil } }
+        guard let flight else { return }
+        // One turn, so the frame holding the indicator at A is drawn and the release has
+        // something to animate FROM.
+        await Task.yield()
+        guard !Task.isCancelled else { return }
+
+        withAnimation(ScrubTravel.curve) { launched = flight.id }
+
+        // Reduce Motion gets no flare: there is no travel to arrive from, so a light here
+        // would be a light with no motion to explain it.
+        guard !reduceMotion else { return }
+        withAnimation(ScrubTravel.bloomRise) { blooming = flight.id }
+        try? await Task.sleep(for: .seconds(ScrubTravel.seconds))
+        // Not `Task.isCancelled`: a cancelled sleep still has to hand the flare back, and the
+        // id is what keeps this from putting out a NEWER crossing's flare instead of its own.
+        guard blooming == flight.id else { return }
+        withAnimation(ScrubTravel.bloomFall) { blooming = nil }
+    }
+
+    /// Reduce Motion gets the positional change with no glide: the concrete indicator is
+    /// simply at B, which is where the bar already draws it — so there is nothing to hold
+    /// back and nothing to animate. The static tint band still marks the span.
+    ///
+    /// A re-scrub landing mid-crossing abandons it rather than continuing: a live gesture
+    /// blanks the flight by definition (nothing is in flight until it commits). It abandons AT
+    /// A — the gesture's `concrete` is the unlanded flight's own origin, which is the point the
+    /// crossing had left — so the indicator drops back to the position the picture is still
+    /// showing rather than stranding part-way to a target it never reached. It takes lifting
+    /// and re-pressing inside half a second to see it at all.
+    private var travelOffset: CGFloat {
+        if case .traveling(let progress, _) = preview, let flight {
+            return ScrubTravel.offset(flight.delta, width: width, progress: progress)
+        }
+        guard preview == nil, !reduceMotion, concrete == nil else { return 0 }
+        guard let flight, launched != flight.id else { return 0 }
+        return ScrubTravel.parkOffset(flight.delta, width: width)
+    }
+
+    /// The ghost is the DESTINATION marker: fully up while a gesture owns the bar, held through
+    /// the first half of the crossing, gone at touchdown.
+    ///
+    /// Reduce Motion keeps the gesture's ghost — a static marker of where the finger is aiming
+    /// carries information, and losing it would leave the split with only one indicator — but
+    /// drops the post-commit one, which under Reduce Motion has no travel to explain it and
+    /// would just blink a coloured ring around the solid handle at the same pixel.
+    private var ghostOpacity: Double {
+        switch preview {
+        case .dragging: return 1
+        case .traveling(let progress, _): return ScrubTravel.ghostOpacity(atTravel: progress)
+        case .sweeping, .reducedMotion: return 0
+        case nil:
+            if concrete != nil { return 1 }
+            guard !reduceMotion, let flight else { return 0 }
+            return launched == flight.id ? 0 : 1
+        }
+    }
+
+    private var ghostFade: Animation? {
+        guard preview == nil, !reduceMotion, ghostOpacity == 0 else { return nil }
+        return ScrubTravel.dissolve
+    }
+
+    /// The flare's strength. A pinned preview samples the same ramp the live rise animates, so
+    /// the render and the device agree on what "mid-crossing" looks like; the live path can't
+    /// use the ramp directly because it has no per-frame progress to feed it.
+    private var bloomOpacity: Double {
+        switch preview {
+        case .traveling(let progress, _): return ScrubTravel.bloom(atTravel: progress)
+        case .dragging, .sweeping, .reducedMotion: return 0
+        case nil: return blooming == nil ? 0 : 1
         }
     }
 }
@@ -302,7 +543,7 @@ private struct ScrubGesture: ViewModifier {
                         guard width > 0 else { return }
                         let base = startFraction ?? played
                         if startFraction == nil { startFraction = base }
-                        let fraction = min(max(base + v.translation.width / width, 0), 1)
+                        let fraction = (base + v.translation.width / width).unitClamped
                         lastReported = fraction
                         onChanged?(fraction)
                     }
@@ -311,7 +552,7 @@ private struct ScrubGesture: ViewModifier {
                         let base = startFraction ?? played
                         startFraction = nil
                         lastReported = nil
-                        onEnded?(min(max(base + v.translation.width / width, 0), 1))
+                        onEnded?((base + v.translation.width / width).unitClamped)
                     }
             )
             // Cancellation path: `dragActive` resets to false with `lastReported`
@@ -340,6 +581,269 @@ private struct OptionalDigitRoll: ViewModifier {
         if let animation { content.animation(animation, value: value) }
         else { content }
     }
+}
+
+/// The ghost handle's soft outward light, and a genuine no-op at radius 0.
+///
+/// Structural rather than a `.shadow(color: .clear)`: the glow needs a `compositingGroup` so the
+/// fill and its outline cast ONE light instead of two, and that group is an offscreen pass. The
+/// concrete handle is on screen for the whole film and never glows — it must not pay for a pass
+/// it doesn't use, sixty times a second, on a drag.
+private struct ScrubGhostGlow: ViewModifier {
+    let color: Color
+    let radius: CGFloat
+
+    func body(content: Content) -> some View {
+        if radius > 0 {
+            content.compositingGroup().shadow(color: color.opacity(0.5), radius: radius)
+        } else {
+            content
+        }
+    }
+}
+
+/// One diagnostic bar for the concrete/virtual previews below. Defaults are the settled
+/// single-indicator bar in the monochrome fallback; each preview row overrides only the part
+/// it is exhibiting. The flight id is arbitrary here — a render has no second flight to
+/// supersede this one.
+private func indicatorPreviewBar(
+    played: Double,
+    concrete: Double? = nil,
+    delta: SeekDelta? = nil,
+    mode: PlayerProgressBar.Mode = .normal,
+    playhead: PlayerProgressBar.Playhead = .dot,
+    bubble: String? = nil,
+    accent: Color = .white
+) -> some View {
+    PlayerProgressBar(metrics: .tv, mode: mode, playhead: playhead, played: played,
+                      concrete: concrete, buffered: 0.81,
+                      flight: delta.map { SeekSpan(id: 1, delta: $0) },
+                      elapsed: "1:04:18", remaining: "-1:02:42",
+                      elapsedSeconds: 3858, remainingSeconds: 3762,
+                      chapters: [0.12, 0.41, 0.58, 0.89],
+                      bubbleTime: bubble, accent: accent)
+}
+
+/// The three accents every state preview is rendered against. Two artwork-plausible hues that
+/// the normalizer would actually produce (`ArtworkAccent.normalized` clamps into
+/// saturation 0.35–0.75, brightness ≥ 0.70) plus the white fallback a grey poster falls back to
+/// — so a render answers "does the hue read" and "is the fallback still the monochrome bar" at
+/// the same time. Both sit near the saturated end: that is where most posters now land, and a
+/// hue that survives there survives anywhere in the band.
+enum ScrubAccentPreview {
+    /// A warm poster's hue — the amber end of the range.
+    static let ember = Color(hue: 0.06, saturation: 0.70, brightness: 0.92)
+    /// A cool one — the teal/cyan end.
+    static let cool = Color(hue: 0.55, saturation: 0.64, brightness: 0.86)
+    /// No usable colour in the artwork: the bar is exactly what it was before the accent existed.
+    static let fallback = Color.white
+
+    static let all: [(String, Color)] = [("ember", ember), ("cool", cool), ("white", fallback)]
+}
+
+// PHASE 1 — the drag. Two indicators: the CONCRETE one (solid, on the paused playback
+// position, carrying the played fill) and its VIRTUAL ghost riding the gesture. The gap
+// between them carries the soft split band; the bubble belongs to the ghost.
+//
+// Row 1 — forward drag on the full-HUD bar: solid dot at 0.28, ghost dot at 0.72, band
+//   LIFTED (it lies past the fill, on bare track).
+// Row 2 — backward drag on the same bar: ghost at 0.28, solid at 0.72, band INKED (it lies
+//   inside the fill). The fill must still end at 0.72 — honest to the concrete position.
+// Row 3/4 — the same two on the mini bar, where the grammar is the vertical line.
+#Preview("scrub indicators — drag (dot bar / line bar)", traits: .fixedLayout(width: 1200, height: 760)) {
+    ZStack {
+        LinearGradient(colors: [.purple, .black], startPoint: .topLeading, endPoint: .bottomTrailing)
+            .ignoresSafeArea()
+        VStack(spacing: 70) {
+            indicatorPreviewBar(played: 0.72, concrete: 0.28, mode: .scrub, bubble: "1:31:10")
+            indicatorPreviewBar(played: 0.28, concrete: 0.72, mode: .scrub, bubble: "0:35:20")
+            indicatorPreviewBar(played: 0.72, concrete: 0.28, mode: .scrub,
+                                playhead: .line, bubble: "1:31:10")
+            indicatorPreviewBar(played: 0.28, concrete: 0.72, mode: .scrub,
+                                playhead: .line, bubble: "0:35:20")
+        }
+        .padding(60)
+        .environment(\.seekPulsePreview, .dragging)
+    }
+    .frame(width: 1200, height: 760)
+    .environment(\.colorScheme, .dark)
+}
+
+// PHASE 2 — the travel. The gesture is over, so `played` IS the destination and the bar
+// would draw a settled playhead at B; the pinned state pulls the concrete indicator back
+// along the delta and part-dissolves the ghost still standing at B. The fill travels with
+// the dot, which is why the band has to split at the fill's own edge rather than pick one
+// tint for the whole span.
+//
+// Rows 1-3 — a forward jump 0.28 → 0.72 at 20% / 55% / 90% of the crossing: the ghost fades
+//   out as the dot arrives, the band goes ink-behind / lift-ahead of the moving fill edge,
+//   and the comet sits BEHIND the dot.
+// Row 4 — a backward jump 0.72 → 0.28 mid-crossing, on the mini bar's line grammar.
+#Preview("scrub indicators — travel (A→B crossing)", traits: .fixedLayout(width: 1200, height: 760)) {
+    ZStack {
+        LinearGradient(colors: [.purple, .black], startPoint: .topLeading, endPoint: .bottomTrailing)
+            .ignoresSafeArea()
+        VStack(spacing: 70) {
+            indicatorPreviewBar(played: 0.72, delta: SeekDelta(from: 0.28, to: 0.72))
+                .environment(\.seekPulsePreview, .traveling(progress: 0.2, phase: 0.12))
+            indicatorPreviewBar(played: 0.72, delta: SeekDelta(from: 0.28, to: 0.72))
+                .environment(\.seekPulsePreview, .traveling(progress: 0.55, phase: 0.34))
+            indicatorPreviewBar(played: 0.72, delta: SeekDelta(from: 0.28, to: 0.72))
+                .environment(\.seekPulsePreview, .traveling(progress: 0.9, phase: 0.55))
+            indicatorPreviewBar(played: 0.28, delta: SeekDelta(from: 0.72, to: 0.28),
+                                mode: .scrub, playhead: .line)
+                .environment(\.seekPulsePreview, .traveling(progress: 0.5, phase: 0.4))
+        }
+        .padding(60)
+    }
+    .frame(width: 1200, height: 760)
+    .environment(\.colorScheme, .dark)
+}
+
+// PHASE 2b — the CHAINED re-scrub: a second gesture over a first seek that never landed. The
+// video has been sitting at A0 = 0.28 the whole time (the first commit only ever promised
+// B1 = 0.86), so the concrete indicator stays there through the second drag and the second
+// commit's crossing runs A0→B2 — never B1→B2, which would launch the dot from a point it has
+// never occupied.
+//
+// Row 1 — the second drag, forward. Solid dot still at A0, and NO comet: a gesture supersedes
+//   the flight it interrupts (a `.previewing` stage publishes no span), so only the drag's own
+//   soft band is left.
+// Row 2 — the same drag reversed past A0, so the ghost sits BEHIND the concrete dot.
+// Row 3 — the chained commit's crossing, forward: the dot leaves 0.28, not 0.86.
+// Row 4 — the flip. B2 = 0.08 is on the far side of A0, so the same chain yields one clean
+//   backward crossing out of A0 on the mini bar's line grammar.
+#Preview("scrub indicators — chained re-scrub (unlanded seek)", traits: .fixedLayout(width: 1200, height: 760)) {
+    ZStack {
+        LinearGradient(colors: [.purple, .black], startPoint: .topLeading, endPoint: .bottomTrailing)
+            .ignoresSafeArea()
+        VStack(spacing: 70) {
+            indicatorPreviewBar(played: 0.60, concrete: 0.28, mode: .scrub, bubble: "1:16:00")
+                .environment(\.seekPulsePreview, .dragging)
+            indicatorPreviewBar(played: 0.08, concrete: 0.28, mode: .scrub, bubble: "0:10:05")
+                .environment(\.seekPulsePreview, .dragging)
+            indicatorPreviewBar(played: 0.60, delta: SeekDelta(from: 0.28, to: 0.60))
+                .environment(\.seekPulsePreview, .traveling(progress: 0.35, phase: 0.22))
+            indicatorPreviewBar(played: 0.08, delta: SeekDelta(from: 0.28, to: 0.08),
+                                mode: .scrub, playhead: .line)
+                .environment(\.seekPulsePreview, .traveling(progress: 0.45, phase: 0.38))
+        }
+        .padding(60)
+    }
+    .frame(width: 1200, height: 760)
+    .environment(\.colorScheme, .dark)
+}
+
+// PHASE 3 — the dot has landed but the engine hasn't, frozen mid-sweep (`seekPulsePreview`)
+// so a static render can show it at all: the live sweep is a `TimelineView`, and a one-frame
+// snapshot catches it at phase 0 with the comet entirely off the segment. `played` equals
+// each delta's `to` on purpose — the bar drops any delta that isn't the destination it's
+// displaying, so these rows also prove that gate passes for a settled commit.
+//
+// Row 1 — forward 0.28 → 0.72: the delta is INSIDE the played fill, dimmed with ink, comet
+//   travelling left→right toward B. Should read as the fill arriving, never as a gap.
+// Row 2 — backward 0.72 → 0.28: the delta sits PAST the fill on bare track, lifted above it,
+//   comet travelling right→left. Brighter than track, clearly below the fill.
+// Row 3 — the same forward delta under Reduce Motion: the tint band with NO comet.
+// Row 4 — a tiny 0.50 → 0.515 delta: below the minimum span, so nothing draws.
+#Preview("scrub delta pulse (forward / backward / reduce motion)", traits: .fixedLayout(width: 1200, height: 760)) {
+    ZStack {
+        LinearGradient(colors: [.purple, .black], startPoint: .topLeading, endPoint: .bottomTrailing)
+            .ignoresSafeArea()
+        VStack(spacing: 70) {
+            indicatorPreviewBar(played: 0.72, delta: SeekDelta(from: 0.28, to: 0.72))
+            indicatorPreviewBar(played: 0.28, delta: SeekDelta(from: 0.72, to: 0.28))
+            indicatorPreviewBar(played: 0.72, delta: SeekDelta(from: 0.28, to: 0.72))
+                .environment(\.seekPulsePreview, .reducedMotion)
+            indicatorPreviewBar(played: 0.515, delta: SeekDelta(from: 0.50, to: 0.515))
+        }
+        .padding(60)
+        .environment(\.seekPulsePreview, .sweeping(phase: 0.62))
+    }
+    .frame(width: 1200, height: 760)
+    .environment(\.colorScheme, .dark)
+}
+
+// ── The accent previews ─────────────────────────────────────────────────────────────────────
+// The four above pin the GEOMETRY of each state in the monochrome fallback; these three pin the
+// LOOK of the same states once an artwork accent is in play. Each renders one state across the
+// warm hue, the cool hue, and white — so a single render answers both "does the hue read over
+// video" and "is the white fallback still the bar we shipped". Since the indicators are FLAT,
+// the white row is the pre-accent bar exactly: any difference in it is a regression.
+
+// ACCENT · the drag. What to look for: the concrete bead/sliver stays WHITE, opaque and flat (it
+// is the honest position and must not take the poster's colour), while the ghost is a hollow
+// silhouette outlined in the accent with a soft light around it, the split band's lift half
+// carries the hue, and the bubble reads out in it. No gradient, no highlight, no bevel on either
+// indicator — a handle that looks pressable is the bug this preview exists to catch.
+#Preview("scrub accent — drag (dot / line × 3 accents)", traits: .fixedLayout(width: 1200, height: 1160)) {
+    ZStack {
+        LinearGradient(colors: [.purple, .black], startPoint: .topLeading, endPoint: .bottomTrailing)
+            .ignoresSafeArea()
+        VStack(spacing: 62) {
+            ForEach(ScrubAccentPreview.all, id: \.0) { _, accent in
+                indicatorPreviewBar(played: 0.72, concrete: 0.28, mode: .scrub,
+                                    bubble: "1:31:10", accent: accent)
+                indicatorPreviewBar(played: 0.28, concrete: 0.72, mode: .scrub,
+                                    playhead: .line, bubble: "0:35:20", accent: accent)
+            }
+        }
+        .padding(60)
+        .environment(\.seekPulsePreview, .dragging)
+    }
+    .frame(width: 1200, height: 1160)
+    .environment(\.colorScheme, .dark)
+}
+
+// ACCENT · the crossing and the landing. Rows come in pairs per accent: mid-flight at 55% (the
+// bloom is still dark — `ScrubTravel.bloomOnset` holds it off until the last 30%) and at
+// touchdown, where the flare is at full and the ghost has dissolved into the bead. The two rows
+// of a pair must differ ONLY by the pool of light under the head and the ghost's absence.
+#Preview("scrub accent — travel + arrival bloom", traits: .fixedLayout(width: 1200, height: 1160)) {
+    ZStack {
+        LinearGradient(colors: [.purple, .black], startPoint: .topLeading, endPoint: .bottomTrailing)
+            .ignoresSafeArea()
+        VStack(spacing: 62) {
+            ForEach(ScrubAccentPreview.all, id: \.0) { _, accent in
+                indicatorPreviewBar(played: 0.72, delta: SeekDelta(from: 0.28, to: 0.72),
+                                    accent: accent)
+                    .environment(\.seekPulsePreview, .traveling(progress: 0.55, phase: 0.34))
+                indicatorPreviewBar(played: 0.72, delta: SeekDelta(from: 0.28, to: 0.72),
+                                    accent: accent)
+                    .environment(\.seekPulsePreview, .traveling(progress: 1.0, phase: 0.62))
+            }
+        }
+        .padding(60)
+    }
+    .frame(width: 1200, height: 1160)
+    .environment(\.colorScheme, .dark)
+}
+
+// ACCENT · the settle loop, frozen mid-sweep. Per accent: a forward delta (the span lies INSIDE
+// the played fill, so the band is ink and the accent arrives as the comet and the breath) and
+// a backward one (the span is on bare track, so the band's lift half
+// is the accent outright). The last row is Reduce Motion at the warm hue — the static band keeps
+// its gentle tint, and there must be NO comet and NO breath anywhere in it.
+#Preview("scrub accent — settle loop (ink / lift / reduce motion)", traits: .fixedLayout(width: 1200, height: 1340)) {
+    ZStack {
+        LinearGradient(colors: [.purple, .black], startPoint: .topLeading, endPoint: .bottomTrailing)
+            .ignoresSafeArea()
+        VStack(spacing: 62) {
+            ForEach(ScrubAccentPreview.all, id: \.0) { _, accent in
+                indicatorPreviewBar(played: 0.72, delta: SeekDelta(from: 0.28, to: 0.72),
+                                    accent: accent)
+                indicatorPreviewBar(played: 0.28, delta: SeekDelta(from: 0.72, to: 0.28),
+                                    playhead: .line, accent: accent)
+            }
+            indicatorPreviewBar(played: 0.72, delta: SeekDelta(from: 0.28, to: 0.72),
+                                accent: ScrubAccentPreview.ember)
+                .environment(\.seekPulsePreview, .reducedMotion)
+        }
+        .padding(60)
+        .environment(\.seekPulsePreview, .sweeping(phase: 0.62))
+    }
+    .frame(width: 1200, height: 1340)
+    .environment(\.colorScheme, .dark)
 }
 
 // Incomplete media (unknown runtime): a dim track with the live elapsed ticking on the
@@ -376,7 +880,8 @@ private struct OptionalDigitRoll: ViewModifier {
                               elapsed: "1:04:18", remaining: "-1:02:42",
                               elapsedSeconds: 3858, remainingSeconds: 3762,
                               chapters: [0.12, 0.27, 0.41, 0.58, 0.74, 0.89])
-            PlayerProgressBar(metrics: .tv, mode: .scrub, played: 0.72, buffered: 0.81,
+            PlayerProgressBar(metrics: .tv, mode: .scrub, playhead: .line,
+                              played: 0.72, buffered: 0.81,
                               elapsed: "1:31:10", remaining: "-0:35:50",
                               elapsedSeconds: 5470, remainingSeconds: 2150,
                               chapters: [0.12, 0.27, 0.41, 0.58, 0.74, 0.89],
