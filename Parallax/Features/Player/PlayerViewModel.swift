@@ -178,7 +178,45 @@ final class PlayerViewModel {
         let dur = CMTimeGetSeconds(currentDuration)
         let end = CMTimeGetSeconds(bufferedTo)
         guard dur > 0, end.isFinite else { return nil }
-        return min(max(end / dur, 0), 1)
+        return (end / dur).unitClamped
+    }
+
+    /// Where playback HONESTLY is, as opposed to where the bar is currently promising it will
+    /// be. The two come apart for exactly one window: `currentPosition` is overwritten with the
+    /// seek target on the beat a commit arms its flight, so from that instant until the engine
+    /// takes the seek it reads a place the picture has not reached — while the flight still
+    /// carries the position it jumped away from, which is where the picture actually sits.
+    ///
+    /// `.landing` is where that stops being true: a `.projected` beat is the engine's estimate
+    /// off its OWN seek target, which the seek-settle contract calls display-safe — the picture
+    /// is at (or running from) it. From that beat the published clock is honest again, so the
+    /// concrete indicator follows it instead of claiming the video never moved for the whole
+    /// multi-second settle window a VLC re-anchor takes.
+    ///
+    /// Two readers, and they have to be the same expression or the bar contradicts itself: the
+    /// CONCRETE indicator draws this during a gesture (`PlayerProgressBar.init(scrubbingTo:vm:)`),
+    /// and every new flight anchors its `played` on it (`beginPreview`, `commitScrubSeek`) — so a
+    /// scrub made over a seek that never landed CHAINS back to the original A instead of claiming
+    /// a B nothing ever played, and the crossing it commits starts from the dot the user has been
+    /// looking at. That is the whole chaining rule, and it exists only here.
+    var concretePosition: CMTime {
+        guard let flight else { return currentPosition }
+        return flight.stage == .landing ? currentPosition : flight.played
+    }
+
+    /// The committed seek as the bar draws it: the 0...1 fractions the playhead jumped between,
+    /// plus the flight's identity. Live from the commit until the engine lands, nil while a
+    /// gesture is still previewing (nothing is in flight yet) and whenever the runtime isn't
+    /// scrubbable. Read by `ScrubDeltaPulse`, which sweeps the segment from `from` toward `to`,
+    /// and by the concrete indicator's crossing, which animates on `id`.
+    var seekSpan: SeekSpan? {
+        guard let flight, flight.stage != .previewing, hasKnownDuration else { return nil }
+        let dur = CMTimeGetSeconds(currentDuration)
+        let from = CMTimeGetSeconds(flight.played) / dur
+        let to = CMTimeGetSeconds(flight.requested) / dur
+        guard from.isFinite, to.isFinite else { return nil }
+        return SeekSpan(id: flight.id,
+                        delta: SeekDelta(from: from.unitClamped, to: to.unitClamped))
     }
     /// Whether the ENGINE is actively playing (vs paused): a mirror driven by its beats,
     /// so it necessarily LAGS: VLC polls its transport every 500ms behind a seek-settlement
@@ -428,7 +466,7 @@ final class PlayerViewModel {
         chapterFractions = chapters.map { chapter in
             let c = chapter.start.components
             let s = Double(c.seconds) + Double(c.attoseconds) / 1e18
-            return min(max(s / dur, 0), 1)
+            return (s / dur).unitClamped
         }
     }
 
@@ -674,7 +712,25 @@ final class PlayerViewModel {
     /// published positions (a hold and no hold treat each provenance identically; only the
     /// window's END differs), so a test that cannot read it can only assert the defect one
     /// window later, if at all.
-    private(set) var seekHold: SeekHold?
+    private(set) var seekHold: SeekHold? {
+        didSet {
+            // The flight is the hold's meaning, so it cannot outlive it: every path that ends
+            // a hold — the engine landing, a failed phase, an abandoned re-anchor, the
+            // watchdog, `stop()` — ends the flight too, and a rule the property enforces
+            // cannot be forgotten by the next one. A PREVIEW has no hold to end (the finger is
+            // still down, nothing has been dispatched), so it is left alone; `beginExit()`
+            // clears that one explicitly.
+            if seekHold == nil, flight?.stage != .previewing { flight = nil }
+        }
+    }
+
+    /// The one seek in flight — gesture, commit and landing — or nil when the bar is settled.
+    /// See `SeekFlight`. Every transition is a method below; nothing else writes it.
+    private(set) var flight: SeekFlight?
+    /// Monotonic flight ids. Never reset: identity has to survive a re-anchor, a track switch
+    /// and a `retry()` within one view model, or the bar could key an animation on a number it
+    /// has already used.
+    private var lastFlightID: UInt64 = 0
     private let nowPlaying: any NowPlayingUpdating
     private var itemTitle: String = ""
     /// HUD-only episode number prepended to `title` (e.g. `"2. <name>"`); nil for
@@ -685,6 +741,17 @@ final class PlayerViewModel {
     // into a transcode, so switching tracks means re-resolving the stream around
     // a different source index. We keep the item + the current indices to rebuild.
     private var playingItem: ItemDetail?
+
+    /// The playing item's artwork hue, once it has been derived — the colour the scrub bar
+    /// paints its provisional elements in (see `PlayerViewModel.scrubAccent`). Nil is the
+    /// answer for the whole first second of every session, for artwork with no usable colour,
+    /// for SMB (no `ItemDetail`, no image ref), and for any failure along the way; nil means
+    /// the bar stays its monochrome white, which is the pre-accent look.
+    private(set) var accentHSB: AccentHSB?
+    /// The one-shot derivation, held only so a new item (or `stop()`) can cancel a fetch that
+    /// is still in flight and can't be allowed to paint the next item's bar.
+    private var accentTask: Task<Void, Never>?
+
     /// The id requested via `start(itemID:)`, kept so `retry()` can re-fetch when
     /// the original failure was the detail fetch itself (no `playingItem` yet).
     private var pendingItemID: ItemID?
@@ -790,6 +857,14 @@ final class PlayerViewModel {
     /// they can never disagree about what "now" is.
     private let seekHoldNow: @Sendable () -> ContinuousClock.Instant
 
+    /// The playing item's artwork bytes, for the scrub bar's accent hue. A closure because the
+    /// image lives behind a session-scoped image pipeline (auth header, shared disk cache) the
+    /// view model has no business knowing about; the default answers nil, which is the white
+    /// bar. Bytes rather than a decoded image on purpose: `Data` crosses to the extraction's
+    /// off-main task without an isolation argument, and the decode is part of the work we are
+    /// moving off the main thread anyway.
+    private let fetchArtwork: @Sendable (ItemDetail) async -> Data?
+
     /// The user's subtitle appearance, read at asset-construction time. A closure rather
     /// than a value: `SubtitlePreferences` loads its persisted style asynchronously, so a
     /// value captured when the view model was built could be the pre-load default.
@@ -851,7 +926,8 @@ final class PlayerViewModel {
         backfillDelay: Duration = .seconds(8),
         subtitleStyle: @escaping @MainActor () -> SubtitleStyle = { .standard },
         playerSurface: @escaping @MainActor () -> CGSize? = { nil },
-        seekHoldNow: @escaping @Sendable () -> ContinuousClock.Instant = { .now }
+        seekHoldNow: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
+        fetchArtwork: @escaping @Sendable (ItemDetail) async -> Data? = { _ in nil }
     ) {
         self.deviceProfileBuilder = deviceProfileBuilder
         self.playbackInfo = playbackInfo
@@ -874,6 +950,7 @@ final class PlayerViewModel {
         self.subtitleStyle = subtitleStyle
         self.playerSurface = playerSurface
         self.seekHoldNow = seekHoldNow
+        self.fetchArtwork = fetchArtwork
     }
 
     isolated deinit {
@@ -890,6 +967,7 @@ final class PlayerViewModel {
         deliveryProbeTask?.cancel()
         thumbnailBackfillTask?.cancel()
         segmentsTask?.cancel()
+        accentTask?.cancel()
     }
 
     // MARK: - Skip segments & episode succession
@@ -1025,6 +1103,27 @@ final class PlayerViewModel {
         }
     }
 
+    /// Derives the scrub bar's accent from the item's artwork, once per item, in the background.
+    /// Reset to nil FIRST so an episode→episode swap can never show the previous poster's hue
+    /// on the new item's bar, not even for the beat before the new fetch answers.
+    ///
+    /// Nothing here is allowed to matter: the fetch is best-effort, the extraction runs
+    /// detached at utility priority (a poster decode has no business on the main thread while a
+    /// stream is opening), and every failure — no ref, no bytes, no colour in the artwork —
+    /// leaves the bar white. It is deliberately NOT awaited anywhere in the start path.
+    private func loadAccent(for item: ItemDetail) {
+        accentTask?.cancel()
+        accentHSB = nil
+        accentTask = Task { [weak self, fetchArtwork] in
+            guard let data = await fetchArtwork(item), !Task.isCancelled else { return }
+            let accent = await Task.detached(priority: .utility) {
+                ArtworkAccent.accent(fromImageData: data)
+            }.value
+            guard !Task.isCancelled else { return }
+            self?.accentHSB = accent
+        }
+    }
+
     /// Direct-play entry: fetch the item's detail, then play. The frosted reload
     /// cover stays up through the fetch (phase == .loading), so there's no separate
     /// spinner. Used when a screen has only the item id (an episode tapped in Home /
@@ -1085,6 +1184,7 @@ final class PlayerViewModel {
 
         // Fire-and-forget alongside the resolve: best-effort, never gates playback.
         loadSegmentsAndNeighbors(for: item)
+        loadAccent(for: item)
 
         do {
             do {
@@ -1703,6 +1803,13 @@ final class PlayerViewModel {
         guard !isExiting else { return }
         isExiting = true
         freezeVideoSurface()
+        // The seek is over too: `seek(to:)` and `commitScrubSeek` both fence on `isExiting`, so
+        // nothing can land this flight any more — and the surfaces stay mounted for the whole
+        // slide-out, which without this carries a scrub bar and a timestamp bubble out of the
+        // screen with them. (`stop()` clears it as well, but that runs on `onDisappear`, at the
+        // END of the dismissal.)
+        seekHold = nil
+        flight = nil
         // A transport command armed just before the fence is still pending its hop to the
         // engine; `setPlaying`'s guard only covers commands that arrive after. The task
         // re-checks `Task.isCancelled` before it touches the engine, so cancelling here
@@ -1775,6 +1882,9 @@ final class PlayerViewModel {
         await reportStoppedIfNeeded()
         await audioSession.deactivate()
         playingItem = nil
+        accentTask?.cancel()
+        accentTask = nil
+        accentHSB = nil
         pendingItemID = nil
         pendingFromBeginning = false
         smbResolve = nil
@@ -1810,6 +1920,7 @@ final class PlayerViewModel {
         // seek's destination. (Deliberately NOT cleared in the transcode re-anchor
         // reload: that window is exactly what the hold exists to cover.)
         seekHold = nil
+        flight = nil
         currentDuration = .zero
         chapterFractions = []
         bufferedTo = nil
@@ -2600,6 +2711,42 @@ final class PlayerViewModel {
         await commitScrubSeek(to: target, resume: desiredPlaying)
     }
 
+    /// A gesture has taken the bar: the finger (or the tvOS swipe) is previewing `requested`
+    /// while the picture stays where it is. Nothing is dispatched — this is the state the
+    /// concrete/virtual split draws, and the state a commit converts.
+    ///
+    /// Idempotent: a second begin inside a live preview is an update, so no re-entry into the
+    /// gesture can re-anchor the origin the user has been watching.
+    func beginPreview(at requested: CMTime) {
+        guard flight?.stage != .previewing else { return updatePreview(to: requested) }
+        flight = SeekFlight(id: nextFlightID(), played: concretePosition,
+                            requested: requested, stage: .previewing)
+    }
+
+    /// The preview moved. Same flight, same origin, same identity — only the promise changes.
+    func updatePreview(to requested: CMTime) {
+        guard let live = flight, live.stage == .previewing else { return }
+        flight = SeekFlight(id: live.id, played: live.played,
+                            requested: requested, stage: .previewing)
+    }
+
+    /// The gesture ended without committing — an explicit cancel (tvOS Back out of a swipe
+    /// scrub), or a drag released on a player that can't seek. The bar goes back to whatever it
+    /// was showing BEFORE the gesture: a still-unlanded commit if one stands (the preview
+    /// superseded it, and cancelling hands it back — with the preview's own id, so nothing that
+    /// is already drawn restarts), or nothing at all.
+    func cancelPreview() {
+        guard let live = flight, live.stage == .previewing else { return }
+        flight = seekHold.map {
+            SeekFlight(id: live.id, played: live.played, requested: $0.target, stage: .committed)
+        }
+    }
+
+    private func nextFlightID() -> UInt64 {
+        lastFlightID += 1
+        return lastFlightID
+    }
+
     func commitScrubSeek(to target: CMTime, resume: Bool) async {
         // Exit fence, and the load-bearing one: every scrub surface COALESCES its commit
         // (`SeekCommitCoalescer`, ~400ms), so a drag released just before the close button
@@ -2614,6 +2761,15 @@ final class PlayerViewModel {
         // it there — moving only with the engine's own `.projected` beats — until an
         // `.observed` one lands: the seek-settle contract's "this is my clock, with no seek of
         // mine outstanding" (`PositionProvenance`).
+        // The `.previewing` → `.committed` transition, and the ONE place the chaining rule
+        // lives: the new flight's A is `concretePosition` rather than `currentPosition`, so a
+        // commit made while an earlier one is still unlanded inherits the position the picture
+        // never left. Reading the displayed position here would span from a target nothing ever
+        // played, and the crossing would launch from a dot that has been sitting at the real A
+        // all along. A fresh id supersedes whatever was in flight: the bar drops the old span on
+        // an integer compare, with no tolerance to get wrong.
+        flight = SeekFlight(id: nextFlightID(), played: concretePosition,
+                            requested: target, stage: .committed)
         seekHold = SeekHold(target: target, armedAt: seekHoldNow())
         lastPosition = target
         currentPosition = target
@@ -3020,7 +3176,14 @@ final class PlayerViewModel {
             // The bar follows the engine's own projection off the target and freezes on a
             // clock that is still behind it. `lastPosition` follows neither: until an observed
             // clock lands, the committed target is the only defensible resume point.
-            if provenance == .projected { currentPosition = position }
+            if provenance == .projected {
+                currentPosition = position
+                // `.projected` is display-safe by contract: the picture is at, or running from,
+                // this position. So the flight has stopped hiding a jump — the honest position
+                // is the published clock again, and the concrete indicator stops claiming the
+                // video sits at A for the whole (multi-second, on a VLC re-anchor) settle.
+                if flight?.stage == .committed { flight?.stage = .landing }
+            }
         case .release:
             seekHold = nil
             // Dropping the hold and ADOPTING the beat are two decisions, and the watchdog is

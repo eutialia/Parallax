@@ -95,6 +95,8 @@ struct SeekHoldTests {
         #expect(SeekHold.watchdog > .seconds(15))
     }
 
+    /// The hold is the release POLICY and nothing else: the commit's origin, its identity and
+    /// its stage all belong to `SeekFlight`. What is left here is a target and a deadline.
     @Test("value semantics: the target and the arming instant are the whole identity")
     func equality() {
         #expect(Self.hold() == Self.hold())
