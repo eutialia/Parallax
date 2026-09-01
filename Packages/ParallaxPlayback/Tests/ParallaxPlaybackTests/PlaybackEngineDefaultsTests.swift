@@ -13,11 +13,11 @@ private final class BarePlaybackEngine: PlaybackEngine {
     nonisolated let capabilities = PlaybackEngineCapabilities(
         supportsPiP: false, supportsVideoAirPlay: false, supportsNowPlayingIntegration: false
     )
-    nonisolated let state: AsyncStream<PlaybackState>
-    private let continuation: AsyncStream<PlaybackState>.Continuation
+    nonisolated let state: AsyncStream<PlaybackBeat>
+    private let continuation: AsyncStream<PlaybackBeat>.Continuation
 
     init() {
-        let (stream, cont) = AsyncStream<PlaybackState>.makeStream()
+        let (stream, cont) = AsyncStream<PlaybackBeat>.makeStream()
         self.state = stream
         self.continuation = cont
     }
@@ -28,7 +28,7 @@ private final class BarePlaybackEngine: PlaybackEngine {
     private let pauseCalls = OSAllocatedUnfairLock(initialState: 0)
     var pauseCallCount: Int { pauseCalls.withLock { $0 } }
 
-    func load(_ asset: PlayableAsset) async throws {}
+    func load(_ asset: PlayableAsset) async throws -> PlaybackSessionID { .none }
     func play() async {}
     func pause() async { pauseCalls.withLock { $0 += 1 } }
     func seek(to time: CMTime) async {}

@@ -354,12 +354,21 @@ final class PlayerViewModel {
     /// state in `stop()`.
     private var didReactivelyReroute = false
 
-    /// True from the moment a `.failed` beat schedules the reactive-fallback hop until
-    /// `attemptReactiveFallback` clears it right before `loadAndPlay` on the retry engine.
-    /// Gates `handle(_:)` (next to `isSwitchingTracks`) so the dying AVKit engine's
-    /// trailing beats — a stray `.buffering`/`.playing` racing its own teardown — can't
-    /// land on the VM while the hop is in flight. Reset in `stop()`.
-    private var isReactivelyRerouting = false
+    /// The engine session this view model is driving — `engine.load()`'s return value, and
+    /// the ONE thing `handle` checks a beat against. An engine is reloadable in place, so the
+    /// engine's own identity cannot answer "is this beat about the media I am playing now?":
+    /// a re-anchor keeps the engine, its stream and its buffered beats, and the outgoing
+    /// media's callbacks stay live for seconds after the reload arms (a status KVO enqueued on
+    /// the run loop, an inventory load mid-await, an armed watchdog).
+    ///
+    /// It replaces the flags this view model used to raise around a reload and a reroute. Those
+    /// were read where a beat is CONSUMED while being cleared on the reload's own timeline, so a
+    /// beat the dying session published while a flag was up could take its MainActor turn after
+    /// the flag came down and be honored as the live session's — on a re-anchor that beat is a
+    /// `.failed`, because the reload kills the outgoing encode job before the replacement
+    /// resolves, and the error scrim lands over a reload that is buffering perfectly well.
+    /// Nil before the first load and after a teardown: nothing to adopt.
+    private(set) var activeSession: PlaybackSessionID?
 
     /// The reactive-fallback hop `.failed` spawns (`attemptReactiveFallback`), stored so
     /// `stop()` can cancel it — closing the window where `retry()`/`resetForReplay` tear
@@ -1521,7 +1530,10 @@ final class PlayerViewModel {
             // path, so a replacement that was installed for a player already dismissing is
             // torn down with its subscription rather than left resident until `stop()`.
             try checkStillActive()
-            try await engine.load(asset)
+            // The load's return value IS the boundary: from here on this is the only session
+            // whose beats this view model adopts, and everything the media it replaced still
+            // has in flight is stamped with a session that no longer matches.
+            activeSession = try await engine.load(asset)
             // Last fence before audio starts: an exit that landed during load must
             // not be answered with play() on a player that's already dismissed.
             try checkStillActive()
@@ -1603,6 +1615,9 @@ final class PlayerViewModel {
         transcodeDelivery = nil
         stateTask?.cancel()
         stateTask = nil
+        // No engine, no session: a beat that survives the cancellation below belongs to media
+        // this view model no longer has any surface for.
+        activeSession = nil
         await engineSlot.drain()
         // A load failure tears the bridge down with the engine: nothing consumes the stream, so
         // the orphaned listener + its SMB connection must not outlive the failed load.
@@ -1675,6 +1690,7 @@ final class PlayerViewModel {
         }
         stateTask?.cancel()
         stateTask = nil
+        activeSession = nil   // the session ends here; nothing published from now on is ours
         // Closes the retry()/resetForReplay window where a pending reactive-fallback
         // hop outlives its session: without this, a hop scheduled just before a
         // restart could build a VLC engine for the NEW session's state.
@@ -1747,7 +1763,6 @@ final class PlayerViewModel {
         desiredPlaying = false
         currentAsset = nil
         didReactivelyReroute = false
-        isReactivelyRerouting = false
         // NOTE: playbackRate is deliberately NOT reset here. retry() routes through
         // stop()→start(); zeroing it would silently drop the user's chosen speed on
         // the fresh engine (beginPlayback's re-apply guard would see 1.0×). A real
@@ -2787,20 +2802,33 @@ final class PlayerViewModel {
         stateTask?.cancel()
         let stream = engine.state
         stateTask = Task { [weak self] in
-            for await state in stream {
-                await self?.handle(state, from: engine)
+            for await beat in stream {
+                await self?.handle(beat, from: engine)
             }
         }
     }
 
-    /// A beat only counts while it comes from the engine this view model is currently
-    /// driving. Cancellation is not synchronous: a state already pulled from a replaced
+    /// The two identity questions a beat has to answer, and they are different questions.
+    ///
+    /// The ENGINE: cancellation is not synchronous, so a beat already pulled from a replaced
     /// engine's stream can still be waiting for its MainActor hop when the replacement is
-    /// installed, and adopting it would report the dead session's phase and position
-    /// against the live one.
-    private func handle(_ state: PlaybackState, from engine: any PlaybackEngine) async {
+    /// installed, and adopting it would report the dead engine's phase and position against
+    /// the live one.
+    ///
+    /// The SESSION within that engine: a reload keeps the engine, so engine identity says
+    /// nothing about which media a beat describes. The stamp does, and it is applied where the
+    /// beat is PUBLISHED — which is what makes it survive the stream's buffer and the hop that
+    /// every flag-based answer to the same question loses to.
+    private func handle(_ beat: PlaybackBeat, from engine: any PlaybackEngine) async {
         guard self.engine === engine else { return }
-        await handle(state)
+        // Ahead of the session gate, deliberately: the hold's watchdog exists for the windows
+        // where beats are dropped, and a superseded session's beat is still proof that time is
+        // passing. It never adopts a position — see `publish`.
+        if let hold = seekHold, seekHoldNow() - hold.armedAt >= SeekHold.watchdog {
+            seekHold = nil
+        }
+        guard beat.session == activeSession else { return }
+        await handle(beat.state)
     }
 
     /// The ONE writer of `currentPosition` for engine beats — every `.playing`/`.paused`/
@@ -2879,26 +2907,10 @@ final class PlayerViewModel {
         }
     }
 
+    /// Every beat here has already proved it belongs to the live engine AND the live session
+    /// (`handle(_:from:)`), so there is nothing left to gate on: a reload's outgoing beats, a
+    /// dying engine's trailing ones and a superseded item's late callbacks never arrive.
     private func handle(_ state: PlaybackState) async {
-        // The seek hold's watchdog, evaluated on EVERY state and ahead of every gate below.
-        // `publish` is the natural place for it and the wrong one: it needs a position-carrying
-        // beat that reaches it, and the windows the watchdog exists for are exactly the ones
-        // where none does — a track switch or a reactive reroute swallows every beat at the
-        // guards below, and a dead engine emits nothing but `.failed`. The bar would then stay
-        // pinned at the target with nothing left to unpin it.
-        //
-        // It never adopts a position: this is the anti-wedge exit, and the beat that happens to
-        // arrive at the deadline says nothing about where the media is (see `publish`).
-        if let hold = seekHold, seekHoldNow() - hold.armedAt >= SeekHold.watchdog {
-            seekHold = nil
-        }
-        // While a transcode track switch reloads the reused engine, ignore the
-        // outgoing stream's trailing beats — a stale `.playing` would claim the new
-        // session's reportStart and the server would never register it starting.
-        if isSwitchingTracks { return }
-        // While a reactive AVKit→VLC fallback is hopping engines, ignore the dying
-        // engine's trailing beats — same rationale as `isSwitchingTracks` above.
-        if isReactivelyRerouting { return }
         // NOTE: do NOT gate the whole handler on `resolved` here. The SMB/local path
         // (`start(smbItem:)`) leaves `resolved` nil but still drives phase/position/
         // track/buffering beats through this surface. Each Jellyfin *reporting* call
@@ -3127,7 +3139,6 @@ final class PlayerViewModel {
                 didReactivelyReroute = true
                 // Set before spawning the hop: the UI must not sit on `.playing` (or
                 // any other stale phase) until the hop actually runs the retry.
-                isReactivelyRerouting = true
                 phase = .loading
                 // Unstructured hop (same shape as `.ended` above): this handler runs
                 // INSIDE `stateTask`'s await loop, and the fallback cancels `stateTask` —
@@ -3199,9 +3210,6 @@ final class PlayerViewModel {
         // reroute instead of in front of it.
         guard !Task.isCancelled, !isExiting else { return }
 
-        // The retry engine's own beats must flow from here on — clear the trailing-beat
-        // gate right before starting it.
-        isReactivelyRerouting = false
         do {
             try await loadAndPlay(retryAsset, reusingEngine: false, forcedEngine: .vlcKit)
         } catch is CancellationError {

@@ -18,17 +18,28 @@ public protocol PlaybackEngine: AnyObject, Sendable {
     nonisolated var currentTime: CMTime { get }
 
     /// Single-consumer state stream. Only `PlayerViewModel` iterates this.
+    /// Every element carries the session that published it (`PlaybackBeat`) — an engine is
+    /// reloadable in place, so the engine's identity alone cannot tell a reload's incoming
+    /// beats from the outgoing ones still in the buffer.
     /// Terminal delivery is NOT idempotent at the engine layer: an engine may
     /// emit `.ended`, and `teardown()` separately finishes the continuation, so
     /// the consumer must de-duplicate terminal reporting (e.g. a natural
     /// `.ended` followed by a teardown on dismissal). A future engine is free to
     /// strengthen this to a single terminal event; until then the guard lives in
     /// the view model.
-    nonisolated var state: AsyncStream<PlaybackState> { get }
+    nonisolated var state: AsyncStream<PlaybackBeat> { get }
 
     /// Load the asset. Seeks to `asset.startTime` when the item becomes ready.
     /// Throws `PlaybackError` if the item cannot be prepared.
-    func load(_ asset: PlayableAsset) async throws
+    ///
+    /// Opens a new SESSION and returns its id. An engine is reloadable in place (the transcode
+    /// re-anchor / track switch reuses it so the video layer survives the swap), so this is the
+    /// boundary between the media being replaced and its replacement: every beat published from
+    /// here on carries the returned id, and every beat the outgoing media still had in flight —
+    /// buffered in the stream, or queued on a run loop against a callback installed for it —
+    /// carries the previous one and is dropped by the engine's own yield funnel.
+    @discardableResult
+    func load(_ asset: PlayableAsset) async throws -> PlaybackSessionID
 
     /// Begin or resume playback.
     func play() async

@@ -19,8 +19,8 @@ enum WatchdogKind: String, CaseIterable, CustomTestStringConvertible {
     var testDescription: String { rawValue }
 
     /// Builds the watchdog and returns its arm/disarm pair. `LoadWatchdog` takes the
-    /// callback at `arm`, `StallWatchdog` at `init`; the adapter hides that difference
-    /// so the contract reads the same for both.
+    /// callback at `arm`, `StallWatchdog` at `init` and the session at `arm`; the adapter
+    /// hides that difference so the contract reads the same for both.
     @MainActor
     func make(deadline: Duration, onFire: @escaping @MainActor () -> Void)
     -> (arm: () -> Void, disarm: () -> Void) {
@@ -29,8 +29,8 @@ enum WatchdogKind: String, CaseIterable, CustomTestStringConvertible {
             let wd = LoadWatchdog(timeout: deadline)
             return ({ wd.arm(onTimeout: onFire) }, { wd.disarm() })
         case .stall:
-            let wd = StallWatchdog(deadline: deadline, onExpiry: onFire)
-            return ({ wd.arm() }, { wd.disarm() })
+            let wd = StallWatchdog(deadline: deadline, onExpiry: { _ in onFire() })
+            return ({ wd.arm(for: .none) }, { wd.disarm() })
         }
     }
 }

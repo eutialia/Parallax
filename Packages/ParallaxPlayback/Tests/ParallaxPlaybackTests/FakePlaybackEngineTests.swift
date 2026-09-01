@@ -20,8 +20,8 @@ struct FakePlaybackEngineTests {
 
         var received: [PlaybackState] = []
         let task = Task {
-            for await state in fake.state {
-                received.append(state)
+            for await beat in fake.state {
+                received.append(beat.state)
                 if received.count == 2 { break }
             }
         }
@@ -66,9 +66,9 @@ struct FakePlaybackEngineTests {
         let fake = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         var handled: [PlaybackState] = []
         let task = Task {
-            for await state in fake.state {
+            for await beat in fake.state {
                 await Task.yield()   // a body that suspends must still be waited out
-                handled.append(state)
+                handled.append(beat.state)
             }
         }
 

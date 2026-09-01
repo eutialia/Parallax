@@ -42,8 +42,15 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         supportsNowPlayingIntegration: true
     )
 
-    public nonisolated let state: AsyncStream<PlaybackState>
-    private nonisolated let continuation: AsyncStream<PlaybackState>.Continuation
+    public nonisolated let state: AsyncStream<PlaybackBeat>
+    private nonisolated let continuation: AsyncStream<PlaybackBeat>.Continuation
+
+    /// The session `load()` last opened — see `PlaybackBeat`. This engine is reloadable in
+    /// place too (the transcode track switch assigns fresh media to the live player), and its
+    /// long-lived per-session workers — the progress poll, the resume-seek task, the two
+    /// watchdogs — outlive the media they were started for by design. Each carries the session
+    /// it was started for, and `yield(_:from:)` drops the rest.
+    private var session: PlaybackSessionID = .none
 
     // MARK: - VLC internals
 
@@ -118,7 +125,15 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     private func publish(positionMs: Int32, _ state: PlaybackState? = nil) {
         displayClock.store(pendingStartMs == nil ? positionMs : -1, ordering: .relaxed)
         guard let state else { return }
-        continuation.yield(state)
+        yield(state, from: session)
+    }
+
+    /// The ONE way a beat leaves this engine (`publish` funnels through it), stamped with the
+    /// session that produced it. A poll tick, a resume seek or a watchdog left over from media
+    /// a reload replaced yields into the void instead of onto the live session's stream.
+    private func yield(_ state: PlaybackState, from session: PlaybackSessionID) {
+        guard session == self.session else { return }
+        continuation.yield(PlaybackBeat(session: session, state: state))
     }
 
     /// The live playback position in milliseconds, or -1 when libvlc has no clock yet.
@@ -266,8 +281,8 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// intent, not frames (VLCKit#578), so a network death leaves the poll emitting `.playing` over a
     /// frozen clock forever — armed when the stall detector trips, and its expiry yields
     /// `.failed(.networkStalled)`. `lazy` so the `onExpiry` closure can capture `self`. See `StallWatchdog`.
-    private lazy var stallWatchdog = StallWatchdog(deadline: stallDeadline) { [weak self] in
-        self?.handleStallTimeout()
+    private lazy var stallWatchdog = StallWatchdog(deadline: stallDeadline) { [weak self] session in
+        self?.handleStallTimeout(from: session)
     }
 
     /// `stallWatchdog`'s deadline. `StallWatchdog`'s own 45s default in production; injectable
@@ -494,8 +509,14 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
 
     // MARK: - PlaybackEngine
 
-    public func load(_ asset: PlayableAsset) async throws {
-        continuation.yield(.loading)
+    @discardableResult
+    public func load(_ asset: PlayableAsset) async throws -> PlaybackSessionID {
+        // The session boundary: everything the outgoing media still has in flight — a poll tick
+        // mid-sleep, a resume seek, an armed watchdog — is stamped with the session it was
+        // started for and stops reaching the stream here.
+        session = session.next()
+        let session = self.session
+        yield(.loading, from: session)
         // A reused engine (the transcode reload) can still be winding down `endAudio()`'s
         // stop on its own thread. Join it before handing the player fresh media.
         await awaitPendingStop()
@@ -537,6 +558,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         // External subtitles are NOT slaved to the player: VLC's text renderers can't shape
         // sidecar SRT/VTT on iOS, so they're fetched + drawn client-side (SubtitleOverlayView)
         // the same way the transcode path is — see PlayerViewModel.makeAsset.
+        return session
     }
 
     public func play() async {
@@ -546,6 +568,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         // anything. Only `load()` reopens the session.
         guard Self.shouldHonorTransport(audioEnded: audioEnded),
               !refusedWhileWindingDown("transport") else { return }
+        let session = self.session
         desiredPlaying = true
         // Release silence()'s mute here, not in load(): play() covers EVERY path that
         // resumes audio (a reload's fresh start, but also a bare resume after a failed
@@ -575,7 +598,9 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         // Deadline the load: if no first frame arrives (a truncated container the demuxer can't
         // finish, a dead SMB mount), surface a failure instead of an endless spinner. Disarmed by
         // the first beat (emitPosition/emitReady), teardown, or a terminal state.
-        loadWatchdog.arm { [weak self] in self?.handleLoadTimeout() }
+        loadWatchdog.arm { [weak self, session] in
+            self?.handleLoadTimeout(from: session)
+        }
     }
 
     /// The source never opened within the watchdog deadline (a dead mount — VLC never left
@@ -584,11 +609,11 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// the engine down — the user's exit/retry does), so a late beat from the wedged demux would
     /// otherwise flip `phase` back to `.playing` over the error. Guarded by `currentMedia` so a
     /// beat that already disarmed-then-this-somehow-raced is a no-op.
-    private func handleLoadTimeout() {
-        guard currentMedia != nil else { return }
+    private func handleLoadTimeout(from session: PlaybackSessionID) {
+        guard session == self.session, currentMedia != nil else { return }
         progressTask?.cancel()
         progressTask = nil
-        continuation.yield(.failed(.assetNotPlayable))
+        yield(.failed(.assetNotPlayable), from: session)
     }
 
     /// A mid-playback stall the poll surfaced (frozen clock + frozen demux, see `startProgressPolling`)
@@ -597,11 +622,11 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// `handleLoadTimeout`): the app's `.failed` handler only sets `phase = .failed` — it does NOT tear
     /// the engine down — so a late `.playing` beat from a briefly-recovering demux would otherwise flip
     /// `phase` back over the error scrim. Guarded by `currentMedia` so an already-torn-down engine no-ops.
-    private func handleStallTimeout() {
-        guard currentMedia != nil else { return }
+    private func handleStallTimeout(from session: PlaybackSessionID) {
+        guard session == self.session, currentMedia != nil else { return }
         progressTask?.cancel()
         progressTask = nil
-        continuation.yield(.failed(.networkStalled))
+        yield(.failed(.networkStalled), from: session)
     }
 
     /// Resume by SEEKING to the saved offset once the demux reports seekable. This
@@ -1278,6 +1303,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// fire while time is frozen).
     private func startProgressPolling() {
         progressTask?.cancel()
+        let session = self.session
         progressTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(Self.pollIntervalMs))
@@ -1338,7 +1364,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
                     // initial loads stay bounded by the (shorter) loadWatchdog either way.
                     if !self.isStalled {
                         self.isStalled = true
-                        self.stallWatchdog.arm()
+                        self.stallWatchdog.arm(for: session)
                         Self.log.info("play-intent reassert: input paused against play intent, re-issuing play()")
                     }
                     self.player.play()
@@ -1420,7 +1446,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
                 let stalled = self.stallDetector.observe(timeMs: nowMs, readBytes: readBytes)
                 if stalled, !self.isStalled {
                     self.isStalled = true
-                    self.stallWatchdog.arm()   // bound the stall — expiry → .failed(.networkStalled)
+                    self.stallWatchdog.arm(for: session)   // bound the stall — expiry → .failed(.networkStalled)
                 }
                 // Suppress the transient clock VLC reports right after a user seek until it
                 // converges on the requested target (±3s tolerates a keyframe-snapped
@@ -1584,10 +1610,10 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     private func emitReady(_ inventory: TrackInventory) {
         guard currentMedia != nil else { return }
         loadWatchdog.disarm()   // tracks/length resolved = the demux is progressing, the load is alive
-        continuation.yield(.ready(
+        yield(.ready(
             duration: Self.vlcDurationToCMTime(ms: effectiveDurationMs()),
             tracks: inventory
-        ))
+        ), from: session)
     }
 
     private func buildTrackInventory() -> TrackInventory {
@@ -2149,7 +2175,7 @@ extension VLCKitEngine: VLCMediaPlayerDelegate {
     private func handleStateChanged(_ state: VLCMediaPlayerState) {
         switch state {
         case .opening:
-            continuation.yield(.loading)
+            yield(.loading, from: session)
         case .ended:
             // Natural end-of-stream. During teardown the delegate is nilled BEFORE
             // player.stop(), so this branch is never reached from teardown — no
@@ -2157,7 +2183,7 @@ extension VLCKitEngine: VLCMediaPlayerDelegate {
             desiredPlaying = false   // finished input: the play-intent reassert must never restart it
             loadWatchdog.disarm()
             if currentMedia != nil {
-                continuation.yield(.ended)
+                yield(.ended, from: session)
             }
         case .stopped:
             // NOT end-of-stream on 3.x — `.ended` is ("Stream has ended"); `.stopped` is
@@ -2171,7 +2197,7 @@ extension VLCKitEngine: VLCMediaPlayerDelegate {
         case .error:
             desiredPlaying = false
             loadWatchdog.disarm()   // libvlc surfaced the failure itself; don't also time out
-            continuation.yield(.failed(.assetNotPlayable))
+            yield(.failed(.assetNotPlayable), from: session)
         case .buffering, .playing, .paused, .esAdded:
             // Deliberately ignored for BEATS. VLC drops into `.buffering` freely during
             // normal playback and its `.playing`/`.paused` transitions are not reliable

@@ -49,7 +49,14 @@ public final class FakePlaybackEngine: PlaybackEngine {
 
     public nonisolated let id: PlaybackEngineID
     public nonisolated let capabilities: PlaybackEngineCapabilities
-    public nonisolated let state: AsyncStream<PlaybackState>
+    public nonisolated let state: AsyncStream<PlaybackBeat>
+
+    /// The session `load()` last opened, stamped onto every `push`. Mirrors both real engines:
+    /// a fake is reloadable in place too, and a test that reloads it gets the same boundary the
+    /// app relies on. `Mutex`-free because it is only written from `load()` and read from
+    /// `push`, both on the generic executor in every existing suite; `nonisolated(unsafe)` is
+    /// the same bargain the rest of this double's knobs make.
+    public nonisolated(unsafe) private(set) var session: PlaybackSessionID = .none
 
     private struct RecordedState {
         var loadedAssets: [PlayableAsset] = []
@@ -79,7 +86,7 @@ public final class FakePlaybackEngine: PlaybackEngine {
     /// test that doesn't care about the WAN-skip behavior isn't surprised by a fake-specific one.
     public nonisolated(unsafe) var captureFramePerformsIO = true
 
-    private let continuation: AsyncStream<PlaybackState>.Continuation
+    private let continuation: AsyncStream<PlaybackBeat>.Continuation
     /// The hand-off ledger `settle()` reads — see `DrainBarrier`.
     private let barrier: DrainBarrier
     /// Parks `seek(to:)` on demand. See `holdSeeks()`.
@@ -100,7 +107,7 @@ public final class FakePlaybackEngine: PlaybackEngine {
         // stream wraps it purely to expose the one thing a continuation-backed stream
         // can't: the moment the consumer asks for the NEXT element — which is exactly
         // the moment its `for await` body finished processing the previous one.
-        let (buffered, cont) = AsyncStream<PlaybackState>.makeStream()
+        let (buffered, cont) = AsyncStream<PlaybackBeat>.makeStream()
         let barrier = DrainBarrier()
         let source = BufferedSource(buffered)
         let beatGate = ParkingGate()
@@ -120,12 +127,20 @@ public final class FakePlaybackEngine: PlaybackEngine {
         })
     }
 
-    /// Push a state into the stream immediately.
+    /// Push a state into the stream immediately, stamped with the current session.
     public func push(_ state: PlaybackState) {
+        push(state, from: session)
+    }
+
+    /// Push a state stamped with an ARBITRARY session — the superseded-media beat a real engine
+    /// drops at its own yield funnel, delivered here so the app side can be held to the same
+    /// rule. A fake cannot reproduce the engine-internal race, so the stamp is handed over
+    /// directly instead of being raced for.
+    public func push(_ state: PlaybackState, from session: PlaybackSessionID) {
         // A push after the stream finished is dropped by the stream, so it must not be
         // counted either — otherwise it would be a debt `settle()` could never clear.
         guard barrier.notePush() else { return }
-        continuation.yield(state)
+        continuation.yield(PlaybackBeat(session: session, state: state))
     }
 
     /// Finish the stream without recording a "teardown" call.
@@ -170,12 +185,17 @@ public final class FakePlaybackEngine: PlaybackEngine {
         }
     }
 
-    public func load(_ asset: PlayableAsset) async throws {
+    /// Opens a new session like both real engines, so a reload's incoming beats are
+    /// distinguishable from the outgoing ones a test left in flight.
+    @discardableResult
+    public func load(_ asset: PlayableAsset) async throws -> PlaybackSessionID {
         recordedState.withLock {
             $0.loadedAssets.append(asset)
             $0.calls.append("load")
         }
         if let loadError { throw loadError }
+        session = session.next()
+        return session
     }
 
     public func play() async { recordedState.withLock { $0.calls.append("play") } }
@@ -339,15 +359,15 @@ private final class ParkingGate: Sendable {
 /// outer stream's producer closure. Single-consumer by construction (one `for await`
 /// over `FakePlaybackEngine.state`), which is what makes the unchecked conformance safe.
 private final class BufferedSource: @unchecked Sendable {
-    private var iterator: AsyncStream<PlaybackState>.Iterator
+    private var iterator: AsyncStream<PlaybackBeat>.Iterator
 
-    init(_ stream: AsyncStream<PlaybackState>) {
+    init(_ stream: AsyncStream<PlaybackBeat>) {
         self.iterator = stream.makeAsyncIterator()
     }
 
     /// Nil on finish AND on consumer cancellation — `AsyncStream`'s own iterator
     /// handles both, so the outer stream inherits the original termination behavior.
-    func next() async -> PlaybackState? {
+    func next() async -> PlaybackBeat? {
         await iterator.next()
     }
 }
