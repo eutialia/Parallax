@@ -2080,6 +2080,161 @@ struct PlayerViewModelTests {
         #expect((vm.engine as? FakePlaybackEngine) === engineAfterStart)
     }
 
+    /// A view model whose SECOND resolve answers with a direct-play VC-1 MKV. The server
+    /// picks the delivery per request, so a track switch's re-resolve can come back with a
+    /// stream the engine in hand cannot play — VC-1 routes to VLC, the transcode it
+    /// replaces ran on AVKit — and the reload must BUILD an engine instead of reloading
+    /// the live one. The rebuild branch every other reload test deliberately avoids.
+    private func makeEngineRebuildVM() -> (vm: PlayerViewModel, engines: EngineLedger) {
+        let ledger = EngineLedger()
+        // No server default subtitle: nothing may auto-apply between the two resolves the
+        // test counts.
+        let transcode = PlayerFixtures.resolvedMultiTrackTranscode(defaultSubtitleStreamIndex: nil)
+        nonisolated(unsafe) var resolveCount = 0
+        let vm = makePlayerVM(
+            resolve: { _, _, _, _ in
+                resolveCount += 1
+                return resolveCount == 1 ? transcode : PlayerFixtures.resolvedVC1MKV()
+            },
+            engineFactory: { id, _ in ledger.make(id) }
+        )
+        return (vm, ledger)
+    }
+
+    /// Drives `makeEngineRebuildVM` to the point of the switch: the session is playing on
+    /// the AVKit transcode engine and the VC-1 audio track is picked out, so the caller only
+    /// has to trigger the switch that rebuilds.
+    private func startEngineRebuildVM() async throws -> (
+        vm: PlayerViewModel, engines: EngineLedger,
+        outgoing: FakePlaybackEngine, switchTo: AudioTrack
+    ) {
+        let (vm, engines) = makeEngineRebuildVM()
+        await vm.start(item: PlayerFixtures.movieDetail())
+        let outgoing = try #require(vm.engine as? FakePlaybackEngine)
+        try #require(outgoing.id == .avKit)
+        outgoing.push(.playing(100))
+        try await outgoing.settle()
+        let audio4 = try #require(vm.availableAudioTracks.first { $0.id == .jellyfinStream(4) })
+        return (vm, engines, outgoing, audio4)
+    }
+
+    @Test("a reload that must change engines retires the outgoing engine")
+    func engineRebuildRetiresTheOutgoingEngine() async throws {
+        let (vm, engines, outgoing, audio4) = try await startEngineRebuildVM()
+        await vm.selectAudioTrack(audio4)
+
+        // A new engine, and the old one really retired: a bare reference swap would leave
+        // it decoding (VLC keeps its audio running), its progress task ticking and its
+        // delegate wired — two streams playing at once.
+        #expect(engines.count == 2)
+        let incoming = try #require(vm.engine as? FakePlaybackEngine)
+        #expect(incoming !== outgoing)
+        #expect(incoming.id == .vlcKit)
+        #expect(incoming.calls.contains("load"))
+        #expect(incoming.calls.contains("play"))
+        // The audio cut leads the swap and the teardown follows it — the whole point of
+        // splitting them: silence is owed to the user NOW, the teardown is owed to nobody.
+        await waitUntil { outgoing.calls.contains("teardown") }
+        let cut = try #require(outgoing.calls.firstIndex(of: "endAudio"))
+        let torn = try #require(outgoing.calls.firstIndex(of: "teardown"))
+        #expect(cut < torn)
+    }
+
+    /// The outgoing engine's audio must be dead before the replacement opens its own: two
+    /// decoders feeding one output is the audible defect a rebuild has to avoid, and it is
+    /// the ONLY part of retiring an engine the swap is allowed to wait for.
+    @Test("the outgoing engine's audio is cut before the incoming engine loads")
+    func rebuildCutsOutgoingAudioBeforeTheIncomingLoads() async throws {
+        let (vm, engines, outgoing, audio4) = try await startEngineRebuildVM()
+        outgoing.holdEndAudio()
+
+        let switching = Task { await vm.selectAudioTrack(audio4) }
+        await waitUntil { outgoing.hasParkedEndAudio }
+
+        // Parked INSIDE the swap: the cut is recorded, the replacement has not loaded, and
+        // the slot still holds the outgoing engine — never nil, so the video host stays
+        // mounted over the frozen frame for the whole rebuild.
+        #expect(outgoing.calls.contains("endAudio"))
+        #expect(vm.engine === outgoing)
+        #expect(!engines.live.calls.contains("load"))
+
+        outgoing.releaseEndAudio()
+        await switching.value
+
+        let incoming = try #require(vm.engine as? FakePlaybackEngine)
+        #expect(incoming !== outgoing)
+        #expect(incoming.calls.first == "load")
+    }
+
+    /// The retirement is a tracked background task, not a step of the swap: the picture
+    /// comes back as soon as the replacement is loaded, however long VLC takes to wind the
+    /// old player down (multi-second on a parked SMB read). `stop()` is what pays that debt.
+    @Test("a parked teardown holds up neither the swap nor the view model — but stop() waits for it")
+    func aParkedTeardownDelaysOnlyTheDrain() async throws {
+        let (vm, engines, outgoing, audio4) = try await startEngineRebuildVM()
+        outgoing.holdTeardown()
+
+        await vm.selectAudioTrack(audio4)
+
+        // The switch returned with the replacement live and playing…
+        #expect(engines.count == 2)
+        let incoming = try #require(vm.engine as? FakePlaybackEngine)
+        #expect(incoming !== outgoing)
+        #expect(incoming.calls.contains("play"))
+        // …while the outgoing teardown is still parked.
+        await waitUntil { outgoing.hasParkedTeardown }
+        #expect(outgoing.hasParkedTeardown)
+
+        // Session end drains it: `stop()` cannot return while a retirement is outstanding,
+        // or a teardown would outlive the session that started it.
+        nonisolated(unsafe) var stopReturned = false
+        let stopping = Task { await vm.stop(); stopReturned = true }
+        for _ in 0..<50 { await Task.yield() }
+        #expect(stopReturned == false, "stop() returned with a teardown still in flight")
+
+        outgoing.releaseTeardown()
+        await stopping.value
+        #expect(vm.engine == nil)
+        #expect(outgoing.calls.contains("teardown"))
+        #expect(incoming.calls.contains("teardown"))
+    }
+
+    /// The race the identity guard in `handle(_:from:)` exists for: a beat already pulled
+    /// from the outgoing engine's stream, suspended on its hop to the view model while the
+    /// replacement is installed. Cancelling a subscription cannot recall a state already in
+    /// flight, so nothing but the guard stops the dead session from writing its clock (and
+    /// its phase) over the live one's.
+    @Test("a beat from the replaced engine never reaches the view model's state")
+    func replacedEngineBeatsAreIgnored() async throws {
+        let (vm, engines, outgoing, audio4) = try await startEngineRebuildVM()
+
+        // In flight before the switch, held between the stream and the consumer.
+        outgoing.holdBeats()
+        let delivered = outgoing.deliveredBeats
+        outgoing.push(.playing(4_242))
+        await waitUntil { outgoing.hasParkedBeat }
+
+        await vm.selectAudioTrack(audio4)
+        #expect(engines.count == 2)
+
+        // The new session owns the bar.
+        let incoming = try #require(vm.engine as? FakePlaybackEngine)
+        incoming.push(.playing(7))
+        try await incoming.settle()
+        #expect(CMTimeGetSeconds(vm.currentPosition) == 7)
+
+        // Now let the replaced engine's beat land. `settle()` can't be the barrier here —
+        // the outgoing subscription is cancelled, so it never comes back for another
+        // element and its processed count can never advance again; delivery is what is
+        // observable, and the yields cover the handler's hop after it.
+        outgoing.releaseBeats()
+        await waitUntil { outgoing.deliveredBeats > delivered }
+        for _ in 0..<50 { await Task.yield() }
+
+        #expect(CMTimeGetSeconds(vm.currentPosition) == 7)
+        #expect(vm.phase == .playing)
+    }
+
     @Test("transcode: subtitle selection is isolated — an explicit sub survives an audio switch; none stays none")
     func transcodeSubtitleIsolation() async throws {
         let reporting = StubPlaybackReporting()

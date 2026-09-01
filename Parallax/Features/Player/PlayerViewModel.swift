@@ -62,7 +62,15 @@ final class PlayerViewModel {
             if case .failed = phase { seekHold = nil }
         }
     }
-    private(set) var engine: (any PlaybackEngine)?
+    /// The engine this session is driving. Read-only here: `engineSlot` owns the
+    /// lifetime, and every build/retire goes through it, so "never nil between the first
+    /// `loadAndPlay` and `stop()`" is an invariant one type enforces rather than a rule
+    /// four call sites remember. Observable through the slot — a view reading this reads
+    /// `EngineSlot.current`, so a swap re-renders the host exactly as a stored property
+    /// would.
+    var engine: (any PlaybackEngine)? { engineSlot.current }
+
+    private let engineSlot = EngineSlot()
 
     /// The libvlc instance arguments `engine` was BUILT with, so `loadAndPlay` can tell a
     /// reusable engine from a stale one. Instance-scoped options are fixed at construction
@@ -1475,8 +1483,17 @@ final class PlayerViewModel {
            libraryOptions == engineLibraryOptions {
             engine = existing
         } else {
+            // The replacement is built BEFORE the outgoing engine is retired, and the slot
+            // installs it in the same tick the old one leaves: the host view stays mounted
+            // over the frozen frame, and `attachIfNeeded` re-points the drawable in place.
+            // `EngineSlot.swap` cuts the outgoing audio on the spot (two decoders feeding
+            // one output is the audible defect) and moves only the slow half — the
+            // teardown — off this path, into a retirement `stop()` drains.
             engine = engineFactory(id, libraryOptions)
-            self.engine = engine
+            await engineSlot.swap(to: engine)
+            // Exit can land inside that audio cut; nothing below may start audio for a
+            // player that is already dismissing.
+            try checkStillActive()
             engineLibraryOptions = libraryOptions
             subscribe(to: engine)
             nowPlaying.configure(
@@ -1552,8 +1569,6 @@ final class PlayerViewModel {
     /// long as the user sits on the failure overlay — the exact contention
     /// `stopEncoding` exists to prevent. Both are idempotent vs a racing `stop()`.
     private func tearDownEngine() async {
-        stateTask?.cancel()
-        stateTask = nil
         keepaliveTask?.cancel()
         keepaliveTask = nil
         deliveryProbeTask?.cancel()
@@ -1568,10 +1583,9 @@ final class PlayerViewModel {
         thumbnailBackfillTask = nil
         didScheduleThumbnailBackfill = false
         transcodeDelivery = nil
-        if let engine {
-            await engine.teardown()
-            self.engine = nil
-        }
+        stateTask?.cancel()
+        stateTask = nil
+        await engineSlot.drain()
         // A load failure tears the bridge down with the engine: nothing consumes the stream, so
         // the orphaned listener + its SMB connection must not outlive the failed load.
         await tearDownSMBBridge()
@@ -1652,9 +1666,11 @@ final class PlayerViewModel {
         keepaliveTask = nil
         transportTask?.cancel()
         transportTask = nil
-        if let engine {
-            await engine.teardown()
-        }
+        // The same drain a rebuild's retirement goes through: the reference is dropped
+        // here, so nothing that re-reads `engine` can poke one that is winding down, and
+        // the await covers every teardown this session started — including one a track
+        // switch left running.
+        await engineSlot.drain()
         // Kill the SMB bridge with the session: an orphaned listener holds an SMB connection and
         // a LAN-reachable file URL. No-op on Jellyfin/VLC-route sessions (smbCleanup is nil).
         await tearDownSMBBridge()
@@ -1665,7 +1681,6 @@ final class PlayerViewModel {
         await stopEncodingIfNeeded()
         await reportStoppedIfNeeded()
         await audioSession.deactivate()
-        engine = nil
         playingItem = nil
         pendingItemID = nil
         pendingFromBeginning = false
@@ -2746,13 +2761,28 @@ final class PlayerViewModel {
 
     // MARK: - Private
 
+    /// Consumes `engine`'s beats until its stream finishes or this subscription is
+    /// replaced — and replacing ENDS the outgoing one first. An orphaned consumer only
+    /// stops when the OLD engine's stream finishes, which is teardown's job, so leaving
+    /// it standing is what keeps a replaced engine retained and beating.
     private func subscribe(to engine: any PlaybackEngine) {
+        stateTask?.cancel()
         let stream = engine.state
         stateTask = Task { [weak self] in
             for await state in stream {
-                await self?.handle(state)
+                await self?.handle(state, from: engine)
             }
         }
+    }
+
+    /// A beat only counts while it comes from the engine this view model is currently
+    /// driving. Cancellation is not synchronous: a state already pulled from a replaced
+    /// engine's stream can still be waiting for its MainActor hop when the replacement is
+    /// installed, and adopting it would report the dead session's phase and position
+    /// against the live one.
+    private func handle(_ state: PlaybackState, from engine: any PlaybackEngine) async {
+        guard self.engine === engine else { return }
+        await handle(state)
     }
 
     /// The ONE writer of `currentPosition` for engine beats — every `.playing`/`.paused`/
@@ -3113,11 +3143,12 @@ final class PlayerViewModel {
     /// `ReactiveFallback.shouldReroute` already gated this to exactly once per session
     /// (`didReactivelyReroute`) and to an AVKit failure on an MP4-family container.
     ///
-    /// The failed AVKit engine is torn down NARROWLY — its state subscription and the
-    /// engine object only, not the SMB bridge or the Jellyfin encode job (`tearDownEngine`
-    /// would reap both) — because the retry reuses the exact same URL and still needs
-    /// them alive. Mirrors the ordinary mid-session `.failed` handling (no
-    /// `audioSession.deactivate()`): the session isn't over, VLC is just trying next.
+    /// The failed AVKit engine is retired by the rebuild itself (`EngineSlot.swap`), not
+    /// ahead of it: only the engine object and its state subscription die, never the SMB
+    /// bridge or the Jellyfin encode job (`tearDownEngine` would reap both), because the
+    /// retry reuses the exact same URL and still needs them alive. Mirrors the ordinary
+    /// mid-session `.failed` handling (no `audioSession.deactivate()`): the session isn't
+    /// over, VLC is just trying next.
     private func attemptReactiveFallback(from asset: PlayableAsset) async {
         // Exit can race the failure beat: beginExit()/stop() lands while this async
         // handler is running. Building a fresh VLC engine and starting audio under an
@@ -3144,15 +3175,10 @@ final class PlayerViewModel {
         let resumeAt = CMTimeGetSeconds(currentPosition) > 0 ? currentPosition : asset.startTime
         let retryAsset = asset.replacingStartTime(resumeAt)
 
-        stateTask?.cancel()
-        stateTask = nil
-        if let engine {
-            await engine.teardown()
-            self.engine = nil
-        }
-        // Re-guard after the teardown await: exit or a fresh stop()/retry() can land
-        // while we were suspended, and this hop must not resurrect playback for a
-        // session that's already gone.
+        // The failed AVKit engine is NOT retired here: `loadAndPlay` takes the rebuild
+        // branch (the retry is forced onto VLCKit) and the slot swaps it out — cutting
+        // its audio, keeping the video host mounted, and tearing it down behind the
+        // reroute instead of in front of it.
         guard !Task.isCancelled, !isExiting else { return }
 
         // The retry engine's own beats must flow from here on — clear the trailing-beat
