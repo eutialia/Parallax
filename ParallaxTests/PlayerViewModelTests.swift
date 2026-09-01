@@ -1,7 +1,11 @@
 import Foundation
+import CoreGraphics
 import CoreMedia
+import ImageIO
 import MediaPlayer
+import SwiftUI
 import Testing
+import UniformTypeIdentifiers
 @testable import Parallax
 import ParallaxPlayback
 import ParallaxPlaybackTestSupport
@@ -5057,5 +5061,155 @@ struct SubtitleDelayOwnershipTests {
 
         #expect(vm.subtitleDelayMs == 0)
         #expect(engine.calls.contains { $0.hasPrefix("setSubtitleDelay") } == false)
+    }
+}
+
+/// The accent's LIFECYCLE — not its arithmetic, which `ParallaxCoreTests/ArtworkAccentTests`
+/// owns. Everything here is about which item's hue is allowed to reach the bar and when: the
+/// `fetchArtwork` seam exists so that question is answerable without a network, and these are
+/// the four answers the bar depends on.
+///
+/// The fetch is parked on a gate rather than raced against a sleep: "a slow fetch for the old
+/// item cannot paint the new one's bar" is a statement about ORDERING, and a timing-based
+/// version of it would pass on a fast runner for the wrong reason.
+@Suite("PlayerViewModel — artwork accent lifecycle", .serialized)
+@MainActor
+struct PlayerAccentLifecycleTests {
+
+    /// Parks a fetch until the test lets it through. Armed on construction — every case here
+    /// wants the first fetch held.
+    private actor ArtworkGate {
+        private var waiters: [CheckedContinuation<Void, Never>] = []
+        private var open = false
+
+        func wait() async {
+            guard !open else { return }
+            await withCheckedContinuation { waiters.append($0) }
+        }
+
+        func release() {
+            open = true
+            let parked = waiters
+            waiters = []
+            parked.forEach { $0.resume() }
+        }
+    }
+
+    /// PNG bytes of a flat, strongly-hued image — the accent it resolves to is deliberately not
+    /// nil, so "the bar took a colour" and "the bar stayed white" are distinguishable states.
+    private func tealArtwork() throws -> Data {
+        let side = 64
+        let space = try #require(CGColorSpace(name: CGColorSpace.sRGB))
+        let context = try #require(CGContext(
+            data: nil, width: side, height: side, bitsPerComponent: 8, bytesPerRow: 0,
+            space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(red: 0.10, green: 0.55, blue: 0.75, alpha: 1)
+        context.fill(CGRect(x: 0, y: 0, width: side, height: side))
+        let image = try #require(context.makeImage())
+        let bytes = NSMutableData()
+        let destination = try #require(CGImageDestinationCreateWithData(
+            bytes, UTType.png.identifier as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image, nil)
+        #expect(CGImageDestinationFinalize(destination))
+        return bytes as Data
+    }
+
+    /// A view model whose artwork fetch answers per item id, so a case can give one item real
+    /// bytes and another none.
+    private func makeVM(
+        engine: FakePlaybackEngine,
+        fetchArtwork: @escaping @Sendable (ItemDetail) async -> Data?
+    ) -> PlayerViewModel {
+        makePlayerVM(
+            resolve: { id, _, _, _ in PlayerFixtures.resolvedEpisode(id: id.rawValue) },
+            engine: engine,
+            fetchArtwork: fetchArtwork
+        )
+    }
+
+    /// Polls rather than sleeps a fixed span: the accent lands off the main actor, so the only
+    /// honest wait is "until it does, or the anti-hang bound".
+    private func waitForAccent(_ vm: PlayerViewModel,
+                               timeout: Duration = CITimeScale.seconds(2)) async {
+        let deadline = ContinuousClock.now.advanced(by: timeout)
+        while vm.accentHSB == nil, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    @Test("a second start clears the previous item's hue before the new fetch can answer")
+    func aSecondStartClearsTheAccentFirst() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let artwork = try tealArtwork()
+        let gate = ArtworkGate()
+        let vm = makeVM(engine: engine) { item in
+            guard item.id.rawValue == "ep-a" else {
+                // The second item's fetch never answers: what the bar shows after the swap must
+                // come from the RESET, not from a fresh hue racing in behind it.
+                await gate.wait()
+                return nil
+            }
+            return artwork
+        }
+
+        await vm.start(item: PlayerFixtures.episodeDetail(id: "ep-a"))
+        await waitForAccent(vm)
+        #expect(vm.accentHSB != nil)
+
+        await vm.start(item: PlayerFixtures.episodeDetail(id: "ep-b"))
+        #expect(vm.accentHSB == nil, "an episode→episode swap must never carry the old poster's hue")
+        await gate.release()
+    }
+
+    @Test("a fetch that answers after the next item started cannot paint its bar")
+    func aSupersededFetchCannotWrite() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let artwork = try tealArtwork()
+        let gate = ArtworkGate()
+        let vm = makeVM(engine: engine) { item in
+            guard item.id.rawValue == "ep-a" else { return nil }
+            await gate.wait()
+            return artwork
+        }
+
+        await vm.start(item: PlayerFixtures.episodeDetail(id: "ep-a"))
+        await vm.start(item: PlayerFixtures.episodeDetail(id: "ep-b"))
+        // Only now does A's poster arrive. Its task was cancelled by B's start; the guard past
+        // the await is what has to notice.
+        await gate.release()
+
+        await waitForAccent(vm)
+        #expect(vm.accentHSB == nil, "the previous item's poster must not reach the current item's bar")
+    }
+
+    @Test("stop() takes the accent with it")
+    func stopClearsTheAccent() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let artwork = try tealArtwork()
+        let vm = makeVM(engine: engine) { _ in artwork }
+
+        await vm.start(item: PlayerFixtures.episodeDetail(id: "ep-a"))
+        await waitForAccent(vm)
+        #expect(vm.accentHSB != nil)
+
+        await vm.stop()
+        #expect(vm.accentHSB == nil)
+    }
+
+    /// The whole feature's failure mode, and it must be silent: a fetch that answers nothing, or
+    /// answers with bytes that aren't an image, leaves the bar exactly as monochrome as it was
+    /// before the accent existed.
+    @Test("nothing decodable leaves the bar white", arguments: [
+        nil, Data(), Data("<html>404</html>".utf8),
+    ] as [Data?])
+    func undecodableArtworkLeavesTheBarWhite(payload: Data?) async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let vm = makeVM(engine: engine) { _ in payload }
+
+        await vm.start(item: PlayerFixtures.episodeDetail(id: "ep-a"))
+        await waitForAccent(vm)
+
+        #expect(vm.accentHSB == nil)
+        #expect(vm.scrubAccent == .white)
     }
 }

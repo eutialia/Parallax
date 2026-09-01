@@ -1,7 +1,9 @@
 import CoreGraphics
 import Foundation
+import ImageIO
 import Testing
-@testable import Parallax
+import UniformTypeIdentifiers
+import ParallaxCore
 
 /// The normalizer, which is the half of the accent pipeline that has an opinion. Extraction only
 /// reports what is in the pixels; this decides whether that is a colour at all and what it has to
@@ -183,6 +185,28 @@ struct ArtworkAccentExtractionTests {
         #expect(abs(accent.hue - 0.56) < 0.03)
     }
 
+    /// The only entry point production calls, and the one step the rest of this suite skips:
+    /// encoded bytes → decode → the same vote. PNG rather than a fixture file so the pixels and
+    /// the expected hue are stated in the same place, and lossless so the answer is the image's
+    /// own colour rather than the codec's opinion of it.
+    @Test("encoded artwork bytes resolve to the picture's hue")
+    func encodedBytesYieldTheirHue() throws {
+        let image = try #require(solid(red: 0.10, green: 0.55, blue: 0.75))
+        let encoded = try #require(png(image))
+        let accent = try #require(ArtworkAccent.accent(fromImageData: encoded))
+        #expect(abs(accent.hue - 0.55) < 0.02)
+    }
+
+    /// Bytes that aren't an image at all — a truncated download, an HTML error page the server
+    /// returned with a 200 — must fall out as "no accent", not as a decode crash or a hue picked
+    /// out of noise. This is the failure the bar's white fallback exists for.
+    @Test("bytes that aren't an image yield no accent", arguments: [
+        Data(), Data([0x00]), Data("<html>404</html>".utf8),
+    ])
+    func garbageBytesYieldNil(data: Data) {
+        #expect(ArtworkAccent.accent(fromImageData: data) == nil)
+    }
+
     // MARK: - Fixtures
 
     private func solid(red: CGFloat, green: CGFloat, blue: CGFloat) -> CGImage? {
@@ -206,6 +230,18 @@ struct ArtworkAccentExtractionTests {
                 y += height
             }
         }
+    }
+
+    /// PNG-encodes a generated image so `accent(fromImageData:)` gets the same thing the network
+    /// hands it: bytes with a container around them. Lossless on purpose — a JPEG would put its
+    /// own chroma subsampling between the drawn colour and the assertion.
+    private func png(_ image: CGImage) -> Data? {
+        let bytes = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+            bytes, UTType.png.identifier as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(destination, image, nil)
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        return bytes as Data
     }
 
     private func draw(_ body: (CGContext, CGRect) -> Void) -> CGImage? {

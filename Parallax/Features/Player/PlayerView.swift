@@ -1,6 +1,5 @@
 import SwiftUI
 import CoreMedia
-import Nuke
 import ParallaxCore
 import ParallaxJellyfin
 import ParallaxPlayback
@@ -315,16 +314,19 @@ struct PlayerView: View {
             playerSurface: playerSurfaceProvider,
             // Poster bytes for the scrub bar's accent hue. Through the session's own image
             // pipeline, not a bare URLSession: the image endpoints reject anonymous reads on an
-            // auth-required server, and the pipeline is the one thing that carries the token —
-            // it also means this shares the disk cache every poster tile already fills.
-            // `thumbnailMaxPixel` is the whole request: an accent needs a hue, not a picture.
-            fetchArtwork: { [factory = deps.imagePipelineFactory] item in
-                guard let ref = item.accentImageRef,
-                      let url = ImageURLBuilder.url(serverURL: session.serverURL, ref: ref,
-                                                    maxWidth: ArtworkAccent.thumbnailMaxPixel)
-                else { return nil }
-                return try? await factory.pipeline(for: session)
-                    .data(for: ImageRequest(url: url)).0
+            // auth-required server, and the pipeline is the one thing that carries the token. It
+            // shares the pipeline, that header, and the cache store with every poster tile — but
+            // not their cache ENTRIES, since `maxWidth` is part of Nuke's key and this asks for a
+            // thumbnail nothing else requests. `thumbnailMaxPixel` is the whole request: an
+            // accent needs a hue, not a picture.
+            //
+            // The capture is explicit and narrow on purpose: this closure lives as long as the
+            // view model does, and an implicit `self`/`session` capture would pin the whole
+            // Jellyfin session to it.
+            fetchArtwork: { [factory = deps.imagePipelineFactory, session] item in
+                guard let ref = item.accentImageRef else { return nil }
+                return await factory.imageData(for: ref, session: session,
+                                               maxWidth: ArtworkAccent.thumbnailMaxPixel)
             }
         )
         install(vm)
