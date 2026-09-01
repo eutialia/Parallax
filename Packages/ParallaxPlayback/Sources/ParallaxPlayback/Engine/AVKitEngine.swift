@@ -258,7 +258,7 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         statusObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
             // KVO delivers on the main run loop for an AVPlayerItem created here.
             MainActor.assumeIsolated {
-                self?.handleStatusChange(item, from: session)
+                _ = self?.handleStatusChange(item, from: session)
             }
         }
 
@@ -809,7 +809,11 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     /// device-confirmed). Published from the session this observer was installed for, that dead
     /// item's `.failed` never leaves the engine; without it the app shows "Couldn't decode this
     /// file" over a reload that is buffering perfectly well.
-    func handleStatusChange(_ item: AVPlayerItem, from session: PlaybackSessionID) {
+    ///
+    /// Returns what the failure branch diagnosed (nil for every other status) — see
+    /// `logItemFailure`.
+    @discardableResult
+    func handleStatusChange(_ item: AVPlayerItem, from session: PlaybackSessionID) -> PlaybackDebugInfo? {
         switch item.status {
         case .readyToPlay:
             guard session == self.session else { break }   // a dead item disarms nothing
@@ -831,33 +835,58 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
                 self.yield(.ready(duration: duration, tracks: tracks), from: session)
             }
         case .failed:
-            // The item never became playable. Capture the concrete failure so a
-            // device/sim trace can tell a genuine codec problem apart from a URL
-            // load failure (401 / TLS trust / bad path / redirect) — the symptom
-            // is identical ("Couldn't decode that file.") but the cause is not.
-            // domain+code+localizedDescription are the actionable, token-free
-            // bits; the asset URL is hashed because it embeds the api_key.
-            let nsError = item.error as NSError?
-            let underlying = nsError?.userInfo[NSUnderlyingErrorKey] as? NSError
-            Log.playback.error(
-                """
-                AVPlayerItem failed: \
-                domain=\(nsError?.domain ?? "nil", privacy: .public) \
-                code=\(nsError?.code ?? 0, privacy: .public) \
-                desc=\(nsError?.localizedDescription ?? "nil", privacy: .public) \
-                underlying=\(underlying.map { "\($0.domain) code=\($0.code)" } ?? "nil", privacy: .public) \
-                url=\((item.asset as? AVURLAsset)?.url.absoluteString ?? "<no-url>", privacy: .private(mask: .hash))
-                """
-            )
-            guard session == self.session else { break }   // a dead item disarms nothing
+            let snapshot = logItemFailure(item, from: session)
+            guard session == self.session else { return snapshot }   // a dead item disarms nothing
             loadWatchdog.disarm()   // the item surfaced its own failure; don't also time out
             stallWatchdog.disarm()
             yield(.failed(.assetNotPlayable), from: session)
+            return snapshot
         case .unknown:
             break
         @unknown default:
             break
         }
+        return nil
+    }
+
+    /// The item never became playable. `item.error` names a CoreMedia code and nothing else —
+    /// `-19602` after a transcode re-anchor says a request failed, not WHICH one — so the
+    /// engine's full synchronous diagnosis rides along: the HLS error log (the failing URI's
+    /// trailing path + its status code), the transport state, the playhead versus what is
+    /// actually loaded. Exactly what `logWatchdogExpiry` prints, for the failure that arrives
+    /// on its own instead of on a deadline.
+    ///
+    /// Read SYNCHRONOUSLY and BEFORE the `.failed` beat below, for the same reason the
+    /// watchdog's is: that beat is what tears the engine down, and a deferred read finds a
+    /// nil'd `currentItem`.
+    ///
+    /// The session is named because the whole question a re-anchor failure raises is which
+    /// stream died — the reload's replacement, or the item it superseded, still mounted and
+    /// still failing on the playlist whose encode job the reload just killed.
+    ///
+    /// domain+code+localizedDescription are the actionable, token-free bits; the asset URL is
+    /// hashed because it embeds the api_key, and `errorLogDetail` is `.private` because it
+    /// appends CoreMedia's own free text (see `PlaybackDebugInfo.errorLogDetail`).
+    @discardableResult
+    private func logItemFailure(_ item: AVPlayerItem, from session: PlaybackSessionID) -> PlaybackDebugInfo {
+        let snapshot = syncSnapshot(of: item)
+        let nsError = item.error as NSError?
+        let underlying = nsError?.userInfo[NSUnderlyingErrorKey] as? NSError
+        Log.playback.error(
+            """
+            AVPlayerItem failed: \
+            domain=\(nsError?.domain ?? "nil", privacy: .public) \
+            code=\(nsError?.code ?? 0, privacy: .public) \
+            desc=\(nsError?.localizedDescription ?? "nil", privacy: .public) \
+            underlying=\(underlying.map { "\($0.domain) code=\($0.code)" } ?? "nil", privacy: .public) \
+            session=\(session.description, privacy: .public) \
+            live=\(session == self.session, privacy: .public) \
+            \(snapshot.logSummary, privacy: .public) \
+            hlsErrors=\(snapshot.errorLogDetail, privacy: .private) \
+            url=\((item.asset as? AVURLAsset)?.url.absoluteString ?? "<no-url>", privacy: .private(mask: .hash))
+            """
+        )
+        return snapshot
     }
 
     /// `didPlayToEndTimeNotification`, stamped like the status KVO and for the same reason: the

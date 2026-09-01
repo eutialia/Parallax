@@ -554,6 +554,69 @@ struct AVKitWatchdogExpiryTests {
         #expect(info.logSummary.contains("item=ready"))
     }
 
+    /// The item's OWN failure is the one the device keeps hitting (`CoreMediaErrorDomain
+    /// -19602` after a transcode re-anchor) and the one the engine used to report the least
+    /// about: `item.error` names a CoreMedia code, never the HTTP request behind it. That
+    /// request lives in the access/error logs, which the engine already reads for a watchdog
+    /// expiry — so a `.failed` must produce the same diagnosis, captured on the spot.
+    ///
+    /// `errorLogTail` is deliberately NOT asserted: AVFoundation files a refused MASTER
+    /// playlist as `item.error` and leaves `errorLog()` empty (verified here — a closed
+    /// loopback port, played, still logs nothing), and only fills it for a variant playlist or
+    /// a segment. What the summary always carries is enough to tell those apart.
+    ///
+    /// The teardown in the same turn is the point: `.failed` is what tears the engine down, so
+    /// a snapshot deferred past this line would read a nil'd `currentItem` and log dashes —
+    /// empty in exactly the case it exists for (same trap as `logWatchdogExpiry`).
+    @Test("an item's own failure is diagnosed like a watchdog expiry, before the teardown")
+    func itemFailureCarriesTheSameDiagnosis() async throws {
+        let engine = AVKitEngine()
+        var iterator = engine.state.makeAsyncIterator()
+        // Nothing stubs `status` — AVFoundation owns it, so the failure has to be real, and
+        // it has to be an HTTP one: `AVPlayerItem.errorLog()` is the HTTP-streaming log, and a
+        // file:// failure leaves it empty. A closed loopback port refuses the connection
+        // immediately, so this needs no server and no network.
+        let session = try await engine.load(
+            .fixture(url: try #require(URL(string: "http://127.0.0.1:1/not-a-stream.m3u8")))
+        )
+        // The HTTP-streaming log only fills once AVPlayer actually tries to stream; a loaded
+        // but never-played item fails with an empty one.
+        await engine.play()
+        while let beat = await iterator.next() {
+            if case .failed = beat.state { break }
+        }
+        let item = try #require(engine.currentItem)
+
+        let snapshot = engine.handleStatusChange(item, from: session)
+        await engine.teardown()
+
+        let info = try #require(snapshot, "the item's failure was diagnosed with nothing at all")
+        #expect(info.itemStatus == "failed", "the snapshot never named the item's status")
+        #expect(info.transportState != nil)
+        // The fields that discriminate WHERE it died, which `item.error` alone never says:
+        // nothing transferred means the playlist itself never arrived; bytes with no loaded
+        // range means the playlist was fine and the segments were not.
+        #expect(info.logSummary.contains("item=failed"))
+        #expect(info.logSummary.contains("bytes="))
+        #expect(info.logSummary.contains("ranges="))
+    }
+
+    /// A `.readyToPlay` has nothing to diagnose; only the failure branch returns a snapshot,
+    /// so a caller can't mistake "nothing went wrong" for "the diagnosis was lost".
+    @Test("a readiness transition produces no failure diagnosis")
+    func readinessProducesNoDiagnosis() async throws {
+        let engine = AVKitEngine()
+        var iterator = engine.state.makeAsyncIterator()
+        let session = try await engine.load(.fixture(url: AVKitFixtures.tiny))
+        while let beat = await iterator.next() {
+            if case .ready = beat.state { break }
+        }
+        let item = try #require(engine.currentItem)
+
+        #expect(engine.handleStatusChange(item, from: session) == nil)
+        await engine.teardown()
+    }
+
     /// Both expiries are a no-op once the item is gone — the guard that stops a teardown
     /// racing a fired timer into a phantom failure.
     @Test("a watchdog that fires after teardown publishes nothing")
