@@ -64,7 +64,6 @@ nonisolated enum PlayerHUDTuning {
 
 nonisolated func reduce(_ state: PlayerHUDState, _ event: RemoteEvent, _ ctx: ReduceContext)
     -> (PlayerHUDState, [PlayerEffect]) {
-    func clamp(_ x: Double) -> Double { min(max(x, 0), 1) }
     /// The click step as a fraction of the duration. Zero when the duration is
     /// unknown so a click is a no-op seek.
     let clickStep = ctx.durationSeconds > 0 ? PlayerHUDTuning.clickStepSeconds / ctx.durationSeconds : 0
@@ -88,14 +87,14 @@ nonisolated func reduce(_ state: PlayerHUDState, _ event: RemoteEvent, _ ctx: Re
     case .floor:
         switch event {
         case .swipeHorizontal(let d):
-            return (.swipeScrub(progress: clamp(ctx.liveProgress + d), wasPlaying: ctx.desiredPlaying), [.pause])
+            return (.swipeScrub(progress: (ctx.liveProgress + d).unitClamped, wasPlaying: ctx.desiredPlaying), [.pause])
         case .swipeVertical, .click(.up), .click(.down):
             return (.fullHUD, [])
         case .click(.left):
             // No seek effect — the view debounces one seek to the settled target.
-            return (.clickSeek(targetProgress: clamp(ctx.liveProgress - clickStep)), [])
+            return (.clickSeek(targetProgress: (ctx.liveProgress - clickStep).unitClamped), [])
         case .click(.right):
-            return (.clickSeek(targetProgress: clamp(ctx.liveProgress + clickStep)), [])
+            return (.clickSeek(targetProgress: (ctx.liveProgress + clickStep).unitClamped), [])
         case .select, .playPause:
             return (.floor, [.togglePlayPause])
         case .menu:
@@ -108,7 +107,7 @@ nonisolated func reduce(_ state: PlayerHUDState, _ event: RemoteEvent, _ ctx: Re
         let confirm: [PlayerEffect] = wasPlaying ? [.seek(progress: p), .play] : [.seek(progress: p)]
         switch event {
         case .swipeHorizontal(let d):
-            return (.swipeScrub(progress: clamp(p + d), wasPlaying: wasPlaying), [])
+            return (.swipeScrub(progress: (p + d).unitClamped, wasPlaying: wasPlaying), [])
         case .select:
             return (.floor, confirm)
         case .swipeVertical, .click:
@@ -128,12 +127,12 @@ nonisolated func reduce(_ state: PlayerHUDState, _ event: RemoteEvent, _ ctx: Re
         switch event {
         case .click(.left):
             // No seek effect — the view debounces one seek to the settled target.
-            return (.clickSeek(targetProgress: clamp(target - clickStep)), [])
+            return (.clickSeek(targetProgress: (target - clickStep).unitClamped), [])
         case .click(.right):
-            return (.clickSeek(targetProgress: clamp(target + clickStep)), [])
+            return (.clickSeek(targetProgress: (target + clickStep).unitClamped), [])
         case .swipeHorizontal(let d):
             // Fall back to analog scrub from the current target; pause for the preview.
-            return (.swipeScrub(progress: clamp(target + d), wasPlaying: ctx.desiredPlaying), [.pause])
+            return (.swipeScrub(progress: (target + d).unitClamped, wasPlaying: ctx.desiredPlaying), [.pause])
         case .swipeVertical, .click(.up), .click(.down):
             return (.fullHUD, [])
         case .select, .playPause:
@@ -147,7 +146,7 @@ nonisolated func reduce(_ state: PlayerHUDState, _ event: RemoteEvent, _ ctx: Re
         case .swipeHorizontal(let d):
             // Only arrives while the scrubber holds focus (`PlayerView.onPan` gates it):
             // the chrome collapses into the same analog scrub as a floor swipe.
-            return (.swipeScrub(progress: clamp(ctx.liveProgress + d), wasPlaying: ctx.desiredPlaying), [.pause])
+            return (.swipeScrub(progress: (ctx.liveProgress + d).unitClamped, wasPlaying: ctx.desiredPlaying), [.pause])
         case .menu, .idle:
             return (.floor, [])
         case .playPause:
