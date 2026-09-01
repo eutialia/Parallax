@@ -23,6 +23,10 @@ import ParallaxPlayback
 /// `.projected` beat holds AND is display-safe, and splitting those two questions is the
 /// caller's job (`PlayerViewModel.publish`) — which is why `Verdict` has two cases, not three.
 ///
+/// It is the release POLICY and nothing else. What the window means — the origin the crossing
+/// runs from, the identity a re-scrub supersedes, the stage the bar draws — belongs to
+/// `SeekFlight`, which lives and dies with it.
+///
 /// Pure value semantics so `SeekHoldTests` can pin the release rules without a player.
 nonisolated struct SeekHold: Equatable, Sendable {
     /// Anti-wedge floor, and nothing else: an engine that never reports an observed clock

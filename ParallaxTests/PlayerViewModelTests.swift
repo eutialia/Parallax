@@ -1792,18 +1792,21 @@ struct PlayerViewModelTests {
 
     /// A failed session emits no further position beat, so a hold left standing has nothing
     /// that could ever hand the bar back: it would ride under the error scrim and into the
-    /// retry as a resume point nothing played.
-    @Test("a failed phase drops the hold")
+    /// retry as a resume point nothing played. And with the hold goes the origin the next
+    /// commit would have chained to — a stale one would anchor a later scrub in a dead session.
+    @Test("a failed phase drops the hold, and the chained origin with it")
     func failedPhaseDropsTheHold() async throws {
         let (vm, engines) = try await makeReanchorVM(at: 600)
         let engine = engines.live
         await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
         #expect(vm.seekHold != nil)
+        #expect(CMTimeGetSeconds(vm.concretePosition) == 600)
 
         engine.push(.failed(.networkStalled))
         try await engine.settle()
 
         #expect(vm.seekHold == nil, "the hold outlived the session it was armed in")
+        #expect(CMTimeGetSeconds(vm.concretePosition) == CMTimeGetSeconds(vm.currentPosition))
     }
 
     /// An invalid/indefinite CMTime is not a position: `CMTimeGetSeconds` gives NaN, and every
@@ -1962,6 +1965,302 @@ struct PlayerViewModelTests {
         replayed.push(.playing(5))
         try await replayed.settle()
         #expect(CMTimeGetSeconds(vm.currentPosition) == 5)       // not swallowed as a guess
+    }
+
+    // MARK: - The seek flight — the A→B span the scrub pulse sweeps, and its identity
+
+    /// The pulse's whole input. It exists for exactly the flight's lifetime, spans the jump the
+    /// hold hides (the published position is the target from the first instant, so A survives
+    /// nowhere else), and its sign is the direction the comet travels.
+    @Test("the delta spans commit A → target B for as long as the hold, in either direction",
+          arguments: [3_000.0, 120.0])
+    func seekSpanSpansTheCommittedJump(target: Double) async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let vm = try await makeReanchorVM(engine: engine, at: 600)
+        let duration = CMTimeGetSeconds(vm.currentDuration)
+        #expect(vm.seekSpan == nil, "nothing is in flight yet")
+
+        await vm.commitScrubSeek(to: CMTime(seconds: target, preferredTimescale: 600), resume: true)
+
+        let delta = try #require(vm.seekSpan).delta
+        #expect(delta.from == 600 / duration)
+        #expect(delta.to == target / duration)
+        #expect(delta.isForward == (target > 600))
+
+        // Stale beats are the reload's own clock — the jump is still in flight, so is the pulse.
+        engine.push(.playing(600, provenance: .stale))
+        try await engine.settle()
+        #expect(vm.seekSpan?.delta == delta)
+
+        // The engine lands: the hold releases and the bar goes back to its plain filled form.
+        engine.push(.playing(target))
+        try await engine.settle()
+        #expect(vm.seekSpan == nil)
+        #expect(vm.flight == nil, "the flight is the hold's meaning — it ends with it")
+    }
+
+    /// The anchoring rule, and the whole reason `concretePosition` exists. A seek that has not
+    /// landed has not moved the picture, so the second commit's A is the position the FIRST one
+    /// jumped away from — not the target it is still promising. `currentPosition` reads that
+    /// promise from the instant the hold arms, so reading it here would span a jump B1→B2 whose
+    /// A the video never played, and the crossing would start from a dot that was never there.
+    @Test("a re-scrub over an unlanded seek chains the delta back to the original A")
+    func seekSpanChainsThroughAnUnlandedSeek() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let vm = try await makeReanchorVM(engine: engine, at: 600)
+        let duration = CMTimeGetSeconds(vm.currentDuration)
+
+        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        #expect(try #require(vm.seekSpan).delta.isForward)
+        // The bar promises B1 while the picture sits on A0 — the two positions the split names.
+        #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000)
+        #expect(CMTimeGetSeconds(vm.concretePosition) == 600)
+
+        // Nothing lands: the reload's own beats are the pre-seek clock.
+        engine.push(.playing(600, provenance: .stale))
+        try await engine.settle()
+
+        await vm.commitScrubSeek(to: CMTime(seconds: 5_400, preferredTimescale: 600), resume: true)
+
+        let delta = try #require(vm.seekSpan).delta
+        #expect(delta.from == 600 / duration, "A0 is the last position that actually played")
+        #expect(delta.to == 5_400 / duration)
+        #expect(CMTimeGetSeconds(try #require(vm.flight).played) == 600)
+
+        // A third scrub over the same unlanded flight chains just as far back — the origin is
+        // the picture's, and the picture has not moved once.
+        await vm.commitScrubSeek(to: CMTime(seconds: 4_200, preferredTimescale: 600), resume: true)
+        #expect(try #require(vm.seekSpan).delta.from == 600 / duration)
+        #expect(CMTimeGetSeconds(vm.concretePosition) == 600)
+    }
+
+    /// The direction flip, which is where a wrong anchor stops being subtle: the first commit
+    /// went FORWARD and the second lands on the far side of A0. Chained, that is one clean
+    /// backward span A0→B2; anchored on the promise it would be a backward span from B1, whose
+    /// crossing starts to the right of a dot that has been sitting at A0 the whole drag.
+    @Test("a chained re-scrub that reverses past A0 spans A0→B2 backward")
+    func seekSpanChainsThroughADirectionFlip() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let vm = try await makeReanchorVM(engine: engine, at: 600)
+        let duration = CMTimeGetSeconds(vm.currentDuration)
+
+        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        try #require(try #require(vm.seekSpan).delta.isForward)
+
+        await vm.commitScrubSeek(to: CMTime(seconds: 120, preferredTimescale: 600), resume: true)
+
+        let delta = try #require(vm.seekSpan).delta
+        #expect(delta.from == 600 / duration)
+        #expect(delta.to == 120 / duration)
+        #expect(!delta.isForward)
+    }
+
+    /// …and chaining ends the moment the hold does. An observed beat is the engine's own clock
+    /// with no seek outstanding: the picture really is there now, so the next scrub anchors on
+    /// the landed position like any first scrub. Without this the origin would stick at the
+    /// session's first A forever.
+    @Test("a landed seek stops the chain: the next scrub anchors on where it landed")
+    func seekSpanStopsChainingOnceTheHoldReleases() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let vm = try await makeReanchorVM(engine: engine, at: 600)
+        let duration = CMTimeGetSeconds(vm.currentDuration)
+
+        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        engine.push(.playing(3_000))
+        try await engine.settle()
+        try #require(vm.seekHold == nil)
+        #expect(CMTimeGetSeconds(vm.concretePosition) == 3_000)
+
+        await vm.commitScrubSeek(to: CMTime(seconds: 1_800, preferredTimescale: 600), resume: true)
+
+        let delta = try #require(vm.seekSpan).delta
+        #expect(delta.from == 3_000 / duration, "a landed seek IS the honest position")
+        #expect(delta.to == 1_800 / duration)
+        #expect(!delta.isForward)
+    }
+
+    /// No runtime, no fractions: incomplete media plays with an `.indefinite` duration, and the
+    /// bar renders its indeterminate form with no fill to sweep.
+    @Test("an unknown runtime has no delta, hold or not")
+    func seekSpanNeedsAKnownRuntime() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let vm = makePlayerVM(resolve: { _, _, _, _ in PlayerFixtures.resolved() }, engine: engine)
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(600, duration: .indefinite))
+        try await engine.settle()
+        try #require(vm.hasKnownDuration == false)
+
+        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        #expect(vm.seekHold != nil)     // the hold still stands…
+        #expect(vm.seekSpan == nil)     // …but there is nothing to draw it against
+    }
+
+    /// A gesture is a flight too, and it is the state a commit CONVERTS. Nothing is dispatched
+    /// while it stands — no span for the pulse to sweep — but the split head has to be drawn,
+    /// and it has to be drawn against the position the picture is really at: over a seek that
+    /// never landed, that is the first commit's A, not the target it is still promising.
+    @Test("a commit made over a live preview chains the gesture's own origin")
+    func commitOverALivePreviewChainsTheOrigin() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let vm = try await makeReanchorVM(engine: engine, at: 600)
+        let duration = CMTimeGetSeconds(vm.currentDuration)
+
+        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        engine.push(.playing(600, provenance: .stale))
+        try await engine.settle()
+
+        // The finger comes down again over the unlanded seek and drags to a third place.
+        vm.beginPreview(at: CMTime(seconds: 5_400, preferredTimescale: 600))
+        #expect(vm.flight?.stage == .previewing)
+        #expect(vm.seekSpan == nil, "a gesture has dispatched nothing — there is no span yet")
+        #expect(CMTimeGetSeconds(vm.concretePosition) == 600)
+        vm.updatePreview(to: CMTime(seconds: 4_200, preferredTimescale: 600))
+        #expect(CMTimeGetSeconds(try #require(vm.flight).requested) == 4_200)
+
+        await vm.commitScrubSeek(to: CMTime(seconds: 4_200, preferredTimescale: 600), resume: true)
+
+        #expect(vm.flight?.stage == .committed)
+        let delta = try #require(vm.seekSpan).delta
+        #expect(delta.from == 600 / duration, "the crossing starts where the picture actually is")
+        #expect(delta.to == 4_200 / duration)
+    }
+
+    /// The identity, and the reason it is an integer. A superseded commit must stop painting the
+    /// instant a newer one exists — the bar drops the old span on an id compare, not on a float
+    /// tolerance over two fractions (on a two-hour runtime, "close enough" was a 3.6 s window in
+    /// which a dead commit still matched).
+    @Test("a superseded commit yields a new flight id")
+    func aSupersededCommitYieldsANewID() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let vm = try await makeReanchorVM(engine: engine, at: 600)
+
+        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        let first = try #require(vm.seekSpan)
+
+        await vm.commitScrubSeek(to: CMTime(seconds: 5_400, preferredTimescale: 600), resume: true)
+        let second = try #require(vm.seekSpan)
+
+        #expect(second.id != first.id)
+        #expect(second.id > first.id, "ids are monotonic — the newest commit is the highest")
+        #expect(second.delta.to != first.delta.to)
+    }
+
+    /// A gesture that commits nothing leaves nothing behind: no flight, no timer, and the bar
+    /// back on the engine's own position on the same beat. (The old bar had to SLEEP through
+    /// this case — a 250 ms grace guessing at whether a commit was still coming.)
+    @Test("a cancelled gesture returns the bar to the engine, with nothing left running")
+    func aCancelledPreviewReturnsToNil() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let vm = try await makeReanchorVM(engine: engine, at: 600)
+
+        vm.beginPreview(at: CMTime(seconds: 5_400, preferredTimescale: 600))
+        try #require(vm.flight?.stage == .previewing)
+
+        vm.cancelPreview()
+
+        #expect(vm.flight == nil)
+        #expect(vm.seekSpan == nil)
+        #expect(CMTimeGetSeconds(vm.concretePosition) == CMTimeGetSeconds(vm.currentPosition))
+    }
+
+    /// Cancelling a gesture that INTERRUPTED a commit hands that commit back rather than
+    /// dropping the bar to nothing: the seek is still in flight, and the pulse still has
+    /// something true to say. It keeps the gesture's id, so nothing already on screen restarts.
+    @Test("cancelling over an unlanded commit hands the commit back")
+    func aCancelledPreviewRestoresTheCommitItInterrupted() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let vm = try await makeReanchorVM(engine: engine, at: 600)
+        let duration = CMTimeGetSeconds(vm.currentDuration)
+
+        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        vm.beginPreview(at: CMTime(seconds: 5_400, preferredTimescale: 600))
+        let previewID = try #require(vm.flight).id
+
+        vm.cancelPreview()
+
+        let span = try #require(vm.seekSpan)
+        #expect(span.id == previewID)
+        #expect(span.delta.from == 600 / duration)
+        #expect(span.delta.to == 3_000 / duration, "the committed target, not where the finger was")
+    }
+
+    /// The identity is the COMMIT, never the fractions it renders as. A re-anchor swaps in a new
+    /// player item and republishes a duration that differs by a frame's worth; every fraction on
+    /// the bar shifts with it. Keyed on those, the crossing would cancel and re-enter mid-flight
+    /// and the concrete indicator would jump back to A — on precisely the multi-second seek this
+    /// whole feature exists for.
+    @Test("a duration republish moves the fractions and leaves the flight id alone")
+    func aDurationRepublishDoesNotChangeTheFlightID() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let vm = try await makeReanchorVM(engine: engine, at: 600)
+
+        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        let before = try #require(vm.seekSpan)
+
+        let stretched = CMTimeMultiplyByFloat64(vm.currentDuration, multiplier: 1.02)
+        engine.push(.playing(600, duration: stretched, provenance: .stale))
+        try await engine.settle()
+
+        let after = try #require(vm.seekSpan)
+        #expect(after.id == before.id)
+        #expect(after.delta != before.delta, "the fractions ARE expected to move — they are render input")
+        #expect(CMTimeGetSeconds(vm.currentDuration) == CMTimeGetSeconds(stretched))
+    }
+
+    /// The exit fence. `seek(to:)` and `commitScrubSeek` both refuse to run once the player is
+    /// leaving, so nothing can ever land this flight — and the surfaces stay mounted for the
+    /// whole slide-out, which without this carries a scrub bar and a floating timestamp off the
+    /// screen with them.
+    @Test("beginExit ends the flight, gesture or commit")
+    func beginExitEndsTheFlight() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let vm = try await makeReanchorVM(engine: engine, at: 600)
+
+        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        try #require(vm.flight != nil)
+
+        vm.beginExit()
+
+        #expect(vm.flight == nil)
+        #expect(vm.seekHold == nil)
+        #expect(vm.seekSpan == nil)
+    }
+
+    /// `.projected` is the engine's estimate off its OWN seek target, which the seek-settle
+    /// contract calls display-safe: the picture is at, or running from, it. So the flight stops
+    /// hiding a jump at that beat — the concrete indicator follows the clock again instead of
+    /// claiming the video sat at A for the whole settle window (~5 s on a VLC re-anchor), and
+    /// the next scrub chains from where the picture really is.
+    @Test("a projected beat lands the flight: the honest position is the clock again")
+    func aProjectedBeatAdvancesTheFlightToLanding() async throws {
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let vm = try await makeReanchorVM(engine: engine, at: 600)
+        let duration = CMTimeGetSeconds(vm.currentDuration)
+
+        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        #expect(vm.flight?.stage == .committed)
+        #expect(CMTimeGetSeconds(vm.concretePosition) == 600, "nothing has moved yet")
+
+        // A stale beat is the pre-seek clock and moves nothing.
+        engine.push(.playing(600, provenance: .stale))
+        try await engine.settle()
+        #expect(vm.flight?.stage == .committed)
+        #expect(CMTimeGetSeconds(vm.concretePosition) == 600)
+
+        // …and then the engine starts projecting from its target.
+        engine.push(.playing(3_002, provenance: .projected))
+        try await engine.settle()
+
+        #expect(vm.flight?.stage == .landing)
+        #expect(vm.seekHold != nil, "still unresolved — only an observed beat ends the flight")
+        #expect(CMTimeGetSeconds(vm.concretePosition) == 3_002)
+        // The span is the JUMP, and it stays the jump: the comet has to keep saying which way
+        // this seek went for as long as it is unresolved.
+        #expect(try #require(vm.seekSpan).delta.from == 600 / duration)
+
+        // The next scrub chains from where the picture actually got to.
+        await vm.commitScrubSeek(to: CMTime(seconds: 4_200, preferredTimescale: 600), resume: true)
+        #expect(try #require(vm.seekSpan).delta.from == 3_002 / duration)
     }
 
     @Test("scrub commit while paused on a re-encode transcode out of buffer: the force-resuming reload is re-paused")
