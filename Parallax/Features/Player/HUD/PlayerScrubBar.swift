@@ -26,10 +26,6 @@ struct PlayerScrubBar: View {
     /// glides discrete ±steps (click-seek, double-tap). The bubble's digit roll always runs
     /// on `scrubSpring`, so even a 1:1 head keeps its "aliveness".
     var positionAnimation: Animation? = scrubSpring
-    /// The artwork accent every provisional element of the bar is painted in — see
-    /// `PlayerProgressBar.accent`. `.white` is the monochrome bar, which is what every caller
-    /// gets until it opts in with `vm.scrubAccent`.
-    var accent: Color = .white
 
     var body: some View {
         // The timestamp keeps rolling on its OWN transaction (scrubDigitRoll) even when
@@ -42,7 +38,7 @@ struct PlayerScrubBar: View {
         PlayerProgressBar(scrubbingTo: progress, vm: vm, metrics: metrics,
                           mode: .scrub, playhead: .line, showsBubble: true,
                           scrubDigitRoll: Self.scrubSpring,
-                          reportsPullExclusion: false, accent: accent)
+                          reportsPullExclusion: false)
             // Position: a discrete ±step glides to its target; analog swipe tracks the head
             // 1:1 so the displayed position == the value Select commits. A follow spring
             // desyncs them — worst on the 23.976/24Hz panel Match-Frame-Rate pins for 24p
@@ -81,8 +77,7 @@ extension PlayerProgressBar {
          scrubDigitRoll: Animation? = nil,
          onScrubChanged: ((Double) -> Void)? = nil,
          onScrubEnded: ((Double) -> Void)? = nil,
-         reportsPullExclusion: Bool = true,
-         accent: Color = .white) {
+         reportsPullExclusion: Bool = true) {
         // Incomplete media plays with an `.indefinite` duration that never resolves (`dur` is NaN).
         // Without a known runtime there's no scrubbable timeline: show the LIVE elapsed position
         // only (no fraction, no total/remaining, no bubble, no scrub handlers), and let the bar
@@ -117,8 +112,7 @@ extension PlayerProgressBar {
             onScrubChanged: known ? onScrubChanged : nil,
             onScrubEnded: known ? onScrubEnded : nil,
             scrubDigitRoll: scrubDigitRoll,
-            reportsPullExclusion: reportsPullExclusion,
-            accent: accent
+            reportsPullExclusion: reportsPullExclusion
         )
     }
 }

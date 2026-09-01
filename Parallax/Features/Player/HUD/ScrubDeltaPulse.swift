@@ -27,6 +27,17 @@ extension EnvironmentValues {
     /// the travel is over before a second frame exists, and `accessibilityReduceMotion` is a
     /// read-only environment value.
     @Entry var seekPulsePreview: ScrubDeltaPulse.PreviewState? = nil
+
+    /// The artwork hue the scrub bar's PROVISIONAL elements are painted in — the ghost handle,
+    /// the span band, the comet and its breath, the arrival bloom. Nothing that carries
+    /// information reads it (see `PlayerProgressBar.accent`).
+    ///
+    /// An environment value rather than an init parameter: four views in two files want the same
+    /// colour, it is a property of the SESSION (one item, one poster, one hue) and not of any one
+    /// bar, and every surface that mounts a bar would otherwise have to know the accent exists
+    /// just to forward it. `PlayerView` sets it once on the player root; `.white` — the default —
+    /// is the monochrome bar, which is what every preview, test, and non-player caller gets.
+    @Entry var scrubAccent: Color = .white
 }
 
 /// The concrete indicator's commit-time journey: the constants, and the pure geometry both
@@ -131,11 +142,11 @@ struct ScrubSpanBand<Overlay: View>: View {
     /// Scales both tints. The drag preview runs under 1 so the band never competes with the
     /// scrub bubble sitting directly above it; the in-flight pulse runs at full strength.
     var intensity: Double = 1
+    @ViewBuilder var overlay: () -> Overlay
+
     /// The provisional hue. It colours the LIFT half (the band over bare track); the ink half
     /// stays ink, because ink is a shadow over the played fill and shadows aren't tinted.
-    /// `.white` is the monochrome bar, unchanged.
-    var accent: Color = .white
-    @ViewBuilder var overlay: () -> Overlay
+    @Environment(\.scrubAccent) private var accent
 
     /// Narrower than this there is nothing to differentiate and nothing to sweep — a few
     /// points of tint next to the handle reads as a rendering artifact, not as a span.
@@ -191,9 +202,9 @@ struct ScrubSpanBand<Overlay: View>: View {
 
 extension ScrubSpanBand where Overlay == EmptyView {
     init(span: SeekDelta, fillEdge: Double, width: CGFloat, height: CGFloat,
-         unit: CGFloat, intensity: Double = 1, accent: Color = .white) {
+         unit: CGFloat, intensity: Double = 1) {
         self.init(span: span, fillEdge: fillEdge, width: width, height: height,
-                  unit: unit, intensity: intensity, accent: accent) { EmptyView() }
+                  unit: unit, intensity: intensity) { EmptyView() }
     }
 }
 
@@ -252,9 +263,8 @@ struct ScrubDeltaPulse: View {
     /// `PlayerMetrics.u` — the phone/tv scale the glint's minimum width rides.
     let unit: CGFloat
     /// The seek is provisional until it lands, so all of it — band, comet, breath — is painted
-    /// in the accent. `.white` is the monochrome bar.
-    var accent: Color = .white
-
+    /// in the accent.
+    @Environment(\.scrubAccent) private var accent
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.seekPulsePreview) private var preview
 
@@ -313,7 +323,7 @@ struct ScrubDeltaPulse: View {
 
     private func segment(_ delta: SeekDelta) -> some View {
         ScrubSpanBand(span: delta, fillEdge: fillEdge, width: width,
-                      height: height, unit: unit, accent: accent) {
+                      height: height, unit: unit) {
             glintLayer(delta, span: CGFloat(delta.upper - delta.lower) * width)
         }
     }
@@ -403,9 +413,10 @@ struct ScrubDeltaPulse: View {
 /// the whole film: the solid handle is flat white with no glow of its own, and this is the one
 /// moment it is allowed any.
 struct ScrubArrivalBloom: View {
-    let accent: Color
     let diameter: CGFloat
     let opacity: Double
+
+    @Environment(\.scrubAccent) private var accent
 
     var body: some View {
         Circle()
