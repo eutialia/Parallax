@@ -1107,21 +1107,29 @@ final class PlayerViewModel {
     /// Reset to nil FIRST so an episode→episode swap can never show the previous poster's hue
     /// on the new item's bar, not even for the beat before the new fetch answers.
     ///
-    /// Nothing here is allowed to matter: the fetch is best-effort, the extraction runs
-    /// detached at utility priority (a poster decode has no business on the main thread while a
-    /// stream is opening), and every failure — no ref, no bytes, no colour in the artwork —
-    /// leaves the bar white. It is deliberately NOT awaited anywhere in the start path.
+    /// Nothing here is allowed to matter: the fetch is best-effort, the decode runs off the main
+    /// actor (a poster decode has no business on the main thread while a stream is opening), and
+    /// every failure — no ref, no bytes, no colour in the artwork — leaves the bar white. It is
+    /// deliberately NOT awaited anywhere in the start path.
+    ///
+    /// The decode is a `nonisolated` call, not a nested `Task.detached`: awaiting a detached
+    /// task's `.value` is not a cancellation point, so a nested one outlived the item it was
+    /// decoding for. A plain call inherits this task's cancellation and is one hop cheaper.
     private func loadAccent(for item: ItemDetail) {
         accentTask?.cancel()
         accentHSB = nil
-        accentTask = Task { [weak self, fetchArtwork] in
+        accentTask = Task(priority: .utility) { [weak self, fetchArtwork] in
             guard let data = await fetchArtwork(item), !Task.isCancelled else { return }
-            let accent = await Task.detached(priority: .utility) {
-                ArtworkAccent.accent(fromImageData: data)
-            }.value
+            let accent = await Self.extractAccent(from: data)
             guard !Task.isCancelled else { return }
             self?.accentHSB = accent
         }
+    }
+
+    /// The decode + vote, off the main actor. `nonisolated` is the whole point: the view model is
+    /// `@MainActor`, and this is the one step that must not run there.
+    private nonisolated static func extractAccent(from data: Data) async -> AccentHSB? {
+        ArtworkAccent.accent(fromImageData: data)
     }
 
     /// Direct-play entry: fetch the item's detail, then play. The frosted reload

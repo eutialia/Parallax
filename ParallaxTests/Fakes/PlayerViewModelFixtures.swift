@@ -102,7 +102,8 @@ func makePlayerVM(
     reloadResolveDeadline: Duration = .seconds(15),
     subtitleStyle: @escaping @MainActor () -> SubtitleStyle = { .standard },
     playerSurface: @escaping @MainActor () -> CGSize? = { nil },
-    seekHoldNow: @escaping @Sendable () -> ContinuousClock.Instant = { .now }
+    seekHoldNow: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
+    fetchArtwork: @escaping @Sendable (ItemDetail) async -> Data? = { _ in nil }
 ) -> PlayerViewModel {
     PlayerViewModel(
         deviceProfileBuilder: makeTestDeviceProfileBuilder(),
@@ -121,7 +122,8 @@ func makePlayerVM(
         reloadResolveDeadline: reloadResolveDeadline,
         subtitleStyle: subtitleStyle,
         playerSurface: playerSurface,
-        seekHoldNow: seekHoldNow
+        seekHoldNow: seekHoldNow,
+        fetchArtwork: fetchArtwork
     )
 }
 
@@ -145,7 +147,8 @@ func makePlayerVM(
     reloadResolveDeadline: Duration = .seconds(15),
     subtitleStyle: @escaping @MainActor () -> SubtitleStyle = { .standard },
     playerSurface: @escaping @MainActor () -> CGSize? = { nil },
-    seekHoldNow: @escaping @Sendable () -> ContinuousClock.Instant = { .now }
+    seekHoldNow: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
+    fetchArtwork: @escaping @Sendable (ItemDetail) async -> Data? = { _ in nil }
 ) -> PlayerViewModel {
     makePlayerVM(
         reporting: reporting,
@@ -163,7 +166,8 @@ func makePlayerVM(
         reloadResolveDeadline: reloadResolveDeadline,
         subtitleStyle: subtitleStyle,
         playerSurface: playerSurface,
-        seekHoldNow: seekHoldNow
+        seekHoldNow: seekHoldNow,
+        fetchArtwork: fetchArtwork
     )
 }
 
