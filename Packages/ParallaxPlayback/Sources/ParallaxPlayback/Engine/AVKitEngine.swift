@@ -400,6 +400,7 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         Log.playback.error(
             """
             AVKit \(kind, privacy: .public) watchdog expired: \(snapshot.logSummary, privacy: .public) \
+            hlsRequests=\(snapshot.accessLogDetail, privacy: .public) \
             hlsErrors=\(snapshot.errorLogDetail, privacy: .private)
             """
         )
@@ -719,12 +720,33 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         }
 
         // Access log: the negative sentinel means "not yet measured".
-        if let event = item.accessLog()?.events.last {
-            info.indicatedBitrate = event.indicatedBitrate > 0 ? event.indicatedBitrate : nil
-            info.observedBitrate = event.observedBitrate > 0 ? event.observedBitrate : nil
-            info.droppedVideoFrames = event.numberOfDroppedVideoFrames >= 0 ? event.numberOfDroppedVideoFrames : nil
-            info.stallCount = event.numberOfStalls >= 0 ? event.numberOfStalls : nil
-            info.bytesTransferred = event.numberOfBytesTransferred > 0 ? event.numberOfBytesTransferred : nil
+        if let events = item.accessLog()?.events, !events.isEmpty {
+            if let event = events.last {
+                info.indicatedBitrate = event.indicatedBitrate > 0 ? event.indicatedBitrate : nil
+                info.observedBitrate = event.observedBitrate > 0 ? event.observedBitrate : nil
+                info.droppedVideoFrames = event.numberOfDroppedVideoFrames >= 0 ? event.numberOfDroppedVideoFrames : nil
+                info.stallCount = event.numberOfStalls >= 0 ? event.numberOfStalls : nil
+                info.bytesTransferred = event.numberOfBytesTransferred > 0 ? event.numberOfBytesTransferred : nil
+            }
+            // The whole sequence, oldest first — WHICH resources the player asked for, in
+            // order. `item.error` names a code and `errorLog()` names the request that failed;
+            // only this says what was requested BEFORE it, which is the difference between
+            // "the player asked for the resume segment and the server dropped it" and "the
+            // player asked for segment 0 and the server restarted the encode underneath it".
+            // `playbackStartOffset` is where in the playlist AVFoundation actually began —
+            // not necessarily where the app seeked to.
+            info.accessLogTail = events.map { e in
+                let path = e.uri.flatMap(Self.redactedTail(of:)) ?? "—"
+                return """
+                    \(path) reqs=\(e.numberOfMediaRequests) \
+                    bytes=\(e.numberOfBytesTransferred) \
+                    ibr=\(Self.rounded(e.indicatedBitrate)) \
+                    obr=\(Self.rounded(e.observedBitrate)) \
+                    startOffset=\(Self.rounded(e.playbackStartOffset)) \
+                    watched=\(Self.rounded(e.durationWatched)) \
+                    session=\(e.playbackSessionID ?? "—")
+                    """
+            }
         }
 
         // Transport truth: the discriminator for "never plays, no error".
@@ -753,9 +775,15 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         // the api_key lives) so the log names WHICH resource failed: playlist,
         // init segment, or a specific media segment.
         if let events = item.errorLog()?.events, !events.isEmpty {
-            info.errorLogTail = events.suffix(3).map { e in
-                let path = e.uri.flatMap(Self.redactedTail(of:)).map { " @\($0)" } ?? ""
-                return "\(e.errorDomain) \(e.errorStatusCode)\(path): \(e.errorComment ?? "—")"
+            // Whole log, not a tail: the sequence is the diagnosis. Path FIRST so an entry
+            // reads as "this request, this outcome", and stamped with the access log's
+            // `playbackSessionID` so the two logs join on more than their ordering.
+            info.errorLogTail = events.map { e in
+                let path = e.uri.flatMap(Self.redactedTail(of:)) ?? "—"
+                return """
+                    \(path) status=\(e.errorStatusCode) \(e.errorDomain) \
+                    session=\(e.playbackSessionID ?? "—"): \(e.errorComment ?? "—")
+                    """
             }
         }
 
@@ -851,10 +879,18 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
 
     /// The item never became playable. `item.error` names a CoreMedia code and nothing else —
     /// `-19602` after a transcode re-anchor says a request failed, not WHICH one — so the
-    /// engine's full synchronous diagnosis rides along: the HLS error log (the failing URI's
-    /// trailing path + its status code), the transport state, the playhead versus what is
-    /// actually loaded. Exactly what `logWatchdogExpiry` prints, for the failure that arrives
-    /// on its own instead of on a deadline.
+    /// engine's full synchronous diagnosis rides along: the request SEQUENCE
+    /// (`hlsRequests=`, the access log, oldest first) then the failures within it
+    /// (`hlsErrors=`, the error log, each naming its URI's trailing path and status), plus the
+    /// transport state and the playhead versus what is actually loaded. Exactly what
+    /// `logWatchdogExpiry` prints, for the failure that arrives on its own instead of on a
+    /// deadline.
+    ///
+    /// `hlsRequests=none` is not "nothing was requested": an access-log event is a *playback*
+    /// session record, so it is only filed once media flows. A load that dies on a playlist
+    /// leaves it empty and the error log holds the whole account (verified against a loopback
+    /// server that serves the master and hangs up on the variant — see
+    /// `itemFailureCarriesTheRequestSequence`).
     ///
     /// Read SYNCHRONOUSLY and BEFORE the `.failed` beat below, for the same reason the
     /// watchdog's is: that beat is what tears the engine down, and a deferred read finds a
@@ -882,6 +918,7 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
             session=\(session.description, privacy: .public) \
             live=\(session == self.session, privacy: .public) \
             \(snapshot.logSummary, privacy: .public) \
+            hlsRequests=\(snapshot.accessLogDetail, privacy: .public) \
             hlsErrors=\(snapshot.errorLogDetail, privacy: .private) \
             url=\((item.asset as? AVURLAsset)?.url.absoluteString ?? "<no-url>", privacy: .private(mask: .hash))
             """
@@ -947,9 +984,26 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     /// init vs media segment apart without leaking credentials.
     static func redactedTail(of uri: String) -> String? {
         guard let components = URLComponents(string: uri) else { return nil }
+        // `.path` drops the query, which is where the api_key lives — the redaction is
+        // structural, not a filter, so a new query parameter can never leak through it.
         let parts = components.path.split(separator: "/")
+            .filter { !Self.isOpaqueIdentifier($0) }
         guard !parts.isEmpty else { return nil }
-        return parts.suffix(2).joined(separator: "/")
+        return parts.suffix(3).joined(separator: "/")
+    }
+
+    /// A path component that is a bare hex/UUID id — the item and media-source ids Jellyfin
+    /// puts mid-path. Dropped so a tail reads `hls1/main/47.mp4` or `videos/master.m3u8`
+    /// instead of spending its slots on an id that names no resource.
+    private static func isOpaqueIdentifier(_ component: Substring) -> Bool {
+        let hex = component.filter { $0 != "-" }
+        return hex.count >= 32 && hex.allSatisfy(\.isHexDigit)
+    }
+
+    /// Access-log doubles read `-1` where AVFoundation has not measured them yet, and carry
+    /// absurd precision where it has.
+    private static func rounded(_ value: Double) -> String {
+        value < 0 ? "—" : String(format: "%.1f", value)
     }
 
     /// End of the loaded range containing `time` — the absolute media time the

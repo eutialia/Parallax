@@ -116,10 +116,25 @@ struct PlaybackEngineStreamContractTests {
 @MainActor
 struct AVKitLogRedactionTests {
 
-    @Test("keeps the trailing two path components and drops the query", arguments: [
-        ("https://jf.example.com/Videos/abc/main.m3u8?api_key=SECRET", "abc/main.m3u8"),
-        ("https://jf.example.com/Videos/abc/hls1/main/123.mp4?api_key=SECRET&x=1", "main/123.mp4"),
+    @Test("names the resource, drops the query and the item id", arguments: [
+        ("https://jf.example.com/Videos/abc/main.m3u8?api_key=SECRET", "Videos/abc/main.m3u8"),
+        ("https://jf.example.com/Videos/abc/hls1/main/123.mp4?api_key=SECRET&x=1", "hls1/main/123.mp4"),
         ("https://jf.example.com/master.m3u8", "master.m3u8"),
+        // The real shape. Two components were not enough: a Jellyfin segment URI spends one of
+        // them on `main`, so `47.mp4` arrived without the `hls1/main` that says it is a media
+        // segment and not an init one — and a playlist URI spent both on a 32-hex item id.
+        (
+            "https://jf.example.com/Videos/a1b2c3d4e5f60718293a4b5c6d7e8f90/hls1/main/47.mp4?api_key=SECRET",
+            "hls1/main/47.mp4"
+        ),
+        (
+            "https://jf.example.com/Videos/a1b2c3d4e5f60718293a4b5c6d7e8f90/master.m3u8?PlaySessionId=x",
+            "Videos/master.m3u8"
+        ),
+        (
+            "https://jf.example.com/Videos/a1b2c3d4-e5f6-0718-293a-4b5c6d7e8f90/hls1/main/-1.mp4",
+            "hls1/main/-1.mp4"
+        ),
     ])
     func redactsTail(uri: String, expected: String) {
         let tail = AVKitEngine.redactedTail(of: uri)
@@ -599,6 +614,58 @@ struct AVKitWatchdogExpiryTests {
         #expect(info.logSummary.contains("item=failed"))
         #expect(info.logSummary.contains("bytes="))
         #expect(info.logSummary.contains("ranges="))
+        // A refused connection has no HTTP transaction to report, and the diagnosis says so
+        // rather than printing an empty field: "none" on device means the socket never got
+        // far enough to log, which is itself the answer.
+        #expect(info.accessLogDetail == "none")
+        #expect(info.errorLogDetail == "none")
+    }
+
+    /// The device case the previous test cannot reach. `item.error` said `-19602`, the summary
+    /// said `bytes=— ranges=[]`, and the error log said `NSURLErrorDomain -1005` **with no URI**
+    /// — so the log named the failure and never named the request, which is the one thing that
+    /// separates "the player asked for the resume segment and the server dropped it" from "the
+    /// player asked for something else entirely". A server that answers the master playlist and
+    /// then hangs up on the variant produces exactly that pair of logs for real, and the
+    /// diagnosis has to carry both, in order.
+    @Test("the failure diagnosis carries the request sequence, not just the failure")
+    func itemFailureCarriesTheRequestSequence() async throws {
+        let server = try HLSLoopbackServer.servingOnlyTheMasterPlaylist()
+        defer { server.stop() }
+        let master = try await server.baseURL().appending(path: "master.m3u8")
+
+        let engine = AVKitEngine()
+        var iterator = engine.state.makeAsyncIterator()
+        let session = try await engine.load(.fixture(url: master))
+        await engine.play()
+        while let beat = await iterator.next() {
+            if case .failed = beat.state { break }
+        }
+        let item = try #require(engine.currentItem)
+
+        let info = try #require(engine.handleStatusChange(item, from: session))
+        await engine.teardown()
+
+        // The server's own record: the master was served, the variant was asked for and
+        // dropped. Everything below is the engine's report of that same sequence.
+        #expect(server.pathsRequested.contains("/master.m3u8"))
+
+        // The access log is EMPTY here, and that is a fact about AVFoundation worth pinning:
+        // an `AVPlayerItemAccessLogEvent` is a *playback* session record, so it is only filed
+        // once media starts flowing — a master playlist that transferred fine still logs
+        // nothing when the variant behind it never arrives. So on device `hlsRequests=none`
+        // does not mean "nothing was requested"; it means playback never began, and the error
+        // log below is the only account of the requests. (If this ever starts reporting
+        // events, the assertion flips and the extra fields are already formatted for it.)
+        #expect(info.accessLogDetail == "none")
+        // The error log — WHICH request failed. The URI is the field the device log was
+        // missing, and it is present here, so a nil URI on device is AVFoundation declining to
+        // attribute the failure rather than the engine dropping it.
+        #expect(info.errorLogDetail != "none", "the diagnosis reported no HLS errors at all")
+        #expect(info.errorLogDetail.contains("main.m3u8"), "the failing request went unnamed")
+        #expect(info.errorLogDetail.contains("status="))
+        // The log may never carry a query — that is where the api_key rides.
+        #expect(!info.errorLogDetail.contains("?"))
     }
 
     /// A `.readyToPlay` has nothing to diagnose; only the failure branch returns a snapshot,

@@ -59,6 +59,15 @@ public struct PlaybackDebugInfo: Sendable, Equatable {
     /// redacted trailing path (query stripped — that's where the api_key lives),
     /// just enough to tell playlist vs init vs media segment apart.
     public var errorLogTail: [String]
+    /// Every `AVPlayerItemAccessLogEvent`, oldest first, one entry per media request run:
+    /// "path reqs=N bytes=N ibr=N start=Ns session=…". The error log says a request FAILED;
+    /// this says which requests were ATTEMPTED and in what order — the only way to tell "the
+    /// player asked for the resume segment and the server dropped it" apart from "the player
+    /// asked for segment 0 and the server restarted the encode underneath it". `numberOfMediaRequests`
+    /// counting 1 with `bytes=0` is the signature of a single request that died mid-flight.
+    /// URIs are reduced the same way `errorLogTail`'s are, and every other field is a number
+    /// AVFoundation authored — so unlike the error log this whole string is safe at `.public`.
+    public var accessLogTail: [String]
 
     public init(
         presentationWidth: Int? = nil,
@@ -78,7 +87,8 @@ public struct PlaybackDebugInfo: Sendable, Equatable {
         transportState: String? = nil,
         stallCount: Int? = nil,
         bytesTransferred: Int64? = nil,
-        errorLogTail: [String] = []
+        errorLogTail: [String] = [],
+        accessLogTail: [String] = []
     ) {
         self.presentationWidth = presentationWidth
         self.presentationHeight = presentationHeight
@@ -98,6 +108,7 @@ public struct PlaybackDebugInfo: Sendable, Equatable {
         self.stallCount = stallCount
         self.bytesTransferred = bytesTransferred
         self.errorLogTail = errorLogTail
+        self.accessLogTail = accessLogTail
     }
 
     public static let empty = PlaybackDebugInfo()
@@ -126,5 +137,13 @@ public struct PlaybackDebugInfo: Sendable, Equatable {
     /// log site must emit THIS at `.private` and the summary above at `.public`.
     public var errorLogDetail: String {
         errorLogTail.isEmpty ? "none" : errorLogTail.joined(separator: " | ")
+    }
+
+    /// The access log, whole. Every field in it is either a number AVFoundation reported or a
+    /// URI already reduced to a query-free trailing path, so — unlike `errorLogDetail` — this
+    /// carries no free text and logs `.public`: the request sequence stays readable on a device
+    /// with private logging off.
+    public var accessLogDetail: String {
+        accessLogTail.isEmpty ? "none" : accessLogTail.joined(separator: " | ")
     }
 }
