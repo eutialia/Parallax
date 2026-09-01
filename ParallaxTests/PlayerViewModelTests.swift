@@ -2199,6 +2199,32 @@ struct PlayerViewModelTests {
         #expect(incoming.calls.contains("teardown"))
     }
 
+    /// The transport intent the user expressed DURING the rebuild owns the session that
+    /// comes out of it. The reload's own `play()` is mechanical — a track switch resumes
+    /// because it must — so a pause that landed while the engine was being replaced has to
+    /// survive it, or a lock-screen pause mid-switch comes back playing.
+    @Test("a pause issued during the rebuild is honored by the rebuilt engine")
+    func aPauseDuringTheRebuildSurvivesIt() async throws {
+        let (vm, _, outgoing, audio4) = try await startEngineRebuildVM()
+        outgoing.holdEndAudio()
+
+        let switching = Task { await vm.selectAudioTrack(audio4) }
+        await waitUntil { outgoing.hasParkedEndAudio }
+
+        // The lock screen's pause, landing inside the swap. It is accepted because the slot
+        // is never empty: a nil engine here makes `setPlaying` return without even recording
+        // the intent, and the rebuilt engine then comes up playing against it.
+        vm.setPlaying(false)
+        #expect(vm.desiredPlaying == false)
+
+        outgoing.releaseEndAudio()
+        await switching.value
+
+        let incoming = try #require(vm.engine as? FakePlaybackEngine)
+        #expect(vm.desiredPlaying == false)
+        #expect(incoming.calls.last == "pause")
+    }
+
     /// The race the identity guard in `handle(_:from:)` exists for: a beat already pulled
     /// from the outgoing engine's stream, suspended on its hop to the view model while the
     /// replacement is installed. Cancelling a subscription cannot recall a state already in
