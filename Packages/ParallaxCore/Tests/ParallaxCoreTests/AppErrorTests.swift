@@ -10,6 +10,7 @@ struct AppErrorTests {
     private static let sourceFailures: [SourceFailure] = [.notFound, .permissionDenied, .connectionLost]
     private static let playbackFailures: [PlaybackFailure] = [
         .decodeFailed, .unsupportedFormat, .resourceUnavailable, .audioSessionFailed,
+        .startupTimedOut,
     ]
     private static let urlErrorCodes: [URLError.Code] = [
         .notConnectedToInternet, .networkConnectionLost, .timedOut,

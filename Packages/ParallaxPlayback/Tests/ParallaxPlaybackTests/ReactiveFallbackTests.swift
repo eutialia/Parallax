@@ -23,6 +23,8 @@ struct ReactiveFallbackTests {
             (PlaybackEngineID.avKit, Container.mp4, true, PlaybackError.assetNotPlayable, false),      // second failure — one shot only
             (PlaybackEngineID.avKit, Container.mp4, false, PlaybackError.networkStalled, false),       // a link stall, not a decode defect — rerouting would mask the honest stall scrim
             (PlaybackEngineID.avKit, Container.mp4, false, PlaybackError.unknown("x"), false),         // an engine-specific failure outside the two known cases
+            (PlaybackEngineID.avKit, Container.mp4, false, PlaybackError.loadTimedOut, true),          // the load watchdog: a VLC retry is bounded and sometimes rescues a file AVKit hangs on
+            (PlaybackEngineID.avKit, Container.mkv, false, PlaybackError.loadTimedOut, false),         // …still MP4-family only
         ]
     )
     func decisionMatrix(

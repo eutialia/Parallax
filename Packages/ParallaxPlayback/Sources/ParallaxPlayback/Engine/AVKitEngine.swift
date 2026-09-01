@@ -327,16 +327,20 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     /// The item never became playable within the watchdog deadline — surface `.failed` so the
     /// error scrim takes over instead of an endless spinner. Guarded by `currentItem` so a beat
     /// that already disarmed makes this a no-op.
-    private func handleLoadTimeout() {
+    ///
+    /// `.loadTimedOut`, not `.assetNotPlayable`: nothing here says the asset is broken, and
+    /// borrowing that case put "Couldn't decode this file" on a server that was merely slow.
+    /// Internal so a test can drive the expiry without waiting out the real deadline.
+    func handleLoadTimeout() {
         guard currentItem != nil else { return }
-        continuation.yield(.failed(.assetNotPlayable))
+        continuation.yield(.failed(.loadTimedOut))
     }
 
     /// A mid-playback stall (`.buffering`) never recovered within the watchdog deadline — surface
     /// `.failed(.networkStalled)` so the "stream stalled and didn't recover" scrim + manual retry
     /// take over instead of an eternal spinner. Guarded by `currentItem` so a beat that already
     /// disarmed makes this a no-op (mirrors `handleLoadTimeout`).
-    private func handleStallTimeout() {
+    func handleStallTimeout() {
         guard currentItem != nil else { return }
         continuation.yield(.failed(.networkStalled))
     }

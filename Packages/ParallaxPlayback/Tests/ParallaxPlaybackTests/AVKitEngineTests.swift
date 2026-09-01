@@ -5,6 +5,31 @@ import Testing
 import ParallaxPlaybackTestSupport
 @testable import ParallaxPlayback
 
+/// The real media every AVKit suite drives AVFoundation with. One home rather than a copy per
+/// suite: what AVFoundation does with a real file is the whole point of these tests, so the
+/// accessor is shared and the choice of file stays the test's own.
+enum AVKitFixtures {
+    /// 3 seconds, one embedded subtitle track — the seek-settle suite's material.
+    static var subtitled: URL {
+        get throws {
+            try #require(
+                Bundle.module.url(forResource: "subtitled", withExtension: "mp4", subdirectory: "Fixtures"),
+                "subtitled.mp4 fixture missing from the test bundle"
+            )
+        }
+    }
+
+    /// The smallest playable file in the bundle — enough to reach `.readyToPlay` and nothing more.
+    static var tiny: URL {
+        get throws {
+            try #require(
+                Bundle.module.url(forResource: "tiny", withExtension: "mp4", subdirectory: "Fixtures"),
+                "tiny.mp4 fixture missing from the test bundle"
+            )
+        }
+    }
+}
+
 @Suite("AVKitEngine")
 @MainActor
 struct AVKitEngineTests {
@@ -231,15 +256,6 @@ struct AVKitSubtitleSuppressionTests {
 @MainActor
 struct AVKitSeekSettleTests {
 
-    private static var fixture: URL {
-        get throws {
-            try #require(
-                Bundle.module.url(forResource: "subtitled", withExtension: "mp4", subdirectory: "Fixtures"),
-                "subtitled.mp4 fixture missing from the test bundle"
-            )
-        }
-    }
-
     /// Loads the fixture and returns once the item is `.readyToPlay` (so `seek(to:)` reaches
     /// the real seek path rather than being queued against a not-yet-ready item).
     ///
@@ -252,7 +268,7 @@ struct AVKitSeekSettleTests {
     private func readyEngine() async throws -> AVKitEngine {
         let engine = AVKitEngine()
         var iterator = engine.state.makeAsyncIterator()
-        try await engine.load(.fixture(url: Self.fixture))
+        try await engine.load(.fixture(url: AVKitFixtures.subtitled))
         while let beat = await iterator.next() {
             if case .ready = beat { return engine }
             if case .failed(let error) = beat { throw error }
@@ -388,7 +404,7 @@ struct AVKitSeekSettleTests {
         let engine = AVKitEngine()
         let log = PositionBeatLog(engine)
 
-        try await engine.load(.fixture(url: Self.fixture,
+        try await engine.load(.fixture(url: AVKitFixtures.subtitled,
                                        startTime: CMTime(seconds: 1.5, preferredTimescale: 600)))
         #expect(engine.inFlightSeeks == 1, "the resume seek left the settle window closed")
         await engine.play()
@@ -426,12 +442,12 @@ struct AVKitSeekSettleTests {
         // becomes ready AVFoundation resolves it immediately instead of queueing it (measured,
         // both ways). Both paths close through `seekDidFinish(generation:)`, which is what the
         // rest of this test drives directly.
-        try await engine.load(.fixture(url: Self.fixture,
+        try await engine.load(.fixture(url: AVKitFixtures.subtitled,
                                        startTime: CMTime(seconds: 1.5, preferredTimescale: 600)))
         #expect(engine.inFlightSeeks == 1, "the seek never opened a settle window")
         let abandoned = engine.seekGeneration
 
-        try await engine.load(.fixture(url: Self.fixture))   // the re-anchor discards that item
+        try await engine.load(.fixture(url: AVKitFixtures.subtitled))   // the re-anchor discards that item
         #expect(engine.inFlightSeeks == 0, "the discarded item's window was never reclaimed")
         #expect(engine.seekGeneration != abandoned, "the new stream reused the discarded stamp")
 
@@ -467,5 +483,73 @@ struct AVKitSeekSettleTests {
         #expect(engine.inFlightSeeks == 0, "the no-op seek leaked a settle window")
         #expect(engine.seekGeneration == 0, "the no-op seek superseded a batch that never existed")
         await engine.teardown()
+    }
+}
+
+/// The two watchdogs are the engine's only "it just spun forever" exits, and what they say when
+/// they fire is the whole diagnosis the user and the log get. The expiries are driven directly
+/// rather than waited out — `LoadWatchdog`'s own contract suite already covers the timer; this is
+/// about the beat it produces.
+@Suite("AVKitEngine — watchdog expiries", .serialized, .timeLimit(.minutes(1)))
+@MainActor
+struct AVKitWatchdogExpiryTests {
+
+    /// A load that never produced a frame is not a decode failure. Borrowing
+    /// `.assetNotPlayable` put "Couldn't decode this file" on a server that was merely slow —
+    /// the one message that sends the user looking at the file instead of the link.
+    @Test("the load watchdog surfaces its own failure, not a decode failure")
+    func loadTimeoutIsItsOwnFailure() async throws {
+        let engine = AVKitEngine()
+        var iterator = engine.state.makeAsyncIterator()
+        try await engine.load(.fixture(url: AVKitFixtures.tiny))
+
+        engine.handleLoadTimeout()
+
+        var reported: PlaybackError?
+        while let beat = await iterator.next() {
+            if case .failed(let error) = beat { reported = error; break }
+        }
+        #expect(reported == .loadTimedOut)
+        await engine.teardown()
+    }
+
+    /// The control: a mid-playback stall keeps its own case, which the app already maps to
+    /// the "stream stalled and didn't recover" scrim.
+    @Test("the stall watchdog still surfaces networkStalled")
+    func stallTimeoutKeepsItsCase() async throws {
+        let engine = AVKitEngine()
+        var iterator = engine.state.makeAsyncIterator()
+        try await engine.load(.fixture(url: AVKitFixtures.tiny))
+
+        engine.handleStallTimeout()
+
+        var reported: PlaybackError?
+        while let beat = await iterator.next() {
+            if case .failed(let error) = beat { reported = error; break }
+        }
+        #expect(reported == .networkStalled)
+        await engine.teardown()
+    }
+
+    /// Both expiries are a no-op once the item is gone — the guard that stops a teardown
+    /// racing a fired timer into a phantom failure.
+    @Test("a watchdog that fires after teardown publishes nothing")
+    func expiryAfterTeardownIsANoOp() async throws {
+        let engine = AVKitEngine()
+        try await engine.load(.fixture(url: AVKitFixtures.tiny))
+        await engine.teardown()
+
+        engine.handleLoadTimeout()
+        engine.handleStallTimeout()
+
+        // The stream is finished, so a beat published here could only arrive as a buffered
+        // leftover ahead of the terminal nil.
+        var iterator = engine.state.makeAsyncIterator()
+        while let beat = await iterator.next() {
+            if case .failed(let error) = beat {
+                Issue.record("a torn-down engine published \(error)")
+                break
+            }
+        }
     }
 }

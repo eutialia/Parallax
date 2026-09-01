@@ -23,16 +23,19 @@ public enum ReactiveFallback {
     ///   - alreadyRerouted: whether this playback session already spent its one re-route.
     ///   - error: the failure kind. The stall watchdog's `.networkStalled` is a link
     ///     problem, not a decode defect — rerouting would tear down a working engine and
-    ///     mask the honest stall scrim, so only `.assetNotPlayable` reroutes. That case
-    ///     covers both the decode-failure KVO and the load watchdog: a load-wedge retry
-    ///     on VLC is bounded and sometimes rescues files AVKit hangs on.
+    ///     mask the honest stall scrim. `.assetNotPlayable` (the decode-failure KVO) and
+    ///     `.loadTimedOut` (the load watchdog) both reroute: a load-wedge retry on VLC is
+    ///     bounded and sometimes rescues files AVKit hangs on. The two were one case until
+    ///     the watchdog got its own, and splitting them must not silently drop that half.
     public static func shouldReroute(
         currentEngine: PlaybackEngineID,
         container: Container?,
         alreadyRerouted: Bool,
         error: PlaybackError
     ) -> Bool {
-        guard !alreadyRerouted, currentEngine == .avKit, let container, error == .assetNotPlayable else { return false }
+        guard !alreadyRerouted, currentEngine == .avKit, let container,
+              error == .assetNotPlayable || error == .loadTimedOut
+        else { return false }
         return eligibleContainers.contains(container)
     }
 }
