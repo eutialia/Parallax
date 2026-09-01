@@ -22,3 +22,4 @@ public protocol VLCPlayerHosting: AnyObject {
     /// can read it without a `MainActor` hop.
     nonisolated var vlcPlayer: VLCMediaPlayer { get }
 }
+
