@@ -124,6 +124,11 @@ struct PlayerView: View {
 
             playbackSurface
         }
+        // The artwork hue, published ONCE for every scrub surface under the player — the HUD
+        // scrubber, the floor bar, the seek-flash bar. It is a property of the session, not of
+        // any one bar, so no mount point has to know it exists in order to forward it. White
+        // until the poster's accent lands, and white forever if it never does.
+        .environment(\.scrubAccent, viewModel?.scrubAccent ?? .white)
         // VoiceOver's two-finger double-tap toggles playback from anywhere on the surface.
         .accessibilityAction(.magicTap) { viewModel?.togglePlayPause() }
         // On the whole stack, floor included: the pull moves ONE layer — the
@@ -714,8 +719,7 @@ struct PlayerView: View {
             // concrete indicator is supposed to be crossing.
             if let scrubProgress {
                 PlayerScrubBar(metrics: .tv, vm: vm, progress: scrubProgress,
-                               positionAnimation: isAnalogScrubbing ? nil : PlayerScrubBar.scrubSpring,
-                               accent: vm.scrubAccent)
+                               positionAnimation: isAnalogScrubbing ? nil : PlayerScrubBar.scrubSpring)
                     .transition(.opacity)
             }
 

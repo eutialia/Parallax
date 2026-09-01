@@ -1120,8 +1120,7 @@ struct PlayerControlsView: View {
         } label: {
             // No bubble on tvOS — the focusable bar is its own indicator.
             PlayerProgressBar(scrubbingTo: displayed, vm: vm, metrics: m,
-                              mode: scrubberFocused ? .focused : .normal, showsBubble: false,
-                              accent: vm.scrubAccent)
+                              mode: scrubberFocused ? .focused : .normal, showsBubble: false)
         }
         .buttonStyle(TVQuietButtonStyle(pressedOpacity: 0.9))
         // A VoiceOver user landing on the focusable bar otherwise hears no position; announce it.
@@ -1245,8 +1244,7 @@ struct PlayerControlsView: View {
                     guard !Task.isCancelled, scrubGeneration == gen else { return }
                     isScrubbing = false
                 }
-            },
-            accent: vm.scrubAccent
+            }
         )
         // VoiceOver/Switch Control can't drive the drag gesture; expose the bar as an
         // adjustable element so seeking survives the loss of the old UIKit Slider.
@@ -1402,8 +1400,7 @@ struct PlayerControlsView: View {
             let fade = reduceMotion ? 1.0 : PlayerSeekFlash.envelope(
                 sinceBurstStart: context.date.timeIntervalSince(flash.burstStart),
                 sinceLastTap: context.date.timeIntervalSince(flash.lastTap))
-            PlayerScrubBar(metrics: m, vm: vm, progress: flash.targetFraction,
-                           accent: vm.scrubAccent)
+            PlayerScrubBar(metrics: m, vm: vm, progress: flash.targetFraction)
                 .opacity(fade)
         }
         .allowsHitTesting(false)

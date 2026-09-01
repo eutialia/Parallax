@@ -81,15 +81,16 @@ struct PlayerProgressBar: View {
     /// from inside it re-declared the preference on every seek-flash tick and tripped SwiftUI's
     /// "PullExclusionZonesKey tried to update multiple times per frame".
     var reportsPullExclusion: Bool = true
+
     /// The hue every PROVISIONAL element of the bar is painted in — the ghost handle, the span
-    /// band, the comet and its breath, the arrival bloom, the scrub bubble. The concrete half
-    /// (played fill, solid handle, time labels, chapter ticks) stays white: those state facts,
-    /// and a fact shouldn't change colour with the poster.
-    ///
-    /// Derived from the item's artwork (`ArtworkAccent`), which is why it arrives as a plain
-    /// value rather than an environment key: the bar is a value type with a memberwise init the
-    /// previews and tests build directly, and `.white` — the default — is the monochrome bar.
-    var accent: Color = .white
+    /// band, the comet and its breath, the arrival bloom. Everything that carries INFORMATION
+    /// stays white: the played fill, the solid handle, the time labels, the chapter ticks, and
+    /// the scrub bubble's timestamp and chapter caption. A fact shouldn't change colour with the
+    /// poster, and the bubble is the most load-bearing fact on the bar — it floats over live
+    /// video with nothing but a drop shadow behind it, and `ArtworkAccent`'s band is an HSB one
+    /// (`brightness >= 0.70` is `max(r,g,b)`, not luminance), so a saturated blue that passes it
+    /// can still read as dark ink over a bright frame. White cannot fail.
+    @Environment(\.scrubAccent) private var accent
 
     private var trackH: CGFloat { metrics.trackHeight }
     private var labelSize: CGFloat { metrics.timeLabelSize }
@@ -158,11 +159,11 @@ struct PlayerProgressBar: View {
                             if let concrete {
                                 ScrubSpanBand(span: SeekDelta(from: concrete.unitClamped, to: p),
                                               fillEdge: cf, width: w, height: trackH,
-                                              unit: metrics.u, intensity: 0.6, accent: accent)
+                                              unit: metrics.u, intensity: 0.6)
                             }
 
                             ScrubDeltaPulse(flight: flight, fillEdge: cf, width: w,
-                                            height: trackH, unit: metrics.u, accent: accent)
+                                            height: trackH, unit: metrics.u)
 
                             ForEach(chapters, id: \.self) { c in
                                 Rectangle()
@@ -190,10 +191,17 @@ struct PlayerProgressBar: View {
                                     // Off the handle's LONG side, so the line grammar's flare is
                                     // a pool around a tall sliver rather than a 7pt-wide dab.
                                     ScrubArrivalBloom(
-                                        accent: accent,
                                         diameter: max(handleWidth, handleHeight) * 1.9,
                                         opacity: indicators.bloom)
                                 }
+                                // The bloom is ADDITIVE, and additive light needs a defined
+                                // backdrop — the rule `ScrubSpanBand` states for the comet, and
+                                // the bloom is the same construct. Without this group its blend
+                                // would reach the MOVIE: invisible over a bright frame, glaring
+                                // over a black one, i.e. the flare's strength decided by whatever
+                                // shot the seek happened to land on. Grouping pins it to the
+                                // handle it belongs to, so it renders the same over any frame.
+                                .compositingGroup()
                                 .offset(x: cx - handleWidth / 2)
                         }
                     }
@@ -305,15 +313,16 @@ struct PlayerProgressBar: View {
                 .font(.system(size: metrics.scrubBubbleSize, weight: .bold).monospacedDigit())
                 .contentTransition(.numericText(value: elapsedSeconds))
                 .modifier(OptionalDigitRoll(animation: scrubDigitRoll, value: elapsedSeconds))
-                // The bubble belongs to the GHOST — it reads out where the gesture is aiming,
-                // not where the video is — so it wears the provisional colour with it.
-                .foregroundStyle(accent)
+                // White, not the accent: the bubble is the one piece of CONTENT the scrub HUD
+                // exists to show, and it sits over live video behind nothing but a shadow. See
+                // `accent` above for why the artwork band is no contrast floor.
+                .foregroundStyle(.white)
                 .shadow(color: .black.opacity(0.6), radius: 20 * metrics.u, y: 2)
                 .fixedSize()
             if let bubbleChapter {
                 Text(bubbleChapter)
                     .font(.system(size: metrics.scrubChapterSize, weight: .medium))
-                    .foregroundStyle(accent.opacity(0.74))
+                    .foregroundStyle(.white.opacity(0.74))
                     .lineLimit(1)
             }
         }
@@ -612,8 +621,7 @@ private func indicatorPreviewBar(
     delta: SeekDelta? = nil,
     mode: PlayerProgressBar.Mode = .normal,
     playhead: PlayerProgressBar.Playhead = .dot,
-    bubble: String? = nil,
-    accent: Color = .white
+    bubble: String? = nil
 ) -> some View {
     PlayerProgressBar(metrics: .tv, mode: mode, playhead: playhead, played: played,
                       concrete: concrete, buffered: 0.81,
@@ -621,7 +629,7 @@ private func indicatorPreviewBar(
                       elapsed: "1:04:18", remaining: "-1:02:42",
                       elapsedSeconds: 3858, remainingSeconds: 3762,
                       chapters: [0.12, 0.41, 0.58, 0.89],
-                      bubbleTime: bubble, accent: accent)
+                      bubbleTime: bubble)
 }
 
 /// The three accents every state preview is rendered against. Two artwork-plausible hues that
@@ -630,7 +638,7 @@ private func indicatorPreviewBar(
 /// — so a render answers "does the hue read" and "is the fallback still the monochrome bar" at
 /// the same time. Both sit near the saturated end: that is where most posters now land, and a
 /// hue that survives there survives anywhere in the band.
-enum ScrubAccentPreview {
+private enum ScrubAccentPreview {
     /// A warm poster's hue — the amber end of the range.
     static let ember = Color(hue: 0.06, saturation: 0.70, brightness: 0.92)
     /// A cool one — the teal/cyan end.
@@ -782,10 +790,13 @@ enum ScrubAccentPreview {
             .ignoresSafeArea()
         VStack(spacing: 62) {
             ForEach(ScrubAccentPreview.all, id: \.0) { _, accent in
-                indicatorPreviewBar(played: 0.72, concrete: 0.28, mode: .scrub,
-                                    bubble: "1:31:10", accent: accent)
-                indicatorPreviewBar(played: 0.28, concrete: 0.72, mode: .scrub,
-                                    playhead: .line, bubble: "0:35:20", accent: accent)
+                Group {
+                    indicatorPreviewBar(played: 0.72, concrete: 0.28, mode: .scrub,
+                                        bubble: "1:31:10")
+                    indicatorPreviewBar(played: 0.28, concrete: 0.72, mode: .scrub,
+                                        playhead: .line, bubble: "0:35:20")
+                }
+                .environment(\.scrubAccent, accent)
             }
         }
         .padding(60)
@@ -795,28 +806,48 @@ enum ScrubAccentPreview {
     .environment(\.colorScheme, .dark)
 }
 
-// ACCENT · the crossing and the landing. Rows come in pairs per accent: mid-flight at 55% (the
-// bloom is still dark — `ScrubTravel.bloomOnset` holds it off until the last 30%) and at
-// touchdown, where the flare is at full and the ghost has dissolved into the bead. The two rows
-// of a pair must differ ONLY by the pool of light under the head and the ghost's absence.
-#Preview("scrub accent — travel + arrival bloom", traits: .fixedLayout(width: 1200, height: 1160)) {
+// ACCENT · the crossing and the landing, over TWO backdrops. Rows come in pairs per accent:
+// mid-flight at 55% (the bloom is still dark — `ScrubTravel.bloomOnset` holds it off until the
+// last 30%) and at touchdown, where the flare is at full and the ghost has dissolved into the
+// bead. The two rows of a pair must differ ONLY by the pool of light under the head and the
+// ghost's absence.
+//
+// The two COLUMNS are the point of the second backdrop: the bloom is `.plusLighter`, and the
+// finding this preview settles is that additive light must not blend against the movie frame. The
+// left column is the darkest frame a seek can land on, the right one the brightest. The flare has
+// to read the SAME in both — if the bright column washes it out or the black column blows it up,
+// the `compositingGroup()` under the handle is not doing its job.
+#Preview("scrub accent — travel + arrival bloom", traits: .fixedLayout(width: 2400, height: 1180)) {
+    HStack(spacing: 0) {
+        travelBloomColumn(backdrop: .black, caption: "black frame")
+        travelBloomColumn(backdrop: Color(white: 0.94), caption: "bright frame")
+    }
+    .frame(width: 2400, height: 1180)
+    .environment(\.colorScheme, .dark)
+}
+
+/// One backdrop's worth of the travel/bloom pairs. A function rather than two copies so the two
+/// columns can only ever differ by the colour behind them.
+private func travelBloomColumn(backdrop: Color, caption: String) -> some View {
     ZStack {
-        LinearGradient(colors: [.purple, .black], startPoint: .topLeading, endPoint: .bottomTrailing)
-            .ignoresSafeArea()
+        backdrop.ignoresSafeArea()
         VStack(spacing: 62) {
+            Text(caption)
+                .font(.system(size: 28, weight: .semibold))
+                .foregroundStyle(backdrop == .black ? .white : .black)
             ForEach(ScrubAccentPreview.all, id: \.0) { _, accent in
-                indicatorPreviewBar(played: 0.72, delta: SeekDelta(from: 0.28, to: 0.72),
-                                    accent: accent)
-                    .environment(\.seekPulsePreview, .traveling(progress: 0.55, phase: 0.34))
-                indicatorPreviewBar(played: 0.72, delta: SeekDelta(from: 0.28, to: 0.72),
-                                    accent: accent)
-                    .environment(\.seekPulsePreview, .traveling(progress: 1.0, phase: 0.62))
+                Group {
+                    indicatorPreviewBar(played: 0.72, delta: SeekDelta(from: 0.28, to: 0.72))
+                        .environment(\.seekPulsePreview, .traveling(progress: 0.55, phase: 0.34))
+                    indicatorPreviewBar(played: 0.72, delta: SeekDelta(from: 0.28, to: 0.72))
+                        .environment(\.seekPulsePreview, .traveling(progress: 1.0, phase: 0.62))
+                }
+                .environment(\.scrubAccent, accent)
             }
         }
         .padding(60)
     }
-    .frame(width: 1200, height: 1160)
-    .environment(\.colorScheme, .dark)
+    .frame(width: 1200, height: 1180)
 }
 
 // ACCENT · the settle loop, frozen mid-sweep. Per accent: a forward delta (the span lies INSIDE
@@ -830,13 +861,15 @@ enum ScrubAccentPreview {
             .ignoresSafeArea()
         VStack(spacing: 62) {
             ForEach(ScrubAccentPreview.all, id: \.0) { _, accent in
-                indicatorPreviewBar(played: 0.72, delta: SeekDelta(from: 0.28, to: 0.72),
-                                    accent: accent)
-                indicatorPreviewBar(played: 0.28, delta: SeekDelta(from: 0.72, to: 0.28),
-                                    playhead: .line, accent: accent)
+                Group {
+                    indicatorPreviewBar(played: 0.72, delta: SeekDelta(from: 0.28, to: 0.72))
+                    indicatorPreviewBar(played: 0.28, delta: SeekDelta(from: 0.72, to: 0.28),
+                                        playhead: .line)
+                }
+                .environment(\.scrubAccent, accent)
             }
-            indicatorPreviewBar(played: 0.72, delta: SeekDelta(from: 0.28, to: 0.72),
-                                accent: ScrubAccentPreview.ember)
+            indicatorPreviewBar(played: 0.72, delta: SeekDelta(from: 0.28, to: 0.72))
+                .environment(\.scrubAccent, ScrubAccentPreview.ember)
                 .environment(\.seekPulsePreview, .reducedMotion)
         }
         .padding(60)
