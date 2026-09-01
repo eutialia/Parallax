@@ -331,18 +331,45 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     /// `.loadTimedOut`, not `.assetNotPlayable`: nothing here says the asset is broken, and
     /// borrowing that case put "Couldn't decode this file" on a server that was merely slow.
     /// Internal so a test can drive the expiry without waiting out the real deadline.
-    func handleLoadTimeout() {
-        guard currentItem != nil else { return }
+    @discardableResult
+    func handleLoadTimeout() -> PlaybackDebugInfo? {
+        guard let item = currentItem else { return nil }
+        let snapshot = logWatchdogExpiry("load", of: item)
         continuation.yield(.failed(.loadTimedOut))
+        return snapshot
     }
 
     /// A mid-playback stall (`.buffering`) never recovered within the watchdog deadline — surface
     /// `.failed(.networkStalled)` so the "stream stalled and didn't recover" scrim + manual retry
     /// take over instead of an eternal spinner. Guarded by `currentItem` so a beat that already
     /// disarmed makes this a no-op (mirrors `handleLoadTimeout`).
-    func handleStallTimeout() {
-        guard currentItem != nil else { return }
+    @discardableResult
+    func handleStallTimeout() -> PlaybackDebugInfo? {
+        guard let item = currentItem else { return nil }
+        let snapshot = logWatchdogExpiry("stall", of: item)
         continuation.yield(.failed(.networkStalled))
+        return snapshot
+    }
+
+    /// A watchdog giving up is the one moment where "it just spun forever" becomes a report,
+    /// and the useful half is what the engine was doing when it gave up. Read SYNCHRONOUSLY,
+    /// before the `.failed` above reaches the app: that beat is what tears the engine down (a
+    /// `.loadTimedOut` on an MP4 reroutes to VLC, which retires this engine outright), so a
+    /// snapshot deferred into a `Task` was read after `currentItem` was already nil and logged
+    /// a line of dashes — empty in exactly the case it was written for. Only the
+    /// media-selection half of `debugSnapshot()` needs an await, and none of it is in here.
+    ///
+    /// Returns what it logged so a test can assert on the diagnosis rather than on the log.
+    @discardableResult
+    private func logWatchdogExpiry(_ kind: String, of item: AVPlayerItem) -> PlaybackDebugInfo {
+        let snapshot = syncSnapshot(of: item)
+        Log.playback.error(
+            """
+            AVKit \(kind, privacy: .public) watchdog expired: \(snapshot.logSummary, privacy: .public) \
+            hlsErrors=\(snapshot.errorLogDetail, privacy: .private)
+            """
+        )
+        return snapshot
     }
 
     public func pause() async {
@@ -621,6 +648,27 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
 
     public func debugSnapshot() async -> PlaybackDebugInfo {
         guard let item = currentItem else { return .empty }
+        var info = syncSnapshot(of: item)
+        // The one part that needs the actor: media-selection groups load asynchronously. It is
+        // the debug overlay's field, not the watchdog's, which is why the two halves are split.
+        // The engine's TRUE selection — what's actually audible/legible right now, which is what
+        // answers "I picked a subtitle but nothing renders".
+        if let asset = item.asset as? AVURLAsset {
+            let audibleGroup = try? await asset.loadMediaSelectionGroup(for: .audible)
+            let legibleGroup = try? await asset.loadMediaSelectionGroup(for: .legible)
+            let selection = item.currentMediaSelection
+            info.legibleOptions = legibleGroup?.options.map(\.displayName) ?? []
+            info.selectedAudible = audibleGroup.flatMap { selection.selectedMediaOption(in: $0)?.displayName }
+            info.selectedLegible = legibleGroup.flatMap { selection.selectedMediaOption(in: $0)?.displayName }
+        }
+        return info
+    }
+
+    /// Everything about `item` and the player that can be read without suspending: the whole of
+    /// `logSummary`. Split out of `debugSnapshot()` so a watchdog expiry can capture its
+    /// diagnosis inline, ahead of the `.failed` beat that may tear the engine down — see
+    /// `logWatchdogExpiry`.
+    private func syncSnapshot(of item: AVPlayerItem) -> PlaybackDebugInfo {
         var info = PlaybackDebugInfo()
 
         let size = item.presentationSize
@@ -702,17 +750,6 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
             let end = CMTimeGetSeconds(CMTimeRangeGetEnd(range))
             guard start.isFinite, end.isFinite else { return nil }
             return String(format: "%.1f–%.1f", start, end)
-        }
-
-        // The engine's TRUE selection — what's actually audible/legible right now,
-        // which is what answers "I picked a subtitle but nothing renders".
-        if let asset = item.asset as? AVURLAsset {
-            let audibleGroup = try? await asset.loadMediaSelectionGroup(for: .audible)
-            let legibleGroup = try? await asset.loadMediaSelectionGroup(for: .legible)
-            let selection = item.currentMediaSelection
-            info.legibleOptions = legibleGroup?.options.map(\.displayName) ?? []
-            info.selectedAudible = audibleGroup.flatMap { selection.selectedMediaOption(in: $0)?.displayName }
-            info.selectedLegible = legibleGroup.flatMap { selection.selectedMediaOption(in: $0)?.displayName }
         }
 
         return info
