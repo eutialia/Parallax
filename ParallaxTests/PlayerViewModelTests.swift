@@ -992,10 +992,9 @@ struct PlayerViewModelTests {
         // Both schedule entries fetch nil — the probe gives up silently, leaving the
         // seek gate conservative (nil delivery) rather than stuck reading "probing…".
         engine.push(.playing(10))
-        try await Task.sleep(for: .milliseconds(80))
+        try await requireEventually({ vm.deliveryProbeExhausted }, "the probe never gave up")
 
         #expect(vm.transcodeDelivery == nil)
-        #expect(vm.deliveryProbeExhausted == true)
     }
 
     // MARK: - commitSeek — the scrub-commit path every UI scrub now routes through
@@ -1158,43 +1157,6 @@ struct PlayerViewModelTests {
     }
 
     // MARK: - The seek hold — the bar shows the target from commit until the engine catches up
-
-    /// Builds a transcode VM parked at `A` with a text sidecar up (the re-anchor gate) and
-    /// a buffer that ends before any scrub target — every commit below takes the slow
-    /// `reloadTranscode` path, which is the window the snap-back lives in.
-    ///
-    /// Engines come from an `EngineLedger`, so each one carries the id the view model asked
-    /// for and a reload that RE-BUILDS shows up as a second entry — the caller's `engine`
-    /// local then still points at the outgoing engine, which is a legible failure instead of
-    /// one instance replaying two sessions' calls.
-    private func makeReanchorVM(
-        at seconds: Double,
-        reporting: StubPlaybackReporting = StubPlaybackReporting(),
-        seekHoldNow: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
-        nowPlaying: any NowPlayingUpdating = NowPlayingController(),
-        resolve: @escaping PlayerViewModel.ResolveCall = { _, _, _, _ in
-            PlayerFixtures.resolvedMultiTrackTranscode()
-        }
-    ) async throws -> (vm: PlayerViewModel, engines: EngineLedger) {
-        let engines = EngineLedger()
-        let vm = makePlayerVM(reporting: reporting, resolve: resolve,
-                              engineFactory: { id, _ in engines.make(id) },
-                              nowPlaying: nowPlaying, seekHoldNow: seekHoldNow)
-        await vm.start(item: PlayerFixtures.movieDetail())
-        let engine = engines.live
-        engine.push(.playing(seconds))
-        try await engine.settle()
-        // A precondition, not an assertion: every test below reads "the bar moved OFF A",
-        // which proves nothing if the fixture never parked at A. Stop here instead.
-        try #require(CMTimeGetSeconds(vm.currentPosition) == seconds)
-
-        // Sidecar overlay up: the one consumer that reads the clock absolutely, so an
-        // out-of-buffer seek re-anchors instead of seeking in-stream.
-        let text = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(1) })
-        await vm.selectSubtitleTrack(text)
-        engine.bufferedRange = 0...(seconds + 60)
-        return (vm, engines)
-    }
 
     @Test("a commit that re-anchors shows the TARGET while the reload scrim is up — never the pre-scrub position")
     func commitSeekHoldsTargetThroughReanchor() async throws {
@@ -1755,36 +1717,40 @@ struct PlayerViewModelTests {
         #expect(events.contains(.stopped(ticks: 600 * 10_000_000, itemID: "movie-1")))
     }
 
-    /// The hold outliving the re-anchor that was supposed to honour it. A scrub committed
-    /// while a track switch holds the reload gets `.abandoned` from `performTranscodeReload`,
-    /// and `drainReanchorSeeks` then DROPS the target — nothing will ever play there. The hold
-    /// has to go with it (as it already does on `fallBackAfterFailedSwitch`), or the switch's
-    /// own reload has to spend a beat releasing a window nobody is filling.
-    @Test("an abandoned re-anchor drops the hold with the target it dropped")
-    func abandonedReanchorDropsTheHold() async throws {
+    /// The hold now outlives the window it was armed in, because the TARGET does. A scrub
+    /// committed while a track switch holds the reload used to come back `.abandoned` and be
+    /// dropped — nothing would ever play there, so the hold had to go with it. It merges into
+    /// `pendingReload` instead, and the switch's own drain reloads at it; dropping the hold
+    /// here would hand the bar back to a stream that is about to be replaced.
+    @Test("a commit made during a track switch keeps its hold — the switch's drain re-anchors at the target")
+    func commitDuringATrackSwitchKeepsItsHold() async throws {
         let gate = ResolveGate()
-        let (vm, engines) = try await makeReanchorVM(at: 600, resolve: { _, _, _, _ in
+        nonisolated(unsafe) var resolveStarts: [CMTime?] = []
+        let (vm, engines) = try await makeReanchorVM(at: 600, resolve: { _, _, start, _ in
+            resolveStarts.append(start)
             await gate.wait()
             return PlayerFixtures.resolvedMultiTrackTranscode()
         })
         let engine = engines.live
-        // The switch's re-resolve parks in the gate, which is what keeps `isSwitchingTracks`
+        // The switch's re-resolve parks in the gate, which is what keeps `isMidSessionReload`
         // up while the scrub commits underneath it — the race, held open.
         await gate.arm()
         let audio = try #require(vm.availableAudioTracks.first { $0 != vm.selectedAudioTrack })
         let switching = Task { @MainActor in await vm.selectAudioTrack(audio) }
-        try await requireEventually({ vm.isSwitchingTracks }, "the switch never reached the reload")
+        try await requireEventually({ vm.isMidSessionReload }, "the switch never reached the reload")
 
         await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
-        #expect(vm.seekHold == nil, "the abandoned re-anchor left its hold armed")
+        #expect(vm.seekHold != nil, "the queued target lost the hold that shows it")
 
         await gate.open()
         await switching.value
-        // The switch's own reload owns the position now: its first observed beat is adopted
-        // outright, with no held target to argue with.
-        engine.push(.playing(600.5))
+
+        // Two reloads out of one window: the switch at the live position, then the merged
+        // seek at the target — and the bar was showing that target the whole time.
+        #expect(resolveStarts.compactMap { $0.map(CMTimeGetSeconds) } == [600, 3_000])
+        engine.push(.playing(3_000.5))
         try await engine.settle()
-        #expect(CMTimeGetSeconds(vm.currentPosition) == 600.5)
+        #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000.5)
     }
 
     /// The watchdog needs a beat to be evaluated, and `publish` only sees position-carrying
@@ -2740,10 +2706,10 @@ struct PlayerViewModelTests {
     @Test("the outgoing engine's audio is cut before the incoming engine loads")
     func rebuildCutsOutgoingAudioBeforeTheIncomingLoads() async throws {
         let (vm, engines, outgoing, audio4) = try await startEngineRebuildVM()
-        outgoing.holdEndAudio()
+        outgoing.hold(.endAudio)
 
         let switching = Task { await vm.selectAudioTrack(audio4) }
-        await waitUntil { outgoing.hasParkedEndAudio }
+        await waitUntil { outgoing.hasParked(.endAudio) }
 
         // Parked INSIDE the swap: the cut is recorded, the replacement has not loaded, and
         // the slot still holds the outgoing engine — never nil, so the video host stays
@@ -2752,7 +2718,7 @@ struct PlayerViewModelTests {
         #expect(vm.engine === outgoing)
         #expect(!engines.live.calls.contains("load"))
 
-        outgoing.releaseEndAudio()
+        outgoing.release(.endAudio)
         await switching.value
 
         let incoming = try #require(vm.engine as? FakePlaybackEngine)
@@ -2766,7 +2732,7 @@ struct PlayerViewModelTests {
     @Test("a parked teardown holds up neither the swap nor the view model — but stop() waits for it")
     func aParkedTeardownDelaysOnlyTheDrain() async throws {
         let (vm, engines, outgoing, audio4) = try await startEngineRebuildVM()
-        outgoing.holdTeardown()
+        outgoing.hold(.teardown)
 
         await vm.selectAudioTrack(audio4)
 
@@ -2776,8 +2742,8 @@ struct PlayerViewModelTests {
         #expect(incoming !== outgoing)
         #expect(incoming.calls.contains("play"))
         // …while the outgoing teardown is still parked.
-        await waitUntil { outgoing.hasParkedTeardown }
-        #expect(outgoing.hasParkedTeardown)
+        await waitUntil { outgoing.hasParked(.teardown) }
+        #expect(outgoing.hasParked(.teardown))
 
         // Session end drains it: `stop()` cannot return while a retirement is outstanding,
         // or a teardown would outlive the session that started it.
@@ -2786,7 +2752,7 @@ struct PlayerViewModelTests {
         for _ in 0..<50 { await Task.yield() }
         #expect(stopReturned == false, "stop() returned with a teardown still in flight")
 
-        outgoing.releaseTeardown()
+        outgoing.release(.teardown)
         await stopping.value
         #expect(vm.engine == nil)
         #expect(outgoing.calls.contains("teardown"))
@@ -2800,10 +2766,10 @@ struct PlayerViewModelTests {
     @Test("a pause issued during the rebuild is honored by the rebuilt engine")
     func aPauseDuringTheRebuildSurvivesIt() async throws {
         let (vm, _, outgoing, audio4) = try await startEngineRebuildVM()
-        outgoing.holdEndAudio()
+        outgoing.hold(.endAudio)
 
         let switching = Task { await vm.selectAudioTrack(audio4) }
-        await waitUntil { outgoing.hasParkedEndAudio }
+        await waitUntil { outgoing.hasParked(.endAudio) }
 
         // The lock screen's pause, landing inside the swap. It is accepted because the slot
         // is never empty: a nil engine here makes `setPlaying` return without even recording
@@ -2811,7 +2777,7 @@ struct PlayerViewModelTests {
         vm.setPlaying(false)
         #expect(vm.desiredPlaying == false)
 
-        outgoing.releaseEndAudio()
+        outgoing.release(.endAudio)
         await switching.value
 
         let incoming = try #require(vm.engine as? FakePlaybackEngine)
@@ -2829,10 +2795,10 @@ struct PlayerViewModelTests {
         let (vm, engines, outgoing, audio4) = try await startEngineRebuildVM()
 
         // In flight before the switch, held between the stream and the consumer.
-        outgoing.holdBeats()
+        outgoing.hold(.beat)
         let delivered = outgoing.deliveredBeats
         outgoing.push(.playing(4_242))
-        await waitUntil { outgoing.hasParkedBeat }
+        await waitUntil { outgoing.hasParked(.beat) }
 
         await vm.selectAudioTrack(audio4)
         #expect(engines.count == 2)
@@ -2847,7 +2813,7 @@ struct PlayerViewModelTests {
         // the outgoing subscription is cancelled, so it never comes back for another
         // element and its processed count can never advance again; delivery is what is
         // observable, and the yields cover the handler's hop after it.
-        outgoing.releaseBeats()
+        outgoing.release(.beat)
         await waitUntil { outgoing.deliveredBeats > delivered }
         for _ in 0..<50 { await Task.yield() }
 
@@ -3613,14 +3579,14 @@ struct PlayerViewModelTests {
 
         if point == .duringDrag { vm.togglePlayPause() }
 
-        engine.holdSeeks()
+        engine.hold(.seek)
         let commit = Task { @MainActor in
             await vm.commitSeek(to: CMTime(seconds: 200, preferredTimescale: 600))
         }
         if point == .afterCommitDispatch { vm.togglePlayPause() }
-        await waitUntil { engine.hasParkedSeek }
+        await waitUntil { engine.hasParked(.seek) }
         if point == .insideSeek { vm.togglePlayPause() }
-        engine.releaseSeeks()
+        engine.release(.seek)
         await commit.value
         if point == .afterSeekLands { vm.togglePlayPause() }
 
@@ -3773,15 +3739,15 @@ struct PlayerViewModelTests {
         try await engine.settle()
 
         // Park the commit inside its engine seek so the fence lands mid-await, deterministically.
-        engine.holdSeeks()
+        engine.hold(.seek)
         let before = engine.calls.count
         let commit = Task { @MainActor in
             await vm.commitSeek(to: CMTime(seconds: 200, preferredTimescale: 600))
         }
-        await waitUntil { engine.hasParkedSeek }
+        await waitUntil { engine.hasParked(.seek) }
 
         vm.beginExit()
-        engine.releaseSeeks()
+        engine.release(.seek)
         await commit.value
 
         #expect(!Array(engine.calls.dropFirst(before)).contains("play"))

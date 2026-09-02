@@ -210,17 +210,17 @@ struct PlayerControlsView: View {
     /// (focus moving down from the scrubber lands on the chip nearest the playhead,
     /// not the geometric screen-center pick).
     @FocusState private var chipFocus: TrackMenuKind?
-    /// False while the stream is still resolving/buffering. The chrome mounts from
-    /// loading onward so Close, tap-to-toggle, and the track chips work immediately;
-    /// engine-backed transport (play/pause, skip, chapter seek, double-tap seek)
-    /// gates on this — the centre cluster is hidden outright because the loading
-    /// scrim's ring owns that spot.
-    private var playbackReady: Bool { vm.phase == .playing }
+    /// Whether engine-backed input is accepted: a live stream, or a MID-SESSION reload,
+    /// which the model parks and honors (`PendingReload`). A cold start is the only locked
+    /// window. The chrome mounts from loading onward so Close, tap-to-toggle and the track
+    /// chips work immediately; the scrubber, transport and chip picks gate on this.
+    private var playbackReady: Bool { vm.acceptsPlaybackCommands }
     /// Centre transport visibility. Absent until the stream plays and while a stall
     /// scrim is up — the scrim's ring occupies the transport's exact spot (loading and
-    /// rebuffer alike).
+    /// rebuffer alike). Its own `.playing` test, deliberately: input is accepted through a
+    /// reload but the ring owns the centre spot for its duration.
     private var showsCenterTransport: Bool {
-        guard playbackReady, !vm.showsStallScrim else { return false }
+        guard vm.phase == .playing, !vm.showsStallScrim else { return false }
         #if os(tvOS)
         // tvOS: nudging the focused scrubber with L/R keeps the FULL chrome up, so the
         // transport must not blink out under it — and a vertical focus move past it must
@@ -976,8 +976,9 @@ struct PlayerControlsView: View {
     /// during a load (and reset on an episode switch), and rendering them as they land
     /// inserted chips at the leading edge and shoved the rest right (the "chips jump"
     /// bug). By `.playing` every list is settled, so the row lays out once in its final
-    /// shape. A transcode track switch keeps `phase == .playing`, so the chips never
-    /// flicker there — only a true (re)load hides them, which already shows the scrim.
+    /// shape. A mid-session reload keeps the row mounted — it drops `phase` to `.loading`
+    /// but `acceptsPlaybackCommands` spans it, so an audio switch no longer unmounts the
+    /// chips and re-inserts them on the far side of its own re-buffer.
     @ViewBuilder
     private func chips(_ m: PlayerMetrics, iconOnly: Bool = false) -> some View {
         if playbackReady {
@@ -1070,10 +1071,9 @@ struct PlayerControlsView: View {
     /// immediately because the VM's `SeekHold` already publishes the target as
     /// `currentPosition` and pins it there until the engine lands.
     /// Generation-guarded so a newer scrub (or a dismissal) can't clear the flag out from
-    /// under the live one. `playbackReady` matters beyond the engine-nil case: during a
-    /// track-switch re-buffer `currentDuration` is stale-positive (handle() is muted by
-    /// isSwitchingTracks), so without it a Select here would fire a real seek at the
-    /// mid-reload engine — the transcode seek-wedge class. Same reason on every seek path.
+    /// under the live one. `playbackReady` is the cold-start fence only: a commit made
+    /// during a mid-session reload is welcome, because the model parks it in `pendingReload`
+    /// and the running reload's successor resumes there.
     private func commitScrub(durSeconds: Double) {
         guard playbackReady, vm.engine != nil, durSeconds > 0, isScrubbing else { return }
         let gen = scrubGeneration
@@ -1172,9 +1172,9 @@ struct PlayerControlsView: View {
             scrubbingTo: displayed, vm: vm, metrics: m,
             mode: dragScrubbing ? .scrub : .normal, playhead: .line, showsBubble: dragScrubbing,
             onScrubChanged: { frac in
-                // playbackReady: during a track-switch re-buffer the duration is
-                // stale-positive — entering a drag then would pause + seek the
-                // mid-reload engine (the transcode seek-wedge class).
+                // playbackReady is the cold start only: before the first `.playing` beat
+                // there is no duration to scrub against. A drag begun during a mid-session
+                // reload is fine — its commit merges into the reload that is already running.
                 guard playbackReady, durSeconds > 0 else { return }
                 // Keyed on the FINGER (dragScrubbing), not isScrubbing: the
                 // previous commit holds isScrubbing true while its seek is in
