@@ -1,3 +1,4 @@
+import Testing
 import Foundation
 import CoreMedia
 @testable import Parallax
@@ -103,7 +104,8 @@ func makePlayerVM(
     subtitleStyle: @escaping @MainActor () -> SubtitleStyle = { .standard },
     playerSurface: @escaping @MainActor () -> CGSize? = { nil },
     seekHoldNow: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
-    fetchArtwork: @escaping @Sendable (ItemDetail) async -> Data? = { _ in nil }
+    fetchArtwork: @escaping @Sendable (ItemDetail) async -> Data? = { _ in nil },
+    rememberTrackSelection: @escaping @Sendable (TrackSelectionUpdate) async -> Void = { _ in }
 ) -> PlayerViewModel {
     PlayerViewModel(
         deviceProfileBuilder: makeTestDeviceProfileBuilder(),
@@ -114,6 +116,7 @@ func makePlayerVM(
         nowPlaying: nowPlaying,
         fetchDetail: fetchDetail,
         subtitleFetch: subtitleFetch,
+        rememberTrackSelection: rememberTrackSelection,
         fetchSegments: fetchSegments,
         fetchAdjacent: fetchAdjacent,
         keepaliveInterval: keepaliveInterval,
@@ -373,9 +376,12 @@ enum PlayerFixtures {
     /// VC-1 MKV direct-play — routes to .vlcKit because .vc1 is not in
     /// EngineSelector's avKitVideoCodecs set. The audio codec is the only axis the two
     /// callers differ on (a DTS track vs an AVKit-playable AAC one).
-    static func resolvedVC1MKV(audioCodec: AudioCodec = .dts) -> ResolvedPlayback {
+    /// `itemID` is a seam, not decoration: `streamSelection` only carries the standing
+    /// stream indices when the resolve belongs to the item being played, so a reload the
+    /// server answers with a direct-play stream for the SAME item has to say so.
+    static func resolvedVC1MKV(audioCodec: AudioCodec = .dts, itemID: String = "movie-2") -> ResolvedPlayback {
         ResolvedPlayback(
-            itemID: "movie-2",
+            itemID: itemID,
             url: URL(string: "https://jf.example.com/Videos/movie-2/stream.mkv?api_key=abc")!,
             method: .directPlay,
             container: .mkv,
@@ -539,8 +545,39 @@ enum PlayerFixtures {
     }
 }
 
+/// The transcode menu row carrying a Jellyfin stream index. Every reload fixture builds its
+/// menus from the same stream indices, so naming a track by index is how the suites say
+/// "audio 4" without re-deriving the row each time.
+@MainActor
+func audioTrack(_ vm: PlayerViewModel, _ index: Int) throws -> AudioTrack {
+    try #require(vm.availableAudioTracks.first { $0.id == .jellyfinStream(index) })
+}
+
+/// `audioTrack`'s subtitle half. Index 1 is the Chinese sidecar, 7 the English burn-in.
+@MainActor
+func subtitleTrack(_ vm: PlayerViewModel, _ index: Int) throws -> SubtitleTrack {
+    try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(index) })
+}
+
+/// Arm `gate`, run `action` (the seek or pick that starts a reload) on its own task, and stand
+/// there until the reload is really in flight — the opening move of every case that acts
+/// DURING a reload. Returns the task, so the caller awaits the whole drain after `gate.open()`.
+@MainActor
+func startReload(
+    _ gate: ResolveGate,
+    on vm: PlayerViewModel,
+    _ what: Comment = "the action never reached the reload",
+    sourceLocation: SourceLocation = #_sourceLocation,
+    action: @escaping @MainActor @Sendable () async -> Void
+) async throws -> Task<Void, Never> {
+    await gate.arm()
+    let task = Task { @MainActor in await action() }
+    try await requireEventually({ vm.isMidSessionReload }, what, sourceLocation: sourceLocation)
+    return task
+}
+
 /// Parks an injected `resolve` until a test lets it through, so the windows the view model
-/// only opens DURING a re-resolve — `isSwitchingTracks`, the frozen surface, the `.loading`
+/// only opens DURING a re-resolve — `isMidSessionReload`, the frozen surface, the `.loading`
 /// scrim — become states a test can stand inside and probe rather than races to win.
 ///
 /// Armed explicitly (not on construction) because the same closure serves the fixture's own
@@ -564,4 +601,53 @@ actor ResolveGate {
         waiters = []
         parked.forEach { $0.resume() }
     }
+}
+
+/// THE mid-session-reload fixture: a playing transcode VM parked at `seconds`, with a buffer
+/// that ends 60s later — so every seek past it takes the slow `reloadTranscode` road, which is
+/// the window the reload suites stand inside.
+///
+/// Engines come from an `EngineLedger`, so each one carries the id the view model asked for and
+/// a reload that RE-BUILDS shows up as a second entry — the caller's `engine` local then still
+/// points at the outgoing engine, which is a legible failure instead of one instance replaying
+/// two sessions' calls.
+///
+/// `sidecarUp` (default) leaves a client-rendered text sub selected: it is the one consumer
+/// that reads the player clock ABSOLUTELY, so with it up an out-of-buffer seek re-anchors
+/// instead of drifting in-stream. Turn it off for the cases that want the dirty-timeline road,
+/// or that must prove a sidecar URL is read from the session the reload opens.
+@MainActor
+func makeReanchorVM(
+    at seconds: Double,
+    reporting: StubPlaybackReporting = StubPlaybackReporting(),
+    seekHoldNow: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
+    nowPlaying: any NowPlayingUpdating = NowPlayingController(),
+    subtitleFetch: @escaping @Sendable (URL) async -> Data? = { _ in Data() },
+    rememberTrackSelection: @escaping @Sendable (TrackSelectionUpdate) async -> Void = { _ in },
+    sidecarUp: Bool = true,
+    resolve: @escaping PlayerViewModel.ResolveCall = { _, _, _, _ in
+        PlayerFixtures.resolvedMultiTrackTranscode()
+    }
+) async throws -> (vm: PlayerViewModel, engines: EngineLedger) {
+    let engines = EngineLedger()
+    let vm = makePlayerVM(reporting: reporting, resolve: resolve,
+                          engineFactory: { id, _ in engines.make(id) },
+                          nowPlaying: nowPlaying,
+                          subtitleFetch: subtitleFetch,
+                          seekHoldNow: seekHoldNow,
+                          rememberTrackSelection: rememberTrackSelection)
+    await vm.start(item: PlayerFixtures.movieDetail())
+    let engine = engines.live
+    engine.push(.playing(seconds))
+    try await engine.settle()
+    // A precondition, not an assertion: every test on this fixture reads "the bar moved OFF A",
+    // which proves nothing if the fixture never parked at A. Stop here instead.
+    try #require(CMTimeGetSeconds(vm.currentPosition) == seconds)
+
+    if sidecarUp {
+        let text = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(1) })
+        await vm.selectSubtitleTrack(text)
+    }
+    engine.bufferedRange = 0...(seconds + 60)
+    return (vm, engines)
 }

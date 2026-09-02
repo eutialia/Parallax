@@ -543,7 +543,7 @@ struct PlayerView: View {
 
     private var scrimFlavor: PlayerLoadingScrim.Mode {
         guard let vm = viewModel else { return .coldStart }
-        return vm.isSwitchingTracks || vm.showsStallScrim ? .liveFrame : .coldStart
+        return vm.isMidSessionReload || vm.showsStallScrim ? .liveFrame : .coldStart
     }
 
     /// Whether to show the loading veil: before the VM exists, while it's
@@ -789,14 +789,17 @@ struct PlayerView: View {
             cancelClickSeek()
             chromeVisible = isFullHUD
         }
-        // Phase transitions own the HUD floor hand-offs:
-        // • first .playing — the loading chrome drops to the reducer's clean
+        // Command-acceptance transitions own the HUD floor hand-offs:
+        // • first accepted — the loading chrome drops to the reducer's clean
         //   floor (re-buffers keep their HUD state, see `didBeginPlayback`);
-        // • leaving .playing (re-buffer / failure) — a scrub state would strand
-        //   a frozen bar plus armed idle/commit timers over the scrim, and its
-        //   duration context is stale mid-reload; fold to the floor and drop
-        //   the pending seek.
-        .onChange(of: vm.phase == .playing) { _, nowPlaying in
+        // • losing acceptance (a cold re-load / failure) — a scrub state would strand
+        //   a frozen bar plus armed idle/commit timers over the scrim; fold to the floor
+        //   and drop the pending seek.
+        //
+        // Keyed on acceptance rather than `.playing` so a MID-SESSION reload doesn't fold
+        // a live swipe-scrub to the floor: the gesture is still going to commit, and the
+        // model will honor it. `didBeginPlayback` keeps its meaning either way.
+        .onChange(of: vm.acceptsPlaybackCommands) { _, nowPlaying in
             if nowPlaying {
                 if !didBeginPlayback {
                     didBeginPlayback = true
@@ -915,12 +918,12 @@ struct PlayerView: View {
             }
         }
 
-        // Pre-playback (initial load and a track-switch re-buffer): only chrome
-        // reveal, exit, and idle are meaningful. Transport/seek events are
-        // dropped at the door — mid-reload the engine is being fed a new asset
-        // and `currentDuration` is stale, so a seek/play would land on a dead or
-        // mid-swap stream. The reducer itself stays phase-blind.
-        if vm.phase != .playing {
+        // Cold start only: nothing has resolved, so there is no duration to seek against
+        // and no session to command — only chrome reveal, exit and idle mean anything.
+        // A MID-SESSION reload is not this window: the model parks whatever the remote
+        // sends and the running reload honors it, so the transport and the scrubber stay
+        // live through it. The reducer itself stays phase-blind.
+        if !vm.acceptsPlaybackCommands {
             switch event {
             case .menu where !didBeginPlayback:
                 // First load: Back exits immediately (synchronously fencing the

@@ -97,14 +97,8 @@ public final class FakePlaybackEngine: PlaybackEngine {
     private let continuation: AsyncStream<PlaybackBeat>.Continuation
     /// The hand-off ledger `settle()` reads — see `DrainBarrier`.
     private let barrier: DrainBarrier
-    /// Parks `seek(to:)` on demand. See `holdSeeks()`.
-    private let seekGate = ParkingGate()
-    /// Parks state delivery on demand, with the element already in hand. See `holdBeats()`.
-    private let beatGate: ParkingGate
-    /// Parks `endAudio()` on demand. See `holdEndAudio()`.
-    private let endAudioGate = ParkingGate()
-    /// Parks `teardown()` on demand. See `holdTeardown()`.
-    private let teardownGate = ParkingGate()
+    /// One `ParkingGate` per parkable call. See `ParkedCall` and `hold(_:)`.
+    private let gates: [ParkedCall: ParkingGate]
 
     public init(id: PlaybackEngineID, capabilities: PlaybackEngineCapabilities) {
         self.id = id
@@ -118,8 +112,9 @@ public final class FakePlaybackEngine: PlaybackEngine {
         let (buffered, cont) = AsyncStream<PlaybackBeat>.makeStream()
         let barrier = DrainBarrier()
         let source = BufferedSource(buffered)
-        let beatGate = ParkingGate()
-        self.beatGate = beatGate
+        let gates = Dictionary(uniqueKeysWithValues: ParkedCall.allCases.map { ($0, ParkingGate()) })
+        let beatGate = gates[.beat]!
+        self.gates = gates
         self.continuation = cont
         self.barrier = barrier
         self.state = AsyncStream(unfolding: {
@@ -128,7 +123,7 @@ public final class FakePlaybackEngine: PlaybackEngine {
             guard let next = await source.next() else { return nil }
             // The gate sits BETWEEN the pull and the delivery on purpose: that is the
             // window a real beat spends mid-hop to the MainActor, which is the only place
-            // a replaced engine's state can still reach a consumer. See `holdBeats()`.
+            // a replaced engine's state can still reach a consumer. See `ParkedCall.beat`.
             await beatGate.park()
             barrier.noteDelivery()
             return next
@@ -222,7 +217,10 @@ public final class FakePlaybackEngine: PlaybackEngine {
 
     /// Recorded distinctly from "pause" so tests can tell a resumable silence from a
     /// transport pause — the two diverge on real engines (VLC mutes the audio output).
-    public func silence() async { recordedState.withLock { $0.calls.append("silence") } }
+    public func silence() async {
+        recordedState.withLock { $0.calls.append("silence") }
+        await gates[.silence]!.park()
+    }
 
     /// Recorded distinctly from "silence" too: this is the TERMINAL exit cut (VLC stops
     /// the player outright), and the exit tests assert exactly which of the two a path took.
@@ -232,70 +230,61 @@ public final class FakePlaybackEngine: PlaybackEngine {
             // The terminal cut stops the player outright, so the transport is down with it.
             $0.isPlayingNow = false
         }
-        await endAudioGate.park()
+        await gates[.endAudio]!.park()
     }
 
     public func seek(to time: CMTime) async {
         let seconds = CMTimeGetSeconds(time)
         let formatted = String(format: "%.1f", seconds)
         recordedState.withLock { $0.calls.append("seek(\(formatted))") }
-        await seekGate.park()
+        await gates[.seek]!.park()
     }
 
     // MARK: - Gates
 
-    /// Park every subsequent `seek(to:)` at its suspension point (after recording the call)
-    /// until `releaseSeeks()`. The only way to hold a caller INSIDE `await engine.seek(...)`
-    /// and run other MainActor work in that window, which is what an interleave test of a
-    /// synchronous fence landing mid-seek needs. Off by default; no other path is affected.
-    public func holdSeeks() { seekGate.hold() }
+    /// A call the fake can park a caller inside, at its suspension point and after it has
+    /// recorded itself. Standing in that window is what turns an interleaving into an
+    /// observation rather than a race the test has to win. All off by default.
+    public enum ParkedCall: CaseIterable, Hashable, Sendable {
+        /// Inside `await engine.seek(...)` — the window a synchronous fence can land in
+        /// mid-seek.
+        case seek
+        /// State DELIVERY, with the element already pulled from the stream: the beat is in
+        /// the consumer's hands but its handler has not run. Cancelling a subscription
+        /// cannot recall a state already in flight, so this is what proves the consumer
+        /// drops it on identity rather than on luck.
+        case beat
+        /// Inside `endAudio()` — the awaited half of an engine swap, so the outgoing engine
+        /// is still the live one while a transport command or a beat lands.
+        case endAudio
+        /// Inside `silence()` — the FIRST await of a mid-session reload's prelude, before
+        /// it has written a single flag. Where a session handoff has to find it.
+        case silence
+        /// Inside `teardown()`, before it finishes the stream — a stand-in for VLC's
+        /// multi-second teardown, which is what proves a retirement runs off the swap's
+        /// critical path.
+        case teardown
+        /// Inside `setSubtitleTrack(_:)` — the deselect a client-rendered sidecar activation
+        /// awaits, and the only seam in the SETTLE half of a reload (the outcome is in, the
+        /// intent is not spent yet).
+        case subtitleTrack
+    }
 
-    /// True while at least one `seek(to:)` is parked on the gate. `waitUntil`-friendly proof
-    /// that the caller really is suspended, so the interleaving under test is not a guess.
-    public var hasParkedSeek: Bool { seekGate.hasParked }
+    /// Park every subsequent `call` until `release(_:)`. No other path is affected.
+    public func hold(_ call: ParkedCall) { gates[call]!.hold() }
 
-    /// Lift the gate and resume every parked `seek(to:)`. Later seeks pass straight through.
-    public func releaseSeeks() { seekGate.release() }
+    /// True while at least one caller is parked on `call`'s gate. `requireEventually`-friendly
+    /// proof that the caller really is suspended, so the interleaving under test is not a guess.
+    public func hasParked(_ call: ParkedCall) -> Bool { gates[call]!.hasParked }
 
-    /// Park state DELIVERY with the element already pulled from the stream — the beat is in
-    /// the consumer's hands but its handler has not run. The window a replaced engine's last
-    /// beat lives in: cancelling a subscription cannot recall a state already in flight, so
-    /// this is what proves the consumer drops it on identity rather than on luck.
-    public func holdBeats() { beatGate.hold() }
-
-    /// True while a beat is parked between the pull and the delivery.
-    public var hasParkedBeat: Bool { beatGate.hasParked }
+    /// Lift `call`'s gate and resume everything parked on it. Later calls pass straight through.
+    public func release(_ call: ParkedCall) { gates[call]!.release() }
 
     /// Number of states handed to the consumer. Unlike `settle()` this counts DELIVERY, not
     /// processing, so it is the barrier that still works for a subscription the view model
     /// has already cancelled — a cancelled `for await` never comes back for another element,
     /// so its processed count can never advance again.
     public var deliveredBeats: Int { barrier.deliveredCount() }
-
-    /// Lift the beat gate and let every parked delivery through.
-    public func releaseBeats() { beatGate.release() }
-
-    /// Park `endAudio()` after it records the call — the awaited half of an engine swap.
-    /// Holds the caller INSIDE `EngineSlot.swap`, which is the window a transport command
-    /// or a beat can land in while the outgoing engine is still the live one.
-    public func holdEndAudio() { endAudioGate.hold() }
-
-    /// True while an `endAudio()` is parked on the gate.
-    public var hasParkedEndAudio: Bool { endAudioGate.hasParked }
-
-    /// Lift the audio-cut gate and let every parked `endAudio()` return.
-    public func releaseEndAudio() { endAudioGate.release() }
-
-    /// Park `teardown()` after it records the call and before it finishes the stream — a
-    /// stand-in for VLC's multi-second teardown. What proves a retirement really runs off
-    /// the swap's critical path, and that `drain()` really waits for it.
-    public func holdTeardown() { teardownGate.hold() }
-
-    /// True while a `teardown()` is parked on the gate.
-    public var hasParkedTeardown: Bool { teardownGate.hasParked }
-
-    /// Lift the teardown gate and let every parked `teardown()` finish.
-    public func releaseTeardown() { teardownGate.release() }
 
     public func isBuffered(at time: CMTime) async -> Bool {
         guard let bufferedRange else { return true }
@@ -314,6 +303,7 @@ public final class FakePlaybackEngine: PlaybackEngine {
             $0.selectedSubtitleTrackID = track?.id
             $0.calls.append(track.map { "setSubtitleTrack(\($0.id))" } ?? "setSubtitleTrack(nil)")
         }
+        await gates[.subtitleTrack]!.park()
     }
 
     public func setSubtitleDelay(milliseconds: Int) async {
@@ -322,7 +312,7 @@ public final class FakePlaybackEngine: PlaybackEngine {
 
     public func teardown() async {
         recordedState.withLock { $0.calls.append("teardown") }
-        await teardownGate.park()
+        await gates[.teardown]!.park()
         finish()
     }
 
@@ -332,10 +322,9 @@ public final class FakePlaybackEngine: PlaybackEngine {
     }
 }
 
-/// One hold-and-release gate, shared by every parking seam on the fake (`seek`, state
-/// delivery, `teardown`). `park()` suspends its caller while the gate is up and returns
-/// immediately when it isn't, so an unused gate costs nothing and no path branches on
-/// which seam it is.
+/// One hold-and-release gate — the fake keeps one per `ParkedCall`. `park()` suspends its
+/// caller while the gate is up and returns immediately when it isn't, so an unused gate costs
+/// nothing and no path branches on which seam it is.
 private final class ParkingGate: Sendable {
     private struct State {
         var isHeld = false

@@ -60,6 +60,12 @@ final class PlayerViewModel {
     private(set) var phase: Phase = .idle {
         didSet {
             if case .failed = phase { seekHold = nil }
+            // `midSessionReload` means "phase is `.loading` because an engine-reusing
+            // reload put it there", so the phase leaving `.loading` IS its end —
+            // and it leaves on the NEW session's first live beat, several hundred ms after
+            // the drain returned. Clearing it with the drain instead is what used to unmount
+            // the chip row and fold a live scrub for that tail.
+            if case .loading = phase {} else { midSessionReload = nil }
         }
     }
     /// The engine this session is driving. Read-only here: `engineSlot` owns the
@@ -260,11 +266,11 @@ final class PlayerViewModel {
     /// stream ("Switching audio · <track>"); a seek that re-anchors the transcode, or
     /// a mid-stream stall over a live frame, reads "Buffering"; a first play is
     /// "Loading video". The re-anchor seek reuses the track-switch reload (so it sets
-    /// `isSwitchingTracks` too) — `isReanchoring` must win first, since a scrub is not
+    /// `isMidSessionReload` too) — `isReanchoring` must win first, since a scrub is not
     /// an audio switch.
     var loaderTitle: String {
         if isReanchoring { return LoaderCaption.buffering }
-        if isSwitchingTracks { return LoaderCaption.switchingAudio }
+        if isMidSessionReload { return LoaderCaption.switchingAudio }
         if showsStallScrim { return LoaderCaption.buffering }
         return LoaderCaption.loadingVideo
     }
@@ -276,7 +282,7 @@ final class PlayerViewModel {
         static let switchingAudio = "Switching audio"
         static let loadingVideo = "Loading video"
     }
-    var loaderSubtitle: String? { isSwitchingTracks && !isReanchoring ? selectedAudioTrack?.displayName : nil }
+    var loaderSubtitle: String? { isMidSessionReload && !isReanchoring ? selectedAudioTrack?.displayName : nil }
 
     /// Mid-stream stall (engine waiting for media while the user's intent is
     /// "playing") — drives the light buffering scrim over the frozen frame.
@@ -289,6 +295,11 @@ final class PlayerViewModel {
     /// surface is live (`phase == .playing`). A stall during the first load
     /// keeps the heavy "Loading" scrim instead — same spot, different flavor.
     var showsStallScrim: Bool { phase == .playing && isStalled }
+
+    /// Whether engine-backed input (scrub, seek, track picks, play/pause) is accepted: a live
+    /// stream, or a mid-session reload that will honor it through `pendingReload`. A cold start
+    /// stays locked — nothing exists yet to merge into (no session, no track list, no duration).
+    var acceptsPlaybackCommands: Bool { phase == .playing || isMidSessionReload }
 
     private func armStallDebounce() {
         guard !isStalled, stallDebounceTask == nil else { return }
@@ -312,7 +323,7 @@ final class PlayerViewModel {
     enum TrackPick: Equatable {
         case audio(AudioTrack)
         /// `nil` is Off — leaving an active burn-in for Off now re-resolves like any
-        /// other subtitle pick (see `reloadSubtitleTranscode`), so its failure needs a
+        /// other subtitle pick (see `queueSubtitleReload`), so its failure needs a
         /// representable "requested" pick too. Off has no `TrackID` (the menu's Off row
         /// carries none either — `TrackMenuRowID.subtitlesOff`), hence `id` below.
         case subtitle(SubtitleTrack?)
@@ -344,11 +355,32 @@ final class PlayerViewModel {
     /// pick, `dismissTrackSwitchFailure()` keeps the current one. Nil when no failed
     /// switch is pending. Fatal failures (engine lost mid-reload) never set this —
     /// they go through `phase = .failed` and the general error scrim.
-    struct TrackSwitchFailure {
+    struct TrackSwitchFailure: Equatable {
         /// The track the user asked for — the retry target.
         let requested: TrackPick
         /// The track playback stayed on. Nil when the previous selection is unknown.
         let fallback: TrackPick?
+
+        /// The scrim a queued audio change owes when its reload didn't land: the pick is the
+        /// retry target, its `previous` is what kept playing.
+        init(audio change: PendingReload.AudioChange) {
+            requested = .audio(change.pick)
+            fallback = change.previous.map(TrackPick.audio)
+        }
+
+        /// The subtitle twin. Off is a representable pick on both sides.
+        init(subtitle change: PendingReload.SubtitleChange) {
+            requested = .subtitle(change.pick)
+            fallback = change.previous.map(TrackPick.subtitle)
+        }
+
+        /// A burn-in the server accepted and then quietly declined to paint. `fallback` is
+        /// the rollback target rather than the change's `previous`, which may itself be a
+        /// burn-in there is no rolling back to.
+        init(declined target: SubtitleTrack, fallback: SubtitleTrack?) {
+            requested = .subtitle(target)
+            self.fallback = fallback.map(TrackPick.subtitle)
+        }
     }
     private(set) var trackSwitchFailure: TrackSwitchFailure?
 
@@ -503,7 +535,7 @@ final class PlayerViewModel {
         let c = chapter.start.components
         let seconds = Double(c.seconds) + Double(c.attoseconds) / 1e18
         // Transport-preserving: a paused chapter jump must stay paused across an
-        // out-of-buffer re-anchor (whose reload force-resumes).
+        // out-of-buffer re-anchor.
         await commitSeek(to: CMTime(seconds: seconds, preferredTimescale: 600))
     }
 
@@ -589,6 +621,13 @@ final class PlayerViewModel {
             // track switch rebuilt it — must no-op or reach the LIVE engine, never the instance
             // the caller happened to be holding before its await.
             guard !Task.isCancelled, let engine else { return }
+            // A transport command must not reach an engine mid-reload: the item under it is
+            // being replaced, and commanding through that window is the seek-wedge class.
+            // Nothing is lost — `drainPendingReloads` re-commands from `engineShouldPlay`
+            // once the last reload of the run has settled, which is where this command's
+            // intent already lives. (The reload's own `loadAndPlay` tail runs BEFORE that
+            // settle, so it is not the flush this relies on.)
+            guard !isReloadingTranscode else { return }
             // The exit fence, re-checked here rather than at every caller: `beginExit()` is
             // synchronous MainActor work and can land after a resume was queued, and nothing
             // downstream stops an AVKit engine from restarting audio under a dismissing player.
@@ -753,12 +792,23 @@ final class PlayerViewModel {
     /// Server language preferences were applied to this item's initial tracks —
     /// once per `start`, never on track-switch reloads or duplicate `.ready` beats.
     private var didApplyPreferredTracks = false
-    /// True only while a transcode track switch is reloading the (reused) engine.
-    /// Gates `handle(_:)` so the outgoing stream's trailing beats are ignored — a
-    /// stale `.playing` would otherwise claim the new session's `reportStart`.
-    /// Also drives the loader caption (a switch reads "Switching audio", a first
-    /// play reads "Loading").
-    private(set) var isSwitchingTracks = false
+    /// The intent `phase == .loading` is covering, when an engine-reusing reload put it
+    /// there rather than a cold start. Set by `performTranscodeReload` from `reloadInFlight`
+    /// on the line before it sets the phase, and dropped by the phase's own `didSet`, so it
+    /// spans the reload's TAIL too — the window between the drain returning and the new
+    /// session's first live beat. Drives the loader caption, the scrim's flavour and
+    /// `acceptsPlaybackCommands`.
+    ///
+    /// The INTENT and not a bool because the caption reads it: `reloadInFlight` is already
+    /// nil for that whole tail, so a caption derived from it spent the last stretch of every
+    /// scrub claiming an audio switch that never happened.
+    private(set) var midSessionReload: PendingReload?
+    var isMidSessionReload: Bool { midSessionReload != nil }
+    /// A reload is actually in flight, so input must merge into `pendingReload` instead of
+    /// reaching an engine that is being swapped out from under it. Strictly narrower than
+    /// `isMidSessionReload`: acceptance spans the tail, queueing must not — a seek arriving
+    /// after the drain ended would merge with nothing left to spend it.
+    private var isReloadingTranscode: Bool { reloadInFlight != nil }
     private var lastPosition: CMTime = .zero
     /// A scrub/seek commit in flight: `currentPosition` reads the committed target (or the
     /// engine's own forward projection off it), not the engine's stale clock, until the engine
@@ -841,11 +891,25 @@ final class PlayerViewModel {
     private var currentAudioStreamIndex: Int?
     private var currentSubtitleStreamIndex: Int?
 
-    // Transcode seek re-anchoring: an out-of-buffer seek re-resolves a fresh transcode
-    // at the target (see `seek(to:)`). The newest target wins, drained single-flight so
-    // a scrub past the buffer can't stack reloads or strand on a stale position.
-    private var pendingReanchorTarget: CMTime?
-    private var isReanchoring = false
+    /// What the NEXT engine-reusing reload must honor: a seek target, an audio pick, a
+    /// subtitle pick, in any combination (see `PendingReload`). Every action taken during a
+    /// reload merges here; `drainPendingReloads` spends it, one reload per standing intent.
+    private var pendingReload = PendingReload()
+    /// The intent the in-flight reload is honoring; nil when no reload runs. Also the
+    /// drain's single-flight latch — a second caller sees it and leaves the running loop to
+    /// pick up whatever it just merged.
+    private var reloadInFlight: PendingReload?
+    /// Bumped by `stop()`, so everything that suspends inside one session can tell that the
+    /// session it belongs to is over. `isExiting` cannot answer that: `resetForReplay`
+    /// (retry, and the auto-advance episode handoff) disarms the fence again for the fresh
+    /// start, and a reload parked across that window would otherwise wake up and write the
+    /// previous item's stream, picks and sidecar into the session that replaced it.
+    private var sessionGeneration = 0
+    /// The reload under the scrim carries a seek target and NO audio pick, so it is a scrub
+    /// rather than a track switch — which is the whole difference the loader caption draws. A merged
+    /// seek+pick is the switch: the track name is what the user is waiting on, the position is
+    /// incidental.
+    private var isReanchoring: Bool { midSessionReload?.position != nil && midSessionReload?.audio == nil }
     /// True once an out-of-buffer transcode seek went IN-STREAM — allowed only while no
     /// sidecar subtitle renders. The server restarted ffmpeg under the item's established
     /// timeline mapping, so the mapping may have shifted vs the frames (the 2026-07-17
@@ -1274,7 +1338,8 @@ final class PlayerViewModel {
                 item: item,
                 startTime: resumeTime,
                 audioStreamIndex: nil,
-                subtitleStreamIndex: nil
+                subtitleStreamIndex: nil,
+                generation: sessionGeneration
             )
         } catch is CancellationError {
             // Exit raced the start path. stop() owns the real teardown; just make
@@ -1411,7 +1476,7 @@ final class PlayerViewModel {
                 vlcOptions: smbItem.vlcOptions,
                 vlcLibraryOptions: smbItem.vlcLibraryOptions
             )
-            try await loadAndPlay(asset, reusingEngine: false)
+            try await loadAndPlay(asset, reusingEngine: false, generation: sessionGeneration)
         } catch is CancellationError {
             // Exit fence: the player is dismissing, so `stop()` (onDisappear backstop) owns the
             // bridge teardown — don't race it here.
@@ -1511,7 +1576,7 @@ final class PlayerViewModel {
     }
 
     /// Resolve + load + play. Shared by first play (`start`) and a transcode
-    /// track switch (`switchTranscodeTrack`). On the transcode path the menus
+    /// track switch (`drainPendingReloads`). On the transcode path the menus
     /// are sourced from the server's full track list, since the HLS manifest
     /// only carries the single chosen rendition.
     private func beginPlayback(
@@ -1520,9 +1585,10 @@ final class PlayerViewModel {
         audioStreamIndex: Int?,
         subtitleStreamIndex: Int?,
         reusingEngine: Bool = false,
-        superseding: PlaybackSessionID? = nil
+        superseding: PlaybackSessionID? = nil,
+        generation: Int
     ) async throws {
-        try checkStillActive()
+        try checkStillActive(generation: generation)
         let caps = await deviceProfileBuilder.build()
         let selection = streamSelection(
             for: item,
@@ -1552,7 +1618,7 @@ final class PlayerViewModel {
         }
         // The critical fence: resolve is the long network call, so this is where an
         // exit-during-loading usually lands. Bail BEFORE building an engine.
-        try checkStillActive()
+        try checkStillActive(generation: generation)
         self.resolved = resolved
         subtitleURLs = resolved.subtitleStreamURLs   // Jellyfin: index → authed VTT URL
         startKeepalive(for: resolved)
@@ -1581,7 +1647,8 @@ final class PlayerViewModel {
         }
 
         let asset = makeAsset(from: resolved)
-        try await loadAndPlay(asset, reusingEngine: reusingEngine, superseding: superseding)
+        try await loadAndPlay(asset, reusingEngine: reusingEngine, superseding: superseding,
+                              generation: generation)
         // The engine now plays a FRESH AVPlayerItem whose timeline mapping derives from
         // this session's own segments — any prior in-stream restart shift is laundered.
         transcodeTimelineDirty = false
@@ -1661,7 +1728,8 @@ final class PlayerViewModel {
         _ asset: PlayableAsset,
         reusingEngine: Bool,
         forcedEngine: PlaybackEngineID? = nil,
-        superseding: PlaybackSessionID? = nil
+        superseding: PlaybackSessionID? = nil,
+        generation: Int
     ) async throws {
         // Recorded up front (before the engine even attempts the load) so a reactive
         // fallback (`attemptReactiveFallback`) can rebuild this exact asset off it
@@ -1719,7 +1787,7 @@ final class PlayerViewModel {
             subscribe(to: engine)
             nowPlaying.configure(
                 // Transport-preserving: a paused lock-screen scrub must not come back
-                // playing when an out-of-buffer target re-anchors (reload force-resumes).
+                // playing when an out-of-buffer target re-anchors.
                 onSeek: { [weak self] time in Task { await self?.commitSeek(to: time) } },
                 // Route through setPlaying (not engine.play/pause directly) so a remote command
                 // clears any pending scrub latch — otherwise it's swallowed and the glyph sticks.
@@ -1732,7 +1800,7 @@ final class PlayerViewModel {
             // Exit can land inside the swap's audio cut. Checked here, inside the teardown
             // path, so a replacement that was installed for a player already dismissing is
             // torn down with its subscription rather than left resident until `stop()`.
-            try checkStillActive()
+            try checkStillActive(generation: generation)
             // The load's return value IS the boundary: from here on this is the only session
             // whose beats this view model adopts, and everything the media it replaced still
             // has in flight is stamped with a session that no longer matches.
@@ -1761,7 +1829,7 @@ final class PlayerViewModel {
             reloadAwaitingFirstLiveBeat = surfaceFrozen
             // Last fence before audio starts: an exit that landed during load must
             // not be answered with play() on a player that's already dismissed.
-            try checkStillActive()
+            try checkStillActive(generation: generation)
             #if os(tvOS)
             // Between load and play, never later: ask the TV to match the
             // content's native mode (HDR / frame rate) and wait for the switch
@@ -1775,13 +1843,13 @@ final class PlayerViewModel {
             // dead waiting before every audio switch.
             if !reusingEngine {
                 await DisplayCriteriaMatcher.prepare(for: engine)
-                try checkStillActive()
+                try checkStillActive(generation: generation)
             }
             #endif
         } catch {
             // A load failure (or an exit mid-load) must not leave the engine + its
             // state subscription dangling: tear down before propagating, so
-            // start()/switchTranscodeTrack surface .failed with no leaked Task and
+            // start()/the reload drain surface .failed with no leaked Task and
             // no open AsyncStream. (Idempotent vs a stop() that already tore down.)
             await tearDownEngine()
             throw error
@@ -1812,8 +1880,10 @@ final class PlayerViewModel {
         // own mechanical `play()`: a pause issued while the engine was being replaced
         // (lock screen, Now Playing, the transport button) landed on the OUTGOING engine,
         // and without this the replacement comes up playing against it.
-        // Rebuilds only: an engine-REUSING reload is the re-anchor, whose paused-user
-        // re-pause belongs to `commitSeek`, which sequences it against the seek.
+        // Rebuilds only: a REUSED engine belongs to a reload, whose transport the drain
+        // reconciles from intent once the run has settled — this line runs before that
+        // settle, and on the VLCKit route a `pause()` here also races the detached
+        // resume-seek `play()` spawns, so a paused chapter jump could land off-target.
         if rebuilt, !desiredPlaying, self.engine === engine {
             await engine.pause()
         }
@@ -1899,6 +1969,15 @@ final class PlayerViewModel {
         try Task.checkCancellation()
     }
 
+    /// The same fence for work that belongs to ONE session: a load parked across a
+    /// `resetForReplay` (retry, auto-advance) finds the exit fence disarmed again, so
+    /// `isExiting` alone would let it wake up and play the previous item into the session
+    /// that replaced it. Aborting exactly like an exit is what the callers already handle.
+    private func checkStillActive(generation: Int) throws {
+        try checkStillActive()
+        if generation != sessionGeneration { throw CancellationError() }
+    }
+
     func stop() async {
         isExiting = true
         guard !didStop else { return }
@@ -1960,10 +2039,15 @@ final class PlayerViewModel {
         smbResolve = nil
         currentAudioStreamIndex = nil
         currentSubtitleStreamIndex = nil
-        // A re-anchor in flight is abandoned by reloadTranscode's exit fence; clear its
-        // state too so a retry()/replay can't inherit a stale target or a stuck flag.
-        pendingReanchorTarget = nil
-        isReanchoring = false
+        // A reload in flight is abandoned by reloadTranscode's exit fence; clear the intent
+        // too so a retry()/replay can't inherit a stale target, pick or latch. The
+        // generation bump is what stops the DRAIN — and the reload parked inside it — from
+        // waking up in the session that replaced this one: `isExiting` can't, because
+        // `resetForReplay` disarms it again for the fresh start.
+        sessionGeneration &+= 1
+        pendingReload = PendingReload()
+        reloadInFlight = nil
+        midSessionReload = nil
         transcodeTimelineDirty = false
         // The held frame is deliberately NOT released here: `stop()` always runs with the
         // exit fence armed, and the exit freeze is what the card slides out on. The one
@@ -2139,49 +2223,55 @@ final class PlayerViewModel {
         // every other caller (remote commands, the playback lab) goes through, so the
         // rule lives here too. Nothing to record: the user's real selection is unchanged.
         guard !track.isUnsupported else { return }
-        // Dropped (not queued) while a start or a prior switch is mid-flight: the
-        // selected label is set before the re-resolve below, so accepting a pick
-        // here would show a track the reload never honors.
-        guard !isStartingPlayback, !isSwitchingTracks else { return }
+        // A cold start is the one window a pick still can't survive: there is no session,
+        // no track list and no `pendingReload` road to merge into yet. A pick made during a
+        // RELOAD is queued below and honored by that reload's successor.
+        guard !isStartingPlayback else { return }
         // Re-picking the playing track is a no-op: on transcode it would be a
         // full re-resolve + reload hitch, on direct-play a pointless preference
         // round-trip. (A failed switch restores `selectedAudioTrack` to the
         // fallback first, so the scrim's retry still passes this guard.)
         guard track != selectedAudioTrack else { return }
+        // While a reload runs, `resolved` is answering for a session that is being replaced:
+        // the server is allowed to come back with a direct-play stream, and it lands in
+        // `resolved` while `loadAndPlay` is still mid-swap — so the `method` read below would
+        // re-point an engine that is being torn down. Queue instead, exactly as `seek(to:)`
+        // and `selectSubtitleTrack` do, and let the reload's successor bring the pick up.
+        if isReloadingTranscode {
+            await queueAudioReload(to: track)
+            return
+        }
         // Direct-play has every track in the stream → switch in-engine (instant).
         // Transcode carries only the baked-in rendition → re-resolve around the
         // chosen source index (track.id) and reload at the current position.
         if resolved?.method == .transcode {
             // Transcode menus carry `.jellyfinStream` ids — the source stream index
             // the server selects by. A non-jellyfin id here would be a wiring bug.
-            guard let index = track.id.jellyfinStreamIndex else { return }
-            let previous = selectedAudioTrack
-            selectedAudioTrack = track
-            trackSwitchFailure = nil
-            switch await switchTranscodeTrack(audioStreamIndex: index, subtitleStreamIndex: currentSubtitleStreamIndex) {
-            case .completed:
-                persistTrackSelection(.audio(languageCode: track.languageCode))
-            case .abandoned:
-                // The reload never ran (re-entrant pick or exit) — quietly restore
-                // the checkmark so the menu doesn't show a track that isn't playing.
-                selectedAudioTrack = previous
-            case .fellBack:
-                // Playback resumed on the previous track: restore the checkmark and
-                // surface the failure scrim (retry / keep current track).
-                selectedAudioTrack = previous
-                trackSwitchFailure = TrackSwitchFailure(
-                    requested: .audio(track),
-                    fallback: previous.map(TrackPick.audio)
-                )
-            case .failed:
-                break   // phase == .failed — the general error scrim owns the surface
-            }
+            guard track.id.jellyfinStreamIndex != nil else { return }
+            await queueAudioReload(to: track)
         } else {
             guard let engine else { return }
             await engine.setAudioTrack(track)
             selectedAudioTrack = track
             persistTrackSelection(.audio(languageCode: track.languageCode))
         }
+    }
+
+    /// Optimistically adopt an audio target and hand it to the reload queue — the mirror of
+    /// `queueSubtitleReload`, and the one road every transcode audio pick takes.
+    private func queueAudioReload(to track: AudioTrack) async {
+        // Changing your mind BACK to the track that is still playing: cancel the dimension
+        // instead of spending a reload arriving where the stream already is. (`previous` is
+        // the pre-pick selection, so this is exactly "the queued change is now a no-op".)
+        if pendingReload.audio?.previous == track {
+            pendingReload.audio = nil
+            selectedAudioTrack = track
+            return
+        }
+        pendingReload.merge(audio: track, previous: selectedAudioTrack)
+        selectedAudioTrack = track
+        trackSwitchFailure = nil
+        await drainPendingReloads()
     }
 
     /// Show the loading affordance for a pick that is about to be made.
@@ -2203,23 +2293,36 @@ final class PlayerViewModel {
     }
 
     func selectSubtitleTrack(_ track: SubtitleTrack?) async {
-        // Same drop-don't-queue rule as selectAudioTrack: mid-switch, `resolved`
-        // still points at the outgoing session, so a sidecar fetch would read the
-        // old session's subtitle URLs.
-        guard !isStartingPlayback, !isSwitchingTracks else { return }
+        // Same cold-start-only rule as `selectAudioTrack`. Mid-reload picks are queued
+        // instead: `resolved` still points at the outgoing session, so every branch that
+        // would otherwise act NOW — a sidecar fetch, a bare Off — has to wait for the
+        // session the reload is bringing up, which is what `pendingReload` buys.
+        guard !isStartingPlayback else { return }
+        // Re-picking the row already checked is a no-op on every road below — a re-resolve
+        // and reload for a stream already playing, or a re-fetch of the overlay already up.
+        // Above the mid-reload road, not inside it: a re-tap during a reload used to spend a
+        // whole extra reload arriving where the pick already was. (A failed switch restores
+        // `selectedSubtitleTrack` to the fallback first, so the scrim's retry still passes.)
+        // Off is the one pick whose checkmark can lie: a transcode resolved with NO subtitle
+        // index shows Off checked while the server was left to choose, so an explicit Off
+        // there is real intent — it pins the `-1` sentinel the next reload must carry.
+        let offIsUnpinned = track == nil && resolved?.method == .transcode && currentSubtitleStreamIndex != -1
+        guard track != selectedSubtitleTrack || offIsUnpinned else { return }
+        // While a reload runs, EVERY branch below is answering about the outgoing session —
+        // its `subtitleURLs`, its burned-in image, its clock. One road out: queue, and let
+        // the reload's successor bring the pick up against the session it opens.
+        if isReloadingTranscode {
+            await queueSubtitleReload(to: track)
+            return
+        }
         // A burned-in (image) subtitle has no sidecar to fetch — the server can only
         // deliver it baked into the video, which costs a full re-encode. Route through
         // the same re-resolve `selectAudioTrack` uses instead of the sidecar-fetch
         // path below; the picked index lands as `subtitleStreamIndex` on the next
         // PlaybackInfo POST and the server burns it in from there.
         if let track, track.isBurnedIn {
-            // Re-picking the already-burned-in track is a no-op — it would cost a
-            // pointless re-resolve/reload for a stream already playing. (A failed
-            // switch restores `selectedSubtitleTrack` to the fallback first, so the
-            // scrim's retry still passes this guard.)
-            guard track != selectedSubtitleTrack else { return }
-            guard let index = track.id.jellyfinStreamIndex else { return }
-            await reloadSubtitleTranscode(to: track, subtitleStreamIndex: index)
+            guard track.id.jellyfinStreamIndex != nil else { return }
+            await queueSubtitleReload(to: track)
             return
         }
         // Leaving an ACTIVE burn-in for anything else — Off or a text sub — needs the
@@ -2243,15 +2346,13 @@ final class PlayerViewModel {
             // item's mapping — permitted only while no sidecar rendered, see `seek(to:)`)
             // that must be laundered BEFORE absolute-timestamp cues draw.
             if leavingBurnIn || (resolved?.method == .transcode && transcodeTimelineDirty) {
-                await reloadSubtitleTranscode(to: track, subtitleStreamIndex: index) {
-                    await self.activateSidecarSubtitle(track, index: index)
-                }
+                await queueSubtitleReload(to: track)
                 return
             }
             await activateSidecarSubtitle(track, index: index)
         } else if resolved?.method == .transcode {
             if leavingBurnIn {
-                await reloadSubtitleTranscode(to: nil, subtitleStreamIndex: -1)
+                await queueSubtitleReload(to: nil)
                 return
             }
             // Transcode Off, no active burn-in: no engine subtitle exists (subs never
@@ -2271,74 +2372,28 @@ final class PlayerViewModel {
         persistTrackSelection(.subtitles(languageCode: track?.languageCode))
     }
 
-    /// Re-resolves the transcode around a new subtitle target and reports the outcome
-    /// through the same optimistic-set/restore/scrim machinery `selectSubtitleTrack`'s
-    /// burn-in branch always used — now shared with the two "leaving an active burn-in"
-    /// branches (Off, a text sub) that used to skip the reload entirely. `onCompleted`
-    /// runs once the reload lands, for target-specific follow-up that must not race the
-    /// still-burning-in outgoing session (a text sub's sidecar fetch).
-    private func reloadSubtitleTranscode(
-        to target: SubtitleTrack?,
-        subtitleStreamIndex: Int,
-        onCompleted: () async -> Void = {}
-    ) async {
-        let previous = selectedSubtitleTrack
+    /// Optimistically adopt a subtitle target and hand it to the reload queue — the one
+    /// road for every subtitle pick that costs a re-resolve (into a burn-in, out of one,
+    /// off a dirty timeline, or made while a reload is already running). The verification,
+    /// the sidecar activation and the rollback all live in `settle`, so this is only the
+    /// optimistic half.
+    private func queueSubtitleReload(to target: SubtitleTrack?) async {
+        // Changing your mind BACK, as in `queueAudioReload` — plus the overlay the queued
+        // pick optimistically dropped, since the previous session is still the mounted one.
+        if let queued = pendingReload.subtitle, queued.previous == target {
+            pendingReload.subtitle = nil
+            selectedSubtitleTrack = target
+            restoreSidecarSubtitle(target)
+            return
+        }
+        pendingReload.merge(subtitle: target, previous: selectedSubtitleTrack)
         selectedSubtitleTrack = target
         trackSwitchFailure = nil
         // No overlay renders while the reload is in flight — drop whatever sidecar was
-        // showing (a burn-in target shows nothing either way; the failure/abandon arms
-        // below re-arm it via restoreSidecarSubtitle if the previous track had one).
+        // showing (a burn-in target shows nothing either way; `settle`'s not-landed arms
+        // re-arm it via `restoreSidecarSubtitle` if the previous track had one).
         clearSidecarSubtitle()
-        switch await switchTranscodeTrack(audioStreamIndex: currentAudioStreamIndex, subtitleStreamIndex: subtitleStreamIndex) {
-        case .completed:
-            // A burn-in is the one pick whose success the client can't see: the
-            // subtitle lives inside the video pixels, so a server that quietly
-            // declined to paint it looks exactly like one that did. Ask the fresh
-            // session what it actually agreed to before claiming the pick worked.
-            if let target, target.isBurnedIn, !serverBurnsInSubtitle(at: subtitleStreamIndex) {
-                // Unlike the arms below, the reload DID happen — the new session was
-                // built around an index it isn't burning in, so leaving it recorded
-                // would make the next audio switch ask for the same dead pick. And
-                // because the session is FRESH, restoring an external text track goes
-                // through the full activation (incl. the mandatory engine deselect
-                // that guards the double-subtitle bug), not the bare restore the
-                // not-landed arms use.
-                // The declined session was still negotiated FOR a burn-in — video
-                // stream copy off, a full re-encode with nothing to show for it —
-                // so the rollback must re-resolve too, not just restore the
-                // overlay, or the wasteful session outlives the failed pick. No
-                // recursion risk: the fallback is never a burn-in. The failure
-                // record lands AFTER the nested reload, whose own optimistic set
-                // would clear it.
-                let fallback = previous.flatMap { $0.isBurnedIn ? nil : $0 }
-                if let fallback, let prevIndex = fallback.id.jellyfinStreamIndex {
-                    await reloadSubtitleTranscode(to: fallback, subtitleStreamIndex: prevIndex) {
-                        await self.activateSidecarSubtitle(fallback, index: prevIndex)
-                    }
-                } else {
-                    await reloadSubtitleTranscode(to: nil, subtitleStreamIndex: -1)
-                }
-                trackSwitchFailure = TrackSwitchFailure(
-                    requested: .subtitle(target),
-                    fallback: fallback.map(TrackPick.subtitle)
-                )
-                return
-            }
-            await onCompleted()
-            persistTrackSelection(.subtitles(languageCode: target?.languageCode))
-        case .abandoned:
-            selectedSubtitleTrack = previous
-            restoreSidecarSubtitle(previous)
-        case .fellBack:
-            selectedSubtitleTrack = previous
-            restoreSidecarSubtitle(previous)
-            trackSwitchFailure = TrackSwitchFailure(
-                requested: .subtitle(target),
-                fallback: previous.map(TrackPick.subtitle)
-            )
-        case .failed:
-            break   // phase == .failed — the general error scrim owns the surface
-        }
+        await drainPendingReloads()
     }
 
     /// Activate a client-rendered sidecar subtitle: the app draws it via
@@ -2349,7 +2404,13 @@ final class PlayerViewModel {
     /// used to skip this deselect — that was the double-subtitle bug. Harmless no-op on
     /// the transcode/AVKit path, which has no in-manifest text track to deselect.
     private func activateSidecarSubtitle(_ track: SubtitleTrack, index: Int) async {
+        // The deselect is the one await between the pick and every write below it, and the
+        // drain's generation fences sit OUTSIDE `settle` — so a session handoff landing here
+        // wrote the previous item's index, checkmark and sidecar fetch into the session that
+        // replaced it. Every caller is covered, cold start included, at no call-site cost.
+        let generation = sessionGeneration
         await engine?.setSubtitleTrack(nil)
+        guard generation == sessionGeneration else { return }
         // Drop the OUTGOING track's cues before the fetch. The menu already reads
         // the new language, and a cold embedded stream can take seconds to extract
         // server-side — leaving the old bitmaps up for that window shows one
@@ -2361,7 +2422,7 @@ final class PlayerViewModel {
     }
 
     /// Re-arms the client overlay for the track a failed/abandoned subtitle switch fell
-    /// back to — every `reloadSubtitleTranscode` failure/abandon arm (a pick INTO a
+    /// back to — every `settle` failure/abandon arm (a pick INTO a
     /// burn-in, or leaving one for Off/a text sub) clears the sidecar optimistically
     /// before the re-resolve; when that re-resolve doesn't land, the still-mounted
     /// previous session needs its text overlay back (a bare Off/burn-in track needs
@@ -2649,8 +2710,8 @@ final class PlayerViewModel {
         return CGSize(width: width, height: height)
     }
 
-    /// How a transcode track switch ended — drives `selectAudioTrack`'s selection
-    /// restore and the failure scrim.
+    /// How an engine-reusing reload ended — drives `settle`'s selection restores and the
+    /// failure scrim.
     private enum TrackSwitchOutcome {
         case completed
         /// The reload was dropped or cancelled (re-entrant pick / player exit) —
@@ -2714,6 +2775,18 @@ final class PlayerViewModel {
         // slide-out and a seek arriving now would re-anchor (or re-buffer) a dead session.
         guard !isExiting else { return false }
         guard let engine else { return false }
+        // A reload already in flight makes both questions below meaningless — hand the
+        // newest target to the pending intent and let the drain honor it, which covers a
+        // TRACK switch too: the reload that comes out of one resumes wherever this says.
+        //
+        // Ahead of the METHOD guard, not just the buffer one: `beginPlayback` writes
+        // `resolved` before `loadAndPlay` suspends, so a reload the server answered with a
+        // direct-play stream (it is allowed to) reads `.directPlay` here while the engine is
+        // still mid-`load()` — and the in-stream branch would seek it there.
+        if isReloadingTranscode {
+            pendingReload.merge(position: target)
+            return true
+        }
         // Only a transcode can restart ffmpeg under the item's timeline mapping;
         // direct play / VLC / SMB seek in-stream. Delivery (copy vs re-encode) does
         // NOT exempt — see the doc above.
@@ -2721,32 +2794,20 @@ final class PlayerViewModel {
             await engine.seek(to: target)
             return false
         }
-        // A re-anchor already in flight makes the engine's buffer state meaningless
-        // (it's mid-reload) — hand the newest target to the drain and let it win.
-        if isReanchoring {
-            pendingReanchorTarget = target
-            return true
-        }
         if await engine.isBuffered(at: target) {
             await engine.seek(to: target)
             return false
         }
-        // Out of buffer, no sidecar rendering, no reload in flight: nothing reads the
-        // clock absolutely, so take the in-stream seek (buffer intact, ordinary
-        // re-buffer UX) and record the possibly-shifted mapping for the next sidecar
-        // activation to launder. The `isSwitchingTracks` check is load-bearing: a
-        // reload's OPTIMISTIC selection (e.g. a burn-in pick) can read as "no sidecar"
-        // mid-flight, and an in-stream seek then would both race the dying engine and
-        // mark dirty in a window where a failed switch RESTORES a text sidecar without
-        // laundering. Inside that window only the re-anchor path is safe — it degrades
-        // to the documented drop-don't-queue abandon.
-        if !sidecarSubtitleActive && !isSwitchingTracks {
+        // Out of buffer with no sidecar rendering: nothing reads the clock absolutely, so
+        // take the in-stream seek (buffer intact, ordinary re-buffer UX) and record the
+        // possibly-shifted mapping for the next sidecar activation to launder.
+        if !sidecarSubtitleActive {
             transcodeTimelineDirty = true
             await engine.seek(to: target)
             return false
         }
-        pendingReanchorTarget = target
-        await drainReanchorSeeks()
+        pendingReload.merge(position: target)
+        await drainPendingReloads()
         return true
     }
 
@@ -2857,55 +2918,191 @@ final class PlayerViewModel {
         // indistinguishable from an ordinary in-stream seek.
         guard !isExiting else { return }
         // The commit is what the hold was holding for, so this is where it ends. The reconcile
-        // is unconditional, though: a re-anchor's reload force-resumes whether or not a hold
-        // was ever up, so a paused chapter jump out of buffer has to be put back too. One
-        // statement covers both shapes a commit can end in, because it asks the question both
-        // were approximating — where should the engine be right now. This is `endScrubHold`
-        // without its guard, so the command goes out exactly once whether or not a hold was up.
+        // is unconditional, though: it asks the question every shape of commit was
+        // approximating — where should the engine be right now — and it is the one that is
+        // ORDERED against the seek, which the reload's own tail (`loadAndPlay`) cannot be for
+        // an in-stream seek that never reloaded. This is `endScrubHold` without its guard, so
+        // the command goes out exactly once whether or not a hold was up.
         isHoldingStillFrame = false
         commandTransport(engineShouldPlay)
     }
 
-    /// Single-flight drain of `pendingReanchorTarget`: the first caller re-resolves the
-    /// transcode at the latest pending target, then loops to pick up any newer target
-    /// that arrived during the (multi-second) re-buffer — so a scrub past the buffer
-    /// settles on where the user stopped, not the first overshoot.
-    private func drainReanchorSeeks() async {
-        guard !isReanchoring else { return }
-        isReanchoring = true
-        defer { isReanchoring = false }
-        while let target = pendingReanchorTarget {
-            pendingReanchorTarget = nil
-            // Newest-wins: a seek arriving during the reload re-sets the target and the
-            // loop picks it up next iteration. But STOP on any non-`.completed` outcome —
-            // `.abandoned` (a concurrent track switch holds the reload, or the player is
-            // exiting) would otherwise spin against the block, and `.failed`/`.fellBack`
-            // would reload into a torn-down or fallback surface. The rare dropped seek
-            // (scrub during an audio switch) is re-issued by the next scrub.
-            guard case .completed = await reloadTranscode(
-                resumeAt: target,
-                audioStreamIndex: currentAudioStreamIndex,
-                subtitleStreamIndex: currentSubtitleStreamIndex
-            ) else {
-                // Also drop any target queued during the failed attempt: the fallback
-                // resumed the OLD stream, and a stale drain against it would fight the
-                // user's next (fresh) scrub.
-                pendingReanchorTarget = nil
+    /// Single-flight drain of `pendingReload`, and the ONLY caller of `reloadTranscode`:
+    /// takes whatever is standing, reloads once around it, settles every dimension, then
+    /// loops to pick up anything that landed during the (multi-second) re-buffer. So a
+    /// scrub past the buffer settles on where the user stopped rather than the first
+    /// overshoot, and a pick made mid-reload costs exactly one more re-resolve.
+    ///
+    /// Re-entrant callers return immediately: `reloadInFlight` says a loop is already
+    /// running, and it will see what they merged.
+    private func drainPendingReloads() async {
+        guard reloadInFlight == nil else { return }
+        // Every await below can resume in a session this loop no longer belongs to (see
+        // `sessionGeneration`); past that point it must write NOTHING — not a settle, not
+        // the latch, not the flush.
+        let generation = sessionGeneration
+        while !pendingReload.isEmpty {
+            let intent = pendingReload
+            pendingReload = PendingReload()
+            reloadInFlight = intent
+            let outcome = await reloadTranscode(
+                // The transcode plays a full-timeline HLS playlist the engine SEEKS to the
+                // resume offset (Jellyfin ignores StartTimeTicks for the playlist start), so
+                // `currentPosition` is already absolute media time — resume the new stream
+                // right there. (Adding the old origin double-counted it, so resume drifted
+                // further forward on every track switch.)
+                resumeAt: intent.position ?? currentPosition,
+                audioStreamIndex: intent.audio?.pick.id.jellyfinStreamIndex ?? currentAudioStreamIndex,
+                subtitleStreamIndex: intent.subtitle.map { Self.subtitleIndex(of: $0.pick) } ?? currentSubtitleStreamIndex,
+                generation: generation
+            )
+            guard generation == sessionGeneration else { return }
+            await settle(intent, outcome)
+            guard generation == sessionGeneration else { return }
+            reloadInFlight = nil
+            // Newest-wins keeps looping, but STOP on any non-`.completed` outcome:
+            // `.abandoned` (the player is exiting) would spin against the block, and
+            // `.failed`/`.fellBack` would reload into a torn-down or fallback surface.
+            // Anything queued during the failed attempt goes with it — the fallback resumed
+            // the OLD stream, and a stale intent against it would fight the user's next move.
+            //
+            // Its optimistic labels go back too, but ONLY for a dimension the failed intent
+            // did not carry: `settle` has already restored those to the selection that stood
+            // before the run's FIRST pick, and a queued change's `previous` is the pick that
+            // was in flight — a track that never played. Restoring it over the older one left
+            // the menu there while the scrim named something else, and the re-tap then died
+            // on `track != selectedAudioTrack`.
+            guard case .completed = outcome else {
+                restoreSelections(audio: intent.audio == nil ? pendingReload.audio : nil,
+                                  subtitle: intent.subtitle == nil ? pendingReload.subtitle : nil)
+                pendingReload = PendingReload()
                 break
             }
         }
+        // The flush the mid-reload transport guard promises. `reloadInFlight` stays set
+        // through `settle` — an engine deselect plus a sidecar fetch, seconds on a text sub —
+        // and a pause pressed in that window is dropped by `commandTransport` with nothing to
+        // replay it: only `commitSeek` re-derives afterwards, so an audio/subtitle drain left
+        // audio playing under a paused glyph.
+        commandTransport(engineShouldPlay)
+    }
+
+    /// Jellyfin's "no subtitle" sentinel for an Off pick — the wire value `-1`, distinct
+    /// from the `nil` that asks the server to choose again.
+    private static func subtitleIndex(of track: SubtitleTrack?) -> Int {
+        track?.id.jellyfinStreamIndex ?? -1
+    }
+
+    /// The ONE place a reload's outcome is answered, per dimension. Everything the old
+    /// `selectAudioTrack` switch and `reloadSubtitleTranscode` switch did lives here, which
+    /// is what lets a merged reload settle an audio pick and a subtitle pick from one result.
+    private func settle(_ intent: PendingReload, _ outcome: TrackSwitchOutcome) async {
+        switch outcome {
+        case .completed:
+            // Another reload is already queued, so this session is an intermediate one: its
+            // sidecar URLs, its clock and its menus are all about to be replaced. Settling
+            // here installs an overlay a queued Off would never clear, and a fetch between
+            // iterations lets the intermediate session's observed beat release the seek hold
+            // and snap the bar back. Ride the dimensions forward instead — a newer pick of
+            // the same dimension supersedes, everything else settles on the LAST reload.
+            guard pendingReload.isEmpty else {
+                if pendingReload.audio == nil { pendingReload.audio = intent.audio }
+                if pendingReload.subtitle == nil { pendingReload.subtitle = intent.subtitle }
+                return
+            }
+            if let audio = intent.audio {
+                persistTrackSelection(.audio(languageCode: audio.pick.languageCode))
+            }
+            if let subtitle = intent.subtitle {
+                await settleSubtitle(subtitle)
+                // A declined burn-in's scrim, raised only now — the rollback carrying the
+                // record is the reload that just landed, and its own optimistic clear is
+                // behind us. Nothing carries the record forward from here: a pick queued
+                // during the rollback took its dimension, and with it the record.
+                if let record = subtitle.reportOnLand { trackSwitchFailure = record }
+            }
+        case .abandoned:
+            // The reload never ran (the player is exiting) — quietly restore the checkmarks
+            // so no menu shows a track that isn't playing.
+            restoreSelections(audio: intent.audio, subtitle: intent.subtitle)
+        case .fellBack:
+            // Playback resumed on the previous stream: restore the checkmarks and surface
+            // the failure scrim (retry / keep current track). One scrim per reload, so a
+            // merged pick reports the audio dimension — the louder of the two; a
+            // position-only reload reports nothing, as it never did.
+            restoreSelections(audio: intent.audio, subtitle: intent.subtitle)
+            if let audio = intent.audio {
+                trackSwitchFailure = TrackSwitchFailure(audio: audio)
+            } else if let subtitle = intent.subtitle {
+                // A rollback is not a user pick, so its own failure is never the scrim's
+                // subject: when the rollback of a declined burn-in falls back too, the scrim
+                // still names the burn-in the user asked for and the track it stayed on.
+                trackSwitchFailure = subtitle.reportOnLand ?? TrackSwitchFailure(subtitle: subtitle)
+            }
+        case .failed:
+            break   // phase == .failed — the general error scrim owns the surface
+        }
+    }
+
+    /// The optimistic picks, put back after a reload that never landed. Per dimension rather
+    /// than per intent: a failed run restores from two intents at once (the one that failed
+    /// and whatever was queued behind it), and only the older `previous` of each dimension is
+    /// the selection that actually stood.
+    private func restoreSelections(audio: PendingReload.AudioChange?, subtitle: PendingReload.SubtitleChange?) {
+        if let audio { selectedAudioTrack = audio.previous }
+        if let subtitle {
+            selectedSubtitleTrack = subtitle.previous
+            restoreSidecarSubtitle(subtitle.previous)
+        }
+    }
+
+    /// What a LANDED reload owes the subtitle it was built around.
+    private func settleSubtitle(_ change: PendingReload.SubtitleChange) async {
+        let target = change.pick
+        let index = Self.subtitleIndex(of: target)
+        // A burn-in is the one pick whose success the client can't see: the subtitle lives
+        // inside the video pixels, so a server that quietly declined to paint it looks
+        // exactly like one that did. Ask the fresh session what it actually agreed to.
+        if let target, target.isBurnedIn, !serverBurnsInSubtitle(at: index) {
+            // The declined session was still negotiated FOR a burn-in — video stream copy
+            // off, a full re-encode with nothing to show for it — so the rollback re-resolves
+            // rather than merely restoring the overlay, or the wasteful session outlives the
+            // failed pick. Leaving the dead index recorded would also make the next switch
+            // ask for it again. No recursion: the fallback is never a burn-in.
+            let fallback = change.previous.flatMap { $0.isBurnedIn ? nil : $0 }
+            // `previous: fallback`, not the declined target: if the rollback ALSO fails, the
+            // menu and the overlay must land on the fallback the scrim names — which is what
+            // lets the scrim's retry of the burn-in pass `track != selectedSubtitleTrack`.
+            pendingReload.merge(subtitle: fallback, previous: fallback)
+            // The scrim rides the rollback rather than going up here: the rollback clears
+            // `trackSwitchFailure` optimistically like any other pick, so a record written
+            // now would be wiped before anyone saw it.
+            pendingReload.subtitle?.reportOnLand = TrackSwitchFailure(declined: target, fallback: fallback)
+            return
+        }
+        // The whole point of queueing a text pick: the URLs it fetches belong to the session
+        // this reload just opened, not the one it replaced.
+        if let target, !target.isBurnedIn, let streamIndex = target.id.jellyfinStreamIndex {
+            await activateSidecarSubtitle(target, index: streamIndex)
+        } else if target == nil {
+            // Off landing on a fresh session: the overlay was dropped optimistically when the
+            // pick was queued, but a reload that superseded a text pick can have re-installed
+            // one under it (`applyTranscodeDefaultSubtitle`, `populateTranscodeMenus`).
+            clearSidecarSubtitle()
+        }
+        persistTrackSelection(.subtitles(languageCode: target?.languageCode))
     }
 
     /// Re-resolve a fresh transcode session resuming at `resume`, reusing the engine so
     /// its video layer + audio session stay live (the surface holds the last frame
-    /// through the swap instead of blinking to black). Shared by the audio/subtitle
-    /// track switch (new indices, resume at the current position) and the re-anchor seek
-    /// (same indices, `resume` = the seek target). Costs a brief re-buffer — the server
-    /// re-encodes around the new anchor.
+    /// through the swap instead of blinking to black). Called only by
+    /// `drainPendingReloads`, which is where the indices and the resume point come from.
+    /// Costs a brief re-buffer — the server re-encodes around the new anchor.
     private func reloadTranscode(
         resumeAt resume: CMTime,
         audioStreamIndex: Int?,
-        subtitleStreamIndex: Int?
+        subtitleStreamIndex: Int?,
+        generation: Int
     ) async -> TrackSwitchOutcome {
         // Cancellation shield: every scrub surface cancels its in-flight commit when
         // newer input lands (`scrubCommitTask?.cancel()`, `SeekCommitCoalescer`), and
@@ -2920,7 +3117,8 @@ final class PlayerViewModel {
             await performTranscodeReload(
                 resumeAt: resume,
                 audioStreamIndex: audioStreamIndex,
-                subtitleStreamIndex: subtitleStreamIndex
+                subtitleStreamIndex: subtitleStreamIndex,
+                generation: generation
             )
         }.value
     }
@@ -2938,26 +3136,24 @@ final class PlayerViewModel {
     /// `loadAndPlay` installs the replacement when `load()` returns. The only path that puts
     /// the OLD stream back on screen — `fallBackAfterFailedSwitch`, after a failed
     /// re-resolve — puts its session back with it; an exit through this window is `stop()`'s.
+    /// `generation` is the DRAIN's, captured before it claimed the intent — never re-read
+    /// here. A `resetForReplay` landing in the MainActor hop into this task would otherwise
+    /// hand the reload the replacement's generation, and every fence below would wave through
+    /// a load of the previous episode's stream at the previous episode's indices.
     private func performTranscodeReload(
         resumeAt resume: CMTime,
         audioStreamIndex: Int?,
-        subtitleStreamIndex: Int?
+        subtitleStreamIndex: Int?,
+        generation: Int
     ) async -> TrackSwitchOutcome {
-        // The chips stay mounted through .loading — a second pick (or seek) mid-reload
-        // must wait for (not race) the in-flight reload.
-        guard !isSwitchingTracks, let item = playingItem else {
-            // The re-anchor is not happening, and `drainReanchorSeeks` drops the target on any
+        guard let item = playingItem else {
+            // The reload is not happening, and `drainPendingReloads` drops the intent on any
             // non-`.completed` outcome — so a hold armed at it now points at a place nothing
             // will play. Same reasoning (and same fix) as `fallBackAfterFailedSwitch`: hand the
             // bar and the resume point back to whatever stream is actually running.
             seekHold = nil
             return .abandoned
         }
-
-        // Keep the engine + its layer alive across the reload (beginPlayback reloads
-        // it). Suppress the outgoing stream's trailing beats while we do.
-        isSwitchingTracks = true
-        defer { isSwitchingTracks = false }
 
         // The decision point — see the doc above. Everything the outgoing media publishes
         // from here on describes a stream this player has already walked away from, and the
@@ -2977,82 +3173,99 @@ final class PlayerViewModel {
         // flush AVPlayerLayer to black (see `AVKitVideoLayerHost.onFreezeReady`).
         // Taken BEFORE the silence's await so the frame on screen is the live one.
         freezeVideoSurface()
-        await engine?.silence()
-        phase = .loading
-        // The outgoing stream's buffer is meaningless for the new transcode —
-        // showing it would advertise instant seeks the reload can't honor.
-        bufferedTo = nil
-        // Kill the outgoing encoding FIRST (the replacement job must not fight
-        // an abandoned one for the source file), close the outgoing session,
-        // then reset the lifecycle flags — the reload is a brand-new play
-        // session that must reportStart/reportStopped/stopEncoding on its own
-        // terms. Trade-off: if the re-resolve FAILS, the silent fallback
-        // resumes the old stream on a dead encoding — it plays out its buffer
-        // and may stall into the failure scrim, which is still strictly better
-        // than every successful reload livelocking.
-        //
-        // The other cost of this order, and why it stays anyway: the outgoing item is still
-        // attached for the whole re-resolve, playing a playlist whose ffmpeg job just died —
-        // so it can fail on its own (device-confirmed: `CoreMediaErrorDomain -19602` on the
-        // session's `master.m3u8`). Deferring the kill until after the resolve would trade a
-        // cosmetic failure for the encode contention the comment above was written for, which
-        // is device-diagnosed and unrecoverable. It costs nothing instead, because the session
-        // was closed above: that failure — and every ordinary beat the abandoned item keeps
-        // publishing at the pre-scrub clock — carries a session no longer active, so `handle`
-        // drops it.
-        let boundary = ContinuousClock.now
-        await stopEncodingIfNeeded()
-        await reportStoppedIfNeeded()
-        // The boundary the whole re-anchor trail hangs off: after this line the outgoing
-        // ffmpeg job is dead and nothing has replaced it yet. The play session is named in
-        // clear so a later failure log can be read against the URL it carries — the abandoned
-        // stream and its replacement differ by nothing else — and the elapsed time is what
-        // separates "the kill was slow" from "the re-resolve was".
-        Log.playback.info(
-            """
-            reload boundary: superseded=\(superseded?.description ?? "none", privacy: .public) \
-            playSession=\(closingPlaySession ?? "—", privacy: .public) \
-            killed+reported in \(Self.millis(since: boundary), privacy: .public)ms, \
-            re-resolving at \(CMTimeGetSeconds(resume), format: .fixed(precision: 1), privacy: .public)s
-            """
-        )
-        didReportStart = false
-        didReportStopped = false
-        didStopEncoding = false
-        // The reload dispatches a fresh engine.play() below (via beginPlayback →
-        // loadAndPlay), which re-arms startupClockStart — this session's old metric
-        // must not linger on screen until that beat lands.
-        startupClockStart = nil
-        startupMillis = nil
-        // The delivery verdict belonged to the outgoing session (a burn-in subtitle
-        // switch can flip the video to a re-encode, and a re-anchor opens a fresh
-        // session) — drop the stale verdict so the delivery debug row shows
-        // "probing…" until the new session's first `.playing` beat re-probes.
-        deliveryProbeTask?.cancel()
-        deliveryProbeTask = nil
-        transcodeDelivery = nil
-        // A stale "exhausted" from the outgoing session must not carry over: the debug row
-        // gates on this flag when `transcodeDelivery` is nil, and without the reset it would
-        // show "no delivery info" for the whole reload window instead of "probing…" until
-        // `startDeliveryProbe` re-arms on the new session's first `.playing` beat.
-        deliveryProbeExhausted = false
-
+        // Every write below belongs to THIS session, and every await before them can
+        // resume in one that replaced it: a reload parked across an episode handoff used
+        // to raise the reload scrim over playing video and re-arm PlaybackStart on a
+        // session that had already reported it. Fenced by the same `catch` the load is.
         do {
+            await engine?.silence()
+            try checkStillActive(generation: generation)
+            // Paired with the assignment below and released by the phase's `didSet`: this is
+            // what tells every scrim and gate that the `.loading` about to be set is a reload
+            // over a live frame, not a cold start.
+            midSessionReload = reloadInFlight
+            phase = .loading
+            // The outgoing stream's buffer is meaningless for the new transcode —
+            // showing it would advertise instant seeks the reload can't honor.
+            bufferedTo = nil
+            // Kill the outgoing encoding FIRST (the replacement job must not fight
+            // an abandoned one for the source file), close the outgoing session,
+            // then reset the lifecycle flags — the reload is a brand-new play
+            // session that must reportStart/reportStopped/stopEncoding on its own
+            // terms. Trade-off: if the re-resolve FAILS, the silent fallback
+            // resumes the old stream on a dead encoding — it plays out its buffer
+            // and may stall into the failure scrim, which is still strictly better
+            // than every successful reload livelocking.
+            //
+            // The other cost of this order, and why it stays anyway: the outgoing item is still
+            // attached for the whole re-resolve, playing a playlist whose ffmpeg job just died —
+            // so it can fail on its own (device-confirmed: `CoreMediaErrorDomain -19602` on the
+            // session's `master.m3u8`). Deferring the kill until after the resolve would trade a
+            // cosmetic failure for the encode contention the comment above was written for, which
+            // is device-diagnosed and unrecoverable. It costs nothing instead, because the session
+            // was closed above: that failure — and every ordinary beat the abandoned item keeps
+            // publishing at the pre-scrub clock — carries a session no longer active, so `handle`
+            // drops it.
+            let boundary = ContinuousClock.now
+            await stopEncodingIfNeeded()
+            try checkStillActive(generation: generation)
+            // The stop report names the session `resolved` points at — which is the REPLACEMENT's
+            // after a handoff, so a stale reload reporting here would close a session that just
+            // opened.
+            await reportStoppedIfNeeded()
+            try checkStillActive(generation: generation)
+            // The boundary the whole re-anchor trail hangs off: after this line the outgoing
+            // ffmpeg job is dead and nothing has replaced it yet. The play session is named in
+            // clear so a later failure log can be read against the URL it carries — the abandoned
+            // stream and its replacement differ by nothing else — and the elapsed time is what
+            // separates "the kill was slow" from "the re-resolve was".
+            Log.playback.info(
+                """
+                reload boundary: superseded=\(superseded?.description ?? "none", privacy: .public) \
+                playSession=\(closingPlaySession ?? "—", privacy: .public) \
+                killed+reported in \(Self.millis(since: boundary), privacy: .public)ms, \
+                re-resolving at \(CMTimeGetSeconds(resume), format: .fixed(precision: 1), privacy: .public)s
+                """
+            )
+            didReportStart = false
+            didReportStopped = false
+            didStopEncoding = false
+            // The reload dispatches a fresh engine.play() below (via beginPlayback →
+            // loadAndPlay), which re-arms startupClockStart — this session's old metric
+            // must not linger on screen until that beat lands.
+            startupClockStart = nil
+            startupMillis = nil
+            // The delivery verdict belonged to the outgoing session (a burn-in subtitle
+            // switch can flip the video to a re-encode, and a re-anchor opens a fresh
+            // session) — drop the stale verdict so the delivery debug row shows
+            // "probing…" until the new session's first `.playing` beat re-probes.
+            deliveryProbeTask?.cancel()
+            deliveryProbeTask = nil
+            transcodeDelivery = nil
+            // A stale "exhausted" from the outgoing session must not carry over: the debug row
+            // gates on this flag when `transcodeDelivery` is nil, and without the reset it would
+            // show "no delivery info" for the whole reload window instead of "probing…" until
+            // `startDeliveryProbe` re-arms on the new session's first `.playing` beat.
+            deliveryProbeExhausted = false
+
             try await beginPlayback(
                 item: item,
                 startTime: resume,
                 audioStreamIndex: audioStreamIndex,
                 subtitleStreamIndex: subtitleStreamIndex,
                 reusingEngine: true,
-                superseding: superseded
+                superseding: superseded,
+                generation: generation
             )
             return .completed
         } catch is CancellationError {
-            // Exit raced the reload — stop() already owns the teardown. The shield in
-            // `reloadTranscode` guarantees the exit fence is the only cancellation
-            // source; verify it, because a bare `.abandoned` restores no state and a
-            // NON-exit cancellation would strand the .loading scrim forever.
-            guard isExiting else {
+            // Exit — or the session handoff `resetForReplay` performs — raced the reload;
+            // `stop()` already owns the teardown, and the drain's own generation check drops
+            // the intent without touching the session that replaced this one. The shield in
+            // `reloadTranscode` guarantees those are the only cancellation sources; verify
+            // it, because a bare `.abandoned` restores no state and a NON-exit cancellation
+            // would strand the .loading scrim forever.
+            guard isExiting || generation != sessionGeneration else {
                 return await fallBackAfterFailedSwitch(
                     .unexpected("transcode reload cancelled mid-flight",
                                 underlying: AnySendableError(CancellationError())),
@@ -3069,24 +3282,6 @@ final class PlayerViewModel {
                 restoring: superseded
             )
         }
-    }
-
-    /// Rebuilds the transcode around new stream indices, resuming at the current
-    /// position. Costs a brief re-buffer — the server has to re-encode around the
-    /// chosen track. The engine instance is REUSED (reloaded), so the video surface
-    /// stays mounted and holds the last frame through the swap instead of blinking to
-    /// black; the audio session stays active too.
-    private func switchTranscodeTrack(audioStreamIndex: Int?, subtitleStreamIndex: Int?) async -> TrackSwitchOutcome {
-        // The transcode plays a full-timeline HLS playlist the engine SEEKS to the
-        // resume offset (Jellyfin ignores StartTimeTicks for the playlist start), so
-        // currentPosition is already absolute media time — resume the new stream right
-        // there. (Adding the old origin double-counted it, so resume drifted further
-        // forward on every track switch.)
-        await reloadTranscode(
-            resumeAt: currentPosition,
-            audioStreamIndex: audioStreamIndex,
-            subtitleStreamIndex: subtitleStreamIndex
-        )
     }
 
     /// The design's "failures are loud, fallbacks are silent": when the re-resolve
@@ -3134,8 +3329,10 @@ final class PlayerViewModel {
         // here hands both back to the resumed stream at once.
         seekHold = nil
         phase = .playing
-        desiredPlaying = true
-        await engine.play()
+        // Resume from the STANDING intent, not from a hardcoded play: the failed reload's
+        // window is long enough for the user to have paused inside it (lock screen, the
+        // transport button), and overwriting that would restart audio nobody asked for.
+        if engineShouldPlay { await engine.play() } else { await engine.pause() }
         return .fellBack(error)
     }
 
@@ -3588,7 +3785,8 @@ final class PlayerViewModel {
         guard !Task.isCancelled, !isExiting else { return }
 
         do {
-            try await loadAndPlay(retryAsset, reusingEngine: false, forcedEngine: .vlcKit)
+            try await loadAndPlay(retryAsset, reusingEngine: false, forcedEngine: .vlcKit,
+                                  generation: sessionGeneration)
         } catch is CancellationError {
             // Exit raced the retry — stop() owns the real teardown.
         } catch let error as AppError {
@@ -3647,8 +3845,16 @@ final class PlayerViewModel {
             .filter { $0.kind == .subtitle }
             .map(Self.subtitleTrack(from:))
 
-        selectedAudioTrack = availableAudioTracks.first { $0.id == currentAudioStreamIndex.map(TrackID.jellyfinStream) }
-        selectedSubtitleTrack = availableSubtitleTracks.first { $0.id == currentSubtitleStreamIndex.map(TrackID.jellyfinStream) }
+        // The LISTS always rebuild — a reload can change what the server offers — but a
+        // dimension with a pick already queued belongs to that pick, not to the indices this
+        // reload resolved with. `beginPlayback` runs on every reload, so without this a pick
+        // made during R1 would read the OLD track for the whole of R2.
+        if pendingReload.audio == nil {
+            selectedAudioTrack = availableAudioTracks.first { $0.id == currentAudioStreamIndex.map(TrackID.jellyfinStream) }
+        }
+        if pendingReload.subtitle == nil {
+            selectedSubtitleTrack = availableSubtitleTracks.first { $0.id == currentSubtitleStreamIndex.map(TrackID.jellyfinStream) }
+        }
     }
 
     private func makeAsset(from resolved: ResolvedPlayback) -> PlayableAsset {
