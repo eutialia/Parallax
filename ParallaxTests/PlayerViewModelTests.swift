@@ -1725,7 +1725,7 @@ struct PlayerViewModelTests {
     @Test("a commit made during a track switch keeps its hold — the switch's drain re-anchors at the target")
     func commitDuringATrackSwitchKeepsItsHold() async throws {
         let gate = ResolveGate()
-        nonisolated(unsafe) var resolveStarts: [CMTime?] = []
+        let resolveStarts = CallRecorder<CMTime?>()
         let (vm, engines) = try await makeReanchorVM(at: 600, resolve: { _, _, start, _ in
             resolveStarts.append(start)
             await gate.wait()
@@ -1747,7 +1747,7 @@ struct PlayerViewModelTests {
 
         // Two reloads out of one window: the switch at the live position, then the merged
         // seek at the target — and the bar was showing that target the whole time.
-        #expect(resolveStarts.compactMap { $0.map(CMTimeGetSeconds) } == [600, 3_000])
+        #expect(resolveStarts.values.compactMap { $0.map(CMTimeGetSeconds) } == [600, 3_000])
         engine.push(.playing(3_000.5))
         try await engine.settle()
         #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000.5)

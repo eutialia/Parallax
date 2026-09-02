@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import CoreMedia
+import Synchronization
 @testable import Parallax
 import ParallaxPlayback
 import ParallaxPlaybackTestSupport
@@ -9,6 +10,17 @@ import ParallaxPlaybackTestSupport
 
 // FakePlaybackEngine, PlaybackEngineCapabilities.avKit, and FakeCapabilityProbe
 // are imported from ParallaxPlaybackTestSupport.
+
+/// A call ledger a `@Sendable` closure can append to from any executor and a test can read on
+/// the MainActor. Replaces the `nonisolated(unsafe) var` arrays the recorders used to be.
+final class CallRecorder<Element: Sendable>: Sendable {
+    private let storage = Mutex<[Element]>([])
+    func append(_ element: Element) { storage.withLock { $0.append(element) } }
+    var values: [Element] { storage.withLock { $0 } }
+    var count: Int { values.count }
+    var last: Element? { values.last }
+    var isEmpty: Bool { values.isEmpty }
+}
 
 struct NoopAudioSession: AudioSessionControlling {
     let routeChanges: AsyncStream<Void> = AsyncStream { _ in }
