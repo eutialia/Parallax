@@ -517,11 +517,7 @@ final class PlayerViewModel {
     private func recomputeChapterFractions() {
         let dur = CMTimeGetSeconds(currentDuration)
         guard dur > 0 else { chapterFractions = []; return }
-        chapterFractions = chapters.map { chapter in
-            let c = chapter.start.components
-            let s = Double(c.seconds) + Double(c.attoseconds) / 1e18
-            return (s / dur).unitClamped
-        }
+        chapterFractions = chapters.map { ($0.start.fractionalSeconds / dur).unitClamped }
     }
 
     /// Sets `currentDuration` and refreshes the derived `chapterFractions` ONLY when the
@@ -534,28 +530,36 @@ final class PlayerViewModel {
         recomputeChapterFractions()
     }
 
+    /// The chapter holding `seconds`: the last one starting at or before it, or the first
+    /// when the position is still before the first start. A non-finite position also
+    /// answers the first — `CMTimeGetSeconds` reports NaN before the first frame lands.
+    /// Nil without chapters. The one rule behind the scrub bubble's caption, the chapter menu's
+    /// highlighted row and the row it opens on.
+    nonisolated static func chapter(in chapters: [Chapter], atSeconds seconds: Double) -> Chapter? {
+        guard seconds.isFinite else { return chapters.first }
+        return chapters.last { $0.start.fractionalSeconds <= seconds } ?? chapters.first
+    }
+
+    /// The id of the chapter the bar's virtual indicator sits in, so the chapter menu's
+    /// highlight walks with a step or a swipe and lands with the commit, like the bar does.
+    var currentChapterID: Int? {
+        Self.chapter(in: chapters, atSeconds: CMTimeGetSeconds(virtualPosition))?.id
+    }
+
     /// The chapter containing `atSeconds`, formatted "Chapter N · Name" — the scrub
     /// bubble's caption on every platform. Nil when the item has no chapters.
     func chapterTitle(atSeconds: Double) -> String? {
-        let chapters = chapters
-        guard !chapters.isEmpty else { return nil }
-        func startSeconds(_ chapter: Chapter) -> Double {
-            let c = chapter.start.components
-            return Double(c.seconds) + Double(c.attoseconds) / 1e18
-        }
-        let current = chapters.last(where: { startSeconds($0) <= atSeconds }) ?? chapters[0]
+        guard let current = Self.chapter(in: chapters, atSeconds: atSeconds) else { return nil }
         if let name = current.name, !name.isEmpty {
             return "Chapter \(current.index + 1) · \(name)"
         }
         return "Chapter \(current.index + 1)"
     }
 
-    /// Seek to a chapter's start. Reconstruct the full sub-second offset (the
-    /// fractional part lives in `attoseconds`) — `.seconds` alone would land a
-    /// chapter with a fractional start up to ~1s early, inside the prior chapter.
+    /// Seek to a chapter's start, at its full sub-second offset — a chapter with a
+    /// fractional start rounded down would land up to ~1s early, inside the prior chapter.
     func seekToChapter(_ chapter: Chapter) async {
-        let c = chapter.start.components
-        let seconds = Double(c.seconds) + Double(c.attoseconds) / 1e18
+        let seconds = chapter.start.fractionalSeconds
         // Transport-preserving: a paused chapter jump must stay paused across an
         // out-of-buffer re-anchor.
         await commitSeek(to: CMTime(seconds: seconds, preferredTimescale: 600))

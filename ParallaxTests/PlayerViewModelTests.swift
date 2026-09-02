@@ -2008,6 +2008,29 @@ struct PlayerViewModelTests {
         #expect(vm.concreteFraction == 600 / duration, "the picture is still at A until the engine lands")
     }
 
+    /// The chapter menu highlights the chapter the bar's VIRTUAL indicator is in, so the
+    /// highlight walks with a step or a swipe and hands back on a cancel, like the bar.
+    @Test("the current chapter follows the virtual position")
+    func currentChapterFollowsTheVirtualPosition() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let vm = makePlayerVM(reporting: StubPlaybackReporting(), engine: engine,
+                              resolved: PlayerFixtures.resolved())
+        await vm.start(item: PlayerFixtures.movieDetailWithChapters(startsSeconds: [0, 600, 1200],
+                                                                    runtime: .seconds(1800)))
+        #expect(vm.currentChapterID == 0, "before the first beat the clock is invalid: the first chapter")
+
+        engine.push(.playing(700, duration: .seconds(1800)))
+        try await engine.settle()
+        #expect(vm.currentChapterID == 1)
+
+        vm.beginPreview(at: CMTime(seconds: 1_300, preferredTimescale: 600))
+        #expect(vm.currentChapterID == 2, "a preview is the bar's promise")
+        vm.updatePreview(to: CMTime(seconds: 100, preferredTimescale: 600))
+        #expect(vm.currentChapterID == 0)
+        vm.cancelPreview()
+        #expect(vm.currentChapterID == 1, "cancelled: back to the clock")
+    }
+
     @Test("a cancelled preview hands the virtual position back to the clock")
     func virtualPositionAfterCancel() async throws {
         let (vm, _) = try await makeReanchorVM(at: 600)

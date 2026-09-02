@@ -646,8 +646,7 @@ struct PlayerControlsView: View {
         case .speed:
             SpeedMenu.leadingRowID(options: speedOptions, selected: Double(vm.playbackRate))
         case .chapters:
-            ChapterMenu.leadingRowID(chapters: vm.chapters,
-                                     atSeconds: CMTimeGetSeconds(vm.currentPosition))
+            vm.currentChapterID.map(TrackMenuRowID.chapter)
         }
     }
 
@@ -1442,7 +1441,7 @@ struct PlayerControlsView: View {
     @ViewBuilder
     private var chapterMenuList: some View {
         trackMenuPanel(.chapters) {
-            ChapterMenu(chapters: vm.chapters) { chapter in
+            ChapterMenu(chapters: vm.chapters, currentID: vm.currentChapterID) { chapter in
                 closeMenu(); resetHideTimer()
                 #if !os(tvOS)
                 cancelPendingSeek()

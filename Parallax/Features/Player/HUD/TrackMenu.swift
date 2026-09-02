@@ -227,6 +227,9 @@ private struct MenuRow<Trailing: View>: View {
                     .contentShape(.rect)
                     .opacity(isUnavailable ? MenuMetrics.unavailableOpacity : 1)
                     .animation(.tvFocusChrome, value: focused)
+                    // The selection can move under an open panel (playback crossing into
+                    // the next chapter): the fill hands over by crossfade, not a snap.
+                    .animation(.default, value: isSelected)
             }
         }
         .tvMenuRowButton()
@@ -365,28 +368,23 @@ struct SubtitleTrackMenu: View {
 
 struct ChapterMenu: View {
     let chapters: [Chapter]
+    /// The chapter the playhead (the bar's virtual indicator) is in — the highlighted row,
+    /// like the selected track in the other menus. It moves while the panel is open.
+    let currentID: Int?
     let onSelect: (Chapter) -> Void
-
-    /// The row the panel opens scrolled to (and focuses on tvOS): no row is "selected",
-    /// so lead with the chapter containing the playhead.
-    ///
-    /// A non-finite position leads with the first chapter: `CMTimeGetSeconds` answers NaN
-    /// for an invalid/indefinite time — which is what the engine reports before the first
-    /// frame lands — and `Duration.seconds(_:)` traps on it.
-    nonisolated static func leadingRowID(chapters: [Chapter], atSeconds seconds: Double) -> TrackMenuRowID? {
-        guard seconds.isFinite else { return chapters.first.map { .chapter($0.id) } }
-        return (chapters.last { $0.start <= .seconds(seconds) } ?? chapters.first).map { .chapter($0.id) }
-    }
 
     var body: some View {
         // The outer `LazyVStack` in `TrackMenuPanel` realizes these rows lazily, so a 30–60 chapter
         // movie defers off-screen rows (no build+measure hang on present).
         ForEach(chapters) { chapter in
-            MenuRow(rowID: .chapter(chapter.id), isSelected: false, action: { onSelect(chapter) }) {
+            let isCurrent = chapter.id == currentID
+            MenuRow(rowID: .chapter(chapter.id), isSelected: isCurrent, action: { onSelect(chapter) }) {
                 HStack(spacing: Space.s12) {
+                    // The index stands in for the check column: the current chapter's reads
+                    // as ink, the rest recede.
                     Text("\(chapter.index + 1)")
                         .font(.caption.weight(.semibold).monospacedDigit())
-                        .foregroundStyle(Color.tertiaryLabel)
+                        .foregroundStyle(isCurrent ? Color.label : Color.tertiaryLabel)
                         .frame(width: MenuMetrics.checkColumn)
                     // A name the panel can't fit loops instead of truncating
                     // (panel width is the menu system's, not the longest title's).
@@ -678,6 +676,7 @@ struct TrackMenuPanel<Content: View>: View {
                 Chapter(index: 2, name: nil, start: .seconds(1815)),
                 Chapter(index: 3, name: "Finale", start: .seconds(5403)),
             ],
+            currentID: 1,
             onSelect: { _ in }
         )
         .frame(width: 360)
