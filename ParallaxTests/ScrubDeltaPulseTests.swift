@@ -168,7 +168,7 @@ struct ScrubTravelTests {
     }
 
     /// The flare belongs to the crossing that produced it, and `ScrubIndicators` starts its
-    /// decay exactly one crossing after the commit — so the decay itself has to fit inside a
+    /// decay exactly one crossing after the landing — so the decay itself has to fit inside a
     /// crossing, or a second scrub arriving on the heels of the first would find the flare from
     /// the first still burning and the two would read as one long glow.
     @Test("the flare's decay fits inside the crossing that lit it")
@@ -185,6 +185,32 @@ struct ScrubTravelTests {
         let samples = stride(from: 0.0, through: 1.0, by: 0.05)
             .map { ScrubTravel.ghostOpacity(atTravel: $0) }
         #expect(zip(samples, samples.dropFirst()).allSatisfy { $0 >= $1 })
+    }
+
+    /// The concrete indicator earns its crossing when the seek LANDS, which is the beat the model
+    /// drops the flight on — so the bar has to park it on a span the model no longer publishes.
+    @Test("the concrete indicator is parked at A for the whole flight and until its crossing launches")
+    func parkedSpanFollowsTheFlightThenTheRetainedCopy() {
+        let span = SeekSpan(id: 7, delta: Self.forward)
+        #expect(ScrubTravel.parked(flight: span, retained: nil, launched: nil) == span, "in flight: at A")
+        #expect(ScrubTravel.parked(flight: span, retained: span, launched: nil) == span)
+        #expect(ScrubTravel.parked(flight: nil, retained: span, launched: nil) == span,
+                "landed, crossing not launched yet: still at A")
+        #expect(ScrubTravel.parked(flight: nil, retained: span, launched: 7) == nil,
+                "crossing launched: the offset animates to B")
+        #expect(ScrubTravel.parked(flight: nil, retained: nil, launched: nil) == nil)
+        #expect(ScrubTravel.parked(flight: span, retained: span, launched: 7) == nil,
+                "a flight whose crossing already launched is not re-parked")
+        let newer = SeekSpan(id: 8, delta: Self.backward)
+        #expect(ScrubTravel.parked(flight: newer, retained: span, launched: 7) == newer,
+                "a new flight parks on its own A")
+    }
+
+    @Test("the landing linger covers the crossing and the flare's decay")
+    func landingLingerCoversTheCrossing() {
+        #expect(ScrubTravel.landingSeconds >= ScrubTravel.seconds + ScrubTravel.bloomFadeSeconds)
+        #expect(ScrubTravel.landingSeconds >= ScrubTravel.seconds + ScrubDeltaPulse.fadeSeconds,
+                "…and the comet's trailing sweep plus its fade")
     }
 
 }

@@ -30,7 +30,7 @@ struct PlayerProgressBar: View {
     /// No known runtime (incomplete media playing with an `.indefinite` duration): the timeline
     /// isn't scrubbable, so suppress the draggable handle and the played fill — the bar becomes a
     /// dim track carrying only the live elapsed label. The caller also blanks `remaining` and the
-    /// scrub handlers. Derived once from `vm.hasKnownDuration` in `init(scrubbingTo:vm:)`.
+    /// scrub handlers. Derived once from `vm.hasKnownDuration` in `init(vm:)`.
     var indeterminate: Bool = false
     let played: Double
     /// The honest playback position while a scrub previews somewhere ELSE on the bar — the
@@ -343,17 +343,23 @@ private struct ScrubIndicatorState {
 }
 
 /// Owns the only two things in the concrete/virtual model that need MEMORY: the concrete
-/// indicator's commit-time travel to the virtual one, and the arrival flare that lights as it
-/// touches down. It draws nothing — it hands the bar a `ScrubIndicatorState` and leaves every
-/// point of geometry where it already lived.
+/// indicator's travel to the virtual one when the seek LANDS, and the arrival flare that lights
+/// as it touches down. It draws nothing — it hands the bar a `ScrubIndicatorState` and leaves
+/// every point of geometry where it already lived.
 ///
 /// Both are "which flight have I launched", an integer compare against `SeekFlight.id`, and
 /// that shape is load-bearing three times over. The first frame of a commit is already correct
-/// (a mirror updated from `onChange` would flash the destination before jumping back to the
-/// origin). The resting values are exactly 0 and 0, so the callers' own position animations
-/// (the mini bar's click-seek spring, the tvOS analog 1:1 pin) keep owning the playhead. And a
-/// duration republish mid-flight — a re-anchor's `applyDuration` moving every fraction by a
-/// frame's worth — cannot restart a crossing, because no animation here is keyed on a fraction.
+/// (a POSITION mirror updated from `onChange` would flash the destination before jumping back
+/// to the origin — `retained` below is such a mirror, but it never sources a position while the
+/// flight is live, so lagging a frame costs it nothing). The resting values are exactly 0 and 0,
+/// so the callers' own position animations (the mini bar's click-seek spring, the tvOS analog
+/// 1:1 pin) keep owning the playhead. And a duration republish mid-flight — a re-anchor's
+/// `applyDuration` moving every fraction by a frame's worth — cannot restart a crossing, because
+/// no animation here is keyed on a fraction.
+///
+/// The crossing is earned by the LANDING, which is the beat the model drops the flight on — so
+/// this keeps its own copy of the span to cross (`retained`), because by then the model has
+/// nothing left to hand over.
 ///
 /// There is no state for "the gesture ended but the commit hasn't arrived": the view model
 /// publishes `.previewing` → `.committed` on the beat the finger lifts, so there is no gap to
@@ -361,7 +367,7 @@ private struct ScrubIndicatorState {
 ///
 /// It's a separate view because `PlayerProgressBar` must stay a pure value type: a private
 /// `@State` on the struct would make its memberwise init file-private, and the
-/// `init(scrubbingTo:vm:)` convenience in `PlayerScrubBar.swift` is built on that init.
+/// `init(vm:)` convenience in `PlayerScrubBar.swift` is built on that init.
 private struct ScrubIndicators<Content: View>: View {
     /// The concrete indicator's fraction while a gesture previews a seek; nil on the
     /// single-indicator bar. Already clamped.
@@ -375,10 +381,14 @@ private struct ScrubIndicators<Content: View>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.seekPulsePreview) private var preview
 
-    /// The flight whose crossing has been LAUNCHED. While it isn't the live one, the concrete
-    /// indicator is held back at A; flipping it inside `withAnimation` is what makes the
-    /// crossing a crossing.
+    /// The flight whose crossing has been LAUNCHED — which is when that flight ENDS. Until
+    /// then the concrete indicator is held back at A; flipping this inside `withAnimation` is
+    /// what makes the crossing a crossing.
     @State private var launched: UInt64?
+    /// The last flight, kept past its end, because the crossing is earned when the seek lands
+    /// and by then the model has nothing left to hand over. Refreshed on every change of the
+    /// live span, not just on a new id — a duration republish moves the fractions.
+    @State private var retained: SeekSpan?
     /// The flight whose arrival flare is lit. An id rather than a flag so a cancelled sleep can
     /// never put out a flare that belongs to a newer crossing.
     @State private var blooming: UInt64?
@@ -388,40 +398,46 @@ private struct ScrubIndicators<Content: View>: View {
             content(ScrubIndicatorState(travelOffset: travelOffset, ghostOpacity: ghostOpacity,
                                         ghostFade: ghostFade, bloom: bloomOpacity))
         }
+        .onChange(of: flight, initial: true) { _, flight in if let flight { retained = flight } }
         .task(id: flight?.id) { await land() }
     }
 
-    /// Hands the concrete indicator (and the ghost it was aiming at) to the flight's
-    /// destination, one animated step, then lights and lets go of the arrival flare. Everything
-    /// before that step is derived, so the frame a commit lands on is already drawn at A — a
-    /// mirror updated from a change handler would flash the destination first and jump back.
+    /// Holds the concrete indicator (and the ghost it is aiming at) at A for the whole flight,
+    /// then hands it to the destination in one animated step the moment the seek lands, and lights
+    /// and lets go of the arrival flare. Everything before that step is derived, so the frame the
+    /// landing arrives on is already drawn at A.
     private func land() async {
         guard preview == nil else { return }
         // A flare belongs to the crossing that lit it. Put out anything still burning before
         // this flight decides what it is, so two landings can't overlap into one long glow.
         if blooming != nil { withAnimation(ScrubTravel.bloomFall) { blooming = nil } }
-        guard let flight else { return }
+        // In flight there is nothing to launch: the picture is still at A (or still fetching B),
+        // and so is the indicator.
+        guard flight == nil, let retained, launched != retained.id else { return }
         // One turn, so the frame holding the indicator at A is drawn and the release has
         // something to animate FROM.
         await Task.yield()
         guard !Task.isCancelled else { return }
 
-        withAnimation(ScrubTravel.curve) { launched = flight.id }
-
-        // Reduce Motion gets no flare: there is no travel to arrive from, so a light here
-        // would be a light with no motion to explain it.
-        guard !reduceMotion else { return }
-        withAnimation(ScrubTravel.bloomRise) { blooming = flight.id }
+        // Reduce Motion gets the positional change with no glide and no flare: there is no
+        // travel to arrive from, so a light here would be a light with no motion to explain it.
+        guard !reduceMotion else { launched = retained.id; return }
+        withAnimation(ScrubTravel.curve) { launched = retained.id }
+        withAnimation(ScrubTravel.bloomRise) { blooming = retained.id }
         try? await Task.sleep(for: .seconds(ScrubTravel.seconds))
         // Not `Task.isCancelled`: a cancelled sleep still has to hand the flare back, and the
         // id is what keeps this from putting out a NEWER crossing's flare instead of its own.
-        guard blooming == flight.id else { return }
+        guard blooming == retained.id else { return }
         withAnimation(ScrubTravel.bloomFall) { blooming = nil }
     }
 
-    /// Reduce Motion gets the positional change with no glide: the concrete indicator is
-    /// simply at B, which is where the bar already draws it — so there is nothing to hold
-    /// back and nothing to animate. The static tint band still marks the span.
+    private var parked: SeekSpan? {
+        ScrubTravel.parked(flight: flight, retained: retained, launched: launched)
+    }
+
+    /// Reduce Motion holds the indicator at A exactly like everything else — the picture is
+    /// there, and the ghost is dropped so the parked head is the only marker — and then jumps
+    /// it to B on the landing instead of gliding. The static tint band still marks the span.
     ///
     /// A re-scrub landing mid-crossing abandons it rather than continuing: a live gesture
     /// blanks the flight by definition (nothing is in flight until it commits). It abandons AT
@@ -433,18 +449,19 @@ private struct ScrubIndicators<Content: View>: View {
         if case .traveling(let progress, _) = preview, let flight {
             return ScrubTravel.offset(flight.delta, width: width, progress: progress)
         }
-        guard preview == nil, !reduceMotion, concrete == nil else { return 0 }
-        guard let flight, launched != flight.id else { return 0 }
-        return ScrubTravel.parkOffset(flight.delta, width: width)
+        guard preview == nil, concrete == nil, let parked else { return 0 }
+        return ScrubTravel.parkOffset(parked.delta, width: width)
     }
 
-    /// The ghost is the DESTINATION marker: fully up while a gesture owns the bar, held through
-    /// the first half of the crossing, gone at touchdown.
+    /// The ghost is the DESTINATION marker: fully up while a gesture owns the bar, up for the
+    /// whole flight (the target is only a promise until the seek lands), held through the first
+    /// half of the crossing the landing launches, gone at touchdown.
     ///
     /// Reduce Motion keeps the gesture's ghost — a static marker of where the finger is aiming
     /// carries information, and losing it would leave the split with only one indicator — but
-    /// drops the post-commit one, which under Reduce Motion has no travel to explain it and
-    /// would just blink a coloured ring around the solid handle at the same pixel.
+    /// drops the post-commit one: with no crossing to absorb it, a second head standing at B
+    /// would just wink out when the seek lands, and the static tint band already says which
+    /// stretch is in flight.
     private var ghostOpacity: Double {
         switch preview {
         case .dragging: return 1
@@ -452,8 +469,8 @@ private struct ScrubIndicators<Content: View>: View {
         case .sweeping, .reducedMotion: return 0
         case nil:
             if concrete != nil { return 1 }
-            guard !reduceMotion, let flight else { return 0 }
-            return launched == flight.id ? 0 : 1
+            guard !reduceMotion else { return 0 }
+            return parked == nil ? 0 : 1
         }
     }
 
@@ -742,7 +759,8 @@ private enum ScrubAccentPreview {
     .environment(\.colorScheme, .dark)
 }
 
-// PHASE 3 — the dot has landed but the engine hasn't, frozen mid-sweep (`seekPulsePreview`)
+// PHASE 3 — the comet outliving the crossing: the dot has arrived at B and the trail is still
+// sweeping out behind it, frozen mid-sweep (`seekPulsePreview`)
 // so a static render can show it at all: the live sweep is a `TimelineView`, and a one-frame
 // snapshot catches it at phase 0 with the comet entirely off the segment. `played` equals
 // each delta's `to` on purpose — the bar drops any delta that isn't the destination it's

@@ -9,8 +9,8 @@ import CoreMedia
 ///
 /// It shares the full-HUD scrubber's geometry (inset, track, labels, row height) so the
 /// floor↔HUD switch reads as one persistent bar, not a jump-cut. Visual only
-/// (`allowsHitTesting(false)`): the owner drives `progress`; seeking is the remote (tvOS)
-/// or the double-tap (touch).
+/// (`allowsHitTesting(false)`): the head follows the model's flight, so the owner brings
+/// only the mount and the animation; seeking is the remote (tvOS) or the double-tap (touch).
 struct PlayerScrubBar: View {
     /// The discrete-step glide shared by tvOS click-seek and the touch double-tap burst:
     /// the head springs to its new ±step target while the bubble digits roll with it.
@@ -18,13 +18,10 @@ struct PlayerScrubBar: View {
 
     let metrics: PlayerMetrics
     let vm: PlayerViewModel
-    /// Scrub-head fraction (0...1): the tvOS analog swipe head, the click-seek target, or
-    /// the touch double-tap burst's accumulated target.
-    let progress: Double
-    /// Head/label POSITION animation. Nil pins the head 1:1 to `progress` — tvOS analog
-    /// swipe, where the displayed position must equal the value a Select commits; a spring
-    /// glides discrete ±steps (click-seek, double-tap). The bubble's digit roll always runs
-    /// on `scrubSpring`, so even a 1:1 head keeps its "aliveness".
+    /// Head/label POSITION animation. Nil pins the head 1:1 to the model's virtual position —
+    /// tvOS analog swipe, where the displayed position must equal the value a commit lands on;
+    /// a spring glides discrete ±steps (click-seek, double-tap). The bubble's digit roll always
+    /// runs on `scrubSpring`, so even a 1:1 head keeps its "aliveness".
     var positionAnimation: Animation? = scrubSpring
 
     var body: some View {
@@ -35,17 +32,15 @@ struct PlayerScrubBar: View {
         // (nothing can start a drag on it) and rides `TimelineView(.animation)` subtrees, so
         // reporting the exclusion zone would re-declare the preference on every animation
         // tick — see `PullExclusionReporter`.
-        PlayerProgressBar(scrubbingTo: progress, vm: vm, metrics: metrics,
+        PlayerProgressBar(vm: vm, metrics: metrics,
                           mode: .scrub, playhead: .line, showsBubble: true,
                           scrubDigitRoll: Self.scrubSpring,
                           reportsPullExclusion: false)
             // Position: a discrete ±step glides to its target; analog swipe tracks the head
             // 1:1 so the displayed position == the value Select commits. A follow spring
             // desyncs them — worst on the 23.976/24Hz panel Match-Frame-Rate pins for 24p
-            // film, where its settle spans ~6 frames (felt as "trails my finger"). Keyed on
-            // the CLAMPED value (the displayed head) so an out-of-range delta that doesn't
-            // move the head can't fire a spurious transaction.
-            .animation(positionAnimation, value: progress.unitClamped)
+            // film, where its settle spans ~6 frames (felt as "trails my finger").
+            .animation(positionAnimation, value: vm.virtualFraction)
             // Pinned to the EXACT spot the full-HUD scrubber rests at (shared
             // `scrubberInsetX`/`scrubberBottom`) so a seek bar and the HUD bar never sit at
             // different heights/widths. Caller mounts this in a safe-area-respecting context
@@ -59,20 +54,20 @@ struct PlayerScrubBar: View {
 }
 
 extension PlayerProgressBar {
-    /// Configures a scrub bar from a 0...1 `fraction` + the view model — the ONE place the
-    /// "fraction → time labels + bubble" derivation lives, so every scrub surface reads
-    /// identically. Shared by `PlayerScrubBar` (the read-only seek bar / tvOS seek) and the
-    /// interactive HUD scrubber. The *driver* (finger drag vs double-tap vs remote) and the
-    /// *packaging* (placement, gestures, focus) stay with each caller; only this readout
-    /// derivation is shared. Lives in an extension so `PlayerProgressBar`'s value-only
+    /// Configures a scrub bar from the view model alone — the ONE place the "flight → head +
+    /// time labels + bubble" derivation lives, so every scrub surface reads identically.
+    /// Shared by `PlayerScrubBar` (the read-only seek bar / tvOS seek) and the interactive HUD
+    /// scrubber. The caller brings only PACKAGING (mode, playhead, bubble, scrub handlers);
+    /// the driver (finger drag vs double-tap vs remote) declares its seek to the model and
+    /// reads the result back here. Lives in an extension so `PlayerProgressBar`'s value-only
     /// memberwise init — what the previews and tests use — is preserved.
-    /// The concrete/virtual split is the view model's to declare, not the caller's: a
-    /// `.previewing` flight means a gesture owns the bar, so `fraction` is the VIRTUAL indicator
-    /// (ghost + bubble + readout) and the position the picture is actually held on — the scrub's
-    /// entry pause froze it there — is the concrete one that keeps the played fill honest. Every
-    /// scrub surface reads the same flight, so the two bars can't drift apart on what "the video
-    /// is actually at X" means, and the split can't outlive the gesture that opened it.
-    init(scrubbingTo fraction: Double, vm: PlayerViewModel, metrics: PlayerMetrics,
+    /// Both indicators are the view model's to declare, not the caller's: a `.previewing`
+    /// flight means a gesture owns the bar, so the VIRTUAL position (ghost + bubble + readout)
+    /// is where the gesture is aiming and the CONCRETE one — the position the picture is held
+    /// on, the scrub's entry pause froze it there — keeps the played fill honest. Every scrub
+    /// surface reads the same flight, so the two bars can't drift apart on what "the video is
+    /// actually at X" means, and the split can't outlive the gesture that opened it.
+    init(vm: PlayerViewModel, metrics: PlayerMetrics,
          mode: Mode, playhead: Playhead = .dot, showsBubble: Bool,
          scrubDigitRoll: Animation? = nil,
          onScrubChanged: ((Double) -> Void)? = nil,
@@ -86,18 +81,13 @@ extension PlayerProgressBar {
         let known = vm.hasKnownDuration
         let dur = CMTimeGetSeconds(vm.currentDuration)
         let previewing = vm.flight?.stage == .previewing
-        let p = fraction.unitClamped
+        let p = vm.virtualFraction
         let shown = known ? p * dur : CMTimeGetSeconds(vm.currentPosition)
         let remaining = max(0, dur - shown)
-        // `concretePosition`, not `currentPosition`: dragging again over a seek that hasn't
-        // landed must keep the solid indicator on the position the first commit jumped away
-        // from. `currentPosition` is that commit's promised destination, and parking the
-        // concrete indicator on it would claim the video is somewhere it has never been.
-        let live = known && dur > 0 ? (CMTimeGetSeconds(vm.concretePosition) / dur).unitClamped : 0
         self.init(
             metrics: metrics, mode: mode, playhead: playhead, indeterminate: !known,
             played: known ? p : 0,
-            concrete: previewing && known ? live : nil,
+            concrete: previewing && known ? vm.concreteFraction : nil,
             buffered: known ? vm.bufferedFraction : nil,
             // Every scrub surface gets the pulse from the one place the readout is derived.
             // The flight itself is the newest-wins gate: a gesture supersedes what it

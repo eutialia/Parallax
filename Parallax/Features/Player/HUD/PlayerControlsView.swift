@@ -47,6 +47,13 @@ struct PlayerControlsView: View {
     /// into analog scrub only while the bar is focused. Required, not optional —
     /// without the wiring, swipe-on-scrubber silently degrades to click-stepping.
     let onScrubberFocusChange: (Bool) -> Void
+    /// The focused scrubber's left/right step; the reducer turns it into a preview.
+    let onScrubberStep: (ClickDirection) -> Void
+    /// Select on the focused scrubber: commit the pending step now.
+    let onScrubberSelect: () -> Void
+    /// Position animation for the scrubber's head and labels; the surface owner decides,
+    /// so the HUD and floor bars ride one rule.
+    let positionAnimation: Animation?
     /// Reports HUD interaction (focus moving between scrubber/chips, panel work) up to
     /// `PlayerView` so its inactivity timer re-arms. In `.fullHUD` the raw press adapter
     /// is unmounted and focus-engine navigation never reaches `send`; directional CLICKS
@@ -90,11 +97,14 @@ struct PlayerControlsView: View {
     #endif
 
     @State private var hideTask: Task<Void, Never>? = nil
+    #if !os(tvOS)
+    /// A drag-scrub's commit is still in flight — outlives the finger, so the transport
+    /// stays out until the seek lands. tvOS's equivalent is reducer-owned in `PlayerView`.
     @State private var isScrubbing = false
-    @State private var scrubProgress: Double = 0
     /// Bumped on every drag start so a slow seek can't clear `isScrubbing` after a newer
     /// drag began (which would snap the thumb back to live playback mid-grab).
     @State private var scrubGeneration = 0
+    #endif
     /// A finger is on the bar (iOS): the chrome collapses into the lone scrub bar over
     /// a dimmed, paused frame — the touch analog of tvOS `PlayerHUDState.swipeScrub`.
     /// Never set on tvOS, where that collapse is reducer-owned in `PlayerView`.
@@ -158,9 +168,6 @@ struct PlayerControlsView: View {
         var seconds: Int
         var tapPoint: CGPoint
         var trigger: Int
-        /// Absolute seek target as a 0...1 fraction — drives the shared `PlayerScrubBar`
-        /// riding the dome, so its head sits where the accumulated burst will land.
-        var targetFraction: Double
         /// Burst clock for the bar's fade — mirrors the dome's internal clock so the bar
         /// fades on the IDENTICAL `PlayerSeekFlash.envelope`. `burstStart` resets on a
         /// direction reversal (the dome remounts via `.id`); `lastTap` bumps every tap.
@@ -224,8 +231,8 @@ struct PlayerControlsView: View {
         #if os(tvOS)
         // tvOS: nudging the focused scrubber with L/R keeps the FULL chrome up, so the
         // transport must not blink out under it — and a vertical focus move past it must
-        // never hide it (that latched `isScrubbing` and stranded the focus engine on a
-        // disappearing cluster). Only the loading/stall ring claims this spot here.
+        // never hide it (a scrub-latched hide stranded the focus engine on a disappearing
+        // cluster). Only the loading/stall ring claims this spot here.
         return true
         #else
         // iOS drag-scrub collapses the chrome to the lone bar; hold the transport out
@@ -332,10 +339,10 @@ struct PlayerControlsView: View {
         .animation(.playerStateCrossfade, value: dragScrubbing)
         // The centre transport swaps with the stall scrim's ring — fade, don't pop.
         .animation(.playerStateCrossfade, value: vm.showsStallScrim)
+        #if !os(tvOS)
         // …and fades back in when an in-flight scrub commit lands (the transport
         // is held out through `isScrubbing` so the paused glyph can't flash).
         .animation(.playerStateCrossfade, value: isScrubbing)
-        #if !os(tvOS)
         .onAppear { scheduleHide() }
         // The sleeping tasks outlive a dismissed player: the seek commit would fire
         // into a mid-teardown engine, the others write to dead @State. Cancel them.
@@ -943,13 +950,6 @@ struct PlayerControlsView: View {
         frames.min { abs($0.value.midX - playheadX) < abs($1.value.midX - playheadX) }?.key
     }
 
-    /// Live playback position as a clamped 0...1 fraction — shared by the scrubber's
-    /// display math and `playheadChip` so the clamp can't drift between them.
-    private var liveProgressFraction: Double {
-        guard vm.hasKnownDuration else { return 0 }   // canonical "is the runtime usable?" predicate
-        return (CMTimeGetSeconds(vm.currentPosition) / CMTimeGetSeconds(vm.currentDuration)).unitClamped
-    }
-
     #if os(tvOS)
     /// Whether a chip can take focus right now. Chapters is the one chip that can be
     /// DISABLED (it gates on a live engine), and a FocusState write or default-focus
@@ -963,7 +963,7 @@ struct PlayerControlsView: View {
     /// target when focus moves down from the scrubber. Falls back to the speed chip
     /// (always present and enabled) before geometry lands.
     private var playheadChip: TrackMenuKind {
-        let progress = isScrubbing ? scrubProgress : liveProgressFraction
+        let progress = vm.virtualFraction
         let candidates = chipFrames.filter { chipIsFocusable($0.key) }
         guard scrubberFrame.width > 0, !candidates.isEmpty else { return .speed }
         let x = scrubberFrame.minX + progress * scrubberFrame.width
@@ -1065,39 +1065,14 @@ struct PlayerControlsView: View {
 
     // MARK: - Scrubber (shared visual, platform interaction)
 
-    #if os(tvOS)
-    /// tvOS Select on the focused scrubber: commit the pending ±10s scrub head as ONE
-    /// engine seek, then drop `isScrubbing` so the bar tracks live playback again — safe
-    /// immediately because the VM's `SeekHold` already publishes the target as
-    /// `currentPosition` and pins it there until the engine lands.
-    /// Generation-guarded so a newer scrub (or a dismissal) can't clear the flag out from
-    /// under the live one. `playbackReady` is the cold-start fence only: a commit made
-    /// during a mid-session reload is welcome, because the model parks it in `pendingReload`
-    /// and the running reload's successor resumes there.
-    private func commitScrub(durSeconds: Double) {
-        guard playbackReady, vm.engine != nil, durSeconds > 0, isScrubbing else { return }
-        let gen = scrubGeneration
-        let target = CMTime(seconds: scrubProgress * durSeconds, preferredTimescale: 600)
-        // Routed through `commitSeek` (not a bare `seek`) so an out-of-buffer re-encode
-        // transcode's force-resuming re-anchor (#15845) can't un-pause a paused user; the
-        // commit reads the live transport intent itself.
-        Task {
-            await vm.commitSeek(to: target)
-            if scrubGeneration == gen { isScrubbing = false }
-        }
-    }
-    #endif
-
     @ViewBuilder
     private func scrubber(_ m: PlayerMetrics) -> some View {
         let durSeconds = CMTimeGetSeconds(vm.currentDuration)
-        let liveProgress = liveProgressFraction
-        let displayed = isScrubbing ? scrubProgress : liveProgress
-        // `displayed * dur` — the SAME clamped value the shared `PlayerProgressBar(scrubbingTo:)`
-        // init derives the visible label from (`liveProgress` is already clamped). Used for the
-        // VoiceOver value below so it can't diverge from the bar at an out-of-range live
-        // position (a beat reporting past-duration would otherwise read past the total in VO).
-        let shownSeconds = displayed * durSeconds
+        // The SAME clamped value the shared `PlayerProgressBar(vm:)` init derives the visible
+        // label from. Used for the VoiceOver value below so it can't diverge from the bar at an
+        // out-of-range live position (a beat reporting past-duration would otherwise read past
+        // the total in VO).
+        let shownSeconds = vm.virtualFraction * durSeconds
         // VoiceOver value for the scrub bar — elapsed of total time (AVPlayerViewController's idiom),
         // not a bare percentage. Shared by both platforms so they announce identically; tracks the
         // scrub head mid-adjust via `shownSeconds`.
@@ -1106,16 +1081,15 @@ struct PlayerControlsView: View {
             : ""
 
         #if os(tvOS)
-        // tvOS: a focusable Button wraps the bar. Left/right step a ±10s scrub head
-        // (they reach `onMoveCommand` because the bar has no horizontal focusable
-        // neighbour); Select commits. The head ring shows only while focused — the bar
-        // is its own focus indicator, so the style must paint no system chrome
-        // (`.plain` draws the tvOS focus platter around the whole bar).
+        // tvOS: a focusable Button wraps the bar. Left/right reach `onMoveCommand` because the bar
+        // has no horizontal focusable neighbour; up/down ARE focus navigation to the chips / centre
+        // transport and must never enter scrub. Both the step and Select go to the reducer, which
+        // owns the preview → debounced commit the same way it does on the floor. The head ring shows
+        // only while focused — the bar is its own focus indicator, so the style paints no chrome.
         Button {
-            commitScrub(durSeconds: durSeconds)
+            onScrubberSelect()
         } label: {
-            // No bubble on tvOS — the focusable bar is its own indicator.
-            PlayerProgressBar(scrubbingTo: displayed, vm: vm, metrics: m,
+            PlayerProgressBar(vm: vm, metrics: m,
                               mode: scrubberFocused ? .focused : .normal, showsBubble: false)
         }
         .buttonStyle(TVQuietButtonStyle(pressedOpacity: 0.9))
@@ -1126,35 +1100,19 @@ struct PlayerControlsView: View {
         // The playhead-dot x for `playheadChip` (chip-row default focus) reads off
         // this frame plus the displayed fraction.
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("hud")) } action: { scrubberFrame = $0 }
-        // Animate the thicken/handle-grow as focus lands, matching the original bar.
         .animation(.easeOut(duration: 0.15), value: scrubberFocused)
+        .animation(positionAnimation, value: vm.virtualFraction)
         .onMoveCommand { direction in
-            guard playbackReady, durSeconds > 0 else { return }
-            // ONLY left/right scrub. The bar has no horizontal focus neighbour, so L/R
-            // reach here instead of moving focus; up/down ARE focus navigation to the
-            // chips / centre transport and must never enter scrub. Latching `isScrubbing`
-            // on a vertical press froze the bar at the live fraction and — now that the
-            // tvOS centre cluster is visible — hid it out from under the focus engine.
-            // So set `isScrubbing` INSIDE the L/R cases, never before the switch.
-            let step = 10.0 / durSeconds
+            guard playbackReady else { return }
             switch direction {
-            case .left, .right:
-                if !isScrubbing { scrubProgress = liveProgress; isScrubbing = true; scrubGeneration += 1 }
-                // Animated so the ±10s step glides and the time digits roll (`.numericText`) —
-                // the same curve the bar's head/digit-roll ride (`PlayerScrubBar.scrubSpring`).
-                withAnimation(PlayerScrubBar.scrubSpring) {
-                    scrubProgress = direction == .left
-                        ? max(0, scrubProgress - step)
-                        : min(1, scrubProgress + step)
-                }
-            default:
-                break   // up/down: leave focus movement to the engine
+            case .left: onScrubberStep(.left)
+            case .right: onScrubberStep(.right)
+            default: break
             }
         }
         .onChange(of: scrubberFocused) { _, focused in
             onScrubberFocusChange(focused)
-            onActivity()   // focus arriving on / leaving the bar is interaction — keep the HUD up
-            if !focused && isScrubbing { isScrubbing = false }
+            onActivity()
         }
         #else
         // A finger on the bar enters drag-scrub: pause on the preview frame, collapse
@@ -1169,7 +1127,7 @@ struct PlayerControlsView: View {
         // pill stays on the frame the entry pause is holding and a ghost of it rides the finger,
         // so the played fill never claims a position the video isn't at.
         PlayerProgressBar(
-            scrubbingTo: displayed, vm: vm, metrics: m,
+            vm: vm, metrics: m,
             mode: dragScrubbing ? .scrub : .normal, playhead: .line, showsBubble: dragScrubbing,
             onScrubChanged: { frac in
                 // playbackReady is the cold start only: before the first `.playing` beat
@@ -1197,7 +1155,6 @@ struct PlayerControlsView: View {
                     // untouched, so the play/pause glyph keeps drawing the truth under the drag.
                     vm.beginScrubHold()
                 }
-                scrubProgress = frac
                 // The gesture is the model's to know: the split head, the ghost and the bubble
                 // are all one published flight, so nothing has to infer "a finger is down" from
                 // a view flag a commit could outlive.
@@ -1207,7 +1164,6 @@ struct PlayerControlsView: View {
                 dragScrubbing = false
                 onScrubActiveChange(false)
                 resetHideTimer()
-                scrubProgress = frac
                 guard playbackReady, vm.engine != nil, durSeconds > 0 else {
                     // Nothing to commit — hand the bar back rather than leaving it split on a
                     // preview no seek will ever convert, and let the picture go: no commit is
@@ -1247,26 +1203,13 @@ struct PlayerControlsView: View {
         .accessibilityAdjustableAction { direction in
             guard playbackReady, durSeconds > 0 else { return }
             resetHideTimer()
-            cancelPendingSeek()
-            let step = 10.0 / durSeconds
-            let target = direction == .increment ? min(1, displayed + step) : max(0, displayed - step)
-            scrubProgress = target
-            // Same generation-guarded release as the drag path — otherwise `isScrubbing`
-            // sticks true and the bar freezes at `scrubProgress`, never tracking playback.
-            if !isScrubbing { isScrubbing = true; scrubGeneration += 1 }
-            let gen = scrubGeneration
-            guard vm.engine != nil else { isScrubbing = false; return }
-            let seekTarget = CMTime(seconds: target * durSeconds, preferredTimescale: 600)
-            // Routed through `commitSeek` (not a bare `seek`) so an out-of-buffer re-encode
-            // transcode's force-resuming re-anchor (#15845) can't silently un-pause a paused
-            // user; the commit reads the live transport intent itself.
-            scrubCommitTask?.cancel()
-            scrubCommitTask = Task {
-                await vm.commitSeek(to: seekTarget)
-                // Same generation-guarded, hold-backed release as the drag path.
-                guard !Task.isCancelled, scrubGeneration == gen else { return }
-                isScrubbing = false
-            }
+            // A double-tap burst's dome would otherwise keep drawing its stale label over
+            // this step and route the next tap into the burst instead of the chrome toggle.
+            seekFlashDismissTask?.cancel()
+            seekFlash = nil
+            stepSeek(by: direction == .increment ? PlayerHUDTuning.clickStepSeconds
+                                                 : -PlayerHUDTuning.clickStepSeconds,
+                     durSeconds: durSeconds)
         }
         #endif
     }
@@ -1350,28 +1293,34 @@ struct PlayerControlsView: View {
         return nil
     }
 
-    /// One ±10s step: accumulate the debounced target and drive the flash. The
-    /// engine seek is debounced — the whole burst lands as ONE seek.
+    /// One ±step from the bar's virtual position: the model previews it (opening the split
+    /// head on the first step) and the shared coalescer commits the settled target — the same
+    /// accumulate-then-fire-once shape for the double-tap burst and the VoiceOver adjust.
+    private func stepSeek(by seconds: Double, durSeconds: Double) {
+        // No engine, no commit: the coalescer's seek would never land, leaving the preview's
+        // hold armed with no beat to clear it.
+        guard vm.engine != nil else { return }
+        let target = min(max(CMTimeGetSeconds(vm.virtualPosition) + seconds, 0), durSeconds)
+        vm.beginPreview(at: CMTime(seconds: target, preferredTimescale: 600))
+        scheduleSeekCommit(to: target)
+    }
+
+    /// One tap of a double-tap burst: drive the flash, then hand the step to `stepSeek`,
+    /// which accumulates the previewed target and debounces the one engine seek.
     private func seekStep(_ direction: PlayerSeekFlash.Direction, at location: CGPoint, durSeconds: Double, now: Date) {
-        let delta: Double = direction == .forward ? 10 : -10
-        // While a scrub's commit is still in flight the bar's own target is the truth:
-        // the finger can have moved past the last committed target, which is all
-        // `vm.currentPosition` knows about.
-        let livePosition = isScrubbing ? scrubProgress * durSeconds : CMTimeGetSeconds(vm.currentPosition)
-        let base = seekCoalescer.pending ?? livePosition
-        let target = min(max(base + delta, 0), durSeconds)
+        let step = PlayerHUDTuning.clickStepSeconds
+        let delta = direction == .forward ? step : -step
 
         // Same direction = the same burst extends (label accumulates, dome's clock holds);
         // a reversal is a fresh burst (label resets, dome remounts via `.id`, so its
         // `burstStart` must reset too — the bar's fade keys off it).
         let sameDirection = seekFlash?.direction == direction
-        let seconds = (sameDirection ? seekFlash?.seconds ?? 0 : 0) + 10
+        let seconds = (sameDirection ? seekFlash?.seconds ?? 0 : 0) + Int(step)
         let burstStart = sameDirection ? (seekFlash?.burstStart ?? now) : now
         seekFlash = SeekFlash(direction: direction, seconds: seconds,
                               tapPoint: location, trigger: (seekFlash?.trigger ?? 0) + 1,
-                              targetFraction: durSeconds > 0 ? target / durSeconds : 0,
                               burstStart: burstStart, lastTap: now)
-        scheduleSeekCommit(to: target)
+        stepSeek(by: delta, durSeconds: durSeconds)
         scheduleSeekFlashDismissal()
     }
 
@@ -1390,7 +1339,7 @@ struct PlayerControlsView: View {
             let fade = reduceMotion ? 1.0 : PlayerSeekFlash.envelope(
                 sinceBurstStart: context.date.timeIntervalSince(flash.burstStart),
                 sinceLastTap: context.date.timeIntervalSince(flash.lastTap))
-            PlayerScrubBar(metrics: m, vm: vm, progress: flash.targetFraction)
+            PlayerScrubBar(metrics: m, vm: vm)
                 .opacity(fade)
         }
         .allowsHitTesting(false)
@@ -1420,6 +1369,8 @@ struct PlayerControlsView: View {
     /// track reload must drop a queued double-tap burst — its debounced commit
     /// would fire up to 400ms later and drag playback back to the stale target.
     private func cancelPendingSeek() {
+        // A burst whose commit is dropped must not leave the bar split.
+        vm.cancelPreview()
         seekCoalescer.cancel()
         seekFlashDismissTask?.cancel()
         seekFlash = nil
