@@ -1979,8 +1979,8 @@ struct PlayerViewModelTests {
     @Test("the delta spans commit A → target B for as long as the hold, in either direction",
           arguments: [3_000.0, 120.0])
     func seekSpanSpansTheCommittedJump(target: Double) async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let vm = try await makeReanchorVM(engine: engine, at: 600)
+        let (vm, engines) = try await makeReanchorVM(at: 600)
+        let engine = engines.live
         let duration = CMTimeGetSeconds(vm.currentDuration)
         #expect(vm.seekSpan == nil, "nothing is in flight yet")
 
@@ -2010,8 +2010,8 @@ struct PlayerViewModelTests {
     /// A the video never played, and the crossing would start from a dot that was never there.
     @Test("a re-scrub over an unlanded seek chains the delta back to the original A")
     func seekSpanChainsThroughAnUnlandedSeek() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let vm = try await makeReanchorVM(engine: engine, at: 600)
+        let (vm, engines) = try await makeReanchorVM(at: 600)
+        let engine = engines.live
         let duration = CMTimeGetSeconds(vm.currentDuration)
 
         await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
@@ -2044,8 +2044,8 @@ struct PlayerViewModelTests {
     /// crossing starts to the right of a dot that has been sitting at A0 the whole drag.
     @Test("a chained re-scrub that reverses past A0 spans A0→B2 backward")
     func seekSpanChainsThroughADirectionFlip() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let vm = try await makeReanchorVM(engine: engine, at: 600)
+        let (vm, engines) = try await makeReanchorVM(at: 600)
+        let engine = engines.live
         let duration = CMTimeGetSeconds(vm.currentDuration)
 
         await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
@@ -2065,8 +2065,8 @@ struct PlayerViewModelTests {
     /// session's first A forever.
     @Test("a landed seek stops the chain: the next scrub anchors on where it landed")
     func seekSpanStopsChainingOnceTheHoldReleases() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let vm = try await makeReanchorVM(engine: engine, at: 600)
+        let (vm, engines) = try await makeReanchorVM(at: 600)
+        let engine = engines.live
         let duration = CMTimeGetSeconds(vm.currentDuration)
 
         await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
@@ -2105,8 +2105,8 @@ struct PlayerViewModelTests {
     /// never landed, that is the first commit's A, not the target it is still promising.
     @Test("a commit made over a live preview chains the gesture's own origin")
     func commitOverALivePreviewChainsTheOrigin() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let vm = try await makeReanchorVM(engine: engine, at: 600)
+        let (vm, engines) = try await makeReanchorVM(at: 600)
+        let engine = engines.live
         let duration = CMTimeGetSeconds(vm.currentDuration)
 
         await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
@@ -2135,8 +2135,8 @@ struct PlayerViewModelTests {
     /// which a dead commit still matched).
     @Test("a superseded commit yields a new flight id")
     func aSupersededCommitYieldsANewID() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let vm = try await makeReanchorVM(engine: engine, at: 600)
+        let (vm, engines) = try await makeReanchorVM(at: 600)
+        let engine = engines.live
 
         await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
         let first = try #require(vm.seekSpan)
@@ -2154,8 +2154,8 @@ struct PlayerViewModelTests {
     /// this case — a 250 ms grace guessing at whether a commit was still coming.)
     @Test("a cancelled gesture returns the bar to the engine, with nothing left running")
     func aCancelledPreviewReturnsToNil() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let vm = try await makeReanchorVM(engine: engine, at: 600)
+        let (vm, engines) = try await makeReanchorVM(at: 600)
+        let engine = engines.live
 
         vm.beginPreview(at: CMTime(seconds: 5_400, preferredTimescale: 600))
         try #require(vm.flight?.stage == .previewing)
@@ -2172,8 +2172,8 @@ struct PlayerViewModelTests {
     /// something true to say. It keeps the gesture's id, so nothing already on screen restarts.
     @Test("cancelling over an unlanded commit hands the commit back")
     func aCancelledPreviewRestoresTheCommitItInterrupted() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let vm = try await makeReanchorVM(engine: engine, at: 600)
+        let (vm, engines) = try await makeReanchorVM(at: 600)
+        let engine = engines.live
         let duration = CMTimeGetSeconds(vm.currentDuration)
 
         await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
@@ -2195,8 +2195,8 @@ struct PlayerViewModelTests {
     /// whole feature exists for.
     @Test("a duration republish moves the fractions and leaves the flight id alone")
     func aDurationRepublishDoesNotChangeTheFlightID() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let vm = try await makeReanchorVM(engine: engine, at: 600)
+        let (vm, engines) = try await makeReanchorVM(at: 600)
+        let engine = engines.live
 
         await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
         let before = try #require(vm.seekSpan)
@@ -2217,8 +2217,8 @@ struct PlayerViewModelTests {
     /// screen with them.
     @Test("beginExit ends the flight, gesture or commit")
     func beginExitEndsTheFlight() async throws {
-        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let vm = try await makeReanchorVM(engine: engine, at: 600)
+        let (vm, engines) = try await makeReanchorVM(at: 600)
+        let engine = engines.live
 
         await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
         try #require(vm.flight != nil)
@@ -2237,8 +2237,8 @@ struct PlayerViewModelTests {
     /// the next scrub chains from where the picture really is.
     @Test("a projected beat lands the flight: the honest position is the clock again")
     func aProjectedBeatAdvancesTheFlightToLanding() async throws {
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
-        let vm = try await makeReanchorVM(engine: engine, at: 600)
+        let (vm, engines) = try await makeReanchorVM(at: 600)
+        let engine = engines.live
         let duration = CMTimeGetSeconds(vm.currentDuration)
 
         await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
