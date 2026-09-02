@@ -91,7 +91,7 @@ private final class NonHostingEngine: PlaybackEngine {
     )
     nonisolated let state = AsyncStream<PlaybackBeat> { $0.finish() }
 
-    func load(_ asset: PlayableAsset) async throws -> PlaybackSessionID { .none }
+    func load(_ asset: PlayableAsset) async throws -> PlaybackSessionID { .none.next() }
     func play() async {}
     func pause() async {}
     func seek(to time: CMTime) async {}

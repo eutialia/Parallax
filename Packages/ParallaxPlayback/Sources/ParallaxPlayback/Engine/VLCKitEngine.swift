@@ -604,7 +604,8 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     }
 
     /// The source never opened within the watchdog deadline (a dead mount — VLC never left
-    /// `.opening`). Surface `.failed` so the error scrim + offline-recovery take over. Stop the
+    /// `.opening`). Surface `.failed(.loadTimedOut)` — the watchdog's own case, so the scrim
+    /// says the source took too long rather than that the file could not be decoded. Stop the
     /// progress poll too: the app's `.failed` handler only sets `phase = .failed` (it does NOT tear
     /// the engine down — the user's exit/retry does), so a late beat from the wedged demux would
     /// otherwise flip `phase` back to `.playing` over the error. Guarded by `currentMedia` so a
@@ -613,7 +614,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         guard session == self.session, currentMedia != nil else { return }
         progressTask?.cancel()
         progressTask = nil
-        yield(.failed(.assetNotPlayable), from: session)
+        yield(.failed(.loadTimedOut), from: session)
     }
 
     /// A mid-playback stall the poll surfaced (frozen clock + frozen demux, see `startProgressPolling`)
