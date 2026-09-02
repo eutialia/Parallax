@@ -99,8 +99,6 @@ struct PlayerControlsView: View {
     /// a dimmed, paused frame — the touch analog of tvOS `PlayerHUDState.swipeScrub`.
     /// Never set on tvOS, where that collapse is reducer-owned in `PlayerView`.
     @State private var dragScrubbing = false
-    /// Whether playback was live when the drag began — the commit resumes iff true.
-    @State private var scrubWasPlaying = false
     #if os(tvOS)
     /// Whether the scrub bar holds focus — drives the focused-handle ring and gates
     /// remote left/right into ±10s seek steps.
@@ -1080,13 +1078,11 @@ struct PlayerControlsView: View {
         guard playbackReady, vm.engine != nil, durSeconds > 0, isScrubbing else { return }
         let gen = scrubGeneration
         let target = CMTime(seconds: scrubProgress * durSeconds, preferredTimescale: 600)
-        // The user's intent, not the engine mirror: `isPlaying` still reads false while the
-        // previous seek's beats catch up, and capturing that is what stuck playback on a
-        // pause. Routed through `commitScrubSeek` (not a bare `seek`) so an out-of-buffer
-        // re-encode transcode's force-resuming re-anchor (#15845) can't un-pause a paused user.
-        let resume = vm.desiredPlaying
+        // Routed through `commitSeek` (not a bare `seek`) so an out-of-buffer re-encode
+        // transcode's force-resuming re-anchor (#15845) can't un-pause a paused user; the
+        // commit reads the live transport intent itself.
         Task {
-            await vm.commitScrubSeek(to: target, resume: resume)
+            await vm.commitSeek(to: target)
             if scrubGeneration == gen { isScrubbing = false }
         }
     }
@@ -1187,12 +1183,6 @@ struct PlayerControlsView: View {
                 // bar back mid-drag nor resume under the finger.
                 if !dragScrubbing {
                     scrubGeneration += 1
-                    // The user's transport intent, read fresh on every press. Unlike the
-                    // `isPlaying` mirror it isn't moved by the scrub's own pause or by the
-                    // engine's lagging beats, so a re-drag during an in-flight commit still
-                    // captures "playing", and an explicit pause taken mid-chain
-                    // is honored instead of being overridden by a stale chain-start value.
-                    scrubWasPlaying = vm.desiredPlaying
                     // The ambient `.animation(value: dragScrubbing)` covers this flip
                     // symmetrically with the release; a grab-side "missing" morph on
                     // device was a Debug-build frame drop (the chrome collapse lands
@@ -1203,7 +1193,9 @@ struct PlayerControlsView: View {
                     onScrubActiveChange(true)
                     hideTask?.cancel()
                     cancelPendingSeek()
-                    Task { await vm.engine?.pause() }
+                    // The picture freezes on the preview frame; the transport INTENT is
+                    // untouched, so the play/pause glyph keeps drawing the truth under the drag.
+                    vm.beginScrubHold()
                 }
                 scrubProgress = frac
                 // The gesture is the model's to know: the split head, the ghost and the bubble
@@ -1218,22 +1210,22 @@ struct PlayerControlsView: View {
                 scrubProgress = frac
                 guard playbackReady, vm.engine != nil, durSeconds > 0 else {
                     // Nothing to commit — hand the bar back rather than leaving it split on a
-                    // preview no seek will ever convert.
+                    // preview no seek will ever convert, and let the picture go: no commit is
+                    // coming to end the hold.
                     vm.cancelPreview()
+                    vm.endScrubHold()
                     isScrubbing = false
                     return
                 }
                 let gen = scrubGeneration
-                let resume = scrubWasPlaying
                 let target = CMTime(seconds: frac * durSeconds, preferredTimescale: 600)
                 scrubCommitTask?.cancel()
                 scrubCommitTask = Task {
                     // Route through the gated commit seek so an out-of-buffer re-encode
-                    // transcode RE-ANCHORS (jellyfin#15845) instead of drifting subtitles;
-                    // it also replays `resume`. The glyph needs no protection across this:
-                    // it reads `desiredPlaying`, which the drag's engine-level pause never
-                    // touched.
-                    await vm.commitScrubSeek(to: target, resume: resume)
+                    // transcode RE-ANCHORS (jellyfin#15845) instead of drifting subtitles; it
+                    // also reconciles the engine to whatever the transport intent is WHEN IT
+                    // LANDS, so a press during the drag or inside the seek wins.
+                    await vm.commitSeek(to: target)
                     // Release the moment the commit returns — `vm.currentPosition` already
                     // reads the target (the VM's `SeekHold` publishes it at commit time and
                     // pins it there through the reload scrim), so handing the bar back to
@@ -1265,14 +1257,12 @@ struct PlayerControlsView: View {
             let gen = scrubGeneration
             guard vm.engine != nil else { isScrubbing = false; return }
             let seekTarget = CMTime(seconds: target * durSeconds, preferredTimescale: 600)
-            // The user's intent, not the engine mirror (which lags a previous seek's resume
-            // by a poll or a re-buffer). Routed through `commitScrubSeek` (not a bare
-            // `seek`) so an out-of-buffer re-encode transcode's force-resuming re-anchor
-            // (#15845) can't silently un-pause a paused user.
-            let resume = vm.desiredPlaying
+            // Routed through `commitSeek` (not a bare `seek`) so an out-of-buffer re-encode
+            // transcode's force-resuming re-anchor (#15845) can't silently un-pause a paused
+            // user; the commit reads the live transport intent itself.
             scrubCommitTask?.cancel()
             scrubCommitTask = Task {
-                await vm.commitScrubSeek(to: seekTarget, resume: resume)
+                await vm.commitSeek(to: seekTarget)
                 // Same generation-guarded, hold-backed release as the drag path.
                 guard !Task.isCancelled, scrubGeneration == gen else { return }
                 isScrubbing = false
@@ -1411,12 +1401,10 @@ struct PlayerControlsView: View {
     /// tvOS click-seek).
     private func scheduleSeekCommit(to target: Double) {
         seekCoalescer.schedule(target) { target in
-            // The user's intent, not the engine mirror: this fires 400ms after the last tap,
-            // squarely inside the window where a previous seek's resume beat hasn't landed
-            // yet. Routed through `commitScrubSeek` (not a bare `seek`) so an out-of-buffer
-            // re-encode transcode's force-resuming re-anchor (#15845) can't un-pause a paused user.
-            await vm.commitScrubSeek(to: CMTime(seconds: target, preferredTimescale: 600),
-                                     resume: vm.desiredPlaying)
+            // Routed through `commitSeek` (not a bare `seek`) so an out-of-buffer re-encode
+            // transcode's force-resuming re-anchor (#15845) can't un-pause a paused user. It
+            // fires 400ms after the last tap and reads the intent when it lands, not now.
+            await vm.commitSeek(to: CMTime(seconds: target, preferredTimescale: 600))
         }
     }
 

@@ -4,7 +4,7 @@ import Foundation
 /// (`PlayerControlsView`) and the tvOS click-seek (`PlayerView`) accumulate an absolute
 /// target and fire a single commit after a quiet interval — per-tap seeks thrash a
 /// transcode and wedge the player (the click-seek lesson). Owned per-surface: the commit
-/// closure routes through that surface's own seek path (`vm.commitScrubSeek` /
+/// closure routes through that surface's own seek path (`vm.commitSeek` /
 /// `apply(.seek)`), so this helper only owns the accumulate-then-fire-once timing.
 /// Cancel-on-newer — a fresh target restarts the clock.
 @MainActor

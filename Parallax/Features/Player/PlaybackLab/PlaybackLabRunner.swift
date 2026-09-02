@@ -168,11 +168,11 @@ final class PlaybackLabRunner {
         case "pause":
             vm?.setPlaying(false)
         case "seek":
-            await vm?.seekPreservingTransport(to: labTime(step.toSeconds ?? 0))
+            await vm?.commitSeek(to: labTime(step.toSeconds ?? 0))
         case "skip":
             if let vm {
                 let current = vm.currentPosition.isNumeric ? vm.currentPosition.seconds : 0
-                await vm.seekPreservingTransport(to: labTime(current + (step.bySeconds ?? 0)))
+                await vm.commitSeek(to: labTime(current + (step.bySeconds ?? 0)))
             }
         case "scrub":
             await scrub(to: step.toSeconds ?? 0)
@@ -208,17 +208,16 @@ final class PlaybackLabRunner {
         }
     }
 
-    /// UI-fidelity scrub: the same drag-pause → commit sandwich `PlayerControlsView`'s
+    /// UI-fidelity scrub: the same still-frame hold → commit sandwich `PlayerControlsView`'s
     /// scrubber performs. The pause→seek→play shape is load-bearing: it reproduces bugs
     /// a plain in-stream seek does not (VLCKit 3.x's unflushed post-paused-seek aout
     /// engages on exactly this shape — see `pausedSeekTargetMs`).
     private func scrub(to seconds: Double) async {
         guard let vm else { return }
-        let wasPlaying = vm.desiredPlaying   // the intent the real scrubber captures, not the lagging mirror
-        await vm.engine?.pause()
-        // A beat of "drag time" so the pause lands before the commit, like a finger would.
+        vm.beginScrubHold()
+        // A beat of "drag time" so the hold lands before the commit, like a finger would.
         try? await Task.sleep(for: .milliseconds(300))
-        await vm.commitScrubSeek(to: labTime(seconds), resume: wasPlaying)
+        await vm.commitSeek(to: labTime(seconds))
     }
 
     /// Selects an audio track by name substring through the HUD's exact path,

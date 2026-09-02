@@ -195,7 +195,7 @@ final class PlayerViewModel {
     ///
     /// Two readers, and they have to be the same expression or the bar contradicts itself: the
     /// CONCRETE indicator draws this during a gesture (`PlayerProgressBar.init(scrubbingTo:vm:)`),
-    /// and every new flight anchors its `played` on it (`beginPreview`, `commitScrubSeek`) — so a
+    /// and every new flight anchors its `played` on it (`beginPreview`, `commitSeek`) — so a
     /// scrub made over a seek that never landed CHAINS back to the original A instead of claiming
     /// a B nothing ever played, and the crossing it commits starts from the dot the user has been
     /// looking at. That is the whole chaining rule, and it exists only here.
@@ -414,7 +414,7 @@ final class PlayerViewModel {
     /// `.playing`/`.paused` beat.
     ///
     /// That beat carries two decisions a re-anchor cannot make any other way. It takes the
-    /// cover down: the reload force-resumes and `commitScrubSeek` re-pauses it, so a scrub
+    /// cover down: the reload force-resumes and `commitSeek` re-pauses it, so a scrub
     /// committed while PAUSED can go its whole life without ever publishing `.playing`, and the
     /// heavy cover then sits over a rendered, healthy frame forever. And it opens the session
     /// for reporting: the reload reset `didReportStart`, so with only `.playing` allowed to
@@ -504,7 +504,7 @@ final class PlayerViewModel {
         let seconds = Double(c.seconds) + Double(c.attoseconds) / 1e18
         // Transport-preserving: a paused chapter jump must stay paused across an
         // out-of-buffer re-anchor (whose reload force-resumes).
-        await seekPreservingTransport(to: CMTime(seconds: seconds, preferredTimescale: 600))
+        await commitSeek(to: CMTime(seconds: seconds, preferredTimescale: 600))
     }
 
     /// Optimistic transport toggle from the play/pause button. Flips to the opposite of the
@@ -526,14 +526,10 @@ final class PlayerViewModel {
     /// scrub-commit window rewrites the intent every transport surface reads, so it shows on
     /// the press instead of waiting for a beat that AVKit never sends while paused.
     ///
-    /// Spam-safe by cancel-previous coalescing: each call retargets ONE `transportTask`, so a
-    /// burst flips the glyph with every press (parity — instant, like the system player) but only
-    /// the LAST intent is still alive to command the engine; stale commands die before their
-    /// `await`. The synchronous flip happens before any suspension, so intent order can't interleave.
-    ///
-    /// The scrub and reducer pause/resume paths must KEEP commanding the engine directly: they
-    /// are transient holds on a still frame, and routing them here would overwrite the very
-    /// intent (`desiredPlaying`) their commit is about to replay.
+    /// Spam-safe by the cancel-previous coalescing in `commandTransport`: a burst flips the glyph
+    /// with every press (parity — instant, like the system player) but only the LAST intent is
+    /// still alive to command the engine. The synchronous flip happens before any suspension, so
+    /// intent order can't interleave.
     func setPlaying(_ playing: Bool) {
         guard engine != nil else { return }
         // Same exit fence the scrub/seek surfaces carry: a Now Playing or lock-screen play
@@ -544,12 +540,74 @@ final class PlayerViewModel {
         guard !isExiting else { return }
         desiredPlaying = playing
         isPlaying = playing
+        commandTransport(engineShouldPlay)
+    }
+
+    /// The scrub's transient hold on the still frame. A gesture previewing a destination must
+    /// freeze the picture, and that is NOT a transport intent — the user never asked to pause,
+    /// so `desiredPlaying` stays exactly where it was and the glyph keeps drawing the truth.
+    /// Written only by `beginScrubHold`/`endScrubHold`.
+    private(set) var isHoldingStillFrame = false
+
+    /// What the engine should be doing right now: the user's intent, minus any hold. The one
+    /// derived quantity behind every transport command, which makes the invariant stateable —
+    /// with no hold active and no command in flight, the engine's transport equals
+    /// `desiredPlaying` — and unviolatable, because there is nothing left to replay.
+    private var engineShouldPlay: Bool { desiredPlaying && !isHoldingStillFrame }
+
+    /// Freeze the picture under a scrub preview: the iOS drag's finger-down, the tvOS reducer
+    /// entering `.swipeScrub`.
+    func beginScrubHold() {
+        guard !isHoldingStillFrame else { return }
+        isHoldingStillFrame = true
+        commandTransport(engineShouldPlay)
+    }
+
+    /// The gesture is over — commit or cancel, both end here. Idempotent, so the tvOS batch's
+    /// trailing `.releaseHold` after a `.seek` (which ends the hold itself) is a no-op rather
+    /// than a second command.
+    func endScrubHold() {
+        guard isHoldingStillFrame else { return }
+        isHoldingStillFrame = false
+        commandTransport(engineShouldPlay)
+    }
+
+    /// The ONE place the engine's transport is commanded. Cancel-previous, so whoever spoke last
+    /// is the only voice still alive at the engine no matter which surface issued the command —
+    /// a press, a scrub commit's reconcile, a still-frame hold's release. Two writers awaiting
+    /// their own `play()`/`pause()` on separate unstructured tasks have no ordering at all: the
+    /// slow one (VLC's settle gate, an AVPlayer rate flip on a transcode) can land after the fast
+    /// one and leave the engine playing under a paused glyph, which nothing self-heals because
+    /// every transport surface draws from intent.
+    ///
+    /// Synchronous by design: the caller flips its state and returns, so nobody holds a
+    /// suspension open across which a newer intent could interleave.
+    private func commandTransport(_ playing: Bool) {
         transportTask?.cancel()
         transportTask = Task {
-            // Re-read the engine at execution time: a pending command after
-            // stop() must no-op, not poke a torn-down engine.
+            // Re-read the engine at execution time: a pending command after stop() — or after a
+            // track switch rebuilt it — must no-op or reach the LIVE engine, never the instance
+            // the caller happened to be holding before its await.
             guard !Task.isCancelled, let engine else { return }
+            // The exit fence, re-checked here rather than at every caller: `beginExit()` is
+            // synchronous MainActor work and can land after a resume was queued, and nothing
+            // downstream stops an AVKit engine from restarting audio under a dismissing player.
+            // A pause is always safe to deliver.
+            guard !(playing && isExiting) else { return }
             if playing { await engine.play() } else { await engine.pause() }
+        }
+    }
+
+    /// Await the transport channel's in-flight command, and any command that replaces it while
+    /// we wait. `commandTransport` is fire-and-forget on purpose — no caller holds a suspension
+    /// open across which a newer intent could interleave — which leaves "the engine has been
+    /// commanded" unobservable from the outside. This is the seam that makes it observable, for
+    /// tests that must assert the invariant AT QUIESCENCE: polling until engine and intent agree
+    /// passes vacuously the instant before a wrong command lands.
+    func awaitTransportQuiescence() async {
+        while let pending = transportTask {
+            await pending.value
+            if transportTask == pending { return }
         }
     }
 
@@ -850,7 +908,7 @@ final class PlayerViewModel {
     /// Injectable so tests don't wait wall-clock seconds for it to fire.
     private let backfillDelay: Duration
 
-    /// The clock `SeekHold` is armed and judged against — `commitScrubSeek` stamps `armedAt`
+    /// The clock `SeekHold` is armed and judged against — `commitSeek` stamps `armedAt`
     /// with it and `publish` passes it as `now`. Injectable for one reason: `SeekHold.watchdog`
     /// is 20 s, and the branch it guards (an engine that stops observing forever) is otherwise
     /// only reachable by a test that waits 20 wall-clock seconds. One closure for both reads so
@@ -1035,7 +1093,7 @@ final class PlayerViewModel {
         // Same commit path as the chapter jump: transport-preserving (an out-of-buffer
         // re-anchor's reload force-resumes) and it arms the seek hold, so the bar shows
         // the skip destination instead of the intro's clock behind the reload scrim.
-        await seekPreservingTransport(to: CMTime(seconds: segment.endSeconds, preferredTimescale: 600))
+        await commitSeek(to: CMTime(seconds: segment.endSeconds, preferredTimescale: 600))
     }
 
     /// Play the next episode now (the outro button, or the prev/next transport).
@@ -1662,7 +1720,7 @@ final class PlayerViewModel {
             nowPlaying.configure(
                 // Transport-preserving: a paused lock-screen scrub must not come back
                 // playing when an out-of-buffer target re-anchors (reload force-resumes).
-                onSeek: { [weak self] time in Task { await self?.seekPreservingTransport(to: time) } },
+                onSeek: { [weak self] time in Task { await self?.commitSeek(to: time) } },
                 // Route through setPlaying (not engine.play/pause directly) so a remote command
                 // clears any pending scrub latch — otherwise it's swallowed and the glyph sticks.
                 onPlay: { [weak self] in self?.setPlaying(true) },
@@ -1732,6 +1790,9 @@ final class PlayerViewModel {
         // first `.playing` beat in `handle(_:)` — see `startupMillis`.
         startupClockStart = ContinuousClock.now
         if isFreshSession { desiredPlaying = true }
+        // Starting a stream supersedes any transport command still queued on the channel: a
+        // pause armed before this load must not land on the engine it is about to start.
+        transportTask?.cancel()
         await engine.play()
         // A freshly-built engine starts at 1.0×; re-apply the chosen speed so it
         // survives an engine rebuild (track switch / first play after a speed change).
@@ -1752,7 +1813,7 @@ final class PlayerViewModel {
         // (lock screen, Now Playing, the transport button) landed on the OUTGOING engine,
         // and without this the replacement comes up playing against it.
         // Rebuilds only: an engine-REUSING reload is the re-anchor, whose paused-user
-        // re-pause belongs to `commitScrubSeek`, which sequences it against the seek.
+        // re-pause belongs to `commitSeek`, which sequences it against the seek.
         if rebuilt, !desiredPlaying, self.engine === engine {
             await engine.pause()
         }
@@ -1811,13 +1872,14 @@ final class PlayerViewModel {
         guard !isExiting else { return }
         isExiting = true
         freezeVideoSurface()
-        // The seek is over too: `seek(to:)` and `commitScrubSeek` both fence on `isExiting`, so
+        // The seek is over too: `seek(to:)` and `commitSeek` both fence on `isExiting`, so
         // nothing can land this flight any more — and the surfaces stay mounted for the whole
         // slide-out, which without this carries a scrub bar and a timestamp bubble out of the
         // screen with them. (`stop()` clears it as well, but that runs on `onDisappear`, at the
         // END of the dismissal.)
         seekHold = nil
         flight = nil
+        isHoldingStillFrame = false
         // A transport command armed just before the fence is still pending its hop to the
         // engine; `setPlaying`'s guard only covers commands that arrive after. The task
         // re-checks `Task.isCancelled` before it touches the engine, so cancelling here
@@ -1929,6 +1991,7 @@ final class PlayerViewModel {
         // reload: that window is exactly what the hold exists to cover.)
         seekHold = nil
         flight = nil
+        isHoldingStillFrame = false
         currentDuration = .zero
         chapterFractions = []
         bufferedTo = nil
@@ -2642,7 +2705,7 @@ final class PlayerViewModel {
     /// subtitle-scrub-desync-history) before relaxing anything.
     /// Returns `true` when the seek RE-ANCHORED (rebuilt the transcode via
     /// `reloadTranscode`, which force-resumes playback), `false` for an in-stream
-    /// `engine.seek`. `commitScrubSeek` branches on it to restore a paused scrub's
+    /// `engine.seek`. `commitSeek` branches on it to restore a paused scrub's
     /// pause after a force-resuming reload.
     @discardableResult
     func seek(to target: CMTime) async -> Bool {
@@ -2695,30 +2758,6 @@ final class PlayerViewModel {
         selectedSubtitleTrack.map { !$0.isBurnedIn && $0.id.jellyfinStreamIndex != nil } ?? false
     }
 
-    /// A scrub-commit seek: the gated `seek(to:)` followed by the pre-scrub transport
-    /// replay. Every touch/VoiceOver/tvOS scrub commit routes its seek through `seek(to:)`
-    /// so an out-of-buffer transcode seek re-anchors instead of drifting the subtitle
-    /// overlay; the touch drag additionally pauses the engine to
-    /// hold the still frame, so it must replay the user's pre-scrub play state here.
-    ///
-    /// The wrinkle a bare `seek` can't cover: a re-anchor runs `reloadTranscode`, whose
-    /// `loadAndPlay` UNCONDITIONALLY resumes — so a scrub that began while PAUSED comes
-    /// back playing unless we re-pause it. An in-stream seek leaves the drag's pause in
-    /// place, so it only needs the resume. `resume` is the chain-start play state
-    /// (`scrubWasPlaying`); the caller owns the generation-guarded `isScrubbing` release
-    /// around this call.
-    /// `commitScrubSeek` with the user's CURRENT transport intent: the transport-preserving
-    /// seek for every non-scrub surface (chapter list, Now Playing remote, tvOS effects),
-    /// where no latch pins a pre-gesture state. Without it, a paused out-of-buffer seek comes
-    /// back playing (the re-anchor's reload force-resumes); the same bug `commitScrubSeek`
-    /// fixes for drags.
-    ///
-    /// `desiredPlaying`, not `isPlaying`: the mirror can read paused simply because a scrub or
-    /// a seek fetch is in flight, and resuming off that stale read is the stuck-paused bug.
-    func seekPreservingTransport(to target: CMTime) async {
-        await commitScrubSeek(to: target, resume: desiredPlaying)
-    }
-
     /// A gesture has taken the bar: the finger (or the tvOS swipe) is previewing `requested`
     /// while the picture stays where it is. Nothing is dispatched — this is the state the
     /// concrete/virtual split draws, and the state a commit converts.
@@ -2755,12 +2794,29 @@ final class PlayerViewModel {
         return lastFlightID
     }
 
-    func commitScrubSeek(to target: CMTime, resume: Bool) async {
+    /// THE seek every surface commits through — both scrubs, the chapter list, the Now Playing
+    /// remote, the tvOS reducer's `.seek` effect, VoiceOver. It is three things at once: the
+    /// flight's `.previewing` → `.committed` transition, the gated `seek(to:)` (so an
+    /// out-of-buffer transcode seek RE-ANCHORS instead of drifting the subtitle overlay), and
+    /// the reconciliation that leaves the engine's transport where the user's intent says.
+    ///
+    /// That last part reads `desiredPlaying` HERE, at the point of use, and takes no `resume`
+    /// parameter — a snapshot taken when the gesture started carries no information the live
+    /// value doesn't, only staleness. The window is long: a re-anchor runs `reloadTranscode`,
+    /// and the seek stays suspended for seconds behind it or behind VLC's settle gate. Anything
+    /// that moves the intent inside it — a Select on the tvOS floor, a lock-screen or headphone
+    /// press, a terminal beat, a failed track switch falling back — owns the transport, and a
+    /// replayed snapshot would command the engine behind its back with nothing to self-heal it,
+    /// because every transport surface draws from intent.
+    ///
+    /// Intent, never the `isPlaying` mirror: the mirror can read paused simply because a scrub
+    /// or a seek fetch is in flight, and resuming off that stale read is the stuck-paused bug.
+    func commitSeek(to target: CMTime) async {
         // Exit fence, and the load-bearing one: every scrub surface COALESCES its commit
         // (`SeekCommitCoalescer`, ~400ms), so a drag released just before the close button
-        // lands here inside the dismiss animation, and its `resume` branch would call
-        // `engine.play()`, unmuting and restarting the audio the exit just ended. The
-        // engine's own latch refuses that play; this refuses to issue it at all.
+        // lands here inside the dismiss animation, and a resume would call `engine.play()`,
+        // unmuting and restarting the audio the exit just ended. The engine's own latch
+        // refuses that play; this refuses to issue it at all.
         guard !isExiting else { return }
         // Publish the destination BEFORE the seek. An out-of-buffer transcode
         // commit re-anchors, and `performTranscodeReload` raises the `.loading` scrim and
@@ -2793,21 +2849,21 @@ final class PlayerViewModel {
         Log.playback.info(
             """
             scrub commit: target=\(CMTimeGetSeconds(target), format: .fixed(precision: 1), privacy: .public)s \
-            reanchor=\(didReanchor, privacy: .public) resume=\(resume, privacy: .public)
+            reanchor=\(didReanchor, privacy: .public) intent=\(self.desiredPlaying ? "play" : "pause", privacy: .public)
             """
         )
         // Re-check: `beginExit()` is synchronous MainActor work and can land while this
         // commit is suspended inside the seek above, whose fenced return (`false`) is
         // indistinguishable from an ordinary in-stream seek.
         guard !isExiting else { return }
-        guard let engine else { return }
-        if resume {
-            // The reload already resumed; only the in-stream seek left the drag-pause on.
-            if !didReanchor { await engine.play() }
-        } else if didReanchor {
-            // The reload force-resumed against the user's pause — restore it.
-            await engine.pause()
-        }
+        // The commit is what the hold was holding for, so this is where it ends. The reconcile
+        // is unconditional, though: a re-anchor's reload force-resumes whether or not a hold
+        // was ever up, so a paused chapter jump out of buffer has to be put back too. One
+        // statement covers both shapes a commit can end in, because it asks the question both
+        // were approximating — where should the engine be right now. This is `endScrubHold`
+        // without its guard, so the command goes out exactly once whether or not a hold was up.
+        isHoldingStillFrame = false
+        commandTransport(engineShouldPlay)
     }
 
     /// Single-flight drain of `pendingReanchorTarget`: the first caller re-resolves the

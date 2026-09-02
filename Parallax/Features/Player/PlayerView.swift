@@ -836,7 +836,7 @@ struct PlayerView: View {
     /// takes. The flight outlives the cover, so the bar comes back for the landing.
     private func scrubBarProgress(_ vm: PlayerViewModel) -> Double? {
         switch hudState {
-        case .swipeScrub(let progress, _), .clickSeek(targetProgress: let progress): progress
+        case .swipeScrub(let progress), .clickSeek(targetProgress: let progress): progress
         case .floor: vm.phase == .loading ? nil : vm.seekSpan?.delta.to
         case .fullHUD: nil
         }
@@ -938,8 +938,7 @@ struct PlayerView: View {
         let leavingTarget: Double? = { if case .clickSeek(let t) = hudState { return t } else { return nil } }()
         let ctx = ReduceContext(
             liveProgress: tvProgress(of: vm),
-            durationSeconds: CMTimeGetSeconds(vm.currentDuration),
-            desiredPlaying: vm.desiredPlaying
+            durationSeconds: CMTimeGetSeconds(vm.currentDuration)
         )
         let (next, effects) = reduce(hudState, event, ctx)
 
@@ -972,14 +971,14 @@ struct PlayerView: View {
     /// view flags.
     ///
     /// A commit is deliberately NOT a cancel: the reducer emits its `.seek` effect one hop
-    /// before `commitScrubSeek` converts the preview into a committed flight, and cancelling in
+    /// before `commitSeek` converts the preview into a committed flight, and cancelling in
     /// that hop is what used to unmount the bar for a frame at exactly the moment the crossing
     /// should start.
     private func syncScrubPreview(from current: PlayerHUDState, to next: PlayerHUDState,
                                   effects: [PlayerEffect], _ vm: PlayerViewModel) {
         let dur = CMTimeGetSeconds(vm.currentDuration)
         guard dur > 0 else { return }
-        if case .swipeScrub(let progress, _) = next {
+        if case .swipeScrub(let progress) = next {
             vm.beginPreview(at: CMTime(seconds: progress * dur, preferredTimescale: 600))
             return
         }
@@ -1021,10 +1020,10 @@ struct PlayerView: View {
         return (CMTimeGetSeconds(vm.currentPosition) / dur).unitClamped
     }
 
-    /// Apply a transition's effects **in order, in a single task**, so an ordered pair
-    /// like `[.seek, .play]` can't race: as detached per-effect tasks, `play()` could
-    /// land before `seek()`, and a play-then-seek on a Jellyfin transcode parks AVPlayer
-    /// in `.waitingToPlayAtSpecifiedRate` (reported as playing) — the resume is lost.
+    /// Apply a transition's effects **in order, in a single task**, so an ordered batch like
+    /// `[.seek, .releaseHold]` can't race: as detached per-effect tasks the release could land
+    /// before the seek, and a play-then-seek on a Jellyfin transcode parks AVPlayer in
+    /// `.waitingToPlayAtSpecifiedRate` (reported as playing) — the resume is lost.
     ///
     /// `.exit` is pulled out and run synchronously with the press: `beginExit()`
     /// must arm its fence before a suspended start-path continuation can
@@ -1039,26 +1038,22 @@ struct PlayerView: View {
 
     private func apply(_ effect: PlayerEffect, _ vm: PlayerViewModel) async {
         switch effect {
-        case .pause:
-            await vm.engine?.pause()
-        case .play:
-            await vm.engine?.play()
+        case .holdStillFrame:
+            vm.beginScrubHold()
+        case .releaseHold:
+            vm.endScrubHold()
         case .seek(let p):
             let dur = CMTimeGetSeconds(vm.currentDuration)
             guard dur > 0 else { return }
             let target = CMTime(seconds: p * dur, preferredTimescale: 600)
-            // Transport-preserving: it replays the user's INTENT, which the reducer's
-            // scrub pause deliberately left alone. A scrub that began paused re-pauses
-            // the re-anchor's force-resume; one that began playing resumes here and the
-            // reducer's own `.play` effect (wasPlaying) lands idempotently after. A bare
-            // `seek` would leave a paused swipe-scrub playing after an out-of-buffer
-            // re-anchor.
-            await vm.seekPreservingTransport(to: target)
+            // The commit ends the scrub's still-frame hold and reconciles the engine to the
+            // user's INTENT, which the hold deliberately left alone — so a scrub that began
+            // paused re-pauses the re-anchor's force-resume, and one that began playing
+            // resumes. The batch's trailing `.releaseHold` is then a no-op.
+            await vm.commitSeek(to: target)
         case .togglePlayPause:
-            // Optimistic flip inside the vm — the paused overlay reacts on the
-            // press, not a beat later, and remote-press spam coalesces to the
-            // last intent. The reducer's .pause/.play effects above keep
-            // commanding the engine directly (they carry wasPlaying intent).
+            // Optimistic flip inside the vm — the paused overlay reacts on the press, not a
+            // beat later, and remote-press spam coalesces to the last intent.
             vm.togglePlayPause()
         case .exit:
             exitPlayer()

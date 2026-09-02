@@ -63,6 +63,7 @@ public final class FakePlaybackEngine: PlaybackEngine {
         var calls: [String] = []
         var selectedAudioTrackID: TrackID? = nil
         var selectedSubtitleTrackID: TrackID? = nil
+        var isPlayingNow = false
     }
     private let recordedState = Mutex(RecordedState())
 
@@ -70,6 +71,13 @@ public final class FakePlaybackEngine: PlaybackEngine {
     public var calls: [String] { recordedState.withLock { $0.calls } }
     public var selectedAudioTrackID: TrackID? { recordedState.withLock { $0.selectedAudioTrackID } }
     public var selectedSubtitleTrackID: TrackID? { recordedState.withLock { $0.selectedSubtitleTrackID } }
+    /// The engine's transport as STATE, not as the tail of `calls`. `calls` answers "which
+    /// commands were issued, in which order"; this answers "where did the transport end up",
+    /// which is the invariant a caller that commands the engine from several places actually
+    /// owes (`engine.isPlayingNow == vm.desiredPlaying` at quiescence). A test that asserts on
+    /// the last logged string instead is order-sensitive to whichever unstructured task happened
+    /// to finish last.
+    public var isPlayingNow: Bool { recordedState.withLock { $0.isPlayingNow } }
 
     /// Set to make every `load` throw after recording — a failed stream load.
     public nonisolated(unsafe) var loadError: Error? = nil
@@ -198,9 +206,19 @@ public final class FakePlaybackEngine: PlaybackEngine {
         return session
     }
 
-    public func play() async { recordedState.withLock { $0.calls.append("play") } }
+    public func play() async {
+        recordedState.withLock {
+            $0.calls.append("play")
+            $0.isPlayingNow = true
+        }
+    }
 
-    public func pause() async { recordedState.withLock { $0.calls.append("pause") } }
+    public func pause() async {
+        recordedState.withLock {
+            $0.calls.append("pause")
+            $0.isPlayingNow = false
+        }
+    }
 
     /// Recorded distinctly from "pause" so tests can tell a resumable silence from a
     /// transport pause — the two diverge on real engines (VLC mutes the audio output).
@@ -209,7 +227,11 @@ public final class FakePlaybackEngine: PlaybackEngine {
     /// Recorded distinctly from "silence" too: this is the TERMINAL exit cut (VLC stops
     /// the player outright), and the exit tests assert exactly which of the two a path took.
     public func endAudio() async {
-        recordedState.withLock { $0.calls.append("endAudio") }
+        recordedState.withLock {
+            $0.calls.append("endAudio")
+            // The terminal cut stops the player outright, so the transport is down with it.
+            $0.isPlayingNow = false
+        }
         await endAudioGate.park()
     }
 
