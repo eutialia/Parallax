@@ -1503,9 +1503,6 @@ final class PlayerViewModel {
             // teardown — off this path, into a retirement `stop()` drains.
             engine = engineFactory(id, libraryOptions)
             await engineSlot.swap(to: engine)
-            // Exit can land inside that audio cut; nothing below may start audio for a
-            // player that is already dismissing.
-            try checkStillActive()
             engineLibraryOptions = libraryOptions
             subscribe(to: engine)
             nowPlaying.configure(
@@ -1520,6 +1517,10 @@ final class PlayerViewModel {
         }
 
         do {
+            // Exit can land inside the swap's audio cut. Checked here, inside the teardown
+            // path, so a replacement that was installed for a player already dismissing is
+            // torn down with its subscription rather than left resident until `stop()`.
+            try checkStillActive()
             try await engine.load(asset)
             // Last fence before audio starts: an exit that landed during load must
             // not be answered with play() on a player that's already dismissed.
