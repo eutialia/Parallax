@@ -8,9 +8,10 @@ import Foundation
 nonisolated enum PlayerHUDState: Equatable {
     /// Clean screen — nothing drawn over the video.
     case floor
-    /// Analog swipe scrub: the video is paused on the preview frame at `progress`,
-    /// and Select commits the seek (resuming iff `wasPlaying`).
-    case swipeScrub(progress: Double, wasPlaying: Bool)
+    /// Analog swipe scrub: the picture is held on the preview frame at `progress`, and Select
+    /// commits the seek. Nothing to remember about the transport — the hold leaves the user's
+    /// intent alone, so releasing it restores whatever the intent is by then.
+    case swipeScrub(progress: Double)
     /// Discrete ±10s click seeking: the video keeps playing while the minimal scrub
     /// bar previews `targetProgress`, which accumulates one step per left/right click.
     /// The reducer emits NO seek here — the view debounces a single seek to the final
@@ -38,8 +39,13 @@ nonisolated enum RemoteEvent: Equatable {
 }
 
 nonisolated enum PlayerEffect: Equatable {
-    case pause
-    case play
+    /// Freeze the picture under the scrub preview. Not a pause: the user's transport intent is
+    /// untouched, which is why the glyph keeps drawing the truth through a scrub.
+    case holdStillFrame
+    /// Let the picture go again, wherever the intent has ended up. EVERY exit from `.swipeScrub`
+    /// emits it, including the cancels — a hold nothing releases is a frozen picture under a
+    /// playing glyph.
+    case releaseHold
     case seek(progress: Double)
     case togglePlayPause
     case exit
@@ -48,11 +54,6 @@ nonisolated enum PlayerEffect: Equatable {
 nonisolated struct ReduceContext: Equatable {
     let liveProgress: Double
     let durationSeconds: Double
-    /// The user's transport INTENT (`PlayerViewModel.desiredPlaying`), never the engine's
-    /// `isPlaying` mirror. Every scrub entry below seeds `wasPlaying` from it, and the mirror
-    /// lags: a scrub starting inside that lag would capture `false` and confirm without
-    /// resuming, stranding playback on the pause the scrub itself issued.
-    let desiredPlaying: Bool
 }
 
 nonisolated enum PlayerHUDTuning {
@@ -87,7 +88,7 @@ nonisolated func reduce(_ state: PlayerHUDState, _ event: RemoteEvent, _ ctx: Re
     case .floor:
         switch event {
         case .swipeHorizontal(let d):
-            return (.swipeScrub(progress: (ctx.liveProgress + d).unitClamped, wasPlaying: ctx.desiredPlaying), [.pause])
+            return (.swipeScrub(progress: (ctx.liveProgress + d).unitClamped), [.holdStillFrame])
         case .swipeVertical, .click(.up), .click(.down):
             return (.fullHUD, [])
         case .click(.left):
@@ -103,24 +104,29 @@ nonisolated func reduce(_ state: PlayerHUDState, _ event: RemoteEvent, _ ctx: Re
             return (.floor, [])
         }
 
-    case .swipeScrub(let p, let wasPlaying):
-        let confirm: [PlayerEffect] = wasPlaying ? [.seek(progress: p), .play] : [.seek(progress: p)]
+    case .swipeScrub(let p):
+        // Every exit releases the hold. The commit's `.seek` reconciles the transport on its
+        // own, so the trailing release is idempotent there — but on the cancel it is the only
+        // thing that unfreezes the picture, and a cancel that emitted nothing (the old
+        // `wasPlaying == false` branch) left a Play pressed mid-scrub stranded: intent playing,
+        // engine held, nothing to reconcile the two.
+        let confirm: [PlayerEffect] = [.seek(progress: p), .releaseHold]
         switch event {
         case .swipeHorizontal(let d):
-            return (.swipeScrub(progress: (p + d).unitClamped, wasPlaying: wasPlaying), [])
+            return (.swipeScrub(progress: (p + d).unitClamped), [])
         case .select:
             return (.floor, confirm)
         case .swipeVertical, .click:
             return (.fullHUD, confirm)
         case .menu:
-            // Explicit cancel (Back): discard the preview, resume where it was.
-            return (.floor, wasPlaying ? [.play] : [])
+            // Explicit cancel (Back): discard the preview, let the picture go.
+            return (.floor, [.releaseHold])
         case .idle:
             // Timeout commits the scrub. tvOS can drop a Select that lands right after a
             // swipe; committing on idle means that missed confirm never loses the seek.
             return (.floor, confirm)
         case .playPause:
-            return (.floor, [.seek(progress: p), .togglePlayPause])
+            return (.floor, [.seek(progress: p), .releaseHold, .togglePlayPause])
         }
 
     case .clickSeek(let target):
@@ -132,7 +138,7 @@ nonisolated func reduce(_ state: PlayerHUDState, _ event: RemoteEvent, _ ctx: Re
             return (.clickSeek(targetProgress: (target + clickStep).unitClamped), [])
         case .swipeHorizontal(let d):
             // Fall back to analog scrub from the current target; pause for the preview.
-            return (.swipeScrub(progress: (target + d).unitClamped, wasPlaying: ctx.desiredPlaying), [.pause])
+            return (.swipeScrub(progress: (target + d).unitClamped), [.holdStillFrame])
         case .swipeVertical, .click(.up), .click(.down):
             return (.fullHUD, [])
         case .select, .playPause:
@@ -146,7 +152,7 @@ nonisolated func reduce(_ state: PlayerHUDState, _ event: RemoteEvent, _ ctx: Re
         case .swipeHorizontal(let d):
             // Only arrives while the scrubber holds focus (`PlayerView.onPan` gates it):
             // the chrome collapses into the same analog scrub as a floor swipe.
-            return (.swipeScrub(progress: (ctx.liveProgress + d).unitClamped, wasPlaying: ctx.desiredPlaying), [.pause])
+            return (.swipeScrub(progress: (ctx.liveProgress + d).unitClamped), [.holdStillFrame])
         case .menu, .idle:
             return (.floor, [])
         case .playPause:

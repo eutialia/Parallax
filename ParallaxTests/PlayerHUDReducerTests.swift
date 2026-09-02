@@ -8,8 +8,9 @@ private let referenceDuration: Double = 100
 /// from the reducer's own step constant, never re-typed as 0.1.
 private let clickStep = PlayerHUDTuning.clickStepSeconds / referenceDuration
 
-private let playingCtx = ReduceContext(liveProgress: 0.5, durationSeconds: referenceDuration, desiredPlaying: true)
-private let pausedCtx = ReduceContext(liveProgress: 0.5, durationSeconds: referenceDuration, desiredPlaying: false)
+/// The reducer no longer branches on the transport at all — the still-frame hold leaves the
+/// user's intent alone, and every exit from a scrub releases it — so one context covers every row.
+private let baseCtx = ReduceContext(liveProgress: 0.5, durationSeconds: referenceDuration)
 
 /// One cell of the state × event transition table.
 private struct Transition: Sendable, CustomTestStringConvertible {
@@ -20,45 +21,38 @@ private struct Transition: Sendable, CustomTestStringConvertible {
     let effects: [PlayerEffect]
 
     var testDescription: String {
-        "\(state) + \(event)\(ctx.desiredPlaying ? "" : " (paused)") → \(expected) \(effects)"
+        "\(state) + \(event) → \(expected) \(effects)"
     }
 }
 
 /// The deterministic cells: one row per (state, event) whose outcome is a plain
-/// transition, including the paused-context variants. The scrub/click-seek cells with
-/// their own rationale keep dedicated tests below.
+/// transition. The scrub/click-seek cells with their own rationale keep dedicated tests below.
 private let transitionTable: [Transition] = [
     // floor — select/play-pause toggle in place, menu exits the player.
-    .init(state: .floor, event: .select, ctx: playingCtx, expected: .floor, effects: [.togglePlayPause]),
-    .init(state: .floor, event: .playPause, ctx: playingCtx, expected: .floor, effects: [.togglePlayPause]),
-    .init(state: .floor, event: .playPause, ctx: pausedCtx, expected: .floor, effects: [.togglePlayPause]),
-    .init(state: .floor, event: .menu, ctx: playingCtx, expected: .floor, effects: [.exit]),
-    .init(state: .floor, event: .idle, ctx: playingCtx, expected: .floor, effects: []),
+    .init(state: .floor, event: .select, ctx: baseCtx, expected: .floor, effects: [.togglePlayPause]),
+    .init(state: .floor, event: .playPause, ctx: baseCtx, expected: .floor, effects: [.togglePlayPause]),
+    .init(state: .floor, event: .menu, ctx: baseCtx, expected: .floor, effects: [.exit]),
+    .init(state: .floor, event: .idle, ctx: baseCtx, expected: .floor, effects: []),
     // clickSeek — select commits to floor via a toggle; menu/idle just hide the bar.
-    .init(state: .clickSeek(targetProgress: 0.4), event: .select, ctx: playingCtx, expected: .floor, effects: [.togglePlayPause]),
-    .init(state: .clickSeek(targetProgress: 0.4), event: .menu, ctx: playingCtx, expected: .floor, effects: []),
-    .init(state: .clickSeek(targetProgress: 0.4), event: .idle, ctx: playingCtx, expected: .floor, effects: []),
-    // swipeScrub — play/pause commits the preview seek AND forwards the toggle
-    // (an untested cell before this table existed).
-    .init(state: .swipeScrub(progress: 0.3, wasPlaying: true), event: .playPause, ctx: playingCtx,
-          expected: .floor, effects: [.seek(progress: 0.3), .togglePlayPause]),
-    .init(state: .swipeScrub(progress: 0.3, wasPlaying: false), event: .playPause, ctx: pausedCtx,
-          expected: .floor, effects: [.seek(progress: 0.3), .togglePlayPause]),
+    .init(state: .clickSeek(targetProgress: 0.4), event: .select, ctx: baseCtx, expected: .floor, effects: [.togglePlayPause]),
+    .init(state: .clickSeek(targetProgress: 0.4), event: .menu, ctx: baseCtx, expected: .floor, effects: []),
+    .init(state: .clickSeek(targetProgress: 0.4), event: .idle, ctx: baseCtx, expected: .floor, effects: []),
+    // swipeScrub — play/pause commits the preview seek, releases the hold, and forwards the
+    // toggle (an untested cell before this table existed).
+    .init(state: .swipeScrub(progress: 0.3), event: .playPause, ctx: baseCtx,
+          expected: .floor, effects: [.seek(progress: 0.3), .releaseHold, .togglePlayPause]),
     // fullHUD — menu/idle hide to floor (never exit); play/pause stays in chrome.
-    .init(state: .fullHUD, event: .menu, ctx: playingCtx, expected: .floor, effects: []),
-    .init(state: .fullHUD, event: .menu, ctx: pausedCtx, expected: .floor, effects: []),
-    .init(state: .fullHUD, event: .idle, ctx: playingCtx, expected: .floor, effects: []),
-    .init(state: .fullHUD, event: .idle, ctx: pausedCtx, expected: .floor, effects: []),
-    .init(state: .fullHUD, event: .playPause, ctx: playingCtx, expected: .fullHUD, effects: [.togglePlayPause]),
-    .init(state: .fullHUD, event: .playPause, ctx: pausedCtx, expected: .fullHUD, effects: [.togglePlayPause]),
+    .init(state: .fullHUD, event: .menu, ctx: baseCtx, expected: .floor, effects: []),
+    .init(state: .fullHUD, event: .idle, ctx: baseCtx, expected: .floor, effects: []),
+    .init(state: .fullHUD, event: .playPause, ctx: baseCtx, expected: .fullHUD, effects: [.togglePlayPause]),
 ]
 
 struct PlayerHUDReducerTests {
-    private let playing = playingCtx
-    private let paused = pausedCtx
+    private let playing = baseCtx
+    private let paused = baseCtx
     // Incomplete media whose runtime never resolved: `CMTimeGetSeconds(.indefinite)` is NaN, so
     // `durationSeconds > 0` is false and there's no scrubbable timeline.
-    private let indeterminate = ReduceContext(liveProgress: 0, durationSeconds: .nan, desiredPlaying: true)
+    private let indeterminate = ReduceContext(liveProgress: 0, durationSeconds: .nan)
 
     @Test("every deterministic (state, event) cell lands where the table says",
           arguments: transitionTable)
@@ -94,27 +88,17 @@ struct PlayerHUDReducerTests {
 
     // MARK: floor
 
-    @Test("floor: horizontal swipe enters scrub, pauses, seeds from live + delta")
+    @Test("floor: horizontal swipe enters scrub, holds the still frame, seeds from live + delta")
     func floorSwipeEntersScrub() {
         let (state, fx) = reduce(.floor, .swipeHorizontal(deltaProgress: 0.25), playing)
-        #expect(state == .swipeScrub(progress: 0.75, wasPlaying: true))
-        #expect(fx == [.pause])
-    }
-
-    @Test("floor: the scrub captures the user's transport INTENT, so a swipe inside the engine's beat lag still resumes")
-    func floorSwipeCapturesIntentNotEngineMirror() {
-        // A second scrub lands while the engine is still momentarily paused from
-        // the first commit. The context carries `desiredPlaying` (never touched by beats),
-        // so `wasPlaying` is true and the confirm resumes instead of sticking on pause.
-        let (state, _) = reduce(.floor, .swipeHorizontal(deltaProgress: 0.1), playing)
-        #expect(state == .swipeScrub(progress: 0.6, wasPlaying: true))
-        #expect(reduce(state, .select, playing).1 == [.seek(progress: 0.6), .play])
+        #expect(state == .swipeScrub(progress: 0.75))
+        #expect(fx == [.holdStillFrame])
     }
 
     @Test("floor: horizontal swipe clamps the seeded progress to 0...1")
     func floorSwipeClamps() {
         let (state, _) = reduce(.floor, .swipeHorizontal(deltaProgress: 0.9), paused)
-        #expect(state == .swipeScrub(progress: 1.0, wasPlaying: false))
+        #expect(state == .swipeScrub(progress: 1.0))
     }
 
     @Test("floor: vertical swipe reveals full HUD")
@@ -163,11 +147,11 @@ struct PlayerHUDReducerTests {
         #expect(reduce(.clickSeek(targetProgress: 0.05), .click(.left), playing).0 == .clickSeek(targetProgress: 0.0))
     }
 
-    @Test("clickSeek: horizontal swipe falls back to analog scrub and pauses")
+    @Test("clickSeek: horizontal swipe falls back to analog scrub and holds the still frame")
     func clickSeekToSwipe() {
         let (state, fx) = reduce(.clickSeek(targetProgress: 0.4), .swipeHorizontal(deltaProgress: 0.1), playing)
-        #expect(state == .swipeScrub(progress: 0.5, wasPlaying: true))
-        #expect(fx == [.pause])
+        #expect(state == .swipeScrub(progress: 0.5))
+        #expect(fx == [.holdStillFrame])
     }
 
     @Test("clickSeek: vertical swipe / up-down click opens full HUD")
@@ -178,59 +162,60 @@ struct PlayerHUDReducerTests {
 
     // MARK: swipeScrub
 
-    @Test("scrub: horizontal swipe adjusts the head, keeps wasPlaying, no effect")
+    @Test("scrub: horizontal swipe adjusts the head, no effect")
     func scrubAdjusts() {
-        let (state, fx) = reduce(.swipeScrub(progress: 0.5, wasPlaying: true),
+        let (state, fx) = reduce(.swipeScrub(progress: 0.5),
                                  .swipeHorizontal(deltaProgress: -0.25), playing)
-        #expect(state == .swipeScrub(progress: 0.25, wasPlaying: true))
+        #expect(state == .swipeScrub(progress: 0.25))
         #expect(fx.isEmpty)
     }
 
-    @Test("scrub: select confirms seek + resumes when was playing, returns to floor")
-    func scrubSelectConfirmsResumes() {
-        let (state, fx) = reduce(.swipeScrub(progress: 0.3, wasPlaying: true), .select, playing)
+    @Test("scrub: select confirms the seek and releases the hold, returns to floor")
+    func scrubSelectConfirms() {
+        let (state, fx) = reduce(.swipeScrub(progress: 0.3), .select, playing)
         #expect(state == .floor)
-        #expect(fx == [.seek(progress: 0.3), .play])
-    }
-
-    @Test("scrub: select confirms seek without resume when it was paused")
-    func scrubSelectConfirmsNoResume() {
-        let (_, fx) = reduce(.swipeScrub(progress: 0.3, wasPlaying: false), .select, paused)
-        #expect(fx == [.seek(progress: 0.3)])
+        #expect(fx == [.seek(progress: 0.3), .releaseHold])
     }
 
     @Test("scrub: vertical swipe and click confirm seek and open full HUD")
     func scrubConfirmToHUD() {
-        #expect(reduce(.swipeScrub(progress: 0.2, wasPlaying: true), .swipeVertical, playing).0 == .fullHUD)
-        #expect(reduce(.swipeScrub(progress: 0.2, wasPlaying: true), .click(.up), playing).0 == .fullHUD)
-        #expect(reduce(.swipeScrub(progress: 0.2, wasPlaying: false), .click(.left), paused).1 == [.seek(progress: 0.2)])
+        #expect(reduce(.swipeScrub(progress: 0.2), .swipeVertical, playing).0 == .fullHUD)
+        #expect(reduce(.swipeScrub(progress: 0.2), .click(.up), playing).0 == .fullHUD)
+        #expect(reduce(.swipeScrub(progress: 0.2), .click(.left), paused).1 == [.seek(progress: 0.2), .releaseHold])
     }
 
-    @Test("scrub: menu cancels — no seek, resumes if it was playing, back to floor")
+    @Test("scrub: menu cancels — no seek, but the hold is still released")
     func scrubMenuCancels() {
-        #expect(reduce(.swipeScrub(progress: 0.9, wasPlaying: true), .menu, playing) == (PlayerHUDState.floor, [PlayerEffect.play]))
-        #expect(reduce(.swipeScrub(progress: 0.9, wasPlaying: false), .menu, paused) == (PlayerHUDState.floor, []))
+        #expect(reduce(.swipeScrub(progress: 0.9), .menu, playing)
+                == (PlayerHUDState.floor, [PlayerEffect.releaseHold]))
     }
 
     @Test("scrub: idle commits the scrub — seeks to the preview head so a missed Select can't lose it")
     func scrubIdleCommits() {
-        #expect(reduce(.swipeScrub(progress: 0.9, wasPlaying: true), .idle, playing)
-                == (PlayerHUDState.floor, [PlayerEffect.seek(progress: 0.9), PlayerEffect.play]))
-        #expect(reduce(.swipeScrub(progress: 0.9, wasPlaying: false), .idle, paused)
-                == (PlayerHUDState.floor, [PlayerEffect.seek(progress: 0.9)]))
+        #expect(reduce(.swipeScrub(progress: 0.9), .idle, playing)
+                == (PlayerHUDState.floor, [PlayerEffect.seek(progress: 0.9), PlayerEffect.releaseHold]))
+    }
+
+    /// The rule the `.menu` cancel used to break, stated as a rule: a hold nothing releases is a
+    /// frozen picture under a glyph that reads intent, and nothing self-heals it. The old
+    /// `wasPlaying == false` cancel emitted no effect at all, so a Now Playing Play pressed
+    /// mid-scrub left the engine held with `desiredPlaying == true`.
+    @Test("scrub: EVERY exit from swipeScrub releases the hold",
+          arguments: [RemoteEvent.select, .swipeVertical, .click(.up), .click(.left),
+                      .menu, .idle, .playPause])
+    func everyScrubExitReleasesTheHold(event: RemoteEvent) {
+        let (state, fx) = reduce(.swipeScrub(progress: 0.4), event, playing)
+        #expect(state != .swipeScrub(progress: 0.4))   // it IS an exit
+        #expect(fx.contains(.releaseHold))
     }
 
     // MARK: fullHUD
 
-    @Test("fullHUD: horizontal swipe (view-gated to scrubber focus) drops into analog scrub and pauses")
+    @Test("fullHUD: horizontal swipe (view-gated to scrubber focus) drops into analog scrub and holds")
     func hudSwipeEntersScrub() {
         let (state, fx) = reduce(.fullHUD, .swipeHorizontal(deltaProgress: 0.25), playing)
-        #expect(state == .swipeScrub(progress: 0.75, wasPlaying: true))
-        #expect(fx == [.pause])
-
-        let (pausedState, pausedFx) = reduce(.fullHUD, .swipeHorizontal(deltaProgress: -0.25), paused)
-        #expect(pausedState == .swipeScrub(progress: 0.25, wasPlaying: false))
-        #expect(pausedFx == [.pause])
+        #expect(state == .swipeScrub(progress: 0.75))
+        #expect(fx == [.holdStillFrame])
     }
 
     @Test("fullHUD: vertical swipe/click/select are no-ops (handled natively)")

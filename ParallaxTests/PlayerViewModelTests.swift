@@ -905,7 +905,7 @@ struct PlayerViewModelTests {
         // commit whenever a newer scrub arrives.
         engine.bufferedRange = 0...120
         let commit = Task {
-            await vm.commitScrubSeek(to: CMTime(seconds: 5000, preferredTimescale: 600), resume: true)
+            await vm.commitSeek(to: CMTime(seconds: 5000, preferredTimescale: 600))
         }
         var reloadEntered = enteredStream.makeAsyncIterator()
         await reloadEntered.next()
@@ -998,10 +998,10 @@ struct PlayerViewModelTests {
         #expect(vm.deliveryProbeExhausted == true)
     }
 
-    // MARK: - commitScrubSeek — the scrub-commit path every UI scrub now routes through
+    // MARK: - commitSeek — the scrub-commit path every UI scrub now routes through
 
     @Test("scrub commit on direct play: in-stream engine.seek + resume — no re-anchor, byte-identical to the old path")
-    func commitScrubSeekDirectPlayInStream() async throws {
+    func commitSeekDirectPlayInStream() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         nonisolated(unsafe) var resolveCalls = 0
@@ -1015,9 +1015,14 @@ struct PlayerViewModelTests {
         engine.bufferedRange = 0...120   // ignored for non-transcode: the gate exits before isBuffered
 
         // Resuming scrub → in-stream seek then play (the drag paused the engine to hold the frame).
-        await vm.commitScrubSeek(to: CMTime(seconds: 3000, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 3000, preferredTimescale: 600))
+        // The commit's transport command rides the view model's one serialized channel
+        // (`commandTransport`), which is fire-and-forget: it lands a turn after the commit
+        // returns. Assert at quiescence, never on the call that queued it.
+        await waitUntil { engine.calls.last == "play" }
         #expect(engine.calls.contains("seek(3000.0)"))
         #expect(engine.calls.last == "play")
+        #expect(engine.isPlayingNow)
         #expect(resolveCalls == 1)                              // no fresh transcode
         #expect(engine.loadedAssets.count == loadsAfterStart)   // engine not reloaded
     }
@@ -1041,7 +1046,7 @@ struct PlayerViewModelTests {
             engine: engine
         )
         await vm.start(item: PlayerFixtures.movieDetail())
-        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
 
         // The seek's target echo, then the hold's extrapolations at the 500ms poll cadence —
         // `target + polls × pollMs × rate`, which is monotone and never below the target.
@@ -1080,7 +1085,7 @@ struct PlayerViewModelTests {
             engine: engine
         )
         await vm.start(item: PlayerFixtures.movieDetail())
-        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
 
         for seconds in [3_000.0, 3_002.0, 3_004.0] {
             engine.push(.playing(seconds, provenance: .projected))
@@ -1095,7 +1100,7 @@ struct PlayerViewModelTests {
     }
 
     @Test("scrub commit on direct play while paused: seek only, no resume — a paused scrub stays paused")
-    func commitScrubSeekDirectPlayPausedStaysPaused() async throws {
+    func commitSeekDirectPlayPausedStaysPaused() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         let vm = makePlayerVM(
@@ -1104,10 +1109,17 @@ struct PlayerViewModelTests {
             engine: engine
         )
         await vm.start(item: PlayerFixtures.movieDetail())
+        vm.setPlaying(false)
+        await vm.awaitTransportQuiescence()
 
-        await vm.commitScrubSeek(to: CMTime(seconds: 3000, preferredTimescale: 600), resume: false)
-        // load + play from start(), then the bare in-stream seek — no trailing play, no pause.
-        #expect(engine.calls == ["load", "play", "seek(3000.0)"])
+        let before = engine.calls.count
+        await vm.commitSeek(to: CMTime(seconds: 3000, preferredTimescale: 600))
+        await vm.awaitTransportQuiescence()
+        // The bare in-stream seek, then the reconcile restates the standing pause: nothing resumes.
+        let tail = Array(engine.calls.dropFirst(before))
+        #expect(tail.first == "seek(3000.0)")
+        #expect(!tail.contains("play"))
+        #expect(engine.isPlayingNow == false)
     }
 
     @Test("""
@@ -1115,7 +1127,7 @@ struct PlayerViewModelTests {
           re-encode, and no exemption for a proven video copy
           """,
           arguments: deliveryShapes)
-    func commitScrubSeekReanchorsForEveryDelivery(delivery: TranscodeDelivery) async throws {
+    func commitSeekReanchorsForEveryDelivery(delivery: TranscodeDelivery) async throws {
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
         nonisolated(unsafe) var resolveCalls: [CMTime?] = []
@@ -1138,7 +1150,7 @@ struct PlayerViewModelTests {
 
         // Out-of-buffer scrub commit → fresh transcode AT the target, not an in-stream seek.
         engine.bufferedRange = 0...120
-        await vm.commitScrubSeek(to: CMTime(seconds: 3000, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 3000, preferredTimescale: 600))
         #expect(resolveCalls.count == 2)
         #expect(CMTimeGetSeconds((resolveCalls.last ?? nil) ?? .zero) == 3000)
         #expect(engine.loadedAssets.count == loadsAfterStart + 1)   // engine reloaded
@@ -1185,13 +1197,13 @@ struct PlayerViewModelTests {
     }
 
     @Test("a commit that re-anchors shows the TARGET while the reload scrim is up — never the pre-scrub position")
-    func commitScrubSeekHoldsTargetThroughReanchor() async throws {
+    func commitSeekHoldsTargetThroughReanchor() async throws {
         let (vm, engines) = try await makeReanchorVM(at: 600)
         let engine = engines.live
 
         // The reload lands `.loading` and drops every engine beat while it runs, so this
         // returns with the OLD clock still the newest thing the engine ever published.
-        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
 
         #expect(vm.phase == .loading)                              // still behind the scrim
         #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000)     // …showing B, not A
@@ -1204,7 +1216,7 @@ struct PlayerViewModelTests {
     func seekHoldReleasesOnTheFirstObservedBeat() async throws {
         let (vm, engines) = try await makeReanchorVM(at: 600)
         let engine = engines.live
-        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
 
         for _ in 0..<4 {
             engine.push(.playing(600, provenance: .stale))
@@ -1232,7 +1244,7 @@ struct PlayerViewModelTests {
     func observedFarOffBeatReleasesOntoTheEnginesPosition(landing: Double) async throws {
         let (vm, engines) = try await makeReanchorVM(at: 600)
         let engine = engines.live
-        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
 
         engine.push(.playing(landing))
         try await engine.settle()
@@ -1243,7 +1255,7 @@ struct PlayerViewModelTests {
     func seekHoldIgnoresStaleBufferingBeats() async throws {
         let (vm, engines) = try await makeReanchorVM(at: 600)
         let engine = engines.live
-        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
 
         for _ in 0..<3 {
             engine.push(.buffering(600, provenance: .stale))
@@ -1254,7 +1266,7 @@ struct PlayerViewModelTests {
 
     // MARK: - The re-anchor's first live beat
 
-    /// A scrub committed while PAUSED re-anchors, and `commitScrubSeek` re-pauses the reload the
+    /// A scrub committed while PAUSED re-anchors, and `commitSeek` re-pauses the reload the
     /// instant it force-resumes — so that session can go its whole life without ever publishing
     /// `.playing`. Its first `.paused` beat is the only live beat it will ever have, and it has
     /// to carry both jobs: take the reload cover down (it used to sit over a rendered, healthy
@@ -1267,7 +1279,8 @@ struct PlayerViewModelTests {
         let (vm, engines) = try await makeReanchorVM(at: 600, reporting: reporting)
         let engine = engines.live
 
-        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: false)
+        vm.setPlaying(false)
+        await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
         #expect(vm.phase == .loading)   // the reload cover, over the frozen frame
 
         // The reloaded session's ONLY live beat: paused, at the target, and observed.
@@ -1319,7 +1332,7 @@ struct PlayerViewModelTests {
         let engine = engines.live
         let outgoing = engine.session
 
-        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
         #expect(engine.session != outgoing, "the reload never opened a new session")
 
         engine.push(.failed(.assetNotPlayable), from: outgoing)
@@ -1339,7 +1352,7 @@ struct PlayerViewModelTests {
         let (vm, engines) = try await makeReanchorVM(at: 600)
         let engine = engines.live
         let outgoing = engine.session
-        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
 
         engine.push(.ready(duration: CMTime(seconds: 7_200, preferredTimescale: 600),
                            tracks: TrackInventory(audio: [], subtitles: [],
@@ -1371,7 +1384,7 @@ struct PlayerViewModelTests {
         triggerExit = { vm.beginExit() }
         let standing = engine.session
 
-        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
         #expect(engine.session == standing, "the abandoned reload opened a session anyway")
 
         engine.push(.playing(640))
@@ -1443,7 +1456,7 @@ struct PlayerViewModelTests {
         let standing = engine.session
 
         let commit = Task {
-            await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+            await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
         }
         await waitUntil("the reload never reached its re-resolve") { gate.parked }
 
@@ -1482,7 +1495,7 @@ struct PlayerViewModelTests {
         let standing = engine.session
 
         let commit = Task {
-            await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+            await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
         }
         await waitUntil("the reload never reached its re-resolve") { gate.parked }
 
@@ -1514,7 +1527,7 @@ struct PlayerViewModelTests {
         let engine = engines.live
         let standing = engine.session
 
-        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
         #expect(engine.session == standing, "the failed reload opened a session anyway")
         #expect(engine.calls.last == "play", "the fallback never resumed the old stream")
 
@@ -1524,7 +1537,7 @@ struct PlayerViewModelTests {
                 "the resumed stream is playing with every beat dropped")
     }
 
-    /// A paused scrub's re-anchor is re-paused by `commitScrubSeek` and may never emit
+    /// A paused scrub's re-anchor is re-paused by `commitSeek` and may never emit
     /// `.playing` at all. On VLC a seek committed while paused keeps projecting until playback
     /// resumes — its extrapolation freezes ON the target, which IS the correct paused
     /// position — so a `.projected` `.paused` AT the target is not a wedge, it is the contract
@@ -1535,7 +1548,8 @@ struct PlayerViewModelTests {
     func heldPausedBeatsHold() async throws {
         let (vm, engines) = try await makeReanchorVM(at: 600)
         let engine = engines.live
-        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: false)
+        vm.setPlaying(false)
+        await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
 
         for (seconds, provenance) in [(600.0, PositionProvenance.stale), (3_000.0, .projected),
                                       (600.0, .stale), (3_000.0, .projected)] {
@@ -1569,7 +1583,7 @@ struct PlayerViewModelTests {
         // Direct play, target outside the buffer → an in-stream `engine.seek`, which is
         // exactly the path whose pre-seek echo lands AT the target.
         engine.bufferedRange = 0...660
-        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
         #expect(engine.calls.contains("seek(3000.0)"))
 
         engine.push(.buffering(3_000, provenance: .projected))
@@ -1682,7 +1696,7 @@ struct PlayerViewModelTests {
                                                      seekHoldNow: { now })
         let engine = engines.live
 
-        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
         now = now.advanced(by: SeekHold.watchdog + .seconds(1))
 
         engine.push(.playing(0, provenance: .stale))
@@ -1703,7 +1717,7 @@ struct PlayerViewModelTests {
         let (vm, engines) = try await makeReanchorVM(at: 600, seekHoldNow: { now })
         let engine = engines.live
 
-        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
         now = now.advanced(by: SeekHold.watchdog + .seconds(1))
 
         engine.push(.playing(0, provenance: .stale))
@@ -1761,7 +1775,7 @@ struct PlayerViewModelTests {
         let switching = Task { @MainActor in await vm.selectAudioTrack(audio) }
         try await requireEventually({ vm.isSwitchingTracks }, "the switch never reached the reload")
 
-        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
         #expect(vm.seekHold == nil, "the abandoned re-anchor left its hold armed")
 
         await gate.open()
@@ -1783,7 +1797,7 @@ struct PlayerViewModelTests {
         nonisolated(unsafe) var now = ContinuousClock.now
         let (vm, engines) = try await makeReanchorVM(at: 600, seekHoldNow: { now })
         let engine = engines.live
-        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
         #expect(vm.seekHold != nil)
 
         now = now.advanced(by: SeekHold.watchdog + .seconds(1))
@@ -1802,7 +1816,7 @@ struct PlayerViewModelTests {
     func failedPhaseDropsTheHold() async throws {
         let (vm, engines) = try await makeReanchorVM(at: 600)
         let engine = engines.live
-        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
         #expect(vm.seekHold != nil)
         #expect(CMTimeGetSeconds(vm.concretePosition) == 600)
 
@@ -1852,7 +1866,7 @@ struct PlayerViewModelTests {
         })
         let engine = engines.live
 
-        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
         #expect(resolveCalls == 2)   // the re-anchor tried, and failed
 
         engine.push(.playing(600))
@@ -1879,7 +1893,7 @@ struct PlayerViewModelTests {
         let parked = try #require(nowPlaying.updates.last)
         try #require(CMTimeGetSeconds(parked.position) == 600)
 
-        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
 
         let published = try #require(nowPlaying.updates.last)
         #expect(CMTimeGetSeconds(published.position) == 3_000)
@@ -1897,7 +1911,7 @@ struct PlayerViewModelTests {
             try await engine.settle()
         }
 
-        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
         for _ in 0..<3 {
             try await pushStale(600)
             #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000)
@@ -1905,7 +1919,7 @@ struct PlayerViewModelTests {
 
         // Repoint. A fresh `SeekHold` restarts the watchdog clock, so the second commit gets
         // the whole budget rather than whatever the first one had left.
-        await vm.commitScrubSeek(to: CMTime(seconds: 4_000, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 4_000, preferredTimescale: 600))
         #expect(CMTimeGetSeconds(vm.currentPosition) == 4_000)
 
         // A beat that WOULD have satisfied the superseded target is still just the old clock.
@@ -1930,7 +1944,7 @@ struct PlayerViewModelTests {
         engine.push(.playing(600))
         try await engine.settle()
 
-        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
         #expect(engine.calls.contains("seek(3000.0)"))
         #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000)
 
@@ -1958,7 +1972,7 @@ struct PlayerViewModelTests {
         await vm.selectSubtitleTrack(text)
         first.bufferedRange = 0...660
 
-        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
         #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000)   // hold armed and holding
 
         // retry() → resetForReplay → stop(), which ends the session AND the hold with it.
@@ -1984,7 +1998,7 @@ struct PlayerViewModelTests {
         let duration = CMTimeGetSeconds(vm.currentDuration)
         #expect(vm.seekSpan == nil, "nothing is in flight yet")
 
-        await vm.commitScrubSeek(to: CMTime(seconds: target, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: target, preferredTimescale: 600))
 
         let delta = try #require(vm.seekSpan).delta
         #expect(delta.from == 600 / duration)
@@ -2014,7 +2028,7 @@ struct PlayerViewModelTests {
         let engine = engines.live
         let duration = CMTimeGetSeconds(vm.currentDuration)
 
-        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
         #expect(try #require(vm.seekSpan).delta.isForward)
         // The bar promises B1 while the picture sits on A0 — the two positions the split names.
         #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000)
@@ -2024,7 +2038,7 @@ struct PlayerViewModelTests {
         engine.push(.playing(600, provenance: .stale))
         try await engine.settle()
 
-        await vm.commitScrubSeek(to: CMTime(seconds: 5_400, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 5_400, preferredTimescale: 600))
 
         let delta = try #require(vm.seekSpan).delta
         #expect(delta.from == 600 / duration, "A0 is the last position that actually played")
@@ -2033,7 +2047,7 @@ struct PlayerViewModelTests {
 
         // A third scrub over the same unlanded flight chains just as far back — the origin is
         // the picture's, and the picture has not moved once.
-        await vm.commitScrubSeek(to: CMTime(seconds: 4_200, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 4_200, preferredTimescale: 600))
         #expect(try #require(vm.seekSpan).delta.from == 600 / duration)
         #expect(CMTimeGetSeconds(vm.concretePosition) == 600)
     }
@@ -2048,10 +2062,10 @@ struct PlayerViewModelTests {
         let engine = engines.live
         let duration = CMTimeGetSeconds(vm.currentDuration)
 
-        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
         try #require(try #require(vm.seekSpan).delta.isForward)
 
-        await vm.commitScrubSeek(to: CMTime(seconds: 120, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 120, preferredTimescale: 600))
 
         let delta = try #require(vm.seekSpan).delta
         #expect(delta.from == 600 / duration)
@@ -2069,13 +2083,13 @@ struct PlayerViewModelTests {
         let engine = engines.live
         let duration = CMTimeGetSeconds(vm.currentDuration)
 
-        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
         engine.push(.playing(3_000))
         try await engine.settle()
         try #require(vm.seekHold == nil)
         #expect(CMTimeGetSeconds(vm.concretePosition) == 3_000)
 
-        await vm.commitScrubSeek(to: CMTime(seconds: 1_800, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 1_800, preferredTimescale: 600))
 
         let delta = try #require(vm.seekSpan).delta
         #expect(delta.from == 3_000 / duration, "a landed seek IS the honest position")
@@ -2094,7 +2108,7 @@ struct PlayerViewModelTests {
         try await engine.settle()
         try #require(vm.hasKnownDuration == false)
 
-        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
         #expect(vm.seekHold != nil)     // the hold still stands…
         #expect(vm.seekSpan == nil)     // …but there is nothing to draw it against
     }
@@ -2109,7 +2123,7 @@ struct PlayerViewModelTests {
         let engine = engines.live
         let duration = CMTimeGetSeconds(vm.currentDuration)
 
-        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
         engine.push(.playing(600, provenance: .stale))
         try await engine.settle()
 
@@ -2121,7 +2135,7 @@ struct PlayerViewModelTests {
         vm.updatePreview(to: CMTime(seconds: 4_200, preferredTimescale: 600))
         #expect(CMTimeGetSeconds(try #require(vm.flight).requested) == 4_200)
 
-        await vm.commitScrubSeek(to: CMTime(seconds: 4_200, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 4_200, preferredTimescale: 600))
 
         #expect(vm.flight?.stage == .committed)
         let delta = try #require(vm.seekSpan).delta
@@ -2138,10 +2152,10 @@ struct PlayerViewModelTests {
         let (vm, engines) = try await makeReanchorVM(at: 600)
         let engine = engines.live
 
-        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
         let first = try #require(vm.seekSpan)
 
-        await vm.commitScrubSeek(to: CMTime(seconds: 5_400, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 5_400, preferredTimescale: 600))
         let second = try #require(vm.seekSpan)
 
         #expect(second.id != first.id)
@@ -2176,7 +2190,7 @@ struct PlayerViewModelTests {
         let engine = engines.live
         let duration = CMTimeGetSeconds(vm.currentDuration)
 
-        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
         vm.beginPreview(at: CMTime(seconds: 5_400, preferredTimescale: 600))
         let previewID = try #require(vm.flight).id
 
@@ -2198,7 +2212,7 @@ struct PlayerViewModelTests {
         let (vm, engines) = try await makeReanchorVM(at: 600)
         let engine = engines.live
 
-        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
         let before = try #require(vm.seekSpan)
 
         let stretched = CMTimeMultiplyByFloat64(vm.currentDuration, multiplier: 1.02)
@@ -2211,7 +2225,7 @@ struct PlayerViewModelTests {
         #expect(CMTimeGetSeconds(vm.currentDuration) == CMTimeGetSeconds(stretched))
     }
 
-    /// The exit fence. `seek(to:)` and `commitScrubSeek` both refuse to run once the player is
+    /// The exit fence. `seek(to:)` and `commitSeek` both refuse to run once the player is
     /// leaving, so nothing can ever land this flight — and the surfaces stay mounted for the
     /// whole slide-out, which without this carries a scrub bar and a floating timestamp off the
     /// screen with them.
@@ -2220,7 +2234,7 @@ struct PlayerViewModelTests {
         let (vm, engines) = try await makeReanchorVM(at: 600)
         let engine = engines.live
 
-        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
         try #require(vm.flight != nil)
 
         vm.beginExit()
@@ -2241,7 +2255,7 @@ struct PlayerViewModelTests {
         let engine = engines.live
         let duration = CMTimeGetSeconds(vm.currentDuration)
 
-        await vm.commitScrubSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
         #expect(vm.flight?.stage == .committed)
         #expect(CMTimeGetSeconds(vm.concretePosition) == 600, "nothing has moved yet")
 
@@ -2263,12 +2277,12 @@ struct PlayerViewModelTests {
         #expect(try #require(vm.seekSpan).delta.from == 600 / duration)
 
         // The next scrub chains from where the picture actually got to.
-        await vm.commitScrubSeek(to: CMTime(seconds: 4_200, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 4_200, preferredTimescale: 600))
         #expect(try #require(vm.seekSpan).delta.from == 3_002 / duration)
     }
 
     @Test("scrub commit while paused on a re-encode transcode out of buffer: the force-resuming reload is re-paused")
-    func commitScrubSeekReEncodePausedRepauses() async throws {
+    func commitSeekReEncodePausedRepauses() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
@@ -2294,17 +2308,22 @@ struct PlayerViewModelTests {
         let text = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(1) })
         await vm.selectSubtitleTrack(text)
 
-        // The reload's loadAndPlay force-resumes; a scrub that began PAUSED (resume:false)
-        // must be re-paused, so the last command the engine sees is a pause.
+        // The reload's loadAndPlay force-resumes; a user who is PAUSED must be re-paused, so
+        // the last command the engine sees is a pause. The intent is what the commit reads, so
+        // the pause has to be a real one rather than an argument.
+        vm.setPlaying(false)
+        await vm.awaitTransportQuiescence()
         engine.bufferedRange = 0...120
-        await vm.commitScrubSeek(to: CMTime(seconds: 3000, preferredTimescale: 600), resume: false)
+        await vm.commitSeek(to: CMTime(seconds: 3000, preferredTimescale: 600))
+        await vm.awaitTransportQuiescence()
         #expect(engine.loadedAssets.count == loadsAfterStart + 1)   // re-anchored (engine reloaded)
         #expect(engine.calls.contains("play"))                      // reload force-resumed
         #expect(engine.calls.last == "pause")                       // …then re-paused for the paused scrub
+        #expect(engine.isPlayingNow == false)
     }
 
     @Test("scrub commit supersession: a second out-of-buffer re-anchor issued while the first is still resolving wins — newest target, no stale strand")
-    func commitScrubSeekReanchorSupersedesNewestWins() async throws {
+    func commitSeekReanchorSupersedesNewestWins() async throws {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
@@ -2315,7 +2334,7 @@ struct PlayerViewModelTests {
         )
 
         // Gate the FIRST re-anchor's resolve (target A = 3000s) open until the SECOND
-        // commitScrubSeek (target B = 5000s) has run and superseded it. Deterministic —
+        // commitSeek (target B = 5000s) has run and superseded it. Deterministic —
         // NO Task.sleep: `firstReanchorEntered` signals the drain is parked mid-reload, and
         // `releaseFirstReanchor` unparks resolve #A only after B has enqueued behind it.
         let firstReanchorEntered = AsyncStream<Void>.makeStream()
@@ -2356,13 +2375,13 @@ struct PlayerViewModelTests {
 
         // First commit runs on its own MainActor task; it parks inside resolve(A) with
         // `isReanchoring == true`, holding the single-flight drain open.
-        let first = Task { @MainActor in await vm.commitScrubSeek(to: targetA, resume: true) }
+        let first = Task { @MainActor in await vm.commitSeek(to: targetA) }
         for await _ in firstReanchorEntered.stream { break }   // wait until the drain is parked
 
         // Second commit lands WHILE the first re-anchor is still resolving. seek(B) sees
         // `isReanchoring` and hands B to the drain's pending slot instead of an engine.seek
         // — it must supersede A, not strand it. This returns immediately (no reload here).
-        await vm.commitScrubSeek(to: targetB, resume: true)
+        await vm.commitSeek(to: targetB)
 
         // Unpark resolve(A); the drain finishes A's reload, then loops onto the newer B.
         releaseFirstReanchor.continuation.yield(())
@@ -2419,7 +2438,7 @@ struct PlayerViewModelTests {
         // resumes, no engine reload happens, and the sidecar selection survives. The
         // next scrub simply retries — nothing is stuck.
         engine.bufferedRange = 0...120
-        await vm.commitScrubSeek(to: CMTime(seconds: 3000, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 3000, preferredTimescale: 600))
 
         #expect(resolveCalls == 2)                                // re-anchor attempted once
         #expect(engine.loadedAssets.count == loadsAfterStart)     // no reload landed
@@ -2454,7 +2473,7 @@ struct PlayerViewModelTests {
         // The fixture's server-default subtitle auto-armed the sidecar, so an
         // out-of-buffer scrub re-anchors — the reload must freeze BEFORE the swap.
         engine.bufferedRange = 0...120
-        await vm.commitScrubSeek(to: CMTime(seconds: 3000, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 3000, preferredTimescale: 600))
         #expect(freezeCalls == 1)
         #expect(unfreezeCalls == 0)   // held until the new session actually renders
 
@@ -2488,7 +2507,7 @@ struct PlayerViewModelTests {
         try await engine.settle()
 
         engine.bufferedRange = 0...120
-        await vm.commitScrubSeek(to: CMTime(seconds: 3000, preferredTimescale: 600), resume: false)
+        await vm.commitSeek(to: CMTime(seconds: 3000, preferredTimescale: 600))
         #expect(freezeCalls == 1)
         #expect(unfreezeCalls == 0)
 
@@ -3312,7 +3331,7 @@ struct PlayerViewModelTests {
 
         // The drag holds the still frame by pausing the ENGINE (never `setPlaying`), then commits.
         await vm.engine?.pause()
-        await vm.commitScrubSeek(to: CMTime(seconds: 100, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 100, preferredTimescale: 600))
         #expect(vm.desiredPlaying == true)
 
         // wmv/VLC settle window: the drag's own `.paused` beat lands after the commit already
@@ -3342,7 +3361,7 @@ struct PlayerViewModelTests {
 
         // Scrub commit in flight (drag pause, seek issued, resume replayed).
         await vm.engine?.pause()
-        await vm.commitScrubSeek(to: CMTime(seconds: 100, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 100, preferredTimescale: 600))
 
         // The user hits Pause on the lock screen / headset, so Now Playing's onPause routes
         // through setPlaying(false). It must land on the press, and stay landed: AVKit emits
@@ -3435,7 +3454,7 @@ struct PlayerViewModelTests {
     }
 
     @Test("a seek inside the engine's beat lag still resumes: intent outlives the stale isPlaying mirror")
-    func seekPreservingTransportResumesAgainstStalePausedBeat() async throws {
+    func commitSeekResumesAgainstStalePausedBeat() async throws {
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(engine: engine, resolved: resolved)
@@ -3448,7 +3467,7 @@ struct PlayerViewModelTests {
         // nothing until the re-buffer ends), so the drag's stale `.paused` lands AFTER the
         // commit already replayed play(); isPlaying reads false while playback is resuming.
         await vm.engine?.pause()
-        await vm.commitScrubSeek(to: CMTime(seconds: 100, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 100, preferredTimescale: 600))
         engine.push(.paused(100, duration: resolved.runtime!))
         try await engine.settle()
         #expect(vm.isPlaying == false)       // the lag window
@@ -3457,12 +3476,13 @@ struct PlayerViewModelTests {
         // The SECOND seek captures intent, not the mirror: it must come back playing.
         // Reading the mirror here is the stuck-paused bug: resume: false, playback never resumes.
         let before = engine.calls.count
-        await vm.seekPreservingTransport(to: CMTime(seconds: 200, preferredTimescale: 600))
+        await vm.commitSeek(to: CMTime(seconds: 200, preferredTimescale: 600))
+        await waitUntil { engine.calls.count > before + 1 }   // the serialized channel lands a turn later
         #expect(Array(engine.calls.dropFirst(before)) == ["seek(200.0)", "play"])
     }
 
     @Test("an explicit pause is honored across a stale .playing beat: a scrub there must NOT resume")
-    func seekPreservingTransportHonorsExplicitPauseAgainstStalePlayingBeat() async throws {
+    func commitSeekHonorsExplicitPauseAgainstStalePlayingBeat() async throws {
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(engine: engine, resolved: resolved)
@@ -3479,8 +3499,13 @@ struct PlayerViewModelTests {
         #expect(vm.desiredPlaying == false)
 
         let before = engine.calls.count
-        await vm.seekPreservingTransport(to: CMTime(seconds: 200, preferredTimescale: 600))
-        #expect(Array(engine.calls.dropFirst(before)) == ["seek(200.0)"])   // seek only, no resume
+        await vm.commitSeek(to: CMTime(seconds: 200, preferredTimescale: 600))
+        await vm.awaitTransportQuiescence()
+        // Seek, then the reconcile restates the pause the stale beat tried to overwrite: no resume.
+        let tail = Array(engine.calls.dropFirst(before))
+        #expect(tail.first == "seek(200.0)")
+        #expect(!tail.contains("play"))
+        #expect(engine.isPlayingNow == false)
     }
 
     @Test("a re-anchor's force-resume never registers as user intent: a paused scrub stays paused start to finish")
@@ -3515,7 +3540,7 @@ struct PlayerViewModelTests {
         // commit, not just its end state.
         engine.bufferedRange = 0...120
         let commit = Task { @MainActor in
-            await vm.commitScrubSeek(to: CMTime(seconds: 3000, preferredTimescale: 600), resume: false)
+            await vm.commitSeek(to: CMTime(seconds: 3000, preferredTimescale: 600))
         }
         nonisolated(unsafe) var leaked = false
         let watcher = Task { @MainActor in
@@ -3526,10 +3551,12 @@ struct PlayerViewModelTests {
         }
         await commit.value
         watcher.cancel()
+        await vm.awaitTransportQuiescence()
 
         #expect(leaked == false)
         #expect(vm.desiredPlaying == false)
         #expect(engine.calls.last == "pause")   // the reload's force-resume was undone
+        #expect(engine.isPlayingNow == false)
     }
 
     @Test("a natural end drops the intent: the next scrub can't resume a finished item")
@@ -3545,6 +3572,132 @@ struct PlayerViewModelTests {
         engine.push(.ended)
         try await engine.settle()
         #expect(vm.desiredPlaying == false)
+    }
+
+    // MARK: - A transport press landing INSIDE a scrub commit
+
+    /// Where a play/pause press lands relative to a scrub commit. Every one of these is a real
+    /// window on device, and the commit is suspended across most of it: the coalescer fires
+    /// ~400ms after the touch goes quiet, and the seek then parks for as long as the engine
+    /// takes — seconds on a transcode re-anchor or behind VLC's settle gate.
+    enum PressPoint: CaseIterable {
+        /// The finger is still down. A snapshot taken at finger-down is already stale here, and
+        /// no counter of commands-since-dispatch can see it: the press happened BEFORE dispatch.
+        case duringDrag
+        /// The coalescer's task is queued but hasn't started running the commit.
+        case afterCommitDispatch
+        /// Parked inside `engine.seek` — the window the tvOS Select-on-the-floor bug lives in.
+        case insideSeek
+        /// The commit returned; its own transport command may still be queued behind the press.
+        case afterSeekLands
+    }
+
+    /// The one invariant this whole path owes: with no hold active and no command in flight,
+    /// the engine's transport equals `desiredPlaying`. Asserted as engine STATE, not as the last
+    /// string in the call log — two unstructured commands have no ordering, so "which call was
+    /// logged last" is a proxy that can be right for the wrong reason.
+    @Test("the engine's transport agrees with the live intent however a press interleaves a scrub commit",
+          arguments: PressPoint.allCases)
+    func transportAgreesWithIntentAcrossACommit(at point: PressPoint) async throws {
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let resolved = PlayerFixtures.resolved()
+        let vm = makePlayerVM(engine: engine, resolved: resolved)
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(10, duration: resolved.runtime!))
+        try await engine.settle()
+        #expect(vm.desiredPlaying)
+
+        // The scrub's still-frame hold: a direct engine pause that leaves the intent alone, so
+        // every commit below would have captured `resume: true` at finger-down.
+        await vm.engine?.pause()
+
+        if point == .duringDrag { vm.togglePlayPause() }
+
+        engine.holdSeeks()
+        let commit = Task { @MainActor in
+            await vm.commitSeek(to: CMTime(seconds: 200, preferredTimescale: 600))
+        }
+        if point == .afterCommitDispatch { vm.togglePlayPause() }
+        await waitUntil { engine.hasParkedSeek }
+        if point == .insideSeek { vm.togglePlayPause() }
+        engine.releaseSeeks()
+        await commit.value
+        if point == .afterSeekLands { vm.togglePlayPause() }
+
+        #expect(vm.desiredPlaying == false)   // one press, from playing
+        await vm.awaitTransportQuiescence()
+        #expect(engine.isPlayingNow == vm.desiredPlaying)
+    }
+
+    /// The trailing effect of the tvOS commit batch, on its own: ending the hold must put the
+    /// engine where the LIVE intent says rather than replay the state the swipe started with.
+    /// A unit test of that one call, and it says so — the ordered `[.seek, .releaseHold]` batch
+    /// is driven end to end by `transportAgreesWithIntentAcrossACommit`.
+    @Test("ending the scrub hold replays the LIVE intent, not the pre-scrub one")
+    func endScrubHoldReplaysLiveIntent() async throws {
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let resolved = PlayerFixtures.resolved()
+        let vm = makePlayerVM(engine: engine, resolved: resolved)
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(10, duration: resolved.runtime!))
+        try await engine.settle()
+
+        // The hold freezes the picture and leaves the intent alone — that is the whole point.
+        vm.beginScrubHold()
+        await vm.awaitTransportQuiescence()
+        #expect(engine.isPlayingNow == false)
+        #expect(vm.desiredPlaying)
+
+        let beforeRelease = engine.calls.count
+        vm.endScrubHold()
+        await vm.awaitTransportQuiescence()
+        #expect(Array(engine.calls.dropFirst(beforeRelease)) == ["play"])
+        #expect(engine.isPlayingNow)
+
+        // Same hold, but a press moved the intent inside it: the release follows the press.
+        vm.beginScrubHold()
+        await vm.awaitTransportQuiescence()
+        let beforePress = engine.calls.count
+        vm.togglePlayPause()
+        #expect(vm.desiredPlaying == false)
+        await vm.awaitTransportQuiescence()
+        #expect(Array(engine.calls.dropFirst(beforePress)) == ["pause"])
+
+        let before = engine.calls.count
+        vm.endScrubHold()
+        await vm.awaitTransportQuiescence()
+        // Exactly one pause, not merely "no play": the old shape passed even if the release
+        // did nothing at all.
+        #expect(Array(engine.calls.dropFirst(before)) == ["pause"])
+        #expect(engine.isPlayingNow == false)
+    }
+
+    /// The `.menu` cancel out of a scrub that started PAUSED used to emit no effect at all, so
+    /// a Play arriving from Now Playing or the lock screen mid-scrub was never reconciled:
+    /// intent playing, engine still held on the frozen frame, glyph drawing play over a still
+    /// picture, and nothing to heal it. Releasing the hold on every exit is what closes it.
+    @Test("a Play pressed inside a paused scrub is honored when the scrub is cancelled")
+    func playPressedInsideAPausedScrubSurvivesTheCancel() async throws {
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let resolved = PlayerFixtures.resolved()
+        let vm = makePlayerVM(engine: engine, resolved: resolved)
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(10, duration: resolved.runtime!))
+        try await engine.settle()
+
+        vm.setPlaying(false)                 // the scrub starts from a paused player
+        await vm.awaitTransportQuiescence()
+        vm.beginScrubHold()
+        await vm.awaitTransportQuiescence()
+
+        vm.setPlaying(true)                  // Now Playing / lock-screen Play, mid-scrub
+        await vm.awaitTransportQuiescence()
+        #expect(engine.isPlayingNow == false)   // the hold still owns the picture
+
+        vm.endScrubHold()                    // the `.menu` cancel's `.releaseHold`
+        await vm.awaitTransportQuiescence()
+        #expect(engine.isPlayingNow == vm.desiredPlaying)
+        #expect(engine.isPlayingNow)
     }
 
     // MARK: - Exit: audio ends at the fence, and nothing after it may restart playback
@@ -3579,13 +3732,13 @@ struct PlayerViewModelTests {
     }
 
     /// THE hole this closes: every scrub surface coalesces its commit (~400ms), so a drag
-    /// released just before the close button fires INTO the dismiss animation. Its resume
-    /// branch would `engine.play()`, unmuting and restarting the audio the exit just ended,
-    /// for the rest of the slide-out. Both resume states, because the `else` branch commands
-    /// the engine too (a re-anchor's force-resume gets re-paused).
+    /// released just before the close button fires INTO the dismiss animation. Reconciling the
+    /// transport there would `engine.play()`, unmuting and restarting the audio the exit just
+    /// ended, for the rest of the slide-out. Both intents, because the commit commands the
+    /// engine either way (a re-anchor's force-resume gets re-paused).
     @Test("a scrub commit landing after the exit fence never touches the engine",
           arguments: [true, false])
-    func commitScrubSeekIsFencedByExit(resume: Bool) async throws {
+    func commitSeekIsFencedByExit(playing: Bool) async throws {
         let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(engine: engine, resolved: resolved)
@@ -3593,11 +3746,14 @@ struct PlayerViewModelTests {
         engine.push(.playing(10, duration: resolved.runtime!))
         try await engine.settle()
 
+        vm.setPlaying(playing)
+        await vm.awaitTransportQuiescence()
         vm.beginExit()
         await waitUntil { engine.calls.last == "endAudio" }
 
         let before = engine.calls.count
-        await vm.commitScrubSeek(to: CMTime(seconds: 200, preferredTimescale: 600), resume: resume)
+        await vm.commitSeek(to: CMTime(seconds: 200, preferredTimescale: 600))
+        await vm.awaitTransportQuiescence()
         #expect(Array(engine.calls.dropFirst(before)).isEmpty)
     }
 
@@ -3608,7 +3764,7 @@ struct PlayerViewModelTests {
     /// in-stream seek, and the resume branch calls `engine.play()`. On AVKit nothing downstream
     /// catches that (no engine latch), so audio comes back for the rest of the slide-out.
     @Test("a commit suspended in its seek re-checks the fence before resuming")
-    func commitScrubSeekRechecksTheFenceAfterItsSeek() async throws {
+    func commitSeekRechecksTheFenceAfterItsSeek() async throws {
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(engine: engine, resolved: resolved)
@@ -3620,7 +3776,7 @@ struct PlayerViewModelTests {
         engine.holdSeeks()
         let before = engine.calls.count
         let commit = Task { @MainActor in
-            await vm.commitScrubSeek(to: CMTime(seconds: 200, preferredTimescale: 600), resume: true)
+            await vm.commitSeek(to: CMTime(seconds: 200, preferredTimescale: 600))
         }
         await waitUntil { engine.hasParkedSeek }
 
@@ -3652,11 +3808,11 @@ struct PlayerViewModelTests {
         #expect(Array(engine.calls.dropFirst(before)).isEmpty)
     }
 
-    /// `seekPreservingTransport` is the one every non-scrub surface calls, and it reads the
+    /// `commitSeek` is the one every non-scrub surface calls, and it reads the
     /// live intent, which is still `true` for a player exiting mid-playback. It must inherit
     /// the fence, not route around it.
-    @Test("seekPreservingTransport inherits the exit fence")
-    func seekPreservingTransportIsFencedByExit() async throws {
+    @Test("commitSeek inherits the exit fence")
+    func commitSeekIsFencedByExit() async throws {
         let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
         let resolved = PlayerFixtures.resolved()
         let vm = makePlayerVM(engine: engine, resolved: resolved)
@@ -3669,7 +3825,7 @@ struct PlayerViewModelTests {
         await waitUntil { engine.calls.last == "endAudio" }
 
         let before = engine.calls.count
-        await vm.seekPreservingTransport(to: CMTime(seconds: 200, preferredTimescale: 600))
+        await vm.commitSeek(to: CMTime(seconds: 200, preferredTimescale: 600))
         #expect(Array(engine.calls.dropFirst(before)).isEmpty)
     }
 
@@ -3792,7 +3948,7 @@ struct PlayerViewModelTests {
         // Out-of-buffer commit with a sidecar up → re-anchor reload → the frame is held, and
         // no beat follows, so it is still held when the user reaches for retry.
         engine.bufferedRange = 0...120
-        await vm.commitScrubSeek(to: CMTime(seconds: 3000, preferredTimescale: 600), resume: true)
+        await vm.commitSeek(to: CMTime(seconds: 3000, preferredTimescale: 600))
         #expect(freezeCalls == 1)
         #expect(unfreezeCalls == 0)
 
