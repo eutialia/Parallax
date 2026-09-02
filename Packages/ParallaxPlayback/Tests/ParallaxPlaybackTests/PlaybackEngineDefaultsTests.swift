@@ -28,7 +28,7 @@ private final class BarePlaybackEngine: PlaybackEngine {
     private let pauseCalls = OSAllocatedUnfairLock(initialState: 0)
     var pauseCallCount: Int { pauseCalls.withLock { $0 } }
 
-    func load(_ asset: PlayableAsset) async throws -> PlaybackSessionID { .none }
+    func load(_ asset: PlayableAsset) async throws -> PlaybackSessionID { .none.next() }
     func play() async {}
     func pause() async { pauseCalls.withLock { $0 += 1 } }
     func seek(to time: CMTime) async {}
