@@ -11,7 +11,7 @@ import ParallaxPlaybackTestSupport
 /// REQUEST (the fake resolve hands back a fixed asset), so this is the ledger every case
 /// below asserts on. File scope, not nested: the recorder runs inside `resolve`, off the
 /// suite's MainActor.
-private struct ResolveAsk: Equatable, CustomStringConvertible {
+private struct ResolveAsk: Equatable, Sendable, CustomStringConvertible {
     var start: Double?
     var audio: Int?
     var subtitle: Int?
@@ -50,8 +50,8 @@ struct PlayerReloadQueueTests {
     @Test("an audio pick during a re-anchor reload rides it out: ONE further reload, carrying the seek target AND the new index")
     func audioPickDuringAReanchorMerges() async throws {
         let gate = ResolveGate()
-        nonisolated(unsafe) var asks: [ResolveAsk] = []
-        nonisolated(unsafe) var persisted: [TrackSelectionUpdate] = []
+        let asks = CallRecorder<ResolveAsk>()
+        let persisted = CallRecorder<TrackSelectionUpdate>()
 
         let (vm, _) = try await makeReanchorVM(
             at: 600,
@@ -77,14 +77,14 @@ struct PlayerReloadQueueTests {
         await gate.open()
         await seeking.value
 
-        #expect(asks == [ResolveAsk(),
+        #expect(asks.values == [ResolveAsk(),
                         ResolveAsk(start: 3_000, audio: 3, subtitle: 1),
                         ResolveAsk(start: 3_000, audio: 4, subtitle: 1)])
         #expect(vm.selectedAudioTrack == audio4)
         #expect(vm.trackSwitchFailure == nil)
         // The writer is fire-and-forget, so arrival is the assertion, not the tick it lands on.
         try await requireEventually(
-            { persisted.contains { if case .audio = $0 { return true } else { return false } } },
+            { persisted.values.contains { if case .audio = $0 { return true } else { return false } } },
             "the landed pick was never persisted"
         )
     }
@@ -92,7 +92,7 @@ struct PlayerReloadQueueTests {
     @Test("a scrub commit during an audio switch is queued, not dropped: one further reload AT the target on the new track")
     func scrubCommitDuringAnAudioSwitchIsQueued() async throws {
         let gate = ResolveGate()
-        nonisolated(unsafe) var asks: [ResolveAsk] = []
+        let asks = CallRecorder<ResolveAsk>()
 
         let (vm, _) = try await makeReanchorVM(at: 600, resolve: { _, _, start, selection in
             asks.append(ask(start, selection))
@@ -112,7 +112,7 @@ struct PlayerReloadQueueTests {
         await gate.open()
         await switching.value
 
-        #expect(asks == [ResolveAsk(),
+        #expect(asks.values == [ResolveAsk(),
                         ResolveAsk(start: 600, audio: 4, subtitle: 1),
                         ResolveAsk(start: 3_000, audio: 4, subtitle: 1)])
     }
@@ -120,7 +120,7 @@ struct PlayerReloadQueueTests {
     @Test("an audio pick and a burn-in pick made during one reload cost ONE further reload carrying both indices")
     func audioAndSubtitlePicksMergeIntoOneReload() async throws {
         let gate = ResolveGate()
-        nonisolated(unsafe) var asks: [ResolveAsk] = []
+        let asks = CallRecorder<ResolveAsk>()
 
         let (vm, _) = try await makeReanchorVM(at: 600, resolve: { _, _, start, selection in
             asks.append(ask(start, selection))
@@ -139,7 +139,7 @@ struct PlayerReloadQueueTests {
         await gate.open()
         await seeking.value
 
-        #expect(asks == [ResolveAsk(),
+        #expect(asks.values == [ResolveAsk(),
                         ResolveAsk(start: 3_000, audio: 3, subtitle: 1),
                         ResolveAsk(start: 3_000, audio: 5, subtitle: 7)])
         #expect(vm.selectedAudioTrack == audio5)
@@ -149,7 +149,7 @@ struct PlayerReloadQueueTests {
     @Test("two audio picks in one window: the SECOND reloads, and a fallback restores the selection that stood before the FIRST")
     func newestPickReloadsAndAFallbackRestoresTheOldest() async throws {
         let gate = ResolveGate()
-        nonisolated(unsafe) var asks: [ResolveAsk] = []
+        let asks = CallRecorder<ResolveAsk>()
 
         let (vm, _) = try await makeReanchorVM(at: 600, resolve: { _, _, start, selection in
             asks.append(ask(start, selection))
@@ -172,7 +172,7 @@ struct PlayerReloadQueueTests {
         await gate.open()
         await seeking.value
 
-        #expect(asks.map(\.audio) == [nil, 3, 5], "the superseded pick reloaded, or the merge never ran: \(asks)")
+        #expect(asks.values.map(\.audio) == [nil, 3, 5], "the superseded pick reloaded, or the merge never ran: \(asks.values)")
         #expect(vm.selectedAudioTrack == standing, "the label restored to the superseded pick, not the pre-pick track")
         let failure = try #require(vm.trackSwitchFailure)
         #expect(failure.requested == .audio(audio5))
@@ -182,8 +182,8 @@ struct PlayerReloadQueueTests {
     @Test("a text-sub pick made during a reload activates against the NEW session's sidecar URL")
     func textSubPickDuringAReloadReadsTheNewSession() async throws {
         let gate = ResolveGate()
-        nonisolated(unsafe) var asks: [ResolveAsk] = []
-        nonisolated(unsafe) var fetched: [URL] = []
+        let asks = CallRecorder<ResolveAsk>()
+        let fetched = CallRecorder<URL>()
 
         // No server default subtitle: nothing is fetched before the pick under test, so the
         // sidecar cache can't answer it and the URL really is re-read from the session.
@@ -213,7 +213,7 @@ struct PlayerReloadQueueTests {
         await switching.value
         try await requireEventually({ !fetched.isEmpty }, "the sidecar was never fetched")
 
-        #expect(fetched == [sidecarURL(session: 3)], "the sidecar activated against the outgoing session's URL")
+        #expect(fetched.values == [sidecarURL(session: 3)], "the sidecar activated against the outgoing session's URL")
         #expect(vm.selectedSubtitleTrack == text)
     }
 
@@ -222,7 +222,7 @@ struct PlayerReloadQueueTests {
     @Test("a pause issued during an audio switch is honoured by the session that comes out of it")
     func pauseDuringASwitchSurvivesTheReload() async throws {
         let gate = ResolveGate()
-        nonisolated(unsafe) var asks: [ResolveAsk] = []
+        let asks = CallRecorder<ResolveAsk>()
 
         let (vm, engines) = try await makeReanchorVM(at: 600, resolve: { _, _, start, selection in
             asks.append(ask(start, selection))
@@ -280,7 +280,7 @@ struct PlayerReloadQueueTests {
     @Test("a pause issued during a FAILED switch is not overwritten by the fallback resume")
     func pauseDuringAFailedSwitchIsNotOverwritten() async throws {
         let gate = ResolveGate()
-        nonisolated(unsafe) var asks: [ResolveAsk] = []
+        let asks = CallRecorder<ResolveAsk>()
 
         let (vm, engines) = try await makeReanchorVM(at: 600, resolve: { _, _, start, selection in
             asks.append(ask(start, selection))
@@ -311,7 +311,7 @@ struct PlayerReloadQueueTests {
     func acceptsPlaybackCommandsSpansTheReloadButNotTheColdStart() async throws {
         let cold = ResolveGate()
         let switching = ResolveGate()
-        nonisolated(unsafe) var asks: [ResolveAsk] = []
+        let asks = CallRecorder<ResolveAsk>()
         let engines = EngineLedger()
 
         let vm = makePlayerVM(
@@ -388,7 +388,7 @@ struct PlayerReloadQueueTests {
     @Test("a pick made during a reload that FAILS gets its label back — and can be picked again")
     func pickDuringAFailedReloadRestoresItsLabel() async throws {
         let gate = ResolveGate()
-        nonisolated(unsafe) var asks: [ResolveAsk] = []
+        let asks = CallRecorder<ResolveAsk>()
 
         let (vm, _) = try await makeReanchorVM(at: 600, resolve: { _, _, start, selection in
             asks.append(ask(start, selection))
@@ -423,7 +423,7 @@ struct PlayerReloadQueueTests {
 
     @Test("a seek during a reload whose re-resolve came back DIRECT-PLAY still merges — the engine is mid-load")
     func seekDuringADirectPlayReloadMerges() async throws {
-        nonisolated(unsafe) var asks: [ResolveAsk] = []
+        let asks = CallRecorder<ResolveAsk>()
 
         let (vm, engines) = try await makeReanchorVM(at: 600, resolve: { _, _, start, selection in
             asks.append(ask(start, selection))
@@ -457,7 +457,7 @@ struct PlayerReloadQueueTests {
     @Test("a burn-in the server declined yields to the text pick made during it — no rollback, no scrim")
     func declinedBurnInYieldsToANewerPick() async throws {
         let gate = ResolveGate()
-        nonisolated(unsafe) var asks: [ResolveAsk] = []
+        let asks = CallRecorder<ResolveAsk>()
 
         let (vm, _) = try await makeReanchorVM(at: 600, sidecarUp: false, resolve: { _, _, start, selection in
             asks.append(ask(start, selection))
@@ -477,14 +477,14 @@ struct PlayerReloadQueueTests {
         await gate.open()
         await picking.value
 
-        #expect(asks.map(\.subtitle) == [nil, 7, 1], "the rollback overwrote the pick the user had moved to")
+        #expect(asks.values.map(\.subtitle) == [nil, 7, 1], "the rollback overwrote the pick the user had moved to")
         #expect(vm.selectedSubtitleTrack == text)
         #expect(vm.trackSwitchFailure == nil, "the user had already moved off the burn-in")
     }
 
     @Test("when the rollback of a declined burn-in ALSO fails, the menu and the overlay land on the fallback")
     func declinedBurnInRollbackFailureRestoresTheFallback() async throws {
-        nonisolated(unsafe) var asks: [ResolveAsk] = []
+        let asks = CallRecorder<ResolveAsk>()
 
         let (vm, _) = try await makeReanchorVM(
             at: 600,
@@ -502,7 +502,7 @@ struct PlayerReloadQueueTests {
 
         await vm.selectSubtitleTrack(burnIn)
 
-        #expect(asks.map(\.subtitle) == [nil, 7, 1])
+        #expect(asks.values.map(\.subtitle) == [nil, 7, 1])
         #expect(vm.selectedSubtitleTrack == text, "the declined burn-in stayed on the menu")
         // The overlay, not a round trip: the sidecar cache is keyed by media source + stream,
         // so re-activating a track fetched this session deliberately costs no fetch at all.
@@ -518,8 +518,8 @@ struct PlayerReloadQueueTests {
     @Test("a text pick superseded by Off during its own reload is never fetched, and the overlay ends clear")
     func offQueuedDuringATextReloadNeverFetchesTheSupersededTrack() async throws {
         let gate = ResolveGate()
-        nonisolated(unsafe) var asks: [ResolveAsk] = []
-        nonisolated(unsafe) var fetched: [URL] = []
+        let asks = CallRecorder<ResolveAsk>()
+        let fetched = CallRecorder<URL>()
 
         let (vm, _) = try await makeReanchorVM(
             at: 600,
@@ -543,7 +543,7 @@ struct PlayerReloadQueueTests {
         await gate.open()
         await picking.value
 
-        #expect(asks.map(\.subtitle) == [nil, 1, -1])
+        #expect(asks.values.map(\.subtitle) == [nil, 1, -1])
         #expect(fetched.isEmpty, "the superseded track's overlay was installed anyway")
         #expect(vm.selectedSubtitleTrack == nil)
         #expect(vm.sidecarSubtitleInfo == nil, "the queued Off never cleared the overlay")
@@ -552,8 +552,8 @@ struct PlayerReloadQueueTests {
     @Test("a seek merged into a text-sub reload fetches ONCE, against the session the LAST reload opened")
     func seekMergedIntoATextReloadFetchesOnceAfterTheLastReload() async throws {
         let gate = ResolveGate()
-        nonisolated(unsafe) var asks: [ResolveAsk] = []
-        nonisolated(unsafe) var fetched: [URL] = []
+        let asks = CallRecorder<ResolveAsk>()
+        let fetched = CallRecorder<URL>()
 
         let (vm, _) = try await makeReanchorVM(
             at: 600,
@@ -582,7 +582,7 @@ struct PlayerReloadQueueTests {
 
         #expect(asks.count == 3)
         #expect(asks.last?.start == 4_200)
-        #expect(fetched == [sidecarURL(session: 3)], "the intermediate session's URL was fetched between reloads")
+        #expect(fetched.values == [sidecarURL(session: 3)], "the intermediate session's URL was fetched between reloads")
     }
 
     // MARK: - A landing reload does not own a menu it is not carrying
@@ -591,7 +591,7 @@ struct PlayerReloadQueueTests {
     func aQueuedPickOutlivesTheLandingOfTheReloadItWasMadeIn() async throws {
         let first = ResolveGate()
         let landing = ResolveGate()
-        nonisolated(unsafe) var asks: [ResolveAsk] = []
+        let asks = CallRecorder<ResolveAsk>()
 
         let (vm, _) = try await makeReanchorVM(at: 600, resolve: { _, _, start, selection in
             asks.append(ask(start, selection))
@@ -625,7 +625,7 @@ struct PlayerReloadQueueTests {
     func mergedSeekAndAudioReadsAsAnAudioSwitch() async throws {
         let first = ResolveGate()
         let landing = ResolveGate()
-        nonisolated(unsafe) var asks: [ResolveAsk] = []
+        let asks = CallRecorder<ResolveAsk>()
 
         let (vm, _) = try await makeReanchorVM(at: 600, resolve: { _, _, start, selection in
             asks.append(ask(start, selection))
@@ -660,7 +660,7 @@ struct PlayerReloadQueueTests {
     @Test("picking back to the track that is still playing cancels the queued dimension instead of reloading to it")
     func pickingBackToTheStandingTrackCancelsTheDimension() async throws {
         let gate = ResolveGate()
-        nonisolated(unsafe) var asks: [ResolveAsk] = []
+        let asks = CallRecorder<ResolveAsk>()
 
         let (vm, _) = try await makeReanchorVM(at: 600, resolve: { _, _, start, selection in
             asks.append(ask(start, selection))
@@ -686,7 +686,7 @@ struct PlayerReloadQueueTests {
         await gate.open()
         await seeking.value
 
-        #expect(asks == [ResolveAsk(), ResolveAsk(start: 3_000, audio: 3, subtitle: 1)],
+        #expect(asks.values == [ResolveAsk(), ResolveAsk(start: 3_000, audio: 3, subtitle: 1)],
                 "a reload was spent going back to where the stream already was")
     }
 
@@ -699,7 +699,7 @@ struct PlayerReloadQueueTests {
     @Test("a reload parked across an episode handoff writes nothing into the session that replaced it")
     func aParkedReloadWritesNothingIntoTheReplacementSession() async throws {
         let gate = ResolveGate()
-        nonisolated(unsafe) var asks: [String] = []
+        let asks = CallRecorder<String>()
         let engines = EngineLedger()
 
         let vm = makePlayerVM(
@@ -733,7 +733,7 @@ struct PlayerReloadQueueTests {
         await gate.open()
         await switching.value
 
-        #expect(asks == ["ep-1", "ep-1", "ep-2"], "the stale drain resolved again")
+        #expect(asks.values == ["ep-1", "ep-1", "ep-2"], "the stale drain resolved again")
         #expect(engines.count == 2)
         #expect(replacement.loadedAssets.count == 1, "the stale reload loaded the previous episode's stream")
         #expect(vm.selectedAudioTrack?.id == .jellyfinStream(3),
@@ -749,7 +749,7 @@ struct PlayerReloadQueueTests {
     @Test("a failed run restores the audio that stood before its FIRST pick, not the one in flight")
     func aFailedRunRestoresTheAudioFromBeforeTheRun() async throws {
         let gate = ResolveGate()
-        nonisolated(unsafe) var asks: [ResolveAsk] = []
+        let asks = CallRecorder<ResolveAsk>()
 
         let (vm, _) = try await makeReanchorVM(at: 600, resolve: { _, _, start, selection in
             asks.append(ask(start, selection))
@@ -788,7 +788,7 @@ struct PlayerReloadQueueTests {
     @Test("a failed run restores the subtitle — and the overlay — from before its FIRST pick")
     func aFailedRunRestoresTheSubtitleFromBeforeTheRun() async throws {
         let gate = ResolveGate()
-        nonisolated(unsafe) var asks: [ResolveAsk] = []
+        let asks = CallRecorder<ResolveAsk>()
 
         let (vm, _) = try await makeReanchorVM(
             at: 600,
@@ -831,7 +831,7 @@ struct PlayerReloadQueueTests {
     /// PlaybackStart on a session that had already reported it.
     @Test("a reload parked in its PRELUDE across an episode handoff writes nothing into the replacement")
     func aReloadParkedInThePreludeWritesNothingIntoTheReplacement() async throws {
-        nonisolated(unsafe) var asks: [String] = []
+        let asks = CallRecorder<String>()
         let engines = EngineLedger()
 
         let vm = makePlayerVM(
@@ -864,7 +864,7 @@ struct PlayerReloadQueueTests {
         outgoing.release(.silence)
         await switching.value
 
-        #expect(asks == ["ep-1", "ep-2"], "the stale reload re-resolved the previous episode")
+        #expect(asks.values == ["ep-1", "ep-2"], "the stale reload re-resolved the previous episode")
         #expect(replacement.loadedAssets.count == 1, "the stale reload loaded into the replacement")
         #expect(vm.phase == .playing, "the stale prelude put a loading scrim over playing video")
         #expect(vm.isMidSessionReload == false)
@@ -878,8 +878,8 @@ struct PlayerReloadQueueTests {
     /// written into the session that replaced it.
     @Test("a sidecar activation parked on the engine deselect writes nothing into the session that replaced it")
     func aParkedSidecarActivationWritesNothingIntoTheReplacementSession() async throws {
-        nonisolated(unsafe) var asks: [String] = []
-        nonisolated(unsafe) var fetched: [URL] = []
+        let asks = CallRecorder<String>()
+        let fetched = CallRecorder<URL>()
         let engines = EngineLedger()
 
         let vm = makePlayerVM(
@@ -928,7 +928,7 @@ struct PlayerReloadQueueTests {
     @Test("a declined burn-in raises no scrim when the user picked Off during its rollback")
     func aDeclinedBurnInDropsItsRecordWhenTheRollbackIsSuperseded() async throws {
         let rollback = ResolveGate()
-        nonisolated(unsafe) var asks: [ResolveAsk] = []
+        let asks = CallRecorder<ResolveAsk>()
 
         let (vm, _) = try await makeReanchorVM(at: 600, resolve: { _, _, start, selection in
             asks.append(ask(start, selection))
@@ -950,7 +950,7 @@ struct PlayerReloadQueueTests {
         await rollback.open()
         await picking.value
 
-        #expect(asks.map(\.subtitle) == [nil, 7, 1, -1])
+        #expect(asks.values.map(\.subtitle) == [nil, 7, 1, -1])
         #expect(vm.selectedSubtitleTrack == nil)
         #expect(vm.trackSwitchFailure == nil,
                 "the burn-in's scrim rose over the Off that landed after it")
@@ -986,7 +986,7 @@ struct PlayerReloadQueueTests {
     /// reading `resolved?.method` re-points an engine that is mid-swap.
     @Test("an audio pick during a reload whose re-resolve came back DIRECT-PLAY still merges")
     func audioPickDuringADirectPlayReloadMerges() async throws {
-        nonisolated(unsafe) var asks: [ResolveAsk] = []
+        let asks = CallRecorder<ResolveAsk>()
 
         let (vm, engines) = try await makeReanchorVM(at: 600, resolve: { _, _, start, selection in
             asks.append(ask(start, selection))
@@ -1020,7 +1020,7 @@ struct PlayerReloadQueueTests {
     @Test("re-tapping the checked subtitle row during a reload spends no reload and keeps the overlay")
     func reTappingTheCheckedSubtitleRowMidReloadIsANoOp() async throws {
         let gate = ResolveGate()
-        nonisolated(unsafe) var asks: [ResolveAsk] = []
+        let asks = CallRecorder<ResolveAsk>()
 
         let (vm, _) = try await makeReanchorVM(
             at: 600,
@@ -1045,13 +1045,13 @@ struct PlayerReloadQueueTests {
         await gate.open()
         await seeking.value
 
-        #expect(asks == [ResolveAsk(), ResolveAsk(start: 3_000, audio: 3, subtitle: 1)],
+        #expect(asks.values == [ResolveAsk(), ResolveAsk(start: 3_000, audio: 3, subtitle: 1)],
                 "a reload was spent re-picking the row that was already checked")
     }
 
     @Test("an explicit Off on a transcode the server resolved with NO subtitle pins the sentinel the next reload carries")
     func explicitOffPinsTheNoneSentinel() async throws {
-        nonisolated(unsafe) var asks: [ResolveAsk] = []
+        let asks = CallRecorder<ResolveAsk>()
 
         let (vm, _) = try await makeReanchorVM(
             at: 600,
