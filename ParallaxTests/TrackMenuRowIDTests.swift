@@ -131,14 +131,26 @@ struct TrackMenuRowIDTests {
           arguments: [(-10.0, 0), (0.0, 0), (299.0, 0), (300.0, 1), (450.0, 1),
                       (900.0, 2), (100_000.0, 2)])
     func chapterAtPlayhead(seconds: Double, expected: Int) {
-        #expect(ChapterMenu.leadingRowID(chapters: Self.chapters, atSeconds: seconds)
-                == .chapter(expected))
+        #expect(PlayerViewModel.chapter(in: Self.chapters, atSeconds: seconds)?.id == expected)
     }
 
     @Test("no chapters yields no leading row")
     func chaptersEmpty() {
-        #expect(ChapterMenu.leadingRowID(chapters: [], atSeconds: 12) == nil)
-        #expect(ChapterMenu.leadingRowID(chapters: [], atSeconds: .nan) == nil)
+        #expect(PlayerViewModel.chapter(in: [], atSeconds: 12) == nil)
+        #expect(PlayerViewModel.chapter(in: [], atSeconds: .nan) == nil)
+    }
+
+    /// The leading row and the highlighted row are one rule: a fractional start counts
+    /// from its sub-second offset, and nothing before the first start is "no chapter".
+    @Test("the chapter holding a position is the last one started at or before it",
+          arguments: [(-1.0, 0), (299.9, 0), (300.0, 1), (300.5, 1), (899.99, 1), (900.0, 2)])
+    func chapterAtPosition(seconds: Double, expected: Int) {
+        let chapters = [
+            Chapter(index: 0, name: nil, start: .seconds(0)),
+            Chapter(index: 1, name: nil, start: .seconds(300)),
+            Chapter(index: 2, name: nil, start: .milliseconds(900_000)),
+        ]
+        #expect(PlayerViewModel.chapter(in: chapters, atSeconds: seconds)?.index == expected)
     }
 
     /// `CMTimeGetSeconds(kCMTimeInvalid)` is NaN — what the engine reports before the
@@ -147,8 +159,7 @@ struct TrackMenuRowIDTests {
     @Test("a non-finite playhead leads with the first chapter, not a trap",
           arguments: [Double.nan, .infinity, -.infinity])
     func chapterNonFinitePlayhead(seconds: Double) {
-        #expect(ChapterMenu.leadingRowID(chapters: Self.chapters, atSeconds: seconds)
-                == .chapter(0))
+        #expect(PlayerViewModel.chapter(in: Self.chapters, atSeconds: seconds)?.id == 0)
     }
 
     // MARK: - Cross-menu identity
