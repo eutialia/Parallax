@@ -1983,6 +1983,48 @@ struct PlayerViewModelTests {
         #expect(vm.flight == nil, "the flight is the hold's meaning — it ends with it")
     }
 
+    /// The two positions the bar draws, as the model publishes them: the VIRTUAL one is the
+    /// gesture's promise while a preview is up and the published clock otherwise (a commit pins
+    /// that clock on its target), the CONCRETE one is where the picture actually is.
+    @Test("the virtual position rides the preview, then the pinned clock")
+    func virtualPositionFollowsThePreviewThenTheClock() async throws {
+        let (vm, _) = try await makeReanchorVM(at: 600)
+        let duration = CMTimeGetSeconds(vm.currentDuration)
+        #expect(CMTimeGetSeconds(vm.virtualPosition) == 600, "no flight: the clock")
+        #expect(vm.virtualFraction == 600 / duration)
+        #expect(vm.concreteFraction == 600 / duration)
+
+        vm.beginPreview(at: CMTime(seconds: 1_200, preferredTimescale: 600))
+        #expect(CMTimeGetSeconds(vm.virtualPosition) == 1_200, "a preview is the bar's promise")
+        #expect(CMTimeGetSeconds(vm.concretePosition) == 600, "the picture has not moved")
+        #expect(vm.virtualFraction == 1_200 / duration)
+        #expect(vm.concreteFraction == 600 / duration)
+
+        vm.updatePreview(to: CMTime(seconds: 1_800, preferredTimescale: 600))
+        #expect(vm.virtualFraction == 1_800 / duration)
+
+        await vm.commitSeek(to: CMTime(seconds: 1_800, preferredTimescale: 600))
+        #expect(CMTimeGetSeconds(vm.virtualPosition) == 1_800, "the hold pins the clock on the target")
+        #expect(vm.concreteFraction == 600 / duration, "the picture is still at A until the engine lands")
+    }
+
+    @Test("a cancelled preview hands the virtual position back to the clock")
+    func virtualPositionAfterCancel() async throws {
+        let (vm, _) = try await makeReanchorVM(at: 600)
+        vm.beginPreview(at: CMTime(seconds: 1_200, preferredTimescale: 600))
+        vm.cancelPreview()
+        #expect(CMTimeGetSeconds(vm.virtualPosition) == 600)
+        #expect(vm.flight == nil)
+    }
+
+    @Test("a preview past the end clamps the fraction to the track")
+    func virtualFractionClamps() async throws {
+        let (vm, _) = try await makeReanchorVM(at: 600)
+        let duration = CMTimeGetSeconds(vm.currentDuration)
+        vm.beginPreview(at: CMTime(seconds: duration * 2, preferredTimescale: 600))
+        #expect(vm.virtualFraction == 1)
+    }
+
     /// The anchoring rule, and the whole reason `concretePosition` exists. A seek that has not
     /// landed has not moved the picture, so the second commit's A is the position the FIRST one
     /// jumped away from — not the target it is still promising. `currentPosition` reads that

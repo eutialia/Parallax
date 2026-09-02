@@ -200,7 +200,7 @@ final class PlayerViewModel {
     /// multi-second settle window a VLC re-anchor takes.
     ///
     /// Two readers, and they have to be the same expression or the bar contradicts itself: the
-    /// CONCRETE indicator draws this during a gesture (`PlayerProgressBar.init(scrubbingTo:vm:)`),
+    /// CONCRETE indicator draws this during a gesture (`PlayerProgressBar.init(vm:)`),
     /// and every new flight anchors its `played` on it (`beginPreview`, `commitSeek`) — so a
     /// scrub made over a seek that never landed CHAINS back to the original A instead of claiming
     /// a B nothing ever played, and the crossing it commits starts from the dot the user has been
@@ -208,6 +208,28 @@ final class PlayerViewModel {
     var concretePosition: CMTime {
         guard let flight else { return currentPosition }
         return flight.stage == .landing ? currentPosition : flight.played
+    }
+
+    /// The position the bar's VIRTUAL indicator draws, and the one every step, click and swipe
+    /// accumulates on: the gesture's own promise while a preview is up, otherwise the published
+    /// clock (which a commit pins on its target until the engine lands). `concretePosition` is
+    /// the other half of the pair — where the picture actually is.
+    var virtualPosition: CMTime {
+        if let flight, flight.stage == .previewing { return flight.requested }
+        return currentPosition
+    }
+
+    /// `virtualPosition` as a 0…1 track fraction; 0 when the runtime isn't scrubbable.
+    var virtualFraction: Double { fraction(of: virtualPosition) }
+
+    /// `concretePosition` as a 0…1 track fraction; 0 when the runtime isn't scrubbable.
+    var concreteFraction: Double { fraction(of: concretePosition) }
+
+    private func fraction(of time: CMTime) -> Double {
+        guard hasKnownDuration else { return 0 }
+        let seconds = CMTimeGetSeconds(time)
+        guard seconds.isFinite else { return 0 }
+        return (seconds / CMTimeGetSeconds(currentDuration)).unitClamped
     }
 
     /// The committed seek as the bar draws it: the 0...1 fractions the playhead jumped between,

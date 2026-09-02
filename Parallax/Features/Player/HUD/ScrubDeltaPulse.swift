@@ -40,17 +40,19 @@ extension EnvironmentValues {
     @Entry var scrubAccent: Color = .white
 }
 
-/// The concrete indicator's commit-time journey: the constants, and the pure geometry both
-/// the live animation and its diagnostic preview resolve against.
+/// The concrete indicator's landing journey: the constants, and the pure geometry both the
+/// live animation and its diagnostic preview resolve against.
 ///
 /// The model this serves: while a finger (or a tvOS swipe) previews a seek, the bar carries
-/// TWO indicators — the CONCRETE one, still on the paused playback position, and a VIRTUAL
-/// ghost of it riding the gesture. On commit the concrete one travels to where the virtual
-/// stands and the virtual dissolves into it, so the jump is something the eye follows rather
-/// than something it has to reconstruct from a teleport.
+/// TWO indicators — the CONCRETE one, on the position the picture is actually showing, and a
+/// VIRTUAL ghost of it riding the gesture. Committing moves NEITHER: the ghost holds the
+/// promised target at B and the concrete one stays at A, because the picture is still there —
+/// still paused, still fetching. When the seek LANDS the concrete one travels to where the
+/// ghost stands and the ghost dissolves into it, so the jump is something the eye follows
+/// rather than something it has to reconstruct from a teleport.
 enum ScrubTravel {
     /// One A→B crossing by the concrete indicator, end to end. A fixed DURATION for the same
-    /// reason `ScrubDeltaPulse.sweepSeconds` is one: a commit is a single gesture, and it
+    /// reason `ScrubDeltaPulse.sweepSeconds` is one: a landing is a single event, and it
     /// should read as a single traversal whether it jumped a minute or two hours — a
     /// speed-based glide would spend seconds crawling across a long seek.
     ///
@@ -59,7 +61,7 @@ enum ScrubTravel {
     /// comet would run ahead of the thing it is supposed to be following.
     static let seconds: TimeInterval = ScrubDeltaPulse.sweepSeconds * 0.6
 
-    /// Emphasized decelerate: leaves A immediately (the commit must feel instant) and settles
+    /// Emphasized decelerate: leaves A immediately (the landing must feel instant) and settles
     /// onto B rather than stopping dead on it.
     static let curve: Animation = .timingCurve(0.2, 0, 0, 1, duration: seconds)
 
@@ -85,6 +87,11 @@ enum ScrubTravel {
         .easeOut(duration: seconds * (1 - bloomOnset)).delay(seconds * bloomOnset)
     static let bloomFall: Animation = .easeOut(duration: bloomFadeSeconds)
 
+    /// How long a bar has to stay mounted after the flight ends for the landing to play out: the
+    /// crossing itself plus the flare's decay. `PlayerView` keeps the floor's landing bar up this
+    /// long; the model has already dropped the flight by then.
+    static let landingSeconds: TimeInterval = seconds + bloomFadeSeconds
+
     /// The flare's strength at a travel `progress` — the same ramp `bloomRise` runs, as a pure
     /// function so a static render can catch it mid-swell. Zero for the whole approach, full at
     /// touchdown; the decay afterwards is the live animation's business, not the crossing's.
@@ -92,6 +99,14 @@ enum ScrubTravel {
         let p = progress.unitClamped
         guard p > bloomOnset else { return 0 }
         return (p - bloomOnset) / (1 - bloomOnset)
+    }
+
+    /// The span the concrete indicator is parked on — drawn at A while the bar already draws B —
+    /// or nil once it is free to sit at B. In flight it is the live span; after the flight ends it
+    /// is the bar's retained copy, until its crossing has launched.
+    static func parked(flight: SeekSpan?, retained: SeekSpan?, launched: UInt64?) -> SeekSpan? {
+        guard let span = flight ?? retained, launched != span.id else { return nil }
+        return span
     }
 
     /// The displacement that puts the concrete indicator back at A while the bar is already
@@ -208,15 +223,15 @@ extension ScrubSpanBand where Overlay == EmptyView {
     }
 }
 
-/// The travelling highlight over a scrub's delta segment, alive from the commit until the
-/// engine lands on the target (`PlayerViewModel.seekSpan`, i.e. exactly the `SeekFlight`
-/// window). It says two things the still bar can't: the jump is still in flight, and which
-/// way it went.
+/// The travelling highlight over a scrub's delta segment, alive from the commit
+/// (`PlayerViewModel.seekSpan`, i.e. the `SeekFlight` window) until the crossing that the
+/// landing launches has run. It says two things the still bar can't: the jump is still in
+/// flight, and which way it went.
 ///
-/// Its comet is the concrete indicator's motion TRAIL — the dot leaves A on the same beat
-/// and crosses faster (`ScrubTravel.seconds` vs `sweepSeconds`), so the sweep is always
-/// behind it. Once the dot has landed and the engine still hasn't, the sweep keeps looping
-/// on its own as the "still going" signal.
+/// While the seek is in flight the sweep loops on its own as the "still going" signal — the
+/// concrete indicator is parked at A that whole time. It becomes the dot's motion TRAIL on the
+/// beat the engine lands: the dot leaves A there and crosses faster (`ScrubTravel.seconds` vs
+/// `sweepSeconds`), so one more sweep runs behind it and only then goes out.
 ///
 /// Never mounts or unmounts with the seek: it draws nothing when idle and owns its own
 /// fade, so the bar's ZStack (whose transactions the handle and fill also ride) never has to
@@ -252,7 +267,8 @@ struct ScrubDeltaPulse: View {
     static let fadeSeconds: TimeInterval = 0.22
 
     /// The live flight, or nil once the engine has landed. Nil doesn't unmount anything — it
-    /// starts the fade-out, and `shown` keeps drawing the last span until that finishes.
+    /// starts the crossing this trails, and then the fade-out; `shown` keeps drawing the last
+    /// span until both have finished.
     let flight: SeekSpan?
     /// The played fill's leading edge right now — which during the travel is the moving
     /// concrete indicator, not the destination.
@@ -269,7 +285,7 @@ struct ScrubDeltaPulse: View {
     @Environment(\.seekPulsePreview) private var preview
 
     /// What's currently drawn. Trails `flight` on both edges: by `armDelay` going up, by the
-    /// fade coming down.
+    /// crossing plus the fade coming down.
     @State private var shown: SeekSpan?
     @State private var visible = false
     /// Phase anchor. Re-stamped whenever a new FLIGHT arms, so a re-scrub's sweep starts at the
@@ -292,7 +308,7 @@ struct ScrubDeltaPulse: View {
     ///
     /// While the armed flight is still the live one it draws the LIVE fractions rather than the
     /// armed copy: a duration republish mid-hold moves them, and the span is a pure render
-    /// input. `shown` only outlives the flight for the length of the fade-out.
+    /// input. `shown` only outlives the flight for the crossing and its fade-out.
     private var drawn: SeekDelta? {
         guard preview == nil else { return flight?.delta }
         guard let shown else { return nil }
@@ -302,6 +318,13 @@ struct ScrubDeltaPulse: View {
     private func follow(_ flight: SeekSpan?) async {
         guard preview == nil else { return }
         guard let flight else {
+            // The seek landed and the crossing it trails starts now: keep sweeping under the
+            // concrete indicator for its whole travel, then go out. Under Reduce Motion the
+            // indicator jumps instead of crossing, so there is nothing to trail.
+            if !reduceMotion {
+                try? await Task.sleep(for: .seconds(ScrubTravel.seconds))
+                guard !Task.isCancelled else { return }
+            }
             visible = false
             try? await Task.sleep(for: .seconds(Self.fadeSeconds))
             guard !Task.isCancelled else { return }

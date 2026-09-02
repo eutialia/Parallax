@@ -100,6 +100,12 @@ struct PlayerView: View {
     /// Last activity-driven idle re-arm — coalesces the ~60Hz pan stream (re-arming
     /// a multi-second timer per delta churns a cancel+Task each frame for nothing).
     @State private var lastActivityRearm: ContinuousClock.Instant? = nil
+    /// The floor's landing bar outlives the flight by the crossing: the concrete indicator earns
+    /// its travel when the seek LANDS, which is the beat the model drops the flight on. Raised for
+    /// the flight's whole life (the mount gate is read on the same update the span drops, before
+    /// any `onChange` runs) and lowered `landingSeconds` after it ends.
+    @State private var landingLinger = false
+    @State private var landingLingerTask: Task<Void, Never>?
     /// Set at the first `.playing` beat. The initial-load chrome (fullHUD over
     /// the loading scrim — iOS parity) hands off to the reducer's clean floor
     /// exactly once; later loading dips (track-switch re-buffers) keep whatever
@@ -198,6 +204,8 @@ struct PlayerView: View {
             Task { await vm?.stop() }
             #if os(tvOS)
             idleTask?.cancel()
+            landingLingerTask?.cancel()
+            landingLinger = false
             clickSeekCoalescer.cancel()
             DisplayCriteriaMatcher.clear()
             #else
@@ -667,12 +675,14 @@ struct PlayerView: View {
     // MARK: - tvOS floor / swipe-scrub / full-HUD surface
 
     /// The tvOS playback surface: a raw remote-input adapter under the HUD, which is
-    /// hidden on the floor, a minimal scrub bar while swipe-scrubbing, or the full
-    /// chrome in `.fullHUD`. All input flows adapter → `send` → reducer → `apply`.
+    /// hidden on the floor, a lone scrub bar while the floor click- or swipe-scrubs, and
+    /// the full chrome whenever `hudState.chromeUp` — `.fullHUD` plus a swipe that began on its
+    /// scrubber. All input flows adapter → `send` → reducer → `apply`.
     @ViewBuilder
     private func tvPlaybackSurface(_ vm: PlayerViewModel) -> some View {
         // One evaluation: the mount decision below and the fade's key are the same question.
-        let scrubProgress = scrubBarProgress(vm)
+        let showsScrubBar = hudState.showsFloorScrubBar(landing: vm.seekSpan != nil || landingLinger,
+                                                        loading: vm.phase == .loading)
         ZStack {
             // Analog pans are captured at the window level in EVERY state (one
             // recognizer for the surface's lifetime, so an in-flight pan keeps
@@ -685,21 +695,22 @@ struct PlayerView: View {
                          onActivity: { noteRemoteActivity() }) { onPan($0, vm) }
                 .allowsHitTesting(false)
 
-            // The raw adapter owns the remote's PRESSES on the floor and during
-            // scrubbing. It's unmounted in `.fullHUD` so the focus engine drives the
-            // chips/scrubber — and while the switch-failure scrim shows, so its
-            // buttons can take focus (a mounted adapter would swallow Select/Menu).
-            if !isFullHUD && vm.trackSwitchFailure == nil {
+            // The raw adapter owns the remote's PRESSES on the floor and during a floor
+            // scrub. It's unmounted whenever the chrome is up — `.fullHUD` and a scrub that
+            // began on its scrubber — so the focus engine drives the chips/scrubber, and
+            // while the switch-failure scrim shows, so its buttons can take focus (a mounted
+            // adapter would swallow Select/Menu).
+            if !hudState.chromeUp && vm.trackSwitchFailure == nil {
                 TVRemoteInputView(onEvent: { send($0, vm) })
                     .ignoresSafeArea()
             }
 
             // Dim the video while scrubbing so the lone progress bar reads clearly (the
             // design's brightness drop; saturation isn't feasible on a hardware layer).
-            Color.black.opacity(isScrubbing ? 0.5 : 0)
+            Color.black.opacity(hudState.dimsVideo ? 0.5 : 0)
                 .ignoresSafeArea()
                 .allowsHitTesting(false)
-                .animation(.easeInOut(duration: 0.45), value: isScrubbing)
+                .animation(.easeInOut(duration: 0.45), value: hudState.dimsVideo)
 
             // Paused status — dim + flat center glyph. Mounted for the whole eligible
             // window (floor playback, not scrubbing/stalling) and fed the live pause
@@ -708,25 +719,22 @@ struct PlayerView: View {
             // floor it brings its own dim; in .fullHUD the controls scrim already dims, so
             // only the glyph rides (stacked dims read as a brightness glitch).
             if pausedScrimEligible(vm) {
-                PlayerPausedOverlay(metrics: .tv, dimmed: !isFullHUD, isPaused: !vm.desiredPlaying)
+                PlayerPausedOverlay(metrics: .tv, dimmed: !hudState.chromeUp, isPaused: !vm.desiredPlaying)
                     .transition(.opacity)
             }
 
-            // One pattern, one view identity across every state that shows it: swipeScrub↔
-            // clickSeek↔the landing floor must NOT cross-fade separate bars — the shared bar
-            // just retargets its progress (animated below). Hoisted out of the switch for
-            // exactly that reason: a per-case bar would hand the commit a fade-out where the
-            // concrete indicator is supposed to be crossing.
-            if let scrubProgress {
-                PlayerScrubBar(metrics: .tv, vm: vm, progress: scrubProgress,
-                               positionAnimation: isAnalogScrubbing ? nil : PlayerScrubBar.scrubSpring)
+            // One pattern, one view identity across every floor state that shows it: swipeScrub↔
+            // clickSeek↔the landing floor must NOT cross-fade separate bars — the one bar reads
+            // its two indicators off the model, so the hand-offs are position changes, not
+            // remounts. Hoisted out of the switch for exactly that reason: a per-case bar would
+            // hand the commit a fade-out where the concrete indicator is supposed to be crossing.
+            if showsScrubBar {
+                PlayerScrubBar(metrics: .tv, vm: vm,
+                               positionAnimation: scrubPositionAnimation(vm))
                     .transition(.opacity)
             }
 
-            switch hudState {
-            case .floor, .swipeScrub, .clickSeek:
-                EmptyView()
-            case .fullHUD:
+            if hudState.chromeUp {
                 // Back handling lives INSIDE the controls (one root handler that
                 // closes an open panel before folding); `onExitHUD` is the no-menu
                 // branch. The menu mirror gates the idle timer: cancel under an
@@ -734,6 +742,9 @@ struct PlayerView: View {
                 PlayerControlsView(vm: vm, controlsVisible: .constant(true),
                                    debugHUD: $showDebugHUD,
                                    onScrubberFocusChange: { scrubberHasFocus = $0 },
+                                   onScrubberStep: { send(.click($0), vm) },
+                                   onScrubberSelect: { send(.select, vm) },
+                                   positionAnimation: scrubPositionAnimation(vm),
                                    onActivity: { noteRemoteActivity() },
                                    onMenuOpenChange: { open in
                                        trackMenuOpen = open
@@ -748,22 +759,17 @@ struct PlayerView: View {
                     .onDisappear { trackMenuOpen = false }
             }
         }
-        // Key the cross-fades on the state KIND, not the whole `hudState`: `swipeScrub`
-        // and `clickSeek` carry the scrub progress, so keying on the full value re-ran
-        // this 0.2s ease on every swipe delta — the bar chased each frame and the time
-        // text cross-faded continuously. The two flags cover every kind change
-        // (floor↔scrub flips `isScrubbing`, scrub↔HUD flips both, floor↔HUD flips
-        // `isFullHUD`), and swipeScrub↔clickSeek shares one bar identity above, so it
-        // needs no transition at all.
-        .animation(.playerStateCrossfade, value: isScrubbing)
-        // The lone bar now outlives `isScrubbing` — it stays for the landing on the floor —
-        // so its own fade needs its own key. A Bool, not the progress: the value changes on
-        // every swipe delta, and keying the ease on that is what made the bar chase each
-        // frame the last time this cross-fade was over-keyed.
-        .animation(.playerStateCrossfade, value: scrubProgress != nil)
+        // Key the cross-fades on what actually changes on screen, not on `hudState`: these two
+        // flags cover every kind change (floor↔scrub flips `hudState.dimsVideo`, scrub↔HUD flips both,
+        // floor↔HUD flips `hudState.chromeUp`), and swipeScrub↔clickSeek shares one bar identity above,
+        // so it needs no transition at all.
+        .animation(.playerStateCrossfade, value: hudState.dimsVideo)
+        // The lone bar now outlives `hudState.dimsVideo` — it stays for the landing on the floor —
+        // so its own fade needs its own key.
+        .animation(.playerStateCrossfade, value: showsScrubBar)
         // Fast ease-out so a Menu press mid-reveal feels instant — the chrome is
         // opacity-driven and the animation retargets from its current value.
-        .animation(.chromeToggle, value: isFullHUD)
+        .animation(.chromeToggle, value: hudState.chromeUp)
         .animation(.playerStateCrossfade, value: viewModel?.desiredPlaying ?? true)
         // …and the stall scrim's arrival, so a paused→stall flip fades the paused
         // glyph out instead of popping it (review-found).
@@ -777,8 +783,24 @@ struct PlayerView: View {
         // Full-HUD only: swipe-scrub pauses the engine BY DESIGN (which never moves intent)
         // and its 1s commit timer must keep running.
         .onChange(of: vm.desiredPlaying) { _, playing in
-            guard isFullHUD else { return }
+            guard hudState == .fullHUD else { return }
             if playing { restartIdleTimer() } else { idleTask?.cancel() }
+        }
+        // The flight ending is what un-pins the chrome; re-arm the auto-hide then.
+        .onChange(of: vm.flight == nil) { _, ended in
+            guard ended, hudState.chromeUp else { return }
+            restartIdleTimer()
+        }
+        // The landing launches the concrete indicator's crossing, so the bar that shows it has
+        // to outlive the span that mounted it.
+        .onChange(of: vm.seekSpan != nil) { _, now in
+            landingLingerTask?.cancel()
+            guard !now else { landingLinger = true; return }
+            landingLingerTask = Task {
+                try? await Task.sleep(for: .seconds(ScrubTravel.landingSeconds))
+                guard !Task.isCancelled else { return }
+                landingLinger = false
+            }
         }
         // Fresh surface: the initial load shows the full chrome over the scrim
         // (iOS parity — the player is operable while the stream resolves); once
@@ -787,7 +809,7 @@ struct PlayerView: View {
         .onAppear {
             hudState = didBeginPlayback ? .floor : .fullHUD
             cancelClickSeek()
-            chromeVisible = isFullHUD
+            chromeVisible = hudState.chromeUp
         }
         // Command-acceptance transitions own the HUD floor hand-offs:
         // • first accepted — the loading chrome drops to the reducer's clean
@@ -803,7 +825,7 @@ struct PlayerView: View {
             if nowPlaying {
                 if !didBeginPlayback {
                     didBeginPlayback = true
-                    if isFullHUD {
+                    if hudState.chromeUp {
                         hudState = .floor
                         // Same stale-mirror clear as send(): the HUD unmount may
                         // never fire the focus callback with `false`.
@@ -813,50 +835,28 @@ struct PlayerView: View {
             } else {
                 cancelClickSeek()
                 idleTask?.cancel()
-                // Folding to the floor here bypasses the reducer, so the preview it strands has
-                // to be dropped by hand — a swipe scrub that a re-buffer interrupted commits
-                // nothing.
-                if isScrubbing { vm.cancelPreview(); hudState = .floor }
+                // Folding out here bypasses the reducer, so any preview it strands has to be
+                // dropped by hand — a scrub or a click step a re-buffer interrupted commits
+                // nothing. The cancel is unconditional: `.fullHUD` holds live click-step
+                // previews too, and `cancelPreview()` no-ops when none is up. The state lands
+                // wherever the scrub began, so a chrome swipe keeps its chrome. The hold goes
+                // with the preview: this exit bypasses the reducer's `.releaseHold`, and a hold
+                // nothing releases pins the engine paused under a play glyph.
+                vm.cancelPreview()
+                vm.endScrubHold()
+                switch hudState {
+                case .swipeScrub, .clickSeek: hudState = hudState.chromeUp ? .fullHUD : .floor
+                default: break
+                }
             }
-            chromeVisible = isFullHUD
+            chromeVisible = hudState.chromeUp
         }
     }
 
-    /// What the lone scrub bar should be showing, or nil to take it away.
-    ///
-    /// The floor case is the whole reason this isn't just a `switch` inside the body: a
-    /// no-HUD swipe auto-commits back to `.floor`, and unmounting the bar there would fade
-    /// out the one surface the concrete indicator's A→B crossing (and the pulse behind it)
-    /// plays on. So the floor keeps it for exactly the flight's lifetime — the seek is still
-    /// landing, and a bar saying so is the point of the feature. The flight also covers a
-    /// floor-state seek nobody scrubbed for (a Now Playing scrub, a debounced click-seek that
-    /// already left `clickSeek`), which is the same fact and deserves the same bar. And it
-    /// spans the hop between the reducer leaving `.swipeScrub` and the commit landing — the
-    /// preview IS a flight, so there is no frame in which the bar has nothing to show.
-    ///
-    /// `.loading` is the one exception: a re-anchor raises the frosted cover over the whole
-    /// screen, and the bar has no business painting on top of it for the several seconds that
-    /// takes. The flight outlives the cover, so the bar comes back for the landing.
-    private func scrubBarProgress(_ vm: PlayerViewModel) -> Double? {
-        switch hudState {
-        case .swipeScrub(let progress), .clickSeek(targetProgress: let progress): progress
-        case .floor: vm.phase == .loading ? nil : vm.seekSpan?.delta.to
-        case .fullHUD: nil
-        }
-    }
-
-    /// Analog swipe-scrub only (not click-seek): the live finger drives the head, so it
-    /// tracks 1:1 (no position spring) for an accurate, framerate-proof seek. The bubble's
-    /// timestamp still rolls (see `scrubDigitRoll`), so 1:1 keeps its life.
-    private var isAnalogScrubbing: Bool {
-        if case .swipeScrub = hudState { return true }
-        return false
-    }
-
-    private var isFullHUD: Bool { if case .fullHUD = hudState { return true }; return false }
-    /// The two transient scrub-bar states; only these arm the inactivity auto-hide.
-    private var isScrubbing: Bool {
-        switch hudState { case .swipeScrub, .clickSeek: return true; default: return false }
+    /// The position animation every tvOS bar rides: 1:1 under an analog swipe (the displayed
+    /// head must equal what the commit lands on), a spring for a discrete step and the landing.
+    private func scrubPositionAnimation(_ vm: PlayerViewModel) -> Animation? {
+        hudState.animatesDiscreteStep(flightAlive: vm.flight != nil) ? PlayerScrubBar.scrubSpring : nil
     }
 
     /// Whether the paused-status overlay is RELEVANT (mounted): the surface is live on
@@ -873,26 +873,27 @@ struct PlayerView: View {
     /// view is about to dismiss — without the term the pause glyph would flash through
     /// the exit slide.
     private func pausedScrimEligible(_ vm: PlayerViewModel) -> Bool {
-        vm.phase == .playing && !isScrubbing
-            && !vm.showsStallScrim && !isFullHUD && !vm.playbackDidComplete
+        vm.phase == .playing && !hudState.dimsVideo
+            && !vm.showsStallScrim && !hudState.chromeUp && !vm.playbackDidComplete
     }
 
-    /// Window-level pan events. On the floor / scrub states every pan drives the
-    /// reducer. In `.fullHUD` native focus owns navigation — only a horizontal pan
-    /// while the scrubber holds focus falls through (collapsing the chrome into
-    /// analog scrub); everything else stays with the focus engine, so a swipe on a
-    /// chip still just moves the highlight.
+    /// Window-level pan events. On the floor's states every pan drives the reducer. Under the
+    /// chrome native focus owns navigation — only a horizontal pan while the scrubber holds
+    /// focus falls through (starting, then feeding, the scrub the chrome stays up for);
+    /// everything else stays with the focus engine, so a swipe on a chip still just moves the
+    /// highlight.
     private func onPan(_ event: RemoteEvent, _ vm: PlayerViewModel) {
-        if isFullHUD {
+        if hudState.chromeUp {
             guard scrubberHasFocus, case .swipeHorizontal = event else { return }
         }
         send(event, vm)
     }
 
     /// Feed a remote event through the reducer, apply its effects, sync the chrome
-    /// flag, and restart the inactivity timer. The click-seek debounce lives here, not
-    /// in the reducer: rapid clicks accumulate a target in `.clickSeek` and fire a
-    /// single engine seek once they settle (or when the state leaves `.clickSeek`).
+    /// flag, and restart the inactivity timer. The click-seek debounce lives here, not in
+    /// the reducer: a `.preview` outside an analog scrub is a click step that (re-)arms one
+    /// debounced engine seek, flushed or dropped by the next state — see the coalescer
+    /// switch below.
     private func send(_ event: RemoteEvent, _ vm: PlayerViewModel) {
         // While the contextual segment button shows over the floor, the remote acts
         // on IT — the floor adapter already holds focus, so there's no competing
@@ -938,56 +939,31 @@ struct PlayerView: View {
             }
         }
 
-        let leavingTarget: Double? = { if case .clickSeek(let t) = hudState { return t } else { return nil } }()
-        let ctx = ReduceContext(
-            liveProgress: tvProgress(of: vm),
-            durationSeconds: CMTimeGetSeconds(vm.currentDuration)
-        )
+        let ctx = ReduceContext(shownProgress: vm.virtualFraction,
+                                durationSeconds: CMTimeGetSeconds(vm.currentDuration))
         let (next, effects) = reduce(hudState, event, ctx)
 
-        // Commit/cancel a pending click-seek when leaving `.clickSeek`.
-        if leavingTarget != nil {
-            switch next {
-            case .clickSeek: break              // still accumulating — keep debouncing
-            case .swipeScrub: cancelClickSeek() // analog scrub takes over from the target
-            default: flushClickSeek(vm)         // land the accumulated seek now
+        if clickSeekCoalescer.pending != nil {
+            switch PlayerHUDState.pendingClickStep(after: next, on: event) {
+            case .drop: cancelClickSeek()
+            case .flush: flushClickSeek(vm)
+            case .keep: break
             }
         }
 
-        syncScrubPreview(from: hudState, to: next, effects: effects, vm)
         hudState = next
-        // The focus mirror only matters in `.fullHUD`; clear it on the way out because
-        // unmounting the HUD may never fire the focus callback with `false`, and a
-        // stale `true` would route a later pan through the fullHUD gate.
-        if !isFullHUD { scrubberHasFocus = false }
+        // The focus mirror only matters under the chrome; clear it on the way out because
+        // unmounting the HUD may never fire the focus callback with `false`.
+        if !hudState.chromeUp { scrubberHasFocus = false }
         runEffects(effects, vm)
 
-        // Entering or continuing `.clickSeek`: (re)arm the debounced commit.
-        if case .clickSeek(let target) = next { scheduleClickSeek(to: target, vm) }
-
-        chromeVisible = isFullHUD
-        restartIdleTimer()
-    }
-
-    /// Keep the view model's flight in step with the reducer's analog-scrub state, so the split
-    /// head, the bubble and the bar's own mount all read one published fact instead of three
-    /// view flags.
-    ///
-    /// A commit is deliberately NOT a cancel: the reducer emits its `.seek` effect one hop
-    /// before `commitSeek` converts the preview into a committed flight, and cancelling in
-    /// that hop is what used to unmount the bar for a frame at exactly the moment the crossing
-    /// should start.
-    private func syncScrubPreview(from current: PlayerHUDState, to next: PlayerHUDState,
-                                  effects: [PlayerEffect], _ vm: PlayerViewModel) {
-        let dur = CMTimeGetSeconds(vm.currentDuration)
-        guard dur > 0 else { return }
-        if case .swipeScrub(let progress) = next {
-            vm.beginPreview(at: CMTime(seconds: progress * dur, preferredTimescale: 600))
-            return
+        // A preview outside an analog scrub is a click step: (re)arm the one debounced commit.
+        if !hudState.isAnalogScrub {
+            for case .preview(let target) in effects { scheduleClickSeek(to: target, vm) }
         }
-        guard case .swipeScrub = current else { return }
-        let commits = effects.contains { if case .seek = $0 { return true } else { return false } }
-        if !commits { vm.cancelPreview() }
+
+        chromeVisible = hudState.chromeUp
+        restartIdleTimer()
     }
 
     private func scheduleClickSeek(to target: Double, _ vm: PlayerViewModel) {
@@ -1017,24 +993,32 @@ struct PlayerView: View {
         clickSeekCoalescer.cancel()
     }
 
-    private func tvProgress(of vm: PlayerViewModel) -> Double {
-        let dur = CMTimeGetSeconds(vm.currentDuration)
-        guard dur > 0 else { return 0 }
-        return (CMTimeGetSeconds(vm.currentPosition) / dur).unitClamped
-    }
-
     /// Apply a transition's effects **in order, in a single task**, so an ordered batch like
     /// `[.seek, .releaseHold]` can't race: as detached per-effect tasks the release could land
     /// before the seek, and a play-then-seek on a Jellyfin transcode parks AVPlayer in
     /// `.waitingToPlayAtSpecifiedRate` (reported as playing) — the resume is lost.
     ///
-    /// `.exit` is pulled out and run synchronously with the press: `beginExit()`
-    /// must arm its fence before a suspended start-path continuation can
-    /// interleave, and the one-hop Task below is exactly that window.
+    /// The preview writes and `.exit` are pulled out and run synchronously with the press. The
+    /// bar draws off the model, so a preview that landed a hop late would render one frame of
+    /// the new state against the old promise; and `beginExit()` must arm its fence before a
+    /// suspended start-path continuation can interleave, which the one-hop Task below is
+    /// exactly the window for.
     private func runEffects(_ effects: [PlayerEffect], _ vm: PlayerViewModel) {
-        guard !effects.isEmpty else { return }
-        if effects.contains(.exit) { exitPlayer() }
-        let engineEffects = effects.filter { $0 != .exit }
+        var engineEffects: [PlayerEffect] = []
+        for effect in effects {
+            switch effect {
+            case .exit:
+                exitPlayer()
+            case .preview(let progress):
+                let dur = CMTimeGetSeconds(vm.currentDuration)
+                guard dur > 0 else { continue }
+                vm.beginPreview(at: CMTime(seconds: progress * dur, preferredTimescale: 600))
+            case .cancelPreview:
+                vm.cancelPreview()
+            case .holdStillFrame, .releaseHold, .seek, .togglePlayPause:
+                engineEffects.append(effect)
+            }
+        }
         guard !engineEffects.isEmpty else { return }
         Task { for effect in engineEffects { await apply(effect, vm) } }
     }
@@ -1058,8 +1042,9 @@ struct PlayerView: View {
             // Optimistic flip inside the vm — the paused overlay reacts on the press, not a
             // beat later, and remote-press spam coalesces to the last intent.
             vm.togglePlayPause()
-        case .exit:
-            exitPlayer()
+        case .preview, .cancelPreview, .exit:
+            // Applied synchronously in `runEffects` — they must not wait on this task's hop.
+            break
         }
     }
 
@@ -1096,7 +1081,9 @@ struct PlayerView: View {
         case .clickSeek:
             timeout = .seconds(4)
         case .fullHUD:
-            guard !trackMenuOpen, viewModel?.desiredPlaying == true else { return }
+            // Pinned while a seek is alive: folding to the floor mid-flight would swap the HUD's
+            // dot bar for the floor's line bar in the middle of the crossing.
+            guard !trackMenuOpen, viewModel?.desiredPlaying == true, viewModel?.flight == nil else { return }
             timeout = .seconds(4)
         }
         idleTask = Task {
