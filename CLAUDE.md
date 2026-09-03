@@ -38,7 +38,7 @@ This file holds only what you would get wrong without being told. Eutialia's ins
 
 Headless `xcodebuild` is the default. It is deterministic and ignores Xcode's toolbar. Reach for the Xcode MCP only for what headless cannot do.
 
-- App: `xcodebuild -scheme Parallax -destination 'platform=iOS Simulator,name=iPhone 17 Pro' -derivedDataPath /tmp/dd-app build`, or `test`.
+- App: `xcodebuild -scheme Parallax -destination 'platform=iOS Simulator,name=iPhone 17 Pro' -derivedDataPath /tmp/dd-Parallax build`, or `test`.
 - Packages run from their own directory with the same destination. Multi-product packages test through `ParallaxCore-Package` and `ParallaxPlayback-Package`; the bare product schemes have no test action.
 - Swift Testing results are absent from XCTest's "Executed N tests" line; grep for `✔`. `-only-testing:` takes the type name, not the `@Suite` display name, which matches nothing and fakes a pass.
 - Real-keychain suites self-skip on unentitled hosts. A skip is expected, a failure is real.
