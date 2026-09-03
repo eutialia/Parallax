@@ -17,8 +17,9 @@ Packages/*/.swiftpm/
 *.xcresult
 *.log
 
-# Claude Code (local skills/settings)
-.claude/
+# Claude Code: skills are shared, everything else is per-machine
+.claude/*
+!.claude/skills/
 
 # Local dev-tool state
 .superpowers/
@@ -34,3 +35,6 @@ __pycache__/
 
 # Vendored VLCKit binaries, iOS + tvOS — fetched by scripts/fetch-mobilevlckit.sh
 Packages/ParallaxPlayback/Vendor
+
+# Plan output, never published
+docs/superpowers/
