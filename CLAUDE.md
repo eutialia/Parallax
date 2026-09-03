@@ -1,44 +1,93 @@
 # Parallax
 
-Jellyfin (primary) + SMB/local (v2) media player, **Apple platforms only** — iOS/iPadOS first (single `iphoneos` target), tvOS later; macOS/visionOS out of scope. App = `Parallax.xcodeproj`; all logic in local SwiftPM packages under `Packages/` (`ParallaxCore` no-deps, `ParallaxJellyfin`, `ParallaxFileBrowse`, `ParallaxPlayback`, `ParallaxSubtitles` — libass client renderer, DYNAMIC product on purpose: its link line must never contain VLCKit, whose dylib exports an old libass that captures naive static links). Deeper scope lives in Claude memory.
+Parallax is a media player for Apple platforms. Jellyfin and SMB are the primary sources. iOS and iPadOS ship first from a single `iphoneos` target, tvOS follows. macOS and visionOS are out of scope. The repo is public and the app is on the App Store, so anything you write into it is published.
 
-## Xcode MCP — query it for ground truth, don't reason from memory
+The app target under `Parallax/` is a thin shell. Every piece of logic lives in a local SwiftPM package under `Packages/`, and the packages must build and test without the app.
 
-**On every Swift/SwiftUI change, the Xcode MCP is your source of truth — not recall.** Swift 6.2 / iOS 26 APIs move fast and trained knowledge is stale: `DocumentationSearch` any Apple API you're not certain of *before* writing it, and after *every* edit run `XcodeRefreshCodeIssuesInFile` (or `BuildProject`+`GetBuildLog`) for real compiler diagnostics instead of eyeballing. The MCP's output overrides your guess.
+This file holds only what you would get wrong without being told. Eutialia's instructions override anything here.
 
-Apple's Xcode MCP (`xcode` = `xcrun mcpbridge`) is wired in. **When Xcode is open on Parallax, use it instead of `xcodebuild`** — it drives the running Xcode and reuses its build+index (structured results, real diagnostics, no second indexer). `swift-lsp` is **enabled** (`enabledPlugins` in `.claude/settings.local.json`) — use the `LSP` tool for fast per-file diagnostics / hover / definitions while editing. It's a convenience layer, **not** the authority: SourceKit can report **stale `No such module` / cross-module errors until a build populates the module graph**, and it only sees **one destination at a time**, so the Xcode MCP (`BuildProject` / `XcodeRefreshCodeIssuesInFile`) — or a headless `xcodebuild` for the tvOS `#if` slice — stays the source of truth.
+## Repository map
 
-- **First call each session: `XcodeListWindows`** → `tabIdentifier` (usually `windowtab1`); every other tool needs it. Empty = Xcode not open → use fallback below.
-- Tools act on the **scheme + destination selected in Xcode's toolbar**; nothing can change them — if you need a different one, **ask the user to switch it in Xcode**.
-- **Edit with native `Edit`/`Write`** (Xcode auto-reloads); don't use `Xcode{Write,Update,MV,RM,MakeDir}`. After editing, run `XcodeRefreshCodeIssuesInFile` (or `BuildProject`+`GetBuildLog`). Native `Grep`/`Glob`/`Read` are fine here.
+- `Parallax/` – SwiftUI app: navigation, `@Observable @MainActor` wrappers over package state, per-platform UI. The only place `#if os(...)` is allowed.
+- `Packages/ParallaxCore` – shared models, keychain, errors. No dependencies. Ships `ParallaxCoreTestSupport`.
+- `Packages/ParallaxJellyfin` – Jellyfin client on top of jellyfin-sdk.
+- `Packages/ParallaxFileBrowse` – SMB and local browsing.
+- `Packages/ParallaxPlayback` – URL-agnostic player. Entry point is `play(url:headers:hints:)`; state leaves as `AsyncStream<PlaybackState>`.
+- `Packages/ParallaxSubtitles` – libass client renderer. Deliberately a dynamic product: VLCKit's dylib exports an old libass that captures a naive static link, so its link line must never contain VLCKit.
+- `ParallaxTests/` – app-hosted tests. Its local `FakeKeychain` copy is deliberate: linking the test-support product into the app bundle duplicates ParallaxCore and breaks `as AppError` casts.
+- `Config/` – `Version.xcconfig` is the only version source. `Signing.local.xcconfig` is gitignored and holds the real team; recreate it after a clone.
+- `DESIGN.md` – the design system. Code comments cite it as law; read it before touching visuals.
 
-| Need | Tool |
-|---|---|
-| Compile-check active scheme | `BuildProject` → `GetBuildLog` (filter `severity`/`pattern`/`glob`) |
-| Per-file diagnostics after edit | `XcodeRefreshCodeIssuesInFile` (project-relative path); all issues → `XcodeListNavigatorIssues` |
-| Tests | `GetTestList` → `RunSomeTests` (`{targetName,testIdentifier}[]`); whole plan → `RunAllTests` |
-| Render a SwiftUI `#Preview` | `RenderPreview` (`sourceFilePath` + 0-based index) |
-| Apple API docs | `DocumentationSearch` (complements `context7` for jellyfin-sdk) |
+## Invariants
 
-## Headless fallback (Xcode closed)
+- **No platform drift.** `#if os(...)` never appears in `Packages/`; pre-commit and CI reject it. UI may differ per platform, logic may not. A feature on one platform exists on all of them unless hardware makes it impossible.
+- **Packages import no SwiftUI or Combine.** State crosses into the app as an `AsyncStream` and gets wrapped there.
+- **Navigation shape.** iPad is a `TabView` with `.sidebarAdaptable` and `TabSection`. iPhone is a bottom `TabView`. Drill-downs use `NavigationStack`. Never a `NavigationSplitView` at the root.
+- **Structural layout branches key on `userInterfaceIdiom`, never size class.** Large iPhones report regular width in landscape, and a size-class branch turns them into an iPad.
+- **Subtitles render what the author wrote.** App styling is an opt-in override, default off. Colors and positions are kept; fonts are the acceptable loss. Noto is the only font source, bundled; never a system-font fallback.
 
-Schemes: `Parallax` (app), `ParallaxCore-Package`, `ParallaxFileBrowse`, `ParallaxJellyfin`, `ParallaxPlayback-Package`, `ParallaxSubtitles`. Configs: `Debug`/`Release`.
-- App: `xcodebuild -scheme Parallax -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build`
-- **Package tests need an iOS Simulator** — packages declare iOS/tvOS only (no macOS baseline), so host `swift test` doesn't build. From the package dir:
-  `cd Packages/ParallaxJellyfin && xcodebuild test -scheme ParallaxJellyfin -destination 'platform=iOS Simulator,name=iPhone 17 Pro'`
-- **Multi-product packages need the `-Package` scheme** (`ParallaxCore-Package`, `ParallaxPlayback-Package`) — their bare product schemes have no test action. Swift Testing (`@Test`) results are absent from the XCTest "Executed N tests" line (reads 0) — grep `✔`/`Test run with N tests` instead.
-- Real-Keychain suites **self-skip on unentitled test hosts** (`KeychainEntitlementProbe` in `ParallaxCoreTestSupport`, gated via `.enabled(if:)`) — a skip there is expected, a failure is real. Entitled coverage of the real `Keychain` runs app-hosted in `ParallaxTests/KeychainIntegrationTests`. Everything else runs on `FakeKeychain` (shared from `ParallaxCoreTestSupport` for package tests; `ParallaxTests` keeps a deliberate local copy — linking the product into an app-hosted bundle statically duplicates ParallaxCore and breaks cross-boundary `as AppError` casts). All suites are green baselines.
+## Hazards
 
-## Rules
+1. **Headless builds against Xcode's DerivedData.** Without `-derivedDataPath`, `xcodebuild` writes into Xcode's DerivedData and poisons its module cache; the symptom is a fake compile error on unchanged lines. Always pass `-derivedDataPath /tmp/dd-<scheme>`.
+2. **Parallel test runs on one simulator.** They collide and report zero tests as a pass. Run suites sequentially under a shell `timeout`. The MCP test tools have no timeout and have blocked for eight hours; subagents never call them. If any MCP call stalls, stop waiting and go headless.
+3. **Her working tree and simulators are live.** She edits alongside you. Never `reset --hard`, `checkout --`, `worktree remove --force`, or `simctl erase` on her checkout or her simulators; if you need a clean state, make a worktree. Never `stash` across diverged branches. Destructive git needs Eutialia to run it or name it.
+4. **Git that leaves the machine.** Push feature branches, `main`, and tags; never `--all` or `--mirror`. `main` is PR-only and rebase-merge only, with no admin bypass. A PR keeps as many commits as make it readable; squash when it helps, not by rule. Third-party forks get no force-push at all.
+5. **Leaking private infrastructure.** No real hostnames, LAN addresses, or team identifiers in anything tracked. Debug launch arguments added for a screenshot pass are reverted, never committed.
 
-- **Zero platform drift:** `#if os(...)` only in app target `Parallax/`, never `Packages/` (pre-commit + CI enforced). UI may differ per platform; logic must not.
-- **Packages import no SwiftUI/Combine:** state crosses as `AsyncStream<PlaybackState>`, wrapped `@Observable @MainActor` in the app. Playback is URL-agnostic: `play(url:headers:hints:)`.
-- **Navigation:** iPad = `TabView` `.tabViewStyle(.sidebarAdaptable)` + `TabSection` (iPadOS 26 side panel, like Music/Apple TV); iPhone = bottom `TabView`; **never** a fixed-column `NavigationSplitView` root; drill-downs use `NavigationStack`.
-- **Review skills:** the Swift skills are a *review-stage* tool, not a before-you-code step — `/code-review` on Swift changes runs the diff-relevant ones as added angles: `swiftui-pro` (views/APIs), `swift-concurrency-pro` (async/isolation), `swift-focusengine-pro` (focus), `swiftui-liquid-glass` (Liquid Glass), each **scoped to the reviewed hunks** (unscoped, they audit the whole repo and surface out-of-diff noise). Fold their in-diff findings into the review output.
-- **MCP first, not memory:** any Swift/SwiftUI work starts by querying the Xcode MCP for ground truth — `DocumentationSearch` for unfamiliar Apple APIs, `XcodeRefreshCodeIssuesInFile`/`BuildProject` to verify after editing. Apple-API analog of the context7-before-coding rule; don't guess from recall.
-- **HIG before UI verdicts:** when UI *behavior* (not an API) looks off, check Apple's HIG (`DocumentationSearch` / developer.apple.com) for the *intended* behavior before treating it as a bug or coding around it — e.g. the dark-mode base→elevated background lift on a scaled/multitasked iPad window is documented system behavior, not a glitch.
-- **Render, don't guess:** never claim a visual outcome (sizes, alignment, materials, chrome) from reasoning alone — prove it with pixels. Add or extend a `#Preview` that exhibits the exact question (e.g. the side-by-side "Action row parity" preview in `CircleGlassButton.swift`), `RenderPreview` it, and *look*. tvOS renders are 1920-wide, so small deltas vanish in the thumbnail — crop + upscale with `sips -c/-z` before judging. Iterate edit→render until the render shows the fix; keep diagnostic previews as permanent assets. A theory that survives two renders is a fact; one that needed three hacks was wrong (the pill/circle height "ruler" saga).
-- **Measure with the kit, not ad hoc:** for alignment/size questions, pin the preview `traits: .fixedLayout(width:height:)`, add `.previewRuler(trailing: <token>)` (`PreviewRuler.swift`, DEBUG-only red rules), render ONCE in dark mode (best edge contrast), then `python3 scripts/render-ruler.py --pt-width <fixedLayout width> --scan-row auto` — no path needed (defaults to the newest render); `--crop tr --zoom 3` for an eyes-on crop. The pt run-length output is ~5× cheaper than reading the image, so: numbers from the script, image reads only for *qualitative* judgment. One render answers many measurements; trust the ruler line over absolute pt (`.fixedLayout` canvases render a few pt wider than declared — 393→398 observed).
-- **Debug vs Release runtime:** behavior can diverge between the Debug build run from Xcode ("build runtime" — unoptimized, debugger attached) and the Release/archived build ("publish runtime"). A symptom may appear in only one, in *either* direction (memory notes `onExitCommand` flaky in Release only). Before chasing a UI/focus glitch, confirm which config reproduces it rather than assuming the debug run is what ships.
-- **Function before polish:** don't block functional work on rough layout; note UI debt, move on.
-- **Commits:** conventional; understand the diff. After a fix, **wait for the user's sim/device confirmation** before committing (clean build ≠ approval); commit/push only when asked.
+## Build and test
+
+Headless `xcodebuild` is the default. It is deterministic and ignores Xcode's toolbar. Reach for the Xcode MCP only for what headless cannot do.
+
+- App: `xcodebuild -scheme Parallax -destination 'platform=iOS Simulator,name=iPhone 17 Pro' -derivedDataPath /tmp/dd-app build`, or `test`.
+- Packages run from their own directory with the same destination. Multi-product packages test through `ParallaxCore-Package` and `ParallaxPlayback-Package`; the bare product schemes have no test action.
+- Swift Testing results are absent from XCTest's "Executed N tests" line; grep for `✔`. `-only-testing:` takes the type name, not the `@Suite` display name, which matches nothing and fakes a pass.
+- Real-keychain suites self-skip on unentitled hosts. A skip is expected, a failure is real.
+- Anti-hang deadlines go through `CITimeScale`: scale the ceiling, never the assertion. A CI-only flake is an unscaled deadline before it is a bug.
+- Run the tests for what you changed. CI owns the full matrix.
+
+### When the Xcode MCP earns its place
+
+The `xcode` MCP drives a running Xcode. Three uses justify it:
+
+- `RenderPreview` to see a SwiftUI `#Preview`.
+- `DocumentationSearch` for an Apple API you are not sure of. Swift 6.2 and iOS 26 moved past training data, so check before writing. The `apple-platform-references` skill covers the same ground offline.
+- `XcodeRefreshCodeIssuesInFile` for a per-file diagnostic pass when a full build is overkill.
+
+Its tools act on whatever scheme and destination Xcode's toolbar has selected and cannot change them. Edit with the native tools, not the MCP's write tools. The `swift-lsp` plugin is for hover and jump-to-definition only; its `No such module` errors are stale until a build runs.
+
+## Platforms and engines
+
+UI work is done when it holds on every surface it touches, not on the one you rendered. Name the ones you checked.
+
+- **iPhone, iPad, Apple TV.** The floating sidebar only appears at iPad regular width in landscape; portrait renders a top tab bar and hides sidebar bugs.
+- **tvOS focus.** Every horizontal band is a `tvFocusSection`, every pushed page applies `tvHidesTabSidebar`, every empty state has a focusable surface. Miss one and the Menu button exits the app or focus dies on a sparse row.
+- **Both engines, both sources.** AVKit and VLC, Jellyfin and SMB. Engine choice is invisible to the user by decision.
+- **Debug and Release.** They diverge in either direction. Confirm which one reproduces a glitch before chasing it.
+
+## Proving UI
+
+Never claim a visual outcome from reasoning. Sizes, alignment, materials, and chrome get proven with pixels.
+
+- Add or extend a `#Preview` that shows the exact question, render it, and look. Keep diagnostic previews. tvOS renders are 1920 wide, so crop and upscale with `sips` before judging small deltas.
+- For measurements, pin the preview with `traits: .fixedLayout(width:height:)`, add `.previewRuler(trailing:)` from `PreviewRuler.swift`, render once in dark mode, and run `python3 scripts/render-ruler.py --pt-width <width> --scan-row auto`. Numbers come from the script; read the image only for qualitative judgment.
+- A theory that needs a third hack to survive a render is wrong. Fix the root cause, then delete the probes, guards, and lab views the hunt left behind.
+- Before and after comparison is hers. Present both renders; do not declare the verdict.
+- When behavior looks off, check the HIG before calling it a bug. The dark-mode background lift on a scaled iPad window is documented, not a glitch.
+- Function before polish. Note layout debt and move on.
+
+## Standing decisions
+
+- Spring settle is the app's life, including on direct manipulation. Tune a spring before deleting it. App-wide motion changes need a deliberate yes, not a side effect of a local fix.
+- Chrome is monochrome; color comes from artwork.
+- Apple's way first. Follow the Human Interface Guidelines, and start from the simplest system API or the WWDC sample shape. Go custom only when the requirement cannot be met that way, and say which requirement.
+- SwiftUI first. Bridge to UIKit only for what SwiftUI cannot do, and keep the bridge as small as the gap.
+- Perception over completeness. Prefetch a viewport ahead, never a whole folder.
+
+## Working with Eutialia
+
+- Her on-device observations are ground truth.
+- The ship order is fixed: implement, she device-tests, `/code-review --fix`, commit, PR. She grants each step. A clean build is not approval, and nothing lands on `main` directly.
+- Match the ceremony to the change. A one-file edit gets a direct edit, not a worktree and an exploration agent.
+- Plans, research notes, scratch scripts, and lab results are never committed. Keep them outside the tree or in the gitignored tool directories.
+- When she reverses a taste call, revert the whole thing, including the pieces that rode along. Do not layer a fix on top.
+- Code review of Swift changes adds the diff-relevant Swift skills (`swiftui-pro`, `swift-concurrency-pro`, `swift-focusengine-pro`, `swiftui-liquid-glass`), each scoped to the reviewed hunks or they audit the whole repo. Review tool, not a pre-coding ritual.
