@@ -35,17 +35,21 @@ nonisolated struct SeekHold: Equatable, Sendable {
     ///
     /// It is a SILENCE budget, spent by `PlayerViewModel`'s watchdog task and not by this type:
     /// armed when a hold is set, restarted by every beat the live engine delivers while it
-    /// stands, so it fires only after this long with no beat at all. Both engines are
-    /// beat-on-motion (VLC's poll is `isPlaying`-gated, AVKit's clock is a periodic observer),
-    /// so a seek into an unbuffered region on a dead link produces one `.buffering` beat and
-    /// then silence — and a deadline that can only be checked when a beat arrives is exactly
-    /// the deadline that never fires in the case it exists for.
+    /// stands, so it fires only after this long with no beat at all. That is the window no
+    /// engine deadline covers: AVKit's clock is a periodic time observer that goes quiet at
+    /// rate zero, and its stall watchdog is disarmed on that same edge, so a seek into an
+    /// unbuffered region on a dead link produces one `.buffering` beat and then nothing. (VLC is
+    /// the other way round — its poll keeps beating `.buffering` at a starving seek and its own
+    /// stall watchdog fails the session at 45 s, which clears the hold through the failed
+    /// phase.) A deadline that can only be checked when a beat arrives is exactly the deadline
+    /// that never fires in the case it exists for.
     ///
-    /// A healthy session never reaches it. Sized above `reloadResolveDeadline` (15 s), the
-    /// longest a healthy re-anchor goes without a beat: the re-resolve runs with the old
-    /// session closed and the new one not yet loading. If this ever fires on a working
-    /// session, the number is wrong — not the engine.
-    static let watchdog: Duration = .seconds(20)
+    /// A healthy session never reaches it. Sized above the longest a healthy session goes
+    /// without a beat: a stream open, which the engine's `LoadWatchdog` (30 s) bounds by failing
+    /// the session, and a re-anchor's re-resolve (`reloadResolveDeadline`, 15 s), which starts
+    /// silent at the pause the reload opens with and ends at the new session's `.loading` beat.
+    /// If this ever fires on a working session, the number is wrong — not the engine.
+    static let watchdog: Duration = .seconds(35)
 
     /// What the caller should do with the beat it just absorbed.
     enum Verdict: Equatable, Sendable {

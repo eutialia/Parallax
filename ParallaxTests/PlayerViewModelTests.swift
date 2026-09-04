@@ -1754,13 +1754,13 @@ struct PlayerViewModelTests {
         #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000.5)
     }
 
-    /// The wedge itself, and the case a beat-driven watchdog could never reach. Both engines
-    /// beat on motion — VLC's poll is `isPlaying`-gated, AVKit's clock is a periodic time
-    /// observer — so a seek into an unbuffered region on a dead link produces one buffering
-    /// beat and then nothing, forever. A deadline that is only checked when a beat arrives
-    /// never arrives either, and the hold stands for the rest of the session: on tvOS that
-    /// pins the full HUD over the video with no remote input that can unstick it, because the
-    /// idle timer only re-arms when the flight ends.
+    /// The wedge itself, and the case a beat-driven watchdog could never reach. AVKit's clock
+    /// is a periodic time observer that goes quiet at rate zero, and its stall watchdog is
+    /// disarmed on that same edge — so a seek into an unbuffered region on a dead link
+    /// produces one buffering beat and then nothing, forever. A deadline that is only checked
+    /// when a beat arrives never arrives either, and the hold stands for the rest of the
+    /// session: on tvOS that pins the full HUD over the video with no remote input that can
+    /// unstick it, because the idle timer only re-arms when the flight ends.
     @Test("the watchdog fires with no beat at all, and the flight goes with the hold")
     func watchdogFiresWithNoBeatAtAll() async throws {
         let watchdog = SeekHoldWatchdogGate()

@@ -50,11 +50,12 @@ struct SeekHoldTests {
         #expect(Self.hold().absorb(provenance: provenance) == expected)
     }
 
-    /// Bounded well clear of `reloadResolveDeadline` (15 s): the re-resolve is the longest a
-    /// healthy re-anchor goes without a beat, and the watchdog must never be what ends it.
-    @Test("the watchdog outlives the slowest healthy re-anchor")
-    func watchdogClearsTheReloadResolveDeadline() {
-        #expect(SeekHold.watchdog > .seconds(15))
+    /// Bounded clear of every silent stretch a healthy session has: a stream open, which the
+    /// engine's load watchdog ends at 30 s by failing the session, and a re-anchor's re-resolve
+    /// (`reloadResolveDeadline`, 15 s). The watchdog must never be what ends either.
+    @Test("the watchdog outlives the slowest healthy stream open and re-anchor")
+    func watchdogClearsTheEngineDeadlines() {
+        #expect(SeekHold.watchdog > .seconds(30))
     }
 
     /// The hold is the release POLICY and nothing else: the commit's origin, its identity and
