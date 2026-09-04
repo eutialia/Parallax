@@ -842,10 +842,10 @@ final class PlayerViewModel {
     /// whenever no seek is outstanding.
     ///
     /// `private(set)` rather than private for the paths that DROP it — an abandoned re-anchor,
-    /// a failed phase, the `handle` watchdog. Every one of those is invisible from the
-    /// published positions (a hold and no hold treat each provenance identically; only the
-    /// window's END differs), so a test that cannot read it can only assert the defect one
-    /// window later, if at all.
+    /// a failed phase, the watchdog. Every one of those is invisible from the published
+    /// positions (a hold and no hold treat each provenance identically; only the window's END
+    /// differs), so a test that cannot read it can only assert the defect one window later, if
+    /// at all.
     private(set) var seekHold: SeekHold? {
         didSet {
             // The flight is the hold's meaning, so it cannot outlive it: every path that ends
@@ -855,6 +855,35 @@ final class PlayerViewModel {
             // still down, nothing has been dispatched), so it is left alone; `beginExit()`
             // clears that one explicitly.
             if seekHold == nil, flight?.stage != .previewing { flight = nil }
+            // Same reason the flight teardown lives here: the deadline belongs to the hold that
+            // stands, so every write — a re-scrub, a landing, a failed phase, `stop()` — retires
+            // the previous one, and only the arming site would ever remember to.
+            if seekHold == nil {
+                seekHoldWatchdogTask?.cancel()
+                seekHoldWatchdogTask = nil
+            } else {
+                armSeekHoldWatchdog()
+            }
+        }
+    }
+
+    /// The standing hold's silence budget — see `SeekHold.watchdog`. Nil whenever no hold
+    /// stands. Armed by `seekHold`'s `didSet`, restarted by every beat in `handle(_:from:)`.
+    private var seekHoldWatchdogTask: Task<Void, Never>?
+
+    /// Cancellation is the whole supersession story: every restart cancels the standing task,
+    /// and a cancelled task declines after its wait whether or not the injected sleep cut that
+    /// wait short.
+    private func armSeekHoldWatchdog() {
+        seekHoldWatchdogTask?.cancel()
+        seekHoldWatchdogTask = Task { [weak self, seekHoldWatchdog] in
+            try? await seekHoldWatchdog(SeekHold.watchdog)
+            guard !Task.isCancelled, let self else { return }
+            // Releasing without a position, which is the whole difference between this exit and
+            // `absorb`'s: there was no beat for the whole budget — that is the wedge — and the
+            // last one there was carried the pre-seek clock the hold exists to keep off the
+            // bar. The `didSet` tears down the flight, which is what unpins the tvOS full HUD.
+            self.seekHold = nil
         }
     }
 
@@ -998,12 +1027,10 @@ final class PlayerViewModel {
     /// Injectable so tests don't wait wall-clock seconds for it to fire.
     private let backfillDelay: Duration
 
-    /// The clock `SeekHold` is armed and judged against — `commitSeek` stamps `armedAt`
-    /// with it and `publish` passes it as `now`. Injectable for one reason: `SeekHold.watchdog`
-    /// is 20 s, and the branch it guards (an engine that stops observing forever) is otherwise
-    /// only reachable by a test that waits 20 wall-clock seconds. One closure for both reads so
-    /// they can never disagree about what "now" is.
-    private let seekHoldNow: @Sendable () -> ContinuousClock.Instant
+    /// The seek-hold watchdog's wait — see `armSeekHoldWatchdog()`. Injectable for one
+    /// reason: `SeekHold.watchdog` is 20 s, and the branch it guards (an engine that stops
+    /// beating forever) is otherwise only reachable by a test that waits 20 wall-clock seconds.
+    private let seekHoldWatchdog: @Sendable (Duration) async throws -> Void
 
     /// The playing item's artwork bytes, for the scrub bar's accent hue. A closure because the
     /// image lives behind a session-scoped image pipeline (auth header, shared disk cache) the
@@ -1074,7 +1101,9 @@ final class PlayerViewModel {
         backfillDelay: Duration = .seconds(8),
         subtitleStyle: @escaping @MainActor () -> SubtitleStyle = { .standard },
         playerSurface: @escaping @MainActor () -> CGSize? = { nil },
-        seekHoldNow: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
+        seekHoldWatchdog: @escaping @Sendable (Duration) async throws -> Void = {
+            try await Task.sleep(for: $0)
+        },
         fetchArtwork: @escaping @Sendable (ItemDetail) async -> Data? = { _ in nil }
     ) {
         self.deviceProfileBuilder = deviceProfileBuilder
@@ -1097,7 +1126,7 @@ final class PlayerViewModel {
         self.backfillDelay = backfillDelay
         self.subtitleStyle = subtitleStyle
         self.playerSurface = playerSurface
-        self.seekHoldNow = seekHoldNow
+        self.seekHoldWatchdog = seekHoldWatchdog
         self.fetchArtwork = fetchArtwork
     }
 
@@ -1116,6 +1145,7 @@ final class PlayerViewModel {
         thumbnailBackfillTask?.cancel()
         segmentsTask?.cancel()
         accentTask?.cancel()
+        seekHoldWatchdogTask?.cancel()
     }
 
     // MARK: - Skip segments & episode succession
@@ -2921,7 +2951,7 @@ final class PlayerViewModel {
         // an integer compare, with no tolerance to get wrong.
         flight = SeekFlight(id: nextFlightID(), played: concretePosition,
                             requested: target, stage: .committed)
-        seekHold = SeekHold(target: target, armedAt: seekHoldNow())
+        seekHold = SeekHold(target: target)
         lastPosition = target
         currentPosition = target
         // Now Playing extrapolates its clock from the last write, and a re-anchor drops
@@ -3391,12 +3421,10 @@ final class PlayerViewModel {
     /// every flag-based answer to the same question loses to.
     private func handle(_ beat: PlaybackBeat, from engine: any PlaybackEngine) async {
         guard self.engine === engine else { return }
-        // Ahead of the session gate, deliberately: the hold's watchdog exists for the windows
-        // where beats are dropped, and a superseded session's beat is still proof that time is
-        // passing. It never adopts a position — see `publish`.
-        if let hold = seekHold, seekHoldNow() - hold.armedAt >= SeekHold.watchdog {
-            seekHold = nil
-        }
+        // Ahead of the session gate, deliberately: the watchdog is a silence budget, and a
+        // superseded session's beat is still proof the engine is alive. It never adopts a
+        // position — see `publish`.
+        if seekHold != nil { armSeekHoldWatchdog() }
         guard beat.session == activeSession else { return }
         await handle(beat.state)
     }
@@ -3424,13 +3452,14 @@ final class PlayerViewModel {
     /// hold decides who ends the window, never who may be believed — and the no-hold route is
     /// not a safe place to relax it. A `.projected` beat with no hold is the engine's guess off
     /// a seek the VM never committed (a PiP/remote scrub, an engine-internal re-anchor, or a
-    /// hold this VM's own watchdog already dropped while the engine is still projecting), and
-    /// writing it to `lastPosition` persists a fabricated extrapolation as the resume point.
+    /// hold `armSeekHoldWatchdog()` already dropped while the engine is still projecting),
+    /// and writing it to `lastPosition` persists a fabricated extrapolation as the resume point.
     ///
-    /// `.stale` is dropped on every route for the mirror reason: with no hold armed it is
-    /// still the position an unresolved seek moved away from, and on RELEASE it is the watchdog
-    /// firing on whatever beat happened to arrive — ending the hold is right, adopting that
-    /// position is the snap-back.
+    /// The watchdog is not one of the exits here. It fires on elapsed time, in the windows
+    /// where no beat arrives at all, and it releases WITHOUT a position for exactly the reason
+    /// `.stale` is dropped on every route: the last thing an engine says before it goes quiet
+    /// is the clock the unresolved seek moved away from, and adopting it is the snap-back the
+    /// hold existed to prevent.
     ///
     /// The split the callers must respect: USER-FACING surfaces (the bar, Now Playing) read
     /// the held clock (`currentPosition`), while `playbackInfo.reportStart`/`reportProgress`
@@ -3458,7 +3487,7 @@ final class PlayerViewModel {
             }
             return
         }
-        switch hold.absorb(provenance: provenance, now: seekHoldNow()) {
+        switch hold.absorb(provenance: provenance) {
         case .hold:
             // The bar follows the engine's own projection off the target and freezes on a
             // clock that is still behind it. `lastPosition` follows neither: until an observed
@@ -3472,13 +3501,10 @@ final class PlayerViewModel {
                 if flight?.stage == .committed { flight?.stage = .landing }
             }
         case .release:
+            // The one release that carries a position: `.observed` is the engine's own clock
+            // with no seek of its own outstanding, so it owns both the bar and the resume point
+            // from here.
             seekHold = nil
-            // Dropping the hold and ADOPTING the beat are two decisions, and the watchdog is
-            // where they come apart: it releases on whatever beat happened to arrive, which
-            // can be `.stale`. Ending the hold is right — an engine that never observes again
-            // must not freeze the bar forever — but taking the pre-seek clock it carries is
-            // the snap-back the hold existed to prevent, now performed by the exit itself.
-            guard provenance != .stale else { return }
             lastPosition = position
             currentPosition = position
         }

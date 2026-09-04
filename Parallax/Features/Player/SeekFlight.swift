@@ -10,7 +10,8 @@ import CoreMedia
 /// promises, and a stage; and its `id` — not a pair of rendered fractions — is its identity.
 ///
 /// It is deliberately not the release policy. `SeekHold` still decides which engine beat ends
-/// the window (`absorb`); the flight decides what the window MEANS.
+/// the window (`absorb`), and the view model's watchdog ends one that no beat ever will; the
+/// flight decides what the window MEANS.
 nonisolated struct SeekFlight: Equatable, Sendable {
     enum Stage: Equatable, Sendable {
         /// A gesture owns the bar: `requested` rides the finger (or the tvOS swipe) and
@@ -22,7 +23,7 @@ nonisolated struct SeekFlight: Equatable, Sendable {
         /// The engine is projecting off its own seek target. `.projected` is display-safe by
         /// contract ("the picture is at, or running from, this position"), so the honest
         /// position is the published clock again — but the seek is still unresolved, and only
-        /// an `.observed` beat ends the flight.
+        /// an `.observed` beat ends the flight, or the watchdog when no beat arrives at all.
         case landing
     }
 

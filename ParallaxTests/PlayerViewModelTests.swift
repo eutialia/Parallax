@@ -1505,7 +1505,7 @@ struct PlayerViewModelTests {
     /// position — so a `.projected` `.paused` AT the target is not a wedge, it is the contract
     /// working; AVKit's `.paused` in the same window carries the pre-seek clock, `.stale`.
     /// Neither releases. `SeekHold.watchdog` is the only thing that ever ends such a hold, and
-    /// releasing there is a no-op because the beat carries the target anyway.
+    /// it ends it without adopting a position — so the bar stays on the target either way.
     @Test("held .paused beats hold — the stale pre-seek clock and the projected target alike")
     func heldPausedBeatsHold() async throws {
         let (vm, engines) = try await makeReanchorVM(at: 600)
@@ -1645,24 +1645,26 @@ struct PlayerViewModelTests {
         #expect(events.contains(.stopped(ticks: 3_000 * 10_000_000, itemID: "movie-1")))
     }
 
-    /// The watchdog exit is the one release that is NOT the engine handing the position back:
-    /// it fires on whatever beat happens to arrive 20 s in, and on a wedged engine that beat
-    /// carries the pre-seek clock. Ending the hold is right — nothing else can unfreeze the bar
-    /// — but adopting the position it carries performs the exact snap-back the hold existed to
-    /// prevent, and writes it into the resume point on the way out.
-    @Test("the watchdog drops a wedged hold without adopting the stale clock it fired on")
+    /// The watchdog exit is the one release that is NOT the engine handing the position back,
+    /// so it carries no position at all. The last thing a wedged engine said before it went
+    /// quiet is the pre-seek clock; ending the hold is right — nothing else can unfreeze the
+    /// bar — but adopting that clock would perform the exact snap-back the hold existed to
+    /// prevent, and write it into the resume point on the way out.
+    @Test("the watchdog drops a wedged hold without adopting the stale clock under it")
     func watchdogReleaseNeverAdoptsTheStaleClock() async throws {
         let reporting = StubPlaybackReporting()
-        nonisolated(unsafe) var now = ContinuousClock.now
+        let watchdog = SeekHoldWatchdogGate()
         let (vm, engines) = try await makeReanchorVM(at: 600, reporting: reporting,
-                                                     seekHoldNow: { now })
+                                                     seekHoldWatchdog: watchdog.sleep)
         let engine = engines.live
 
         await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
-        now = now.advanced(by: SeekHold.watchdog + .seconds(1))
-
         engine.push(.playing(0, provenance: .stale))
         try await engine.settle()
+        try await requireEventually({ watchdog.armings == 2 }, "the beat never restarted the watchdog")
+
+        watchdog.fire()
+        try await requireEventually({ vm.seekHold == nil }, "the watchdog never released the hold")
         #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000)   // the bar did not snap back
 
         await vm.stop()
@@ -1675,15 +1677,14 @@ struct PlayerViewModelTests {
     /// position outright instead of waiting for a second watchdog.
     @Test("after the watchdog release the next observed beat owns the position")
     func watchdogReleasedHoldFollowsTheNextObservedBeat() async throws {
-        nonisolated(unsafe) var now = ContinuousClock.now
-        let (vm, engines) = try await makeReanchorVM(at: 600, seekHoldNow: { now })
+        let watchdog = SeekHoldWatchdogGate()
+        let (vm, engines) = try await makeReanchorVM(at: 600, seekHoldWatchdog: watchdog.sleep)
         let engine = engines.live
 
         await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
-        now = now.advanced(by: SeekHold.watchdog + .seconds(1))
-
-        engine.push(.playing(0, provenance: .stale))
-        try await engine.settle()
+        try await requireEventually({ watchdog.armings == 1 }, "the commit never armed a watchdog")
+        watchdog.fire()
+        try await requireEventually({ vm.seekHold == nil }, "the watchdog never released the hold")
 
         engine.push(.playing(3_001))
         try await engine.settle()
@@ -1753,25 +1754,77 @@ struct PlayerViewModelTests {
         #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000.5)
     }
 
-    /// The watchdog needs a beat to be evaluated, and `publish` only sees position-carrying
-    /// ones that survive the gates at the top of `handle` — so in exactly the windows it exists
-    /// for (a track switch or a reactive reroute swallowing every beat, an engine that only
-    /// ever emits `.failed`) it could never fire, and the bar stayed pinned at the target with
-    /// nothing left to unpin it. Evaluated at the top of `handle` instead, on every state.
-    @Test("the watchdog fires on a state that carries no position at all")
-    func watchdogFiresOnANonPositionState() async throws {
-        nonisolated(unsafe) var now = ContinuousClock.now
-        let (vm, engines) = try await makeReanchorVM(at: 600, seekHoldNow: { now })
-        let engine = engines.live
+    /// The wedge itself, and the case a beat-driven watchdog could never reach. Both engines
+    /// beat on motion — VLC's poll is `isPlaying`-gated, AVKit's clock is a periodic time
+    /// observer — so a seek into an unbuffered region on a dead link produces one buffering
+    /// beat and then nothing, forever. A deadline that is only checked when a beat arrives
+    /// never arrives either, and the hold stands for the rest of the session: on tvOS that
+    /// pins the full HUD over the video with no remote input that can unstick it, because the
+    /// idle timer only re-arms when the flight ends.
+    @Test("the watchdog fires with no beat at all, and the flight goes with the hold")
+    func watchdogFiresWithNoBeatAtAll() async throws {
+        let watchdog = SeekHoldWatchdogGate()
+        let (vm, _) = try await makeReanchorVM(at: 600, seekHoldWatchdog: watchdog.sleep)
         await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
         #expect(vm.seekHold != nil)
+        #expect(vm.flight != nil)
+        try await requireEventually({ watchdog.armings == 1 }, "the commit never armed a watchdog")
+        #expect(watchdog.requested == [SeekHold.watchdog], "the watchdog spends a different deadline")
 
-        now = now.advanced(by: SeekHold.watchdog + .seconds(1))
-        engine.push(.ready(duration: CMTime(seconds: 7_200, preferredTimescale: 600), tracks: .empty))
-        try await engine.settle()
+        watchdog.fire()
 
-        #expect(vm.seekHold == nil, "the watchdog never saw a beat it could fire on")
+        try await requireEventually({ vm.seekHold == nil }, "the hold outlived its watchdog")
+        #expect(vm.flight == nil, "the HUD stays pinned for as long as the flight stands")
         #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000)   // and it adopted nothing
+    }
+
+    /// A re-scrub inside the window supersedes the hold, so it must supersede the deadline too:
+    /// the first commit's watchdog firing late would drop a hold that is seconds old and hand
+    /// the bar back to a stream still re-anchoring at the newer target.
+    @Test("a re-scrub re-arms the watchdog — the superseded one cannot drop the hold that replaced it")
+    func reScrubReArmsTheWatchdog() async throws {
+        let watchdog = SeekHoldWatchdogGate()
+        let (vm, _) = try await makeReanchorVM(at: 600, seekHoldWatchdog: watchdog.sleep)
+        await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
+        try await requireEventually({ watchdog.armings == 1 }, "the commit never armed a watchdog")
+        await vm.commitSeek(to: CMTime(seconds: 4_000, preferredTimescale: 600))
+        try await requireEventually({ watchdog.armings == 2 }, "the re-scrub never re-armed")
+
+        // The superseded watchdog has to RUN and decline for the negative below to be an
+        // observation rather than a race.
+        watchdog.fire(0)
+        try await requireEventually({ watchdog.completed.contains(0) }, "the superseded watchdog never ran")
+        #expect(CMTimeGetSeconds(vm.seekHold?.target ?? .invalid) == 4_000,
+                "the first commit's watchdog dropped the hold that replaced it")
+
+        // …and the hold that stands has a live deadline of its own, not an inherited one.
+        watchdog.fire(1)
+        try await requireEventually({ vm.seekHold == nil }, "the re-armed watchdog never fired")
+    }
+
+    /// The budget is SILENCE, not time since commit. A re-anchor that is slow but alive keeps
+    /// beating — `.loading`, then `.buffering` off the new session — and every beat restarts
+    /// the deadline, so a healthy seek that takes longer than the budget end to end is never
+    /// the one it drops. Before this the deadline ran from the commit, and a re-resolve near
+    /// its own 15 s ceiling plus a slow stream open tripped it under a live buffering scrim.
+    @Test("a beat inside the window restarts the deadline — a slow, alive seek is not a wedge")
+    func beatInsideTheWindowRestartsTheWatchdog() async throws {
+        let watchdog = SeekHoldWatchdogGate()
+        let (vm, engines) = try await makeReanchorVM(at: 600, seekHoldWatchdog: watchdog.sleep)
+        let engine = engines.live
+        await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
+        try await requireEventually({ watchdog.armings == 1 }, "the commit never armed a watchdog")
+
+        engine.push(.paused(3_000, provenance: .projected))
+        try await engine.settle()
+        try await requireEventually({ watchdog.armings == 2 }, "the beat never restarted the deadline")
+
+        watchdog.fire(0)
+        try await requireEventually({ watchdog.completed.contains(0) }, "the superseded watchdog never ran")
+        #expect(vm.seekHold != nil, "the deadline the beat retired dropped the hold")
+
+        watchdog.fire(1)
+        try await requireEventually({ vm.seekHold == nil }, "the restarted deadline never fired")
     }
 
     /// A failed session emits no further position beat, so a hold left standing has nothing

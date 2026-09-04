@@ -32,9 +32,18 @@ nonisolated struct SeekHold: Equatable, Sendable {
     /// Anti-wedge floor, and nothing else: an engine that never reports an observed clock
     /// again — a seek that died, a session whose poll loop stopped — must not freeze the bar
     /// forever.
-    /// A healthy session never reaches it. Sized above `reloadResolveDeadline` (15 s), which
-    /// bounds the slowest healthy hold there is: a re-anchor that spends its entire re-resolve
-    /// budget before the new stream even starts loading. If this ever fires on a working
+    ///
+    /// It is a SILENCE budget, spent by `PlayerViewModel`'s watchdog task and not by this type:
+    /// armed when a hold is set, restarted by every beat the live engine delivers while it
+    /// stands, so it fires only after this long with no beat at all. Both engines are
+    /// beat-on-motion (VLC's poll is `isPlaying`-gated, AVKit's clock is a periodic observer),
+    /// so a seek into an unbuffered region on a dead link produces one `.buffering` beat and
+    /// then silence — and a deadline that can only be checked when a beat arrives is exactly
+    /// the deadline that never fires in the case it exists for.
+    ///
+    /// A healthy session never reaches it. Sized above `reloadResolveDeadline` (15 s), the
+    /// longest a healthy re-anchor goes without a beat: the re-resolve runs with the old
+    /// session closed and the new one not yet loading. If this ever fires on a working
     /// session, the number is wrong — not the engine.
     static let watchdog: Duration = .seconds(20)
 
@@ -48,13 +57,9 @@ nonisolated struct SeekHold: Equatable, Sendable {
 
     /// The committed seek destination — what the UI shows for as long as the hold lives.
     let target: CMTime
-    /// When the commit armed this hold, for the watchdog. A re-scrub builds a new hold, so
-    /// the newest commit always gets the full budget.
-    let armedAt: ContinuousClock.Instant
 
-    init(target: CMTime, armedAt: ContinuousClock.Instant = .now) {
+    init(target: CMTime) {
         self.target = target
-        self.armedAt = armedAt
     }
 
     /// Judge one engine beat. It takes the beat's LABEL and nothing else — no position: the
@@ -68,21 +73,10 @@ nonisolated struct SeekHold: Equatable, Sendable {
     /// elsewhere is the worse lie. `.projected` and `.stale` both hold: neither is evidence the
     /// seek resolved, and that is the only question this type answers.
     ///
-    /// The watchdog is the only other exit, and it must never be the one a real session takes.
-    /// One case makes that worth spelling out: a VLC seek committed while PAUSED keeps
-    /// projecting until playback resumes, so a user who scrubs, pauses and walks away can hold
-    /// legitimately for minutes and trip it. On a `.projected` beat that release costs nothing —
-    /// the beat carries the held target (VLC's extrapolation freezes there, which IS the correct
-    /// paused position), so nothing on screen moves.
-    ///
-    /// On a `.stale` beat it costs everything, and the difference is not this type's to make.
-    /// The watchdog releases on whatever beat happens to arrive, and `.stale` is the pre-seek
-    /// clock: adopting it is the snap-back the hold exists to prevent, performed by the exit
-    /// itself. So `.release` means only "the hold is over" — never "publish this position".
-    /// Splitting those is the caller's job, and `PlayerViewModel.publish` drops a `.stale`
-    /// position on release for exactly this reason.
-    func absorb(provenance: PositionProvenance, now: ContinuousClock.Instant) -> Verdict {
-        if provenance == .observed { return .release }
-        return now - armedAt >= Self.watchdog ? .release : .hold
+    /// The watchdog is the only other exit and it does not come through here — see `watchdog`.
+    /// So this stays a total function of the label: `.release` means "the engine owns the
+    /// position from this beat on", and it is the only release that ever carries a position.
+    func absorb(provenance: PositionProvenance) -> Verdict {
+        provenance == .observed ? .release : .hold
     }
 }
