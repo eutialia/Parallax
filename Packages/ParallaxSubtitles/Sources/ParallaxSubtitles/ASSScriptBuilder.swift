@@ -35,10 +35,11 @@ enum ASSScriptBuilder {
     static let marginHorizontal = 40
     static let marginVertical = 36
 
-    /// Shadow offset, down and right, shared with the style override so the two
-    /// cannot drift. 1.44/48 = 3% of the font size.
+    /// Shadow offset, down and right, in PlayRes units: 1.44/48 = 3% of the em.
+    /// The canonical shadow is authored elsewhere as a ratio; `SubtitleRenderer`
+    /// republishes this as one so the app can hold the two to the same number.
     static let shadowOffset = 1.44
-    /// Black, at this opacity — the canonical shadow's, and the override's fallback.
+    /// Black, at this opacity — the override's fallback when it sets none.
     static let shadowAlpha = 0.8
 
     /// `&HAABBGGRR`, the style line's colour spelling — the script's byte order,
