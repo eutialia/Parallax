@@ -147,9 +147,9 @@ struct VLCKitLibraryOptionTests {
 
     /// The fix. The freetype renderer belongs to the video output, so its whole option set has
     /// to arrive as libvlc instance arguments — `--`, not `:`. `.opaqueBox` is the other half
-    /// of the user's border choice: box on, ring and shadow off.
+    /// of the user's background choice: box on, shadow off.
     @Test("the font family and the style become the `--freetype-*` argument set",
-          arguments: [SubtitleBackground.outlineShadow, .opaqueBox])
+          arguments: [SubtitleBackground.shadow, .opaqueBox])
     func freetypeArgumentsCarryTheAssetStyle(background: SubtitleBackground) {
         let boxed = background == .opaqueBox
         let style = SubtitleStyle.standard.with { $0.background = background }
@@ -165,16 +165,17 @@ struct VLCKitLibraryOptionTests {
             // 0.92 white, fully opaque.
             "--freetype-color=15461355",     // 0xEBEBEB
             "--freetype-opacity=255",
-            "--freetype-outline-color=0",
-            // The ring is 6% of the font size (the option is a percent, not one of the
-            // None/Thin/Normal/Thick presets its labels suggest); a box turns it off by
-            // thickness, which is the module's real off switch — STYLE_OUTLINE is always set.
-            "--freetype-outline-opacity=\(boxed ? 0 : 255)",
-            "--freetype-outline-thickness=\(boxed ? 0 : 6)",
-            // 0.55 × 255 = 140.25, and the 0.04 VERTICAL offset rides the hypotenuse of the
-            // module's default −45° shadow angle: 0.04 × √2 = 0.0566.
-            "--freetype-shadow-opacity=\(boxed ? 0 : 140)",
-            "--freetype-shadow-distance=0.0566",
+            // The ring is never visible (opacity 0) but its thickness is never 0 outside
+            // the box: the module copies the STROKE into the shadow, so a 0 stroke is an
+            // empty shadow. 3 is a whole percent of the font size, not one of the
+            // None/Thin/Normal/Thick presets its labels suggest.
+            "--freetype-outline-opacity=0",
+            "--freetype-outline-thickness=\(boxed ? 0 : 3)",
+            // This path's own opacity and offset, chosen by eye against the client
+            // renderer's halo: 0.70 × 255 = 179, and 0.03 per axis is the hypotenuse of
+            // the module's default −45° shadow angle: 0.03 × √2 = 0.0424.
+            "--freetype-shadow-opacity=\(boxed ? 0 : 179)",
+            "--freetype-shadow-distance=0.0424",
             "--freetype-background-color=0",
             "--freetype-background-opacity=\(boxed ? 255 : 0)",
         ])

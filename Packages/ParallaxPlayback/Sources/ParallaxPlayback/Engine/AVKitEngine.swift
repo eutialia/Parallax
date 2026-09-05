@@ -204,9 +204,11 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
 
     /// Styling for natively rendered legible tracks (direct-play embedded WebVTT —
     /// sidecar text subs never reach AVKit; the app overlay draws those). Matches
-    /// `SubtitleStyle.standard`: no cue box, black uniform glyph edge, dimmed-white
+    /// `SubtitleStyle.standard`: no cue box, a drop-shadow glyph edge, dimmed-white
     /// fill — native rendering composites into the HDR frame, where pure white is
-    /// drawn at peak brightness ("only the subtitles have HDR"). Per the docs the
+    /// drawn at peak brightness ("only the subtitles have HDR"). The edge styles are
+    /// fixed presets with no radius, offset or opacity to set, so DropShadow is as
+    /// close as this path gets to the canonical soft shadow. Per the docs the
     /// rules apply to WebVTT only; other legible formats keep system styling. Size
     /// is left at the system default (≈5% of video height), which already scales
     /// per screen. Best-effort, not authoritative: a user-customized Subtitles &
@@ -219,7 +221,7 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
             kCMTextMarkupAttribute_BackgroundColorARGB as String: clear,
             kCMTextMarkupAttribute_CharacterBackgroundColorARGB as String: clear,
             kCMTextMarkupAttribute_CharacterEdgeStyle as String:
-                kCMTextMarkupCharacterEdgeStyle_Uniform as String,
+                kCMTextMarkupCharacterEdgeStyle_DropShadow as String,
             kCMTextMarkupAttribute_ForegroundColorARGB as String:
                 [fg.alpha, fg.red, fg.green, fg.blue].map { NSNumber(value: $0) },
         ]

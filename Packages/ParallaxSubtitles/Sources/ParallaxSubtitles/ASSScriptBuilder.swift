@@ -35,11 +35,20 @@ enum ASSScriptBuilder {
     static let marginHorizontal = 40
     static let marginVertical = 36
 
-    /// Border geometry, shared with the style override so the two cannot drift.
-    /// 2.4/48 = 5% of the font size, the proportion VSFilter-era scripts use.
-    /// At `BorderStyle = 3` the same number becomes the opaque box's padding.
-    static let outlineWidth = 2.4
-    static let shadowOffset = 1.2
+    /// Shadow offset, down and right, shared with the style override so the two
+    /// cannot drift. 1.44/48 = 3% of the font size.
+    static let shadowOffset = 1.44
+    /// Black, at this opacity — the canonical shadow's, and the override's fallback.
+    static let shadowAlpha = 0.8
+
+    /// `&HAABBGGRR`, the style line's colour spelling — the script's byte order,
+    /// not `assPacked`'s in-memory one.
+    static func styleColor(_ color: SubtitleColor) -> String {
+        let packed = color.assPacked
+        let alpha = packed & 0xFF, blue = (packed >> 8) & 0xFF
+        let green = (packed >> 16) & 0xFF, red = (packed >> 24) & 0xFF
+        return String(format: "&H%02X%02X%02X%02X", alpha, blue, green, red)
+    }
 
     /// `H:MM:SS.cc` — ASS stores centiseconds, so sub-10ms detail is lost by design.
     static func timecode(_ seconds: Double) -> String {
@@ -53,7 +62,14 @@ enum ASSScriptBuilder {
         return String(format: "%d:%02d:%02d.%02d", h, m, s, centiseconds)
     }
 
+    /// The style line carries no ring (Outline 0, and a transparent OutlineColour
+    /// so an override that seeds the blur with a border never draws one) and a
+    /// black shadow at `shadowAlpha` and `shadowOffset` — the canonical look minus
+    /// the blur, which has no column in the V4+ format and reaches libass through
+    /// the selective style override.
     static func script(events: [ASSEvent], fontFamily: String) -> String {
+        let outlineColor = SubtitleColor(red: 0, green: 0, blue: 0, alpha: 0)
+        let shadowColor = SubtitleColor(red: 0, green: 0, blue: 0, alpha: shadowAlpha)
         var out = """
         [Script Info]
         ScriptType: v4.00+
@@ -65,7 +81,7 @@ enum ASSScriptBuilder {
 
         [V4+ Styles]
         Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-        Style: Default,\(styleSafe(fontFamily)),\(fontSize),&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,\(outlineWidth),\(shadowOffset),2,\(marginHorizontal),\(marginHorizontal),\(marginVertical),1
+        Style: Default,\(styleSafe(fontFamily)),\(fontSize),&H00FFFFFF,&H000000FF,\(styleColor(outlineColor)),\(styleColor(shadowColor)),0,0,0,0,100,100,0,0,1,0,\(shadowOffset),2,\(marginHorizontal),\(marginHorizontal),\(marginVertical),1
 
         [Events]
         Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text

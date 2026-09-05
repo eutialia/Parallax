@@ -161,8 +161,11 @@ struct SRTToASSConverterTests {
         #expect(generated.contains("PlayResX: 1280"))
         #expect(generated.contains("PlayResY: 720"))
         #expect(generated.contains("Style: Default,Avenir Next,48,"))
-        // Bottom-centre alignment, so converted tracks look like normal subtitles.
-        #expect(generated.contains(",1,2.4,1.2,2,40,40,36,1"))
+        // No ring (a transparent OutlineColour behind Outline 0), an 80% black offset
+        // shadow, bottom-centre alignment — a converted track looks like normal
+        // subtitles even before an override reaches it.
+        #expect(generated.contains(",&H00FFFFFF,&H000000FF,&HFF000000,&H33000000,"))
+        #expect(generated.contains(",1,0,1.44,2,40,40,36,1"))
     }
 
     /// A comma in the font name would shift every later field of the style line.

@@ -48,8 +48,6 @@ extension SubtitleStyle {
         let playRes = SubtitleRenderer.convertedScriptPlayRes
         return rendererOverride(
             fontScale: base * SubtitleFontMetrics.emBoxFactor(forFamily: family),
-            emHeightRatio: SubtitleRenderer.convertedScriptFontFraction * base,
-            shadowAlpha: shadowOpacity,
             marginVertical: canvas.height > 0
                 ? metrics.subtitleBottom / canvas.height * playRes.height : nil,
             marginHorizontal: canvas.width > 0
@@ -89,18 +87,16 @@ extension SubtitleStyle {
     static let freetypeRelativeFontSizeFloor = 4
 
     /// The user's overlay style expressed as the renderer's selective override,
-    /// with the caller-computed font scale, the em the cue renders at as a
-    /// fraction of the script canvas, and the tuned rest position as script-unit
-    /// margins. Border and shadow ride along as fractions of that em; the
-    /// renderer turns them into script units.
+    /// with the caller-computed font scale and the tuned rest position as
+    /// script-unit margins. The shadow's offset and blur ride along as fractions
+    /// of the em; the renderer turns them into script units, and libass scales
+    /// them with the font scale exactly as it scales the glyphs.
     ///
     /// The family stays the design bucket's own mapping, where the sans bucket
     /// has no libass name override — the synthesized script already names that
     /// family in its style.
     func rendererOverride(
         fontScale: Double,
-        emHeightRatio: Double? = nil,
-        shadowAlpha: Double? = nil,
         marginVertical: Double? = nil,
         marginHorizontal: Double? = nil
     ) -> SubtitleStyleOverride {
@@ -111,15 +107,10 @@ extension SubtitleStyle {
                 red: foreground.red, green: foreground.green,
                 blue: foreground.blue, alpha: foreground.alpha
             ),
-            outlineColor: SubtitleColor(
-                red: outline.red, green: outline.green,
-                blue: outline.blue, alpha: outline.alpha
-            ),
             opaqueBox: background == .opaqueBox,
-            emHeightRatio: emHeightRatio,
-            outlineEmRatio: outlineWidthRatio,
-            shadowEmRatio: shadowYOffsetRatio,
-            shadowAlpha: shadowAlpha,
+            shadowEmRatio: Self.shadowOffsetRatio,
+            blurEmRatio: Self.shadowBlurRatio,
+            shadowAlpha: Self.shadowOpacity,
             marginVertical: marginVertical,
             marginHorizontal: marginHorizontal
         )
