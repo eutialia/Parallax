@@ -42,6 +42,20 @@ public actor SubtitleRenderer {
         CGSize(width: ASSScriptBuilder.playResX, height: ASSScriptBuilder.playResY)
     }
 
+    /// The synthesized Default style's shadow offset as a fraction of its em —
+    /// the look a converted cue has on the frames before an override lands.
+    /// Exposed for the same reason as the font fraction: the canonical shadow
+    /// lives in a package this one cannot import, and the app asserts the two
+    /// agree instead of trusting a literal written twice.
+    public static var convertedScriptShadowEmRatio: Double {
+        ASSScriptBuilder.shadowOffset / Double(ASSScriptBuilder.fontSize)
+    }
+
+    /// The synthesized Default style's shadow opacity, black.
+    public static var convertedScriptShadowAlpha: Double {
+        ASSScriptBuilder.shadowAlpha
+    }
+
     /// - Parameter defaultFontFamily: the font of converted SRT/WebVTT
     ///   sidecars, and libass' fallback family for any name a script requests
     ///   that the bundle does not carry. Only `SubtitleFontBundle` families
