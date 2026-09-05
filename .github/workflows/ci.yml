@@ -122,6 +122,31 @@ jobs:
             -destination "platform=iOS Simulator,OS=latest,name=${DEVICE}" \
             -only-testing:ParallaxTests
 
+  # Release compiles whole-module under -O, and that pass rejects names
+  # Debug's per-file pass lets through. The v1.2.0 archive failed on a
+  # leading-dot enum case whose module the file never imported, after
+  # Debug had built it on every platform. One platform is enough here;
+  # the compiler pass is the same on tvOS.
+  release-build:
+    runs-on: macos-26
+    timeout-minutes: 30
+    needs: [drift-check, package-tests]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+      - name: Fetch VLCKit binaries
+        uses: ./.github/actions/fetch-vlckit
+      - name: Build app in Release
+        run: |
+          xcodebuild build \
+            -project Parallax.xcodeproj \
+            -scheme Parallax \
+            -configuration Release \
+            -destination 'generic/platform=iOS Simulator'
+
   tvos-build:
     runs-on: macos-26
     timeout-minutes: 30
