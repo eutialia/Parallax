@@ -15,7 +15,8 @@ import Testing
 struct StyleOverrideBorderTests {
 
     private func inkExtent(
-        shadowUnits: Double, blurUnits: Double, storageHeight: CGFloat = 720
+        shadowUnits: Double, blurUnits: Double,
+        storageHeight: CGFloat = 720, fontScale: Double = 1
     ) async throws -> CGRect {
         let renderer = SubtitleRenderer()
         await renderer.setCanvas(
@@ -24,7 +25,7 @@ struct StyleOverrideBorderTests {
         )
         try await renderer.load(SRTFixture.data(text: "Border"), format: .srt)
         await renderer.setStyleOverride(SubtitleStyleOverride(
-            fontScale: 1,
+            fontScale: fontScale,
             primaryColor: SubtitleColor(red: 1, green: 1, blue: 1),
             opaqueBox: false,
             shadowEmRatio: shadowUnits / Double(ASSScriptBuilder.fontSize),
@@ -68,5 +69,25 @@ struct StyleOverrideBorderTests {
 
         #expect(abs(other.width - reference.width) <= 2)
         #expect(abs(other.height - reference.height) <= 2)
+    }
+
+    /// The whole reason `borderGeometry` resolves against the AUTHORED em and not
+    /// the rendered one: libass scales Shadow and Blur by the same factor it
+    /// scales the glyphs, so a ratio of the em stays a ratio of the em at every
+    /// size setting. Resolve it against the rendered size instead and the user's
+    /// scale is applied twice — the shadow goes smeary at the small end and
+    /// vanishes at the large one.
+    @Test("the shadow scales with the font, so it stays the same fraction of the em")
+    func shadowRidesTheFontScale() async throws {
+        let flat = try await inkExtent(shadowUnits: 0, blurUnits: 0)
+        let dropped = try await inkExtent(shadowUnits: 10, blurUnits: 0)
+        let flatBig = try await inkExtent(shadowUnits: 0, blurUnits: 0, fontScale: 2)
+        let droppedBig = try await inkExtent(shadowUnits: 10, blurUnits: 0, fontScale: 2)
+
+        let offset = dropped.maxY - flat.maxY
+        let offsetBig = droppedBig.maxY - flatBig.maxY
+        #expect(offset > 6, "the 1x shadow has to be measurable first: \(offset)")
+        #expect(offsetBig > offset * 1.5 && offsetBig < offset * 2.5,
+                "2x text moved the shadow \(offsetBig)px against \(offset)px at 1x")
     }
 }
