@@ -62,7 +62,7 @@ struct SubtitleControlsList: View {
             section(sizeGroup, "Plain subtitles render at this size in every video and orientation.")
             section(colorGroup, "The fill color for plain subtitles.")
             section(fontGroup, "The typeface for plain subtitles.")
-            section(backgroundGroup, "The outline or box that keeps plain subtitles readable.")
+            section(backgroundGroup, "The shadow or box that keeps plain subtitles readable.")
             section(positionGroup, "Raises plain subtitles from the bottom of the screen.")
             footnote
         }
@@ -214,7 +214,7 @@ struct SubtitleControlsList: View {
     ]
 
     static let backgroundOptions: [(name: String, value: SubtitleBackground)] = [
-        ("Outline & Shadow", .outlineShadow),
+        ("Shadow", .shadow),
         ("Opaque Box", .opaqueBox),
     ]
 

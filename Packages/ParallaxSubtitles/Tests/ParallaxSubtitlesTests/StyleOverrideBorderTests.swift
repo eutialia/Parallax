@@ -4,48 +4,69 @@ import Testing
 
 @testable import ParallaxSubtitles
 
-/// The override's border geometry must reach the rendered pixels: libass does
-/// not scale borders with the font scale, so a silently ignored field brings
-/// back the constant "heavy tint" the em-relative ratios exist to avoid.
+/// The override's shadow geometry must reach the rendered pixels: a field libass
+/// never reads is invisible from the Swift side, because the fields only take
+/// effect when their override bit is enabled.
 ///
 /// Only CONVERTED scripts are overridden — an authored one keeps its creator's
-/// borders — so the em every ratio resolves against is the synthesized script's.
+/// borders — so the em every ratio resolves against is the synthesized script's,
+/// and one script unit is `1/48` of an em.
 @Suite("Style override borders")
 struct StyleOverrideBorderTests {
 
-    /// The em the fixtures' overrides describe: the synthesized script's own,
-    /// so a ratio of 1/48 is one script unit on a 720-line canvas.
-    private static let em = SubtitleRenderer.convertedScriptFontFraction
-
-    private func inkExtent(outlineUnits: Double, shadowUnits: Double) async throws -> CGRect {
+    private func inkExtent(
+        shadowUnits: Double, blurUnits: Double, storageHeight: CGFloat = 720
+    ) async throws -> CGRect {
         let renderer = SubtitleRenderer()
         await renderer.setCanvas(
             size: CGSize(width: 1280, height: 720), scale: 1,
-            storageSize: CGSize(width: 1280, height: 720)
+            storageSize: CGSize(width: storageHeight * 16 / 9, height: storageHeight)
         )
         try await renderer.load(SRTFixture.data(text: "Border"), format: .srt)
         await renderer.setStyleOverride(SubtitleStyleOverride(
             fontScale: 1,
             primaryColor: SubtitleColor(red: 1, green: 1, blue: 1),
-            outlineColor: SubtitleColor(red: 0, green: 0, blue: 0),
             opaqueBox: false,
-            emHeightRatio: Self.em,
-            outlineEmRatio: outlineUnits / Double(ASSScriptBuilder.fontSize),
-            shadowEmRatio: shadowUnits / Double(ASSScriptBuilder.fontSize)
+            shadowEmRatio: shadowUnits / Double(ASSScriptBuilder.fontSize),
+            blurEmRatio: blurUnits / Double(ASSScriptBuilder.fontSize)
         ))
         let frame = try #require(await renderer.frame(at: 2.0))
         return frame.imageRect
     }
 
-    @Test("outline width and shadow offset change the drawn extents")
-    func borderFieldsReachPixels() async throws {
-        let thin = try await inkExtent(outlineUnits: 1, shadowUnits: 0)
-        let thick = try await inkExtent(outlineUnits: 12, shadowUnits: 0)
-        // A 12-unit border adds ~11 units per side over a 1-unit one.
-        #expect(thick.width - thin.width > 16)
-        #expect(thick.height - thin.height > 16)
+    @Test("the shadow offset pushes the drawn extents down and right")
+    func shadowOffsetReachesPixels() async throws {
+        let flat = try await inkExtent(shadowUnits: 0, blurUnits: 0)
+        let dropped = try await inkExtent(shadowUnits: 10, blurUnits: 0)
 
-        let shadowed = try await inkExtent(outlineUnits: 1, shadowUnits: 10)
-        #expect(shadowed.height - thin.height > 6)
+        #expect(dropped.maxY - flat.maxY > 6)
+        #expect(dropped.maxX - flat.maxX > 6)
+        #expect(dropped.minY == flat.minY, "a drop shadow must not grow upwards")
+    }
+
+    /// The blur spreads in every direction, including back against the offset —
+    /// that is what tells it apart from a bigger offset.
+    @Test("the blur radius grows the drawn extents on every side")
+    func blurReachesPixels() async throws {
+        let hard = try await inkExtent(shadowUnits: 4, blurUnits: 0)
+        let soft = try await inkExtent(shadowUnits: 4, blurUnits: 12)
+
+        #expect(soft.minY < hard.minY)
+        #expect(soft.minX < hard.minX)
+        #expect(soft.maxY > hard.maxY)
+        #expect(soft.maxX > hard.maxX)
+    }
+
+    /// libass scales the blur against the video's storage size, the shadow
+    /// against the script's PlayRes; the renderer folds the difference back in
+    /// so the radius is the same fraction of the em on a 4K source as on 720p.
+    @Test("the blur radius does not change with the video's native size",
+          arguments: [360.0, 2160.0])
+    func blurIsStorageIndependent(storageHeight: CGFloat) async throws {
+        let reference = try await inkExtent(shadowUnits: 4, blurUnits: 12)
+        let other = try await inkExtent(shadowUnits: 4, blurUnits: 12, storageHeight: storageHeight)
+
+        #expect(abs(other.width - reference.width) <= 2)
+        #expect(abs(other.height - reference.height) <= 2)
     }
 }

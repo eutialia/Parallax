@@ -32,16 +32,15 @@ public struct SubtitleColor: Sendable, Equatable, Hashable {
 /// and other positioned text keep their authored styling.
 ///
 /// Colour is all-or-nothing: libass has a single flag covering all four style
-/// colours, so setting `primaryColor`, `outlineColor` OR `opaqueBox` also
-/// replaces the secondary (karaoke fill) and back (box/shadow) colours with
-/// plain defaults. Leave all three nil to keep the script's palette as authored.
+/// colours, so setting `primaryColor`, `opaqueBox` OR `shadowAlpha` also replaces
+/// the secondary (karaoke fill), border and back (box/shadow) colours with the
+/// renderer's own. Leave all three nil to keep the script's palette as authored.
 public struct SubtitleStyleOverride: Sendable, Equatable {
 
     public var fontFamily: String?
     /// Multiplies the authored font size. 1 leaves it alone.
     public var fontScale: Double?
     public var primaryColor: SubtitleColor?
-    public var outlineColor: SubtitleColor?
 
     /// Draw each line on a filled rectangle instead of outlining the glyphs.
     ///
@@ -50,23 +49,13 @@ public struct SubtitleStyleOverride: Sendable, Equatable {
     /// also forces the colour override on — see the note above.
     public var opaqueBox: Bool?
 
-    /// The em the cue renders at, as a fraction of the script canvas height —
-    /// the unit border and shadow are measured in. The renderer resolves it into
-    /// script units against a FIXED reference canvas, because libass draws a
-    /// script-unit border to the same pixels whatever the track's own PlayRes
-    /// (measured, see `borderGeometry`). Nil means the synthesized script's own
-    /// em (`convertedScriptFontFraction`).
-    public var emHeightRatio: Double?
-
-    /// Border thickness as a fraction of the rendered em. Nil keeps the
-    /// synthesized default. Expressed against the em rather than in script
-    /// units on purpose: libass does NOT scale borders with the font scale, so
-    /// a constant reads proportionally heavier the smaller the text.
-    public var outlineEmRatio: Double?
-    /// Drop-shadow offset as a fraction of the rendered em, boxless look only
-    /// (the box carries its own contrast). Nil keeps the synthesized default.
+    /// Drop-shadow offset — down AND right — as a fraction of the em, boxless look
+    /// only (the box carries its own contrast). Nil keeps the synthesized default.
     public var shadowEmRatio: Double?
-    /// Shadow opacity for the boxless look. Nil keeps the default half black.
+    /// Gaussian blur radius of the shadow as a fraction of the em. Nil leaves the
+    /// shadow hard-edged, which is what a synthesized script carries.
+    public var blurEmRatio: Double?
+    /// Shadow opacity for the boxless look. Nil keeps the synthesized default.
     public var shadowAlpha: Double?
 
     /// Rest distance from the bottom of the canvas, in script units. libass has
@@ -81,11 +70,9 @@ public struct SubtitleStyleOverride: Sendable, Equatable {
         fontFamily: String? = nil,
         fontScale: Double? = nil,
         primaryColor: SubtitleColor? = nil,
-        outlineColor: SubtitleColor? = nil,
         opaqueBox: Bool? = nil,
-        emHeightRatio: Double? = nil,
-        outlineEmRatio: Double? = nil,
         shadowEmRatio: Double? = nil,
+        blurEmRatio: Double? = nil,
         shadowAlpha: Double? = nil,
         marginVertical: Double? = nil,
         marginHorizontal: Double? = nil
@@ -93,11 +80,9 @@ public struct SubtitleStyleOverride: Sendable, Equatable {
         self.fontFamily = fontFamily
         self.fontScale = fontScale
         self.primaryColor = primaryColor
-        self.outlineColor = outlineColor
         self.opaqueBox = opaqueBox
-        self.emHeightRatio = emHeightRatio
-        self.outlineEmRatio = outlineEmRatio
         self.shadowEmRatio = shadowEmRatio
+        self.blurEmRatio = blurEmRatio
         self.shadowAlpha = shadowAlpha
         self.marginVertical = marginVertical
         self.marginHorizontal = marginHorizontal
@@ -105,21 +90,21 @@ public struct SubtitleStyleOverride: Sendable, Equatable {
 
     /// True when nothing would change.
     var isNoOp: Bool {
-        fontFamily == nil && fontScale == nil && primaryColor == nil
-            && outlineColor == nil && !overridesBorder && !overridesMargins
+        fontFamily == nil && fontScale == nil && !overridesColors
+            && !overridesBorder && !overridesMargins
     }
 
     /// Whether the border fields have to be pushed through. Any of the three
-    /// counts: without this, an outline or shadow set on its own would be
-    /// silently ignored (the flag is what makes libass read the fields).
+    /// counts: without this, a shadow or a blur set on its own would be silently
+    /// ignored (the flag is what makes libass read the fields).
     var overridesBorder: Bool {
-        opaqueBox != nil || outlineEmRatio != nil || shadowEmRatio != nil
+        opaqueBox != nil || shadowEmRatio != nil || blurEmRatio != nil
     }
 
-    /// Whether any colour field has to be pushed through. The opaque box counts:
-    /// its fill IS the back colour.
+    /// Whether any colour field has to be pushed through. The opaque box and the
+    /// shadow opacity count: both live in the back colour.
     var overridesColors: Bool {
-        primaryColor != nil || outlineColor != nil || opaqueBox != nil
+        primaryColor != nil || opaqueBox != nil || shadowAlpha != nil
     }
 
     /// Whether the margin fields have to be pushed through.
@@ -139,8 +124,11 @@ public struct SubtitleStyleOverride: Sendable, Equatable {
             bits |= Int32(ASS_OVERRIDE_BIT_COLORS.rawValue)
         }
         if overridesBorder {
-            // Covers BorderStyle, Outline and Shadow together.
+            // BORDER covers BorderStyle, Outline and Shadow together; the blur
+            // sits outside it in its own bit, and the renderer fills both fields
+            // in one pass, so the two flags travel together.
             bits |= Int32(ASS_OVERRIDE_BIT_BORDER.rawValue)
+            bits |= Int32(ASS_OVERRIDE_BIT_BLUR.rawValue)
         }
         if overridesMargins {
             // Covers MarginL, MarginR and MarginV together.
