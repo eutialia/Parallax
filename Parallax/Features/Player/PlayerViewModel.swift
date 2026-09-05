@@ -873,11 +873,12 @@ final class PlayerViewModel {
 
     /// Cancellation is the whole supersession story: every restart cancels the standing task,
     /// and a cancelled task declines after its wait whether or not the injected sleep cut that
-    /// wait short.
+    /// wait short. Only a wait that RAN OUT ends the hold: a wait that threw, for cancellation
+    /// or anything else, is not a budget that was spent.
     private func armSeekHoldWatchdog() {
         seekHoldWatchdogTask?.cancel()
         seekHoldWatchdogTask = Task { [weak self, seekHoldWatchdog] in
-            try? await seekHoldWatchdog(SeekHold.watchdog)
+            do { try await seekHoldWatchdog(SeekHold.watchdog) } catch { return }
             guard !Task.isCancelled, let self else { return }
             // Releasing without a position, which is the whole difference between this exit and
             // `absorb`'s: there was no beat for the whole budget — that is the wedge — and the
