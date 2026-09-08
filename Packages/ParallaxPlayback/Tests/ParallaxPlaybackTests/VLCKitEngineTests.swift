@@ -384,30 +384,64 @@ struct VLCKitPollGateTests {
     /// distinction; they are what a bare `now != preSeek` (and a bare "closed some distance")
     /// both get wrong.
     @Test("seekHoldShouldRelease", arguments: [
-        // pre-seek 60_000 (01:00), target 480_000 (08:00) → the midpoint is 270_000
-        ("convergence releases immediately", Int32(480_000), 1, Int32(60_000), true),
-        ("a keyframe snap inside tolerance releases", 478_000, 1, 60_000, true),
-        ("mid-hold, clock still pre-seek: keep holding", 60_000, 4, 60_000, false),
-        ("budget spent, clock still pre-seek: keep holding", 60_000, 10, 60_000, false),
-        ("deep past the budget, clock still pre-seek: keep holding", 60_000, 25, 60_000, false),
-        ("50ms of creep is not a landing", 60_050, 10, 60_000, false),
-        ("interpolated forward for the whole budget, still nowhere near", 65_000, 10, 60_000, false),
-        ("a BACKWARD seek's clock running the wrong way entirely", 905_000, 10, 900_000, false),
-        ("exactly halfway — no nearer the target than the origin", 270_000, 10, 60_000, false),
-        ("moved most of the way to the target: release", 400_000, 10, 60_000, true),
-        ("budget spent, landed far off the target: release", 300_000, 10, 60_000, true),
-        ("overshot past the target: release", 700_000, 10, 60_000, true),
-        ("no clock at seek time — nothing to call stale", 60_000, 10, nil, true),
-        ("no clock at seek time, budget unspent: still holding", 60_000, 9, nil, false),
-    ] as [(String, Int32, Int, Int32?, Bool)])
-    func seekHoldShouldRelease(label: String, now: Int32, polls: Int,
+        // pre-seek 60_000 (01:00), target 480_000 (08:00) → the midpoint is 270_000.
+        // `previous` is the raw clock the hold sampled one tick earlier (the pre-seek clock on
+        // the first tick); nil where the row is about the poll budget alone.
+        ("convergence releases immediately", Int32(480_000), nil, 1, Int32(60_000), true),
+        ("a keyframe snap inside tolerance releases", 478_000, nil, 1, 60_000, true),
+        ("mid-hold, clock still pre-seek: keep holding", 60_000, nil, 4, 60_000, false),
+        ("budget spent, clock still pre-seek: keep holding", 60_000, nil, 10, 60_000, false),
+        ("deep past the budget, clock still pre-seek: keep holding", 60_000, nil, 25, 60_000, false),
+        ("50ms of creep is not a landing", 60_050, nil, 10, 60_000, false),
+        ("interpolated forward for the whole budget, still nowhere near", 65_000, nil, 10, 60_000, false),
+        ("a BACKWARD seek's clock running the wrong way entirely", 905_000, nil, 10, 900_000, false),
+        ("exactly halfway — no nearer the target than the origin", 270_000, nil, 10, 60_000, false),
+        ("moved most of the way to the target: release", 400_000, nil, 10, 60_000, true),
+        ("budget spent, landed far off the target: release", 300_000, nil, 10, 60_000, true),
+        ("overshot past the target: release", 700_000, nil, 10, 60_000, true),
+        ("no clock at seek time — nothing to call stale", 60_000, nil, 10, nil, true),
+        ("no clock at seek time, budget unspent: still holding", 60_000, nil, 9, nil, false),
+        // The republish itself. libvlc's clock free-runs ~one poll of media per tick until the
+        // input re-anchors it, and then it JUMPS to wherever the demux really landed — which on
+        // wmv is a keyframe up to 10s short of the request (lab-measured: 150s → 142.5s on the
+        // first tick). A jump is the landing whatever its distance from the target; a creep is not.
+        ("first tick jumped to a landing 10s short of the target: release", 470_000, 60_000, 1, 60_000, true),
+        ("a backward seek's first tick jumped to a short landing: release", 470_000, 900_000, 1, 900_000, true),
+        ("one poll of free-run creep is not a republish", 60_600, 60_000, 1, 60_000, false),
+        ("2× free-run creep is not a republish either", 61_200, 60_000, 1, 60_000, false),
+        ("a jump between two later ticks is still the landing", 470_000, 63_000, 6, 60_000, true),
+        ("a stalled clock never jumps", 63_000, 63_000, 6, 60_000, false),
+        // Jumps that are not landings. `clockMs` synthesizes -1 for a null `player.time`, which
+        // is no reading at all, not a 60s discontinuity; and a demux lands on a keyframe AT OR
+        // BEFORE the request, so a reading past it is the post-`setTime` interpolation
+        // transient the hold was built to suppress.
+        ("the clock going null mid-hold is not a landing", -1, 60_000, 4, 60_000, false),
+        ("first tick jumped to a landing 6s PAST the target (the other ASF muxer): release", 486_000, 60_000, 1, 60_000, true),
+    ] as [(String, Int32, Int32?, Int, Int32?, Bool)])
+    func seekHoldShouldRelease(label: String, now: Int32, previous: Int32?, polls: Int,
                                preSeekClockMs: Int32?, expected: Bool) {
         // `totalPolls` under the cap throughout: this table is the CONDITIONAL rule, and the
         // hard floor beneath it has its own table below.
         #expect(VLCKitEngine.seekHoldShouldRelease(
-            now: now, target: 480_000, polls: polls, totalPolls: polls,
-            preSeekClockMs: preSeekClockMs
+            now: now, previous: previous, target: 480_000, polls: polls, totalPolls: polls,
+            preSeekClockMs: preSeekClockMs, jumpMs: 1_500
         ) == expected, "\(label)")
+    }
+
+    /// What separates a republish from free-run: on its own the clock covers the wall time
+    /// between two samples at the rate, so that plus two polls of slack is a jump. The
+    /// `jumpMs: 1_500` the tables above pin is this at the 500ms cadence and 1×.
+    @Test("seekHoldJumpMs", arguments: [
+        ("1× on cadence: one poll of free-run plus two of slack", 500, 500, Float(1), Int32(1_500)),
+        ("2× covers twice the media in the same wall time", 500, 500, 2, 3_000),
+        ("1.5× scales exactly, not to the next whole rate", 500, 500, 1.5, 2_250),
+        ("slow-motion never lowers the bar below 1×", 500, 500, 0.5, 1_500),
+        ("a 2s gap between samples lets 2s of free-run through", 2_000, 500, 1, 3_000),
+        ("no wall time between samples: the slack alone", 0, 500, 1, 1_000),
+    ] as [(String, Int, Int, Float, Int32)])
+    func seekHoldJumpMs(label: String, elapsedMs: Int, pollMs: Int, rate: Float, expected: Int32) {
+        #expect(VLCKitEngine.seekHoldJumpMs(elapsedMs: elapsedMs, pollMs: pollMs, rate: rate) == expected,
+                "\(label)")
     }
 
     /// The floor under the conditional rule. 30 polls ≈ 15s at the 500ms cadence, and it must
@@ -453,8 +487,8 @@ struct VLCKitPollGateTests {
     func abandonCapEndsAnImmortalHold(label: String, target: Int32, now: Int32,
                                       polls: Int, totalPolls: Int, expected: Bool) {
         #expect(VLCKitEngine.seekHoldShouldRelease(
-            now: now, target: target, polls: polls, totalPolls: totalPolls,
-            preSeekClockMs: target == 60_000 ? 480_000 : 60_000
+            now: now, previous: now, target: target, polls: polls, totalPolls: totalPolls,
+            preSeekClockMs: target == 60_000 ? 480_000 : 60_000, jumpMs: 1_500
         ) == expected, "\(label)")
     }
 
