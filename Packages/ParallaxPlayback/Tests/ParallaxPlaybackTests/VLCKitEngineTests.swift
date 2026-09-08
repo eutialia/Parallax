@@ -411,10 +411,10 @@ struct VLCKitPollGateTests {
         ("2× free-run creep is not a republish either", 61_200, 60_000, 1, 60_000, false),
         ("a jump between two later ticks is still the landing", 470_000, 63_000, 6, 60_000, true),
         ("a stalled clock never jumps", 63_000, 63_000, 6, 60_000, false),
-        // Jumps that are not landings. `clockMs` synthesizes -1 for a null `player.time`, which
-        // is no reading at all, not a 60s discontinuity; and a demux lands on a keyframe AT OR
-        // BEFORE the request, so a reading past it is the post-`setTime` interpolation
-        // transient the hold was built to suppress.
+        // The one jump that is not a landing: `clockMs` synthesizes -1 for a null `player.time`,
+        // which is no reading at all, not a 60s discontinuity. The side of the target is NOT a
+        // tell — ASF lands short on one muxer's files and past the request on another's
+        // (device-measured), and both are the republish.
         ("the clock going null mid-hold is not a landing", -1, 60_000, 4, 60_000, false),
         ("first tick jumped to a landing 6s PAST the target (the other ASF muxer): release", 486_000, 60_000, 1, 60_000, true),
     ] as [(String, Int32, Int32?, Int, Int32?, Bool)])
