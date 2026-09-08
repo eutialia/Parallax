@@ -597,6 +597,34 @@ struct VLCKitSeekSettleTests {
         await engine.teardown()
     }
 
+    /// The wmv shape, lab-measured: libvlc re-anchors its clock on the FIRST tick after the
+    /// write, on a keyframe well short of the request (150s → 142.5s). That reading failed the
+    /// ±3s tolerance, so the hold ignored the honest landing for its whole 10-poll budget,
+    /// extrapolated the bar to 154.5s off a target the media never reached, and then dropped it
+    /// 7s. The jump IS the landing: the hold releases on that tick, and what ships is the raw
+    /// clock, `.observed`, with no hold-budget's worth of projections ahead of it.
+    @Test("a clock that jumps to a short landing releases the hold on that tick")
+    func clockJumpToAShortLandingReleasesTheHold() async throws {
+        let spy = SpyVLCPlayer()
+        spy.demuxBytesPerPoll = 1
+        let engine = try await playingEngine(spy, atMs: 10_000)
+        let log = PositionBeatLog(engine)
+
+        await engine.seek(to: CMTime(seconds: 150, preferredTimescale: 1_000))
+        spy.advanceClock(toMs: 142_500)   // the input re-anchored: 7.5s short, one tick later
+
+        try await requireEventually({ log.beats.contains { $0.provenance == .observed && $0.seconds == 142.5 } },
+                              "the hold never released onto the landing",
+                              timeout: CITimeScale.seconds(10))
+        // Released on the republish, not on the budget: the seek echo and at most one tick of
+        // extrapolation precede it, never the 10-poll walk to 155s.
+        let projected = log.beats.filter { $0.provenance == .projected && $0.seconds >= 150 }
+        #expect(projected.count <= 2, "held for \(projected.count) beats before releasing")
+        #expect(log.beats.allSatisfy { $0.seconds <= 151 })
+        log.stop()
+        await engine.teardown()
+    }
+
     /// The lie, end to end. The hold's poll budget runs out after ~5s; releasing there used to
     /// republish `player.time` as a landed `.playing` — and on a source that never republishes
     /// time at the new offset that value is the position the user seeked AWAY from, so the bar
