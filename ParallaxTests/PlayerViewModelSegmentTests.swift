@@ -142,7 +142,10 @@ struct PlayerViewModelSegmentTests {
 
         engines.first?.push(playing(1790))
         engines.first?.push(.ended)
-        try await Task.sleep(for: .milliseconds(250))   // .ended → task → stop → start(ep-2) → resolve
+        // .ended → task → stop → start(ep-2) → resolve: an oversubscribed runner takes longer
+        // than any fixed sleep, so wait for the succession itself.
+        await waitUntil("ep-2 never resolved") { ids.values.contains(ItemID(rawValue: "ep-2")) }
+        await waitUntil("no fresh engine for ep-2") { engines.count == 2 }
 
         #expect(ids.values.contains(ItemID(rawValue: "ep-2")))
         #expect(engines.count == 2)                     // a fresh engine for ep-2
