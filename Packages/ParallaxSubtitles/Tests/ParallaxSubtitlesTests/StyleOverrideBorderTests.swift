@@ -4,7 +4,7 @@ import Testing
 
 @testable import ParallaxSubtitles
 
-/// The override's shadow geometry must reach the rendered pixels: a field libass
+/// The override's ring geometry must reach the rendered pixels: a field libass
 /// never reads is invisible from the Swift side, because the fields only take
 /// effect when their override bit is enabled.
 ///
@@ -14,9 +14,13 @@ import Testing
 @Suite("Style override borders")
 struct StyleOverrideBorderTests {
 
+    /// The bbox of everything libass actually inked, in canvas pixels.
+    ///
+    /// Measured off the pixels, not off `imageRect`: that rect is the union of
+    /// libass' own bitmaps, whose widths are padded for its SIMD blitters, so it
+    /// quantizes by up to 16px and cannot resolve a border of a few pixels.
     private func inkExtent(
-        shadowUnits: Double, blurUnits: Double,
-        storageHeight: CGFloat = 720, fontScale: Double = 1
+        outlineUnits: Double, storageHeight: CGFloat = 720, fontScale: Double = 1
     ) async throws -> CGRect {
         let renderer = SubtitleRenderer()
         await renderer.setCanvas(
@@ -28,66 +32,70 @@ struct StyleOverrideBorderTests {
             fontScale: fontScale,
             primaryColor: SubtitleColor(red: 1, green: 1, blue: 1),
             opaqueBox: false,
-            shadowEmRatio: shadowUnits / Double(ASSScriptBuilder.fontSize),
-            blurEmRatio: blurUnits / Double(ASSScriptBuilder.fontSize)
+            outlineEmRatio: outlineUnits / Double(ASSScriptBuilder.fontSize)
         ))
         let frame = try #require(await renderer.frame(at: 2.0))
-        return frame.imageRect
+        let pixels = try rendered(try #require(frame.image))
+
+        let ink = try #require(
+            pixels.bounds { pixels[$0, $1].alpha >= 8 }, "nothing was inked"
+        )
+        return CGRect(
+            x: frame.imageRect.minX + CGFloat(ink.minX),
+            y: frame.imageRect.minY + CGFloat(ink.minY),
+            width: CGFloat(ink.maxX - ink.minX + 1), height: CGFloat(ink.maxY - ink.minY + 1)
+        )
     }
 
-    @Test("the shadow offset pushes the drawn extents down and right")
-    func shadowOffsetReachesPixels() async throws {
-        let flat = try await inkExtent(shadowUnits: 0, blurUnits: 0)
-        let dropped = try await inkExtent(shadowUnits: 10, blurUnits: 0)
+    /// A ring is symmetric by definition: it grows the ink by the same amount on
+    /// every side, which is what tells it apart from an offset shadow.
+    @Test("the ring grows the drawn extents equally on all four sides")
+    func ringGrowsEverySideEqually() async throws {
+        let bare = try await inkExtent(outlineUnits: 0)
+        let ringed = try await inkExtent(outlineUnits: 10)
 
-        #expect(dropped.maxY - flat.maxY > 6)
-        #expect(dropped.maxX - flat.maxX > 6)
-        #expect(dropped.minY == flat.minY, "a drop shadow must not grow upwards")
-    }
-
-    /// The blur spreads in every direction, including back against the offset —
-    /// that is what tells it apart from a bigger offset.
-    @Test("the blur radius grows the drawn extents on every side")
-    func blurReachesPixels() async throws {
-        let hard = try await inkExtent(shadowUnits: 4, blurUnits: 0)
-        let soft = try await inkExtent(shadowUnits: 4, blurUnits: 12)
-
-        #expect(soft.minY < hard.minY)
-        #expect(soft.minX < hard.minX)
-        #expect(soft.maxY > hard.maxY)
-        #expect(soft.maxX > hard.maxX)
-    }
-
-    /// libass scales the blur against the video's storage size, the shadow
-    /// against the script's PlayRes; the renderer folds the difference back in
-    /// so the radius is the same fraction of the em on a 4K source as on 720p.
-    @Test("the blur radius does not change with the video's native size",
-          arguments: [360.0, 2160.0])
-    func blurIsStorageIndependent(storageHeight: CGFloat) async throws {
-        let reference = try await inkExtent(shadowUnits: 4, blurUnits: 12)
-        let other = try await inkExtent(shadowUnits: 4, blurUnits: 12, storageHeight: storageHeight)
-
-        #expect(abs(other.width - reference.width) <= 2)
-        #expect(abs(other.height - reference.height) <= 2)
+        let grew = [
+            "left": bare.minX - ringed.minX, "right": ringed.maxX - bare.maxX,
+            "top": bare.minY - ringed.minY, "bottom": ringed.maxY - bare.maxY,
+        ]
+        for (side, delta) in grew {
+            #expect(delta > 6, "\(side) grew \(delta)px")
+        }
+        let spread = (grew.values.max() ?? 0) - (grew.values.min() ?? 0)
+        #expect(spread <= 2, "the ring is not symmetric: \(grew)")
     }
 
     /// The whole reason `borderGeometry` resolves against the AUTHORED em and not
-    /// the rendered one: libass scales Shadow and Blur by the same factor it
-    /// scales the glyphs, so a ratio of the em stays a ratio of the em at every
-    /// size setting. Resolve it against the rendered size instead and the user's
-    /// scale is applied twice — the shadow goes smeary at the small end and
-    /// vanishes at the large one.
-    @Test("the shadow scales with the font, so it stays the same fraction of the em")
-    func shadowRidesTheFontScale() async throws {
-        let flat = try await inkExtent(shadowUnits: 0, blurUnits: 0)
-        let dropped = try await inkExtent(shadowUnits: 10, blurUnits: 0)
-        let flatBig = try await inkExtent(shadowUnits: 0, blurUnits: 0, fontScale: 2)
-        let droppedBig = try await inkExtent(shadowUnits: 10, blurUnits: 0, fontScale: 2)
+    /// the rendered one: libass scales Outline by the same factor it scales the
+    /// glyphs, so a ratio of the em stays a ratio of the em at every size setting.
+    /// Resolve it against the rendered size instead and the user's scale is applied
+    /// twice — the ring goes fat at the small end and vanishes at the large one.
+    @Test("the ring scales with the font, so it stays the same fraction of the em")
+    func ringRidesTheFontScale() async throws {
+        let bare = try await inkExtent(outlineUnits: 0)
+        let ringed = try await inkExtent(outlineUnits: 10)
+        let bareBig = try await inkExtent(outlineUnits: 0, fontScale: 2)
+        let ringedBig = try await inkExtent(outlineUnits: 10, fontScale: 2)
 
-        let offset = dropped.maxY - flat.maxY
-        let offsetBig = droppedBig.maxY - flatBig.maxY
-        #expect(offset > 6, "the 1x shadow has to be measurable first: \(offset)")
-        #expect(offsetBig > offset * 1.5 && offsetBig < offset * 2.5,
-                "2x text moved the shadow \(offsetBig)px against \(offset)px at 1x")
+        let width = ringed.maxX - bare.maxX
+        let widthBig = ringedBig.maxX - bareBig.maxX
+        #expect(width > 6, "the 1x ring has to be measurable first: \(width)")
+        #expect(widthBig > width * 1.5 && widthBig < width * 2.5,
+                "2x text drew a \(widthBig)px ring against \(width)px at 1x")
+    }
+
+    /// libass scales the override's Outline against the script's PlayRes, never the
+    /// video's storage size — so the same cue over a 360-line source and a 4K one
+    /// carries the same ring.
+    @Test("the ring does not change with the video's native size",
+          arguments: [360.0, 2160.0])
+    func ringIsStorageIndependent(storageHeight: CGFloat) async throws {
+        let bare = try await inkExtent(outlineUnits: 0)
+        let reference = try await inkExtent(outlineUnits: 10)
+        let other = try await inkExtent(outlineUnits: 10, storageHeight: storageHeight)
+
+        #expect(reference.width - bare.width > 12, "there has to be a ring to hold still")
+        #expect(abs(other.width - reference.width) <= 2)
+        #expect(abs(other.height - reference.height) <= 2)
     }
 }

@@ -126,6 +126,19 @@ struct RenderedPixels {
     /// Pixels that are close to fully covered — the body of a glyph rather than
     /// its antialiased fringe.
     var opaque: [Pixel] { all.filter { $0.alpha > 200 } }
+
+    /// The bounding box of every pixel `hit` accepts, nil when it accepts none.
+    func bounds(where hit: (Int, Int) -> Bool) -> (minX: Int, minY: Int, maxX: Int, maxY: Int)? {
+        var minX = width, minY = height, maxX = -1, maxY = -1
+        for y in 0..<height {
+            for x in 0..<width where hit(x, y) {
+                minX = Swift.min(minX, x); maxX = Swift.max(maxX, x)
+                minY = Swift.min(minY, y); maxY = Swift.max(maxY, y)
+            }
+        }
+        guard maxX >= minX, maxY >= minY else { return nil }
+        return (minX, minY, maxX, maxY)
+    }
 }
 
 /// Alpha at a point in CANVAS coordinates, so two frames of different sizes can

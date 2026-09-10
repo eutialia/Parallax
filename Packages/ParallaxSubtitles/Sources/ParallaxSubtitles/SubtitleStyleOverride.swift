@@ -16,6 +16,8 @@ public struct SubtitleColor: Sendable, Equatable, Hashable {
         self.alpha = alpha
     }
 
+    public static let black = SubtitleColor(red: 0, green: 0, blue: 0)
+
     /// ASS packs colours as `0xRRGGBBAA` where the last byte is TRANSPARENCY:
     /// zero means opaque.
     var assPacked: UInt32 {
@@ -32,9 +34,9 @@ public struct SubtitleColor: Sendable, Equatable, Hashable {
 /// and other positioned text keep their authored styling.
 ///
 /// Colour is all-or-nothing: libass has a single flag covering all four style
-/// colours, so setting `primaryColor`, `opaqueBox` OR `shadowAlpha` also replaces
-/// the secondary (karaoke fill), border and back (box/shadow) colours with the
-/// renderer's own. Leave all three nil to keep the script's palette as authored.
+/// colours, so setting `primaryColor` OR `opaqueBox` also replaces the secondary
+/// (karaoke fill), border and back (box) colours with the renderer's own. Leave
+/// both nil to keep the script's palette as authored.
 public struct SubtitleStyleOverride: Sendable, Equatable {
 
     public var fontFamily: String?
@@ -49,14 +51,9 @@ public struct SubtitleStyleOverride: Sendable, Equatable {
     /// also forces the colour override on — see the note above.
     public var opaqueBox: Bool?
 
-    /// Drop-shadow offset — down AND right — as a fraction of the em, boxless look
-    /// only (the box carries its own contrast). Nil keeps the synthesized default.
-    public var shadowEmRatio: Double?
-    /// Gaussian blur radius of the shadow as a fraction of the em. Nil leaves the
-    /// shadow hard-edged, which is what a synthesized script carries.
-    public var blurEmRatio: Double?
-    /// Shadow opacity for the boxless look. Nil keeps the synthesized default.
-    public var shadowAlpha: Double?
+    /// Outline ring radius as a fraction of the em, boxless look only (the box
+    /// carries its own contrast). Nil keeps the synthesized default.
+    public var outlineEmRatio: Double?
 
     /// Rest distance from the bottom of the canvas, in script units. libass has
     /// a single flag for all three margins, so setting either margin field
@@ -71,9 +68,7 @@ public struct SubtitleStyleOverride: Sendable, Equatable {
         fontScale: Double? = nil,
         primaryColor: SubtitleColor? = nil,
         opaqueBox: Bool? = nil,
-        shadowEmRatio: Double? = nil,
-        blurEmRatio: Double? = nil,
-        shadowAlpha: Double? = nil,
+        outlineEmRatio: Double? = nil,
         marginVertical: Double? = nil,
         marginHorizontal: Double? = nil
     ) {
@@ -81,9 +76,7 @@ public struct SubtitleStyleOverride: Sendable, Equatable {
         self.fontScale = fontScale
         self.primaryColor = primaryColor
         self.opaqueBox = opaqueBox
-        self.shadowEmRatio = shadowEmRatio
-        self.blurEmRatio = blurEmRatio
-        self.shadowAlpha = shadowAlpha
+        self.outlineEmRatio = outlineEmRatio
         self.marginVertical = marginVertical
         self.marginHorizontal = marginHorizontal
     }
@@ -94,17 +87,17 @@ public struct SubtitleStyleOverride: Sendable, Equatable {
             && !overridesBorder && !overridesMargins
     }
 
-    /// Whether the border fields have to be pushed through. Any of the three
-    /// counts: without this, a shadow or a blur set on its own would be silently
-    /// ignored (the flag is what makes libass read the fields).
+    /// Whether the border fields have to be pushed through. Either counts: without
+    /// this, an outline set on its own would be silently ignored (the flag is what
+    /// makes libass read the fields).
     var overridesBorder: Bool {
-        opaqueBox != nil || shadowEmRatio != nil || blurEmRatio != nil
+        opaqueBox != nil || outlineEmRatio != nil
     }
 
-    /// Whether any colour field has to be pushed through. The opaque box and the
-    /// shadow opacity count: both live in the back colour.
+    /// Whether any colour field has to be pushed through. The opaque box counts:
+    /// it is painted with the back colour.
     var overridesColors: Bool {
-        primaryColor != nil || opaqueBox != nil || shadowAlpha != nil
+        primaryColor != nil || opaqueBox != nil
     }
 
     /// Whether the margin fields have to be pushed through.
@@ -124,11 +117,8 @@ public struct SubtitleStyleOverride: Sendable, Equatable {
             bits |= Int32(ASS_OVERRIDE_BIT_COLORS.rawValue)
         }
         if overridesBorder {
-            // BORDER covers BorderStyle, Outline and Shadow together; the blur
-            // sits outside it in its own bit, and the renderer fills both fields
-            // in one pass, so the two flags travel together.
+            // BORDER covers BorderStyle, Outline and Shadow together.
             bits |= Int32(ASS_OVERRIDE_BIT_BORDER.rawValue)
-            bits |= Int32(ASS_OVERRIDE_BIT_BLUR.rawValue)
         }
         if overridesMargins {
             // Covers MarginL, MarginR and MarginV together.

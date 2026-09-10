@@ -11,11 +11,12 @@ import Foundation
 /// The one thing the renderer changes about such a track is the typeface, because
 /// the fonts it names are not on the device.
 ///
-/// Boxless by design: ONE soft black drop shadow carries legibility on light
+/// Boxless by design: ONE opaque black outline ring carries legibility on light
 /// content, and the fill sits below full white so cues don't read as the
-/// brightest object in a tone-mapped HDR frame. There is no glyph ring — a ring
-/// plus a hard shadow put more dark than ink around small text and filled the
-/// counters in.
+/// brightest object in a tone-mapped HDR frame. The ring is 4% of the em
+/// — under half a Noto Sans Regular stem (~9% of the em) — so the counters stay
+/// open at small sizes. Nothing is blurred and nothing is offset: a soft shadow
+/// turned Noto Serif's hairlines to mush.
 public struct SubtitleStyle: Sendable, Hashable, Codable {
     /// sRGB components 0...1 — kept primitive so the package stays UI-framework-free;
     /// each renderer maps these into its own color type.
@@ -43,20 +44,16 @@ public struct SubtitleStyle: Sendable, Hashable, Codable {
     /// Glyph fill.
     public let foreground: RGBA
 
-    // MARK: Canonical shadow (code, not a setting)
-    // Every ratio is a fraction of the font size, so the look survives the
-    // phone/iPad/tvOS base-size differences unchanged. Static on purpose: an
-    // earlier build persisted the shadow with the style, which froze it into the
+    // MARK: Canonical outline (code, not a setting)
+    // A fraction of the font size, so the look survives the phone/iPad/tvOS
+    // base-size differences unchanged. Static on purpose: an earlier build
+    // persisted the backing geometry with the style, which froze it into the
     // settings of everyone who had ever touched a subtitle control, and no retune
     // could reach them. Those blobs' keys are unknown to the decoder and ignored.
 
-    /// Gaussian blur radius of the shadow. The client renderer blurs; VLC's
-    /// freetype renderer cannot and lands one step short.
-    public static let shadowBlurRatio = 0.05
-    /// Black, at this opacity.
-    public static let shadowOpacity = 0.80
-    /// Shadow offset, applied down AND right (both renderers offset diagonally).
-    public static let shadowOffsetRatio = 0.03
+    /// The ring's radius as a fraction of the em, drawn opaque black. Under half a
+    /// Noto Sans Regular stem (~9% of the em), so the counters stay open.
+    public static let outlineWidthRatio = 0.04
 
     // MARK: User-configurable (v1 subtitle settings).
     // These style the PLAIN-TEXT subtitles we draw ourselves. The client sidecar
@@ -76,8 +73,8 @@ public struct SubtitleStyle: Sendable, Hashable, Codable {
     /// media option plus the `--freetype-font` instance argument the app materializes
     /// it under.
     public let fontDesign: SubtitleFontDesign
-    /// Legibility backing: the canonical soft shadow, OR an opaque box (mutually
-    /// exclusive — a box carries its own contrast, so it takes no shadow).
+    /// Legibility backing: the canonical black ring, OR an opaque box (mutually
+    /// exclusive — a box carries its own contrast, so it takes no ring).
     public let background: SubtitleBackground
     /// Lift above the bottom anchor as a fraction of the surface height
     /// (resolution-independent across phone/iPad/tvOS). 0 == rest at the base inset.
@@ -86,7 +83,7 @@ public struct SubtitleStyle: Sendable, Hashable, Codable {
     public init(foreground: RGBA,
                 fontScale: Double = 1.0,
                 fontDesign: SubtitleFontDesign = .sansSerif,
-                background: SubtitleBackground = .shadow,
+                background: SubtitleBackground = .outline,
                 verticalOffsetRatio: Double = 0) {
         self.foreground = foreground
         self.fontScale = fontScale
@@ -127,7 +124,7 @@ public struct SubtitleStyle: Sendable, Hashable, Codable {
         }
     }
 
-    /// 92% white over the canonical shadow — "white" at a glance, without the
+    /// 92% white over the canonical ring — "white" at a glance, without the
     /// peak-white glare of pure `#FFFFFF` next to tone-mapped HDR video.
     public static let standard = SubtitleStyle(
         foreground: RGBA(red: 0.92, green: 0.92, blue: 0.92)
@@ -157,11 +154,11 @@ public enum SubtitleFontDesign: String, Sendable, Hashable, Codable, CaseIterabl
 }
 
 /// The overlay's legibility backing. `.opaqueBox` is a solid panel behind the
-/// text, which carries its own contrast and so takes no shadow. Mutually
+/// text, which carries its own contrast and so takes no ring. Mutually
 /// exclusive by design.
 public enum SubtitleBackground: String, Sendable, Hashable, Codable, CaseIterable {
-    /// The canonical boxless look: one soft black drop shadow, no glyph ring.
-    /// The raw value is the on-disk contract from before the ring's removal.
-    case shadow = "outlineShadow"
+    /// The canonical boxless look: one opaque black ring, no shadow and no blur.
+    /// The raw value is the on-disk contract and outlives every retune of the look.
+    case outline = "outlineShadow"
     case opaqueBox
 }

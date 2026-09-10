@@ -39,11 +39,11 @@ struct HeroBottomFade: View {
 // MARK: - Type contour (wide screens)
 
 extension View {
-    /// Subtitle-style contour for hero TYPE over the bare wide-band artwork (owner-requested
-    /// 2026-08-10): a tight dark shadow hugging the glyph edges — the video-subtitle recipe, not
-    /// the big soft halo (that variant was tried on the whole column and killed the same day; a
-    /// wide halo reads as a layer, a contour reads as part of the letterform). Compact is a
-    /// no-op: the iPhone band keeps its bottom fade and its signed-off look.
+    /// Contour for hero TYPE over the bare wide-band artwork (owner-requested 2026-08-10):
+    /// a tight dark shadow hugging the glyph edges, not the big soft halo (that variant was
+    /// tried on the whole column and killed the same day; a wide halo reads as a layer, a
+    /// contour reads as part of the letterform). Compact is a no-op: the iPhone band keeps
+    /// its bottom fade and its signed-off look.
     @ViewBuilder
     func heroTypeContour(idiom: AppIdiom) -> some View {
         if idiom == .compact {
