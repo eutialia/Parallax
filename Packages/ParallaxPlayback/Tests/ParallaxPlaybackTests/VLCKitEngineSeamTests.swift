@@ -162,6 +162,8 @@ struct VLCKitLibraryOptionTests {
             "--freetype-font=Noto Sans CJK SC",
             // em = output height / 20 — the divisor the app computed from its own cue size.
             "--freetype-rel-fontsize=20",
+            // Sans keeps freetype's own weight; the serif design asks for bold.
+            "--no-freetype-bold",
             // 0.92 white, fully opaque.
             "--freetype-color=15461355",     // 0xEBEBEB
             "--freetype-opacity=255",
@@ -177,6 +179,22 @@ struct VLCKitLibraryOptionTests {
             "--freetype-background-color=0",
             "--freetype-background-opacity=\(boxed ? 255 : 0)",
         ])
+    }
+
+    /// The serif design is weight 600 everywhere. freetype has no bold file to select
+    /// from the bundle, so `freetype-bold` is the request to embolden synthetically —
+    /// the VLC-side half of the client renderer's per-run `\b1`.
+    /// The sans side is pinned by the full-array test above.
+    @Test("the serif design asks freetype for bold")
+    func serifDesignAsksForBold() {
+        let style = SubtitleStyle.standard.with { $0.fontDesign = .serif }
+        let options = VLCKitEngine.libraryOptions(for: .fixture(
+            subtitleFontFamily: "Noto Serif CJK JP",
+            subtitleTextStyle: EngineSubtitleTextStyle(style: style, relativeFontSize: 20)
+        ))
+        #expect(options?.contains("--freetype-bold") == true, "\(options ?? [])")
+        // libvlc takes the last spelling it sees, so the negative must be absent too.
+        #expect(options?.contains("--no-freetype-bold") == false)
     }
 
     /// The order is load-bearing: `PlayerViewModel` compares this array against the one the

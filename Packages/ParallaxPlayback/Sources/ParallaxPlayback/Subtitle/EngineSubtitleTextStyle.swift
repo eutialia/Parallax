@@ -16,6 +16,11 @@ import Foundation
 ///   height. Relative on purpose: `freetype-fontsize` is absolute pixels and VLC renders
 ///   the SPU at `max(source, placed)` resolution, so an absolute size halves on a 4K
 ///   source. `0` is not "unscaled" — it falls back to the baked-in 6.25.
+/// - **`freetype-bold`** — bool, sets `STYLE_BOLD` on the default style. The module
+///   emboldens synthetically when the selected face is not itself bold, which is how the
+///   pan-CJK Regular the serif design points at reaches the client renderer's serif
+///   weight. Bool options take the `--opt`/`--no-opt` form, and the negative is emitted
+///   rather than omitted so the array stays a fixed shape.
 /// - **`freetype-outline-thickness`** — int 0…50 read as a PERCENTAGE of the live font
 ///   size (`radius = fontSize * clamp(value/100, 0, 0.5)`). The None/Thin/Normal/Thick
 ///   labels in the option table are a UI hint, not the type. `STYLE_OUTLINE` is always
@@ -63,6 +68,7 @@ public struct EngineSubtitleTextStyle: Sendable, Hashable {
         let boxed = style.background == .opaqueBox
         return [
             "freetype-rel-fontsize=\(relativeFontSize)",
+            style.fontDesign == .serif ? "freetype-bold" : "no-freetype-bold",
             "freetype-color=\(style.foreground.rgb24)",
             "freetype-opacity=\(Self.byte(style.foreground.alpha))",
             // The canonical ring: opaque black at the canonical fraction of the em,
