@@ -192,14 +192,17 @@ struct SharedFontLibraryTests {
     /// track does NOT need must never be registered: the two pan-CJK
     /// collections alone are 45 MB of permanently resident memory.
     ///
-    /// Asserted as "the CJK collection appears once a CJK track loads, and
-    /// loading another adds nothing": suites run in parallel against one
-    /// process-wide library, so "only the Latin faces are registered" is not a
-    /// claim any one test can make about global state. The English-only half of
-    /// it is pinned on the pure mapping instead
+    /// Asserted as "a CJK track puts the collection in the library, and a second
+    /// one leaves it there exactly once". Suites run in parallel against one
+    /// process-wide library, so NOTHING about the whole registered set is a
+    /// claim a single test can make: neither "only the Latin faces are there"
+    /// nor "the set is unchanged" — another suite's track can register a face
+    /// between the two reads and make an equality fail with nothing wrong. What
+    /// survives that is per-file: the collection this test loads is present.
+    /// The English-only half is pinned on the pure mapping instead
     /// (`SubtitleFontPlanTests.filesFollowTheFamilies`).
-    @Test("a CJK track registers the collection, once")
-    func cjkTrackRegistersTheCollectionOnce() async throws {
+    @Test("a CJK track registers the collection")
+    func cjkTrackRegistersTheCollection() async throws {
         let english = await makeProbeRenderer()
         try await english.load(SRTFixture.data(text: "Hello world"), format: .srt)
         _ = try #require(await english.frame(at: 2.0))
@@ -213,15 +216,17 @@ struct SharedFontLibraryTests {
             SRTFixture.data(text: "简体字幕测试"), format: .srt, languageHint: "zh-Hans"
         )
         _ = try #require(await chinese.frame(at: 2.0))
-        let afterFirst = LibassLibrary.shared.registeredFileNames
-        #expect(afterFirst.contains("NotoSansCJK-Regular.ttc"))
+        #expect(LibassLibrary.shared.registeredFileNames.contains("NotoSansCJK-Regular.ttc"))
 
         let again = await makeProbeRenderer()
         try await again.load(
             SRTFixture.data(text: "简体字幕测试"), format: .srt, languageHint: "zh-Hans"
         )
         _ = try #require(await again.frame(at: 2.0))
-        #expect(LibassLibrary.shared.registeredFileNames == afterFirst)
+        // The library keys registrations by file name (a Set), so "once" is
+        // structural; what the second load can prove is that the collection is
+        // still there and that the renderer picked it up below.
+        #expect(LibassLibrary.shared.registeredFileNames.contains("NotoSansCJK-Regular.ttc"))
 
         // The point of it all: the second track still resolved to the face,
         // which means the renderer re-ran ass_set_fonts after the library grew.
