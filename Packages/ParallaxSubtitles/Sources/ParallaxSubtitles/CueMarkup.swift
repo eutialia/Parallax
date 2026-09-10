@@ -232,7 +232,10 @@ enum CueMarkup {
         case "i": return "{\\i1}"
         case "/i": return "{\\i0}"
         case "b": return "{\\b1}"
-        case "/b": return "{\\b0}"
+        // A BARE reset, not `\\b0`: the style's own Bold is what carries the
+        // serif design's weight 600, and `\\b0` would switch it off for the
+        // rest of the line.
+        case "/b": return "{\\b}"
         case "u": return "{\\u1}"
         case "/u": return "{\\u0}"
         default: return nil

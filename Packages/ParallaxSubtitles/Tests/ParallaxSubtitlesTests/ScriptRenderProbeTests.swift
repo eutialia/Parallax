@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import Testing
 
@@ -250,6 +251,75 @@ struct ScriptRenderProbeTests {
     @Test("a thoroughly broken decode is not accepted as UTF-8")
     func heavilyDamagedBytesAreNotUTF8() {
         #expect(ASSTextEncoding.utf8(Data(repeating: 0xC3, count: 64)) == nil)
+    }
+
+    /// The claim the serif design's single style-level Bold rests on: libass
+    /// synthesizes bold only when the requested weight beats the face's own
+    /// OS/2 weight by a margin. So the same override emboldens a Regular-only
+    /// pan-CJK face and leaves the real Noto Serif SemiBold Latin as drawn.
+    /// Pixels are the only place that shows — the fontselect log reports the
+    /// same file either way.
+    @Test("the serif design's bold thickens a Regular CJK face and not the SemiBold Latin")
+    func styleBoldEmboldensOnlyTheRegularFaces() async throws {
+        func ink(_ text: String, bold: Bool, languageHint: String?) async throws -> Int {
+            let renderer = await makeProbeRenderer(
+                fontFamily: SubtitleFontBundle.serifCueFamily,
+                size: CGSize(width: 1280, height: 720)
+            )
+            await renderer.setStyleOverride(SubtitleStyleOverride(bold: bold))
+            try await renderer.load(
+                SRTFixture.data(text: text), format: .srt, languageHint: languageHint
+            )
+            let frame = try #require(await renderer.frame(at: 2.0))
+            // The FILL, not every opaque pixel: the black ring around a
+            // synthetically emboldened glyph moves outward without growing
+            // much, so counting it in would dilute the very delta under test.
+            return try rendered(#require(frame.image)).fill.count
+        }
+
+        let plainCJK = try await ink("東京", bold: false, languageHint: "ja")
+        let boldCJK = try await ink("東京", bold: true, languageHint: "ja")
+        #expect(plainCJK > 0)
+        #expect(
+            Double(boldCJK) >= Double(plainCJK) * 1.1,
+            "CJK ink \(boldCJK) bold vs \(plainCJK) plain"
+        )
+
+        let plainLatin = try await ink("Tokyo", bold: false, languageHint: nil)
+        let boldLatin = try await ink("Tokyo", bold: true, languageHint: nil)
+        #expect(plainLatin > 0)
+        #expect(
+            Double(boldLatin) <= Double(plainLatin) * 1.03,
+            "Latin ink \(boldLatin) bold vs \(plainLatin) plain"
+        )
+    }
+
+    /// An SRT `</b>` converts to a bare `\b`, which libass reads as "the
+    /// style's Bold" — the serif design's weight — not as bold off. Proven on
+    /// pixels: a line that closes a bold span halfway carries the same ink as
+    /// the same text with no markup at all, where a `\b0` would lighten the
+    /// second half.
+    @Test("closing an SRT bold span keeps the serif design's weight on the rest of the line")
+    func closingBoldSpanKeepsTheStyleWeight() async throws {
+        func ink(_ text: String) async throws -> Int {
+            let renderer = await makeProbeRenderer(
+                fontFamily: SubtitleFontBundle.serifCueFamily,
+                size: CGSize(width: 1280, height: 720)
+            )
+            await renderer.setStyleOverride(SubtitleStyleOverride(bold: true))
+            try await renderer.load(SRTFixture.data(text: text), format: .srt, languageHint: "ja")
+            let frame = try #require(await renderer.frame(at: 2.0))
+            return try rendered(#require(frame.image)).fill.count
+        }
+
+        let unmarked = try await ink("東京東京")
+        let closedHalfway = try await ink("<b>東京</b>東京")
+        let plainHalf = try await ink("東京")
+        #expect(unmarked > plainHalf, "the second half draws ink at all")
+        #expect(
+            abs(closedHalfway - unmarked) <= unmarked / 33,
+            "closed-halfway ink \(closedHalfway) vs unmarked \(unmarked)"
+        )
     }
 
     /// Big5 text is almost entirely VALID GB18030 and vice versa, so the order

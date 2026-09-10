@@ -157,7 +157,7 @@ Shadows exist only where something floats over *media*:
 ### Named Rules
 **The Legibility-Only Shadow Rule.** A shadow must justify itself as legibility over media. Decorative shadows on chrome are prohibited — separation is glass's job.
 
-**Subtitles are the exception:** plain-text cues carry no shadow at all. Legibility is ONE opaque black outline ring at 4% of the em (`SubtitleStyle.outlineWidthRatio`), unblurred and unoffset, on every renderer — a soft shadow turned a serif's hairlines to mush and put more dark than ink around small text.
+**Subtitles are the exception:** plain-text cues carry no shadow at all. Legibility is ONE opaque black outline ring at 4% of the em (`SubtitleStyle.outlineWidthRatio`), unblurred and unoffset, on every renderer — a soft shadow turned a serif's hairlines to mush and put more dark than ink around small text. The serif design is weight 600 everywhere: a real Noto Serif SemiBold for Latin, and the renderer's synthetic bold for every script that ships Regular only. One style-level Bold does it: libass emboldens only when the request beats the face's own weight, so SemiBold Latin is left as drawn (`SubtitleStyleOverride.bold`, `freetype-bold`).
 
 **The Scrim-Under-Text Rule.** Text over artwork sits on a scrim or glass layer (compact hero band scrim, shelf footer progressive blur, player dim at `rgba(4,4,8,0.46)` × state factor) — or, on the veil-less wide hero band only, carries its own legibility contour (amended 2026-08-10; see Elevation). If you can imagine a bright frame breaking the text, it's already broken.
 

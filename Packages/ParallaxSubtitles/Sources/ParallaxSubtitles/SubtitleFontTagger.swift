@@ -104,8 +104,10 @@ enum SubtitleFontTagger {
             // already compensates the style font itself, so runs only need the
             // difference.
             let factor = plan.sizeFactor(forFamily: family) / plan.styleFontEmBoxFactor
-            guard abs(factor - 1) > 0.02 else { return Tags(family: family) }
-            return Tags(family: family, size: styleFontSize * factor)
+            return Tags(
+                family: family,
+                size: abs(factor - 1) > 0.02 ? styleFontSize * factor : nil
+            )
         }
     }
 
@@ -145,11 +147,11 @@ enum SubtitleFontTagger {
             return "{\\fn\(SubtitleFontTagger.tagSafe(family))\(sizeTag)}"
         }
 
-        /// - Parameter restoring: the author's in-force family, or nil for the
+        /// - Parameter family: the author's in-force family, or nil for the
         ///   style's own font.
         func close(restoring family: String?) -> String {
             let name = family.map(SubtitleFontTagger.tagSafe) ?? ""
-            return size == nil ? "{\\fn\(name)}" : "{\\fn\(name)\\fs}"
+            return "{\\fn\(name)\(size == nil ? "" : "\\fs")}"
         }
     }
 

@@ -119,11 +119,9 @@ struct OutlineRenderTests {
 
 private extension RenderedPixels {
 
-    /// The white glyph fill: 92% white over the ring, so the colour channels — not
-    /// the alpha, which the ring also raises — identify it.
     func isFill(_ x: Int, _ y: Int) -> Bool {
         guard x >= 0, x < width, y >= 0, y < height else { return false }
-        return self[x, y].red > 200
+        return Self.isFill(self[x, y])
     }
 
     func isPartialFill(_ x: Int, _ y: Int) -> Bool {
