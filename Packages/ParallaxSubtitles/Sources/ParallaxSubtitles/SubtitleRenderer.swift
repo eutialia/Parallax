@@ -26,7 +26,7 @@ public actor SubtitleRenderer {
     /// The family converted scripts are built against when the caller doesn't
     /// choose one. This is the LATIN face: every other script is reached by
     /// per-run `\fn` tagging, not by naming a different style font. The only
-    /// other choice is `SubtitleFontBundle.serifFamily`.
+    /// other choice is `SubtitleFontBundle.serifCueFamily`.
     public static let standardFontFamily = SubtitleFontBundle.sansFamily
 
     /// The synthesized Default style's font size as a fraction of the script

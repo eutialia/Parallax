@@ -139,6 +139,15 @@ public enum SubtitleFontBundle {
     public static let sansFamily = "Noto Sans"
     public static let serifFamily = "Noto Serif"
 
+    /// The weight plain-text cues are set in under the serif design. Noto Serif
+    /// Regular is a book weight for paper; over video its hairlines vanish into
+    /// the ring. Named by nameID 1, so libass treats it as its own family and an
+    /// authored script asking for `Noto Serif` still lands on the Regular.
+    /// Registered on demand like every non-Latin face, so a sans user never pays
+    /// for it.
+    public static let serifCueFamily = "Noto Serif SemiBold"
+    public static let serifCueFileName = "NotoSerif-SemiBold.ttf"
+
     /// The on-disk directory holding the fonts — what a second libass (VLC's
     /// internal one) takes as `:ssa-fontsdir`. Fonts only: libass'
     /// `load_fonts_from_dir` calls `ass_add_font` on every file it finds, so the
@@ -169,7 +178,7 @@ public enum SubtitleFontBundle {
     /// Registers the LATIN faces with libass ahead of the first subtitle pick.
     ///
     /// Only those two: `ass_add_font` memcpy's what it is given into the
-    /// process-wide library and never releases it, so registering all 39 files
+    /// process-wide library and never releases it, so registering all 40 files
     /// would cost ~52 MB of resident memory for a track that is almost always
     /// Latin-only. Every other file is added on demand by
     /// `LibassLibrary.ensureRegistered` once a loaded track is known to need it.
@@ -236,6 +245,9 @@ public enum SubtitleFontBundle {
             else { continue }
             names.formUnion(entry.fileNames)
         }
+        // Outside the routing table: the cue face is a weight of the Latin serif,
+        // not a script.
+        if families.contains(serifCueFamily) { names.insert(serifCueFileName) }
         return fileURLs.filter { names.contains($0.lastPathComponent) }
     }
 

@@ -763,6 +763,13 @@ struct SubtitleFontPlanTests {
             "NotoSansCJK-Regular.ttc", "NotoSerifCJK-Regular.ttc",
         ]))
 
+        let serifCue = SubtitleFontBundle.files(
+            forFamilies: [SubtitleFontBundle.serifCueFamily]
+        ).map(\.lastPathComponent)
+        #expect(Set(serifCue) == Set(
+            SubtitleFontBundle.latinFileNames + [SubtitleFontBundle.serifCueFileName]
+        ))
+
         // A name nothing in the bundle carries adds no file: libass resolves it
         // through default_family, which is one of the Latin pair.
         #expect(SubtitleFontBundle.files(forFamilies: ["Comic Sans MS"]).map(\.lastPathComponent)
