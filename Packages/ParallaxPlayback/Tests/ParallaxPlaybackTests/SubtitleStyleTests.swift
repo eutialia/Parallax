@@ -38,7 +38,7 @@ struct SubtitleStyleStandardTests {
     /// Boxless by design, and deliberately below peak white so cues don't read as the
     /// brightest object in a tone-mapped HDR frame. These are the authored values every
     /// renderer (overlay, AVKit, VLC freetype) reads.
-    @Test("the canonical look is 92% white over one soft shadow")
+    @Test("the canonical look is 92% white over a 4% black ring")
     func canonicalLook() {
         let s = SubtitleStyle.standard
         #expect(s.foreground.red == 0.92)
@@ -46,9 +46,7 @@ struct SubtitleStyleStandardTests {
         #expect(s.foreground.blue == 0.92)
         #expect(s.foreground.alpha == 1)
         #expect(s.foreground.red < 1, "peak white would glare against tone-mapped HDR")
-        #expect(SubtitleStyle.shadowBlurRatio == 0.05)
-        #expect(SubtitleStyle.shadowOpacity == 0.80)
-        #expect(SubtitleStyle.shadowOffsetRatio == 0.03)
+        #expect(SubtitleStyle.outlineWidthRatio == 0.04)
     }
 
     /// The user-configurable four must start at their neutral values, or a fresh install
@@ -58,19 +56,18 @@ struct SubtitleStyleStandardTests {
         let s = SubtitleStyle.standard
         #expect(s.fontScale == 1.0)
         #expect(s.fontDesign == .sansSerif)
-        #expect(s.background == .shadow)
+        #expect(s.background == .outline)
         #expect(s.verticalOffsetRatio == 0)
     }
 
-    /// Every geometry knob is a *ratio of the font size*, so the look survives the
-    /// phone/iPad/tvOS base-size differences unchanged. The shadow is the whole
-    /// legibility budget now — there is no ring to fall back on.
-    @Test("the shadow is a real, resolution-independent drop shadow")
-    func shadowIsResolutionIndependent() {
-        #expect(SubtitleStyle.shadowOpacity > 0 && SubtitleStyle.shadowOpacity < 1)
-        #expect(SubtitleStyle.shadowOffsetRatio > 0, "a zero offset would hide the shadow behind the glyph")
-        #expect(SubtitleStyle.shadowBlurRatio > SubtitleStyle.shadowOffsetRatio,
-                "a blur under the offset reads as a second edge rather than a shadow")
+    /// The one geometry knob is a *ratio of the font size*, so the look survives the
+    /// phone/iPad/tvOS base-size differences unchanged. The ring is the whole
+    /// legibility budget now — there is no shadow to fall back on.
+    @Test("the ring is visible and stays under half a stem")
+    func ringStaysUnderHalfAStem() {
+        #expect(SubtitleStyle.outlineWidthRatio > 0, "a zero ring leaves nothing behind the glyph")
+        #expect(SubtitleStyle.outlineWidthRatio <= 0.045,
+                "a ring over half a Noto Sans Regular stem (~9% of the em) fills the counters in")
     }
 }
 
@@ -172,18 +169,19 @@ struct SubtitleStylePersistenceTests {
         #expect(decoded.verticalOffsetRatio == 0.12)
     }
 
-    /// The canonical shadow is NOT persisted: an earlier build froze it into the
-    /// settings of everyone who had ever touched a subtitle control, so no retune
-    /// could reach them. The blob this build writes carries none of those keys.
-    @Test("the canonical shadow is not part of the persisted blob")
-    func canonicalShadowIsNotPersisted() throws {
+    /// The canonical ring is NOT persisted: an earlier build froze the backing
+    /// geometry into the settings of everyone who had ever touched a subtitle
+    /// control, so no retune could reach them. The blob this build writes carries
+    /// none of those keys.
+    @Test("the canonical ring is not part of the persisted blob")
+    func canonicalRingIsNotPersisted() throws {
         let json = try JSONEncoder().encode(SubtitleStyle.standard)
         let keys = try #require(JSONSerialization.jsonObject(with: json) as? [String: Any]).keys
         #expect(Set(keys) == ["foreground", "fontScale", "fontDesign", "background", "verticalOffsetRatio"])
     }
 
     @Test("SubtitleBackground raw values are stable", arguments: [
-        (SubtitleBackground.shadow, "outlineShadow"),
+        (SubtitleBackground.outline, "outlineShadow"),
         (.opaqueBox, "opaqueBox"),
     ])
     func backgroundRawValues(background: SubtitleBackground, raw: String) {

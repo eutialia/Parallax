@@ -42,18 +42,13 @@ public actor SubtitleRenderer {
         CGSize(width: ASSScriptBuilder.playResX, height: ASSScriptBuilder.playResY)
     }
 
-    /// The synthesized Default style's shadow offset as a fraction of its em —
-    /// the look a converted cue has on the frames before an override lands.
-    /// Exposed for the same reason as the font fraction: the canonical shadow
-    /// lives in a package this one cannot import, and the app asserts the two
-    /// agree instead of trusting a literal written twice.
-    public static var convertedScriptShadowEmRatio: Double {
-        ASSScriptBuilder.shadowOffset / Double(ASSScriptBuilder.fontSize)
-    }
-
-    /// The synthesized Default style's shadow opacity, black.
-    public static var convertedScriptShadowAlpha: Double {
-        ASSScriptBuilder.shadowAlpha
+    /// The synthesized Default style's outline ring as a fraction of its em — the
+    /// look a converted cue has on the frames before an override lands. Exposed for
+    /// the same reason as the font fraction: the canonical ring lives in a package
+    /// this one cannot import, and the app asserts the two agree instead of
+    /// trusting a literal written twice.
+    public static var convertedScriptOutlineEmRatio: Double {
+        ASSScriptBuilder.outlineWidth / Double(ASSScriptBuilder.fontSize)
     }
 
     /// - Parameter defaultFontFamily: the font of converted SRT/WebVTT
@@ -179,12 +174,7 @@ public actor SubtitleRenderer {
         hasEmittedFrame = false
         // Laying out the overlay must not construct libass and enumerate every
         // system font; `activeEngine` replays these settings when it builds one.
-        // The override's blur is resolved against this canvas (see
-        // `borderGeometry`), so it is pushed again with the new one.
-        if let engine {
-            applyCanvas(to: engine)
-            applyStyleOverride(to: engine)
-        }
+        if let engine { applyCanvas(to: engine) }
     }
 
     private func applyCanvas(to engine: LibassEngine) {
@@ -262,29 +252,19 @@ public actor SubtitleRenderer {
         style.FontName = font
         style.PrimaryColour = (override.primaryColor ?? SubtitleColor(red: 1, green: 1, blue: 1)).assPacked
         style.SecondaryColour = SubtitleColor(red: 1, green: 0, blue: 0).assPacked
-        // Plain text carries no glyph ring. Boxless still asks libass for a border,
-        // because that bitmap is what the blur and the shadow are built from (see
-        // `borderGeometry`) — fully transparent, so it is never drawn. At
-        // BorderStyle 3 the same field paints the box and has to be opaque.
-        style.OutlineColour = SubtitleColor(
-            red: 0, green: 0, blue: 0, alpha: boxed ? 1 : 0
-        ).assPacked
-        // At BorderStyle 3 this is the box fill and has to be fully opaque;
-        // otherwise it is only the drop shadow, where the caller's opacity (or
-        // half transparency) reads better.
-        style.BackColour = SubtitleColor(
-            red: 0, green: 0, blue: 0,
-            alpha: boxed ? 1 : (override.shadowAlpha ?? ASSScriptBuilder.shadowAlpha)
-        ).assPacked
+        // The ring at BorderStyle 1, the box's outline at BorderStyle 3: opaque
+        // black either way.
+        style.OutlineColour = SubtitleColor.black.assPacked
+        // At BorderStyle 3 this is the box fill and has to be fully opaque; at
+        // BorderStyle 1 it is the drop shadow's colour, which Shadow 0 never draws.
+        style.BackColour = SubtitleColor.black.assPacked
 
         if override.overridesBorder {
-            // 3 = opaque box, 1 = shadow. At 3 the Outline field stops being a
+            // 3 = opaque box, 1 = ring. At 3 the Outline field stops being a
             // stroke width and becomes the box's padding.
-            let border = borderGeometry(override)
             style.BorderStyle = boxed ? 3 : 1
-            style.Outline = border.outline
-            style.Shadow = border.shadow
-            style.Blur = border.blur
+            style.Outline = Self.borderGeometry(override)
+            style.Shadow = 0
         }
 
         if override.overridesMargins {
@@ -302,64 +282,31 @@ public actor SubtitleRenderer {
         }
     }
 
-    /// The border libass needs in order to blur the shadow and nothing else, as a
-    /// fraction of the em.
-    ///
-    /// libass blurs ONE bitmap per cue and copies it into the shadow: the border's
-    /// if the style has a border, the glyph's otherwise. With no border the blur
-    /// therefore lands on the text itself, so the boxless look asks for a border
-    /// this thin, paints it fully transparent, and gets a crisp glyph over a soft
-    /// shadow. It is not a ring — nothing is ever drawn with it — but the shadow it
-    /// seeds is the glyph dilated by this much, so it stays under the offset.
-    private static let shadowSeedEmRatio = 0.02
-
     /// The opaque box's padding as a fraction of the em: at BorderStyle 3 the
     /// Outline field is the box's inset. This is the proportion the box has always
     /// shipped at.
     private static let boxPaddingEmRatio = 0.125
 
-    /// The canvas libass reads the OVERRIDE style's Outline, Shadow and Blur
-    /// against; it scales them from here to the track's PlayRes, so on our
-    /// 720-line scripts every one of the three is multiplied by 2.5 on the way in.
-    /// Measured, not assumed: doubling the override's Shadow moves the drawn edge
-    /// 2.5× further, and an override blur of 3 matches an authored `\blur7.5`.
+    /// The canvas libass reads the OVERRIDE style's Outline against; it scales it
+    /// from here to the track's PlayRes, so on our 720-line scripts the value is
+    /// multiplied by 2.5 on the way in. Measured, not assumed: doubling the
+    /// override's border moves the drawn edge 2.5× further.
     private static let overrideReferenceHeight = 288.0
 
-    /// The synthesized script's own shadow offset, for an override that leaves it
-    /// unset — there is no "keep the style's Shadow" once the border bit is on.
-    private static var synthesizedShadowEmRatio: Double {
-        ASSScriptBuilder.shadowOffset / Double(ASSScriptBuilder.fontSize)
-    }
-
-    /// Resolves the override's em-relative shadow geometry into the units the
-    /// override takes.
+    /// Resolves the override's em-relative ring (or the box's padding) into the
+    /// units the override takes.
     ///
-    /// Three conversions, all measured. The em is the AUTHORED one
-    /// (`ASSScriptBuilder.fontSize`, since only converted scripts are overridden
-    /// and those are ours) because libass scales Outline, Shadow and Blur by the
-    /// same factor it scales the font with — resolving against the size the cue
-    /// really renders at would apply the user's size twice. The result is
-    /// expressed on the override's reference canvas, so what reaches the pixels is
-    /// the fraction of the em the caller asked for. And the blur alone is scaled
-    /// by libass against the STORAGE size (the frame's when none is set) rather
-    /// than the PlayRes the shadow is scaled against, so it is pre-multiplied by
-    /// that ratio or a 4K source would get a third of the radius a 720p one gets.
-    private func borderGeometry(
-        _ override: SubtitleStyleOverride
-    ) -> (outline: Double, shadow: Double, blur: Double) {
+    /// The em is the AUTHORED one (`ASSScriptBuilder.fontSize`, since only
+    /// converted scripts are overridden and those are ours) because libass scales
+    /// Outline by the same factor it scales the font with — resolving against the
+    /// size the cue really renders at would apply the user's size twice. The result
+    /// is expressed on the override's reference canvas, so what reaches the pixels
+    /// is the fraction of the em the caller asked for.
+    private static func borderGeometry(_ override: SubtitleStyleOverride) -> Double {
         let em = Double(ASSScriptBuilder.fontSize)
-            * Self.overrideReferenceHeight / Double(ASSScriptBuilder.playResY)
-        guard override.opaqueBox != true else {
-            return (Self.boxPaddingEmRatio * em, 0, 0)
-        }
-        let blurReference = storagePixelSize?.height ?? canvasPixelSize.height
-        let blurScale = blurReference > 0
-            ? Double(blurReference) / Double(ASSScriptBuilder.playResY) : 1
-        return (
-            outline: Self.shadowSeedEmRatio * em,
-            shadow: (override.shadowEmRatio ?? Self.synthesizedShadowEmRatio) * em,
-            blur: (override.blurEmRatio ?? 0) * em * blurScale
-        )
+            * overrideReferenceHeight / Double(ASSScriptBuilder.playResY)
+        guard override.opaqueBox != true else { return boxPaddingEmRatio * em }
+        return (override.outlineEmRatio ?? convertedScriptOutlineEmRatio) * em
     }
 
     // MARK: - Rendering

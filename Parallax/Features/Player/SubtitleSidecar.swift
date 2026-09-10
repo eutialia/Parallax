@@ -88,9 +88,9 @@ extension SubtitleStyle {
 
     /// The user's overlay style expressed as the renderer's selective override,
     /// with the caller-computed font scale and the tuned rest position as
-    /// script-unit margins. The shadow's offset and blur ride along as fractions
-    /// of the em; the renderer turns them into script units, and libass scales
-    /// them with the font scale exactly as it scales the glyphs.
+    /// script-unit margins. The canonical ring rides along as a fraction of the em;
+    /// the renderer turns it into script units, and libass scales it with the font
+    /// scale exactly as it scales the glyphs.
     ///
     /// The family stays the design bucket's own mapping, where the sans bucket
     /// has no libass name override — the synthesized script already names that
@@ -108,9 +108,7 @@ extension SubtitleStyle {
                 blue: foreground.blue, alpha: foreground.alpha
             ),
             opaqueBox: background == .opaqueBox,
-            shadowEmRatio: Self.shadowOffsetRatio,
-            blurEmRatio: Self.shadowBlurRatio,
-            shadowAlpha: Self.shadowOpacity,
+            outlineEmRatio: Self.outlineWidthRatio,
             marginVertical: marginVertical,
             marginHorizontal: marginHorizontal
         )

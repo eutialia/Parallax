@@ -151,12 +151,13 @@ Depth in Parallax is **material and scrim layering, not shadow stacking**. Surfa
 ### Shadow Vocabulary
 Shadows exist only where something floats over *media*:
 - **Player handle/bubble** (`black @0.5–0.6, radius 2–20 × u`): scrub affordances over video.
-- **Subtitle legibility** (`black @0.9, radius 3`): text over unpredictable frames.
-- **Hero type contour** (`black @0.65, radius 1.5, y 1` text; `@0.45, radius 7, y 2` logo): type over the veil-less wide hero band — the subtitle recipe's sibling, wide screens only.
+- **Hero type contour** (`black @0.65, radius 1.5, y 1` text; `@0.45, radius 7, y 2` logo): type over the veil-less wide hero band — the same legibility-over-media job as the subtitle ring, in shadow form; wide screens only.
 - **Library card** (`black @0.2, radius 8, y 4`): the single chrome shadow, under 16:9 banners.
 
 ### Named Rules
 **The Legibility-Only Shadow Rule.** A shadow must justify itself as legibility over media. Decorative shadows on chrome are prohibited — separation is glass's job.
+
+**Subtitles are the exception:** plain-text cues carry no shadow at all. Legibility is ONE opaque black outline ring at 4% of the em (`SubtitleStyle.outlineWidthRatio`), unblurred and unoffset, on every renderer — a soft shadow turned a serif's hairlines to mush and put more dark than ink around small text.
 
 **The Scrim-Under-Text Rule.** Text over artwork sits on a scrim or glass layer (compact hero band scrim, shelf footer progressive blur, player dim at `rgba(4,4,8,0.46)` × state factor) — or, on the veil-less wide hero band only, carries its own legibility contour (amended 2026-08-10; see Elevation). If you can imagine a bright frame breaking the text, it's already broken.
 

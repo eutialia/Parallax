@@ -35,12 +35,10 @@ enum ASSScriptBuilder {
     static let marginHorizontal = 40
     static let marginVertical = 36
 
-    /// Shadow offset, down and right, in PlayRes units: 1.44/48 = 3% of the em.
-    /// The canonical shadow is authored elsewhere as a ratio; `SubtitleRenderer`
-    /// republishes this as one so the app can hold the two to the same number.
-    static let shadowOffset = 1.44
-    /// Black, at this opacity — the override's fallback when it sets none.
-    static let shadowAlpha = 0.8
+    /// Outline ring radius in PlayRes units: 1.92/48 = 4% of the em, the canonical
+    /// ring. That ratio is authored elsewhere; `SubtitleRenderer` republishes this
+    /// as one so the app can hold the two to the same number.
+    static let outlineWidth = 1.92
 
     /// `&HAABBGGRR`, the style line's colour spelling — the script's byte order,
     /// not `assPacked`'s in-memory one.
@@ -63,14 +61,11 @@ enum ASSScriptBuilder {
         return String(format: "%d:%02d:%02d.%02d", h, m, s, centiseconds)
     }
 
-    /// The style line carries no ring (Outline 0, and a transparent OutlineColour
-    /// so an override that seeds the blur with a border never draws one) and a
-    /// black shadow at `shadowAlpha` and `shadowOffset` — the canonical look minus
-    /// the blur, which has no column in the V4+ format and reaches libass through
-    /// the selective style override.
+    /// The style line carries the canonical ring outright: BorderStyle 1 with an
+    /// opaque black ring `outlineWidth` wide and Shadow 0, so a converted cue has
+    /// its backing on the frames before the style override lands. The fill is peak
+    /// white here; the dimmed fill and the user's colour arrive with the override.
     static func script(events: [ASSEvent], fontFamily: String) -> String {
-        let outlineColor = SubtitleColor(red: 0, green: 0, blue: 0, alpha: 0)
-        let shadowColor = SubtitleColor(red: 0, green: 0, blue: 0, alpha: shadowAlpha)
         var out = """
         [Script Info]
         ScriptType: v4.00+
@@ -82,7 +77,7 @@ enum ASSScriptBuilder {
 
         [V4+ Styles]
         Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-        Style: Default,\(styleSafe(fontFamily)),\(fontSize),&H00FFFFFF,&H000000FF,\(styleColor(outlineColor)),\(styleColor(shadowColor)),0,0,0,0,100,100,0,0,1,0,\(shadowOffset),2,\(marginHorizontal),\(marginHorizontal),\(marginVertical),1
+        Style: Default,\(styleSafe(fontFamily)),\(fontSize),&H00FFFFFF,&H000000FF,\(styleColor(.black)),\(styleColor(.black)),0,0,0,0,100,100,0,0,1,\(outlineWidth),0,2,\(marginHorizontal),\(marginHorizontal),\(marginVertical),1
 
         [Events]
         Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
