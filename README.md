@@ -36,7 +36,7 @@ Problems Parallax can't fix on its own, or could only fix with trade-offs it doe
 
 ## Get it
 
-The app is coming to the App Store (link to follow). The App Store build is compiled from this repository; the price covers the Apple developer membership and ongoing development.
+Parallax is on the [App Store][app-store]. The App Store build is compiled from this repository; the price covers the Apple developer membership and ongoing development.
 
 To build it yourself you need Xcode 26. Clone the repo, open `Parallax.xcodeproj`, and run; simulator builds work as-is. For device builds, supply your signing team once (it stays out of git): `echo 'DEVELOPMENT_TEAM = YOURTEAMID' > Config/Signing.local.xcconfig`. App logic lives in the local Swift packages under `Packages/`; the app target is UI and wiring.
 
@@ -44,7 +44,7 @@ To build it yourself you need Xcode 26. Clone the repo, open `Parallax.xcodeproj
 
 Parallax is open source under the [GNU GPLv3](LICENSE).
 
-You can read, build, modify, and run it, and redistribute it under the GPL's terms. One consequence is worth spelling out: Apple's App Store terms are incompatible with the GPL, so only the copyright holder can publish this app there. If someone else uploads Parallax or a derivative to the App Store, paid or free, that violates the license and I will have it taken down. If you just want the app without building it, buy the App Store version.
+You can read, build, modify, and run it, and redistribute it under the GPL's terms. One consequence is worth spelling out: Apple's App Store terms are incompatible with the GPL, so only the copyright holder can publish this app there. If someone else uploads Parallax or a derivative to the App Store, paid or free, that violates the license and I will have it taken down. If you just want the app without building it, buy the [App Store version][app-store].
 
 ## Contributing
 
@@ -53,3 +53,5 @@ Bug reports and pull requests are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md
 ## Credits
 
 Third-party components and attributions are listed in [CREDITS.md](CREDITS.md).
+
+[app-store]: https://apps.apple.com/app/id6796474963
