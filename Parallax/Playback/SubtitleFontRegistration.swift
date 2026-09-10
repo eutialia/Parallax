@@ -23,7 +23,7 @@ enum SubtitleFontRegistration {
     /// CoreText: our own libass is handed files directly, and VLC's internal libass scans
     /// `ssa-fontsdir` itself.
     ///
-    /// Registering all 39 bundled files instead made iOS log a `GSFont: "…" already
+    /// Registering all 40 bundled files instead made iOS log a `GSFont: "…" already
     /// exists.` for every face it ships under the same PostScript name (several Noto
     /// scripts), and each of those is a face CoreText then resolves to ITS copy, not ours.
     static var fontFileURLs: [URL] {

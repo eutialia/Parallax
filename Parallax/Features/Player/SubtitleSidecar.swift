@@ -124,7 +124,7 @@ extension SubtitleFontDesign {
     var rendererFamily: String? {
         switch self {
         case .sansSerif: nil
-        case .serif: SubtitleFontBundle.serifFamily
+        case .serif: SubtitleFontBundle.serifCueFamily
         }
     }
 

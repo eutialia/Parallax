@@ -23,11 +23,11 @@ project distributes it for building clients, so the practical risk is small.
 
 | Component | License | Role |
 |-----------|---------|------|
-| [Noto Sans / Noto Serif](https://github.com/notofonts/latin-greek-cyrillic) (Regular) | SIL OFL 1.1 | Subtitle typeface — Latin, Greek, Cyrillic (Vietnamese and Latin Extended included) |
+| [Noto Sans / Noto Serif](https://github.com/notofonts/latin-greek-cyrillic) 2.015 (Regular; Serif also SemiBold) | SIL OFL 1.1 | Subtitle typeface — Latin, Greek, Cyrillic (Vietnamese and Latin Extended included) |
 | [Noto Sans CJK / Noto Serif CJK](https://github.com/notofonts/noto-cjk) 2.004 / 2.003 (Regular OTC) | SIL OFL 1.1 | Subtitle typeface — pan-CJK, JP/KR/SC/TC/HK faces (© Adobe) |
 | [Noto per-script faces](https://notofonts.github.io) (Regular) | SIL OFL 1.1 | Subtitle typefaces — Thai, Arabic (Naskh), Hebrew, Devanagari, Bengali, Tamil, Telugu, Kannada, Malayalam, Gujarati, Oriya, Gurmukhi, Sinhala, Khmer, Lao, Myanmar, Georgian, Armenian |
 
-All 39 files are shipped **unmodified** (verified against the upstream git blob hashes).
+All 40 files are shipped **unmodified** (verified against the upstream git blob hashes).
 They live in the `ParallaxSubtitles` framework's `Fonts/` directory; the one shared OFL
 text — which names every family it covers — ships separately as
 `Parallax/Resources/Licenses/ofl-noto.txt`, because libass scans that font directory and

@@ -20,6 +20,7 @@ struct BundledFontTests {
     static let expectedFamilies: [String: [String]] = [
         "NotoSans-Regular.ttf": ["Noto Sans"],
         "NotoSerif-Regular.ttf": ["Noto Serif"],
+        "NotoSerif-SemiBold.ttf": ["Noto Serif SemiBold"],
         "NotoSansCJK-Regular.ttc": [
             "Noto Sans CJK JP", "Noto Sans CJK KR", "Noto Sans CJK SC",
             "Noto Sans CJK TC", "Noto Sans CJK HK",
@@ -111,6 +112,8 @@ struct BundledFontTests {
     func styleAndRegionNaming() {
         #expect(SubtitleFontBundle.sansFamily == "Noto Sans")
         #expect(SubtitleFontBundle.serifFamily == "Noto Serif")
+        #expect(SubtitleFontBundle.serifCueFamily == "Noto Serif SemiBold")
+        #expect(SubtitleFontBundle.design(forFamily: SubtitleFontBundle.serifCueFamily) == .serif)
         #expect(SubtitleFontBundle.family(design: .sans, script: .common) == "Noto Sans")
         #expect(SubtitleFontBundle.family(design: .serif, script: .common) == "Noto Serif")
 
@@ -198,25 +201,29 @@ struct BundledFontTests {
     @Test("the face routing picks for a run covers that run", arguments: BundledFontTests.probes)
     func routedFaceCoversItsRun(probe: (name: String, text: String)) throws {
         for design in SubtitleFontBundle.Design.allCases {
-            let plan = SubtitleFontPlan.build(
-                lines: [probe.text],
-                styleFamily: SubtitleFontBundle.family(design: design, script: .common),
-                languageHint: nil
-            )
-            for (runClass, run) in scriptRuns(of: probe.text, routing: plan.symbolRouting) {
-                let family = plan.family(forRun: runClass, line: probe.text)
-                    ?? plan.styleFamily
-                let coverage = try #require(
-                    SubtitleFontBundle.facesByFamily[family]?.coverage, "\(family)"
+            // The serif design has two style faces: the Regular an authored script
+            // names, and the SemiBold plain-text cues are set in.
+            var styleFamilies = [SubtitleFontBundle.family(design: design, script: .common)]
+            if design == .serif { styleFamilies.append(SubtitleFontBundle.serifCueFamily) }
+            for styleFamily in styleFamilies {
+                let plan = SubtitleFontPlan.build(
+                    lines: [probe.text], styleFamily: styleFamily, languageHint: nil
                 )
-                for scalar in run.unicodeScalars {
-                    #expect(
-                        coverage.contains(scalar.value),
-                        """
-                        \(probe.name)/\(design): \(family) lacks \
-                        U+\(String(scalar.value, radix: 16, uppercase: true))
-                        """
+                for (runClass, run) in scriptRuns(of: probe.text, routing: plan.symbolRouting) {
+                    let family = plan.family(forRun: runClass, line: probe.text)
+                        ?? plan.styleFamily
+                    let coverage = try #require(
+                        SubtitleFontBundle.facesByFamily[family]?.coverage, "\(family)"
                     )
+                    for scalar in run.unicodeScalars {
+                        #expect(
+                            coverage.contains(scalar.value),
+                            """
+                            \(probe.name)/\(design): \(family) lacks \
+                            U+\(String(scalar.value, radix: 16, uppercase: true))
+                            """
+                        )
+                    }
                 }
             }
         }
