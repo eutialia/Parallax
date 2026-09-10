@@ -44,6 +44,11 @@ public struct SubtitleStyleOverride: Sendable, Equatable {
     public var fontScale: Double?
     public var primaryColor: SubtitleColor?
 
+    /// Force the style's weight. libass synthesizes bold only when the request
+    /// exceeds the face's own OS/2 weight by a margin, so one style-level Bold
+    /// draws a real SemiBold face as-is and emboldens every Regular one.
+    public var bold: Bool?
+
     /// Draw each line on a filled rectangle instead of outlining the glyphs.
     ///
     /// This is the caption "opaque box" style. It replaces the border treatment
@@ -67,6 +72,7 @@ public struct SubtitleStyleOverride: Sendable, Equatable {
         fontFamily: String? = nil,
         fontScale: Double? = nil,
         primaryColor: SubtitleColor? = nil,
+        bold: Bool? = nil,
         opaqueBox: Bool? = nil,
         outlineEmRatio: Double? = nil,
         marginVertical: Double? = nil,
@@ -75,6 +81,7 @@ public struct SubtitleStyleOverride: Sendable, Equatable {
         self.fontFamily = fontFamily
         self.fontScale = fontScale
         self.primaryColor = primaryColor
+        self.bold = bold
         self.opaqueBox = opaqueBox
         self.outlineEmRatio = outlineEmRatio
         self.marginVertical = marginVertical
@@ -83,7 +90,7 @@ public struct SubtitleStyleOverride: Sendable, Equatable {
 
     /// True when nothing would change.
     var isNoOp: Bool {
-        fontFamily == nil && fontScale == nil && !overridesColors
+        fontFamily == nil && fontScale == nil && bold == nil && !overridesColors
             && !overridesBorder && !overridesMargins
     }
 
@@ -112,6 +119,10 @@ public struct SubtitleStyleOverride: Sendable, Equatable {
         if fontScale != nil {
             // Without this bit the scale would also blow up positioned signs.
             bits |= Int32(ASS_OVERRIDE_BIT_SELECTIVE_FONT_SCALE.rawValue)
+        }
+        if bold != nil {
+            // ATTRIBUTES covers Bold, Italic, Underline and StrikeOut together.
+            bits |= Int32(ASS_OVERRIDE_BIT_ATTRIBUTES.rawValue)
         }
         if overridesColors {
             bits |= Int32(ASS_OVERRIDE_BIT_COLORS.rawValue)

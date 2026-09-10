@@ -369,6 +369,24 @@ struct SubtitleFontPlanTests {
         #expect(SubtitleFontTagger.tagged(text, plan: plan, styleFontSize: 48) == text)
     }
 
+    /// The serif design's weight 600 is one style-level Bold on the override,
+    /// not a per-run tag: libass only synthesizes bold when the request beats
+    /// the face's own weight, so the run tags carry font and size and nothing
+    /// else — under every design, and in authored scripts too, where Bold
+    /// belongs to the author.
+    @Test("run tagging never writes a weight tag", arguments: SubtitleFontBundle.Design.allCases)
+    func taggingLeavesWeightAlone(design: SubtitleFontBundle.Design) {
+        for styleFamily in [SubtitleFontBundle.family(design: design, script: .common),
+                            SubtitleFontBundle.serifCueFamily] {
+            let plan = Self.stubPlan(
+                design: design, styleFamily: styleFamily,
+                sizeFactors: ["Noto Serif CJK JP": 1.437], trackDefault: .japanese
+            )
+            #expect(SubtitleFontTagger.tagged("東京", plan: plan, styleFontSize: 48).contains("\\b") == false)
+            #expect(SubtitleFontTagger.authoredTagged("東京 ok", plan: plan).contains("\\b") == false)
+        }
+    }
+
     @Test("authored tagging skips CJK lines that agree with the default, never other scripts")
     func authoredTaggingScope() {
         let plan = Self.stubPlan(trackDefault: .simplifiedChinese)

@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import Libass
 import Testing
 
 @testable import ParallaxSubtitles
@@ -13,6 +14,19 @@ import Testing
 /// and one script unit is `1/48` of an em.
 @Suite("Style override borders")
 struct StyleOverrideBorderTests {
+
+    /// A field libass never reads is invisible, so `bold` has to bring its own
+    /// bit — and bring only that one, or an unset colour would flatten the
+    /// script's palette on the way past.
+    @Test("bold enables the attributes bit and nothing else")
+    func boldEnablesTheAttributesBit() {
+        #expect(SubtitleStyleOverride(bold: nil).isNoOp)
+        for bold in [true, false] {
+            let override = SubtitleStyleOverride(bold: bold)
+            #expect(override.isNoOp == false)
+            #expect(override.overrideBits == Int32(ASS_OVERRIDE_BIT_ATTRIBUTES.rawValue))
+        }
+    }
 
     /// The bbox of everything libass actually inked, in canvas pixels.
     ///

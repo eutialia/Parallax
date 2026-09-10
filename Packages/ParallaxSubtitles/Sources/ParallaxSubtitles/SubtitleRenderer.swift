@@ -259,6 +259,16 @@ public actor SubtitleRenderer {
         // BorderStyle 1 it is the drop shadow's colour, which Shadow 0 never draws.
         style.BackColour = SubtitleColor.black.assPacked
 
+        // One flag covers all four attributes, so every field is filled.
+        // libass emboldens synthetically only when the requested weight beats
+        // the face's own OS/2 weight by a margin, so this one Bold leaves the
+        // real Noto Serif SemiBold Latin as drawn and synthesizes the weight
+        // for every Regular-only face the cue routes to.
+        style.Bold = override.bold == true ? 1 : 0
+        style.Italic = 0
+        style.Underline = 0
+        style.StrikeOut = 0
+
         if override.overridesBorder {
             // 3 = opaque box, 1 = ring. At 3 the Outline field stops being a
             // stroke width and becomes the box's padding.

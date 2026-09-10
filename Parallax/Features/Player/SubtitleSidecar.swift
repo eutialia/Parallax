@@ -95,6 +95,11 @@ extension SubtitleStyle {
     /// The family stays the design bucket's own mapping, where the sans bucket
     /// has no libass name override — the synthesized script already names that
     /// family in its style.
+    ///
+    /// The serif design is weight 600 everywhere, and one style-level Bold is
+    /// all it takes: libass only synthesizes bold when the request beats the
+    /// face's own weight by a margin, so the real Noto Serif SemiBold Latin
+    /// stays as drawn and every Regular-only script face is emboldened.
     func rendererOverride(
         fontScale: Double,
         marginVertical: Double? = nil,
@@ -107,6 +112,7 @@ extension SubtitleStyle {
                 red: foreground.red, green: foreground.green,
                 blue: foreground.blue, alpha: foreground.alpha
             ),
+            bold: fontDesign == .serif,
             opaqueBox: background == .opaqueBox,
             outlineEmRatio: Self.outlineWidthRatio,
             marginVertical: marginVertical,

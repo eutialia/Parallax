@@ -56,7 +56,7 @@ struct SRTToASSConverterTests {
 
     @Test("inline markup maps to ASS override tags", arguments: [
         ("italic", "<i>Hi</i>", "{\\i1}Hi{\\i0}"),
-        ("bold", "<b>Hi</b>", "{\\b1}Hi{\\b0}"),
+        ("bold", "<b>Hi</b>", "{\\b1}Hi{\\b}"),
         ("underline", "<u>Hi</u>", "{\\u1}Hi{\\u0}"),
         ("uppercase tags", "<I>Hi</I>", "{\\i1}Hi{\\i0}"),
         ("font tags are dropped, text survives", "<font color=\"#ff0000\">Hi</font>", "Hi"),

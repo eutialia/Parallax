@@ -80,14 +80,14 @@ enum ASSFixture {
     }
 }
 
-/// A renderer wired to the 640x360 probe canvas.
-func makeProbeRenderer(fontFamily: String = SubtitleRenderer.standardFontFamily) async -> SubtitleRenderer {
+/// A renderer wired to the probe canvas (640x360 unless told otherwise), with
+/// storage equal to the canvas so libass' pixel aspect stays 1.
+func makeProbeRenderer(
+    fontFamily: String = SubtitleRenderer.standardFontFamily,
+    size: CGSize = CGSize(width: ASSFixture.playResX, height: ASSFixture.playResY)
+) async -> SubtitleRenderer {
     let renderer = SubtitleRenderer(defaultFontFamily: fontFamily)
-    await renderer.setCanvas(
-        size: CGSize(width: ASSFixture.playResX, height: ASSFixture.playResY),
-        scale: 1,
-        storageSize: CGSize(width: ASSFixture.playResX, height: ASSFixture.playResY)
-    )
+    await renderer.setCanvas(size: size, scale: 1, storageSize: size)
     return renderer
 }
 
@@ -126,6 +126,11 @@ struct RenderedPixels {
     /// Pixels that are close to fully covered — the body of a glyph rather than
     /// its antialiased fringe.
     var opaque: [Pixel] { all.filter { $0.alpha > 200 } }
+
+    /// The glyph fill: 92% white over a black ring, so the colour channels — not
+    /// the alpha, which the ring also raises — identify it.
+    static func isFill(_ pixel: Pixel) -> Bool { pixel.red > 200 }
+    var fill: [Pixel] { opaque.filter(Self.isFill) }
 
     /// The bounding box of every pixel `hit` accepts, nil when it accepts none.
     func bounds(where hit: (Int, Int) -> Bool) -> (minX: Int, minY: Int, maxX: Int, maxY: Int)? {
