@@ -8,8 +8,7 @@ import ParallaxCore
 /// the row a panel scrolls to and the row it focuses can't drift apart.
 ///
 /// A dedicated enum rather than `AnyHashable`: `ScrollPosition.scrollTo(id:)` requires
-/// `Sendable`, and a typeless box can't vouch for its payload — the same constraint that
-/// produced `SMBBrowseScrollAnchor`. It also collapses four key schemes (a `TrackID`, a
+/// `Sendable`, and a typeless box can't vouch for its payload. It also collapses four key schemes (a `TrackID`, a
 /// `Double` rate, a chapter index, and the Off sentinel) into one id type, which is what
 /// `scrollTargetLayout` needs to resolve a row across menus.
 // nonisolated: `ScrollPosition` hashes this off the main actor, and the resolver tests
