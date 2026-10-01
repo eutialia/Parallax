@@ -190,7 +190,8 @@ struct PlayerView: View {
         // The iPhone player follows the device: presenting it widens the mask to
         // portrait+landscape so the physical orientation drives the rotation (no-op on
         // iPad, which plays any way up). The rotate button forces a side on top of that;
-        // the teardown below narrows back to the portrait browse default.
+        // `PlayerPresentationHost.sync` narrows back to the portrait browse default when
+        // the dismissal begins.
         .onAppear { OrientationController.shared.beginPlayerPresentation() }
         #endif
         .onDisappear {
@@ -208,13 +209,6 @@ struct PlayerView: View {
             landingLinger = false
             clickSeekCoalescer.cancel()
             DisplayCriteriaMatcher.clear()
-            #else
-            // Backstop only: the presentation host already ended the presentation when the
-            // dismissal began (rotating back mid-slide instead of snapping after it —
-            // see `PlayerPresentationHost.sync`). This idempotent re-call covers unmounts
-            // that never flipped the request (server switch tearing the player down
-            // structurally).
-            OrientationController.shared.endPlayerPresentation()
             #endif
         }
         // A movie / series finale that played to its end dismisses the player the same

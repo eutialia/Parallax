@@ -152,9 +152,8 @@ struct PlayerPresentationHost: View {
             // player was left in landscape — and a backgrounding mid-slide froze the
             // spring's clock, reopening the app on landscape browse. Narrowing now means
             // the window turns portrait WHILE the card slides out (hence `dismissTravel`
-            // clearing the portrait height when the player was landscape). onDisappear
-            // keeps an idempotent re-call as the backstop for unmounts that never flip
-            // `request` (server switch).
+            // clearing the portrait height when the player was landscape). Every unmount
+            // passes through here: a server switch dismisses through the presenter too.
             OrientationController.shared.endPlayerPresentation()
             presentation.isSettled = false
             // From wherever the surface is — .zero after a Close tap, the finger's
