@@ -22,8 +22,9 @@ import ParallaxCore
 /// to the reaper until its borrower checks it back in. `checkout` never hands out a connection the
 /// same call is about to reap, and `checkin`/`reapIdle` disconnect only entries they have already
 /// removed from `idle` (so a concurrent checkout can't re-borrow one mid-teardown). The stronger
-/// rule for a connection whose call is still PENDING — never disconnect it, in any mode, and never
-/// release it — lives in `SMBConnectionGraveyard`, reached from here through `condemn`.
+/// rule for a connection whose call is still RUNNING — never disconnect it, in any mode, and never
+/// release it until that call returns — lives in `SMBConnectionGraveyard`, reached from here
+/// through `condemn`.
 ///
 /// **Concurrency.** An `actor`, so the idle map and the link-class table mutate race-free. Teardown
 /// awaits happen only on connections already removed from `idle`, so an actor-reentrant `checkout`
@@ -116,16 +117,13 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
     ///   - connect: builds + connects one share connection for a target, handing the built
     ///     connection to `deliver` before the share attach — see `SMBConnectionBuilder`. Production
     ///     wires `SMB2Manager` via the convenience `init`; tests inject a fake.
-    ///   - fuseSleep: how a graveyard release fuse waits (see `condemn`). Injectable so a test can
-    ///     fire a minutes-long fuse instantly.
     public init(
         connectTimeout: TimeInterval = 15,
         maxIdlePerKey: Int = 4,
         idleTTL: Duration = .seconds(60),
         sweepInterval: Duration = .seconds(30),
         now: @escaping @Sendable () -> ContinuousClock.Instant = { ContinuousClock().now },
-        connect: @escaping SMBConnectionBuilder<Connection>,
-        fuseSleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+        connect: @escaping SMBConnectionBuilder<Connection>
     ) {
         self.connectTimeout = connectTimeout
         self.maxIdlePerKey = max(1, maxIdlePerKey)
@@ -133,7 +131,7 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
         self.sweepInterval = sweepInterval
         self.now = now
         self.connect = connect
-        self.graveyard = SMBConnectionGraveyard<Connection>(sleep: fuseSleep)
+        self.graveyard = SMBConnectionGraveyard<Connection>()
     }
 
     deinit {
@@ -201,9 +199,7 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
             SMBDiagnostics.pool.error(
                 "← cold connect FAILED \(target.host)/\(target.share) "
                     + "abandoned=\(settlement.isAbandoned) error=\(error.networkDiagnostic)")
-            claimAbandonedConnect(
-                escrow, failedWith: error, settlement: settlement, operationTimeout: connectTimeout
-            )
+            claimAbandonedConnect(escrow, failedWith: error, settlement: settlement)
             if error is HardTimeoutError { throw SMBListerError.timedOut }
             throw error
         }
@@ -221,15 +217,12 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
     ///
     /// The loser's manager used to be dropped on the floor — and `SMB2Client.deinit` runs its own
     /// `disconnect()` plus `smb2_destroy_context`, i.e. the exact disposal the graveyard forbids for
-    /// a connection whose call may still be pending. Every failure exit hands it over instead:
-    /// parked alive, never disconnected. How long it stays parked is what the error decides:
-    ///  - ABANDONED (the hard ceiling fired, or the caller was cancelled) — the call is still
-    ///    running, so the receipt is a real one and the park ends when that call returns;
-    ///  - AMSMB2's own reply timeout — the call returned but left a request queued inside libsmb2,
-    ///    and nothing will ever settle the receipt, so the park carries a FUSE (`SMBAbandonedCall`);
-    ///  - anything else — the call returned and left nothing behind, so the receipt is settled here
-    ///    and the park frees as soon as it is made. Routing it through the graveyard anyway keeps
-    ///    ONE disposal path for a connection nobody owns.
+    /// a connection whose call may still be running. Every failure exit hands it over instead, and
+    /// the settlement decides where:
+    ///  - ABANDONED (the hard ceiling fired, or the caller was cancelled) — the connect is still
+    ///    running, so it is condemned and the park ends when that call returns;
+    ///  - anything else — the connect returned, AMSMB2's own reply timeout included, so it is
+    ///    discarded like any other completed failure (see `discard`).
     ///
     /// The escrow may hold nothing at all: a connector that failed before it constructed anything
     /// delivered nothing, and the claim simply never fires.
@@ -239,20 +232,16 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
     nonisolated func claimAbandonedConnect(
         _ escrow: SMBConnectionEscrow<Connection>,
         failedWith error: any Error,
-        settlement: SMBOperationSettlement,
-        operationTimeout: TimeInterval
+        settlement: SMBOperationSettlement
     ) {
-        let fuse: Duration? = SMBAbandonedCall.leavesRequestQueued(error)
-            ? SMBAbandonedCall.releaseFuse(afterOperationTimeout: operationTimeout)
-            : nil
         SMBDiagnostics.pool.notice(
-            "claimAbandonedConnect abandoned=\(settlement.isAbandoned) "
-                + "fuse=\(fuse.map(String.init(describing:)) ?? "none") error=\(error.networkDiagnostic)")
-        // Not abandoned and nothing queued ⇒ the connect call has returned for good, so the receipt
-        // is already true: mark it, and the park below releases the instant it is made.
-        if fuse == nil, !settlement.isAbandoned { settlement.markSettled() }
+            "claimAbandonedConnect abandoned=\(settlement.isAbandoned) error=\(error.networkDiagnostic)")
+        guard settlement.isAbandoned else {
+            escrow.onDelivery { built in Task { await built.disconnectGracefully() } }
+            return
+        }
         escrow.onDelivery { [graveyard] built in
-            Task { await graveyard.condemn(built, settledBy: settlement, releaseAfter: fuse) }
+            Task { await graveyard.condemn(built, settledBy: settlement) }
         }
     }
 
@@ -355,22 +344,23 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
     /// reuse. The socket may be half-consumed or degraded, so `checkin` would hand the next borrower
     /// somebody else's failure. The connection is disconnected gracefully in the background.
     ///
-    /// **Only for completed operations.** A borrow whose native call is still PENDING must go to
-    /// `condemn` instead — see the law in `SMBConnectionGraveyard`: a graceful disconnect races
-    /// libsmb2's callback dispatch on a wedged socket and crashes. This path stays exactly as it was
-    /// because it is production-proven for the case it now exclusively serves: the call already
-    /// returned, so the drain it performs finds nothing to wait for.
+    /// **Only for completed operations.** A borrow whose native call is still RUNNING must go to
+    /// `condemn` instead — see the law in `SMBConnectionGraveyard`. A call that returned on AMSMB2's
+    /// own reply timeout is a completed operation: its request stays queued in libsmb2, but the
+    /// drain finds nothing running and every late dispatch lands in request-owned memory.
     ///
     /// `nonisolated` and fire-and-forget: it touches no pool state (the connection was already removed
     /// from `idle` at checkout, so simply never re-adding it is the discard) and it must NOT block the
-    /// caller's `disconnect()` on a teardown that could take the full socket timeout.
+    /// caller's `disconnect()` on a teardown that could take the full socket timeout. The blocking
+    /// part never lands on the cooperative pool: AMSMB2 runs the disconnect poll loop and drops its
+    /// `SMB2Client` on the manager's own dispatch queue, and this `Task` only awaits that.
     public nonisolated func discard(_ handle: SMBPooledConnection<Connection>) {
         SMBDiagnostics.pool.notice(
             "discard \(handle.key.host)/\(handle.key.share) warm=\(handle.isWarm)")
         Task { await handle.connection.disconnectGracefully() }
     }
 
-    /// Parks a borrow whose native call is STILL PENDING: no disconnect of any kind, and no release
+    /// Parks a borrow whose native call is STILL RUNNING: no disconnect of any kind, and no release
     /// until `settlement` reports the call has returned. The law and its costs live on
     /// `SMBConnectionGraveyard`; this is the pool-side door to it.
     ///
@@ -378,24 +368,14 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
     /// never re-adding it is the whole eviction — the key is free to cold-connect a replacement the
     /// moment the next borrower asks. Unlike `discard`, this is actor-isolated and awaited: parking a
     /// reference touches no socket, so there is nothing here that could stall a caller.
-    ///
-    /// `fuse` bounds a park that nothing will ever settle — see `SMBConnectionGraveyard.condemn`.
-    func condemn(
-        _ handle: SMBPooledConnection<Connection>,
-        settlement: SMBOperationSettlement,
-        releaseAfter fuse: Duration? = nil
-    ) async {
-        await condemn(handle.connection, settlement: settlement, releaseAfter: fuse)
+    func condemn(_ handle: SMBPooledConnection<Connection>, settlement: SMBOperationSettlement) async {
+        await condemn(handle.connection, settlement: settlement)
     }
 
     /// The same parking for a connection that was never borrowed — share enumeration builds its own
     /// one-shot connection, and a wedged call on it is the identical hazard.
-    func condemn(
-        _ connection: Connection,
-        settlement: SMBOperationSettlement,
-        releaseAfter fuse: Duration? = nil
-    ) async {
-        await graveyard.condemn(connection, settledBy: settlement, releaseAfter: fuse)
+    func condemn(_ connection: Connection, settlement: SMBOperationSettlement) async {
+        await graveyard.condemn(connection, settledBy: settlement)
     }
 
     /// How many connections are currently parked in the graveyard. Test-visible only: condemning is
@@ -410,8 +390,8 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
         get async { await graveyard.interments }
     }
 
-    /// How many parked connections have actually been let go. Test-visible: a fused park can be
-    /// reached by BOTH its settlement and its fuse, and "released exactly once" has no other witness.
+    /// How many parked connections have actually been let go — counted after their discard returns.
+    /// Test-visible: "released exactly once" has no other witness.
     var releasedTotal: Int {
         get async { await graveyard.releaseCount }
     }
@@ -503,17 +483,9 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
         for connection in corpses {
             Task { await connection.disconnectGracefully() }
         }
-        // Parked occupancy is worth knowing but must NOT be awaited inline. The graveyard runs its
-        // last-reference drop on its own actor, and that drop can reach `SMB2Client.deinit` →
-        // `smb2_destroy_context` on a wedged socket. Awaiting it here would park the foreground
-        // flush — and everything queued behind this actor — behind a native teardown, so the
-        // instrumentation would extend the exact stall it was added to measure, and the log would
-        // show `→ foreground SMB flush` with no `←` for a reason that had nothing to do with SMB.
         // Awaited into a local first: the channel takes a non-async autoclosure.
-        Task { [graveyard] in
-            let parked = await graveyard.occupancy
-            SMBDiagnostics.pool.notice("graveyard parked=\(parked)")
-        }
+        let parked = await graveyard.occupancy
+        SMBDiagnostics.pool.notice("graveyard parked=\(parked)")
     }
 
     /// Folds one cold-connect measurement into `host`'s class, with HYSTERESIS on the way down.
@@ -571,7 +543,7 @@ extension SMBConnectionPool where Connection == SMB2Manager {
     /// AMSMB2 never bounds still fails fast.
     ///
     /// Make-then-attach: the manager is delivered BEFORE `connectShare`, so a share attach that
-    /// times out (AMSMB2's reply timeout leaves the request queued) still has an owner for it.
+    /// fails or is abandoned still has an owner to dispose of it.
     public init(
         connectTimeout: TimeInterval = 15,
         maxIdlePerKey: Int = 4,

@@ -20,8 +20,7 @@ enum SMBDiagnostics {
     /// Borrow lifecycle: checkout, check-in, eviction, flush, reap.
     static let pool = Log.retained(category: "SMBPool")
 
-    /// Parking and release of connections with a pending native call — including the FUSED release,
-    /// the one path that lets go of a connection libsmb2 may still hold a request for.
+    /// Parking and release of connections whose native call was still running when we gave up.
     static let graveyard = Log.retained(category: "SMBGraveyard")
 
     /// Directory and share enumeration, bracketed around the native call.

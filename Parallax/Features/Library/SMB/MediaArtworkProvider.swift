@@ -482,8 +482,7 @@ actor MediaArtworkProvider {
             // kept, so this tile doesn't lose a runtime label that a scroll-off/back would restore.
             return .resolved(MediaArtwork(source: .local(cached.url), duration: cached.duration))
         } catch {
-            // A thrown read taints the borrow → discarded on disconnect (never returned to idle);
-            // a reply timeout condemns instead.
+            // A thrown read taints the borrow → discarded on disconnect (never returned to idle).
             // The reader's own flag can't see the tier's HARD TIMEOUT — that fires OUTSIDE the read,
             // which is still stuck in libsmb2 — so the ceiling counts as link evidence in its own
             // right, exactly as `SMBFileSource.isTransportClass` treats it.

@@ -19,9 +19,9 @@ import ParallaxCore
 ///  - a listing that FINISHED with an error DISCARDS (the socket may be half-consumed; the next
 ///    borrower must not get it) — a graceful teardown with nothing left pending to race;
 ///  - a listing still RUNNING when we give up on it — the hard ceiling fired, or the caller was
-///    cancelled — is CONDEMNED: parked alive, never disconnected, never released until its native
-///    call returns. Disconnecting one of those is itself a crash, `gracefully:` or not; the law and
-///    the leak it deliberately accepts are on `SMBConnectionGraveyard`.
+///    cancelled — is CONDEMNED: parked alive, neither disconnected nor released until its native
+///    call returns, then discarded. Disconnecting it earlier is a crash, `gracefully:` or not;
+///    the law and the leak it deliberately accepts are on `SMBConnectionGraveyard`.
 ///
 /// **Share enumeration does not use the pool.** `listShares` has no share to connect to — it is how
 /// the shares are discovered in the first place — and AMSMB2 runs it over its own IPC$ connection,
@@ -92,10 +92,7 @@ public struct PooledSMBLister<Connection: SMBListableConnection>: SMBLister {
         do {
             connection = try await connectServer(target) { escrow.deliver($0) }
         } catch {
-            pool.claimAbandonedConnect(
-                escrow, failedWith: error, settlement: SMBOperationSettlement(),
-                operationTimeout: operationCeiling
-            )
+            pool.claimAbandonedConnect(escrow, failedWith: error, settlement: SMBOperationSettlement())
             throw error
         }
         connection.setOperationTimeout(operationCeiling)
@@ -115,10 +112,6 @@ public struct PooledSMBLister<Connection: SMBListableConnection>: SMBLister {
             // one down is the graceful-disconnect crash, one-shot connection or not.
             if settlement.isAbandoned {
                 await pool.condemn(connection, settlement: settlement)
-            } else if SMBAbandonedCall.leavesRequestQueued(error) {
-                // Nothing will ever settle this receipt (the reply timeout left the request queued
-                // in libsmb2), so it carries the fuse that bounds the park — see `list`.
-                await pool.condemn(connection, settlement: settlement, releaseAfter: releaseFuse)
             } else {
                 Self.tearDown(connection)
             }
@@ -197,18 +190,13 @@ public struct PooledSMBLister<Connection: SMBListableConnection>: SMBLister {
             // No failure exit ever returns the borrow to the pool — the socket is at best of unknown
             // state — but HOW it leaves splits on one question: is the native call still running?
             //
-            //  - Finished badly (the server said no, the socket returned an error): DISCARD. The
-            //    graceful teardown finds nothing pending, which is the case it has always served.
+            //  - Finished badly (the server said no, the socket returned an error, AMSMB2's own
+            //    reply timeout gave up): DISCARD. The graceful teardown finds nothing running.
             //  - Still running (the hard ceiling fired, or the caller was cancelled while libsmb2 sat
             //    in its poll loop): CONDEMN. Disconnecting that — gracefully included — is a crash,
             //    not a cleanup; see `SMBConnectionGraveyard`. The settlement tells the two apart
             //    because `withHardTimeout` marks it before it resumes us, and it is also what later
             //    releases the parked connection.
-            //  - Finished badly with AMSMB2's OWN reply timeout: also CONDEMN, but with a FUSE. That
-            //    error looks like a completed failure but leaves the request queued inside libsmb2 —
-            //    see `SMBAbandonedCall`. Nothing will ever settle this one, so without the fuse it
-            //    parks for good, leaking a socket and a server session per slow listing. The call
-            //    itself has RETURNED here, which is what makes a timed release safe.
             //
             // Cancellation is deliberately never a check-in: the native call cannot observe it, so a
             // cancelled listing leaves the socket mid-response exactly like a wedged one. The cost is
@@ -216,16 +204,14 @@ public struct PooledSMBLister<Connection: SMBListableConnection>: SMBLister {
             var deservesFreshRetry = false
             SMBDiagnostics.lister.error(
                 "← list FAILED \(share)\(DiagnosticsRedaction.path(listPath)) warm=\(borrowed.isWarm) "
-                    + "abandoned=\(settlement.isAbandoned) "
-                    + "queued=\(SMBAbandonedCall.leavesRequestQueued(error)) "
-                    + "error=\(error.networkDiagnostic)")
+                    + "abandoned=\(settlement.isAbandoned) error=\(error.networkDiagnostic)")
             if settlement.isAbandoned {
                 await pool.condemn(borrowed, settlement: settlement)
-            } else if SMBAbandonedCall.leavesRequestQueued(error) {
-                await pool.condemn(borrowed, settlement: settlement, releaseAfter: releaseFuse)
             } else {
                 pool.discard(borrowed)
-                // Only here: the call RETURNED, so a retry cannot be racing anything still pending.
+                // Only here: the call RETURNED and the retry gets a fresh connection, so it races
+                // nothing. AMSMB2's reply timeout is transport-class: on a warm borrow it is the
+                // after-sleep corpse that wrote into a dead socket and never heard back.
                 // `isTransportClass` already excludes cancellation (and content-level answers).
                 deservesFreshRetry = borrowed.isWarm
                     && SMBFileSource.isTransportClass(error)
@@ -247,12 +233,6 @@ public struct PooledSMBLister<Connection: SMBListableConnection>: SMBLister {
     /// real connection's timeout setter.
     private var operationCeiling: TimeInterval {
         max(0, connectTimeout)
-    }
-
-    /// How long a park nobody can ever settle holds its connection before the graveyard lets go.
-    /// Sized off the same ceiling the operation ran under — see `SMBAbandonedCall.releaseFuse`.
-    private var releaseFuse: Duration {
-        SMBAbandonedCall.releaseFuse(afterOperationTimeout: operationCeiling)
     }
 
     /// Outer wall-clock ceiling on one AMSMB2 operation. AMSMB2's own `timeout` bounds SMB PDU

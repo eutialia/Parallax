@@ -149,9 +149,9 @@ struct SMBPlaybackResolver {
             // wedge on the reader's actor and re-stall resolve()'s return — the very veil-stall the 4s
             // deadline just avoided. Fire-and-forget cleanup. With pooling this is also the CORRECTNESS
             // path: disconnect() sees the still-in-flight op (inFlightOps > 0) and CONDEMNS the borrow
-            // rather than checking it in — it is parked alive and never disconnected in any mode, and
-            // the reference is let go only once that native read finally returns (a reply timeout
-            // condemns too, but on a fuse). Either way the next borrower never sees this socket.
+            // rather than checking it in — it is parked alive, untouched while the native read runs,
+            // and discarded once that read finally returns. Either way the next borrower never sees
+            // this socket.
             //
             // Sample hadTransportFault first: resolve still falls through to native VLC (no throw,
             // no SMBPlaybackItem field the VM reacts to), so a connect/op blip that the probe then

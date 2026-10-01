@@ -6,7 +6,7 @@ import Testing
 /// lifecycle it replaced a per-screen connection with: warm reuse, the discard-on-failure rule, and
 /// the invariant the whole rewrite exists for — a wedged connection is never released while its
 /// native call is still pending.
-/// Time-limited: most of these tests wait on a gate, a fuse or a detached check-in, so a regression
+/// Time-limited: most of these tests wait on a gate or a detached check-in, so a regression
 /// that never signals should fail red rather than hang the whole run.
 @Suite("PooledSMBLister", .timeLimit(.minutes(3)))
 struct PooledSMBListerTests {
@@ -170,29 +170,28 @@ struct PooledSMBListerTests {
     ///    connection forever: every pooled socket is dead on wake and the pool cannot tell, so the
     ///    first folder opened is handed a corpse. Retried on a guaranteed-fresh connection rather
     ///    than putting an error scrim in front of a user whose server is perfectly reachable;
+    ///  - AMSMB2's own REPLY TIMEOUT is the same corpse seen from the other side — the request went
+    ///    into a dead socket and nothing ever answered — so it earns the same fresh retry;
     ///  - an AUTH failure is a real answer from the server — the connection worked well enough to be
-    ///    refused on. Retrying wastes a handshake and can lock an account out;
-    ///  - AMSMB2's own REPLY TIMEOUT leaves a request queued inside libsmb2, so the borrow is
-    ///    condemned and a retry over the same key would be racing that pending call.
+    ///    refused on. Retrying wastes a handshake and can lock an account out.
+    /// Every one of them RETURNED, so the failed borrow is discarded, never condemned.
     struct WarmBorrowFailure: Sendable, CustomTestStringConvertible {
         let label: String
         let error: any Error & Sendable
         /// Whether the listing is re-attempted on a guaranteed-fresh connection.
         let retries: Bool
-        /// Whether the borrow is parked instead of disposed of (libsmb2 still owns a request).
-        let condemns: Bool
 
         var testDescription: String { label }
     }
 
     static let warmBorrowFailures: [WarmBorrowFailure] = [
-        .init(label: "transport failure", error: POSIXError(.ECONNRESET), retries: true, condemns: false),
+        .init(label: "transport failure", error: POSIXError(.ECONNRESET), retries: true),
+        .init(label: "reply timeout", error: innerTimeoutError, retries: true),
         // EPERM is libsmb2's credential refusal — see `SMBFileSource.classify`.
-        .init(label: "auth failure", error: POSIXError(.EPERM), retries: false, condemns: false),
-        .init(label: "reply timeout", error: innerTimeoutError, retries: false, condemns: true),
+        .init(label: "auth failure", error: POSIXError(.EPERM), retries: false),
     ]
 
-    @Test("what a failure on a warm borrow gets: a fresh retry, a surfaced answer, or the graveyard",
+    @Test("what a failure on a warm borrow gets: a fresh retry or a surfaced answer, and a discard",
           arguments: warmBorrowFailures)
     func warmBorrowFailureRouting(_ scenario: WarmBorrowFailure) async throws {
         let world = FakeSMBWorld()
@@ -220,18 +219,9 @@ struct PooledSMBListerTests {
             #expect(world.connectAttempts == 1, "nothing was re-attempted, so nothing reconnected")
         }
 
-        if scenario.condemns {
-            #expect(await pool.condemnedCount == 1, "the queued request parks the connection")
-            #expect(world.disconnectedIDs.isEmpty, "a discard here would disconnect over a live request")
-            // Leave no fuse burning behind the test — it is armed on the fake timer either way.
-            await world.fuse.awaitRequests(1)
-            await world.fuse.fire()
-            await untilSettled { await pool.condemnedCount == 0 }
-        } else {
-            await untilSettled { world.disconnectedIDs == [0] }
-            #expect(world.disconnectedIDs == [0], "the borrow that failed is disposed of, never pooled")
-            #expect(await pool.condemnedCount == 0, "a returned call belongs to discard, not the graveyard")
-        }
+        await untilSettled { world.disconnectedIDs == [0] }
+        #expect(world.disconnectedIDs == [0], "the borrow that failed is disposed of, never pooled")
+        #expect(await pool.condemnedTotal == 0, "a returned call belongs to discard, not the graveyard")
     }
 
     /// The retry is strictly one, and strictly about the pool having handed out a corpse. A FRESH
@@ -294,39 +284,29 @@ struct PooledSMBListerTests {
 
     /// The regression test for the ownership hole: the connector builds its manager and only THEN
     /// attaches the share, so an attach that hits AMSMB2's reply timeout leaves a live connection
-    /// with a request still queued in libsmb2. Dropping it there let ARC run `SMB2Client.deinit` —
-    /// a disconnect plus a context destroy — over that pending request.
-    @Test("a share attach that times out condemns the manager the connector had already built")
-    func connectTimeoutCondemnsTheHalfBuiltConnection() async throws {
+    /// nobody is waiting on. Dropping it there let ARC run `SMB2Client.deinit` — a blocking
+    /// disconnect plus a context destroy — wherever the last reference happened to fall.
+    @Test("a share attach that times out discards the manager the connector had already built")
+    func connectTimeoutDiscardsTheHalfBuiltConnection() async throws {
         let world = FakeSMBWorld()
-        let ceiling: TimeInterval = 9
-        let pool = makeFakePool(world: world, connectTimeout: ceiling)
+        let pool = makeFakePool(world: world)
         let lister = makePooledLister(world: world, pool: pool)
         world.failConnects(with: innerTimeoutError, afterBuilding: true)
 
         await #expect(throws: POSIXError.self) { _ = try await lister.list(share: "Media", path: "") }
 
         #expect(world.connectedIDs == [0], "the manager existed before the attach failed")
-        // Claimed off the caller's path, so the park lands a turn later than the throw.
-        await untilSettled { await pool.condemnedCount == 1 }
-        #expect(await pool.condemnedCount == 1, "…and it is parked, not dropped for ARC to deinit")
-        #expect(world.disconnectedIDs.isEmpty)
-        #expect(world.releasedIDs.isEmpty, "a queued request means the reference is held, not let go")
-
-        // Nothing can ever settle this receipt, so a fuse — sized off the ceiling the connect ran
-        // under — is what ends the park.
-        await world.fuse.awaitRequests(1)
-        #expect(await world.fuse.requested == [SMBAbandonedCall.releaseFuse(afterOperationTimeout: ceiling)])
-        await world.fuse.fire()
-        await untilSettled { world.releasedIDs == [0] }
-        #expect(world.disconnectedIDs.isEmpty, "…and it still speaks no SMB on the way out")
+        // Claimed off the caller's path, and the attach RETURNED — an ordinary discard.
+        await untilSettled { world.disconnectedIDs == [0] }
+        #expect(world.disconnectedIDs == [0], "disposed of with a graceful disconnect, not left to ARC")
+        #expect(await pool.condemnedTotal == 0, "a returned call never reaches the graveyard")
     }
 
     /// Share enumeration builds its own connection outside the pool, so the same half-built failure
     /// reaches it by a different route — and it is the one call that could strand a connection
     /// outright, since nothing else holds a reference to one it never returned.
-    @Test("a share enumeration whose connect times out condemns its half-built connection too")
-    func listSharesConnectTimeoutCondemnsTheHalfBuiltConnection() async throws {
+    @Test("a share enumeration whose connect times out discards its half-built connection too")
+    func listSharesConnectTimeoutDiscardsTheHalfBuiltConnection() async throws {
         let world = FakeSMBWorld()
         let pool = makeFakePool(world: world)
         let lister = makePooledLister(world: world, pool: pool)
@@ -335,14 +315,9 @@ struct PooledSMBListerTests {
         await #expect(throws: POSIXError.self) { _ = try await lister.listShares() }
 
         #expect(world.connectedIDs == [0])
-        await untilSettled { await pool.condemnedCount == 1 }
-        #expect(await pool.condemnedCount == 1, "the one-shot connection is parked, not stranded")
-        #expect(world.disconnectedIDs.isEmpty)
-
-        await world.fuse.awaitRequests(1)
-        await world.fuse.fire()
-        await untilSettled { world.releasedIDs == [0] }
-        #expect(world.disconnectedIDs.isEmpty)
+        await untilSettled { world.disconnectedIDs == [0] }
+        #expect(world.disconnectedIDs == [0])
+        #expect(await pool.condemnedTotal == 0)
     }
 
     // MARK: - The condemn rule (a listing still RUNNING)
@@ -381,10 +356,9 @@ struct PooledSMBListerTests {
     }
 
     /// The other half: the parked connection is not parked forever when its call DOES come back. The
-    /// settle signal releases the reference — and still issues no disconnect, because destroying a
-    /// context only ever crashed while requests were pending, and speaking SMB on a socket this
-    /// wedged is what the first crash stack was.
-    @Test("a condemned connection is released — without a disconnect — once its call settles")
+    /// settle signal hands it to the ordinary graceful discard — safe only now, because nothing is
+    /// running on the context any more.
+    @Test("a condemned connection is discarded once its call settles, never before")
     func settledCallReleasesTheCondemnedConnection() async throws {
         let world = FakeSMBWorld()
         let pool = makeFakePool(world: world)
@@ -402,11 +376,12 @@ struct PooledSMBListerTests {
         // The abandoned native call finally returns.
         await world.operationGate.open()
 
-        await untilSettled { await pool.condemnedCount == 0 }
+        await untilSettled { await pool.releasedTotal == 1 }
         #expect(await pool.condemnedCount == 0, "the plot is freed once nothing is pending")
-        // The abandoned call resumed on a live connection, and nothing was ever disconnected — so
-        // the use-after-free shape had nothing to occur on.
-        #expect(world.disconnectedIDs.isEmpty, "releasing a settled connection speaks no SMB")
+        #expect(world.disconnectedIDs == [0], "the settled connection leaves through the discard")
+        // The abandoned call resumed BEFORE the teardown, so the use-after-free shape never formed.
+        #expect(world.tornDownWithPendingOps.isEmpty)
+        #expect(world.useAfterFreeIDs.isEmpty)
     }
 
     /// Cancellation is the same hazard wearing different clothes: the native call cannot observe it,
@@ -432,24 +407,22 @@ struct PooledSMBListerTests {
         #expect(world.disconnectedIDs.isEmpty)
         #expect(world.tornDownWithPendingOps.isEmpty)
 
-        // …and it leaves the same way any other park does: when the abandoned call finally returns,
-        // the reference is dropped and no disconnect is ever issued.
+        // …and it leaves the same way any other park does: discarded once the abandoned call
+        // finally returns, and not a moment earlier.
         await world.operationGate.open()
-        await untilSettled { await pool.condemnedCount == 0 }
+        await untilSettled { await pool.releasedTotal == 1 }
         #expect(await pool.condemnedCount == 0, "the settled call frees the plot")
-        #expect(await pool.releasedTotal == 1, "released exactly once")
-        #expect(world.disconnectedIDs.isEmpty)
+        #expect(world.disconnectedIDs == [0], "discarded exactly once")
+        #expect(world.tornDownWithPendingOps.isEmpty)
     }
 
-    // MARK: - AMSMB2's own reply timeout (a completed failure that is still pending)
+    // MARK: - AMSMB2's own reply timeout (a completed failure)
 
-    /// The third state, and the one that used to be mis-sorted: AMSMB2's poll loop gave up and threw,
-    /// so nothing was abandoned in the hard-timeout sense and the call RETURNED — but it never
-    /// dequeued the request, so libsmb2 still owns it and will still dispatch its callback. The old
-    /// code read that as "finished badly" and discarded, which is a graceful disconnect over a live
-    /// request. It has to condemn.
-    @Test("a listing that hit AMSMB2's own reply timeout is condemned, not discarded")
-    func innerTimeoutListingIsCondemned() async throws {
+    /// AMSMB2's poll loop gave up and threw, so the call RETURNED with its request still queued in
+    /// libsmb2. Nothing is running on the context, and every late dispatch lands in request-owned
+    /// memory, so it is an ordinary completed failure: discarded, never parked.
+    @Test("a listing that hit AMSMB2's own reply timeout is discarded, not condemned")
+    func innerTimeoutListingIsDiscarded() async throws {
         let world = FakeSMBWorld()
         let pool = makeFakePool(world: world)
         let lister = makePooledLister(world: world, pool: pool)
@@ -457,30 +430,14 @@ struct PooledSMBListerTests {
 
         await #expect(throws: POSIXError.self) { _ = try await lister.list(share: "Media", path: "") }
 
-        #expect(await pool.condemnedCount == 1, "the request is still queued in libsmb2 — park it")
-        #expect(world.disconnectedIDs.isEmpty, "a discard here would be a disconnect over a live request")
-        #expect(world.tornDownWithPendingOps.isEmpty)
-        _ = try await pool.checkout(fakeTarget(host: "nas", share: "Media"))
-        #expect(world.connectedIDs == [0, 1], "the condemned connection is never handed out again")
-
-        // Nothing can ever settle it — libsmb2 gives us no signal that the request retired — so this
-        // park is bounded by a FUSE instead, sized off the ceiling the listing ran under. Without it
-        // a slow NAS leaks a socket and a server session per timed-out listing.
-        await world.fuse.awaitRequests(1)
-        #expect(
-            await world.fuse.requested == [SMBAbandonedCall.releaseFuse(afterOperationTimeout: 15)],
-            "the fuse is derived from the operation ceiling, never typed"
-        )
-        #expect(await pool.condemnedCount == 1, "parked for the whole fuse")
-
-        await world.fuse.fire()
-        await untilSettled { await pool.condemnedCount == 0 }
-        #expect(await pool.condemnedCount == 0, "the fuse frees the plot")
-        #expect(world.disconnectedIDs.isEmpty, "…and still speaks no SMB on the way out")
+        await untilSettled { world.disconnectedIDs == [0] }
+        #expect(world.disconnectedIDs == [0], "the timed-out borrow is disposed of, never pooled")
+        #expect(await pool.condemnedTotal == 0, "a returned call never reaches the graveyard")
+        #expect(world.connectAttempts == 1, "a cold borrow that timed out is the answer — no retry")
     }
 
-    @Test("a share enumeration that hit AMSMB2's own reply timeout is condemned too")
-    func innerTimeoutListSharesIsCondemned() async throws {
+    @Test("a share enumeration that hit AMSMB2's own reply timeout is discarded too")
+    func innerTimeoutListSharesIsDiscarded() async throws {
         let world = FakeSMBWorld()
         let pool = makeFakePool(world: world)
         let lister = makePooledLister(world: world, pool: pool)
@@ -488,14 +445,9 @@ struct PooledSMBListerTests {
 
         await #expect(throws: POSIXError.self) { _ = try await lister.listShares() }
 
-        #expect(await pool.condemnedCount == 1)
-        #expect(world.disconnectedIDs.isEmpty, "the one-shot connection is parked, not torn down")
-
-        // Same unsettleable receipt as the listing path, so the same fuse ends the park.
-        await world.fuse.awaitRequests(1)
-        await world.fuse.fire()
-        await untilSettled { await pool.condemnedCount == 0 }
-        #expect(world.disconnectedIDs.isEmpty, "…and the fused release still speaks no SMB")
+        await untilSettled { world.disconnectedIDs == [0] }
+        #expect(world.disconnectedIDs == [0], "the one-shot connection is torn down, not parked")
+        #expect(await pool.condemnedTotal == 0)
     }
 
     // MARK: - Share enumeration
@@ -551,9 +503,9 @@ struct PooledSMBListerTests {
 
         // The abandoned enumeration returns → the park ends, exactly as it does for a borrow.
         await world.operationGate.open()
-        await untilSettled { await pool.condemnedCount == 0 }
+        await untilSettled { await pool.releasedTotal == 1 }
         #expect(await pool.condemnedCount == 0, "the settled call frees the plot")
-        #expect(await pool.releasedTotal == 1, "released exactly once")
-        #expect(world.disconnectedIDs.isEmpty)
+        #expect(world.disconnectedIDs == [0], "discarded exactly once")
+        #expect(world.tornDownWithPendingOps.isEmpty)
     }
 }

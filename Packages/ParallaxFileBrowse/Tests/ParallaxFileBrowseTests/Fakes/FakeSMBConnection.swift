@@ -61,8 +61,6 @@ final class FakeSMBWorld: @unchecked Sendable {
     /// tree-disconnect plus a logoff round trip), which is how a test proves teardown is off the
     /// caller's critical path and that several teardowns run concurrently rather than in series.
     let teardownGate = AsyncGate()
-    /// Drives the graveyard release fuse — see `makeFakePool`. Nothing sleeps for real.
-    let fuse = FakeFuseTimer()
 
     private let state = OSAllocatedUnfairLock(initialState: State())
 
@@ -73,9 +71,6 @@ final class FakeSMBWorld: @unchecked Sendable {
         var connectAttempts = 0
         var connected: [Int] = []
         var disconnected: [Int] = []
-        /// Ids whose fake connection has actually been DEALLOCATED — recorded from its `deinit`, so
-        /// "the last reference was dropped" is an observation rather than an inference.
-        var released: [Int] = []
         var latencyByHost: [String: Duration] = [:]
         var connectError: (any Error)?
         /// Whether `connectError` is thrown AFTER the connection has been built and delivered.
@@ -116,11 +111,6 @@ final class FakeSMBWorld: @unchecked Sendable {
     var connectedIDs: [Int] { state.withLock { $0.connected } }
     var disconnectedIDs: [Int] { state.withLock { $0.disconnected } }
 
-    /// Ids whose connection has been deallocated. The graveyard's whole promise is "release speaks
-    /// no SMB", and a release is by definition the ABSENCE of a call — so the only way to witness
-    /// one is to watch the object die. An id here with no matching entry in `disconnectedIDs` is
-    /// exactly that promise kept.
-    var releasedIDs: [Int] { state.withLock { $0.released } }
     var readRanges: [Range<UInt64>] { state.withLock { $0.readRanges } }
     var readPaths: [String] { state.withLock { $0.readPaths } }
     var listedPaths: [String] { state.withLock { $0.listedPaths } }
@@ -208,11 +198,6 @@ final class FakeSMBWorld: @unchecked Sendable {
         if let error = failure.error { throw error }
         clock.advance(by: latency)
         return connection
-    }
-
-    /// Called from `FakeSMBConnection.deinit` — see `releasedIDs`.
-    fileprivate func recordRelease(_ id: Int) {
-        state.withLock { $0.released.append(id) }
     }
 
     /// Teardown of one connection, in EVERY mode the production code has — including
@@ -312,10 +297,7 @@ final class FakeSMBWorld: @unchecked Sendable {
 /// a test asserts on one place regardless of how many connections the pool handed out. Conforms to
 /// BOTH borrower protocols so one fake serves the reader and the lister suites alike.
 ///
-/// A CLASS, and deliberately: the real `SMB2Manager` is one, and the graveyard's central claim —
-/// that a park ends by dropping the last reference and nothing else — is only testable if a dropped
-/// reference is observable. `deinit` reports that to the world, so "released, never disconnected"
-/// becomes a fact a test can fail on rather than an inference from silence.
+/// A CLASS, like the real `SMB2Manager`.
 ///
 /// `Sendable` without `@unchecked`: both stored properties are immutable, and all mutable state
 /// lives behind the world's lock.
@@ -327,8 +309,6 @@ final class FakeSMBConnection: SMBReadableConnection, SMBListableConnection, Sen
         self.id = id
         self.world = world
     }
-
-    deinit { world.recordRelease(id) }
 
     func disconnectGracefully() async { await world.disconnect(id) }
     func setOperationTimeout(_ seconds: TimeInterval) { world.recordTimeout(seconds) }
@@ -359,33 +339,27 @@ func makeFakePool(
         idleTTL: idleTTL,
         sweepInterval: sweepInterval,
         now: { [clock = world.clock] in clock.now() },
-        connect: { try await world.connect($0, deliver: $1) },
-        fuseSleep: { [fuse = world.fuse] duration in await fuse.wait(duration) }
+        connect: { try await world.connect($0, deliver: $1) }
     )
 }
 
-/// Checks a connection out and condemns it WITHOUT leaving a reference behind, returning its id.
-///
-/// The borrow handle lives and dies inside this function on purpose: the graveyard's promise is that
-/// it holds the LAST reference and lets go by dropping it, and a test that keeps a handle of its own
-/// can never witness that — `world.releasedIDs` would stay empty however correct the code is.
+/// Checks a connection out and condemns it, returning its id.
 @discardableResult
 func condemnFreshBorrow(
     from pool: SMBConnectionPool<FakeSMBConnection>,
     settlement: SMBOperationSettlement,
-    releaseAfter fuse: Duration? = nil,
     target: SMBConnectionTarget = fakeTarget()
 ) async throws -> Int {
     let borrowed = try await pool.checkout(target)
     let id = borrowed.connection.id
-    await pool.condemn(borrowed, settlement: settlement, releaseAfter: fuse)
+    await pool.condemn(borrowed, settlement: settlement)
     return id
 }
 
 /// AMSMB2's OWN reply timeout, exactly as it reaches our code: a `POSIXError(.ETIMEDOUT)` thrown
-/// from its poll loop. It reads like an ordinary completed failure but leaves the request queued
-/// inside libsmb2, so every borrow lifecycle has to route it to the graveyard rather than to a
-/// discard. Shared so the lister and reader suites test the same error the real one throws.
+/// from its poll loop. The request stays queued inside libsmb2, but the call RETURNED, so every
+/// borrow lifecycle discards it like any other completed failure — never the graveyard. Shared so
+/// the lister and reader suites test the same error the real one throws.
 let innerTimeoutError = POSIXError(.ETIMEDOUT)
 
 /// A target for the fake pool. Defaults are irrelevant to every assertion except the ones that
