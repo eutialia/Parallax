@@ -44,13 +44,17 @@ final class SpyNowPlaying: NowPlayingUpdating {
     private(set) var configureCount = 0
     private(set) var updates: [(position: CMTime, duration: CMTime, isPlaying: Bool, title: String)] = []
     private(set) var clearCount = 0
+    /// The remote toggle the view model registered — what a headset or lock-screen press fires.
+    private(set) var onToggle: (@MainActor () -> Void)?
 
     func configure(
         onSeek: @escaping @MainActor (CMTime) -> Void,
         onPlay: @escaping @MainActor () -> Void,
-        onPause: @escaping @MainActor () -> Void
+        onPause: @escaping @MainActor () -> Void,
+        onToggle: @escaping @MainActor () -> Void
     ) {
         configureCount += 1
+        self.onToggle = onToggle
     }
 
     func update(position: CMTime, duration: CMTime, isPlaying: Bool, title: String) {

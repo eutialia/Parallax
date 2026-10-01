@@ -562,10 +562,11 @@ final class PlayerViewModel {
         await commitSeek(to: CMTime(seconds: seconds, preferredTimescale: 600))
     }
 
-    /// Optimistic transport toggle from the play/pause button. Flips to the opposite of the
-    /// user's INTENT (`desiredPlaying`), never the engine mirror: inside the mirror's lag
-    /// window (wmv/VLC settles for seconds) `isPlaying` can still read the pre-command value,
-    /// so toggling off it did the exact opposite of what the press asked for.
+    /// Optimistic transport toggle from the play/pause button and the remote (headset, Now
+    /// Playing) toggle command. Flips to the opposite of the user's INTENT (`desiredPlaying`),
+    /// never the engine mirror or the Now Playing rate: inside the mirror's lag window
+    /// (wmv/VLC settles for seconds) both can still read the pre-command value, so toggling
+    /// off them did the exact opposite of what the press asked for.
     func togglePlayPause() {
         setPlaying(!desiredPlaying)
     }
@@ -1846,7 +1847,8 @@ final class PlayerViewModel {
                 // Route through setPlaying (not engine.play/pause directly) so a remote command
                 // clears any pending scrub latch — otherwise it's swallowed and the glyph sticks.
                 onPlay: { [weak self] in self?.setPlaying(true) },
-                onPause: { [weak self] in self?.setPlaying(false) }
+                onPause: { [weak self] in self?.setPlaying(false) },
+                onToggle: { [weak self] in self?.togglePlayPause() }
             )
         }
 

@@ -10,7 +10,8 @@ protocol NowPlayingUpdating: AnyObject {
     func configure(
         onSeek: @escaping @MainActor (CMTime) -> Void,
         onPlay: @escaping @MainActor () -> Void,
-        onPause: @escaping @MainActor () -> Void
+        onPause: @escaping @MainActor () -> Void,
+        onToggle: @escaping @MainActor () -> Void
     )
     func update(position: CMTime, duration: CMTime, isPlaying: Bool, title: String)
     func clear()
@@ -24,6 +25,7 @@ final class NowPlayingController: NowPlayingUpdating {
     private var seekHandler: ((CMTime) -> Void)?
     private var playHandler: (() -> Void)?
     private var pauseHandler: (() -> Void)?
+    private var toggleHandler: (() -> Void)?
 
     /// (command, target token) pairs — kept so we can `removeTarget` on teardown.
     /// Simply dropping the token does NOT deregister; the shared command center
@@ -44,12 +46,14 @@ final class NowPlayingController: NowPlayingUpdating {
     func configure(
         onSeek: @escaping @MainActor (CMTime) -> Void,
         onPlay: @escaping @MainActor () -> Void,
-        onPause: @escaping @MainActor () -> Void
+        onPause: @escaping @MainActor () -> Void,
+        onToggle: @escaping @MainActor () -> Void
     ) {
         removeAllTargets()   // guard against double-configure accumulating handlers
         seekHandler = onSeek
         playHandler = onPlay
         pauseHandler = onPause
+        toggleHandler = onToggle
 
         let center = MPRemoteCommandCenter.shared()
 
@@ -65,9 +69,7 @@ final class NowPlayingController: NowPlayingUpdating {
         }
         let toggleToken = center.togglePlayPauseCommand.addTarget { [weak self] _ in
             guard let self else { return .commandFailed }
-            let info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
-            let rate = info[MPNowPlayingInfoPropertyPlaybackRate] as? Double ?? 0
-            if rate > 0 { self.pauseHandler?() } else { self.playHandler?() }
+            self.toggleHandler?()
             return .success
         }
         let seekToken = center.changePlaybackPositionCommand.addTarget { [weak self] event in

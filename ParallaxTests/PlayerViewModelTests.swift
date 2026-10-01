@@ -3482,6 +3482,33 @@ struct PlayerViewModelTests {
         #expect(Array(engine.calls.dropFirst(before)) == ["pause"])
     }
 
+    /// The headset / lock-screen twin of the button bug: the remote toggle decided from the
+    /// Now Playing rate, which the `.paused` beat had already written to 0 while the user's
+    /// intent was still "playing" — so the press resumed instead of pausing.
+    @Test("the remote toggle flips the user's intent, not the lagging Now Playing rate")
+    func remoteToggleReadsIntentNotTheRate() async throws {
+        let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        let resolved = PlayerFixtures.resolved()
+        let nowPlaying = SpyNowPlaying()
+        let vm = makePlayerVM(engine: engine, resolved: resolved, nowPlaying: nowPlaying)
+        await vm.start(item: PlayerFixtures.movieDetail())
+        engine.push(.playing(10, duration: resolved.runtime!))
+        try await engine.settle()
+
+        await vm.engine?.pause()
+        engine.push(.paused(10, duration: resolved.runtime!))
+        try await engine.settle()
+        #expect(nowPlaying.updates.last?.isPlaying == false)
+        #expect(vm.desiredPlaying == true)
+
+        let before = engine.calls.count
+        let toggle = try #require(nowPlaying.onToggle)
+        toggle()
+        #expect(vm.desiredPlaying == false)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(Array(engine.calls.dropFirst(before)) == ["pause"])
+    }
+
     // MARK: - desiredPlaying: the user's transport intent, immune to the engine's beat lag
 
     @Test("engine beats drive isPlaying but never the intent: the mirror lags, the intent doesn't")
