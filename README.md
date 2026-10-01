@@ -38,7 +38,7 @@ Problems Parallax can't fix on its own, or could only fix with trade-offs it doe
 
 Parallax is on the [App Store][app-store]. The App Store build is compiled from this repository; the price covers the Apple developer membership and ongoing development.
 
-To build it yourself you need Xcode 26. Clone the repo, open `Parallax.xcodeproj`, and run; simulator builds work as-is. For device builds, supply your signing team once (it stays out of git): `echo 'DEVELOPMENT_TEAM = YOURTEAMID' > Config/Signing.local.xcconfig`. App logic lives in the local Swift packages under `Packages/`; the app target is UI and wiring.
+To build it yourself you need Xcode 27. Clone the repo, open `Parallax.xcodeproj`, and run; simulator builds work as-is. For device builds, supply your signing team once (it stays out of git): `echo 'DEVELOPMENT_TEAM = YOURTEAMID' > Config/Signing.local.xcconfig`. App logic lives in the local Swift packages under `Packages/`; the app target is UI and wiring.
 
 ## License
 

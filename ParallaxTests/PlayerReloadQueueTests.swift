@@ -444,7 +444,7 @@ struct PlayerReloadQueueTests {
         #expect(merged, "the seek took the in-stream road against an engine mid-load")
 
         outgoing.release(.endAudio)
-        await seeking.value
+        _ = await seeking.value
 
         #expect(asks.count == 3)
         #expect(asks.last == ResolveAsk(start: 3_000, audio: 3, subtitle: 1))
@@ -1006,7 +1006,7 @@ struct PlayerReloadQueueTests {
         #expect(vm.selectedAudioTrack == audio4)
 
         outgoing.release(.endAudio)
-        await seeking.value
+        _ = await seeking.value
 
         #expect(asks.count == 3)
         #expect(asks.last?.audio == 4, "the pick was answered against the half-loaded session")

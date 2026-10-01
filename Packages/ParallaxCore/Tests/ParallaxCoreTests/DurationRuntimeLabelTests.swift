@@ -16,7 +16,7 @@ struct DurationRuntimeLabelTests {
         (83 * 60 + 59, "1h 23m"),     // leftover seconds floor, never spill into 24m
         (0, ""),                      // zero renders nothing, not "0m"
         (-120, ""),                   // and neither does a negative
-    ])
+    ] as [(Int, String)])
     func compactLabel(seconds: Int, expected: String) {
         #expect(Duration.seconds(seconds).compactRuntimeLabel == expected)
     }

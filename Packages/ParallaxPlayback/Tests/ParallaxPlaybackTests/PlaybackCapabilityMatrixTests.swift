@@ -47,7 +47,7 @@ struct PlaybackCapabilityMatrixTests {
          Set(PlaybackCapabilityMatrix.vlcAudioCodecs.map(\.rawValue))),
         ("subtitleFormats", Set(PlaybackCapabilityMatrix.avKitSubtitleFormats.map(\.rawValue)),
          Set(PlaybackCapabilityMatrix.vlcSubtitleFormats.map(\.rawValue))),
-    ])
+    ] as [(String, Set<String>, Set<String>)])
     func vlcIsSupersetOfAVKit(axis: String, avKit: Set<String>, vlc: Set<String>) {
         #expect(avKit.isSubset(of: vlc), "\(axis): VLC dropped \(avKit.subtracting(vlc))")
     }

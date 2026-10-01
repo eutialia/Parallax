@@ -9,7 +9,7 @@ import ParallaxJellyfin
 /// 4c.5) for deterministic throttle tests; this protocol omits it and the
 /// conformance bridges with a real wall-clock value. reportStart/reportStopped
 /// match the actor's signatures exactly.
-protocol PlaybackReporting: Sendable {
+nonisolated protocol PlaybackReporting: Sendable {
     func reportStart(_ beat: ProgressBeat) async
     func reportProgress(_ beat: ProgressBeat) async
     func reportStopped(_ beat: ProgressBeat) async

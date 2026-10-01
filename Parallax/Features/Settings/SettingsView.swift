@@ -213,7 +213,7 @@ struct SettingsView: View {
     /// Keychain or rejected by the server) to a display row so it stays visible and actionable
     /// instead of ghosting in UserDefaults.
     static func signedOutRows(_ servers: [PersistedServer]) -> [SignedOutServerRow] {
-        servers.compactMap(SignedOutServerRow.init)
+        servers.compactMap { SignedOutServerRow($0) }
     }
 
     /// Maps each `.smb` `PersistedServer` to a display row — one row per server, one server per host.
@@ -448,7 +448,7 @@ private struct SettingsRootPreview: View {
                         user: UserSnapshot(id: "u", name: "alice", serverLastUpdatedAt: nil)
                     ))
                 ),
-            ].compactMap(SignedOutServerRow.init),
+            ].compactMap { SignedOutServerRow($0) },
             onSelectJellyfin: { _ in },
             onSelectSMBServer: { _ in },
             onAddServer: {},

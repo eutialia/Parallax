@@ -95,7 +95,7 @@ struct EpisodeCaptionTests {
 struct EpisodeRuntimeTests {
     @Test("runtime rounds down to whole minutes", arguments: [
         (45 * 60, 45), (45 * 60 + 59, 45), (60, 1),
-    ])
+    ] as [(Int, Int)])
     func runtimeLengthMinutes(seconds: Int, expected: Int) {
         #expect(LibraryFixtures.episode(runtime: .seconds(seconds)).runtimeLengthMinutes == expected)
     }

@@ -55,7 +55,7 @@ private struct ItemDetailNavigationModifier: ViewModifier {
             .environment(\.itemZoomNamespace, namespace)
             // Inject the programmatic-push action so menu items on tiles anywhere in this stack can
             // request a detail push without owning a NavigationLink.
-            .environment(\.pushItemDetail) { pendingNav = $0 }
+            .environment(\.pushItemDetail, PushItemDetailAction(stack: namespace) { pendingNav = $0 })
             .navigationDestination(for: ItemNavigation.self) { nav in
                 itemDetailDestination(nav)
                     #if !os(tvOS)

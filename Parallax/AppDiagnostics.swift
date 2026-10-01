@@ -5,7 +5,7 @@ import UIKit
 /// The app target's retained-log channels. Package-side channels live next to what they instrument
 /// (`SMBDiagnostics`); these cover the things only the app can see — scene phase, memory pressure,
 /// and the foreground recovery it drives.
-enum AppDiagnostics {
+nonisolated enum AppDiagnostics {
     /// Launch, scene phase edges, memory warnings. The most important channel in the file for a
     /// wake-time crash: it is what dates the gap between the last record before sleep and the first
     /// one after it.
@@ -112,7 +112,7 @@ private struct ScenePhaseDiagnostics: ViewModifier {
 /// These are recorded ALONGSIDE `scenePhase` rather than instead of it, and the pairing is the
 /// point: `willEnterForeground` with no `scenePhase → active` after it says the wake began and the
 /// scene update never finished, which is precisely the shape of a scene-update watchdog kill.
-private enum AppLifecycleEvent: CaseIterable {
+private nonisolated enum AppLifecycleEvent: CaseIterable {
     case willEnterForeground, didBecomeActive, willResignActive, didEnterBackground
 
     var name: Notification.Name {

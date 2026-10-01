@@ -16,7 +16,7 @@ import ParallaxSubtitles
 /// exist to avoid.
 ///
 /// `.process` scope, so nothing is installed for other apps or persisted.
-enum SubtitleFontRegistration {
+nonisolated enum SubtitleFontRegistration {
 
     /// Only the files backing the family VLC is pointed at — the launch region's pan-CJK
     /// collections, one per design (`VLCSubtitleFonts.freetypeFamily`). Nothing else needs

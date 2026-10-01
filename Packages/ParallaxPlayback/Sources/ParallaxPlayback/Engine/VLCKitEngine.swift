@@ -1145,9 +1145,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
             snapshotTimeoutTask = Task { [weak self] in
                 try? await Task.sleep(for: .seconds(5))
                 guard !Task.isCancelled else { return }
-                // Hop to MainActor: the timeout Task is unstructured and may resume off-main;
-                // completeSnapshot mutates MainActor-isolated state.
-                await self?.completeSnapshot(success: false)
+                self?.completeSnapshot(success: false)
             }
             // Fixed height, width 0: the vendored VLCMediaPlayer.h documents "If width OR
             // height is 0, original aspect-ratio is preserved" — libvlc itself hands back a

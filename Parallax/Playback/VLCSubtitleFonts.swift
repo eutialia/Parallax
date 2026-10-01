@@ -91,7 +91,7 @@ import ParallaxSubtitles
 /// was current when playback started; changing Sans↔Serif mid-playback applies from the
 /// next item. (Client-rendered sidecar tracks have no such limit — `PlayerViewModel`
 /// rebuilds their renderer on the spot.)
-enum VLCSubtitleFonts {
+nonisolated enum VLCSubtitleFonts {
 
     /// The family VLC's libass module passes `ass_set_fonts` as `default_family` on Apple
     /// platforms. Verbatim from `modules/codec/libass.c`; a rename here has to match it
@@ -277,7 +277,7 @@ enum VLCSubtitleFonts {
 
 // MARK: - Orphan cache
 
-extension VLCSubtitleFonts {
+nonisolated extension VLCSubtitleFonts {
     /// The cache directory of the retired `SubtitleFontLocator`, which materialized system
     /// CJK faces before the bundle existed. Its contents are dead weight (tens of MB on a
     /// device that ever played an ASS track) and nothing reads them any more.
@@ -326,7 +326,7 @@ extension VLCSubtitleFonts {
 /// `head.checkSumAdjustment` is left as the source wrote it: it is a whole-file checksum
 /// no rasterizer we ship to validates (FreeType ignores it outright), and recomputing it
 /// would buy nothing a font validator we never run would notice.
-enum SFNTNameRewrite {
+nonisolated enum SFNTNameRewrite {
     enum Failure: Error {
         case notAnSFNT
         case truncated

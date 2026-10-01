@@ -29,8 +29,8 @@ public enum LocalNetworkAddress {
             memcpy(&storage, addr, Int(MemoryLayout<sockaddr_in>.size))
             var sinAddr = storage.sin_addr
             var buffer = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
-            guard inet_ntop(AF_INET, &sinAddr, &buffer, socklen_t(INET_ADDRSTRLEN)) != nil else { continue }
-            let address = String(cString: buffer)
+            guard inet_ntop(AF_INET, &sinAddr, &buffer, socklen_t(INET_ADDRSTRLEN)) != nil,
+                  let address = String(validating: buffer.prefix { $0 != 0 }, as: UTF8.self) else { continue }
             // A self-assigned link-local address means the interface has no DHCP lease —
             // an AirPlay receiver can't route to it, and on-device a VPN's policy layer
             // (NECP) resets connections to it. Worse than the loopback fallback; skip it.

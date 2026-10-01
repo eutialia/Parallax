@@ -4,7 +4,7 @@ import Foundation
 
 /// Records every progress beat the VM forwards, in order, so tests assert the
 /// start/progress/stopped cadence, the tick values, and the item id.
-actor StubPlaybackReporting: PlaybackReporting {
+actor StubPlaybackReporting {
     enum Event: Equatable {
         case start(ticks: Int, isPaused: Bool, itemID: String)
         case progress(ticks: Int, isPaused: Bool, itemID: String)
@@ -17,7 +17,11 @@ actor StubPlaybackReporting: PlaybackReporting {
     /// focused on the report beats.
     private(set) var stoppedEncodings: [String] = []
     private(set) var pings: [String] = []
+}
 
+// Conformed in an extension: Swift 6.4 copies the protocol's `nonisolated` onto a type that names
+// it in its own declaration, and an actor rejects the modifier.
+extension StubPlaybackReporting: PlaybackReporting {
     func reportStart(_ beat: ProgressBeat) async {
         events.append(.start(ticks: beat.positionTicks, isPaused: beat.isPaused, itemID: beat.itemID))
     }

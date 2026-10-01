@@ -4,6 +4,7 @@ import CoreMedia
 import ImageIO
 import MediaPlayer
 import SwiftUI
+import Synchronization
 import Testing
 import UniformTypeIdentifiers
 @testable import Parallax
@@ -70,19 +71,19 @@ struct PlayerViewModelTests {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
         let resolved = PlayerFixtures.resolved()
-        var resolvedItemID: ItemID?
+        let resolvedItemIDs = CallRecorder<ItemID>()
 
         let vm = makePlayerVM(
             reporting: reporting,
             engine: engine,
             resolved: resolved,
-            capturedItem: { resolvedItemID = $0 }
+            capturedItem: { resolvedItemIDs.append($0) }
         )
 
         await vm.start(item: PlayerFixtures.movieDetail())
 
         // Resolve happened with the right item; engine was selected + driven.
-        #expect(resolvedItemID == ItemID(rawValue: "movie-1"))
+        #expect(resolvedItemIDs.last == ItemID(rawValue: "movie-1"))
         #expect(!engine.loadedAssets.isEmpty)
         #expect(engine.loadedAssets.first?.hints.container == .mp4)
         #expect(engine.calls.contains("play"))
@@ -214,14 +215,14 @@ struct PlayerViewModelTests {
     func audioSessionFailureIsDistinctAndShortCircuits() async {
         let reporting = StubPlaybackReporting()
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        var didResolve = false
+        let resolutions = CallRecorder<ItemID>()
 
         let vm = makePlayerVM(
             reporting: reporting,
             engine: engine,
             resolved: PlayerFixtures.resolved(),
             audioSession: ThrowingAudioSession(),
-            capturedItem: { _ in didResolve = true }
+            capturedItem: { resolutions.append($0) }
         )
 
         await vm.start(item: PlayerFixtures.movieDetail())
@@ -231,7 +232,7 @@ struct PlayerViewModelTests {
         #expect(vm.phase == .failed(.playback(.audioSessionFailed)))
         #expect(vm.phase != .failed(.playback(.resourceUnavailable)))
         // activate() throws before resolve() runs, so nothing downstream fired.
-        #expect(didResolve == false)
+        #expect(resolutions.isEmpty)
         #expect(engine.loadedAssets.isEmpty)
     }
 
@@ -1160,8 +1161,7 @@ struct PlayerViewModelTests {
 
     @Test("a commit that re-anchors shows the TARGET while the reload scrim is up — never the pre-scrub position")
     func commitSeekHoldsTargetThroughReanchor() async throws {
-        let (vm, engines) = try await makeReanchorVM(at: 600)
-        let engine = engines.live
+        let (vm, _) = try await makeReanchorVM(at: 600)
 
         // The reload lands `.loading` and drops every engine beat while it runs, so this
         // returns with the OLD clock still the newest thing the engine ever published.
@@ -1905,8 +1905,7 @@ struct PlayerViewModelTests {
     @Test("the commit pushes the TARGET to Now Playing, so the lock screen and the bar agree")
     func commitPublishesTheTargetToNowPlaying() async throws {
         let nowPlaying = SpyNowPlaying()
-        let (vm, engines) = try await makeReanchorVM(at: 600, nowPlaying: nowPlaying)
-        let engine = engines.live
+        let (vm, _) = try await makeReanchorVM(at: 600, nowPlaying: nowPlaying)
         // A precondition, not an assertion: the parked beat has to have reached Now
         // Playing at A, or "the commit moved it to B" proves nothing.
         let parked = try #require(nowPlaying.updates.last)
@@ -2142,8 +2141,7 @@ struct PlayerViewModelTests {
     /// crossing starts to the right of a dot that has been sitting at A0 the whole drag.
     @Test("a chained re-scrub that reverses past A0 spans A0→B2 backward")
     func seekSpanChainsThroughADirectionFlip() async throws {
-        let (vm, engines) = try await makeReanchorVM(at: 600)
-        let engine = engines.live
+        let (vm, _) = try await makeReanchorVM(at: 600)
         let duration = CMTimeGetSeconds(vm.currentDuration)
 
         await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
@@ -2233,8 +2231,7 @@ struct PlayerViewModelTests {
     /// which a dead commit still matched).
     @Test("a superseded commit yields a new flight id")
     func aSupersededCommitYieldsANewID() async throws {
-        let (vm, engines) = try await makeReanchorVM(at: 600)
-        let engine = engines.live
+        let (vm, _) = try await makeReanchorVM(at: 600)
 
         await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
         let first = try #require(vm.seekSpan)
@@ -2252,8 +2249,7 @@ struct PlayerViewModelTests {
     /// this case — a 250 ms grace guessing at whether a commit was still coming.)
     @Test("a cancelled gesture returns the bar to the engine, with nothing left running")
     func aCancelledPreviewReturnsToNil() async throws {
-        let (vm, engines) = try await makeReanchorVM(at: 600)
-        let engine = engines.live
+        let (vm, _) = try await makeReanchorVM(at: 600)
 
         vm.beginPreview(at: CMTime(seconds: 5_400, preferredTimescale: 600))
         try #require(vm.flight?.stage == .previewing)
@@ -2270,8 +2266,7 @@ struct PlayerViewModelTests {
     /// something true to say. It keeps the gesture's id, so nothing already on screen restarts.
     @Test("cancelling over an unlanded commit hands the commit back")
     func aCancelledPreviewRestoresTheCommitItInterrupted() async throws {
-        let (vm, engines) = try await makeReanchorVM(at: 600)
-        let engine = engines.live
+        let (vm, _) = try await makeReanchorVM(at: 600)
         let duration = CMTimeGetSeconds(vm.currentDuration)
 
         await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
@@ -2315,8 +2310,7 @@ struct PlayerViewModelTests {
     /// screen with them.
     @Test("beginExit ends the flight, gesture or commit")
     func beginExitEndsTheFlight() async throws {
-        let (vm, engines) = try await makeReanchorVM(at: 600)
-        let engine = engines.live
+        let (vm, _) = try await makeReanchorVM(at: 600)
 
         await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
         try #require(vm.flight != nil)
@@ -2727,7 +2721,7 @@ struct PlayerViewModelTests {
     func transcodeReloadKeepsTheEngineAcrossARestyle(switchedTo design: SubtitleFontDesign) async throws {
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode()
 
-        nonisolated(unsafe) var style = SubtitleStyle.standard.with { $0.fontDesign = .sansSerif }
+        let style = Mutex(SubtitleStyle.standard.with { $0.fontDesign = .sansSerif })
         nonisolated(unsafe) var createdEngines: [FakePlaybackEngine] = []
         nonisolated(unsafe) var factoryOptions: [[String]?] = []
         let vm = makePlayerVM(
@@ -2739,7 +2733,7 @@ struct PlayerViewModelTests {
                 createdEngines.append(engine)
                 return engine
             },
-            subtitleStyle: { style }
+            subtitleStyle: { style.withLock { $0 } }
         )
         await vm.start(item: PlayerFixtures.movieDetail())
         let engineAfterStart = try #require(vm.engine as? FakePlaybackEngine)
@@ -2750,7 +2744,7 @@ struct PlayerViewModelTests {
         createdEngines[0].push(.playing(100))
         try await createdEngines[0].settle()
 
-        style = SubtitleStyle.standard.with { $0.fontDesign = design }
+        style.withLock { $0 = SubtitleStyle.standard.with { $0.fontDesign = design } }
         let audio4 = try #require(vm.availableAudioTracks.first { $0.id == .jellyfinStream(4) })
         await vm.selectAudioTrack(audio4)
 

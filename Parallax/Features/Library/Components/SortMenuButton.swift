@@ -75,14 +75,14 @@ extension SortMenuButton {
 
     /// The Photos-style `.medium` direction tile row (icon over title, selected pill).
     static func directionRow(_ options: [Option]) -> UIMenu {
-        let row = UIMenu(options: .displayInline, children: options.map(action))
+        let row = UIMenu(options: .displayInline, children: options.map { action($0) })
         row.preferredElementSize = .medium
         return row
     }
 
     /// The inline sort-field list (system leading checkmark on the selected one).
     static func fieldRows(_ options: [Option]) -> UIMenu {
-        UIMenu(options: .displayInline, children: options.map(action))
+        UIMenu(options: .displayInline, children: options.map { action($0) })
     }
 
     private static func action(_ option: Option) -> UIAction {

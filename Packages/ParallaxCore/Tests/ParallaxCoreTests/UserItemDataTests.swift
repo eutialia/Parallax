@@ -48,7 +48,7 @@ struct UserItemDataTests {
         (LibraryFixtures.ticks(seconds: 2699), 45 * 60, 1),    // 1s left → still a minute
         (LibraryFixtures.ticks(seconds: 2639), 45 * 60, 2),    // 61s left → two
         (0, 45 * 60, 45),
-    ])
+    ] as [(Int64, Int, Int)])
     func remainingMinutes(position: Int64, runtimeSeconds: Int, expected: Int) {
         let data = LibraryFixtures.userData(positionTicks: position)
         #expect(data.remainingMinutes(runtime: .seconds(runtimeSeconds)) == expected)

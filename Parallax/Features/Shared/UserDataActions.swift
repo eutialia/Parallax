@@ -147,7 +147,7 @@ final class UserDataActions {
         // Task) accumulates every Change it misses rather than dropping them.
         let (stream, continuation) = AsyncStream<Change>.makeStream()
         subscribers[id] = continuation
-        continuation.onTermination = { _ in
+        continuation.onTermination = { [weak self] _ in
             // onTermination runs off the actor — hop back on to drop the entry.
             Task { @MainActor [weak self] in self?.subscribers[id] = nil }
         }

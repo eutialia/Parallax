@@ -38,7 +38,7 @@ This file holds only what you would get wrong without being told. Eutialia's ins
 
 Headless `xcodebuild` is the default. It is deterministic and ignores Xcode's toolbar. Reach for the Xcode MCP only for what headless cannot do.
 
-- App: `xcodebuild -scheme Parallax -destination 'platform=iOS Simulator,name=iPhone 17 Pro' -derivedDataPath /tmp/dd-Parallax build`, or `test`.
+- App: `xcodebuild -scheme Parallax -destination 'platform=iOS Simulator,name=iPhone 18 Pro' -derivedDataPath /tmp/dd-Parallax build`, or `test`.
 - Packages run from their own directory with the same destination. Multi-product packages test through `ParallaxCore-Package` and `ParallaxPlayback-Package`; the bare product schemes have no test action.
 - Swift Testing results are absent from XCTest's "Executed N tests" line; grep for `✔`. `-only-testing:` takes the type name, not the `@Suite` display name, which matches nothing and fakes a pass.
 - Real-keychain suites self-skip on unentitled hosts. A skip is expected, a failure is real.
@@ -50,7 +50,7 @@ Headless `xcodebuild` is the default. It is deterministic and ignores Xcode's to
 The `xcode` MCP drives a running Xcode. Three uses justify it:
 
 - `RenderPreview` to see a SwiftUI `#Preview`.
-- `DocumentationSearch` for an Apple API you are not sure of. Swift 6.2 and iOS 26 moved past training data, so check before writing. The `apple-platform-references` skill covers the same ground offline.
+- `DocumentationSearch` for an Apple API you are not sure of. Swift 6.4 and iOS 27 moved past training data, so check before writing. The `apple-platform-references` skill covers the same ground offline.
 - `XcodeRefreshCodeIssuesInFile` for a per-file diagnostic pass when a full build is overkill.
 
 Its tools act on whatever scheme and destination Xcode's toolbar has selected and cannot change them. Edit with the native tools, not the MCP's write tools. The `swift-lsp` plugin is for hover and jump-to-definition only; its `No such module` errors are stale until a build runs.

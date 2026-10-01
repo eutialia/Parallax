@@ -36,6 +36,6 @@ final class FakeKeychain: KeychainStoring, @unchecked Sendable {
     }
 
     func delete<Value: Codable & Sendable>(_ key: KeychainKey<Value>) async throws {
-        lock.withLock { store.removeValue(forKey: key.account) }
+        lock.withLock { _ = store.removeValue(forKey: key.account) }
     }
 }

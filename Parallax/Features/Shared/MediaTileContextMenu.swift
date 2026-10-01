@@ -5,13 +5,26 @@ import ParallaxCore
 
 // MARK: - Programmatic detail push
 
+/// Pushes a movie/series detail onto the enclosing stack WITHOUT a zoom transition — the escape
+/// hatch for controls that carry no `NavigationLink`/`matchedTransitionSource` to zoom from (the
+/// context menu's "Go to Series" / "View Details"). Wired by `itemDetailNavigation()` at each
+/// content stack's root (a plain push there — see `ItemDetailNavigationModifier`); the default
+/// no-op covers any view mounted outside such a stack.
+///
+/// Equal by `stack`, not by closure: the closure writes the owning root's `@State`, so every
+/// action one root hands out is interchangeable, and a bare closure would invalidate every tile
+/// reading it each time that root re-renders.
+struct PushItemDetailAction: Equatable {
+    let stack: Namespace.ID?
+    let push: (ItemNavigation) -> Void
+
+    func callAsFunction(_ navigation: ItemNavigation) { push(navigation) }
+
+    static func == (lhs: Self, rhs: Self) -> Bool { lhs.stack == rhs.stack }
+}
+
 extension EnvironmentValues {
-    /// Pushes a movie/series detail onto the enclosing stack WITHOUT a zoom transition — the escape
-    /// hatch for controls that carry no `NavigationLink`/`matchedTransitionSource` to zoom from (the
-    /// context menu's "Go to Series" / "View Details"). Wired by `itemDetailNavigation()` at each
-    /// content stack's root (a plain push there — see `ItemDetailNavigationModifier`); the default
-    /// no-op covers any view mounted outside such a stack.
-    @Entry var pushItemDetail: (ItemNavigation) -> Void = { _ in }
+    @Entry var pushItemDetail = PushItemDetailAction(stack: nil) { _ in }
 }
 
 // MARK: - Media-tile context menu

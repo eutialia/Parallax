@@ -92,11 +92,12 @@ struct UserDataActionsTests {
         }
 
         func setFavorite(itemID: ItemID, isFavorite: Bool) async throws -> UserItemData {
-            lock.lock()
-            favoriteCallCount += 1
-            let started = onStarted
-            onStarted = nil
-            lock.unlock()
+            let started = lock.withLock {
+                favoriteCallCount += 1
+                let started = onStarted
+                onStarted = nil
+                return started
+            }
             started?()
             await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
                 lock.lock(); release = continuation; lock.unlock()

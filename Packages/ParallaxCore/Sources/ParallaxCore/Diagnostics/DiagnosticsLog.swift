@@ -374,7 +374,7 @@ public enum DiagnosticsLog {
         guard sysctlbyname("hw.machine", nil, &size, nil, 0) == 0, size > 0 else { return "?" }
         var value = [CChar](repeating: 0, count: size)
         guard sysctlbyname("hw.machine", &value, &size, nil, 0) == 0 else { return "?" }
-        return String(cString: value)
+        return String(validating: value.prefix { $0 != 0 }, as: UTF8.self) ?? "?"
     }
 
     /// `+SSSS.mmm` — seconds since the session started, on a clock that KEEPS RUNNING while the
@@ -392,10 +392,9 @@ public enum DiagnosticsLog {
         Thread.isMainThread ? "main" : "t\(pthread_mach_thread_np(pthread_self()))"
     }
 
-    /// `nonisolated(unsafe)` because `DateFormatter` isn't `Sendable` but IS documented as thread-safe
-    /// for formatting once configured — and it is configured here, once, and never mutated again.
-    /// Building one per record instead would cost more than everything else this type does.
-    nonisolated(unsafe) private static let fileStampFormatter: DateFormatter = {
+    /// Shared rather than built per record: building one would cost more than everything else this
+    /// type does.
+    private static let fileStampFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
@@ -405,7 +404,7 @@ public enum DiagnosticsLog {
 }
 
 extension ISO8601DateFormatter {
-    /// Shared, never mutated after creation — see `DiagnosticsLog.fileStampFormatter` for why the
-    /// unchecked opt-out is the honest annotation rather than a workaround.
+    /// `nonisolated(unsafe)` because `ISO8601DateFormatter` isn't `Sendable` but IS documented as
+    /// thread-safe for formatting once configured — and it is never mutated after creation.
     nonisolated(unsafe) static let diagnostics = ISO8601DateFormatter()
 }
