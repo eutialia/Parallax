@@ -111,7 +111,7 @@ private struct LaunchStageOverlay: View {
         #endif
         .onAppear { gate.beginStage() }
         .task {
-            try? await Task.sleep(for: Self.watchdogTimeout)
+            guard (try? await Task.sleep(for: Self.watchdogTimeout)) != nil else { return }
             gate.markContentReady()
         }
     }
