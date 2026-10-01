@@ -144,6 +144,7 @@ struct RootTabView: View {
                 // SMB shares drill into the folder browser; Jellyfin collections into the poster
                 // grid (shared with the iPhone list — one dispatch site).
                 libraryEntryDestination(for: entry)
+                    .padNavigationBarMinimizesOnScroll()
             }
         }
         // The last-opened library is the lone dynamic slot in the collapsed bar (Apple Music style);
@@ -158,6 +159,7 @@ struct RootTabView: View {
                 // button shares a bar to cross-fade with instead of sliding off on dismiss.
                 NavigationStack {
                     HomeView()
+                        .padNavigationBarMinimizesOnScroll()
                 }
             }
             // iPhone only: the card-list browser. On iPad the sidebar's per-library tabs (below)
@@ -167,6 +169,7 @@ struct RootTabView: View {
                 Tab("Library", systemImage: "rectangle.stack", value: AppTab.library) {
                     NavigationStack {
                         LibraryHostView()
+                            .padNavigationBarMinimizesOnScroll()
                     }
                 }
             }
@@ -183,6 +186,7 @@ struct RootTabView: View {
                 Tab(value: AppTab.search, role: .search) {
                     NavigationStack {
                         JellyfinSearchView()
+                            .padNavigationBarMinimizesOnScroll()
                     }
                 }
             }
@@ -200,6 +204,7 @@ struct RootTabView: View {
                 Tab("Favorites", systemImage: "heart", value: AppTab.favorites) {
                     NavigationStack {
                         FavoritesView()
+                            .padNavigationBarMinimizesOnScroll()
                     }
                 }
                 .defaultVisibility(lastVisitedLibraryTab == .favorites ? .visible : .hidden, for: .tabBar)
@@ -212,6 +217,7 @@ struct RootTabView: View {
                 Tab("Settings", systemImage: "gearshape", value: AppTab.settings) {
                     NavigationStack {
                         SettingsView()
+                            .padNavigationBarMinimizesOnScroll()
                     }
                 }
             }
@@ -250,7 +256,9 @@ struct RootTabView: View {
         .tabViewStyle(.sidebarAdaptable)
         // iPhone: the floating tab bar ducks out of the way on scroll-down and re-expands on
         // scroll-up — the content-forward behavior the new design demonstrates on exactly this
-        // app class (the session's example is the TV app). No-op in the iPad sidebar layout.
+        // app class (the session's example is the TV app). No-op in the iPad sidebar layout,
+        // whose top tab bar minimizes with the navigation bar instead
+        // (`padNavigationBarMinimizesOnScroll`).
         .tabBarMinimizeBehavior(.onScrollDown)
         // The screen floor is a single `BackgroundField` behind the whole tab host (see
         // `RootView`); tabs no longer paint their own. The sidebar / bottom-bar glass now tints
@@ -299,6 +307,21 @@ struct RootTabView: View {
 
     private func openSettings() {
         router.presentingSettings = true
+    }
+}
+
+private extension View {
+    /// iPad's top tab bar is integrated into the navigation bar and only minimizes with it, so the
+    /// iPhone's `tabBarMinimizeBehavior` has no iPad effect. Applied to each tab's stack root so
+    /// every screen in it inherits the behavior. Keyed on idiom, never size class (see
+    /// `isSidebarLayout`).
+    @ViewBuilder
+    func padNavigationBarMinimizesOnScroll() -> some View {
+        if #available(iOS 27, *), UIDevice.current.userInterfaceIdiom == .pad {
+            toolbarMinimizationBehavior(.onScrollDown, for: .navigationBar)
+        } else {
+            self
+        }
     }
 }
 
