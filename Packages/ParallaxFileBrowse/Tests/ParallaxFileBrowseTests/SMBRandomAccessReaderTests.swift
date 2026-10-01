@@ -81,23 +81,25 @@ struct SMBRandomAccessReaderTests {
         #expect(world.connectedIDs.isEmpty, "an empty read must not cost a pool checkout")
     }
 
-    /// AMSMB2 today signals EOF with a short read, but the reader defensively honors an EOF-SHAPED
-    /// POSIX error the same way — and, crucially, does not taint the borrow over it.
-    @Test("an EOF-shaped POSIX error yields empty data and leaves the borrow reusable",
+    /// Genuine EOF never throws — AMSMB2 returns a short or empty read for it — so ENODATA is
+    /// AMSMB2's `unwrap()` on a context libsmb2 destroyed when the socket dropped mid-read. Swallowing
+    /// it as EOF returned the dead connection to the pool as healthy and let the thumbnail poison
+    /// guard blame the file for a truncated read.
+    @Test("a read that fails with ENODATA or ERANGE throws, flags a transport fault, and discards the borrow",
           arguments: [POSIXErrorCode.ENODATA, .ERANGE])
-    func eofShapedPOSIXErrorIsNotATaint(_ code: POSIXErrorCode) async throws {
+    func eofShapedPOSIXErrorIsARealFailure(_ code: POSIXErrorCode) async throws {
         let world = FakeSMBWorld()
         let pool = makeFakePool(world: world)
         let reader = makeReader(world: world, pool: pool)
         world.setReadOutcome(.fails(POSIXError(code)))
 
-        let data = try await reader.read(offset: 0, length: 16)
-        #expect(data.isEmpty)
+        await #expect(throws: POSIXError(code)) { _ = try await reader.read(offset: 0, length: 16) }
+        #expect(await reader.hadTransportFault == true, "a dropped connection is link evidence, not a bad file")
 
         await reader.disconnect()
-        #expect(world.disconnectedIDs.isEmpty, "an expected EOF shape must not discard the connection")
-        let reused = try await pool.checkout(fakeTarget(host: "nas", share: "Media"))
-        #expect(reused.connection.id == 0, "the clean borrow went back to the idle pool")
+        await untilSettled { world.disconnectedIDs == [0] }
+        #expect(world.disconnectedIDs == [0], "the broken connection is discarded, never pooled")
+        #expect(await pool.idleCount == 0)
     }
 
     // MARK: - fileSize

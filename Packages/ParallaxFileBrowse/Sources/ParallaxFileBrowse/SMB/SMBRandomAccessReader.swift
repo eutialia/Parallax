@@ -154,8 +154,9 @@ public actor SMBRandomAccessReader<Connection: SMBReadableConnection>: RandomAcc
 
     /// Reads up to `length` bytes at `offset`. Honors the POSIX-pread contract: a read at or past EOF
     /// returns the available prefix (possibly empty). AMSMB2's `contents(atPath:range:)` already
-    /// implements this — an out-of-range lowerBound yields empty `Data`, and an over-long range
-    /// truncates to the remaining file content — so no manual clamping is needed.
+    /// implements this — an out-of-range lowerBound yields empty `Data`, an over-long range
+    /// truncates to the remaining file content, and libsmb2 reports `STATUS_END_OF_FILE` as a
+    /// zero-byte read rather than an error — so every thrown error is a real failure.
     public func read(offset: UInt64, length: Int) async throws -> Data {
         guard length > 0 else { return Data() }
         let client = try await borrowedManager()
@@ -169,11 +170,6 @@ public actor SMBRandomAccessReader<Connection: SMBReadableConnection>: RandomAcc
         let upperBound = sum.overflow ? UInt64.max : sum.partialValue
         do {
             return try await client.readBytes(atPath: path, range: offset..<upperBound)
-        } catch let error as POSIXError where error.code == .ENODATA || error.code == .ERANGE {
-            // Defensive: if a future AMSMB2 surfaced an EOF-shaped POSIX error instead of a short
-            // read, honor the pread contract by returning the empty prefix. NOT a taint — an expected
-            // end-of-file shape leaves the connection perfectly reusable.
-            return Data()
         } catch {
             noteFailure(error)
             throw error
