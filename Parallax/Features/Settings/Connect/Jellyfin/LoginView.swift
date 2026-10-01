@@ -144,9 +144,6 @@ struct LoginView: View {
             // Field stack — tvOS uses the Settings-style row list (rows → single-field keyboard screen);
             // iOS uses the inset-grouped fields. See `CredentialRowList` for why the inline tvOS field is avoided.
             #if os(tvOS)
-            // `sweepToken` mirrors SMBLoginView: bumped on Connect so any hidden credential field
-            // tvOS retained as first responder is released before the sign-in — a stale first
-            // responder can swallow the remote's Menu press (the add-SMB freeze's parallel path).
             CredentialRowList(rows: [
                 CredentialRow(id: "server", title: "Server", placeholder: "https://jellyfin.example.com", text: $vm.serverURLInput, keyboard: .URL, textContentType: .URL),
                 CredentialRow(id: "username", title: "Username", placeholder: "Username", text: $vm.username, textContentType: .username),
