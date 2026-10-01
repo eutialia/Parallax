@@ -1364,7 +1364,7 @@ struct PlayerControlsView: View {
         }
     }
 
-    /// Every OTHER seek-shaped action (drag-scrub, skip button, chapter pick) and a
+    /// Every OTHER seek-shaped action (drag-scrub, episode skip, chapter pick) and a
     /// track reload must drop a queued double-tap burst — its debounced commit
     /// would fire up to 400ms later and drag playback back to the stale target.
     private func cancelPendingSeek() {

@@ -567,9 +567,8 @@ struct PlayerView: View {
         if let engine = vm.engine {
             switch engine.id {
             case .avKit:
-                AVKitVideoLayerHost(engine: engine, onPiPReady: { start, stop in
+                AVKitVideoLayerHost(engine: engine, onPiPReady: { start in
                     vm.startPiPAction = start
-                    vm.stopPiPAction = stop
                 }, onFreezeReady: { freeze, unfreeze in
                     vm.freezeSurfaceAction = freeze
                     vm.unfreezeSurfaceAction = unfreeze

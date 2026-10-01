@@ -90,13 +90,10 @@ final class PlayerViewModel {
     var isPiPAvailable: Bool { engine?.capabilities.supportsPiP ?? false }
     var isVideoAirPlayAvailable: Bool { engine?.capabilities.supportsVideoAirPlay ?? false }
 
-    /// PiP start/stop actions, pushed up from the video host once its
-    /// PiP controller is ready (AVKit: `onPiPReady`; VLC: `VLCPictureInPictureDrawable`).
-    /// Nil until a host mounts — so `startPiP()`/`stopPiP()` are safe no-ops in tests.
+    /// PiP start action, pushed up from the AVKit video host (`onPiPReady`) once its PiP
+    /// controller is ready. Nil until a host mounts, so `startPiP()` is a safe no-op in tests.
     var startPiPAction: (@MainActor () -> Void)?
-    var stopPiPAction: (@MainActor () -> Void)?
     func startPiP() { startPiPAction?() }
-    func stopPiP() { stopPiPAction?() }
 
     /// Freeze/unfreeze the video surface's last frame, pushed up from the video host
     /// (`onFreezeReady`) like the PiP actions, and nil until a host mounts, so both are
@@ -3784,11 +3781,6 @@ final class PlayerViewModel {
             // retry. Still fenced while exiting, where the freeze is the dismissal's, not
             // this session's.
             unfreezeVideoSurface()
-            // …and any seek hold, for the same reason: a failed session emits no further
-            // position beat, so nothing else would ever hand the bar back. The error scrim
-            // owns the screen from here; a target pinned under it would survive into the
-            // retry as a resume point nothing ever played.
-            seekHold = nil
             phase = .failed(Self.map(error))
         }
     }

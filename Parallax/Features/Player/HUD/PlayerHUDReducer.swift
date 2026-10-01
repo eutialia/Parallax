@@ -61,7 +61,7 @@ nonisolated struct ReduceContext: Equatable {
 }
 
 nonisolated enum PlayerHUDTuning {
-    /// How far one left/right remote click steps the playhead. Matches the in-HUD skip buttons.
+    /// How far one left/right remote click steps the playhead. Matches the iOS double-tap step.
     static let clickStepSeconds: Double = 10
 }
 

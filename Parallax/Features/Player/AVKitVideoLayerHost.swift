@@ -5,12 +5,12 @@ import ParallaxPlayback
 
 /// Hosts the AVPlayer's video via a layer-backed AVPlayerLayer view and owns an
 /// AVPictureInPictureController so PiP works when the engine supports it.
-/// `onPiPReady` lets PlayerView/5e.4 push start/stop PiP actions back to the VM.
+/// `onPiPReady` pushes the PiP start action back to the VM.
 /// App target (UIKit/AVKit allowed here).
 struct AVKitVideoLayerHost: UIViewRepresentable {
     let engine: any PlaybackEngine
-    var onPiPReady: (@MainActor (@escaping @MainActor () -> Void, @escaping @MainActor () -> Void) -> Void)?
-    /// Pushes freeze/unfreeze actions back to the VM (same shape as `onPiPReady`):
+    var onPiPReady: (@MainActor (@escaping @MainActor () -> Void) -> Void)?
+    /// Pushes freeze/unfreeze actions back to the VM (like `onPiPReady`):
     /// freeze snapshots the current video frame OVER the layer, unfreeze crossfades it
     /// away. The VM brackets engine-reusing reloads with them — `AVPlayerLayer` makes
     /// no hold-the-last-frame guarantee across `replaceCurrentItem` (device-observed:
@@ -28,7 +28,7 @@ struct AVKitVideoLayerHost: UIViewRepresentable {
         context.coordinator.attach(to: view)
         if let onPiPReady {
             let coordinator = context.coordinator
-            onPiPReady({ coordinator.startPiP() }, { coordinator.stopPiP() })
+            onPiPReady { coordinator.startPiP() }
         }
         if let onFreezeReady {
             onFreezeReady({ [weak view] in view?.freezeFrame() }, { [weak view] in view?.unfreezeFrame() })
@@ -54,13 +54,12 @@ struct AVKitVideoLayerHost: UIViewRepresentable {
     }
 
     @MainActor
-    final class Coordinator: NSObject, AVPictureInPictureControllerDelegate {
+    final class Coordinator {
         private var pip: AVPictureInPictureController?
 
         func attach(to view: PlayerLayerView) {
             guard AVPictureInPictureController.isPictureInPictureSupported() else { return }
             guard let controller = AVPictureInPictureController(playerLayer: view.playerLayer) else { return }
-            controller.delegate = self
             #if !os(tvOS)
             controller.canStartPictureInPictureAutomaticallyFromInline = true
             #endif
@@ -68,6 +67,5 @@ struct AVKitVideoLayerHost: UIViewRepresentable {
         }
 
         func startPiP() { pip?.startPictureInPicture() }
-        func stopPiP()  { pip?.stopPictureInPicture() }
     }
 }

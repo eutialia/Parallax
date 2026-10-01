@@ -7,7 +7,7 @@ import SwiftUI
 /// divider, like the TV app's accessory pill: glyphs float in shared air (centered in
 /// equal segments, so the middle gap is 2× the end padding — ends tight, middle
 /// generous). The AirPlay glyph is OUR symbol with an invisible `AVRoutePickerView`
-/// on top for the tap (see `AirPlayRouteButton.hidesSystemGlyph`); the picker's own
+/// on top for the tap (see `AirPlayRouteButton`); the picker's own
 /// chrome can't be size-matched to `pip.enter` and boxed the segment in. Either
 /// segment is omitted if its capability is absent. Height matches `chipHeight` so the
 /// pill rows with the chips.
@@ -25,7 +25,7 @@ struct PlayerSplitPill: View {
                         .font(.system(size: metrics.splitPillIcon, weight: .semibold))
                         .foregroundStyle(.white)
                         .accessibilityHidden(true)   // the picker carries the a11y element
-                    AirPlayRouteButton(hidesSystemGlyph: true)
+                    AirPlayRouteButton()
                 }
                 .frame(width: metrics.splitPillSegment, height: metrics.splitPillHeight)
                 #if !os(tvOS)

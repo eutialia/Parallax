@@ -24,11 +24,8 @@ struct DebugInfoOverlay: View {
     private let startupTuningStore = StartupTuningStore()
 
     @State private var snapshot: PlaybackDebugInfo = .empty
-    /// Mirrors `snapshot`'s polling pattern (final-review M1): the label below read the
-    /// store inline, which only reflected a pick once *something else* re-rendered the
-    /// view — polled here instead so the profile row is honest on its own.
-    // Seeded from the store so frame 0 shows the real profile (the shipping default is
-    // .fastStart now, so a hardcoded literal would render stale until the first poll).
+    /// The picker below is the store's only writer and updates this alongside it, so the
+    /// label needs no polling. Seeded from the store so frame 0 shows the real profile.
     @State private var startupProfile: StartupProfile = StartupTuningStore().selected
 
     /// Readable at couch distance on the tvOS canvas; dense on touch screens.
@@ -59,12 +56,9 @@ struct DebugInfoOverlay: View {
         .preferredColorScheme(.dark)
         .environment(\.colorScheme, .dark)
         .task {
-            // Poll the engine's live snapshot; cancelled when the HUD disappears. The
-            // profile rides the same loop (final-review M1) so a pick from the menu below
-            // shows up within one tick instead of waiting on an unrelated re-render.
+            // Poll the engine's live snapshot; cancelled when the HUD disappears.
             while !Task.isCancelled {
                 snapshot = await vm.currentDebugSnapshot()
-                startupProfile = startupTuningStore.selected
                 try? await Task.sleep(for: .milliseconds(750))
             }
         }
