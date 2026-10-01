@@ -21,9 +21,6 @@ struct LoginView: View {
     @Environment(AppDependencies.self) private var deps
     @Environment(AppRouter.self) private var router
     @State private var viewModel: LoginViewModel?
-    /// Incremented on Connect; `CredentialRowList` releases any stale hidden-field first responder
-    /// when it moves (tvOS-only effect — see the sweep rationale there).
-    @State private var fieldSweep = 0
     #if !os(tvOS)
     @State private var showPassword = false
     /// Drives the return-key field walk: return advances to the next field, and "go" on the last
@@ -154,7 +151,7 @@ struct LoginView: View {
                 CredentialRow(id: "server", title: "Server", placeholder: "https://jellyfin.example.com", text: $vm.serverURLInput, keyboard: .URL, textContentType: .URL),
                 CredentialRow(id: "username", title: "Username", placeholder: "Username", text: $vm.username, textContentType: .username),
                 CredentialRow(id: "password", title: "Password", placeholder: "Password", text: $vm.password, isSecure: true, textContentType: .password),
-            ], sweepToken: fieldSweep)
+            ])
             #else
             SettingsGroup(title: "Server") {
                 CredentialFieldRow(icon: "globe") {
@@ -199,7 +196,6 @@ struct LoginView: View {
             // Connect (solid primary) — needs a server and a username; passwordless Jellyfin
             // accounts are valid, so the password field is not part of the gate.
             Button {
-                fieldSweep += 1
                 Task { await submitSignIn(vm: vm) }
             } label: {
                 Text("Connect").formActionLabel(isWorking: vm.isWorking)

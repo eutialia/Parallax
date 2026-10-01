@@ -1,6 +1,4 @@
 #if os(tvOS)
-import os
-import ParallaxCore
 import SwiftUI
 import UIKit
 
@@ -39,21 +37,10 @@ struct CredentialRow: Identifiable {
 /// focused field's giant lift breaks the flat settings design).
 struct CredentialRowList: View {
     let rows: [CredentialRow]
-    /// Host-bumped sweep trigger (e.g. SMBLoginView increments it on Connect): any change releases
-    /// stale hidden-field first responders. See `resignRequest` for why the sweep exists.
-    var sweepToken: Int = 0
 
     /// Index of the field a pill tap wants to edit. The host consumes it (raises that field's keyboard)
     /// and clears it.
     @State private var focusRequest: Int?
-    /// Asks the host to resign any hidden field still FIRST RESPONDER. tvOS can retain the edited
-    /// field as first responder past the keyboard's dismissal (device-observed; `beginEditing`
-    /// works around the same retention), and a stale first responder can swallow the remote's Menu
-    /// press before it pops navigation — the "stuck on the form, kill the app" freeze. Triggers are
-    /// chosen so a sweep can NEVER fire mid-edit: a pill of OURS gaining remote focus, or the
-    /// enclosing form bumping `sweepToken` (its Connect press) — both only happen with the keyboard
-    /// closed. (`textFieldDidEndEditing` also sweeps, but device runs suggest it may never fire.)
-    @State private var resignRequest = false
 
     var body: some View {
         VStack(spacing: Space.s8) {
@@ -75,18 +62,10 @@ struct CredentialRowList: View {
         // full-screen keyboard covers the form while editing, so the host is never seen — and there's
         // no intermediate "fields page": selecting a pill goes straight to the keyboard.
         .background {
-            CredentialKeyboardHost(rows: rows, focusRequest: $focusRequest, resignRequest: $resignRequest)
+            CredentialKeyboardHost(rows: rows, focusRequest: $focusRequest)
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
         }
-        // A pill gaining focus means the user is back on the FORM — any field still first
-        // responder is stale by definition. Nil changes are ignored: focus leaving the list says
-        // nothing about the keyboard.
-        .onChange(of: focusedRow) { _, focused in
-            guard focused != nil else { return }
-            resignRequest = true
-        }
-        .onChange(of: sweepToken) { _, _ in resignRequest = true }
     }
 
     @FocusState private var focusedRow: String?
@@ -129,12 +108,10 @@ struct CredentialRowList: View {
 private struct CredentialKeyboardHost: UIViewControllerRepresentable {
     let rows: [CredentialRow]
     @Binding var focusRequest: Int?
-    @Binding var resignRequest: Bool
 
     func makeUIViewController(context: Context) -> CredentialKeyboardController {
         let controller = CredentialKeyboardController()
         controller.coordinator = context.coordinator
-        context.coordinator.controller = controller
         controller.rows = rows
         return controller
     }
@@ -148,17 +125,12 @@ private struct CredentialKeyboardHost: UIViewControllerRepresentable {
             // Clear AFTER this update cycle — never mutate observed state mid-update.
             DispatchQueue.main.async { focusRequest = nil }
         }
-        if resignRequest {
-            controller.resignStaleFields()
-            DispatchQueue.main.async { resignRequest = false }
-        }
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     final class Coordinator: NSObject, UITextFieldDelegate {
         var parent: CredentialKeyboardHost
-        weak var controller: CredentialKeyboardController?
         init(_ parent: CredentialKeyboardHost) { self.parent = parent }
 
         /// Live-sync each keystroke back to the row's binding so the pill reflects the value.
@@ -171,22 +143,6 @@ private struct CredentialKeyboardHost: UIViewControllerRepresentable {
         /// which is the pill-reflects-live-value contract). No advance/dismiss to manage.
         func textFieldDidEndEditing(_ field: UITextField, reason: UITextField.DidEndEditingReason) {
             if reason == .committed { write(field) }
-            // tvOS can RETAIN the field as first responder past the keyboard scene's dismissal
-            // (the same quirk `beginEditing` resigns around when re-opening a pill). A stale first
-            // responder sits ahead of the focus system in the press-responder chain and can
-            // swallow the remote's Menu press before it pops navigation — the device-reported
-            // "stuck on the SMB form, had to kill the app" freeze. Sweep on the next runloop turn
-            // (resigning inside the end-editing callback would recurse into it) — but stand down
-            // if a NEW editing session started in the meantime: `beginEditing`'s resign→become on a
-            // retained first responder lands here synchronously mid-resign, and the deferred sweep
-            // then fired AFTER the become and killed the freshly raised keyboard (device symptom:
-            // re-opening a filled field showed an empty editor). The generation check tells the
-            // two apart.
-            let generation = controller?.editGeneration
-            DispatchQueue.main.async { [weak controller] in
-                guard controller?.editGeneration == generation else { return }
-                if field.isFirstResponder { field.resignFirstResponder() }
-            }
         }
 
         private func write(_ field: UITextField) {
@@ -198,14 +154,8 @@ private struct CredentialKeyboardHost: UIViewControllerRepresentable {
 }
 
 private final class CredentialKeyboardController: UIViewController {
-    private static let logger = Log.custom(category: "CredentialRowList")
-
     weak var coordinator: CredentialKeyboardHost.Coordinator?
     var rows: [CredentialRow] = []
-    /// Bumped by `beginEditing` between its resign and its become. The coordinator's deferred
-    /// end-editing sweep snapshots this and only resigns if it's unchanged — i.e. no new session
-    /// was raised since the end-editing fired (see `textFieldDidEndEditing`).
-    private(set) var editGeneration = 0
 
     private var fields: [UITextField] = []
     private let stack = UIStackView()
@@ -242,17 +192,6 @@ private final class CredentialKeyboardController: UIViewController {
         }
     }
 
-    /// Releases any hidden field still claiming first responder while its keyboard is gone (see
-    /// `CredentialRowList.resignRequest`). Callers guarantee the keyboard is closed when this runs,
-    /// so resigning here can never kill a live editing session. Logged: a hit on a device run is
-    /// direct evidence the stale-first-responder freeze theory is right.
-    func resignStaleFields() {
-        for field in fields where field.isFirstResponder {
-            Self.logger.info("Resigning stale first responder (field tag \(field.tag))")
-            field.resignFirstResponder()
-        }
-    }
-
     /// Keep field text in step with the bindings (e.g. re-opening a filled field shows its value).
     /// Skip the field currently being edited: it's the source of truth while first responder, so a
     /// binding that lags a keystroke can't clobber the user's latest input.
@@ -276,11 +215,6 @@ private final class CredentialKeyboardController: UIViewController {
             // keyboard scene's commit/dismiss), a bare becomeFirstResponder() no-ops and the editor
             // never re-presents — resign first so re-selecting the SAME pill re-opens the keyboard.
             if field.isFirstResponder { field.resignFirstResponder() }
-            // That resign fired `textFieldDidEndEditing`, which scheduled a deferred resign sweep.
-            // Bump the generation BEFORE raising the new session so the sweep sees it and stands
-            // down — un-bumped, it ran after the become below and resigned the brand-new keyboard
-            // session, which is why a re-opened filled field presented an EMPTY editor.
-            self.editGeneration += 1
             _ = field.becomeFirstResponder()
         }
     }

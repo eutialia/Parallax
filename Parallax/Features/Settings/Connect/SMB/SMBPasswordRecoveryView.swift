@@ -41,9 +41,6 @@ struct SMBPasswordRecoveryView: View {
     /// hard-bounds its own calls, and device runs still wedged — see `SMBLoginView`).
     @State private var watchdogTask: Task<Void, Never>?
     @State private var isVerifying = false
-    /// Incremented on submit; `CredentialRowList` resigns any stale tvOS hidden-field first
-    /// responder when it moves.
-    @State private var fieldSweep = 0
 
     private var host: String { data.host }
 
@@ -110,8 +107,7 @@ struct SMBPasswordRecoveryView: View {
                     text: $password,
                     isSecure: true
                 ),
-            ],
-            sweepToken: fieldSweep
+            ]
         )
         #else
         SettingsGroup(title: "Password", footer: "Leave blank to connect as a guest.") {
@@ -153,9 +149,6 @@ struct SMBPasswordRecoveryView: View {
         guard !isVerifying else { return }
         errorMessage = nil
         isVerifying = true
-        // Release any hidden tvOS credential field still holding first responder.
-        fieldSweep += 1
-
         // Capture everything the escaping task needs, so nothing inside it reads view state.
         let candidate = password
         let serverID = id

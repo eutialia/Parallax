@@ -47,9 +47,6 @@ struct SMBLoginView: View {
     /// watchdog's DEBUG error message. Reference-typed on purpose — stage transitions are
     /// diagnostics, not display state, so writing them must not invalidate the form's view tree.
     @State private var diagnostics = ConnectDiagnostics()
-    /// Incremented on Connect; `CredentialRowList` resigns any stale hidden-field first responder
-    /// when it moves (see the sweep rationale there).
-    @State private var fieldSweep = 0
 
     #if !os(tvOS)
     /// Return-key field walk: return advances to the next field, "go" on the last (password) connects.
@@ -151,7 +148,7 @@ struct SMBLoginView: View {
         #if os(tvOS)
         // No last-field auto-connect: tvOS's system keyboard Done returns to the form, and the
         // always-present Connect button submits (gated to a complete form).
-        CredentialRowList(rows: credentialRows, sweepToken: fieldSweep)
+        CredentialRowList(rows: credentialRows)
         #else
         connectionFieldsSection
         #endif
@@ -246,10 +243,6 @@ struct SMBLoginView: View {
         connectionError = nil
         isConnecting = true
         diagnostics.stage = "queued"
-        // Release any hidden credential field tvOS left as first responder — the prime suspect
-        // for Menu presses dying during a connect (see CredentialRowList's sweep rationale).
-        fieldSweep += 1
-
         // Capture to avoid closing over @State bindings inside the Task — the dependency factory
         // included, so nothing inside the escaping Task reads view state.
         let capturedPassword = password
