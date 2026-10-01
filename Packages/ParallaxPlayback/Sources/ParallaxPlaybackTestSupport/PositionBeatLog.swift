@@ -32,6 +32,8 @@ public final class PositionBeatLog {
     /// second collector because `state` has exactly ONE consumer: a test that needs both the
     /// beat history and the failure that ends it cannot iterate the stream twice.
     public private(set) var failure: PlaybackError?
+    /// Every `.ready` inventory, in order. Same single-consumer reason as `failure`.
+    public private(set) var readyInventories: [TrackInventory] = []
     private var task: Task<Void, Never>?
 
     public init(_ engine: any PlaybackEngine) {
@@ -39,6 +41,7 @@ public final class PositionBeatLog {
         task = Task { @MainActor [weak self] in
             for await published in stream {
                 if case .failed(let error) = published.state { self?.failure = error }
+                if case .ready(_, let tracks) = published.state { self?.readyInventories.append(tracks) }
                 guard let beat = PositionBeat(published.state) else { continue }
                 self?.beats.append(beat)
             }

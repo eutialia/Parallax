@@ -282,7 +282,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// Surfaces a `.failed` if no first frame arrives within the deadline — so a source that opens
     /// but never decodes can't strand the player on the loading scrim forever. Armed in `play()`,
     /// disarmed by the first beat / teardown / terminal state. See `LoadWatchdog`.
-    private let loadWatchdog = LoadWatchdog()
+    private let loadWatchdog: LoadWatchdog
 
     /// Bounds a mid-playback stall the poll detects (see `stallDetector`). `player.isPlaying` reflects
     /// intent, not frames (VLCKit#578), so a network death leaves the poll emitting `.playing` over a
@@ -452,9 +452,10 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// Test seam: drives `control` for every command and clock read, while `vlcPlayer` keeps
     /// vending a real (idle, media-less) `VLCMediaPlayer` so the drawable-host contract still
     /// holds. Internal — the app has no reason to substitute a player.
-    convenience init(control: any VLCPlayerControlling, stallDeadline: Duration = .seconds(45)) {
+    convenience init(control: any VLCPlayerControlling, loadDeadline: Duration = .seconds(30),
+                     stallDeadline: Duration = .seconds(45)) {
         self.init(mediaPlayer: Self.makePlayer(libraryOptions: nil), control: control,
-                  stallDeadline: stallDeadline)
+                  loadDeadline: loadDeadline, stallDeadline: stallDeadline)
     }
 
     /// **The only place a `VLCMediaPlayer` is ever constructed.** Installing
@@ -503,12 +504,13 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// The one designated init. `mediaPlayer` is the drawable handle `vlcPlayer` vends;
     /// `control` is the command seam — the same object in production, a spy in tests.
     private init(mediaPlayer: VLCMediaPlayer, control: any VLCPlayerControlling,
-                 stallDeadline: Duration = .seconds(45)) {
+                 loadDeadline: Duration = .seconds(30), stallDeadline: Duration = .seconds(45)) {
         let (stream, cont) = PlaybackStateStream.makeStream()
         self.state = stream
         self.continuation = cont
         self.mediaPlayer = mediaPlayer
         self.player = control
+        self.loadWatchdog = LoadWatchdog(timeout: loadDeadline)
         self.stallDeadline = stallDeadline
         super.init()
         player.delegate = self
@@ -1688,15 +1690,25 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// With no length/track delegates on 3.x this diff is the only change signal. Diffs
     /// the FULL built inventory (see `lastPublishedInventory`) and hands the build to
     /// `emitReady` so a re-emit doesn't pay for it twice.
+    ///
+    /// Silent until the input has really opened (a track or a resolved length). An input
+    /// still stuck opening reads as an empty inventory, and publishing that would disarm
+    /// the load watchdog on a dead share and hand the app's one-shot preferred-track pick
+    /// an inventory with nothing in it.
     private func publishInventoryIfChanged() {
         guard let media = currentMedia else { return }
         let inventory = buildTrackInventory()
         let lengthResolved = (Self.validClockMs(media.length) ?? 0) > 0
-        guard inventory != lastPublishedInventory
+        guard Self.inputHasOpened(inventory: inventory, lengthResolved: lengthResolved),
+              inventory != lastPublishedInventory
                 || lengthResolved != lastPublishedLengthResolved else { return }
         lastPublishedInventory = inventory
         lastPublishedLengthResolved = lengthResolved
         emitReady(inventory)
+    }
+
+    nonisolated static func inputHasOpened(inventory: TrackInventory, lengthResolved: Bool) -> Bool {
+        lengthResolved || !inventory.audio.isEmpty || !inventory.subtitles.isEmpty
     }
 
     /// Idempotent one-time setter for VLC's events configuration. The first access

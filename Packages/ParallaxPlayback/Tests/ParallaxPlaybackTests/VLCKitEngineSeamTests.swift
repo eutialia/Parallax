@@ -849,3 +849,50 @@ struct VLCKitSeekSettleTests {
         await engine.teardown()
     }
 }
+
+/// The load deadline only means something if nothing disarms it before the input opens. The
+/// poll's inventory diff used to publish the empty inventory of an input still stuck opening
+/// on its first tick, and that `.ready` disarmed the watchdog: a dead share spun forever.
+@Suite("VLCKitEngine — load readiness", .timeLimit(.minutes(1)))
+@MainActor
+struct VLCKitLoadReadinessTests {
+
+    @Test("an input has opened once it offers a track or a length",
+          arguments: [
+            (TrackInventory.empty, false, false),
+            (TrackInventory.empty, true, true),
+            (TrackInventory(audio: [AudioTrack(id: .vlc("1"), displayName: "English", languageCode: nil)],
+                            subtitles: []), false, true),
+            (TrackInventory(audio: [],
+                            subtitles: [SubtitleTrack(id: .vlc("2"), displayName: "English",
+                                                      languageCode: nil, isForced: false)]),
+             false, true),
+          ])
+    func inputHasOpened(inventory: TrackInventory, lengthResolved: Bool, expected: Bool) {
+        #expect(VLCKitEngine.inputHasOpened(inventory: inventory, lengthResolved: lengthResolved) == expected)
+    }
+
+    @Test("the load watchdog fires only on an input that never opened", arguments: [false, true])
+    func loadWatchdogFiresOnlyOnAHungOpen(opens: Bool) async throws {
+        let spy = SpyVLCPlayer()
+        spy.stubbedState = .opening
+        spy.demuxBytesPerPoll = 1   // counts polls; no clock, so it reads as no beat at all
+        if opens {
+            spy.stubbedAudioTrackIndexes = [NSNumber(value: 1)]
+            spy.stubbedAudioTrackNames = ["English"]
+        }
+        let engine = VLCKitEngine(control: spy, loadDeadline: .seconds(1))
+        let log = PositionBeatLog(engine)
+        try await engine.load(.fixture())
+        await engine.play()
+
+        // Six polls is three seconds of poll sleep against a one-second deadline.
+        try await pollUntil({ log.failure != nil || spy.stubbedDemuxReadBytes >= 6 },
+                            timeout: CITimeScale.seconds(20))
+
+        #expect(log.failure == (opens ? nil : .loadTimedOut))
+        #expect(log.readyInventories.map { $0.audio.map(\.id) } == (opens ? [[.vlc("1")]] : []))
+        log.stop()
+        await engine.teardown()
+    }
+}
