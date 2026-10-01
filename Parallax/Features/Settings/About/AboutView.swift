@@ -136,7 +136,7 @@ struct LicenseTextView: View {
             #if os(tvOS)
             // Full-contrast `.label` here (not iOS's `.secondaryLabel` below) is a deliberate
             // divergence for 10-foot legibility, not an oversight.
-            FocusableScrollText(text: license.text, textStyle: .footnote, design: .monospaced, textColor: .label)
+            FocusableScrollText(text: license.text, textStyle: .footnote, design: .monospaced)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
                 .padding(.horizontal, SettingsMetrics.headerInset)
             #else

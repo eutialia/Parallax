@@ -9,8 +9,6 @@ import ParallaxPlayback
 struct SubtitleSettingsView: View {
     @Environment(SubtitlePreferences.self) private var prefs
     @Environment(SubtitlePreviewState.self) private var preview
-    /// Delays the lights so they fade in AFTER the slide-in; cancelled if the user leaves first.
-    @State private var activationTask: Task<Void, Never>?
 
     var body: some View {
         SettingsScaffold(showsBrand: false) {
@@ -21,24 +19,13 @@ struct SubtitleSettingsView: View {
         .navigationBarTitleDisplayMode(.inline)
         #endif
         // Drive the floating preview: lit while this menu is on screen, gone when it leaves. Activation
-        // is delayed ~0.3s so the lights fade in AFTER the menu's slide-in settles; the Task is cancelled
-        // on early exit so a quick in-and-out can't strand the lights on. Fade-out stays immediate.
-        .onAppear {
-            // Cancel any prior pending activation: a second `onAppear` without an intervening
-            // `onDisappear` would otherwise orphan the first Task (unreachable, so the exit can't
-            // cancel it) and it could flip the lights back on after the menu is gone.
-            activationTask?.cancel()
-            activationTask = Task {
-                try? await Task.sleep(for: .milliseconds(300))
-                guard !Task.isCancelled else { return }
-                preview.activate()
-            }
+        // is delayed ~0.3s so the lights fade in AFTER the menu's slide-in settles; leaving cancels the
+        // `.task`, so a quick in-and-out can't strand the lights on. Fade-out stays immediate.
+        .task {
+            guard (try? await Task.sleep(for: .milliseconds(300))) != nil else { return }
+            preview.activate()
         }
-        .onDisappear {
-            activationTask?.cancel()
-            activationTask = nil
-            preview.deactivate()
-        }
+        .onDisappear { preview.deactivate() }
     }
 }
 

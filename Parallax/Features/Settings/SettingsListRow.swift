@@ -145,7 +145,6 @@ struct SettingsListRow: View {
         if let action {
             Button(role: role, action: action) { label }
                 .tvListRowButton()
-                .disabled(accessory == .soon)
         } else {
             label
         }

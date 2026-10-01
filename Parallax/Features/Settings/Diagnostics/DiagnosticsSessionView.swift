@@ -47,7 +47,7 @@ struct DiagnosticsSessionView: View {
         // tvOS `Text` is never focusable, so a long log would have no focus target and the remote
         // could not scroll it — `FocusableScrollText` is the shared fix (same one the licence pages
         // use), which is also why the scaffold above runs with `scrolls: false`.
-        FocusableScrollText(text: text, textStyle: .caption1, design: .monospaced, textColor: .label)
+        FocusableScrollText(text: text, textStyle: .caption1, design: .monospaced)
             .frame(height: 720)
             .padding(SettingsMetrics.rowHInset)
         #else

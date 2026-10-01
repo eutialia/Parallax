@@ -20,14 +20,12 @@ import UIKit
 /// - No `isEditable = false` guard is needed (or even possible): `UITextView.isEditable` is
 ///   `API_UNAVAILABLE(tvos)` — tvOS text views are never editable, so Select can only pan here.
 ///
-/// `textStyle` / `design` / `textColor` are the styling knobs — they pick the Dynamic-Type ramp the
-/// text scales on, its typeface design, and its ink token, so a host can match its own type scale
-/// without reaching into the view.
+/// `textStyle` / `design` are the styling knobs — they pick the Dynamic-Type ramp the text scales on
+/// and its typeface design, so a host can match its own type scale without reaching into the view.
 struct FocusableScrollText: UIViewRepresentable {
     let text: String
     var textStyle: UIFont.TextStyle = .callout
     var design: UIFontDescriptor.SystemDesign = .default
-    var textColor: Color = .label
 
     private var resolvedFont: UIFont {
         let baseDescriptor = UIFontDescriptor.preferredFontDescriptor(withTextStyle: textStyle)
@@ -46,21 +44,19 @@ struct FocusableScrollText: UIViewRepresentable {
         view.layer.cornerRadius = Radius.tile
         view.textContainerInset = UIEdgeInsets(top: Space.s8, left: Space.s8, bottom: Space.s8, right: Space.s8)
         view.textContainer.lineFragmentPadding = 0
-        view.textColor = UIColor(textColor)
-        view.appliedTextColor = textColor
+        view.textColor = UIColor(Color.label)
         view.font = resolvedFont
         view.adjustsFontForContentSizeCategory = true
         return view
     }
 
-    /// Every write here is guarded: assigning `text`, `font`, or `textColor` re-applies attributes
-    /// across the whole string and invalidates layout, and hosts re-run `updateUIView` on unrelated
-    /// state changes. `UIFont` compares by descriptor, so it can be diffed directly; `UIColor(Color)`
-    /// wraps a dynamic provider that never compares equal, so the `Color` token is diffed instead —
-    /// and the text is diffed against a stored copy rather than `view.text`, whose getter
-    /// re-materializes the whole string out of `textStorage` before the O(n) compare even starts
-    /// (this view's real payload is a 35KB licence). Comparing the two `String`s hits the identity
-    /// fast path when nothing changed, which is the common case.
+    /// Every write here is guarded: assigning `text` or `font` re-applies attributes across the whole
+    /// string and invalidates layout, and hosts re-run `updateUIView` on unrelated state changes.
+    /// `UIFont` compares by descriptor, so it can be diffed directly; the text is diffed against a
+    /// stored copy rather than `view.text`, whose getter re-materializes the whole string out of
+    /// `textStorage` before the O(n) compare even starts (this view's real payload is a 35KB
+    /// licence). Comparing the two `String`s hits the identity fast path when nothing changed,
+    /// which is the common case.
     func updateUIView(_ view: FocusableTextView, context: Context) {
         if view.appliedText != text {
             view.appliedText = text
@@ -71,10 +67,6 @@ struct FocusableScrollText: UIViewRepresentable {
         }
         let font = resolvedFont
         if view.font != font { view.font = font }
-        if view.appliedTextColor != textColor {
-            view.appliedTextColor = textColor
-            view.textColor = UIColor(textColor)
-        }
     }
 
     /// Take the proposed (bounded) size, not the content's intrinsic height — otherwise the text
@@ -92,10 +84,6 @@ struct FocusableScrollText: UIViewRepresentable {
 /// border — a focused reading region should read as a gently lit panel, not an outlined box, and
 /// must adapt to light mode.
 final class FocusableTextView: UITextView {
-    /// The `Color` token behind the current `textColor`, so `updateUIView` can skip a redundant
-    /// re-style; the resolved `UIColor` itself is a dynamic provider and never compares equal.
-    var appliedTextColor: Color?
-
     /// The string last handed to `text`, so `updateUIView` can diff without going through
     /// `UITextView.text` — that getter rebuilds the whole string from `textStorage` on every read,
     /// which is real work on every unrelated re-render for a body this long.
