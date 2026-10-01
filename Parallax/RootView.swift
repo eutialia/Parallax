@@ -146,5 +146,7 @@ struct RootView: View {
             let provider = deps.mediaArtworkProvider
             Task { await provider.setPlaybackActive(present, seq: seq) }
         }
+        // Outermost so the settings sheet and the player layer inherit it too.
+        .bridgesReducedResourceUsage()
     }
 }

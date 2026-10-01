@@ -96,7 +96,8 @@ extension View {
     /// The URLs MUST be built with `ArtworkRequest` (the same sizing the tiles use), or the prefetch
     /// warms a different cache key and just double-downloads. Prefetching is best-effort and bounded
     /// to the shelf's own items (a short list), so it can't flood the cache; it stops when the view
-    /// leaves the screen or the URL set changes.
+    /// leaves the screen or the URL set changes. Both variants stand down while the system prefers
+    /// reduced resource usage: the warm-up is the first non-essential work to go.
     func prefetchArtwork(_ urls: [URL], session: Session) -> some View {
         modifier(ArtworkPrefetchModifier(urls: urls, session: session))
     }
@@ -107,7 +108,10 @@ private struct ArtworkPrefetchModifier: ViewModifier {
     let session: Session
 
     @Environment(AppDependencies.self) private var deps
+    @Environment(\.prefersReducedResourceUsage) private var prefersReducedResourceUsage
     @State private var prefetcher: ImagePrefetcher?
+
+    private var activeURLs: [URL] { prefersReducedResourceUsage ? [] : urls }
 
     func body(content: Content) -> some View {
         content
@@ -115,8 +119,13 @@ private struct ArtworkPrefetchModifier: ViewModifier {
             // caches it, so this is cheap) and restarting on the fresh set — whenever either changes.
             // Keying on the full set, not a count, means a refresh that swaps items in place still
             // re-warms. The captured `urls` are therefore always current (no stale-capture race).
-            .task(id: PrefetchKey(session: session, urls: urls)) {
-                guard !urls.isEmpty else { return }
+            .task(id: PrefetchKey(session: session, urls: activeURLs)) {
+                let urls = activeURLs
+                guard !urls.isEmpty else {
+                    prefetcher?.stopPrefetching()
+                    prefetcher = nil
+                    return
+                }
                 let pipeline = await deps.imagePipelineFactory.pipeline(for: session)
                 // The await is a suspension point: if the view left the screen or the URL set changed
                 // while the pipeline resolved, this task was cancelled. Bail before starting — past
@@ -145,13 +154,17 @@ private struct SourcedArtworkPrefetchModifier: ViewModifier {
     let groups: [ArtworkPrefetchGroup]
 
     @Environment(AppDependencies.self) private var deps
+    @Environment(\.prefersReducedResourceUsage) private var prefersReducedResourceUsage
     @State private var prefetchers: [ImagePrefetcher] = []
+
+    private var activeGroups: [ArtworkPrefetchGroup] { prefersReducedResourceUsage ? [] : groups }
 
     func body(content: Content) -> some View {
         content
             // Keyed on the whole group set so a refresh that swaps items in place still re-warms,
             // and a server appearing/disappearing from the shelf restarts cleanly.
-            .task(id: groups) {
+            .task(id: activeGroups) {
+                let groups = activeGroups
                 guard !groups.isEmpty else {
                     // Stop, don't just bail: the shelf emptying (or its last server leaving) is
                     // exactly when the previous pass's prefetchers must be torn down — returning

@@ -127,6 +127,7 @@ struct HomeHeroCarousel: View {
     @Environment(PlaybackPresenter.self) private var playback
     @Environment(\.appIdiom) private var idiom
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.prefersReducedResourceUsage) private var prefersReducedResourceUsage
 
     // Tracks whether the next-chevron specifically holds focus, so a right-press only advances the
     // carousel when the chevron is focused — never on the ordinary Play↔Favorite↔chevron focus
@@ -209,7 +210,7 @@ struct HomeHeroCarousel: View {
                 numberOfPages: count,
                 currentPage: ((carousel.displayedPage % count) + count) % count,
                 autoAdvanceInterval: 6,
-                isPaused: carousel.isDragging,
+                isPaused: carousel.isDragging || prefersReducedResourceUsage,
                 reduceMotion: reduceMotion,
                 onAdvance: { carousel.commit(to: carousel.displayedPage + 1, reduceMotion: reduceMotion) }
             )

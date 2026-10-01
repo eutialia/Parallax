@@ -52,6 +52,7 @@ struct SMBBrowseView: View {
     @Environment(PlaybackPresenter.self) private var playback
     @Environment(\.appIdiom) private var idiom
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.prefersReducedResourceUsage) private var prefersReducedResourceUsage
     @State private var model: SMBBrowseViewModel?
     /// Highest media index the viewport-ahead prefetch window has covered; -1 = none yet. Monotonic
     /// per listing so scroll-back re-appearances don't re-hand items to the provider.
@@ -230,7 +231,8 @@ struct SMBBrowseView: View {
     /// Rows of thumbnails warmed BEYOND the tile that just appeared — a perception buffer, not the
     /// whole folder (explicit user policy: scroll landings should be warm, but a huge directory must
     /// not fetch wall-to-wall; un-approached items wait until the viewport nears them).
-    private static let prefetchLookaheadRows = 12
+    /// Cut to 3 rows while the system asks apps to defer non-essential prefetching.
+    private var prefetchLookaheadRows: Int { prefersReducedResourceUsage ? 3 : 12 }
 
     /// Viewport-ahead prefetch: when the media tile at `index` materialises in the lazy grid, hand
     /// the provider the next `prefetchLookaheadRows` rows' worth of items past the current watermark.
@@ -245,7 +247,7 @@ struct SMBBrowseView: View {
             prefetchedGeneration = model.listingGeneration
             prefetchedThrough = -1
         }
-        let lookahead = Self.prefetchLookaheadRows * AppLayout.landscapeGridColumns(idiom: idiom)
+        let lookahead = prefetchLookaheadRows * AppLayout.landscapeGridColumns(idiom: idiom)
         let upper = min(index + lookahead, model.media.count - 1)
         let lower = max(prefetchedThrough + 1, index + 1)
         guard lower <= upper else { return }
