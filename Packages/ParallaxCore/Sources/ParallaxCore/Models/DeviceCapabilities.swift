@@ -8,7 +8,6 @@ public struct DeviceCapabilities: Sendable, Hashable, Codable {
     public let hdr: HDRSupport
     public let maxResolution: Resolution
     public let maxBitrate: Bitrate
-    public let audioOutput: AudioOutputCapability
     public let preferredSubtitleFormats: [SubtitleFormat]
 
     // MARK: - Software / VLC-additional tier (Phase 5)
@@ -32,7 +31,6 @@ public struct DeviceCapabilities: Sendable, Hashable, Codable {
         hdr: HDRSupport,
         maxResolution: Resolution,
         maxBitrate: Bitrate,
-        audioOutput: AudioOutputCapability,
         preferredSubtitleFormats: [SubtitleFormat],
         softwareVideoCodecs: [VideoCodec] = [],
         softwareAudioCodecs: [AudioCodec] = [],
@@ -44,7 +42,6 @@ public struct DeviceCapabilities: Sendable, Hashable, Codable {
         self.hdr = hdr
         self.maxResolution = maxResolution
         self.maxBitrate = maxBitrate
-        self.audioOutput = audioOutput
         self.preferredSubtitleFormats = preferredSubtitleFormats
         self.softwareVideoCodecs = softwareVideoCodecs
         self.softwareAudioCodecs = softwareAudioCodecs
@@ -62,7 +59,6 @@ public struct DeviceCapabilities: Sendable, Hashable, Codable {
         hdr: .hdr10,
         maxResolution: .uhd4K,
         maxBitrate: .megabits(120),
-        audioOutput: .stereo,
         preferredSubtitleFormats: [.vtt, .srt],
         softwareVideoCodecs: [.vp9, .av1],
         softwareAudioCodecs: [.dts, .flac, .opus],

@@ -10,8 +10,7 @@ import ParallaxPlayback
 /// under test, and the no-drift rule forbids `#if os` in `Packages/`.
 /// Injected into `DeviceProfileBuilder`.
 struct LiveCapabilityProbe: CapabilityProbe {
-    @MainActor
-    func hdrSupport() -> HDRSupport {
+    nonisolated func hdrSupport() -> HDRSupport {
         // `eligibleForHDRPlayback` already means "this device can present content
         // to an HDR display" — it accounts for the connected display and updates
         // on display changes. The old extra requirement that the UI screen report
@@ -45,14 +44,5 @@ struct LiveCapabilityProbe: CapabilityProbe {
             support.insert(.dolbyVision)
         }
         return support
-    }
-
-    nonisolated func audioOutput() -> AudioOutputCapability {
-        let route = AVAudioSession.sharedInstance().currentRoute
-        let maxChannels = route.outputs.map { $0.channels?.count ?? 2 }.max() ?? 2
-        if maxChannels > 2 {
-            return .multichannel(channelCount: maxChannels)
-        }
-        return .stereo
     }
 }

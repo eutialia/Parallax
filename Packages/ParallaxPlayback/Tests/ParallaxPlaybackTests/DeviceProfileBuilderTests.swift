@@ -7,7 +7,7 @@ import ParallaxPlaybackTestSupport
 @Suite("DeviceProfileBuilder")
 struct DeviceProfileBuilderTests {
 
-    /// The profile a default (no-HDR, stereo) device produces — the shape 12 of these
+    /// The profile a default (no-HDR) device produces — the shape 12 of these
     /// tests need before they can look at one field.
     private func defaultCaps() async -> DeviceCapabilities {
         await DeviceProfileBuilder(probe: FakeCapabilityProbe()).build()
@@ -59,17 +59,6 @@ struct DeviceProfileBuilderTests {
         #expect(await builder.build().hdr == hdr)
     }
 
-    @Test("build() propagates the probe's audio output", arguments: [
-        AudioOutputCapability.stereo,
-        .multichannel(channelCount: 6),
-        .multichannel(channelCount: 8),
-        .atmos,
-    ])
-    func audioOutputPropagates(output: AudioOutputCapability) async {
-        let builder = DeviceProfileBuilder(probe: FakeCapabilityProbe(audioOutput: output))
-        #expect(await builder.build().audioOutput == output)
-    }
-
     // MARK: — Caching + invalidation
 
     @Test("a second build() returns the cache without re-probing")
@@ -78,7 +67,7 @@ struct DeviceProfileBuilderTests {
         let builder = DeviceProfileBuilder(probe: probe)
         _ = await builder.build()
         _ = await builder.build()
-        let count = await probe.callCount
+        let count = probe.callCount
         #expect(count == 1, "expected the probe to run once (cached), got \(count)")
     }
 
@@ -89,7 +78,7 @@ struct DeviceProfileBuilderTests {
         _ = await builder.build()
         await builder.invalidate()
         _ = await builder.build()
-        let count = await probe.callCount
+        let count = probe.callCount
         #expect(count == 2, "expected a re-probe after invalidate, got \(count)")
     }
 
@@ -119,7 +108,7 @@ struct DeviceProfileBuilderTests {
         _ = await builder.build()
         await builder.setNetworkConstrained(true)
         _ = await builder.build()
-        let count = await probe.callCount
+        let count = probe.callCount
         #expect(count == 2, "expected a re-probe after a real constraint change, got \(count)")
     }
 
@@ -133,7 +122,7 @@ struct DeviceProfileBuilderTests {
         _ = await builder.build()
         await builder.setNetworkConstrained(true)
         _ = await builder.build()
-        let count = await probe.callCount
+        let count = probe.callCount
         #expect(count == 1, "expected the repeat setNetworkConstrained(true) to be a no-op, got \(count)")
     }
 }

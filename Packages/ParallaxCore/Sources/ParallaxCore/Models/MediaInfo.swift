@@ -116,9 +116,3 @@ public struct Resolution: Sendable, Hashable, Codable {
     public static let hd1080p = Resolution(width: 1920, height: 1080)
     public static let hd720p = Resolution(width: 1280, height: 720)
 }
-
-public enum AudioOutputCapability: Sendable, Hashable, Codable {
-    case stereo
-    case multichannel(channelCount: Int)
-    case atmos
-}

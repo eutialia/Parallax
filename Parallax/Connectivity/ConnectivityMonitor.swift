@@ -25,8 +25,7 @@ final class ConnectivityMonitor {
     }
 
     /// Consume the reachability stream for the app's lifetime. Driven from a `.task` on the app root
-    /// (mirrors the `routeChanges` consumer) so it shares the view's cancellation rather than leaking
-    /// a free-standing `Task`.
+    /// so it shares the view's cancellation rather than leaking a free-standing `Task`.
     ///
     /// When `builder` is supplied, satisfied updates also forward the OS's constrained-path
     /// signal (Low Data Mode) into `DeviceProfileBuilder.setNetworkConstrained(_:)`. An

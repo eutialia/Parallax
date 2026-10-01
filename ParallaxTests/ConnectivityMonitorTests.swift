@@ -92,8 +92,7 @@ struct ConnectivityMonitorTests {
 /// linking a test-support product into the app-hosted bundle statically duplicates ParallaxCore
 /// (same reason this target keeps its own `FakeKeychain`).
 private struct StubCapabilityProbe: CapabilityProbe {
-    @MainActor func hdrSupport() -> HDRSupport { .none }
-    func audioOutput() -> AudioOutputCapability { .stereo }
+    nonisolated func hdrSupport() -> HDRSupport { .none }
 }
 
 /// Polls an async predicate (the sync `waitUntil` can't await actor state like the builder's).

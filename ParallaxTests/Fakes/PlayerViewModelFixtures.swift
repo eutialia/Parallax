@@ -23,13 +23,11 @@ final class CallRecorder<Element: Sendable>: Sendable {
 }
 
 struct NoopAudioSession: AudioSessionControlling {
-    let routeChanges: AsyncStream<Void> = AsyncStream { _ in }
     func activate() async throws {}
     func deactivate() async {}
 }
 
 struct ThrowingAudioSession: AudioSessionControlling {
-    let routeChanges: AsyncStream<Void> = AsyncStream { _ in }
     func activate() async throws {
         throw NSError(domain: NSOSStatusErrorDomain, code: -50)
     }
@@ -92,7 +90,7 @@ final class EngineLedger {
 
 /// The device profile every player suite builds its view model on: no HDR, stereo out.
 func makeTestDeviceProfileBuilder() -> DeviceProfileBuilder {
-    DeviceProfileBuilder(probe: FakeCapabilityProbe(hdr: .none, audioOutput: .stereo))
+    DeviceProfileBuilder(probe: FakeCapabilityProbe(hdr: .none))
 }
 
 /// THE `PlayerViewModel` builder for every player suite: the test device profile, a

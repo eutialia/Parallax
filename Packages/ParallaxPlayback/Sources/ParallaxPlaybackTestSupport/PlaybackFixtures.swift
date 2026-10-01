@@ -1,5 +1,6 @@
 import CoreMedia
 import Foundation
+import Synchronization
 import ParallaxCore
 import ParallaxPlayback
 
@@ -125,34 +126,20 @@ extension CMTime {
 // MARK: — CountingFakeCapabilityProbe
 
 /// `FakeCapabilityProbe` plus a probe-call counter, for the `DeviceProfileBuilder`
-/// cache/invalidate contract.
-///
-/// `@MainActor` (not an `actor`) so the count increments *synchronously* inside
-/// `hdrSupport()`. An earlier `actor` version recorded each call through a
-/// fire-and-forget `Task { await recordCall() }`, which raced the test's
-/// `await probe.callCount` read and failed non-deterministically under parallel
-/// execution. `DeviceProfileBuilder.build()` awaits the `@MainActor` `hdrSupport()`
-/// before returning, so by the time a test reads `callCount` the increment has landed.
-@MainActor
+/// cache/invalidate contract. The count increments synchronously inside `hdrSupport()`,
+/// so by the time `build()` returns a test reads the landed value.
 public final class CountingFakeCapabilityProbe: CapabilityProbe {
     private let stubbedHDR: HDRSupport
-    private let stubbedAudioOutput: AudioOutputCapability
-    public private(set) var callCount = 0
+    private let calls = Mutex(0)
 
-    public nonisolated init(
-        hdr: HDRSupport = .none,
-        audioOutput: AudioOutputCapability = .stereo
-    ) {
+    public init(hdr: HDRSupport = .none) {
         self.stubbedHDR = hdr
-        self.stubbedAudioOutput = audioOutput
     }
+
+    public var callCount: Int { calls.withLock { $0 } }
 
     public func hdrSupport() -> HDRSupport {
-        callCount += 1
+        calls.withLock { $0 += 1 }
         return stubbedHDR
-    }
-
-    public nonisolated func audioOutput() -> AudioOutputCapability {
-        stubbedAudioOutput
     }
 }

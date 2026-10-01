@@ -13,7 +13,6 @@ struct DeviceCapabilitiesTests {
             hdr: .both,
             maxResolution: .uhd4K,
             maxBitrate: .megabits(80),
-            audioOutput: .multichannel(channelCount: 6),
             preferredSubtitleFormats: [.vtt, .srt]
         )
 
@@ -44,7 +43,6 @@ struct DeviceCapabilitiesTwoTierTests {
         hdr: .none,
         maxResolution: .uhd4K,
         maxBitrate: .megabits(120),
-        audioOutput: .stereo,
         preferredSubtitleFormats: [.vtt, .srt]
     )
 

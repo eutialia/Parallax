@@ -171,38 +171,26 @@ struct ParallaxApp: App {
 
                 // Playback Lab: `-playbackLab <config.json path>` runs a scripted,
                 // UI-free SMB playback session for autonomous debugging — see
-                // PlaybackLabRunner. Detached from this task on purpose: the
-                // route-change loop below never returns, and the lab run must
-                // not block it (or be blocked by it).
+                // PlaybackLabRunner.
                 if let labRunner = PlaybackLabRunner.makeIfRequested(
                     dependencies: dependencies, playback: playback
                 ) {
-                    Task { await labRunner.run() }
+                    await labRunner.run()
                 }
                 #endif
-
-                // Rebuild the device profile on the next resolve whenever
-                // the audio route changes (e.g. AirPlay connects). Per the
-                // spec, in-flight playback is intentionally NOT interrupted.
-                // Structured (no wrapping `Task {}`): the loop is the tail of this
-                // `.task`, so it shares the view's cancellation instead of leaking.
-                for await _ in dependencies.audioSession.routeChanges {
-                    await dependencies.deviceProfileBuilder.invalidate()
-                }
             }
             // Republish network reachability into `connectivity` for the app's lifetime, and
             // forward the Low Data Mode / constrained-path signal into the device profile
-            // builder so the next resolve clamps `maxBitrate` (see `DeviceProfileBuilder`). A
-            // SEPARATE `.task` so it runs concurrently with the route-change loop above (which
-            // never returns); both share the view's cancellation. Drives `.recoversFromOffline`
-            // on views stuck in an error state.
+            // builder so the next resolve clamps `maxBitrate` (see `DeviceProfileBuilder`). Its own
+            // `.task` because it never returns; it shares the view's cancellation. Drives
+            // `.recoversFromOffline` on views stuck in an error state.
             .task { await connectivity.observe(reportingConstraintTo: dependencies.deviceProfileBuilder) }
             // Rebuild the device profile on the next resolve whenever HDR eligibility changes
             // (display connect/disconnect, Low Power Mode, other system resource shifts).
             // `AVPlayer.eligibleForHDRPlayback` is dynamic and explicitly NOT KVO-observable;
             // this notification is Apple's supported way to learn it moved. Per the spec,
             // in-flight playback is intentionally NOT interrupted. A SEPARATE `.task` (mirrors
-            // the two above) so it shares the view's cancellation instead of leaking.
+            // the one above) so it shares the view's cancellation instead of leaking.
             .task {
                 for await _ in NotificationCenter.default.notifications(
                     named: AVPlayer.eligibleForHDRPlaybackDidChangeNotification

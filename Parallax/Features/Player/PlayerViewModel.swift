@@ -4368,6 +4368,5 @@ extension PlayerViewModel {
 private struct PreviewAudioSession: AudioSessionControlling {
     func activate() async throws {}
     func deactivate() async {}
-    let routeChanges = AsyncStream<Void> { _ in }
 }
 #endif
