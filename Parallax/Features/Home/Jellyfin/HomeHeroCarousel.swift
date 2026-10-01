@@ -128,12 +128,6 @@ struct HomeHeroCarousel: View {
     @Environment(\.appIdiom) private var idiom
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    // Pulls tvOS launch focus onto the hero's Play button instead of the `.sidebarAdaptable`
-    // menu. Home loads async (skeleton first), so the menu claims focus on cold launch before
-    // the hero exists; setting this `@FocusState` when the carousel mounts yanks focus across
-    // from the system sidebar (a declarative `prefersDefaultFocus`/`resetFocus` can't — it only
-    // re-resolves *within* its own scope). Unused on iOS — `.focused` is tvOS-gated below.
-    @FocusState private var heroPlayFocused: Bool
     // Tracks whether the next-chevron specifically holds focus, so a right-press only advances the
     // carousel when the chevron is focused — never on the ordinary Play↔Favorite↔chevron focus
     // hops. tvOS-only; inert on iOS (the chevron + `.focused` below are tvOS-gated).
@@ -172,12 +166,6 @@ struct HomeHeroCarousel: View {
         // Same structural fix, same reasoning as `LibraryHeaderControls`'s full-width
         // section (device-verified there) — only the "lands on Play" claim was wrong.
         .tvFocusSection()
-        #if os(tvOS)
-        // The carousel only mounts once the feed has loaded, so this fires after the menu's
-        // cold-launch focus claim — moving focus onto the hero's Play button (collapsing the
-        // menu). Deferred a runloop so the focus system has settled the menu's claim first.
-        .onAppear { Task { @MainActor in heroPlayFocused = true } }
-        #endif
         // Compare ids (not entries) so a favorite toggle doesn't reset the page; a changed entry
         // set snaps back to the first page. `initial: true` because the page state now outlives
         // this view (it's hoisted to HomeView for the split hero): a hero-less interlude
@@ -280,7 +268,13 @@ struct HomeHeroCarousel: View {
                         .heroTypeContour(idiom: idiom)
                 }
             } actions: {
-                primaryPlay(entry, session: session)
+                PrimaryPlayButton(
+                    title: entry.playButtonTitle,
+                    fillWidth: false,
+                    layoutReserveTitle: ItemPlayButtonLabel.layoutReserveTitle(for: .episodeNumbered)
+                ) {
+                    playback.play(entry.playTarget.id, in: session)
+                }
                 FavoriteActionButton(isFavorite: item.userData.isFavorite) {
                     Task { await viewModel.toggleFavorite(for: item.id, source: sourced.source.sourceID) }
                 }
@@ -306,25 +300,6 @@ struct HomeHeroCarousel: View {
             }
         }
     }
-
-    /// Play pill, bound to the carousel's `@FocusState` on tvOS so the carousel can pull launch
-    /// focus onto it (out of the `.sidebarAdaptable` menu) when the feed mounts; inert on iOS.
-    @ViewBuilder
-    private func primaryPlay(_ entry: HomeHeroFeedEntry, session: Session) -> some View {
-        let button = PrimaryPlayButton(
-            title: entry.playButtonTitle,
-            fillWidth: false,
-            layoutReserveTitle: ItemPlayButtonLabel.layoutReserveTitle(for: .episodeNumbered)
-        ) {
-            playback.play(entry.playTarget.id, in: session)
-        }
-        #if os(tvOS)
-        button.focused($heroPlayFocused)
-        #else
-        button
-        #endif
-    }
-
 }
 
 /// Full-bleed artwork for one hero item — the crossfading layers inside `CrossfadeArtwork`,

@@ -227,20 +227,6 @@ struct SMBBrowseView: View {
         path.path.split(separator: "/").last.map(String.init) ?? path.share
     }
 
-    /// Whether a revalidate is allowed to dim + freeze this wall.
-    ///
-    /// Unlike `LibraryGridView` — whose revalidate follows a sort/filter the user just chose — the
-    /// only trigger here is the INVOLUNTARY foreground wake re-list (a sort change goes through
-    /// `load()` and the skeleton). On tvOS the modifier's `allowsHitTesting(false)` pulls focus off
-    /// whatever poster the user was on and parks it on the sort chip, losing a deep scroll position
-    /// for a refresh nobody asked for. So tvOS revalidates SILENTLY; iOS has no focus to lose and
-    /// keeps the crossfade.
-    #if os(tvOS)
-    private static let dimsOnRevalidate = false
-    #else
-    private static let dimsOnRevalidate = true
-    #endif
-
     /// Rows of thumbnails warmed BEYOND the tile that just appeared — a perception buffer, not the
     /// whole folder (explicit user policy: scroll landings should be warm, but a huge directory must
     /// not fetch wall-to-wall; un-approached items wait until the viewport nears them).
@@ -334,7 +320,7 @@ struct SMBBrowseView: View {
                     // with the library grid so the two never drift). Scoped to the grid, not the
                     // whole scroll subtree — see the comment on `sortHeader` above.
                     .staleWhileRevalidate(
-                        isRefreshing: Self.dimsOnRevalidate && model.isRefreshing,
+                        isRefreshing: model.isRefreshing,
                         reduceMotion: reduceMotion
                     )
                 }
