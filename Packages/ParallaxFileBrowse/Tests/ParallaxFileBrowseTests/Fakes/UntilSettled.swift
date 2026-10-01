@@ -24,7 +24,7 @@ func untilSettled(
     let deadline = ContinuousClock().now.advanced(by: CITimeScale.seconds(5))
     while ContinuousClock().now < deadline {
         if await condition() { return }
-        try? await Task.sleep(for: .milliseconds(1))
+        guard (try? await Task.sleep(for: .milliseconds(1))) != nil else { return }
     }
     Issue.record(
         "the condition never settled within 1,000 scheduler turns and \(CITimeScale.seconds(5))",

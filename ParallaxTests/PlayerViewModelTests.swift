@@ -3505,7 +3505,7 @@ struct PlayerViewModelTests {
         let toggle = try #require(nowPlaying.onToggle)
         toggle()
         #expect(vm.desiredPlaying == false)
-        try await Task.sleep(for: .milliseconds(50))
+        await vm.awaitTransportQuiescence()
         #expect(Array(engine.calls.dropFirst(before)) == ["pause"])
     }
 
