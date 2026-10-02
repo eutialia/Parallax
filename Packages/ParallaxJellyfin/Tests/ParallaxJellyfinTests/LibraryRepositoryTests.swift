@@ -155,9 +155,9 @@ struct LibraryRepositoryTests {
     }
 
     /// A newly-added series' hero should open the show from the start, but a bulk-import batch
-    /// rarely contains S1E1 — so the repository asks the server for the series' resume point and
-    /// hands it to the builder as the fallback play target.
-    @Test("homeHeroFeed asks the server for a start episode when a newly added series' batch lacks S1E1")
+    /// rarely contains S1E1 — so the repository asks the server for the series' next-up episode
+    /// and the hero plays it instead of the batch's mid-series earliest.
+    @Test("homeHeroFeed plays the server's start episode when a newly added series' batch lacks S1E1")
     func homeHeroFeedFetchesFirstEpisodeFallback() async throws {
         let (repo, client) = make()
         let importedAt = Date(timeIntervalSince1970: 5_000_000)
@@ -178,9 +178,7 @@ struct LibraryRepositoryTests {
 
         #expect(client.seriesNextUpCalls == ["ser-1"])
         #expect(feed.first?.eyebrow == .newlyAdded)
-        // The batch's earliest episode still wins when present; the fallback only fills the gap
-        // when the batch has none at all.
-        #expect(feed.first?.playTarget.id == ItemID(rawValue: "e4"))
+        #expect(feed.first?.playTarget.id == ItemID(rawValue: "e1"))
     }
 
     /// A batch that already contains S1E1 needs no extra round-trip.

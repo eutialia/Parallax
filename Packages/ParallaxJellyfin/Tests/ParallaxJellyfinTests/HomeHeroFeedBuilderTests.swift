@@ -156,6 +156,28 @@ struct HomeHeroFeedBuilderTests {
         #expect(entries[0].playTarget.id == ItemID(rawValue: "e1"))
     }
 
+    /// A big import's Latest batch is truncated, so its earliest episode can sit mid-series. The
+    /// start episode the repository fetched for that gap is what a newly added series plays.
+    @Test(
+        "A newly added series plays the fetched start episode, else the batch's earliest",
+        arguments: [(fetched: true, expected: "e1"), (fetched: false, expected: "e4")]
+    )
+    func newlyAddedPlaysFetchedStartEpisode(fetched: Bool, expected: String) {
+        let importedAt = Date(timeIntervalSince1970: 3_000_000)
+        let items = (4...6).map { index in
+            episode(id: "e\(index)", seriesID: "s1", season: 1, index: index, date: importedAt)
+        }
+        let start = JellyfinFixtures.episode(id: "e1", seriesID: "s1", indexNumber: 1, parentIndexNumber: 1)
+        let entries = HomeHeroFeedBuilder.build(
+            latestItems: items,
+            seriesByID: ["s1": series(id: "s1", date: importedAt)],
+            firstEpisodeBySeriesID: fetched ? ["s1": start] : [:],
+            limit: 12
+        )
+        #expect(entries.first?.eyebrow == .newlyAdded)
+        #expect(entries.first?.playTarget.id == ItemID(rawValue: expected))
+    }
+
     @Test("New episode play target is newest dateCreated in batch")
     func playLatestEpisode() {
         let seriesDate = Date(timeIntervalSince1970: 1_000_000)
