@@ -434,7 +434,10 @@ struct VLCKitSubtitleControlTests {
     }
 }
 
-@Suite("VLCKitEngine — teardown")
+/// Serialized because a held spy `stop()` parks a cooperative-pool thread, and a parked
+/// test's own `Task.sleep` needs a free one to wake up. Run in parallel, these tests park
+/// enough threads to fill a small CI runner's pool, and no sleeper ever wakes to release them.
+@Suite("VLCKitEngine — teardown", .serialized)
 @MainActor
 struct VLCKitTeardownTests {
 
