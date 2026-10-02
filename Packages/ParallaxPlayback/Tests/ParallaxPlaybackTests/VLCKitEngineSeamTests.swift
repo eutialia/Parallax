@@ -506,8 +506,15 @@ struct VLCKitTeardownTests {
         let engine = VLCKitEngine(control: spy)
         await engine.endAudio()          // stop A, parked in the spy's gate
 
-        let teardown = Task { await engine.teardown() }
-        try await Task.sleep(for: .milliseconds(50))
+        // The task shares the engine's actor, so once it has entered `teardown()` the whole
+        // synchronous prefix has run: a join-skipping teardown has already reached the player.
+        final class Entered { var value = false }
+        let entered = Entered()
+        let teardown = Task {
+            entered.value = true
+            await engine.teardown()
+        }
+        try await requireEventually({ entered.value }, "teardown never started")
         #expect(spy.drawable != nil, "teardown detached the drawable while stop A was still running")
         #expect(spy.stopCalls == 0)
 
