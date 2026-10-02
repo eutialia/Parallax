@@ -7,9 +7,6 @@ import ParallaxCore
 ///   - `DefaultJellyfinAuthClient` (production, wraps a real `JellyfinClient`)
 ///   - `FakeJellyfinAuthClient` (tests, programmable canned responses)
 public protocol JellyfinAuthClient: Sendable {
-    /// The server this client authenticates against.
-    var serverURL: URL { get }
-
     /// Authenticate with username + password.
     func signIn(username: String, password: String) async throws -> AuthenticationResult
     /// Authenticate with a Quick Connect secret surfaced by `quickConnectEvents()`.
@@ -56,7 +53,7 @@ public struct QuickConnectPolling: Sendable {
 }
 
 public final class DefaultJellyfinAuthClient: JellyfinAuthClient, Sendable {
-    public let serverURL: URL
+    private let serverURL: URL
     private let identity: DeviceIdentity
     /// See `DefaultJellyfinLibraryClient.sessionConfiguration` — the injected transport that lets
     /// tests drive the real request path against a stub `URLProtocol`.

@@ -110,8 +110,8 @@ struct ImageURLBuilderTests {
         #expect(components.percentEncodedPath.contains("%25") == rawID.contains("%"))
     }
 
-    /// The literal wire form for one hostile id, so a future refactor can't quietly re-introduce
-    /// double-encoding while still satisfying the round-trip above.
+    /// The round trip above accepts any escaping that decodes back to the id; this pins the exact
+    /// escaped character set the server receives.
     @Test("The escaped path is the single-encoded form, character for character")
     func escapedPathIsSingleEncoded() throws {
         let built = try #require(

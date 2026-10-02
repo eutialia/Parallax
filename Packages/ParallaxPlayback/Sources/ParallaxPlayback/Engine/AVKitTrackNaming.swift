@@ -45,7 +45,7 @@ enum AVKitTrackNaming {
         languageCode: String?,
         locale: Locale = .current
     ) -> String? {
-        nonGenericDisplayName(displayName) ?? localizedLanguageName(languageCode, locale: locale)
+        nonGenericDisplayName(displayName) ?? TrackDisplay.languageName(languageCode, locale: locale)
     }
 
     /// Just the first tier: the option's own name when it isn't a placeholder,
@@ -62,14 +62,8 @@ enum AVKitTrackNaming {
     /// but the common (English) device case shows literally "Unknown"; treat
     /// that and the undetermined ISO codes as non-meaningful so we fall through
     /// to a better label.
-    static func isGenericPlaceholder(_ name: String) -> Bool {
+    private static func isGenericPlaceholder(_ name: String) -> Bool {
         let lowered = name.lowercased()
         return lowered == "unknown" || lowered == "und" || lowered == "undetermined"
-    }
-
-    /// Localized language name for an ISO code — `TrackDisplay.languageName`,
-    /// re-exported under the old name so the naming tiers read in one place.
-    static func localizedLanguageName(_ code: String?, locale: Locale = .current) -> String? {
-        TrackDisplay.languageName(code, locale: locale)
     }
 }

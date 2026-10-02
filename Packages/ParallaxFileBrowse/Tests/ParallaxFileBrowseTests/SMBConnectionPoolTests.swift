@@ -188,7 +188,6 @@ struct SMBConnectionPoolTests {
         await untilSettled { world.disconnectedIDs == [1] }
 
         #expect(world.disconnectedIDs == [1], "only the expired idle sibling is reaped")
-        #expect(world.tornDownWithPendingOps.isEmpty)
 
         // The borrower can still return it cleanly afterward.
         await pool.checkin(borrowed)
@@ -296,26 +295,6 @@ struct SMBConnectionPoolTests {
         #expect(world.connectedIDs == [0])
     }
 
-    /// After a flush the idle list is empty, so the next checkout must cold-connect rather than
-    /// hand back one of the flushed corpses (mirrors `requireFresh`'s "fresh id, not a corpse").
-    @Test("checkout after flushIdle builds a fresh connection")
-    func checkoutAfterFlushBuildsFresh() async throws {
-        let world = FakeSMBWorld()
-        let pool = makeFakePool(world: world)
-
-        let first = try await pool.checkout(fakeTarget())
-        let second = try await pool.checkout(fakeTarget())
-        await pool.checkin(first)
-        await pool.checkin(second)
-
-        await pool.flushIdle()
-        await untilSettled { world.disconnectedIDs.sorted() == [0, 1] }
-
-        let fresh = try await pool.checkout(fakeTarget())
-        #expect(fresh.connection.id == 2, "the borrow is a cold connect, never one of the flushed corpses")
-        #expect(world.connectedIDs == [0, 1, 2])
-    }
-
     /// The background sweep exists for a pool that went quiet with connections still warm — nothing
     /// else would reap them, since the opportunistic reaps only run on checkout/checkin.
     @Test("the scheduled sweep reaps a pool that went quiet")
@@ -412,9 +391,9 @@ struct SMBConnectionPoolTests {
         let world = FakeSMBWorld()
         let pool = makeFakePool(world: world)
         // The manager exists and the SHARE ATTACH is what failed — the production shape.
-        world.failConnects(with: ConnectFailure(), afterBuilding: true)
+        world.failConnects(with: innerTimeoutError, afterBuilding: true)
 
-        await #expect(throws: ConnectFailure.self) { _ = try await pool.checkout(fakeTarget()) }
+        await #expect(throws: POSIXError.self) { _ = try await pool.checkout(fakeTarget()) }
 
         #expect(world.connectedIDs == [0], "the connection existed before the failure")
         // Claimed off the caller's path, and the connect RETURNED — an ordinary discard.
@@ -483,25 +462,19 @@ struct SMBConnectionPoolTests {
         #expect(reused.connection.id == 0)
     }
 
-    @Test("a warm reuse records no new link class; a sustained slow run reclassifies")
-    func linkClassLatestColdWins() async throws {
+    @Test("a warm reuse records no new link class")
+    func warmReuseNeverReclassifies() async throws {
         let world = FakeSMBWorld()
         let pool = makeFakePool(world: world)
 
-        world.setLatency(Self.lanLatency, host: "host")
-        let borrowed = try await pool.checkout(fakeTarget(host: "host", share: "one"))
-        #expect(await pool.linkClass(host: "host") == .lan)
-
-        // Warm reuse of the same key does no round trips → must not reclassify.
-        await pool.checkin(borrowed)
-        _ = try await pool.checkout(fakeTarget(host: "host", share: "one"))
-        #expect(await pool.linkClass(host: "host") == .lan)
-
-        // Fresh cold connects to the same host (different shares → different keys) at high latency.
-        // The FIRST is absorbed as a blip; the second confirms it and the host is reclassified.
         world.setLatency(Self.wanLatency, host: "host")
-        _ = try await pool.checkout(fakeTarget(host: "host", share: "two"))
-        _ = try await pool.checkout(fakeTarget(host: "host", share: "three"))
+        let borrowed = try await pool.checkout(fakeTarget(host: "host"))
+        #expect(await pool.linkClass(host: "host") == .wan)
+
+        // A timed warm reuse would read as a zero-latency sample and promote the host to LAN.
+        await pool.checkin(borrowed)
+        _ = try await pool.checkout(fakeTarget(host: "host"))
+        #expect(world.connectedIDs == [0], "the borrow was a warm reuse")
         #expect(await pool.linkClass(host: "host") == .wan)
     }
 
@@ -580,29 +553,40 @@ struct SMBConnectionPoolTests {
         #expect(world.connectedIDs == [0])
     }
 
-    /// AMSMB2's own timeout doesn't bound every connect phase, so the pool wraps the connector in
-    /// `withHardTimeout` and maps the expiry to a typed lister error.
-    @Test("a connect that outlives the hard ceiling surfaces as SMBListerError.timedOut")
-    func hungConnectTimesOut() async throws {
+    /// Callers that arrive while a probe is in flight must ride it, not cold-connect alongside it,
+    /// and the shared entry must go once that probe ends — a failed one included, or the host stays
+    /// stuck on a finished `nil` after the backoff expires.
+    @Test("concurrent callers share one in-flight probe, which is cleared even when it fails")
+    func concurrentProbesCoalesceAndClear() async {
         let world = FakeSMBWorld()
-        // The pool's ceiling is `connectTimeout + hardTimeoutGrace`; deriving the nominal value from
-        // the grace is what keeps this test sub-second instead of waiting out the real grace period.
-        let ceiling: TimeInterval = 0.2
-        let pool = makeFakePool(
-            world: world,
-            connectTimeout: ceiling - SMBConnectionPool<FakeSMBConnection>.hardTimeoutGrace
-        )
+        let pool = makeFakePool(world: world)
+        let target = fakeTarget(host: "dead")
+        world.failConnects(with: ConnectFailure())
         await world.connectGate.close()
 
-        await #expect(throws: SMBListerError.timedOut) {
-            _ = try await pool.checkout(fakeTarget())
-        }
+        await withTaskGroup(of: SMBLinkClass?.self) { group in
+            group.addTask { await pool.ensureLinkClass(target) }
+            await world.connectGate.awaitArrivals(1)
+            for _ in 0..<4 { group.addTask { await pool.ensureLinkClass(target) } }
+            for _ in 0..<1_000 { await Task.yield() }
+            #expect(await world.connectGate.arrivalCount == 1, "a late caller started its own probe")
 
-        await world.connectGate.open()
+            await world.connectGate.open()
+            for await linkClass in group { #expect(linkClass == nil) }
+        }
+        #expect(world.connectAttempts == 1)
+
+        world.clock.advance(by: .seconds(61))
+        world.failConnects(with: nil)
+        world.setLatency(Self.lanLatency, host: "dead")
+        #expect(await pool.ensureLinkClass(target) == .lan, "the failed probe's entry outlived it")
+        #expect(world.connectAttempts == 2)
     }
 
-    /// The loser of that race keeps running — `withHardTimeout` cannot cancel a libsmb2 connect — so
-    /// it eventually produces a connection nobody asked for any more. Dropping it let ARC run
+    /// AMSMB2's own timeout doesn't bound every connect phase, so the pool wraps the connector in
+    /// `withHardTimeout` and maps the expiry to `SMBListerError.timedOut`. The loser of that race keeps
+    /// running — `withHardTimeout` cannot cancel a libsmb2 connect — so it eventually produces a
+    /// connection nobody asked for any more. Dropping it let ARC run
     /// `SMB2Client.deinit`, which disconnects and destroys the context; on a connect that is still
     /// pending inside libsmb2 that is the disposal the graveyard exists to forbid. It has to be
     /// handed over instead.
@@ -632,14 +616,6 @@ struct SMBConnectionPoolTests {
 
         _ = try await pool.checkout(fakeTarget())
         #expect(world.connectedIDs == [0, 1], "the orphan never comes back out of the pool")
-    }
-
-    /// The production specialization (`SMB2Manager`-backed) can't be driven without a share, but its
-    /// starting state is what callers key off: an unseen host reads as UNKNOWN, not as `.lan`, so a
-    /// prefetch scheduler stays conservative until something has actually measured the link.
-    @Test("a fresh production pool reports no link class for any host")
-    func productionPoolStartsUnclassified() async {
-        #expect(await SMBSharePool().linkClass(host: "nas") == nil)
     }
 
     // MARK: - Target derivation

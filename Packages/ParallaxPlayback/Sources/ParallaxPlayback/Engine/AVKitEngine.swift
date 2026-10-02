@@ -252,8 +252,8 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         // not moved past either: the resume seek is a device-diagnosed livelock fix
         // (see the comment on `pendingStartTime` below) and must not be reordered or
         // interleaved with these knob applications. `.systemDefault` (every field nil)
-        // applies nothing, leaving both AVPlayer properties untouched.
-        Self.applyTuning(tuning, to: item, player: player)
+        // applies nothing, leaving the item untouched.
+        Self.applyTuning(tuning, to: item)
         currentItem = item
 
         statusObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
@@ -970,11 +970,11 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         }
     }
 
-    /// Applies `tuning`'s non-nil fields to a freshly-built item/player pair — the seam
-    /// `load()` calls and tests exercise directly against a bare `AVPlayerItem`/`AVPlayer`
+    /// Applies `tuning`'s non-nil fields to a freshly-built item — the seam
+    /// `load()` calls and tests exercise directly against a bare `AVPlayerItem`
     /// (no network, no `.readyToPlay` needed). A `nil` field is a no-op: it leaves the
     /// corresponding property untouched rather than resetting it to a default value.
-    static func applyTuning(_ tuning: StartupTuning, to item: AVPlayerItem, player: AVPlayer) {
+    static func applyTuning(_ tuning: StartupTuning, to item: AVPlayerItem) {
         if let seconds = tuning.preferredForwardBufferSeconds {
             item.preferredForwardBufferDuration = seconds
         }

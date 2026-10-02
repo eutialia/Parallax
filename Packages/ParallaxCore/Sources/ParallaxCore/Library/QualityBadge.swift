@@ -1,7 +1,7 @@
 import Foundation
 
 /// Derives short quality labels ("4K", "HDR") from a video stream's dimensions +
-/// Jellyfin VideoRangeType. Used on detail hero metadata and in the player.
+/// Jellyfin VideoRangeType, for the detail hero metadata.
 public enum QualityBadge {
     /// Resolution bucket from pixel dimensions; nil when unknown or below 4K.
     public static func resolution(width: Int?, height: Int?) -> String? {

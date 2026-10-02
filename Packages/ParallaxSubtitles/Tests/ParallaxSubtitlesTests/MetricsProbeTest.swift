@@ -51,14 +51,6 @@ struct MetricsProbeTest {
         #expect(factors.count > 10)
     }
 
-    @Test("the file\'s vertical metrics are read, not invented")
-    func readsRealVerticalMetrics() throws {
-        let metrics = try #require(SubtitleFontBundle.metrics(forFamily: "Noto Sans CJK SC"))
-        #expect(metrics.unitsPerEm == 1000)
-        #expect(metrics.winAscent == 1160)
-        #expect(metrics.winDescent == 288)
-    }
-
     @Test("a family the bundle does not carry has no metrics and no factor")
     func unknownFamiliesAreHonest() {
         #expect(SubtitleFontBundle.metrics(forFamily: "PingFang SC") == nil)

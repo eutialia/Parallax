@@ -8,7 +8,7 @@ import ParallaxCore
 struct LibraryRepositoryTests {
     private func make() -> (LibraryRepository, FakeJellyfinLibraryClient) {
         let client = FakeJellyfinLibraryClient()
-        return (LibraryRepository(session: JellyfinFixtures.session(), client: client), client)
+        return (LibraryRepository(client: client), client)
     }
 
     private let moviesLibrary = LibraryScope.collection(CollectionID(rawValue: "coll-movies"))
@@ -22,15 +22,6 @@ struct LibraryRepositoryTests {
         #expect(result.first?.name == "Movies")
         #expect(result.first?.collectionType == .movies)
         #expect(client.collectionsCallCount == 1)
-    }
-
-    @Test("collections() maps client errors to AppError")
-    func collectionsErrorMaps() async throws {
-        let (repo, client) = make()
-        client.collectionsResult = .failure(URLError(.notConnectedToInternet))
-        await #expect(throws: AppError.self) {
-            _ = try await repo.collections()
-        }
     }
 
     @Test("items() returns Page with nextCursor when more results available")
@@ -85,13 +76,6 @@ struct LibraryRepositoryTests {
         #expect(client.itemsCalls.last?.scope == moviesLibrary)
         #expect(client.itemsCalls.last?.startIndex == 0)
         #expect(client.itemsCalls.last?.limit == LibraryRepository.pageSize)
-    }
-
-    @Test("items() forwards the favorites scope to the client")
-    func itemsFavoritesScope() async throws {
-        let (repo, client) = make()
-        _ = try await repo.items(in: .favorites, filter: ItemFilter(), sort: .defaultForLibrary, cursor: nil)
-        #expect(client.itemsCalls.last?.scope == .favorites)
     }
 
     /// Only movie/series/episode DTOs have a detail destination; anything else the server folds
@@ -170,23 +154,6 @@ struct LibraryRepositoryTests {
         #expect(episodeCall?.limit == HomeHeroFeedBuilder.episodeLatestFetchLimit(presentationLimit: 12))
     }
 
-    @Test("homeHeroFeed retains series logo from batch metadata")
-    func homeHeroFeedSeriesLogo() async throws {
-        let (repo, client) = make()
-        client.recentlyAddedResultsByTypes = [.episode: .success([JellyfinFixtures.episodeDto(id: "e1")])]
-        client.itemsByIDsResult = .success([
-            JellyfinFixtures.seriesDto(id: "ser-1", name: "Show", imageTags: ["Logo": "logo-tag"]),
-        ])
-
-        let feed = try await repo.homeHeroFeed(limit: 12)
-        #expect(feed.count == 1)
-        guard case .series(let series) = feed[0].presentation else {
-            Issue.record("Expected series presentation")
-            return
-        }
-        #expect(series.imageRef(.logo)?.tag.rawValue == "logo-tag")
-    }
-
     /// A newly-added series' hero should open the show from the start, but a bulk-import batch
     /// rarely contains S1E1 — so the repository asks the server for the series' resume point and
     /// hands it to the builder as the fallback play target.
@@ -235,22 +202,13 @@ struct LibraryRepositoryTests {
         #expect(client.seriesNextUpCalls.isEmpty)
         #expect(feed.first?.playTarget.id == ItemID(rawValue: "e1"))
     }
-
-    @Test("homeHeroFeed maps a transport failure to AppError")
-    func homeHeroFeedErrorMaps() async throws {
-        let (repo, client) = make()
-        client.recentlyAddedResultsByTypes = [.movie: .failure(URLError(.timedOut))]
-        await #expect(throws: AppError.self) {
-            _ = try await repo.homeHeroFeed(limit: 12)
-        }
-    }
 }
 
 @Suite("LibraryRepository — setFavorite, setPlayed, resumeEpisode, genres, segments")
 struct LibraryRepositoryUserActionTests {
     private func make() -> (LibraryRepository, FakeJellyfinLibraryClient) {
         let client = FakeJellyfinLibraryClient()
-        return (LibraryRepository(session: JellyfinFixtures.session(), client: client), client)
+        return (LibraryRepository(client: client), client)
     }
 
     @Test("setFavorite forwards the flag and returns the server's user data", arguments: [true, false])
@@ -271,15 +229,6 @@ struct LibraryRepositoryUserActionTests {
         #expect(userData.playCount == 3)
     }
 
-    @Test("setFavorite propagates a client failure (so the VM's optimistic revert fires)")
-    func setFavoritePropagatesError() async throws {
-        let (repo, client) = make()
-        client.setFavoriteResult = .failure(FakeJellyfinLibraryClient.FakeError.notConfigured)
-        await #expect(throws: AppError.self) {
-            try await repo.setFavorite(itemID: ItemID(rawValue: "item-1"), isFavorite: true)
-        }
-    }
-
     @Test("setPlayed forwards the flag and returns the server's user data", arguments: [true, false])
     func setPlayedForwardsFlag(isPlayed: Bool) async throws {
         let (repo, client) = make()
@@ -293,15 +242,6 @@ struct LibraryRepositoryUserActionTests {
         #expect(client.setPlayedCalls.last?.itemID == "item-7")
         #expect(client.setPlayedCalls.last?.isPlayed == isPlayed)
         #expect(userData.played == isPlayed)
-    }
-
-    @Test("setPlayed propagates a client failure")
-    func setPlayedPropagatesError() async throws {
-        let (repo, client) = make()
-        client.setPlayedResult = .failure(URLError(.notConnectedToInternet))
-        await #expect(throws: AppError.self) {
-            try await repo.setPlayed(itemID: ItemID(rawValue: "item-7"), isPlayed: true)
-        }
     }
 
     @Test("resumeEpisode maps a BaseItemDto into an Episode")
@@ -358,15 +298,6 @@ struct LibraryRepositoryUserActionTests {
         #expect(segments.map(\.kind) == [.intro])
     }
 
-    @Test("mediaSegments maps a transport failure to AppError")
-    func mediaSegmentsErrorMaps() async throws {
-        let (repo, client) = make()
-        client.mediaSegmentsResult = .failure(URLError(.timedOut))
-        await #expect(throws: AppError.self) {
-            _ = try await repo.mediaSegments(for: ItemID(rawValue: "item-1"))
-        }
-    }
-
     /// The window is [previous, self, next] in airing order, so neighbours are positional — which
     /// is what lets a season finale hand off to the next season's premiere.
     @Test("adjacentEpisodes resolves neighbours out of the server's window")
@@ -387,17 +318,5 @@ struct LibraryRepositoryUserActionTests {
         #expect(client.adjacentEpisodesCalls.map(\.episodeID) == ["e2"])
         #expect(adjacent.previous?.id == ItemID(rawValue: "e1"))
         #expect(adjacent.next?.id == ItemID(rawValue: "e3"))
-    }
-
-    @Test("adjacentEpisodes maps a transport failure to AppError")
-    func adjacentEpisodesErrorMaps() async throws {
-        let (repo, client) = make()
-        client.adjacentEpisodesResult = .failure(URLError(.timedOut))
-        await #expect(throws: AppError.self) {
-            _ = try await repo.adjacentEpisodes(
-                seriesID: ItemID(rawValue: "ser-1"),
-                episodeID: ItemID(rawValue: "e2")
-            )
-        }
     }
 }

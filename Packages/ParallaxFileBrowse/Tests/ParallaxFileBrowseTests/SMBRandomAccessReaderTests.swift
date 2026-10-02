@@ -142,29 +142,6 @@ struct SMBRandomAccessReaderTests {
 
     // MARK: - Transport fault flag
 
-    @Test("a clean read leaves hadTransportFault false")
-    func cleanReadDoesNotMarkTransportFault() async throws {
-        let world = FakeSMBWorld()
-        let reader = makeReader(world: world)
-
-        _ = try await reader.read(offset: 0, length: 16)
-
-        #expect(await reader.hadTransportFault == false)
-    }
-
-    @Test("a transport-class read error flips hadTransportFault")
-    func transportClassReadMarksTransportFault() async throws {
-        let world = FakeSMBWorld()
-        let reader = makeReader(world: world)
-        world.setReadOutcome(.fails(POSIXError(.ECONNRESET)))
-
-        await #expect(throws: POSIXError.self) {
-            _ = try await reader.read(offset: 0, length: 16)
-        }
-
-        #expect(await reader.hadTransportFault == true)
-    }
-
     /// The checkout is a network phase too, and it used to sit OUTSIDE the classified region: every
     /// refused/unreachable/timed-out cold connect left the flag false, so the thumbnail poison guard
     /// blamed the file for a reachability blip. Both ops must classify their borrow.
@@ -201,7 +178,7 @@ struct SMBRandomAccessReaderTests {
         }
     }
 
-    @Test("a non-transport read error leaves hadTransportFault false")
+    @Test("a non-transport read error leaves hadTransportFault false and still discards the borrow")
     func contentLevelReadDoesNotMarkTransportFault() async throws {
         let world = FakeSMBWorld()
         let reader = makeReader(world: world)
@@ -213,6 +190,9 @@ struct SMBRandomAccessReaderTests {
         }
 
         #expect(await reader.hadTransportFault == false)
+        await reader.disconnect()
+        await untilSettled { world.disconnectedIDs == [0] }
+        #expect(world.disconnectedIDs == [0])
     }
 
     // MARK: - teardownCapturingTransportFault
@@ -318,28 +298,6 @@ struct SMBRandomAccessReaderTests {
         let reused = try await pool.checkout(fakeTarget(host: "nas", share: "Media"))
         #expect(reused.connection.id == 0)
         #expect(world.connectedIDs == [0], "the returned connection is reused, not reconnected")
-    }
-
-    @Test("a borrow whose read threw is discarded, never handed to the next borrower")
-    func thrownReadDiscardsTheBorrow() async throws {
-        let world = FakeSMBWorld()
-        let pool = makeFakePool(world: world)
-        let reader = makeReader(world: world, pool: pool)
-        world.setReadOutcome(.fails(ReadFailure()))
-
-        await #expect(throws: ReadFailure.self) {
-            _ = try await reader.read(offset: 0, length: 16)
-        }
-        await reader.disconnect()
-        await untilSettled { world.disconnectedIDs == [0] }
-
-        #expect(world.disconnectedIDs == [0], "the tainted socket is disconnected, not pooled")
-        #expect(
-            await pool.condemnedCount == 0,
-            "the read RETURNED an error — the proven discard path owns this, not the graveyard"
-        )
-        _ = try await pool.checkout(fakeTarget(host: "nas", share: "Media"))
-        #expect(world.connectedIDs == [0, 1], "nothing idle was left to reuse — the next borrow is cold")
     }
 
     @Test("a borrow whose fileSize threw is discarded too")

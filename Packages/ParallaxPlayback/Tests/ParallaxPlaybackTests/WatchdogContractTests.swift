@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import ParallaxPlaybackTestSupport
 @testable import ParallaxPlayback
 
 /// `LoadWatchdog` (bounds the load) and `StallWatchdog` (bounds a mid-playback stall)
@@ -41,20 +42,12 @@ struct WatchdogContractTests {
 
     private let deadline = Duration.milliseconds(50)
 
-    /// Polls up to ~2s so a busy MainActor (the suite runs many async tests in parallel)
-    /// can't turn a slow schedule into a failure. Returns as soon as the condition holds.
-    private func waitUntil(_ condition: () -> Bool) async {
-        for _ in 0..<80 where condition() == false {
-            try? await Task.sleep(for: .milliseconds(25))
-        }
-    }
-
     @Test("an armed watchdog fires once the deadline elapses", arguments: WatchdogKind.allCases)
-    func firesWhenNotDisarmed(kind: WatchdogKind) async {
+    func firesWhenNotDisarmed(kind: WatchdogKind) async throws {
         var fired = false
         let wd = kind.make(deadline: deadline) { fired = true }
         wd.arm()
-        await waitUntil { fired }
+        try await pollUntil { fired }
         #expect(fired)
     }
 
@@ -74,12 +67,12 @@ struct WatchdogContractTests {
     /// it must supersede the previous timer, not stack a second one.
     @Test("re-arming supersedes the previous timer so it fires exactly once",
           arguments: WatchdogKind.allCases)
-    func rearmSupersedes(kind: WatchdogKind) async {
+    func rearmSupersedes(kind: WatchdogKind) async throws {
         var count = 0
         let wd = kind.make(deadline: deadline) { count += 1 }
         wd.arm()
         wd.arm()
-        await waitUntil { count > 0 }
+        try await pollUntil { count > 0 }
         try? await Task.sleep(for: .milliseconds(150))   // let a stray first timer misfire
         #expect(count == 1)
     }
@@ -87,11 +80,11 @@ struct WatchdogContractTests {
     /// The engines disarm on every transport beat without tracking whether the deadline
     /// already blew, so a post-expiry disarm has to be inert.
     @Test("disarm after expiry neither crashes nor re-fires", arguments: WatchdogKind.allCases)
-    func disarmAfterExpiry(kind: WatchdogKind) async {
+    func disarmAfterExpiry(kind: WatchdogKind) async throws {
         var count = 0
         let wd = kind.make(deadline: deadline) { count += 1 }
         wd.arm()
-        await waitUntil { count > 0 }
+        try await pollUntil { count > 0 }
         wd.disarm()
         try? await Task.sleep(for: .milliseconds(150))
         #expect(count == 1)

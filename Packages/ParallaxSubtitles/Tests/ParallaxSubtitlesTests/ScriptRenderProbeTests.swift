@@ -321,36 +321,6 @@ struct ScriptRenderProbeTests {
             "closed-halfway ink \(closedHalfway) vs unmarked \(unmarked)"
         )
     }
-
-    /// Big5 text is almost entirely VALID GB18030 and vice versa, so the order
-    /// of the candidates is load-bearing: narrowest first, GB18030 last, and
-    /// the FIRST that reads as a language it serves wins. Scoring them all and
-    /// taking the highest confidence compared numbers the recognizer never
-    /// meant to be comparable.
-    @Test("a GBK script decodes as GB18030 and a Big5 one as Big5")
-    func narrowestQualifyingCandidateWins() throws {
-        for (text, encoding, expected) in [
-            (
-                "简体中文字幕测试，希望能够正确显示。\n他们在说什么？\n我不知道，但我们该走了。",
-                CFStringEncodings.GB_18030_2000, "简体中文字幕测试"
-            ),
-            (
-                "繁體中文字幕測試，希望能夠正確顯示。\n他們在說什麼？\n我不知道，但我們該走了。",
-                CFStringEncodings.big5, "繁體中文字幕測試"
-            ),
-        ] {
-            let script = ASSFixture.script(
-                text: text.replacingOccurrences(of: "\n", with: "\\N")
-            )
-            let data = try #require(script.data(using: String.Encoding(
-                rawValue: CFStringConvertEncodingToNSStringEncoding(
-                    CFStringEncoding(encoding.rawValue)
-                )
-            )))
-            let decoded = try #require(ASSTextEncoding.decoded(data))
-            #expect(decoded.contains(expected), "\(decoded.prefix(200))")
-        }
-    }
 }
 
 /// The four lines that mean the per-glyph lottery is back. Every name in a

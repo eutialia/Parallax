@@ -20,8 +20,7 @@ public enum HomeHeroFeedBuilder {
         seriesByID: [String: Series],
         firstEpisodeBySeriesID: [String: Episode],
         limit: Int,
-        continueWatching: [Item] = [],
-        importWindow: TimeInterval = defaultImportWindow
+        continueWatching: [Item] = []
     ) -> [HomeHeroFeedEntry] {
         var movies: [(item: Item, date: Date)] = []
         var episodesBySeries: [String: [Episode]] = [:]
@@ -56,7 +55,7 @@ public enum HomeHeroFeedBuilder {
             let eyebrow = classifyEyebrow(
                 seriesDate: series.dateAdded,
                 episodes: episodes,
-                window: importWindow
+                window: defaultImportWindow
             )
             let playEpisode = resolvePlayEpisode(
                 episodes: episodes,
@@ -190,7 +189,7 @@ public enum HomeHeroFeedBuilder {
     }
 
     /// True when `next` is S{n}E{m+1} or S{n+1}E1 immediately after `current`.
-    static func isSequentialNextUp(from current: Episode, to next: Episode) -> Bool {
+    private static func isSequentialNextUp(from current: Episode, to next: Episode) -> Bool {
         guard current.seriesID == next.seriesID else { return false }
         guard let currentSeason = current.parentIndexNumber,
               let currentIndex = current.indexNumber,

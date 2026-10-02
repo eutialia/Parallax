@@ -58,7 +58,7 @@ struct ServerStoreMigrationTests {
         // Token present → the migrated server resolves and is kept.
         let keychain = FakeKeychain()
         try keychain.setValue("bearer-token-xyz", for: tokenKey(for: serverID))
-        let store = ServerStore(settings: settings, keychain: keychain)
+        let store = ServerStore(settings: settings, keychain: keychain, snapshots: JellyfinFixtures.scratchSnapshots())
 
         // Must NOT throw — legacy users are not crashed out to login.
         try await store.load()
@@ -92,28 +92,51 @@ struct ServerStoreMigrationTests {
         }
     }
 
-    @Test("Already-migrated PersistedServer blob loads unchanged (no re-migration)")
+    /// The v2 on-disk format and its storage key, pinned as hand-written JSON under the literal key
+    /// (`JellyfinFixtures.persistedServersKeyName`) so a renamed `CodingKey`, enum envelope, or
+    /// `SettingKey` fails here instead of logging every existing user out. The bytes must also
+    /// survive `load()` untouched: no re-migration.
+    @Test("A hand-written v2 blob under the literal key loads as-is and is not rewritten")
     func newShapeLoadsWithoutMigration() async throws {
         let (settings, suiteName) = JellyfinFixtures.settingsStore("ServerStoreMigrationTests-new")
-        let serverID = ServerID(rawValue: "srv-new")
-        let server = PersistedServer(
-            id: serverID,
-            kind: .jellyfin(JellyfinServerData(
-                serverURL: URL(string: "https://already.migrated")!,
-                serverName: "New",
-                user: UserSnapshot(id: "u", name: "bob", serverLastUpdatedAt: nil)
-            ))
-        )
-        try JellyfinFixtures.seedPersistedServers([server], suiteName: suiteName)
+        let jellyfinRow = #"{"id":"srv-new","kind":{"jellyfin":{"_0":{"serverURL":"https://already.migrated","serverName":"New","user":{"id":"u","name":"bob"}}}}}"#
+        let smbRow = #"{"id":"smb-nas.local","kind":{"smb":{"_0":{"host":"nas.local","username":"alice","domain":"WORKGROUP","shares":["Media","TV"]}}}}"#
+        let blob = Data("[\(jellyfinRow),\(smbRow)]".utf8)
+        JellyfinFixtures.seedPersistedBytes(blob, suiteName: suiteName)
 
         let keychain = FakeKeychain()
-        try keychain.setValue("tok", for: tokenKey(for: serverID))
-        let store = ServerStore(settings: settings, keychain: keychain)
+        try keychain.setValue("tok", for: tokenKey(for: ServerID(rawValue: "srv-new")))
+        let store = ServerStore(settings: settings, keychain: keychain, snapshots: JellyfinFixtures.scratchSnapshots())
         try await store.load()
 
-        let servers = await store.servers
-        #expect(servers.count == 1)
-        #expect(servers.first == server)
+        #expect(await store.servers == [
+            PersistedServer(
+                id: ServerID(rawValue: "srv-new"),
+                kind: .jellyfin(JellyfinServerData(
+                    serverURL: URL(string: "https://already.migrated")!,
+                    serverName: "New",
+                    user: UserSnapshot(id: "u", name: "bob", serverLastUpdatedAt: nil)
+                ))
+            ),
+            PersistedServer(
+                id: ServerID(rawValue: "smb-nas.local"),
+                kind: .smb(SMBServerData(host: "nas.local", username: "alice", domain: "WORKGROUP", shares: ["Media", "TV"]))
+            ),
+        ])
+        #expect(await store.sessions.map(\.accessToken) == ["tok"])
+        #expect(JellyfinFixtures.rawPersistedBytes(suiteName: suiteName) == blob)
+    }
+
+    /// An older server's user blob still carries a `primaryImageTag` this app dropped. Decoding
+    /// must tolerate the extra key rather than throw and take the whole server list down with it.
+    @Test("UserSnapshot tolerates a dropped legacy field in stored JSON")
+    func userSnapshotIgnoresLegacyProfileImageTag() throws {
+        let json = """
+        {"id":"user-1","name":"alice","primaryImageTag":"abc123","serverLastUpdatedAt":null}
+        """
+        let decoded = try JSONDecoder().decode(UserSnapshot.self, from: Data(json.utf8))
+        #expect(decoded.name == "alice")
+        #expect(decoded.id == "user-1")
     }
 
     // MARK: - load() token-resolution contracts
@@ -138,7 +161,7 @@ struct ServerStoreMigrationTests {
 
         let keychain = FakeKeychain()
         keychain.setAbsent(account: tokenKey(for: serverID).account)
-        let store = ServerStore(settings: settings, keychain: keychain)
+        let store = ServerStore(settings: settings, keychain: keychain, snapshots: JellyfinFixtures.scratchSnapshots())
         try await store.load()
 
         let servers = await store.servers
@@ -194,7 +217,7 @@ struct ServerStoreMigrationTests {
         let keychain = FakeKeychain()
         // Token present → the surviving Jellyfin server resolves and is kept.
         try keychain.setValue("bearer", for: tokenKey(for: jellyfinID))
-        let store = ServerStore(settings: settings, keychain: keychain)
+        let store = ServerStore(settings: settings, keychain: keychain, snapshots: JellyfinFixtures.scratchSnapshots())
 
         // Must NOT throw — one bad element does not fail the array.
         try await store.load()
@@ -211,33 +234,37 @@ struct ServerStoreMigrationTests {
         #expect(persisted?.first?.id == jellyfinID)
     }
 
-    /// Locks the retain-over-wipe safety guard: an array whose ONLY element is an
-    /// old-shape SMB row (with the verified `{"smb":{"_0":{...}}}` envelope, so the
-    /// decoder reaches `SMBServerData` and fails on missing `shares`) must NOT
-    /// silently return `[]`. The tolerant pass yields zero survivors, which is
-    /// indistinguishable from "bad blob that could still hold recoverable data", so
+    /// Locks the retain-over-wipe safety guard: an array whose every element is
+    /// undecodable — an old-shape SMB row (with the verified `{"smb":{"_0":{...}}}`
+    /// envelope, so the decoder reaches `SMBServerData` and fails on missing `shares`)
+    /// or an unrecognised shape — must NOT silently return `[]`. The tolerant pass
+    /// yields zero survivors, which is indistinguishable from "bad blob that could
+    /// still hold recoverable data", so
     /// `loadPersistedServers()` falls through to `decodeFailed` rather than
     /// persisting an empty array over the still-valid raw bytes. The raw blob must
     /// remain unchanged after the throw — no silent wipe.
-    @Test("all-incompatible array throws (retain-over-wipe) and leaves the blob intact")
-    func allOldSMBThrowsAndRetains() async throws {
+    @Test(
+        "all-incompatible array throws decodeFailed (retain-over-wipe) and leaves the blob intact",
+        arguments: [
+            #"[{"id":"smb-old","kind":{"smb":{"_0":{"host":"nas","share":"Media","root":"/Movies","username":"a","domain":"W"}}}}]"#,
+            #"[{"unexpected":"shape"}]"#,
+        ]
+    )
+    func allIncompatibleThrowsAndRetains(blob: String) async throws {
         let (settings, suiteName) = JellyfinFixtures.settingsStore("ServerStoreMigrationTests-retain")
-        // One element: old-shape SMB with the REAL `_0` envelope (verified above).
-        let oldSMBOnly = #"[{"id":"smb-old","kind":{"smb":{"_0":{"host":"nas","share":"Media","root":"/Movies","username":"a","domain":"W"}}}}]"#
-        let seededBytes = oldSMBOnly.data(using: .utf8)!
+        let seededBytes = Data(blob.utf8)
         JellyfinFixtures.seedPersistedBytes(seededBytes, suiteName: suiteName)
 
-        let keychain = FakeKeychain()
-        let store = ServerStore(settings: settings, keychain: keychain)
+        let store = ServerStore(settings: settings, keychain: FakeKeychain(), snapshots: JellyfinFixtures.scratchSnapshots())
 
         // Must THROW — zero survivors must not silently return [] and wipe the blob.
-        await #expect(throws: ServerStore.ServerStoreError.self) {
+        await #expect {
             try await store.load()
+        } throws: { error in
+            if case ServerStore.ServerStoreError.decodeFailed = error { true } else { false }
         }
 
-        // Re-read the raw bytes — must equal the seeded data (not wiped or emptied).
-        let rawAfter = JellyfinFixtures.rawPersistedBytes(suiteName: suiteName)
-        #expect(rawAfter == seededBytes)
+        #expect(JellyfinFixtures.rawPersistedBytes(suiteName: suiteName) == seededBytes)
     }
 
     /// Cold-reload contract (A1 review nit): an SMB server added at runtime must
@@ -256,7 +283,7 @@ struct ServerStoreMigrationTests {
         )
 
         // Second store on the SAME settings + keychain → cold reload.
-        let reloaded = ServerStore(settings: harness.settings, keychain: harness.keychain)
+        let reloaded = ServerStore(settings: harness.settings, keychain: harness.keychain, snapshots: JellyfinFixtures.scratchSnapshots())
         try await reloaded.load()
 
         let servers = await reloaded.servers
@@ -295,7 +322,7 @@ struct ServerStoreMigrationTests {
             account: tokenKey(for: serverID).account,
             error: Keychain.KeychainError.unexpectedStatus(-34018)
         )
-        let store = ServerStore(settings: settings, keychain: keychain)
+        let store = ServerStore(settings: settings, keychain: keychain, snapshots: JellyfinFixtures.scratchSnapshots())
         try await store.load()
 
         let servers = await store.servers

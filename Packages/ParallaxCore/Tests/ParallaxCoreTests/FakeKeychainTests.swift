@@ -88,12 +88,13 @@ struct FakeKeychainTests {
         let other = KeychainKey<Token>(account: "server-2")
 
         try await keychain.store(token, for: key)
-        let readOther = try await keychain.read(other)
-        #expect(readOther == nil)
+        try await keychain.store(token, for: other)
 
         try await keychain.delete(key)
-        keychain.setAbsent(account: other.account)
-        #expect(keychain.deleteCalls == [key.account], "deleting one account must not touch another")
+
+        #expect(try await keychain.read(key) == nil)
+        #expect(try await keychain.read(other) == token, "deleting one account must not touch another")
+        #expect(keychain.deleteCalls == [key.account])
     }
 
     /// The programmable seed path encodes through the same JSON as `store`, so a seeded value and
@@ -106,17 +107,5 @@ struct FakeKeychainTests {
         let read = try await keychain.read(key)
         #expect(read == token)
         #expect(keychain.storeCalls.isEmpty, "seeding is not a store call")
-    }
-}
-
-@Suite("KeychainKey")
-struct KeychainKeyTests {
-    /// The phantom `Value` is a compile-time guard only — at runtime the account string is the
-    /// whole identity, which is what lets the fake and the real store key on it alike.
-    @Test("identity is the account string")
-    func identityIsTheAccount() {
-        #expect(KeychainKey<String>(account: "a") == KeychainKey<String>(account: "a"))
-        #expect(KeychainKey<String>(account: "a") != KeychainKey<String>(account: "b"))
-        #expect(KeychainKey<String>(account: "a").account == "a")
     }
 }

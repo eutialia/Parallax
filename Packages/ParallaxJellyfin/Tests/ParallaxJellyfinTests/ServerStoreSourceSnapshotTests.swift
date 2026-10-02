@@ -91,7 +91,7 @@ struct ServerStoreSourceSnapshotTests {
 
         // Drop beta's token, then reload: its row survives as signed-out.
         try await keychain.delete(JellyfinFixtures.tokenKey(forRawID: "beta"))
-        let reloaded = ServerStore(settings: settings, keychain: keychain)
+        let reloaded = ServerStore(settings: settings, keychain: keychain, snapshots: JellyfinFixtures.scratchSnapshots())
         try await reloaded.load()
 
         let withSignedOutRow = await reloaded.sourceSnapshot
@@ -104,19 +104,20 @@ struct ServerStoreSourceSnapshotTests {
         #expect(healed.setIdentity != withSignedOutRow.setIdentity)
     }
 
-    @Test("Identity is order-sensitive so it tracks the add order the sidebar renders")
-    func identityFollowsPersistedOrder() async throws {
-        let first = freshStore()
-        try await first.add(session("alpha"))
-        try await first.add(session("beta"))
+    /// The roots key their reload `.task` on this snapshot, so an invalidation that didn't move it
+    /// would leave the dead server's libraries on screen until something else happened to change.
+    @Test("Invalidating a session changes setIdentity while the row stays listed")
+    func invalidationChangesIdentity() async throws {
+        let store = freshStore()
+        try await store.add(session("alpha"))
+        try await store.add(session("beta"))
+        let before = await store.sourceSnapshot
 
-        let second = freshStore()
-        try await second.add(session("beta"))
-        try await second.add(session("alpha"))
+        await store.invalidateSession(ServerID(rawValue: "beta"))
+        let after = await store.sourceSnapshot
 
-        let firstIdentity = await first.sourceSnapshot.setIdentity
-        let secondIdentity = await second.sourceSnapshot.setIdentity
-        #expect(firstIdentity != secondIdentity)
+        #expect(before.setIdentity != after.setIdentity)
+        #expect(await store.servers.map(\.id).contains(ServerID(rawValue: "beta")))
     }
 
     @Test("An SMB server sets hasAuxiliarySources and lands in the identity")

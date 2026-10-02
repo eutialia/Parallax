@@ -574,7 +574,8 @@ private struct SMBBrowseGridPreview: View {
                         avThumbnailer: AVThumbnailer(),
                         serverStore: ServerStore(
                             settings: SettingsStore(defaults: .standard),
-                            keychain: Keychain(service: "preview")
+                            keychain: Keychain(service: "preview"),
+                            snapshots: SnapshotStore()
                         )
                     ),
                     onPlay: { _ in }

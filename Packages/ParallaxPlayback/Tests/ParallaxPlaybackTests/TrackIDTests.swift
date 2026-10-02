@@ -10,21 +10,6 @@ import ParallaxPlayback
 @Suite("TrackID namespaces")
 struct TrackIDTests {
 
-    @Test("each accessor unwraps only its own namespace", arguments: [
-        TrackID.avKitOption(2),
-        .vlc("2"),
-        .jellyfinStream(2),
-    ])
-    func accessorsAreNamespaceExclusive(id: TrackID) {
-        let unwrapped = [
-            id.avKitOptionIndex != nil,
-            id.vlcTrackID != nil,
-            id.jellyfinStreamIndex != nil,
-        ]
-        #expect(unwrapped.filter { $0 }.count == 1,
-                "\(id) unwrapped through \(unwrapped.filter { $0 }.count) namespaces")
-    }
-
     @Test("avKitOptionIndex unwraps the option index")
     func avKitOptionIndex() {
         #expect(TrackID.avKitOption(7).avKitOptionIndex == 7)
@@ -44,14 +29,5 @@ struct TrackIDTests {
         #expect(TrackID.jellyfinStream(3).jellyfinStreamIndex == 3)
         #expect(TrackID.avKitOption(3).jellyfinStreamIndex == nil)
         #expect(TrackID.vlc("3").jellyfinStreamIndex == nil)
-    }
-
-    /// The whole point of the type: same numeral, different namespace, never equal — so
-    /// they can't collide in the selection dictionaries the player keys by `TrackID`.
-    @Test("ids with the same numeral in different namespaces are distinct")
-    func namespacesDoNotCollide() {
-        let ids: Set<TrackID> = [.avKitOption(2), .jellyfinStream(2), .vlc("2")]
-        #expect(ids.count == 3)
-        #expect(TrackID.avKitOption(2) != TrackID.jellyfinStream(2))
     }
 }

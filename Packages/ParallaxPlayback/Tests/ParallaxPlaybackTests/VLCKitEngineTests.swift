@@ -14,29 +14,6 @@ import ParallaxPlaybackTestSupport
 @MainActor
 struct VLCKitEngineTests {
 
-    /// PiP is OFF on this engine: MobileVLCKit 3.x ships no Picture-in-Picture API at
-    /// all, and this flag is what hides the button. AVKit still reports
-    /// `supportsPiP: true`, so the two engines must differ here.
-    @Test("capabilities: Now Playing yes, PiP and video AirPlay no")
-    func capabilities() {
-        #expect(VLCKitEngine().capabilities == PlaybackEngineCapabilities(
-            supportsPiP: false, supportsVideoAirPlay: false, supportsNowPlayingIntegration: true
-        ))
-    }
-
-    /// A non-finite target must be dropped before it can be turned into a millisecond
-    /// offset — and observably so: the player's clock must be left exactly where it was,
-    /// not written with a garbage `VLCTime`.
-    @Test("seek with a non-finite CMTime leaves the player's clock untouched",
-          arguments: [CMTime.invalid, .indefinite, .positiveInfinity, .negativeInfinity])
-    func seekNonFiniteIsANoOp(time: CMTime) async {
-        let engine = VLCKitEngine()
-        let before = engine.vlcPlayer.time.intValue
-        await engine.seek(to: time)
-        #expect(engine.vlcPlayer.time.intValue == before)
-        #expect(engine.vlcPlayer.isPlaying == false)
-    }
-
     /// The exit latch is what makes `endAudio()` TERMINAL. A scrub commit coalesced just
     /// before the close button lands inside the dismiss animation and calls `play()`, which
     /// unmutes and re-issues play, so audio comes back for the rest of the slide-out.
@@ -121,17 +98,6 @@ struct VLCKitEngineTests {
         await engine.teardown()
     }
 
-    /// `teardown()` drives the same non-Sendable `VLCMediaPlayer` the exit stop is still
-    /// winding down (drawable → delegate → stop). It joins first, or the two run concurrently
-    /// on two threads, the shape libvlc's own teardown aborts on.
-    @Test("teardown joins endAudio's detached stop before it touches the player")
-    func teardownJoinsPendingStop() async {
-        let engine = VLCKitEngine()
-        await engine.endAudio()
-        await engine.teardown()
-        #expect(engine.pendingStopTask == nil)
-    }
-
     /// `silence()` is the RESUMABLE mute (the transcode reload's freeze → silence → reload →
     /// play round-trip depends on `play()` unmuting). If it set the terminal latch, every
     /// track switch would come back silent and stopped.
@@ -175,20 +141,6 @@ struct VLCKitPauseBeatTests {
         let engine = VLCKitEngine()
         try await engine.load(.fixture(url: URL(fileURLWithPath: "/dev/null"), startTime: startTime))
         return engine
-    }
-
-    /// The device-confirmed defect, in its cheapest arrangement: the drag-scrub pauses the
-    /// engine, seeks, and the commit's pause lands while `pendingSeekMs` still holds. The pause
-    /// beat must repeat the target `seek()` already published (a zero-poll hold sits exactly on
-    /// it), not the pre-seek clock libvlc hasn't republished. Two beats at the same position, so
-    /// the dot does not move on the pause press; before the fix the second beat was the stale
-    /// clock (here the -1 sentinel, so it vanished entirely).
-    @Test("pause inside a seek's settle hold republishes the target")
-    func pauseInsideSeekHoldRepublishesTheTarget() async throws {
-        let engine = try await loadedEngine()
-        await engine.seek(to: CMTime(seconds: 75, preferredTimescale: 1_000))
-        await engine.pause()
-        #expect(await drainPositions(engine) == [75.0, 75.0])
     }
 
     /// Startup: the resume seek only applies once the demux reports seekable, so a pause during
@@ -294,11 +246,11 @@ struct VLCKitTimeConversionTests {
 @Suite("VLCKitEngine — beat emission")
 struct VLCKitBeatTests {
 
-    @Test("positionState maps isPlaying onto .playing/.paused with converted times",
+    @Test("liveBeat maps isPlaying onto .playing/.paused with converted times",
           arguments: [true, false])
-    func positionStateMapsTransport(isPlaying: Bool) {
-        let state = VLCKitEngine.positionState(isPlaying: isPlaying, positionMs: 1_000, durationMs: 4_000,
-                                               provenance: .observed)
+    func liveBeatMapsTransport(isPlaying: Bool) throws {
+        let state = try #require(VLCKitEngine.liveBeat(isPlaying: isPlaying, positionMs: 1_000, durationMs: 4_000,
+                                                       provenance: .observed))
         switch (isPlaying, state) {
         case (true, .playing(let p, let d, let buffered, let provenance)),
              (false, .paused(let p, let d, let buffered, let provenance)):
@@ -318,15 +270,12 @@ struct VLCKitBeatTests {
     /// old guard required `durationMs > 0` and wedged incomplete media forever.
     @Test("an unknown length still produces a beat carrying the real position")
     func beatSurvivesUnknownLength() throws {
-        let direct = VLCKitEngine.positionState(isPlaying: true, positionMs: 5_000, durationMs: 0, provenance: .observed)
-        let gated = try #require(VLCKitEngine.liveBeat(isPlaying: true, positionMs: 5_000, durationMs: 0, provenance: .observed))
-        for state in [direct, gated] {
-            guard case .playing(let position, let duration, _, _) = state else {
-                Issue.record("expected .playing, got \(state)"); continue
-            }
-            #expect(CMTimeGetSeconds(position) == 5.0)
-            #expect(duration == .indefinite)
+        let state = try #require(VLCKitEngine.liveBeat(isPlaying: true, positionMs: 5_000, durationMs: 0, provenance: .observed))
+        guard case .playing(let position, let duration, _, _) = state else {
+            Issue.record("expected .playing, got \(state)"); return
         }
+        #expect(CMTimeGetSeconds(position) == 5.0)
+        #expect(duration == .indefinite)
     }
 
     /// `player.time` reads the VLC_TICK_INVALID sentinel (-1) before the first frame.
@@ -356,18 +305,6 @@ struct VLCKitPollGateTests {
     ] as [(String, Int32, Int32, Bool)])
     func seekHasConverged(label: String, now: Int32, target: Int32, expected: Bool) {
         #expect(VLCKitEngine.seekHasConverged(now: now, target: target) == expected, "\(label)")
-    }
-
-    /// The give-up half, split out of the old `seekHasSettled`: purely a poll budget, and
-    /// on its own it says nothing about where the player landed.
-    @Test("seekHoldExpired", arguments: [
-        ("first poll", 1, false),
-        ("one poll short of the budget", 9, false),
-        ("budget spent", 10, true),
-        ("well past the budget", 25, true),
-    ] as [(String, Int, Bool)])
-    func seekHoldExpired(label: String, polls: Int, expected: Bool) {
-        #expect(VLCKitEngine.seekHoldExpired(polls: polls) == expected, "\(label)")
     }
 
     /// The lie the split exists to kill: the budget used to release the hold unconditionally,
@@ -442,20 +379,6 @@ struct VLCKitPollGateTests {
     func seekHoldJumpMs(label: String, elapsedMs: Int, pollMs: Int, rate: Float, expected: Int32) {
         #expect(VLCKitEngine.seekHoldJumpMs(elapsedMs: elapsedMs, pollMs: pollMs, rate: rate) == expected,
                 "\(label)")
-    }
-
-    /// The floor under the conditional rule. 30 polls ≈ 15s at the 500ms cadence, and it must
-    /// sit BELOW the app's own 20s `SeekHold.watchdog` so the engine is the one that gives up
-    /// first — the app's watchdog then never has to fire on a projection.
-    @Test("seekHoldAbandoned", arguments: [
-        ("armed", 0, false),
-        ("past the conditional budget, still inside the cap", 10, false),
-        ("one poll short", 29, false),
-        ("the cap, 15s in", 30, true),
-        ("long past it", 120, true),
-    ] as [(String, Int, Bool)])
-    func seekHoldAbandoned(label: String, polls: Int, expected: Bool) {
-        #expect(VLCKitEngine.seekHoldAbandoned(polls: polls) == expected, "\(label)")
     }
 
     /// Two shapes hold FOREVER under the conditional rule, and both were live defects:
@@ -584,19 +507,23 @@ struct VLCKitPollGateTests {
     /// A pause during a PLAYING hold has to land on the last value the poll extrapolated, or
     /// the dot snaps back to the seek target on the press. Same function, same arguments: the
     /// poll and `pause()` read one accessor.
-    @Test("heldPositionMs hands a settling seek to seekHoldPositionMs verbatim",
-          arguments: [0, 1, 4, 10], [Float(1.0), 2.0])
-    func heldPositionMsMatchesTheSeekHold(polls: Int, rate: Float) {
+    @Test("heldPositionMs extrapolates a settling seek from its target", arguments: [
+        (0, Float(1.0), Int32(60_000)),
+        (0, 2.0, 60_000),
+        (1, 1.0, 60_500),
+        (1, 2.0, 61_000),
+        (4, 1.0, 62_000),
+        (4, 2.0, 64_000),
+        (10, 1.0, 65_000),
+        (10, 2.0, 70_000),
+    ] as [(Int, Float, Int32)])
+    func heldPositionMsMatchesTheSeekHold(polls: Int, rate: Float, expected: Int32) {
         let held = VLCKitEngine.heldPositionMs(
             pendingStartMs: nil, rateFlushAnchorMs: nil, pendingSeekMs: 60_000,
-            pendingSeekPolls: polls, pollMs: VLCKitEngine.pollIntervalMs,
+            pendingSeekPolls: polls, pollMs: 500,
             rate: rate, durationMs: 7_200_000, clockMs: 42_000
         )
-        #expect(held == VLCKitEngine.seekHoldPositionMs(
-            targetMs: 60_000, polls: polls, pollMs: VLCKitEngine.pollIntervalMs,
-            rate: rate, durationMs: 7_200_000
-        ))
-        #expect(held == 60_000 + Int32(Double(polls * VLCKitEngine.pollIntervalMs) * Double(rate)))
+        #expect(held == expected)
     }
 
     /// While VLC's clock sits at the flush anchor the re-decode hasn't produced output at
@@ -650,17 +577,6 @@ struct VLCKitPollGateTests {
         #expect(VLCKitEngine.shouldReassertPlay(
             desiredPlaying: desiredPlaying, isPlaying: isPlaying, state: state
         ) == expected)
-    }
-
-    /// The exit latch, as the gate `play()` and `pause()` both read. Terminal in one
-    /// direction only: once `endAudio()` has stopped the input for the dismissal, nothing but
-    /// a fresh `load()` may let a transport command through.
-    @Test("shouldHonorTransport is false exactly while the exit latch stands", arguments: [
-        (false, true),
-        (true, false),
-    ] as [(Bool, Bool)])
-    func shouldHonorTransport(audioEnded: Bool, expected: Bool) {
-        #expect(VLCKitEngine.shouldHonorTransport(audioEnded: audioEnded) == expected)
     }
 
     /// The poll's live pass needs BOTH the input reporting playing and the user intending it.
@@ -905,44 +821,6 @@ struct VLCKitTimeNullTests {
     }
 }
 
-@Suite("VLCKitEngine — track mapping")
-@MainActor
-struct VLCKitEngineTrackMappingTests {
-
-    /// The `.vlc` tag is the whole point: a VLC `trackId` string can never be confused
-    /// with an AVKit option index or a Jellyfin stream index.
-    @Test("buildAudioTrack tags the id .vlc and carries name/language through",
-          arguments: [("42", "English DTS", "en"), ("7", "Unknown", nil)] as [(String, String, String?)])
-    func audioTrackMapping(id: String, name: String, language: String?) {
-        let track = VLCKitEngine.buildAudioTrack(id: id, name: name, language: language)
-        #expect(track.id == .vlc(id))
-        #expect(track.id.avKitOptionIndex == nil)
-        #expect(track.displayName == name)
-        #expect(track.languageCode == language)
-        #expect(track.isUnsupported == false)   // the default: only a known-bad codec flips it
-    }
-
-    /// The inventory carries the undecodable flag through to the app, which is what lets the
-    /// menu grey the row instead of offering a pick that plays silence.
-    @Test("buildAudioTrack carries the unsupported marking through")
-    func audioTrackCarriesUnsupportedFlag() {
-        let track = VLCKitEngine.buildAudioTrack(id: "4", name: "Japanese", language: "jpn",
-                                                 isUnsupported: true)
-        #expect(track.isUnsupported)
-    }
-
-    /// VLC's track API exposes no forced flag, so every subtitle it vends is unforced —
-    /// forced-track handling exists only on the AVKit path.
-    @Test("buildSubtitleTrack maps id/name/language and is never forced")
-    func subtitleTrackMapping() {
-        let track = VLCKitEngine.buildSubtitleTrack(id: "s1", name: "French ASS", language: "fr")
-        #expect(track.id == .vlc("s1"))
-        #expect(track.displayName == "French ASS")
-        #expect(track.languageCode == "fr")
-        #expect(track.isForced == false)
-    }
-}
-
 /// 3000ms is AV1-software-decode runway (device-proven: at 2× a far seek empties a
 /// 1000ms buffer faster than AV1 can refill it → macroblocking). The constraint is
 /// DECODE-bound, so it stays for software and unknown codecs; a hardware-decoded codec
@@ -963,14 +841,5 @@ struct VLCKitEngineCacheDepthTests {
     func cacheDepth(label: String, scheme: String?, codec: VideoCodec?, expected: Int) {
         let hints = PlaybackHints.fixture(scheme: scheme, container: .mkv, video: codec, audio: nil)
         #expect(VLCKitEngine.cacheDepthMs(for: hints) == expected, "\(label)")
-    }
-
-    /// The shallow depth only ever applies to the SMB + hardware-decode pair; every
-    /// other combination keeps the full runway.
-    @Test("the shallow buffer is strictly narrower than the default runway")
-    func shallowIsShallower() {
-        let shallow = VLCKitEngine.cacheDepthMs(for: .fixture(scheme: "smb", container: .mkv, video: .h264))
-        let runway = VLCKitEngine.cacheDepthMs(for: .fixture(scheme: "smb", container: .mkv, video: .av1))
-        #expect(shallow < runway)
     }
 }

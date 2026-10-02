@@ -2,60 +2,13 @@ import Foundation
 import Testing
 @testable import ParallaxCore
 
-@Suite("Bitrate value type")
-struct BitrateTests {
-    @Test("Bitrate is comparable")
-    func comparable() {
-        #expect(Bitrate.megabits(4) < Bitrate.megabits(8))
-        #expect(Bitrate.megabits(8) == Bitrate.megabits(8))
-    }
-}
-
-@Suite("FilePath value type")
-struct FilePathTests {
-    @Test("FilePath constructs from string components")
-    func fromString() {
-        let path = FilePath("/Media/Movies/Inception.mkv")
-        #expect(path.components == ["Media", "Movies", "Inception.mkv"])
-    }
-
-    @Test("FilePath handles leading and trailing slashes")
-    func trimsSlashes() {
-        #expect(FilePath("/Media/").components == ["Media"])
-        #expect(FilePath("Media").components == ["Media"])
-        #expect(FilePath("").components == [])
-        #expect(FilePath("/").components == [])
-    }
-
-    @Test("FilePath appending produces a new path")
-    func appending() {
-        let parent = FilePath("/Media")
-        let child = parent.appending("Movies")
-        #expect(child.components == ["Media", "Movies"])
-        #expect(child.appending("Inception.mkv").components == ["Media", "Movies", "Inception.mkv"])
-    }
-
-    @Test("FilePath renders to string with leading slash")
-    func rendersToString() {
-        #expect(FilePath("/Media/Movies").rendered == "/Media/Movies")
-        #expect(FilePath("").rendered == "/")
-    }
-
-    @Test("FilePath parent returns container directory")
-    func parent() {
-        #expect(FilePath("/Media/Movies/Inception.mkv").parent?.rendered == "/Media/Movies")
-        #expect(FilePath("/Media").parent?.rendered == "/")
-        #expect(FilePath("/").parent == nil)
-    }
-}
-
 @Suite("MediaInfo enums")
 struct MediaInfoTests {
-    /// The full set, not a spot-check: `Container` is a wire vocabulary, so a case appearing or
-    /// vanishing is a compatibility event that should have to be acknowledged here.
-    @Test("Container covers exactly the families the app routes")
-    func containerCases() {
-        #expect(Set(Container.allCases) == [.mp4, .mov, .mkv, .webm, .ts, .hls, .flac, .mp3, .avi])
+    /// Container is a wire vocabulary: DeviceProfileTranslator joins these raw values into the
+    /// Jellyfin container lists, so a case or spelling change is a compatibility event.
+    @Test("Container raw values are exactly the wire spellings the profile sends")
+    func containerRawValues() {
+        #expect(Set(Container.allCases.map(\.rawValue)) == ["mp4", "mov", "mkv", "webm", "ts", "hls", "flac", "mp3", "avi"])
     }
 
     /// One table for every wire spelling the mapper must accept: server strings arrive
@@ -100,43 +53,12 @@ struct MediaInfoTests {
         }
     }
 
-    @Test("HDRSupport composes as an OptionSet")
-    func hdrOptionSet() {
-        #expect(HDRSupport.dolbyVision.includes(.dolbyVision))
-        #expect(HDRSupport.both.includes(.hdr10))
-        #expect(HDRSupport.both.includes(.dolbyVision))
-        #expect(HDRSupport.hdr10.includes(.hdr10))
-        #expect(HDRSupport.hdr10.includes(.dolbyVision) == false)
-        #expect(HDRSupport.none.includes(.hdr10) == false)
-    }
-
-    @Test("HDRSupport covers HDR10+ and combinations")
-    func hdr10PlusCombinations() {
-        let modern: HDRSupport = [.hdr10, .hdr10Plus, .dolbyVision]
-        #expect(modern.includes(.hdr10Plus))
-        #expect(modern.includes(.hdr10))
-        #expect(modern.includes(.dolbyVision))
-        #expect(modern.includes([.hdr10, .dolbyVision]))
-        #expect(HDRSupport.hdr10.includes(.hdr10Plus) == false)
-    }
-
-    @Test("HDRSupport round-trips through Codable")
-    func hdrCodable() throws {
-        let original: HDRSupport = [.hdr10, .hdr10Plus, .dolbyVision]
-        try assertCodableRoundTrip(original)
-    }
-
     /// The VLC-only codecs' raw values ARE their ffmpeg wire strings — the profile the device
     /// sends to Jellyfin is built from them, so a rename would silently change the negotiation.
     @Test("VLC-only video codecs keep their ffmpeg raw values")
     func videoCodecVLCOnlyRawValues() {
         #expect(VideoCodec.vc1.rawValue == "vc1")
         #expect(VideoCodec.mpeg2video.rawValue == "mpeg2video")
-    }
-
-    @Test("Container.avi exists and rawValue is 'avi'")
-    func aviRawValue() {
-        #expect(Container.avi.rawValue == "avi")
     }
 }
 
@@ -298,15 +220,6 @@ struct MediaStreamInfoHelperTests {
                                     codec: nil, channels: nil, isExternal: false,
                                     isForced: false, isDefault: false)
         #expect(third.id == 3)
-    }
-
-    /// The no-argument accessor exists so call sites don't have to thread a locale; it must be
-    /// the same derivation, just with the current locale.
-    @Test("the locale-free menuLabel is the same derivation as the explicit one")
-    func menuLabelConvenienceMatchesExplicit() {
-        let track = sub("subrip", streamTitle: "Signs & Songs")
-        #expect(track.menuLabel == track.menuLabel(locale: .current))
-        #expect(track.menuLabel == "Signs & Songs")
     }
 
     @Test("an audio track is never an image subtitle, whatever its codec string reads")

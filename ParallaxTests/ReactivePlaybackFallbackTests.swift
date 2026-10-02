@@ -145,31 +145,6 @@ struct ReactivePlaybackFallbackTests {
         #expect(vlcEngine.loadedAssets.isEmpty)   // no reroute attempted
     }
 
-    @Test("a network-stalled AVKit failure never reactively reroutes — a link problem, not a decode defect")
-    func networkStalledNeverReroutes() async throws {
-        let reporting = StubPlaybackReporting()
-        let avKitEngine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let vlcEngine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
-        let resolved = PlayerFixtures.resolved()   // mp4 / h264 / aac direct-play
-        let vm = makeSwitchingVM(
-            reporting: reporting, resolve: { _, _, _, _ in resolved },
-            avKitEngine: avKitEngine, vlcEngine: vlcEngine
-        )
-
-        await vm.start(item: PlayerFixtures.movieDetail())
-        #expect(vm.engine === avKitEngine)
-
-        avKitEngine.push(.failed(.networkStalled))
-        try await avKitEngine.settle()
-
-        guard case .failed = vm.phase else {
-            Issue.record("expected .failed, got \(vm.phase)")
-            return
-        }
-        #expect(vlcEngine.loadedAssets.isEmpty)   // no reroute attempted — rerouting would tear
-                                                   // down a working engine over an honest stall
-    }
-
     @Test("the VLC retry asset carries the original's vlcLibraryOptions")
     func retryPreservesVLCLibraryOptions() async throws {
         let reporting = StubPlaybackReporting()

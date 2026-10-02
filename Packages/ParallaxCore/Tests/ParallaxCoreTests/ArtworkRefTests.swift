@@ -212,30 +212,4 @@ struct ImageKindTests {
     func pathSegment(kind: ImageKind, expected: String) {
         #expect(kind.pathSegment == expected)
     }
-
-    @Test("backdrops at different indices are distinct kinds")
-    func backdropIndexIsPartOfIdentity() {
-        #expect(ImageKind.backdrop(index: 0) != ImageKind.backdrop(index: 1))
-        #expect(ImageKind.backdrop(index: 0) == ImageKind.backdrop(index: 0))
-    }
-}
-
-@Suite("ImageRef")
-struct ImageRefTests {
-    /// SMB/local refs have no server-side BlurHash, so the parameter defaults away.
-    @Test("the BlurHash is optional and defaults to absent")
-    func blurHashDefaultsToNil() {
-        let ref = ImageRef(itemID: ItemID(rawValue: "i"), kind: .primary, tag: ImageTag(rawValue: "t"))
-        #expect(ref.blurHash == nil)
-    }
-
-    /// Two refs to the same item differing only by kind must not collide — they key separate
-    /// cache entries.
-    @Test("kind and tag both participate in identity")
-    func identity() {
-        let base = LibraryFixtures.imageRef(kind: .primary, tag: "t")
-        #expect(base != LibraryFixtures.imageRef(kind: .thumb, tag: "t"))
-        #expect(base != LibraryFixtures.imageRef(kind: .primary, tag: "other"))
-        #expect(base == LibraryFixtures.imageRef(kind: .primary, tag: "t"))
-    }
 }

@@ -57,14 +57,6 @@ struct ItemDetailTests {
         #expect(updated.people == original.people)
         #expect(updated.withSeries(original.series) == original)
     }
-
-    /// Chapters default to empty: not every source ships them, and the detail screen decides
-    /// whether to draw the row from the count.
-    @Test("chapters default to empty on both detail types that carry them")
-    func chaptersDefaultEmpty() {
-        #expect(movieDetail().chapters.isEmpty)
-        #expect(EpisodeDetail(episode: episode, people: []).chapters.isEmpty)
-    }
 }
 
 @Suite("Chapter")
@@ -76,13 +68,6 @@ struct ChapterTests {
         let unnamed = Chapter(index: 3, name: nil, start: .seconds(600))
         #expect(unnamed.id == 3)
         #expect(unnamed.name == nil)
-    }
-
-    @Test("chapters at different indices are distinct even with equal names and starts")
-    func distinctByIndex() {
-        let first = Chapter(index: 0, name: "Intro", start: .zero)
-        let second = Chapter(index: 1, name: "Intro", start: .zero)
-        #expect(first != second)
     }
 }
 
@@ -144,11 +129,5 @@ struct AdjacentEpisodesTests {
     @Test("an empty window resolves to none")
     func emptyWindow() {
         #expect(AdjacentEpisodes(around: ItemID(rawValue: "a"), in: []) == .none)
-    }
-
-    @Test(".none carries neither neighbour")
-    func noneIsEmpty() {
-        #expect(AdjacentEpisodes.none.previous == nil)
-        #expect(AdjacentEpisodes.none.next == nil)
     }
 }

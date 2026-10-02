@@ -49,7 +49,6 @@ final class LibassLibrary: @unchecked Sendable {
 
     private var handle: OpaquePointer?
     private var initFailed = false
-    private var bootstrapDuration: Duration?
 
     /// File names already handed to `ass_add_font`. Add-only: `ass_clear_fonts`
     /// cannot be called on a shared library (its precondition is that every
@@ -72,14 +71,6 @@ final class LibassLibrary: @unchecked Sendable {
     let bootstrapLog = LibassEngine.MessageLog()
 
     private init() {}
-
-    /// Wall time the one-time library bootstrap cost, once it has happened.
-    /// Diagnostic only — the latency guard test prints it.
-    var bootstrapCost: Duration? {
-        lock.lock()
-        defer { lock.unlock() }
-        return bootstrapDuration
-    }
 
     /// Runs `body` against the shared library with every message libass emits
     /// inside it appended to `log`. Returns nil only when the library could not
@@ -153,8 +144,6 @@ final class LibassLibrary: @unchecked Sendable {
         if let handle { return handle }
         guard !initFailed else { return nil }
 
-        let clock = ContinuousClock()
-        let start = clock.now
         guard let library = ass_library_init() else {
             initFailed = true
             return nil
@@ -188,7 +177,6 @@ final class LibassLibrary: @unchecked Sendable {
         )
         currentLog = nil
 
-        bootstrapDuration = clock.now - start
         handle = library
         return library
     }

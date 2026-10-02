@@ -358,12 +358,6 @@ struct LaunchClockTests {
         #expect(pos.holdPhase == nil)
     }
 
-    @Test("rawTime maps real seconds onto the intro-domain story clock")
-    func rawTimeIsTheIntroPace() {
-        #expect(LaunchClock.rawTime(elapsed: 2.0) == 2.0 * LaunchClock.speed)
-        #expect(LaunchClock.rawTime(elapsed: 0) == 0)
-    }
-
     @Test("pending work pins the clock and loops breaths")
     func indefiniteHold() {
         // 40% into the FIRST breath — again via the constants, so a retune can't push this
@@ -449,12 +443,6 @@ struct LaunchClockTests {
         #expect(abs((LaunchClock.activeEnd - LaunchClock.holdStart)
                     / LaunchClock.revealSpeed - 1.7) < 1e-12)                                // release → revealed
         #expect(abs(LaunchClock.settleRealDuration - 0.48) < 1e-12)
-    }
-
-    @Test("the settle window is shared with the host, in real seconds at the reveal pace")
-    func settleRealDuration() {
-        let expected = (LaunchClock.settleEnd - LaunchClock.settleStart) / LaunchClock.revealSpeed
-        #expect(LaunchClock.settleRealDuration == expected)
         #expect(LaunchClock.settleStart < LaunchClock.settleEnd)
         #expect(LaunchClock.settleEnd <= LaunchClock.activeEnd)
     }

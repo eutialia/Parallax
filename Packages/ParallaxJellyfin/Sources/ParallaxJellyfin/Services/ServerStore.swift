@@ -35,8 +35,7 @@ public actor ServerStore {
         }
     }
 
-    /// Internal (not private) so tests seed and re-read the persisted blob through the SAME key
-    /// the store writes, instead of mirroring the `"ParallaxJellyfin.persistedSessions"` literal.
+    /// Internal (not private) so tests can re-read the persisted blob through the typed key.
     static let persistedServersKey = SettingKey<[PersistedServer]>(
         name: "ParallaxJellyfin.persistedSessions",
         defaultValue: []
@@ -62,14 +61,13 @@ public actor ServerStore {
     /// The stale-while-revalidate payload cache. Owned here because this actor is where a server
     /// stops existing — `remove` and `invalidateSession` are the only two paths out, and a cached
     /// Home feed for a server the user just signed out of must not survive to the next launch.
-    /// Optional so tests (and any no-cache configuration) can leave it unwired.
-    private let snapshots: SnapshotStore?
+    private let snapshots: SnapshotStore
     private var persistedServers: [PersistedServer] = []
     private var loadedSessions: [Session] = []
     private var activeID: ServerID?
     private var hiddenCollections: [String: Set<String>] = [:]
 
-    public init(settings: SettingsStore, keychain: any KeychainStoring, snapshots: SnapshotStore? = nil) {
+    public init(settings: SettingsStore, keychain: any KeychainStoring, snapshots: SnapshotStore) {
         self.settings = settings
         self.keychain = keychain
         self.snapshots = snapshots
@@ -314,16 +312,10 @@ public actor ServerStore {
         return upgraded
     }
 
-    /// Adds (or replaces) a session. Coordinates the two stores so a partial
-    /// failure does not leave a Keychain token orphaned: on settings.set
-    /// failure we restore the previous Keychain entry (or delete the new
-    /// one for a fresh add) and revert the in-memory list.
+    /// Adds (or replaces) a session.
     public func add(_ session: Session) async throws {
         let key = Self.secretKey(for: session.id)
         let existingIndex = loadedSessions.firstIndex(where: { $0.id == session.id })
-        let previousToken: String? = existingIndex.map { loadedSessions[$0].accessToken }
-        let previousSessions = loadedSessions
-        let previousServers = persistedServers
 
         do {
             try await keychain.store(session.accessToken, for: key)
@@ -345,12 +337,6 @@ public actor ServerStore {
         do {
             try await settings.set(persistedServers, for: Self.persistedServersKey)
         } catch {
-            // Roll back Keychain so we never leave a live token unreferenced
-            // by UserDefaults. Best-effort: log restore failure but surface
-            // the original error so the caller knows the add did not commit.
-            await rollbackKeychain(key: key, previousToken: previousToken)
-            loadedSessions = previousSessions
-            persistedServers = previousServers
             throw ServerStoreError.persistenceFailed(underlying: String(describing: error))
         }
 
@@ -407,7 +393,7 @@ public actor ServerStore {
 
         // The removed server's cached Home feed / library list goes with it — otherwise the next
         // launch would hydrate a sidebar and shelves for a server that is no longer configured.
-        await snapshots?.removeSnapshots(forServerID: id.rawValue)
+        await snapshots.removeSnapshots(forServerID: id.rawValue)
 
         // Drop any per-server hidden-collections set so a later re-add of the same id can't inherit
         // stale visibility (a Jellyfin re-add reuses the deterministic id). Best-effort: the server is
@@ -439,21 +425,6 @@ public actor ServerStore {
         let id = ServerID(rawValue: "smb-\(data.host)")
         let key = Self.secretKey(for: id)
 
-        // Capture previous state for rollback. A THROWN read (transient Keychain fault) is NOT
-        // proof the slot is empty — distinguish it from a confirmed-absent slot so a re-add
-        // never deletes a still-valid password: nil-because-absent is safe to delete on
-        // rollback; a thrown read leaves the slot untouched.
-        let previousServers = persistedServers
-        let previousPassword: String?
-        let slotWasConfirmedEmpty: Bool
-        do {
-            previousPassword = try await keychain.read(key)
-            slotWasConfirmedEmpty = (previousPassword == nil)
-        } catch {
-            previousPassword = nil
-            slotWasConfirmedEmpty = false
-        }
-
         do {
             try await keychain.store(password, for: key)
         } catch {
@@ -470,16 +441,6 @@ public actor ServerStore {
         do {
             try await settings.set(persistedServers, for: Self.persistedServersKey)
         } catch {
-            // Roll back Keychain and in-memory list so a settings failure never leaves a live
-            // password unreferenced by UserDefaults. Restore a captured previous password;
-            // delete ONLY if the slot was confirmed empty (a true fresh add). If the pre-read
-            // threw, leave the slot — deleting could wipe a password that was actually there.
-            if let previousPassword {
-                try? await keychain.store(previousPassword, for: key)
-            } else if slotWasConfirmedEmpty {
-                try? await keychain.delete(key)
-            }
-            persistedServers = previousServers
             throw ServerStoreError.persistenceFailed(underlying: String(describing: error))
         }
 
@@ -499,8 +460,7 @@ public actor ServerStore {
     /// `ParallaxFileBrowse`, which this package deliberately doesn't depend on), so the caller hands
     /// in the probe; it receives the server's persisted identity plus the candidate password and
     /// throws if the server refuses the sign-in. The Keychain write happens ONLY after it returns,
-    /// so a wrong password leaves the stored one exactly as it was — the same "never commit a
-    /// half-credential" discipline as `addSMBServer`'s rollback, achieved by not writing at all.
+    /// so a wrong password leaves the stored one exactly as it was.
     /// A verification throw is rethrown verbatim so the caller can render its own error.
     ///
     /// `verify` suspends this actor, so the world can change under it: the server can be removed
@@ -508,8 +468,6 @@ public actor ServerStore {
     /// task can be cancelled (its UI already reported the attempt dead). Both are re-checked AFTER
     /// the await — the row again, cancellation explicitly — so a stale success can't write a secret
     /// nothing references or one the user believes was never saved.
-    ///
-    /// No `settings` write, hence no rollback to do: the only mutated state is the Keychain slot.
     public func updateSMBPassword(
         _ password: String,
         for id: ServerID,
@@ -595,22 +553,10 @@ public actor ServerStore {
 
         // The token is dead, so the cached payloads it produced can no longer be revalidated —
         // hydrating them next launch would show a signed-out server's shelves as live content.
-        await snapshots?.removeSnapshots(forServerID: id.rawValue)
+        await snapshots.removeSnapshots(forServerID: id.rawValue)
 
         Log.persistence.info("ServerStore.invalidateSession: \(id.rawValue) signed out after a rejected token")
         return true
-    }
-
-    private func rollbackKeychain(key: KeychainKey<String>, previousToken: String?) async {
-        do {
-            if let previousToken {
-                try await keychain.store(previousToken, for: key)
-            } else {
-                try await keychain.delete(key)
-            }
-        } catch {
-            Log.persistence.error("ServerStore.add rollback failed — token may be orphaned. \(error.localizedDescription)")
-        }
     }
 
     private func persistActiveID() async throws {
@@ -643,10 +589,8 @@ public actor ServerStore {
     }
 
     /// The opaque Keychain account that holds a server's secret — the Jellyfin bearer token
-    /// for `.jellyfin`, the password for `.smb`. Public + static because the app-hosted
-    /// `ParallaxTests/SMBPlaybackResolverTests` derives the keychain slot from it directly;
-    /// production code reads secrets through `smbPassword(for:)` instead.
-    public static func tokenAccount(for id: ServerID) -> String {
+    /// for `.jellyfin`, the password for `.smb`. Internal so package tests address the same slot.
+    static func tokenAccount(for id: ServerID) -> String {
         "token-\(id.rawValue)"
     }
 

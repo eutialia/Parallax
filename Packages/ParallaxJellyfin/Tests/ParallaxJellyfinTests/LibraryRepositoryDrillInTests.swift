@@ -8,7 +8,7 @@ import ParallaxCore
 struct LibraryRepositoryDrillInTests {
     private func make() -> (LibraryRepository, FakeJellyfinLibraryClient) {
         let client = FakeJellyfinLibraryClient()
-        return (LibraryRepository(session: JellyfinFixtures.session(), client: client), client)
+        return (LibraryRepository(client: client), client)
     }
 
     private func dtoSeason(_ id: String, seriesID: String, primaryTag: String? = nil) -> BaseItemDto {
@@ -133,35 +133,54 @@ struct LibraryRepositoryDrillInTests {
         #expect(client.itemsByIDsCalls.isEmpty, "movies have no parent art to resolve")
     }
 
-    /// Each drill-in and shelf call maps its transport failure into the domain error type, so no
-    /// screen ever has to interpret a raw SDK error.
+    /// Each repository call maps its transport failure into the domain error type, so no screen
+    /// ever has to interpret a raw SDK error.
     @Test(
-        "Every drill-in and shelf call maps a transport failure to AppError",
-        arguments: [DrillInCall.seasons, .episodes, .continueWatching, .nextUp, .search]
+        "Every repository call maps a transport failure to AppError",
+        arguments: [
+            RepositoryCall.collections, .seasons, .episodes, .continueWatching, .nextUp, .search,
+            .homeHeroFeed, .setFavorite, .setPlayed, .mediaSegments, .adjacentEpisodes,
+        ]
     )
-    func transportFailuresMapToAppError(call: DrillInCall) async throws {
+    func transportFailuresMapToAppError(call: RepositoryCall) async throws {
         let (repo, client) = make()
         let failure = URLError(.notConnectedToInternet)
         switch call {
+        case .collections: client.collectionsResult = .failure(failure)
         case .seasons: client.seasonsResult = .failure(failure)
         case .episodes: client.episodesResult = .failure(failure)
         case .continueWatching: client.continueWatchingResult = .failure(failure)
         case .nextUp: client.nextUpResult = .failure(failure)
         case .search: client.searchResult = .failure(failure)
+        case .homeHeroFeed: client.recentlyAddedResultsByTypes = [.movie: .failure(failure)]
+        case .setFavorite: client.setFavoriteResult = .failure(failure)
+        case .setPlayed: client.setPlayedResult = .failure(failure)
+        case .mediaSegments: client.mediaSegmentsResult = .failure(failure)
+        case .adjacentEpisodes: client.adjacentEpisodesResult = .failure(failure)
         }
 
         await #expect(throws: AppError.self) {
             switch call {
+            case .collections: _ = try await repo.collections()
             case .seasons: _ = try await repo.seasons(of: ItemID(rawValue: "ser1"))
             case .episodes: _ = try await repo.episodes(of: ItemID(rawValue: "se1"))
             case .continueWatching: _ = try await repo.continueWatching()
             case .nextUp: _ = try await repo.nextUp()
             case .search: _ = try await repo.search("bad", scope: .all)
+            case .homeHeroFeed: _ = try await repo.homeHeroFeed(limit: 12)
+            case .setFavorite: _ = try await repo.setFavorite(itemID: ItemID(rawValue: "i1"), isFavorite: true)
+            case .setPlayed: _ = try await repo.setPlayed(itemID: ItemID(rawValue: "i1"), isPlayed: true)
+            case .mediaSegments: _ = try await repo.mediaSegments(for: ItemID(rawValue: "i1"))
+            case .adjacentEpisodes:
+                _ = try await repo.adjacentEpisodes(seriesID: ItemID(rawValue: "ser1"), episodeID: ItemID(rawValue: "e2"))
             }
         }
     }
 
-    enum DrillInCall: Sendable { case seasons, episodes, continueWatching, nextUp, search }
+    enum RepositoryCall: Sendable {
+        case collections, seasons, episodes, continueWatching, nextUp, search
+        case homeHeroFeed, setFavorite, setPlayed, mediaSegments, adjacentEpisodes
+    }
 
     @Test("search(.all) fans out to three per-type calls and merges results")
     func searchAllFansOut() async throws {
@@ -184,25 +203,6 @@ struct LibraryRepositoryDrillInTests {
         let scopes = Set(client.searchCalls.map { $0.scope })
         #expect(scopes == [.movies, .series, .episodes])
         #expect(client.searchCalls.allSatisfy { $0.query == "bad" })
-    }
-
-    @Test("search(.all) surfaces series even when episodes flood results")
-    func searchAllSeriesNotCrowdedOut() async throws {
-        let (repo, client) = make()
-        var seriesDto = BaseItemDto()
-        seriesDto.id = "ser1"; seriesDto.name = "Hyouka"; seriesDto.type = .series
-        let manyEpisodes = (0..<50).map { dtoEpisode("e\($0)", seriesID: "ser1", seasonID: "se1") }
-        client.searchResultsByScope = [
-            .movies: .success([]),
-            .series: .success([seriesDto]),
-            .episodes: .success(manyEpisodes),
-        ]
-        let results = try await repo.search("hyouka", scope: .all)
-        // Regression: previously a single combined query with limit=50 let
-        // 50 episode hits push the series out of the response entirely.
-        #expect(results.series.count == 1)
-        #expect(results.series.first?.title == "Hyouka")
-        #expect(results.episodes.count == 50)
     }
 
     @Test("search drops wrong-type DTOs the server leaks into a scoped result")

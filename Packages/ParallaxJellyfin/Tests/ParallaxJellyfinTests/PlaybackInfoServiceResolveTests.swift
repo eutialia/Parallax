@@ -64,6 +64,7 @@ struct PlaybackInfoServiceResolveTests {
         subtitle.displayTitle = "Chinese"
         subtitle.language = "zho"
         subtitle.deliveryMethod = .hls
+        subtitle.isHearingImpaired = true
         source.mediaStreams = [video, audio, subtitle]
         return source
     }
@@ -154,7 +155,7 @@ struct PlaybackInfoServiceResolveTests {
         #expect(fake.playbackInfoCalls.first?.selection == selection)
     }
 
-    @Test("Source media streams + default indices are mapped to ResolvedPlayback")
+    @Test("Source media streams, their video/audio/subtitle fields and default indices are mapped to ResolvedPlayback")
     func mediaStreamsMapped() async throws {
         let (service, _) = makeService(source: transcodeSource())
         let resolved = try await service.resolve(
@@ -174,11 +175,24 @@ struct PlaybackInfoServiceResolveTests {
         #expect(audio?.isDefault == true)
         #expect(audio?.sampleRate == 48_000)
         #expect(audio?.bitRate == 4_500_000)
+        #expect(audio?.isHearingImpaired == false, "an unreported flag reads false")
+
+        let video = resolved.mediaStreams.first { $0.kind == .video }
+        #expect(video?.profile == "Main 10")
+        #expect(video?.bitDepth == 10)
+        #expect(video?.width == 3840)
+        #expect(video?.height == 2160)
+        #expect(video?.videoRange == "HDR")
+        #expect(video?.videoRangeType == "HDR10")
+        #expect(video?.colorSpace == "bt2020nc")
+        #expect(video?.bitRate == 18_200_000)
+        #expect(video?.frameRate == 23.976)
 
         let subtitle = resolved.mediaStreams.first { $0.kind == .subtitle }
         #expect(subtitle?.index == 1)
         #expect(subtitle?.displayTitle == "Chinese")
         #expect(subtitle?.subtitleDeliveryMethod == "Hls")
+        #expect(subtitle?.isHearingImpaired == true)
     }
 
     /// Image subs (PGS/VobSub) are burned in server-side, so they have no sidecar to fetch — but
@@ -219,26 +233,6 @@ struct PlaybackInfoServiceResolveTests {
         #expect(fake.subtitleStreamURLRequests.map(\.format) == ["srt", "ass", "vtt"])
         #expect(fake.subtitleStreamURLRequests.first?.mediaSourceID == "ms-2")
         #expect(resolved.subtitleStreamURLs[1] == fake.subtitleURLForIndex(1))
-    }
-
-    @Test("Video stream's HDR / resolution / bit-depth debug fields are mapped")
-    func videoDebugFieldsMapped() async throws {
-        let (service, _) = makeService(source: transcodeSource())
-        let resolved = try await service.resolve(
-            item: ItemID(rawValue: "item-1"),
-            capabilities: caps(),
-            startTime: nil
-        )
-        let video = resolved.mediaStreams.first { $0.kind == .video }
-        #expect(video?.profile == "Main 10")
-        #expect(video?.bitDepth == 10)
-        #expect(video?.width == 3840)
-        #expect(video?.height == 2160)
-        #expect(video?.videoRange == "HDR")
-        #expect(video?.videoRangeType == "HDR10")
-        #expect(video?.colorSpace == "bt2020nc")
-        #expect(video?.bitRate == 18_200_000)
-        #expect(video?.frameRate == 23.976)
     }
 
     /// Reasons are read out of the SERVER's transcodingURL query, so direct play (no such URL)
@@ -292,34 +286,6 @@ struct PlaybackInfoServiceResolveTests {
             startTime: nil
         )
         #expect(resolved.runtime == CMTime(seconds: 100, preferredTimescale: 10_000_000))
-    }
-
-    @Test("isHearingImpaired maps through mediaStreamInfos")
-    func hearingImpairedMapped() async throws {
-        var source = transcodeSource()
-        var sdhSub = MediaStream()
-        sdhSub.type = .subtitle
-        sdhSub.index = 5
-        sdhSub.codec = "subrip"
-        sdhSub.displayTitle = "English SDH"
-        sdhSub.isHearingImpaired = true
-        var normalSub = MediaStream()
-        normalSub.type = .subtitle
-        normalSub.index = 6
-        normalSub.codec = "subrip"
-        normalSub.displayTitle = "English"
-        normalSub.isHearingImpaired = false
-        source.mediaStreams?.append(contentsOf: [sdhSub, normalSub])
-        let (service, _) = makeService(source: source)
-        let resolved = try await service.resolve(
-            item: ItemID(rawValue: "item-1"),
-            capabilities: caps(),
-            startTime: nil
-        )
-        let sdh = try #require(resolved.mediaStreams.first { $0.index == 5 })
-        #expect(sdh.isHearingImpaired == true)
-        let normal = try #require(resolved.mediaStreams.first { $0.index == 6 })
-        #expect(normal.isHearingImpaired == false)
     }
 
     /// A source whose stream URL can't be built is unplayable — better a named failure than an

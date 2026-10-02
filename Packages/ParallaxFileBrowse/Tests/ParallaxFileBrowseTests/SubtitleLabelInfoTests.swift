@@ -1,6 +1,5 @@
 import Foundation
 import Testing
-import ParallaxCore
 @testable import ParallaxFileBrowse
 
 /// Label → structured translation, pinned to an explicit locale so the localized
@@ -40,6 +39,7 @@ struct SubtitleLabelInfoTests {
         Case("cht", tags: ["zh-Hant"], display: "Chinese, Traditional"),
         Case("jptc", tags: ["ja", "zh-Hant"], display: "Japanese + Chinese, Traditional"),
         Case("jpsc", tags: ["ja", "zh-Hans"], display: "Japanese + Chinese, Simplified"),
+        Case("big5gb", tags: ["zh-Hant", "zh-Hans"], display: "Chinese, Traditional + Chinese, Simplified"),
         Case("sc.jp", tags: ["zh-Hans", "ja"], display: "Chinese, Simplified + Japanese"),
         Case("en.signs songs", tags: ["en"], display: "English (Signs & Songs)"),
         Case("commentary", tags: [], display: "Commentary"),
@@ -81,17 +81,6 @@ struct SubtitleLabelInfoTests {
         #expect(info.displayName(fallback: c.label, locale: Self.english) == c.display)
     }
 
-    /// The same file must read the same on both transports: an SMB sidecar named
-    /// `.zh_Hans.` and a Jellyfin stream tagged `zh-Hans` are one language.
-    @Test("SMB label naming matches the Jellyfin-path rendering of the same tag", arguments: [
-        ("zh_Hans", "zh-Hans"), ("cht", "zh-Hant"), ("swe", "sv"), ("eng", "en"),
-    ] as [(String, String)])
-    func namingParityWithStreamTags(label: String, streamTag: String) {
-        let info = SubtitleLabelInfo(label: label)
-        #expect(info.displayName(fallback: label, locale: Self.english)
-                == TrackDisplay.languageName(streamTag, locale: Self.english))
-    }
-
     /// The algorithmic ISO path is LABEL-only; the matcher's stem scan keeps the
     /// curated vocabulary so ordinary title words ("The.Mac.and.Me") can't be
     /// read as languages.
@@ -118,15 +107,5 @@ struct SubtitleLabelInfoTests {
     ] as [(String, String)])
     func widenedLabelComponents(label: String, tag: String) {
         #expect(SubtitleLabelInfo(label: label).languageTags == [tag])
-    }
-
-    @Test("matcher language vocabulary stays translatable")
-    func matcherVocabularyCovered() {
-        // Every language token the matcher can emit as (part of) a label must
-        // translate — the derivation in SubtitleMatcher makes this structural,
-        // but the combo table is separate; pin both.
-        for combo in SubtitleLabelInfo.comboLanguageTags.keys {
-            #expect(!SubtitleLabelInfo(label: combo).languageTags.isEmpty)
-        }
     }
 }

@@ -5,11 +5,9 @@ import ParallaxCore
 public actor LibraryRepository {
     public static let pageSize: Int = 50
 
-    private let session: Session
     private let client: JellyfinLibraryClient
 
-    public init(session: Session, client: JellyfinLibraryClient) {
-        self.session = session
+    public init(client: JellyfinLibraryClient) {
         self.client = client
     }
 

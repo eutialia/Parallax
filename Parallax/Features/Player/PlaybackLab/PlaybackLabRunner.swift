@@ -121,15 +121,14 @@ final class PlaybackLabRunner {
         return SMBServerRef(id: id, data: data)
     }
 
-    /// Lists the lab folder through the real SMB listing path and maps the
-    /// named file exactly like a browse-wall row would, so the ItemID/URL the
-    /// resolver sees is indistinguishable from a user tap.
+    /// Lists the lab folder through the browse wall's own listing call, so the
+    /// ItemID/URL the resolver sees is indistinguishable from a user tap.
     private func resolveItem(ref: SMBServerRef) async throws -> Item {
         let lister = try await deps.makeSMBLister(ref)
         let source = SMBFileSource(lister: lister, host: ref.data.host, share: scenario.server.share, root: "")
-        let entries: [SMBDirectoryEntry]
+        let listing: SMBBrowseListing
         do {
-            entries = try await source.mediaFiles(in: scenario.path)
+            listing = try await source.browse(in: scenario.path)
         } catch {
             // Record the raw underlying error before mapping — the domain#code
             // is the ground truth the mapped taxonomy compresses away.
@@ -139,10 +138,12 @@ final class PlaybackLabRunner {
             ])
             throw SMBFileSource.mapListError(error, share: scenario.server.share, path: scenario.path)
         }
-        guard let entry = entries.first(where: { $0.name == scenario.file }) else {
+        let path = scenario.path.isEmpty ? scenario.file : "\(scenario.path)/\(scenario.file)"
+        let id = SMBFileSource.itemID(share: scenario.server.share, path: path)
+        guard let item = listing.media.first(where: { $0.id == id }) else {
             throw LabError.fileNotFound(scenario.file)
         }
-        return SMBFileSource.item(from: entry, share: scenario.server.share, in: scenario.path)
+        return item
     }
 
     private func waitForViewModel(timeout: Duration = .seconds(15)) async throws {

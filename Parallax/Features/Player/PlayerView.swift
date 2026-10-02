@@ -313,10 +313,7 @@ struct PlayerView: View {
             rememberTrackSelection: { await info.rememberTrackSelection($0) },
             fetchSegments: { (try? await repo.mediaSegments(for: $0)) ?? [] },
             fetchAdjacent: { (try? await repo.adjacentEpisodes(seriesID: $0, episodeID: $1)) ?? .none },
-            // Copy-vs-reencode probe: a thrown transport error and "no session yet"
-            // both collapse to nil (the VM's probe retries, then gives up) — the seek
-            // strategy stays conservative on nil regardless.
-            fetchDelivery: { (try? await info.transcodingDelivery(playSessionID: $0)) ?? nil },
+            fetchDelivery: { await info.transcodingDelivery(playSessionID: $0) },
             subtitleStyle: subtitleStyleProvider,
             playerSurface: playerSurfaceProvider,
             // Poster bytes for the scrub bar's accent hue. Through the session's own image

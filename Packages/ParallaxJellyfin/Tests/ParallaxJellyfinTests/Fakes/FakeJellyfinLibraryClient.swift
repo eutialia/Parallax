@@ -48,8 +48,6 @@ final class FakeJellyfinLibraryClient: JellyfinLibraryClient, @unchecked Sendabl
     private(set) var itemsByIDsCalls: [[String]] = []
     private(set) var seasonsCalls: [String] = []
     private(set) var episodesCalls: [String] = []
-    private(set) var continueWatchingCallCount = 0
-    private(set) var nextUpCallCount = 0
     private(set) var recentlyAddedCalls: [(limit: Int, types: [BaseItemKind])] = []
     private(set) var searchCalls: [(query: String, scope: SearchScope)] = []
     private(set) var setFavoriteCalls: [(itemID: String, isFavorite: Bool)] = []
@@ -104,17 +102,11 @@ final class FakeJellyfinLibraryClient: JellyfinLibraryClient, @unchecked Sendabl
     }
 
     func getContinueWatching() async throws -> [BaseItemDto] {
-        try lock.withLock {
-            continueWatchingCallCount += 1
-            return try continueWatchingResult.get()
-        }
+        try lock.withLock { try continueWatchingResult.get() }
     }
 
     func getNextUp() async throws -> [BaseItemDto] {
-        try lock.withLock {
-            nextUpCallCount += 1
-            return try nextUpResult.get()
-        }
+        try lock.withLock { try nextUpResult.get() }
     }
 
     func getRecentlyAdded(limit: Int, includeItemTypes: [BaseItemKind]) async throws -> [BaseItemDto] {

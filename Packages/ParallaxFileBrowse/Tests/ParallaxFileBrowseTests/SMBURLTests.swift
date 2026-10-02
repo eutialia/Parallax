@@ -33,6 +33,8 @@ struct SMBURLTests {
         #expect(parsed.host == testCase.host)
         #expect(parsed.share == testCase.share)
         #expect(parsed.path == testCase.path)
+        #expect(url.fragment == nil)
+        #expect(url.query == nil)
     }
 
     @Test("make strips leading and trailing path separators")

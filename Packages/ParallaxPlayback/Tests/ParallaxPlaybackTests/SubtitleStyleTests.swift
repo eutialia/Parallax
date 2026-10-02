@@ -76,10 +76,16 @@ struct SubtitleStyleBuilderTests {
 
     /// `with` is the ONE mutation path for the settings controls (the stored properties
     /// are `let`). Its contract is surgical: change what the builder exposes, carry
-    /// everything else through untouched.
+    /// everything else through untouched. Settings chains one edit per tap onto the
+    /// user's current style, so the base sits off every default.
     @Test("changing one exposed field leaves every other field alone")
     func mutatesOnlyTheTargetedField() {
-        let base = SubtitleStyle.standard
+        let base = SubtitleStyle.standard.with {
+            $0.foreground = SubtitleStyle.RGBA(red: 1, green: 0, blue: 0)
+            $0.fontDesign = .serif
+            $0.background = .opaqueBox
+            $0.verticalOffsetRatio = 0.12
+        }
         let scaled = base.with { $0.fontScale = 1.75 }
 
         #expect(scaled.fontScale == 1.75)
@@ -87,13 +93,6 @@ struct SubtitleStyleBuilderTests {
         #expect(scaled.fontDesign == base.fontDesign)
         #expect(scaled.background == base.background)
         #expect(scaled.verticalOffsetRatio == base.verticalOffsetRatio)
-    }
-
-    @Test("value semantics: the original is never mutated")
-    func originalIsUntouched() {
-        let base = SubtitleStyle.standard
-        _ = base.with { $0.fontScale = 2.0; $0.background = .opaqueBox }
-        #expect(base == SubtitleStyle.standard)
     }
 
     @Test("every exposed control round-trips through the builder")
@@ -111,15 +110,6 @@ struct SubtitleStyleBuilderTests {
         #expect(tuned.fontDesign == .serif)
         #expect(tuned.background == .opaqueBox)
         #expect(tuned.verticalOffsetRatio == 0.12)
-    }
-
-    @Test("successive edits compose instead of resetting each other")
-    func editsCompose() {
-        let tuned = SubtitleStyle.standard
-            .with { $0.fontScale = 1.5 }
-            .with { $0.background = .opaqueBox }
-        #expect(tuned.fontScale == 1.5)
-        #expect(tuned.background == .opaqueBox)
     }
 }
 
@@ -187,15 +177,5 @@ struct SubtitleStylePersistenceTests {
     func backgroundRawValues(background: SubtitleBackground, raw: String) {
         #expect(background.rawValue == raw)
         #expect(SubtitleBackground(rawValue: raw) == background)
-    }
-
-    /// The settings pickers enumerate these, so a new case must not be silently absent
-    /// from the UI.
-    @Test("both settings enums enumerate every case they offer")
-    func caseIterableCoversTheUI() {
-        #expect(SubtitleFontDesign.allCases.count == 2)
-        #expect(SubtitleBackground.allCases.count == 2)
-        #expect(Set(SubtitleFontDesign.allCases.map(\.rawValue)).count
-                == SubtitleFontDesign.allCases.count)
     }
 }

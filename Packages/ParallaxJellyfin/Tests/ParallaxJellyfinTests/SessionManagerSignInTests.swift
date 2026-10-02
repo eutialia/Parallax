@@ -119,15 +119,34 @@ struct SessionManagerSignInTests {
 
     /// The server id is the store's primary key, so a response carrying neither an auth serverID
     /// nor a public-info id can't be persisted — better a named failure than a row keyed on
-    /// something unstable.
-    @Test("A response with no server id anywhere refuses to build a session")
-    func signInWithoutServerID() async throws {
+    /// something unstable. A response with no user has nobody to sign in as.
+    @Test("An incomplete authentication response refuses to build a session", arguments: IncompleteResponse.allCases)
+    func signInWithIncompleteResponse(response: IncompleteResponse) async throws {
         let harness = SessionManagerHarness()
-        harness.client.passwordSignInResult = .success(SessionManagerHarness.authResult(serverID: nil))
-        harness.client.publicSystemInfoResult = .success(SessionManagerHarness.publicInfo(id: nil))
+        harness.client.passwordSignInResult = .success(response.authResult)
+        harness.client.publicSystemInfoResult = .success(response.publicInfo)
 
         await #expect(throws: AppError.self) {
             _ = try await harness.manager.signIn(server: harness.serverURL, username: "a", password: "b")
+        }
+        #expect(await harness.store.sessions.isEmpty)
+    }
+
+    enum IncompleteResponse: CaseIterable, Sendable {
+        case noServerID, noUser
+
+        var authResult: AuthenticationResult {
+            switch self {
+            case .noServerID: SessionManagerHarness.authResult(serverID: nil)
+            case .noUser: SessionManagerHarness.authResult(userID: nil, userName: nil)
+            }
+        }
+
+        var publicInfo: PublicSystemInfo {
+            switch self {
+            case .noServerID: SessionManagerHarness.publicInfo(id: nil)
+            case .noUser: SessionManagerHarness.publicInfo()
+            }
         }
     }
 
@@ -155,40 +174,16 @@ struct SessionManagerSignInTests {
         #expect(session.serverName == harness.serverURL.host)
     }
 
-    @Test("A response missing the user refuses to build a session")
-    func signInWithoutUser() async throws {
-        let harness = SessionManagerHarness()
-        harness.client.passwordSignInResult = .success(
-            SessionManagerHarness.authResult(userID: nil, userName: nil)
-        )
-        harness.client.publicSystemInfoResult = .success(SessionManagerHarness.publicInfo())
-
-        await #expect(throws: AppError.self) {
-            _ = try await harness.manager.signIn(server: harness.serverURL, username: "a", password: "b")
-        }
-    }
-
-    @Test("Sign-out removes the session from the store")
-    func signOut() async throws {
-        let harness = SessionManagerHarness()
-        harness.client.passwordSignInResult = .success(SessionManagerHarness.authResult())
-        harness.client.publicSystemInfoResult = .success(SessionManagerHarness.publicInfo())
-
-        let session = try await harness.manager.signIn(server: harness.serverURL, username: "alice", password: "hunter2")
-        try await harness.manager.signOut(session)
-
-        #expect(await harness.store.sessions.isEmpty)
-        #expect(harness.client.signOutCalls == ["tok-from-server"])
-    }
-
     /// The LOCAL revoke is what matters: an offline device must still be able to sign out, and the
     /// token slot must go with it — leaving it behind would let the next launch rebuild the session.
-    @Test("Sign-out still removes locally, and deletes the token, if the server revoke fails")
-    func signOutLocalEvenIfRemoteFails() async throws {
+    @Test("Sign-out removes locally, and deletes the token, whether or not the server revoke succeeds", arguments: [false, true])
+    func signOutRemovesLocally(remoteFails: Bool) async throws {
         let harness = SessionManagerHarness()
         harness.client.passwordSignInResult = .success(SessionManagerHarness.authResult())
         harness.client.publicSystemInfoResult = .success(SessionManagerHarness.publicInfo())
-        harness.client.signOutResult = .failure(URLError(.notConnectedToInternet))
+        if remoteFails {
+            harness.client.signOutResult = .failure(URLError(.notConnectedToInternet))
+        }
 
         let session = try await harness.manager.signIn(server: harness.serverURL, username: "alice", password: "hunter2")
         try await harness.manager.signOut(session)

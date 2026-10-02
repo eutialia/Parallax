@@ -25,7 +25,7 @@ struct SeriesDetailViewModelLoadOrderTests {
     @Test("at the first .loaded frame the hero has no play target yet")
     func loadedLandsBeforeEpisodes() async {
         let client = GatedSeriesLibraryClient()
-        let repo = LibraryRepository(session: makeSession("test-server"), client: client)
+        let repo = LibraryRepository(client: client)
         let vm = SeriesDetailViewModel(
             repo: repo,
             itemID: ItemID(rawValue: "ser1"),

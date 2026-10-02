@@ -188,12 +188,7 @@ public enum SubtitleFontBundle {
     /// `.userInitiated`, not `.utility`: the bootstrap takes the process-wide
     /// libass lock, which does not donate priority, so a background warm-up can
     /// hold up the first real pick.
-    public static func warmUp() { _ = warmUpTask() }
-
-    /// `warmUp`, with a handle to await. Tests need the completion; production
-    /// callers deliberately do not.
-    @discardableResult
-    static func warmUpTask() -> Task<Void, Never> {
+    public static func warmUp() {
         Task.detached(priority: .userInitiated) {
             _ = LibassLibrary.shared.perform(log: nil) { _ in }
             _ = facesByFamily

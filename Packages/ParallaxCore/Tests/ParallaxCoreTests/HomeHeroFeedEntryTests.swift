@@ -52,7 +52,8 @@ struct HomeHeroFeedEntryTests {
     @Test("a part-watched movie resumes without a label")
     func resumeMovie() {
         let target = Item.movie(LibraryFixtures.movie(userData: inProgress))
-        #expect(HomeHeroFeedEntry.playButtonTitle(for: target) == "Resume")
+        let entry = entry(presentation: .series(LibraryFixtures.series()), playTarget: target)
+        #expect(entry.playButtonTitle == "Resume")
     }
 
     /// A series' own user data can carry position ticks, but a folder isn't resumable — the
@@ -69,14 +70,6 @@ struct HomeHeroFeedEntryTests {
         let stale = LibraryFixtures.userData(played: true, positionTicks: LibraryFixtures.ticks(minutes: 5))
         let target = Item.episode(LibraryFixtures.episode(userData: stale))
         #expect(HomeHeroFeedEntry.playButtonTitle(for: target) == "Play")
-    }
-
-    @Test("the instance property agrees with the static derivation")
-    func instancePropertyMatchesStatic() {
-        let target = Item.movie(LibraryFixtures.movie(userData: inProgress))
-        let entry = entry(presentation: .series(LibraryFixtures.series()), playTarget: target)
-        #expect(entry.playButtonTitle == HomeHeroFeedEntry.playButtonTitle(for: target))
-        #expect(entry.playButtonTitle == "Resume")
     }
 }
 

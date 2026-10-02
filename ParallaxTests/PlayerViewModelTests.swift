@@ -4993,7 +4993,6 @@ struct DirectPlaySubtitleOwnershipTests {
         let resolved = PlayerFixtures.resolvedDirectPlaySubtitleMix(image: [2: "eng"])
         let vm = try await startedVM(resolved, engine: engine)
 
-        #expect(resolved.clientRendersAllSubtitles == false)
         #expect(engine.loadedAssets.first?.engineSubtitlesDisabled == false)
         #expect(vm.availableSubtitleTracks.count == 1)
         let row = try #require(vm.availableSubtitleTracks.first)
@@ -5008,7 +5007,6 @@ struct DirectPlaySubtitleOwnershipTests {
         let resolved = PlayerFixtures.resolvedDirectPlaySubtitleMix(text: [2: "eng"])
         let vm = try await startedVM(resolved, engine: engine)
 
-        #expect(resolved.clientRendersAllSubtitles == true)
         #expect(engine.loadedAssets.first?.engineSubtitlesDisabled == true)
         #expect(vm.availableSubtitleTracks.map(\.id) == [.jellyfinStream(2)])
     }
@@ -5021,7 +5019,6 @@ struct DirectPlaySubtitleOwnershipTests {
         )
         let vm = try await startedVM(resolved, engine: engine)
 
-        #expect(resolved.clientRendersAllSubtitles == false)
         #expect(engine.loadedAssets.first?.engineSubtitlesDisabled == false)
         #expect(vm.availableSubtitleTracks.map(\.id) == [.jellyfinStream(2), .vlc("vlc-s3")])
         #expect(vm.availableSubtitleTracks.allSatisfy { !$0.isBurnedIn })

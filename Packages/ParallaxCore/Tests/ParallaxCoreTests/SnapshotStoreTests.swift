@@ -170,4 +170,63 @@ struct SnapshotStoreTests {
             #expect(await store.homeFeed(forServerID: "../../etc") == homeFeed(title: "dots"))
         }
     }
+
+    /// Snapshots outlive the build that wrote them, and a synthesized round trip passes straight
+    /// through a renamed field. This is today's on-disk encoding typed out by hand, every field set:
+    /// a renamed, retyped or newly required field fails here instead of silently discarding every
+    /// cached feed on update. Bumping `schemaVersion` is the deliberate way past it.
+    @Test("today's on-disk encoding still decodes, field for field")
+    func frozenEncoding() async throws {
+        try await withStore { store, container in
+            await store.setHomeFeed(homeFeed(), forServerID: "server-a")
+            await store.setLibraries([LibraryFixtures.collection()], forServerID: "server-a")
+            try Self.frozenHomeFeed.write(to: snapshotFile(.homeFeed, in: container))
+            try Self.frozenLibraries.write(to: snapshotFile(.libraries, in: container))
+
+            let feed = try #require(await store.homeFeed(forServerID: "server-a"))
+            let libraries = try #require(await store.libraries(forServerID: "server-a"))
+            #expect(try jsonObject(JSONEncoder().encode(feed)) == jsonObject(Self.frozenHomeFeed))
+            #expect(try jsonObject(JSONEncoder().encode(libraries)) == jsonObject(Self.frozenLibraries))
+        }
+    }
+
+    private func snapshotFile(_ kind: SnapshotKind, in container: URL) throws -> URL {
+        try #require(
+            FileManager.default
+                .enumerator(at: container, includingPropertiesForKeys: nil)?
+                .compactMap { $0 as? URL }
+                .first { $0.pathExtension == "json" && $0.deletingLastPathComponent().lastPathComponent == kind.rawValue }
+        )
+    }
+
+    private func jsonObject(_ data: Data) throws -> NSObject {
+        try #require(JSONSerialization.jsonObject(with: data) as? NSObject)
+    }
+
+    private static let frozenUserData = """
+        {"played":false,"playbackPositionTicks":6000000000,"playCount":1,"isFavorite":true,"lastPlayedDate":800000000}
+        """
+
+    private static let frozenHomeFeed = Data("""
+        {"hero":[{"eyebrow":"NEW EPISODE AVAILABLE",
+        "presentation":{"series":{"_0":{"id":"s1","title":"Show","overview":"o","year":2024,"status":"Continuing",
+        "communityRating":8.5,"officialRating":"TV-14","genres":["Drama"],"primaryTag":"sp","backdropTags":["sb"],
+        "logoTag":"sl","thumbTag":"st","bannerTag":"sn","dateAdded":790000000,"userData":\(frozenUserData),
+        "blurHashes":["sp","LEHV6n"]}}},
+        "playTarget":{"episode":{"_0":{"id":"e1","seriesID":"s1","seasonID":"sea1","name":"Pilot","seriesName":"Show",
+        "indexNumber":1,"parentIndexNumber":1,"overview":"o","runtime":[0,3000000000000000000],"primaryTag":"ep",
+        "seasonImageRef":{"itemID":"sea1","kind":{"primary":{}},"tag":"sea-p","blurHash":"LKO2"},
+        "seriesImageRef":{"itemID":"s1","kind":{"backdrop":{"index":0}},"tag":"sb","blurHash":"LKO3"},
+        "dateAdded":795000000,"userData":\(frozenUserData),"blurHashes":["ep","LEHV6o"]}}}}],
+        "continueWatching":[{"movie":{"_0":{"id":"m1","title":"Film","overview":"o","year":2023,
+        "runtime":[0,3000000000000000000],"communityRating":7.5,"officialRating":"PG-13","genres":["Action"],
+        "primaryTag":"mp","backdropTags":["mb"],"logoTag":"ml","thumbTag":"mt","dateAdded":780000000,
+        "userData":\(frozenUserData),"width":3840,"height":2160,"videoRangeType":"DOVI","hasSubtitles":true,
+        "size":4000000000,"blurHashes":["mp","LEHV6p"]}}}],
+        "nextUp":[]}
+        """.utf8)
+
+    private static let frozenLibraries = Data("""
+        [{"id":"c1","name":"Shows","collectionType":{"other":{"_0":"homevideos"}},"primaryTag":"cp","blurHashes":["cp","LEHV6q"]}]
+        """.utf8)
 }

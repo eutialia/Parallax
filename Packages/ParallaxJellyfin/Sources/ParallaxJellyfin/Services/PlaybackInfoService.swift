@@ -374,14 +374,14 @@ public actor PlaybackInfoService {
     // MARK: - Delivery probe (copy vs re-encode)
 
     /// One-shot probe of the live session's copy-vs-reencode delivery — see
-    /// `JellyfinPlaybackClient.transcodingDelivery`. Unlike the reports this
-    /// THROWS (mapped to AppError): the caller distinguishes "no session yet"
-    /// (nil, ask again later) from a transport failure.
-    public func transcodingDelivery(playSessionID: String) async throws -> TranscodeDelivery? {
+    /// `JellyfinPlaybackClient.transcodingDelivery`. Nil covers both "no transcode job yet" and a
+    /// failed probe: the caller retries either way and keeps its seek strategy conservative.
+    public func transcodingDelivery(playSessionID: String) async -> TranscodeDelivery? {
         do {
             return try await client.transcodingDelivery(playSessionID: playSessionID)
         } catch {
-            throw ErrorMapping.appError(from: error)
+            Log.playback.error("transcodingDelivery failed: \(error.localizedDescription)")
+            return nil
         }
     }
 

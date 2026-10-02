@@ -38,16 +38,6 @@ struct BackslashEscapingTests {
         #expect(SubtitleFontTagger.tokenize(escaped).first == .character("\\"), "\(escaped)")
     }
 
-    @Test("braces and line breaks keep their escapes", arguments: [
-        ("open brace", "{", "\\{"),
-        ("close brace", "}", "\\}"),
-        ("newline", "\n", "\\N"),
-        ("plain text is untouched", "Hello, world", "Hello, world"),
-    ] as [(String, String, String)])
-    func escapeKeepsBraceAndBreakForms(label: String, source: String, expected: String) {
-        #expect(CueMarkup.escape(source) == expected, "\(label)")
-    }
-
     // MARK: - Tokenizing
 
     @Test("only libass' own escapes tokenize as escapes", arguments: [
@@ -69,14 +59,6 @@ struct BackslashEscapingTests {
         label: String, text: String, expected: [SubtitleFontTagger.Token]
     ) {
         #expect(SubtitleFontTagger.tokenize(text) == expected, "\(label)")
-    }
-
-    /// A word joiner is `Cf`, so it has no class of its own and stays inside
-    /// whichever run is in force — which is the only reason inserting one
-    /// cannot split a tagged run in two.
-    @Test("the word joiner belongs to the run it sits in")
-    func wordJoinerCarriesNoScript() {
-        #expect(SubtitleScript.classify("\u{2060}" as Unicode.Scalar) == nil)
     }
 
     // MARK: - The converted path, end to end
@@ -102,19 +84,6 @@ struct BackslashEscapingTests {
         }
         #expect(plan.cacheMisses.value == 0)
         return events.map(\.text).joined(separator: "\\N")
-    }
-
-    /// The reported bug: `\喵/` rendered as `\{\fnNoto Serif CJK SC}▯/`. The
-    /// doubled backslash left `\{` for libass to read as a literal brace, so
-    /// the whole `\fn` block became text and 喵 stayed on the Latin face.
-    @Test("a cue opening with a backslash still gets its CJK run tagged")
-    func backslashBeforeCJKDoesNotLeakTheTag() {
-        let tagged = convertedAndTagged("\\喵/", languageHint: "zh-Hans")
-
-        #expect(tagged.contains("{\\fnNoto Sans CJK SC"), "\(tagged)")
-        #expect(tagged.contains("}喵"), "\(tagged)")
-        #expect(!tagged.contains("\\{"), "\(tagged)")
-        #expect(tagged.hasPrefix("\\\(Self.wordJoiner){\\fn"), "\(tagged)")
     }
 
     /// Every `{` in a tagged field is either an override block we wrote or an

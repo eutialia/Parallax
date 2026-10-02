@@ -164,14 +164,15 @@ struct VLCThumbnailerHappyPathTests {
 
     /// Same 320-tall tier pin as `AVThumbnailerTests`, on the live VLC path. `tiny.mp4` is
     /// 160×90 so it cannot see a missing height bound; a 640×480 synth source would come
-    /// back at native size if the default `height: 320` were dropped.
+    /// back at native size if the default `height: 320` were dropped; the call leaves `height`
+    /// unset so it is the default under test.
     @Test("a source taller than 320 scales to height == 320")
     func oversizedSourceScalesToTierHeight() async throws {
         let source = try await OversizedThumbnailSource.make()
         defer { source.cleanup() }
 
         let frame = try await VLCThumbnailer().thumbnailData(
-            for: source.url, height: 320, timeout: .seconds(20))
+            for: source.url, timeout: .seconds(20))
         #expect(frame.data.isEmpty == false)
 
         let image = try #require(

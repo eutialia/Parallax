@@ -29,6 +29,7 @@ struct ArtworkSidecarMatcherTests {
         .init(name: "case-insensitive stem", video: "Film.MKV", images: ["film.JPG"], expected: "film.JPG"),
         .init(name: "heic accepted", video: "Film.mkv", images: ["Film.heic"], expected: "Film.heic"),
         .init(name: "webp accepted", video: "Film.mkv", images: ["Film.webp"], expected: "Film.webp"),
+        .init(name: "jpeg accepted", video: "Film.mkv", images: ["Film.jpeg"], expected: "Film.jpeg"),
 
         // ---- Strictness: no fuzz, no folder art, no cross-attach ----
         .init(name: "folder.jpg never attaches", video: "Film.mkv",
@@ -57,16 +58,5 @@ struct ArtworkSidecarMatcherTests {
     @Test("sidecar match matrix", arguments: cases)
     func matches(_ c: Case) {
         #expect(ArtworkSidecarMatcher.match(videoName: c.video, in: .init(imageNames: c.images)) == c.expected)
-    }
-
-    @Test("isImageFile accepts the allowlist, rejects video/subtitle/text")
-    func isImageFileAllowlist() {
-        for ext in ArtworkSidecarMatcher.imageExtensions {
-            #expect(ArtworkSidecarMatcher.isImageFile(name: "x.\(ext)"))
-            #expect(ArtworkSidecarMatcher.isImageFile(name: "x.\(ext.uppercased())"))
-        }
-        for ext in ["mkv", "srt", "txt", "nfo", ""] {
-            #expect(!ArtworkSidecarMatcher.isImageFile(name: "x.\(ext)"))
-        }
     }
 }

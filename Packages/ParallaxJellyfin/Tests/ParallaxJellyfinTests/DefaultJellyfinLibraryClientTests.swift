@@ -12,14 +12,11 @@ import ParallaxCore
 @Suite("DefaultJellyfinLibraryClient — wire contract")
 struct DefaultJellyfinLibraryClientTests {
 
-    private func makeClient(
-        stub: StubHTTPTransport,
-        onTokenRejected: (@Sendable (ServerID) -> Void)? = nil
-    ) -> DefaultJellyfinLibraryClient {
+    private func makeClient(stub: StubHTTPTransport) -> DefaultJellyfinLibraryClient {
         DefaultJellyfinLibraryClient(
             session: JellyfinFixtures.session(id: "s1", token: "tok-1", serverURL: stub.baseURL, userID: "u1"),
             identity: JellyfinFixtures.identity(),
-            onTokenRejected: onTokenRejected,
+            onTokenRejected: { _ in },
             sessionConfiguration: stub.configuration
         )
     }
@@ -492,46 +489,4 @@ struct DefaultJellyfinLibraryClientTests {
         #expect(request.query("isFavorite") == "true")
         #expect(request.queryNames.contains("parentId") == false)
     }
-
-    // MARK: - Token rejection wiring
-
-    /// The validator is installed on this client, so a 401 anywhere in browse traffic is what
-    /// turns a revoked token into a signed-out server. Without the delegate hookup the same 401
-    /// would surface as a generic server error and the row would keep looking connected.
-    @Test("A 401 from any browse call reports the rejected token and names the expiry")
-    func unauthorizedReportsTokenRejection() async throws {
-        let stub = StubHTTPTransport()
-        stub.always(.json("{}", status: 401))
-        let reported = ReportedServerIDs()
-        let client = makeClient(stub: stub, onTokenRejected: { reported.record($0) })
-
-        do {
-            _ = try await client.getCollections()
-            Issue.record("a 401 must not resolve successfully")
-        } catch let error as AppError {
-            guard case .auth(.tokenInvalidated) = error else {
-                Issue.record("expected .auth(.tokenInvalidated), got \(error)")
-                return
-            }
-        }
-        #expect(reported.ids == [ServerID(rawValue: "s1")])
-    }
-
-    @Test("Without a rejection sink a 401 is still an error, and nothing is reported")
-    func unauthorizedWithoutSink() async throws {
-        let stub = StubHTTPTransport()
-        stub.always(.json("{}", status: 401))
-        // No delegate installed → the SDK's own 2xx check throws its APIError instead.
-        await #expect(throws: (any Error).self) {
-            _ = try await makeClient(stub: stub).getCollections()
-        }
-    }
-}
-
-/// Collects ids across the validator's `@Sendable` callback boundary.
-final class ReportedServerIDs: @unchecked Sendable {
-    private let lock = NSLock()
-    private var storage: [ServerID] = []
-    var ids: [ServerID] { lock.withLock { storage } }
-    func record(_ id: ServerID) { lock.withLock { storage.append(id) } }
 }

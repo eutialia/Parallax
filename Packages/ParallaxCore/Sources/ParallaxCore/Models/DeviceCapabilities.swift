@@ -1,6 +1,6 @@
 import Foundation
 
-public struct DeviceCapabilities: Sendable, Hashable, Codable {
+public struct DeviceCapabilities: Sendable, Hashable {
     // MARK: - Hardware / AVKit-native tier
     public let supportedVideoCodecs: [VideoCodec]
     public let supportedAudioCodecs: [AudioCodec]
@@ -47,21 +47,4 @@ public struct DeviceCapabilities: Sendable, Hashable, Codable {
         self.softwareAudioCodecs = softwareAudioCodecs
         self.softwareContainers = softwareContainers
     }
-
-    // MARK: - Test stub
-    /// A fully-populated stub for use in tests. Software fields reflect the
-    /// `PlaybackCapabilityMatrix` software sets (VP9/AV1, DTS/FLAC/Opus,
-    /// MKV/WebM/TS/FLAC/MP3) without importing `ParallaxPlayback`.
-    public static let stub = DeviceCapabilities(
-        supportedVideoCodecs: [.h264, .hevc],
-        supportedAudioCodecs: [.aac, .ac3, .eac3, .mp3],
-        supportedContainers: [.mp4, .mov, .hls],
-        hdr: .hdr10,
-        maxResolution: .uhd4K,
-        maxBitrate: .megabits(120),
-        preferredSubtitleFormats: [.vtt, .srt],
-        softwareVideoCodecs: [.vp9, .av1],
-        softwareAudioCodecs: [.dts, .flac, .opus],
-        softwareContainers: [.mkv, .webm, .ts, .flac, .mp3]
-    )
 }

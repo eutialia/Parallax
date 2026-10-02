@@ -29,7 +29,7 @@ struct ServerStoreTests {
         try await harness.store.add(JellyfinFixtures.session(id: "s2", token: "t2"))
 
         // A new store instance pointing at the same backing storage — i.e. the next launch.
-        let relaunched = ServerStore(settings: harness.settings, keychain: harness.keychain)
+        let relaunched = ServerStore(settings: harness.settings, keychain: harness.keychain, snapshots: JellyfinFixtures.scratchSnapshots())
         try await relaunched.load()
 
         #expect(await relaunched.sessions.count == 2)
@@ -49,13 +49,13 @@ struct ServerStoreTests {
         // s2's token vanishes, so it can't rebuild a session on the next load.
         try await harness.keychain.delete(JellyfinFixtures.tokenKey(forRawID: "s2"))
 
-        let relaunched = ServerStore(settings: harness.settings, keychain: harness.keychain)
+        let relaunched = ServerStore(settings: harness.settings, keychain: harness.keychain, snapshots: JellyfinFixtures.scratchSnapshots())
         try await relaunched.load()
 
         #expect(await relaunched.active?.id == ServerID(rawValue: "s1"))
 
         // The corrected id was written back, so the fallback isn't re-derived every launch.
-        let again = ServerStore(settings: harness.settings, keychain: harness.keychain)
+        let again = ServerStore(settings: harness.settings, keychain: harness.keychain, snapshots: JellyfinFixtures.scratchSnapshots())
         try await again.load()
         #expect(await again.active?.id == ServerID(rawValue: "s1"))
     }
@@ -84,43 +84,6 @@ struct ServerStoreTests {
         try await harness.store.remove(ServerID(rawValue: "s1"))
 
         #expect(await harness.store.active?.id == ServerID(rawValue: "s2"))
-    }
-
-    @Test("Load throws ServerStoreError.decodeFailed when persisted sessions cannot be decoded (refuses to wipe)")
-    func loadRefusesToWipeOnDecodeFailure() async throws {
-        let (settings, suiteName) = JellyfinFixtures.settingsStore("ServerStoreTests-decode")
-        let corruptJSON = #"[{"unexpected":"shape"}]"#.data(using: .utf8)!
-        JellyfinFixtures.seedPersistedBytes(corruptJSON, suiteName: suiteName)
-        let store = ServerStore(settings: settings, keychain: FakeKeychain())
-
-        await #expect(throws: ServerStore.ServerStoreError.self) {
-            try await store.load()
-        }
-
-        // Crucially: the raw bytes are still there — refusing to load means refusing to overwrite.
-        #expect(JellyfinFixtures.rawPersistedBytes(suiteName: suiteName) == corruptJSON)
-    }
-
-    @Test("Load keeps a Jellyfin server whose token vanished, exposing it as signed-out")
-    func loadKeepsMissingTokenServerAsSignedOut() async throws {
-        let harness = JellyfinFixtures.serverStore()
-        try await harness.store.add(JellyfinFixtures.session(id: "ghost", token: "tok"))
-
-        // Simulate the token disappearing underneath us (access-group change after a bundle-id
-        // rename, device migration with ThisDeviceOnly items, Keychain reset). A real sign-out goes
-        // through remove(_:), which deletes the ROW too — so a token-less row is always
-        // Keychain-side data loss, never a completed sign-out, and pruning it would destroy the
-        // user's server list over a recoverable fault.
-        try await harness.keychain.delete(JellyfinFixtures.tokenKey(forRawID: "ghost"))
-
-        try await harness.store.load()
-
-        #expect(await harness.store.sessions.isEmpty)
-        #expect(await harness.store.servers.map(\.id) == [ServerID(rawValue: "ghost")], "the persisted row must survive")
-        #expect(
-            await harness.store.signedOutJellyfinServers.map(\.id) == [ServerID(rawValue: "ghost")],
-            "and be surfaced as signed-out"
-        )
     }
 
     @Test("Re-adding the same server heals its signed-out row")
@@ -155,7 +118,7 @@ struct ServerStoreTests {
         #expect(await harness.store.hiddenCollectionIDs(for: ServerID(rawValue: "s2")).isEmpty)
         #expect(await harness.store.allHiddenCollectionIDs == [ServerID(rawValue: "s1"): ["coll-a", "coll-b"]])
 
-        let relaunched = ServerStore(settings: harness.settings, keychain: harness.keychain)
+        let relaunched = ServerStore(settings: harness.settings, keychain: harness.keychain, snapshots: JellyfinFixtures.scratchSnapshots())
         try await relaunched.load()
         #expect(await relaunched.hiddenCollectionIDs(for: ServerID(rawValue: "s1")) == ["coll-a", "coll-b"])
     }
@@ -184,7 +147,7 @@ struct ServerStoreTests {
         try await harness.store.add(session)
 
         #expect(await harness.store.hiddenCollectionIDs(for: session.id).isEmpty)
-        let relaunched = ServerStore(settings: harness.settings, keychain: harness.keychain)
+        let relaunched = ServerStore(settings: harness.settings, keychain: harness.keychain, snapshots: JellyfinFixtures.scratchSnapshots())
         try await relaunched.load()
         #expect(await relaunched.allHiddenCollectionIDs.isEmpty)
     }

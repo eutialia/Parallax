@@ -54,6 +54,8 @@ struct OutlineRenderTests {
 
     // MARK: - Assertions
 
+    /// Above and below are compared exactly: the one property a drop shadow can
+    /// never have is that nothing is displaced.
     @Test("the ring is the same width on all four sides")
     func ringIsUniform() async throws {
         let pixels = try await renderStem()
@@ -63,6 +65,8 @@ struct OutlineRenderTests {
         #expect(widths.min() ?? 0 >= 4, "the ring is too thin to measure: \(measured)")
         #expect((widths.max() ?? 0) - (widths.min() ?? 0) <= 1,
                 "the ring is not uniform: \(measured.map { ($0.0, $0.1.count) })")
+        let width = Dictionary(uniqueKeysWithValues: measured.map { ($0.0, $0.1.count) })
+        #expect(width["above"] == width["below"], "the ring is offset: \(width)")
     }
 
     /// A ring ends where the stroke ends. Anything that takes more than the
@@ -97,21 +101,6 @@ struct OutlineRenderTests {
         #expect(pixels.partialFillPixels(from: stem.right, dx: 1, dy: 0) <= 2)
         #expect(pixels.partialFillPixels(from: stem.top, dx: 0, dy: -1) <= 2)
         #expect(pixels.partialFillPixels(from: stem.bottom, dx: 0, dy: 1) <= 2)
-    }
-
-    /// The one property a drop shadow can never have, and the reason the old look
-    /// is gone: nothing is displaced, so the band above the cap is the band below
-    /// the baseline.
-    @Test("nothing is offset: the band above the stem matches the band below")
-    func ringIsNotOffset() async throws {
-        let pixels = try await renderStem()
-        let stem = try #require(pixels.stem)
-
-        let above = pixels.outlineBand(from: stem.top, dx: 0, dy: -1)
-        let below = pixels.outlineBand(from: stem.bottom, dx: 0, dy: 1)
-        #expect(below.count >= 4, "no band to compare: below is \(below.count)px")
-        #expect(above.count == below.count,
-                "above reaches \(above.count)px, below \(below.count)px")
     }
 }
 

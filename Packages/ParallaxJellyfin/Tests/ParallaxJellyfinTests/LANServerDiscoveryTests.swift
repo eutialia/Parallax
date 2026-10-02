@@ -76,10 +76,9 @@ struct LANServerDiscoveryDriverTests {
         #expect(discovery.isDiscovering == false)
     }
 
-    /// One pass can carry several answers, and repeated ids across passes are the same server —
-    /// the seen-set is what keeps the picker from listing a server twice.
-    @Test("Duplicate ids collapse while distinct servers all survive, in arrival order")
-    func dedupesWithinAndAcrossPasses() async {
+    /// One pass can carry several answers, and a repeated id within it is the same server.
+    @Test("Duplicate ids within a pass collapse while distinct servers all survive, in arrival order")
+    func dedupesWithinAPass() async {
         let second = Data(#"{"Address":"http://192.168.1.11:8096","Id":"def","Name":"Attic"}"#.utf8)
         let (discovery, _) = discovery([[payload, second, payload]])
 
@@ -115,11 +114,12 @@ struct LANServerDiscoveryDriverTests {
     }
 
     /// A finished run leaves the object reusable, and a fresh run is ADDITIVE — a server found
-    /// earlier must not disappear from the list because the second pass didn't see it.
-    @Test("A run after one finishes is additive")
+    /// earlier must not disappear from the list because the second pass didn't see it, and one it
+    /// sees again is the same server, not a second row.
+    @Test("A run after one finishes is additive and dedupes against earlier runs")
     func laterRunIsAdditive() async {
         let second = Data(#"{"Address":"http://192.168.1.11:8096","Id":"def","Name":"Attic"}"#.utf8)
-        let (discovery, _) = discovery([[payload], [second]])
+        let (discovery, _) = discovery([[payload], [payload, second]])
 
         discovery.start(timeout: 0, retries: 0, retryInterval: .zero)
         await discovery.runningTask?.value

@@ -6,8 +6,8 @@ import ParallaxJellyfin
 struct MediaImage: View {
     /// What the image renders from. Jellyfin keeps its per-`Session` Nuke pipeline
     /// (which carries auth at the URLSession layer) — it does NOT route through
-    /// `ArtworkSource`. The neutral `artwork` case serves local/remote sources
-    /// (SMB thumbnails today, headered remote reserved) over the shared pipeline.
+    /// `ArtworkSource`. The neutral `artwork` case serves SMB's local thumbnails
+    /// over the shared pipeline.
     private enum Content {
         case jellyfin(ImageRef?, Session)
         case artwork(ArtworkSource)
@@ -57,7 +57,7 @@ struct MediaImage: View {
         self.style = style
     }
 
-    /// Source-neutral artwork: a local file thumbnail, a headered remote URL, or none.
+    /// Source-neutral artwork: a local file thumbnail, or none.
     /// Used by non-Jellyfin sources (SMB). `.none` shows the same gray placeholder as
     /// a missing Jellyfin poster.
     init(
@@ -176,8 +176,6 @@ struct MediaImage: View {
             EmptyView()
         case .local(let url):
             artworkImage(ImageRequest(url: url))
-        case .remote(let url, let headers):
-            artworkImage(remoteRequest(url: url, headers: headers))
         }
     }
 
@@ -204,15 +202,6 @@ struct MediaImage: View {
         case .logo: image.allowsHitTesting(false)
         case .fill, .boxed: image.frame(maxWidth: .infinity, maxHeight: .infinity).allowsHitTesting(false)
         }
-    }
-
-    private func remoteRequest(url: URL, headers: [String: String]?) -> ImageRequest {
-        guard let headers, !headers.isEmpty else { return ImageRequest(url: url) }
-        var request = URLRequest(url: url)
-        for (field, value) in headers {
-            request.setValue(value, forHTTPHeaderField: field)
-        }
-        return ImageRequest(urlRequest: request)
     }
 }
 

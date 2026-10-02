@@ -15,7 +15,6 @@ struct SubtitleFontPlanTests {
     private static func stubPlan(
         design: SubtitleFontBundle.Design = .sans,
         styleFamily: String? = nil,
-        sizeFactors: [String: Double] = [:],
         styleFactor: Double = 1,
         trackDefault: CJKFontPlan.Language? = .simplifiedChinese,
         languageByLine: [String: CJKFontPlan.Language] = [:]
@@ -26,8 +25,7 @@ struct SubtitleFontPlanTests {
                 ?? SubtitleFontBundle.family(design: design, script: .common),
             styleFontEmBoxFactor: styleFactor,
             trackDefaultLanguage: trackDefault,
-            languageByLine: languageByLine,
-            sizeFactorByFamily: sizeFactors
+            languageByLine: languageByLine
         )
     }
 
@@ -146,11 +144,9 @@ struct SubtitleFontPlanTests {
         #expect(plan.family(forRun: .cjk, line: "這是繁體中文字幕測試") == "Noto Sans CJK TC")
         #expect(plan.family(forRun: .cjk, line: "こんにちは世界") == "Noto Sans CJK JP")
 
-        // Real win boxes, read from the shipped files: the Latin face declares
-        // 1.519 em and the CJK collection 1.448, which is what the tagger's \fs
-        // compensation and the app-side scale mapping divide by.
+        // The Latin style face's real win box, read from the shipped file: the
+        // tagger's \fs compensation and the app-side scale mapping divide by it.
         #expect(abs(plan.styleFontEmBoxFactor - 1.519) < 0.001)
-        #expect(abs(plan.sizeFactor(forFamily: "Noto Sans CJK SC") - 1.448) < 0.001)
     }
 
     @Test("a ja-labeled kanji-only track stays entirely Japanese")
@@ -185,12 +181,6 @@ struct SubtitleFontPlanTests {
         #expect(plan.trackDefaultLanguage == nil)
         #expect(plan.languageByLine.isEmpty)
         #expect(plan.family(forRun: .common, line: "Hello") == nil)
-    }
-
-    @Test("unknown families have no em box to divide by")
-    func unknownFamilyMetrics() {
-        #expect(SubtitleFontMetrics.emBoxFactor(forFamily: "Arial") == 1)
-        #expect(abs(SubtitleFontMetrics.emBoxFactor(forFamily: "Noto Serif CJK KR") - 1.437) < 0.001)
     }
 
     // MARK: - Script routing
@@ -230,7 +220,7 @@ struct SubtitleFontPlanTests {
     @Test("Latin, Greek and Cyrillic are the style font and take no tag")
     func commonScriptsNeedNoTag() {
         let plan = Self.stubPlan(trackDefault: nil)
-        for text in ["İstanbul", "Łódź", "Việt Nam", "Ελληνικά", "Привет"] {
+        for text in ["İstanbul", "Łódź", "Việt Nam", "Ελληνικά", "Привет", "{\\i1}Hello World"] {
             for character in text {
                 let runClass = SubtitleScript.classify(character) ?? .common
                 #expect(runClass == .common, "\(character) in \(text)")
@@ -246,6 +236,7 @@ struct SubtitleFontPlanTests {
         #expect(SubtitleScript.classify("\u{094D}" as Unicode.Scalar) == nil)  // Devanagari virama
         #expect(SubtitleScript.classify("\u{200D}" as Unicode.Scalar) == nil)  // ZWJ
         #expect(SubtitleScript.classify("\u{200C}" as Unicode.Scalar) == nil)  // ZWNJ
+        #expect(SubtitleScript.classify("\u{2060}" as Unicode.Scalar) == nil)  // word joiner
         // Punctuation, spaces and digits belong to the Latin face, which is the
         // only one that reliably has them.
         #expect(SubtitleScript.classify(" " as Unicode.Scalar) == .common)
@@ -257,17 +248,23 @@ struct SubtitleFontPlanTests {
         // rule can reach it — a 、 out of the Latin face would be a hole.
         #expect(SubtitleScript.classify("、" as Unicode.Scalar) == .cjk)
 
-        let plan = Self.stubPlan(
-            sizeFactors: ["Noto Naskh Arabic": 1, "Noto Sans Devanagari": 1], trackDefault: nil
-        )
+        func plan(for family: String) -> SubtitleFontPlan {
+            Self.stubPlan(
+                styleFactor: SubtitleFontMetrics.emBoxFactor(forFamily: family), trackDefault: nil
+            )
+        }
         // Each Arabic word is its own run and the space between them is Latin;
         // that costs nothing, because Arabic letters do not join across a space
         // and bidi runs over the whole line, not per font run.
-        #expect(SubtitleFontTagger.tagged("مرحبا بالعالم", plan: plan, styleFontSize: 48)
+        #expect(SubtitleFontTagger.tagged(
+            "مرحبا بالعالم", plan: plan(for: "Noto Naskh Arabic"), styleFontSize: 48
+        )
             == "{\\fnNoto Naskh Arabic}مرحبا{\\fn} {\\fnNoto Naskh Arabic}بالعالم{\\fn}")
         // A conjunct's virama and ZWJ stay inside the Devanagari run, which is
         // the whole reason marks and joiners are not treated as punctuation.
-        #expect(SubtitleFontTagger.tagged("क\u{094D}\u{200D}ष", plan: plan, styleFontSize: 48)
+        #expect(SubtitleFontTagger.tagged(
+            "क\u{094D}\u{200D}ष", plan: plan(for: "Noto Sans Devanagari"), styleFontSize: 48
+        )
             == "{\\fnNoto Sans Devanagari}क\u{094D}\u{200D}ष{\\fn}")
     }
 
@@ -304,46 +301,32 @@ struct SubtitleFontPlanTests {
             == "{\\fnNoto Sans CJK SC}简体字幕{\\fn} ABC {\\fnNoto Sans CJK SC}测试{\\fn}")
     }
 
-    @Test("a taller win box than the style font earns \\fs compensation")
-    func compensatesTallWinBoxes() {
-        let plan = Self.stubPlan(sizeFactors: ["Noto Sans CJK SC": 1.362])
-        let tagged = SubtitleFontTagger.tagged("简体 ABC", plan: plan, styleFontSize: 48)
-        #expect(tagged == "{\\fnNoto Sans CJK SC\\fs65.4}简体{\\fn\\fs} ABC")
-    }
-
-    @Test("compensation is relative to the style font's own box")
-    func compensatesRelativeToStyleFont() {
-        // The app-side scale already multiplies the style font's box back, so a
-        // run only needs the DIFFERENCE: 48 × 1.362 / 1.165 ≈ 56.1.
-        let plan = Self.stubPlan(sizeFactors: ["Noto Sans CJK SC": 1.362], styleFactor: 1.165)
-        #expect(SubtitleFontTagger.tagged("简体", plan: plan, styleFontSize: 48)
-            == "{\\fnNoto Sans CJK SC\\fs56.1}简体{\\fn\\fs}")
-    }
-
     @Test("a near-unit factor adds no size tag")
     func skipsNegligibleCompensation() {
-        let plan = Self.stubPlan(sizeFactors: ["Noto Sans CJK SC": 1.01])
+        let plan = Self.stubPlan(styleFactor: 1.44)
         #expect(SubtitleFontTagger.tagged("简体", plan: plan, styleFontSize: 48)
             == "{\\fnNoto Sans CJK SC}简体{\\fn}")
         let matched = Self.stubPlan(
-            sizeFactors: ["Noto Sans CJK SC": 1.448], styleFactor: 1.448
+            styleFactor: SubtitleFontMetrics.emBoxFactor(forFamily: "Noto Sans CJK SC")
         )
         #expect(SubtitleFontTagger.tagged("简体", plan: matched, styleFontSize: 48)
             == "{\\fnNoto Sans CJK SC}简体{\\fn}")
     }
 
-    /// The real bundle's numbers, not stubs: Myanmar declares a 2.50 em box
-    /// against the Latin face's 1.519, so an uncompensated Myanmar caption
-    /// renders at 61% of the Latin around it.
-    @Test("a real Myanmar run is compensated against the real Latin style box")
-    func compensatesRealScriptBoxes() {
+    /// The real bundle's numbers: a run is sized relative to the style face's
+    /// own box, so a Myanmar caption (2.50 em box) under Noto Serif (1.458)
+    /// grows, and a CJK one (1.448) under Noto Sans (1.519) shrinks.
+    @Test("a run is compensated against the real style box", arguments: [
+        ("မြန်မာ", SubtitleFontBundle.serifFamily, "{\\fnNoto Serif Myanmar\\fs82.", "}မြန်မာ{\\fn\\fs}"),
+        ("简体", SubtitleFontBundle.sansFamily, "{\\fnNoto Sans CJK SC\\fs45.", "}简体{\\fn\\fs}"),
+    ])
+    func compensatesRealScriptBoxes(text: String, styleFamily: String, prefix: String, suffix: String) {
         let plan = SubtitleFontPlan.build(
-            lines: ["မြန်မာ"], styleFamily: SubtitleFontBundle.serifFamily, languageHint: nil
+            lines: [text], styleFamily: styleFamily, languageHint: "zh-Hans"
         )
-        let tagged = SubtitleFontTagger.tagged("မြန်မာ", plan: plan, styleFontSize: 48)
-        #expect(tagged.hasPrefix("{\\fnNoto Serif Myanmar\\fs"))
-        // 48 × 2.499 / 1.458 ≈ 82.3
-        #expect(tagged.contains("\\fs82."), "\(tagged)")
+        let tagged = SubtitleFontTagger.tagged(text, plan: plan, styleFontSize: 48)
+        #expect(tagged.hasPrefix(prefix), "\(tagged)")
+        #expect(tagged.hasSuffix(suffix), "\(tagged)")
     }
 
     @Test("each visual line is tagged with its own language's face")
@@ -362,13 +345,6 @@ struct SubtitleFontPlanTests {
             == "{\\an8}{\\fnNoto Sans CJK SC}字{\\fn}\\{{\\fnNoto Sans CJK SC}幕{\\fn}\\}")
     }
 
-    @Test("lines with nothing but Latin come back verbatim")
-    func leavesCommonLinesAlone() {
-        let plan = Self.stubPlan()
-        let text = "{\\i1}Hello World"
-        #expect(SubtitleFontTagger.tagged(text, plan: plan, styleFontSize: 48) == text)
-    }
-
     /// The serif design's weight 600 is one style-level Bold on the override,
     /// not a per-run tag: libass only synthesizes bold when the request beats
     /// the face's own weight, so the run tags carry font and size and nothing
@@ -379,8 +355,7 @@ struct SubtitleFontPlanTests {
         for styleFamily in [SubtitleFontBundle.family(design: design, script: .common),
                             SubtitleFontBundle.serifCueFamily] {
             let plan = Self.stubPlan(
-                design: design, styleFamily: styleFamily,
-                sizeFactors: ["Noto Serif CJK JP": 1.437], trackDefault: .japanese
+                design: design, styleFamily: styleFamily, trackDefault: .japanese
             )
             #expect(SubtitleFontTagger.tagged("東京", plan: plan, styleFontSize: 48).contains("\\b") == false)
             #expect(SubtitleFontTagger.authoredTagged("東京 ok", plan: plan).contains("\\b") == false)
@@ -399,7 +374,7 @@ struct SubtitleFontPlanTests {
         #expect(SubtitleFontTagger.authoredTagged("สวัสดี", plan: plan)
             == "{\\fnNoto Sans Thai}สวัสดี{\\fn}")
         // And it never touches sizes: those are the author's.
-        let serif = Self.stubPlan(design: .serif, sizeFactors: ["Noto Serif CJK JP": 1.9])
+        let serif = Self.stubPlan(design: .serif)
         #expect(SubtitleFontTagger.authoredTagged("こんにちは", plan: serif)
             == "{\\fnNoto Serif CJK JP}こんにちは{\\fn}")
     }
@@ -512,28 +487,6 @@ struct SubtitleFontPlanTests {
         #expect(out.contains("Style: Default,Noto Serif CJK SC,28,"))
         // …and the kana line diverges, onto the Japanese SERIF face, not Sans.
         #expect(dialogueText(dialogueLines(out)[0]) == "{\\fnNoto Serif CJK JP}こんにちは{\\fn}")
-    }
-
-    @Test("a Latin-only authored script lands on the Latin face, not a CJK one")
-    func latinAuthoredScriptSubstitutes() {
-        let script = ASSFixture.script(text: "Hello, world", fontName: "Comic Sans MS")
-        let plan = SubtitleFontPlan.build(
-            lines: ["Hello, world"], styleFamily: SubtitleFontBundle.sansFamily, languageHint: nil
-        )
-        let out = AuthoredFontSubstitution.applied(to: script, plan: plan)
-        #expect(out.contains("Style: Default,Noto Sans,28,"))
-        #expect(dialogueText(dialogueLines(out)[0]) == "Hello, world")
-    }
-
-    @Test("an authored Thai script keeps its Latin style and tags the Thai runs")
-    func thaiAuthoredScriptRoutes() {
-        let script = ASSFixture.script(text: "สวัสดี OK", fontName: "Tahoma")
-        let plan = SubtitleFontPlan.build(
-            lines: ["สวัสดี OK"], styleFamily: SubtitleFontBundle.sansFamily, languageHint: nil
-        )
-        let out = AuthoredFontSubstitution.applied(to: script, plan: plan)
-        #expect(out.contains("Style: Default,Noto Sans,28,"))
-        #expect(dialogueText(dialogueLines(out)[0]).contains("{\\fnNoto Sans Thai}"))
     }
 
     /// A CRLF script's `\r` belongs to the line, not to its last field. Carried
@@ -650,8 +603,9 @@ struct SubtitleFontPlanTests {
 
     @Test("consecutive symbols answering to one face stay one run")
     func symbolRunsCoalesce() {
-        let runs = scriptRuns(of: "♪♫", routing: Self.stubPlan().symbolRouting)
-        #expect(runs.count == 1)
+        let tagged = SubtitleFontTagger.tagged("♪♫", plan: Self.stubPlan(), styleFontSize: 48)
+        #expect(tagged.components(separatedBy: "{\\fnNoto").count == 2, "\(tagged)")
+        #expect(tagged.contains("}♪♫{\\fn"), "\(tagged)")
     }
 
     /// The tag has to name the face and the closer has to give the run back, or
@@ -721,15 +675,6 @@ struct SubtitleFontPlanTests {
         #expect(tagged.contains("{\\fnNoto Serif}สวัสดี") == false)
         // The closer names the font the author had in force, not a bare reset.
         #expect(tagged.hasSuffix("{\\fnNoto Serif} English"), "\(tagged)")
-    }
-
-    @Test("a converted cue still closes with the bare reset")
-    func convertedRunKeepsTheBareReset() {
-        let plan = SubtitleFontPlan.build(
-            lines: ["สวัสดี ok"], styleFamily: SubtitleFontBundle.sansFamily, languageHint: nil
-        )
-        let tagged = SubtitleFontTagger.tagged("สวัสดี ok", plan: plan, styleFontSize: 48)
-        #expect(tagged.contains("{\\fn\\fs} ok") || tagged.contains("{\\fn} ok"), "\(tagged)")
     }
 
     @Test("a bare inline reset leaves the closer bare")

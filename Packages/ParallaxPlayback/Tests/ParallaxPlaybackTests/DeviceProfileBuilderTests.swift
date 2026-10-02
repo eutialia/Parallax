@@ -51,8 +51,8 @@ struct DeviceProfileBuilderTests {
     @Test("build() propagates the probe's HDR support", arguments: [
         HDRSupport.none,
         HDRSupport.hdr10,
+        HDRSupport.dolbyVision,
         HDRSupport([.hdr10, .dolbyVision]),
-        HDRSupport([.hdr10, .hdr10Plus, .dolbyVision]),
     ])
     func hdrPropagates(hdr: HDRSupport) async {
         let builder = DeviceProfileBuilder(probe: FakeCapabilityProbe(hdr: hdr))
@@ -98,7 +98,7 @@ struct DeviceProfileBuilderTests {
     /// would keep asking the server for 360 Mbps.
     @Test("the Low Data ceiling is genuinely lower than the LAN ceiling")
     func ceilingsDiffer() {
-        #expect(DeviceProfileBuilder.lowDataBitrateCeiling < DeviceProfileBuilder.lanBitrateCeiling)
+        #expect(DeviceProfileBuilder.lowDataBitrateCeiling.rawValue < DeviceProfileBuilder.lanBitrateCeiling.rawValue)
     }
 
     @Test("a genuine constraint flip invalidates the cache")

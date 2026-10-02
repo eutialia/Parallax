@@ -48,9 +48,6 @@ struct SubtitleFontPlan {
     /// ("no CJK here"), and telling it apart from "never seen" is what makes a
     /// cache miss detectable.
     let languageByLine: [String: CJKFontPlan.Language?]
-    /// Test-supplied em-box factors, keyed by family. Empty in production: the
-    /// real numbers are read from the shipped files.
-    let sizeFactorByFamily: [String: Double]
     /// Shared with every `with(design:)` copy — they classify the same lines.
     let cacheMisses = CacheMisses()
 
@@ -59,15 +56,13 @@ struct SubtitleFontPlan {
         styleFamily: String,
         styleFontEmBoxFactor: Double,
         trackDefaultLanguage: CJKFontPlan.Language?,
-        languageByLine: [String: CJKFontPlan.Language?],
-        sizeFactorByFamily: [String: Double] = [:]
+        languageByLine: [String: CJKFontPlan.Language?]
     ) {
         self.design = design
         self.styleFamily = styleFamily
         self.styleFontEmBoxFactor = styleFontEmBoxFactor
         self.trackDefaultLanguage = trackDefaultLanguage
         self.languageByLine = languageByLine
-        self.sizeFactorByFamily = sizeFactorByFamily
     }
 
     /// Counts classifications that missed the per-line cache.
@@ -143,12 +138,6 @@ struct SubtitleFontPlan {
                 design: design, language: trackDefaultLanguage
             )
         )
-    }
-
-    /// The em box libass divides a requested size by for `family`. Read from
-    /// the shipped file unless a test supplied one.
-    func sizeFactor(forFamily family: String) -> Double {
-        sizeFactorByFamily[family] ?? SubtitleFontMetrics.emBoxFactor(forFamily: family)
     }
 
     /// The same assignment against another design and style face — how an

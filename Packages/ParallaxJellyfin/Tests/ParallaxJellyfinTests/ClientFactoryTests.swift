@@ -41,6 +41,7 @@ struct ClientFactoryTests {
         libraryStub.always(.json("{}"))
         let libraryClient = await DefaultJellyfinLibraryClientFactory(
             identityProvider: provider,
+            onTokenRejected: { _ in },
             sessionConfiguration: libraryStub.configuration
         ).make(for: JellyfinFixtures.session(serverURL: libraryStub.baseURL))
         _ = try await libraryClient.getCollections()
@@ -49,6 +50,7 @@ struct ClientFactoryTests {
         playbackStub.always(.noContent)
         let playbackClient = await DefaultJellyfinPlaybackClientFactory(
             identityProvider: provider,
+            onTokenRejected: { _ in },
             sessionConfiguration: playbackStub.configuration
         ).make(for: JellyfinFixtures.session(serverURL: playbackStub.baseURL))
         try await playbackClient.pingSession(playSessionID: "ps-1")
@@ -60,12 +62,8 @@ struct ClientFactoryTests {
         }
     }
 
-    @Test("The auth factory points the client at the requested server")
-    func authFactoryUsesRequestedServer() async {
-        let url = URL(string: "https://requested.example.com")!
-        let client = await DefaultJellyfinClientFactory(identityProvider: identityProvider())
-            .make(serverURL: url)
-        #expect(client.serverURL == url)
+    private static func isTokenInvalidated(_ error: AppError?) -> Bool {
+        if case .auth(.tokenInvalidated)? = error { true } else { false }
     }
 
     /// Browse and playback share ONE sink so a revoked token is reported once, wherever it's
@@ -84,7 +82,8 @@ struct ClientFactoryTests {
             onTokenRejected: { reported.record($0) },
             sessionConfiguration: libraryStub.configuration
         ).make(for: JellyfinFixtures.session(id: "s-reject", serverURL: libraryStub.baseURL))
-        await #expect(throws: AppError.self) { _ = try await libraryClient.getCollections() }
+        let libraryError = await #expect(throws: AppError.self) { _ = try await libraryClient.getCollections() }
+        #expect(Self.isTokenInvalidated(libraryError))
 
         let playbackStub = StubHTTPTransport()
         playbackStub.always(.json("{}", status: 401))
@@ -93,25 +92,9 @@ struct ClientFactoryTests {
             onTokenRejected: { reported.record($0) },
             sessionConfiguration: playbackStub.configuration
         ).make(for: JellyfinFixtures.session(id: "s-reject", serverURL: playbackStub.baseURL))
-        await #expect(throws: AppError.self) { try await playbackClient.pingSession(playSessionID: "ps-1") }
+        let playbackError = await #expect(throws: AppError.self) { try await playbackClient.pingSession(playSessionID: "ps-1") }
+        #expect(Self.isTokenInvalidated(playbackError))
 
         #expect(reported.ids == [session.id, session.id])
-    }
-
-    /// Omitting the sink is the previews/tests path: the 401 still fails the call, but nothing is
-    /// signed out.
-    @Test("Omitting the sink leaves the client without a rejection reporter")
-    func sinkIsOptional() async throws {
-        let stub = StubHTTPTransport()
-        stub.always(.json("{}", status: 401))
-        let client = await DefaultJellyfinLibraryClientFactory(
-            identityProvider: identityProvider(),
-            sessionConfiguration: stub.configuration
-        ).make(for: JellyfinFixtures.session(serverURL: stub.baseURL))
-
-        await #expect(throws: (any Error).self) { _ = try await client.getCollections() }
-        // Nothing to assert about a sink that isn't there — the point is that the call still
-        // completes as a failure instead of trapping on a missing handler.
-        #expect(stub.exchanges.count == 1)
     }
 }

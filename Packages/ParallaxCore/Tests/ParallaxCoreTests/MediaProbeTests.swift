@@ -706,22 +706,11 @@ struct ProbedCodecTests {
         #expect(ProbedCodec<VideoCodec>.unknown.knownValue == nil)
         #expect(ProbedCodec<VideoCodec>.none.knownValue == nil)
     }
-
-    @Test("unknown and none are not the same value")
-    func unknownIsNotNone() {
-        #expect(ProbedCodec<AudioCodec>.unknown != ProbedCodec<AudioCodec>.none)
-    }
 }
 
 @Suite("InMemoryRandomAccessReader")
 struct InMemoryRandomAccessReaderTests {
     private let reader = InMemoryRandomAccessReader(data: Data([0, 1, 2, 3, 4, 5, 6, 7]))
-
-    @Test("reports the backing byte count as the file size")
-    func fileSize() async throws {
-        let size = try await reader.fileSize
-        #expect(size == 8)
-    }
 
     /// A read overrunning EOF returns the available PREFIX rather than throwing, mirroring POSIX
     /// pread — the box walk relies on a short read to detect truncation.

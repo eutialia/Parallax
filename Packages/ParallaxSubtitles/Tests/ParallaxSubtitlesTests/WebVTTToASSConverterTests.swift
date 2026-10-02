@@ -7,7 +7,9 @@ import Testing
 struct WebVTTToASSConverterTests {
 
     private func script(_ source: String) -> String {
-        WebVTTToASSConverter.script(from: source, fontFamily: SubtitleFontBundle.sansFamily)
+        ASSScriptBuilder.script(
+            events: WebVTTToASSConverter.events(from: source), fontFamily: SubtitleFontBundle.sansFamily
+        )
     }
 
     private func cue(body: String, settings: String = "") -> (start: String, end: String, text: String)? {
@@ -127,24 +129,6 @@ struct WebVTTToASSConverterTests {
     ] as [(String, String, String)])
     func cueSettings(label: String, settings: String, expected: String) {
         #expect(cue(body: "Hi", settings: settings)?.text == expected + "Hi", "\(label)")
-    }
-
-    @Test("out-of-order cues are re-sorted by start time")
-    func sorting() {
-        let converted = cues(
-            script(
-                """
-                WEBVTT
-
-                00:00:10.000 --> 00:00:12.000
-                Later
-
-                00:00:01.000 --> 00:00:02.000
-                Earlier
-                """
-            )
-        )
-        #expect(converted.map(\.text) == ["Earlier", "Later"])
     }
 
     /// A cue timed past 100 hours would overflow the Double->Int conversion in

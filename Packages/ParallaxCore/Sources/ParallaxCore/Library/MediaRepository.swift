@@ -12,11 +12,4 @@ public protocol MediaRepository: Sendable {
     func collections() async throws -> [MediaCollection]
     func items(in scope: LibraryScope, filter: ItemFilter, sort: ItemSort, cursor: PageCursor?) async throws -> Page<Item>
     func genres(in scope: LibraryScope) async throws -> [String]
-    /// Releases any live connection a conformer holds. HTTP-backed repositories (Jellyfin)
-    /// are stateless, so the default is a no-op.
-    func teardown() async
-}
-
-public extension MediaRepository {
-    func teardown() async {}
 }

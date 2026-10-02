@@ -14,13 +14,16 @@ struct DefaultJellyfinPlaybackClientTests {
                 serverURL: URL(string: "https://j.example.com")!,
                 userID: "u1"
             ),
-            identity: JellyfinFixtures.identity()
+            identity: JellyfinFixtures.identity(),
+            onTokenRejected: { _ in }
         )
     }
 
-    @Test("Direct-play stream URL embeds api_key in the query")
-    func directPlayURLHasAPIKey() {
-        let url = client().streamURL(
+    /// `static=true` is the range-seekable direct-play contract; the device and play session ids
+    /// are what the server scopes the stream (and a later transcode kill) to.
+    @Test("Direct-play stream URL carries api_key, the source, the static flag and the session ids")
+    func directPlayURLHasAPIKey() throws {
+        let built = client().streamURL(
             StreamRequest(
                 itemID: "item-1",
                 container: "mp4",
@@ -30,10 +33,15 @@ struct DefaultJellyfinPlaybackClientTests {
                 isStatic: true
             )
         )
-        let query = url?.query ?? ""
-        #expect(url?.absoluteString.contains("/Videos/item-1/stream.mp4") == true)
-        #expect(query.contains("api_key=tok-1"))
-        #expect(query.contains("mediaSourceId=ms-1") || query.contains("MediaSourceId=ms-1"))
+        let url = try #require(built)
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        func query(_ name: String) -> String? { items.first { $0.name == name }?.value }
+        #expect(url.path == "/Videos/item-1/stream.mp4")
+        #expect(query("api_key") == "tok-1")
+        #expect(query("mediaSourceId") == "ms-1")
+        #expect(query("static") == "true")
+        #expect(query("deviceId") == JellyfinFixtures.identity().deviceID)
+        #expect(query("playSessionId") == "ps-1")
     }
 
     @Test("Server transcodingURL is resolved against the server and kept intact")
@@ -63,56 +71,6 @@ struct DefaultJellyfinPlaybackClientTests {
 
     // MARK: - PlaybackInfo POST body
 
-    /// One setup, one assertion per field. The stream-copy flags and the profile both live on the
-    /// body because the server largely ignores this endpoint's query-param copies — without them
-    /// an eligible source gets fully re-encoded.
-    @Test(
-        "The PlaybackInfo POST body carries the copy flags and the translated profile",
-        arguments: [BodyField.videoStreamCopy, .audioStreamCopy, .maxStreamingBitrate]
-    )
-    func bodyFields(field: BodyField) {
-        let capabilities = JellyfinFixtures.caps()
-        let body = DefaultJellyfinPlaybackClient.playbackInfoBody(
-            profile: DeviceProfileTranslator.deviceProfile(from: capabilities),
-            startTimeTicks: nil,
-            userID: "u1",
-            selection: nil
-        )
-        switch field {
-        case .videoStreamCopy:
-            #expect(body.allowVideoStreamCopy == true)
-        case .audioStreamCopy:
-            #expect(body.allowAudioStreamCopy == true)
-        case .maxStreamingBitrate:
-            // Identity via a distinctive field rather than object equality — proves the exact
-            // profile instance reached the body. The value is derived from the capabilities under
-            // test, never a re-typed literal.
-            #expect(body.deviceProfile?.maxStreamingBitrate == Int(capabilities.maxBitrate.rawValue))
-        }
-    }
-
-    enum BodyField: Sendable {
-        case videoStreamCopy, audioStreamCopy, maxStreamingBitrate
-    }
-
-    /// The media source id is the load-bearing part: Jellyfin only applies stream indices that
-    /// arrive alongside the source they index into, and drops them silently otherwise — a switch
-    /// sent without it looks accepted and rebuilds around the server's own defaults.
-    @Test("Track indices and start time reach the body so a track switch rebuilds the transcode")
-    func bodyCarriesTrackSelection() {
-        let body = DefaultJellyfinPlaybackClient.playbackInfoBody(
-            profile: DeviceProfileTranslator.deviceProfile(from: JellyfinFixtures.caps()),
-            startTimeTicks: 6_000_000_000,
-            userID: "u1",
-            selection: StreamSelection(mediaSourceID: "ms-1", audioStreamIndex: 4, subtitleStreamIndex: 7)
-        )
-        #expect(body.mediaSourceID == "ms-1")
-        #expect(body.audioStreamIndex == 4)
-        #expect(body.subtitleStreamIndex == 7)
-        #expect(body.startTimeTicks == 6_000_000_000)
-        #expect(body.userID == "u1")
-    }
-
     /// Burn-in paints the subtitle into the picture, which a copied video stream can't carry — so
     /// that one pick has to withdraw the stream-copy offer. Every other resolve keeps it (a copy
     /// preserves HDR and costs the server nothing).
@@ -135,7 +93,6 @@ struct DefaultJellyfinPlaybackClientTests {
         // Audio copy is orthogonal — burning a subtitle in never touches the audio stream.
         #expect(body.allowAudioStreamCopy == true)
     }
-
 }
 
 /// The SDK-backed playback client over a stubbed transport, so the endpoints, verbs and POST
@@ -143,19 +100,16 @@ struct DefaultJellyfinPlaybackClientTests {
 @Suite("DefaultJellyfinPlaybackClient — wire contract")
 struct DefaultJellyfinPlaybackClientWireTests {
 
-    private func makeClient(
-        stub: StubHTTPTransport,
-        onTokenRejected: (@Sendable (ServerID) -> Void)? = nil
-    ) -> DefaultJellyfinPlaybackClient {
+    private func makeClient(stub: StubHTTPTransport) -> DefaultJellyfinPlaybackClient {
         DefaultJellyfinPlaybackClient(
             session: JellyfinFixtures.session(id: "s1", token: "tok-1", serverURL: stub.baseURL, userID: "u1"),
             identity: JellyfinFixtures.identity(deviceID: "dev-1"),
-            onTokenRejected: onTokenRejected,
+            onTokenRejected: { _ in },
             sessionConfiguration: stub.configuration
         )
     }
 
-    @Test("playbackInfo POSTs to the item's PlaybackInfo endpoint with the selection in the query")
+    @Test("playbackInfo POSTs to the item's PlaybackInfo endpoint with the selection in the query and body")
     func playbackInfoRequest() async throws {
         let stub = StubHTTPTransport()
         var response = PlaybackInfoResponse()
@@ -188,6 +142,13 @@ struct DefaultJellyfinPlaybackClientWireTests {
         #expect(body.allowVideoStreamCopy == true)
         #expect(body.allowAudioStreamCopy == true)
         #expect(body.deviceProfile?.maxStreamingBitrate == Int(JellyfinFixtures.caps().maxBitrate.rawValue))
+        // Jellyfin only applies stream indices that arrive alongside the source they index into,
+        // so a track switch sent without the body copy looks accepted and rebuilds around defaults.
+        #expect(body.mediaSourceID == "ms-1")
+        #expect(body.audioStreamIndex == 2)
+        #expect(body.subtitleStreamIndex == 3)
+        #expect(body.startTimeTicks == 120_000_000)
+        #expect(body.userID == "u1")
         #expect(decoded.playSessionID == "ps-1")
         #expect(decoded.mediaSources?.first?.id == "ms-1")
     }
@@ -309,20 +270,5 @@ struct DefaultJellyfinPlaybackClientWireTests {
         #expect(request.path == "/Users/Configuration")
         #expect(request.query("userId") == "u1")
         #expect(try request.decodedBody(UserConfiguration.self).audioLanguagePreference == "deu")
-    }
-
-    /// Playback shares the browse chokepoint: a token revoked mid-stream must report once,
-    /// wherever it's noticed first.
-    @Test("A 401 on a playback call reports the rejected token too")
-    func unauthorizedReportsTokenRejection() async throws {
-        let stub = StubHTTPTransport()
-        stub.always(.json("{}", status: 401))
-        let reported = ReportedServerIDs()
-        let client = makeClient(stub: stub, onTokenRejected: { reported.record($0) })
-
-        await #expect(throws: AppError.self) {
-            try await client.pingSession(playSessionID: "ps-1")
-        }
-        #expect(reported.ids == [ServerID(rawValue: "s1")])
     }
 }

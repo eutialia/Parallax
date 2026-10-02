@@ -98,25 +98,32 @@ struct JellyfinTrackMatcherTests {
         #expect(matched.index == 3)
         #expect(matched.codec == "truehd")
         #expect(matched.channels == 8)
-        // Detail-line wording/separator are ParallaxCore's vocabulary, not this test's.
-        let codecName = try #require(TrackDisplay.audioCodecName(codec: "truehd"))
-        let layout = try #require(TrackDisplay.channelLayout(8))
-        #expect(matched.trackDetailLabel == "\(codecName) · \(layout)")
     }
 
-    @Test("falls back to the ordinal label when no server stream matches")
-    func ordinalFallbackWhenNoServerMatch() {
+    @Test("without a server stream, a placeholder name falls back to language, then an ordinal label", arguments: [
+        ("Unknown", nil, AVKitTrackNaming.Kind.audio, 1, "Audio 1"),
+        ("Unknown", "und", .audio, 1, "Audio 1"),
+        ("", nil, .subtitle, 3, "Subtitle 3"),
+        ("UNKNOWN", nil, .audio, 1, "Audio 1"),
+        ("   ", nil, .audio, 2, "Audio 2"),
+        ("Unknown", "en", .audio, 1, "English"),
+        ("", "ja", .subtitle, 2, "Japanese"),
+    ] as [(String, String?, AVKitTrackNaming.Kind, Int, String)])
+    func ordinalFallbackWhenNoServerMatch(
+        displayName: String, language: String?, kind: AVKitTrackNaming.Kind,
+        ordinal: Int, expected: String
+    ) {
         let name = JellyfinTrackMatcher.name(
-            kind: .audio,
-            optionDisplayName: "Unknown",
-            optionLanguage: nil,
-            ordinal: 1,
+            kind: kind,
+            optionDisplayName: displayName,
+            optionLanguage: language,
+            ordinal: ordinal,
             optionCount: 1,
-            streams: [],                      // no metadata at all
+            streams: [],
             defaultStreamIndex: 3,
             locale: en
         )
-        #expect(name == "Audio 1")
+        #expect(name == expected)
     }
 
     @Test("multiple unnamed options join the server stream by language and take its title")

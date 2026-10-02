@@ -26,12 +26,6 @@ struct SMBBrowseSortTests {
         }
     }
 
-    @Test("the default sort is newest-created first")
-    func defaultIsNewestCreated() {
-        #expect(SMBBrowseSort.default.field == .dateCreated)
-        #expect(SMBBrowseSort.default.direction == SMBBrowseSort.Field.dateCreated.naturalDirection)
-    }
-
     @Test("name sort is case-insensitive in both directions",
           arguments: [(SMBBrowseSort.Direction.ascending, ["alpha", "Beta", "gamma"]),
                       (.descending, ["gamma", "Beta", "alpha"])])

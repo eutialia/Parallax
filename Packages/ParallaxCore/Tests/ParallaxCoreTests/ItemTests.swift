@@ -78,7 +78,7 @@ struct ItemTests {
         let tag = ImageTag(rawValue: "poster")
         let hashes = [tag: "LKO2?U"]
         let cases: [Item] = [
-            .movie(LibraryFixtures.movie(primaryTag: tag, blurHashes: hashes)),
+            .movie(LibraryFixtures.movie(primaryTag: tag, size: 1_234_567, blurHashes: hashes)),
             .series(LibraryFixtures.series(primaryTag: tag, blurHashes: hashes)),
             .episode(LibraryFixtures.episode(primaryTag: tag, blurHashes: hashes)),
         ]
@@ -87,6 +87,7 @@ struct ItemTests {
             let updated = item.withUserData(LibraryFixtures.userData(played: true))
             #expect(updated.userData.played)
             #expect(updated.id == item.id)
+            #expect(updated.sizeBytes == item.sizeBytes, "size is part of the SMB thumbnail cache key")
             #expect(updated.withUserData(item.userData) == item, "the copy must be reversible")
         }
     }

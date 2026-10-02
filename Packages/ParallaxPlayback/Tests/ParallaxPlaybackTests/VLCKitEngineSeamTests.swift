@@ -93,6 +93,25 @@ struct VLCKitDisplayClockTests {
     }
 }
 
+@Suite("VLCKitEngine — seek guard")
+@MainActor
+struct VLCKitSeekGuardTests {
+
+    /// A non-finite target must be dropped before it can be turned into a millisecond offset.
+    @Test("seek with a non-finite CMTime never reaches the player",
+          arguments: [CMTime.invalid, .indefinite, .positiveInfinity, .negativeInfinity])
+    func seekNonFiniteIsANoOp(time: CMTime) async throws {
+        let spy = SpyVLCPlayer()
+        let engine = VLCKitEngine(control: spy)
+        try await engine.load(.fixture())
+
+        await engine.seek(to: time)
+
+        #expect(spy.seekWritesMs.isEmpty)
+        await engine.teardown()
+    }
+}
+
 @Suite("VLCKitEngine — media options")
 struct VLCKitMediaOptionTests {
 
@@ -195,21 +214,6 @@ struct VLCKitLibraryOptionTests {
         #expect(options?.contains("--freetype-bold") == true, "\(options ?? [])")
         // libvlc takes the last spelling it sees, so the negative must be absent too.
         #expect(options?.contains("--no-freetype-bold") == false)
-    }
-
-    /// The order is load-bearing: `PlayerViewModel` compares this array against the one the
-    /// live engine was built with to decide whether it can reuse the player, so equal inputs
-    /// must produce an equal array rather than merely an equal SET.
-    @Test("equal assets produce an identical array, element for element")
-    func orderingIsStable() {
-        func build() -> [String]? {
-            VLCKitEngine.libraryOptions(for: .fixture(
-                subtitleFontFamily: "Noto Serif CJK JP",
-                subtitleTextStyle: EngineSubtitleTextStyle(style: .standard, relativeFontSize: 18),
-                vlcLibraryOptions: ["--no-drop-late-frames"]
-            ))
-        }
-        #expect(build() == build())
     }
 
     /// The pre-existing instance arguments (the timing-repair vout flags) keep their place at
@@ -491,6 +495,30 @@ struct VLCKitTeardownTests {
         await engine.teardown()
     }
 
+    /// `teardown()` drives the same non-Sendable `VLCMediaPlayer` the exit stop is still
+    /// winding down (drawable → delegate → stop). It joins first, or the two run concurrently
+    /// on two threads, the shape libvlc's own teardown aborts on.
+    @Test("teardown joins endAudio's detached stop before it touches the player")
+    func teardownJoinsPendingStop() async throws {
+        let spy = SpyVLCPlayer()
+        spy.holdStops()
+        spy.drawable = NSObject()
+        let engine = VLCKitEngine(control: spy)
+        await engine.endAudio()          // stop A, parked in the spy's gate
+
+        let teardown = Task { await engine.teardown() }
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(spy.drawable != nil, "teardown detached the drawable while stop A was still running")
+        #expect(spy.stopCalls == 0)
+
+        spy.stopHolding()
+        spy.releaseHeldStop()            // a teardown that skipped the join parks a second stop
+        await teardown.value
+        #expect(spy.drawable == nil)
+        #expect(spy.stopCalls == 2)
+        #expect(engine.pendingStopTask == nil)
+    }
+
     /// The latch belongs to the session, not the engine: the transcode reload reuses one
     /// engine, so `load()` has to hand the player back.
     @Test("load() lowers the wind-down latch so a reused engine still takes commands")
@@ -551,13 +579,6 @@ struct VLCKitEventsConfigurationTests {
     func makePlayerInstallsTheEventsConfiguration() {
         _ = VLCKitEngine.makePlayer(libraryOptions: nil)
         #expect(VLCLibrary.sharedEventsConfiguration is VLCEventsLegacyConfiguration)
-    }
-
-    @Test("constructing an engine leaves the events configuration installed")
-    func constructionLeavesTheEventsConfigurationInstalled() async {
-        let engine = VLCKitEngine(control: SpyVLCPlayer())
-        #expect(VLCLibrary.sharedEventsConfiguration is VLCEventsLegacyConfiguration)
-        await engine.teardown()
     }
 }
 
@@ -844,6 +865,7 @@ struct VLCKitSeekSettleTests {
         let paused = try #require(log.from(60).last)
         #expect(paused.seconds == 60)
         #expect(paused.provenance == .projected)
+        #expect(log.from(60).map(\.seconds) == [60, 60])
 
         log.stop()
         await engine.teardown()

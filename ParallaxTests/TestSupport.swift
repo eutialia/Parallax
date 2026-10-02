@@ -61,7 +61,14 @@ func makeIsolatedServerStore(label: String) -> ServerStore {
     let suiteName = "\(label)-\(UUID().uuidString)"
     let defaults = UserDefaults(suiteName: suiteName)!
     defaults.removePersistentDomain(forName: suiteName)
-    return ServerStore(settings: SettingsStore(defaults: defaults), keychain: FakeKeychain())
+    return ServerStore(settings: SettingsStore(defaults: defaults), keychain: FakeKeychain(), snapshots: scratchSnapshotStore())
+}
+
+/// Rooted at a path nothing creates: `ServerStore` only ever deletes from its snapshot cache.
+func scratchSnapshotStore() -> SnapshotStore {
+    SnapshotStore(container: URL.temporaryDirectory.appending(
+        path: "scratch-snapshots-\(UUID().uuidString)", directoryHint: .isDirectory
+    ))
 }
 
 /// `makeIsolatedServerStore` with the domain removed however `body` exits, so a test that actually
@@ -75,7 +82,11 @@ func withIsolatedServerStore<Result>(
     let defaults = UserDefaults(suiteName: suiteName)!
     defaults.removePersistentDomain(forName: suiteName)
     defer { defaults.removePersistentDomain(forName: suiteName) }
-    return try await body(ServerStore(settings: SettingsStore(defaults: defaults), keychain: FakeKeychain()))
+    return try await body(ServerStore(
+        settings: SettingsStore(defaults: defaults),
+        keychain: FakeKeychain(),
+        snapshots: scratchSnapshotStore()
+    ))
 }
 
 /// A `UserDataWriting` with canned, per-call results for each operation, independently — no

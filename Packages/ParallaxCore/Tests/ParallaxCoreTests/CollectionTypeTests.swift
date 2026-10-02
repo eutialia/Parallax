@@ -28,11 +28,4 @@ struct CollectionTypeTests {
     func unsupportedLibrariesAreExcluded(raw: String) {
         #expect(CollectionType.other(raw).isBrowsable == false)
     }
-
-    /// `.mixed` must stay distinct from `.other`, not just equal-by-coincidence — the two carry
-    /// opposite browsability, so collapsing them would silently reintroduce the regression.
-    @Test("mixed is not the same value as an unknown typed library")
-    func mixedIsDistinctFromOther() {
-        #expect(CollectionType.mixed != .other("unknown"))
-    }
 }

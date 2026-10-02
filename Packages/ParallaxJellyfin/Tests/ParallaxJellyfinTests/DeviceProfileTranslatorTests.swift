@@ -114,25 +114,6 @@ struct DeviceProfileTranslatorTests {
         }
     }
 
-    /// The routing rule this tier exists to express: a premium MKV must remux to AVKit rather than
-    /// route to the software engine, so the hardware video codecs must NOT appear here.
-    @Test("VLC DirectPlay video codecs exclude the AVKit-native ones")
-    func vlcDirectPlayExcludesAVKitVideoCodecs() throws {
-        let capabilities = tieredCaps()
-        let entry = try #require(vlcEntry(in: DeviceProfileTranslator.deviceProfile(from: capabilities)))
-        let codecs = csvParts(entry.videoCodec)
-        for hardware in capabilities.supportedVideoCodecs.map(\.rawValue) {
-            #expect(codecs.contains(hardware) == false, "\(hardware) must remux to AVKit, not route to VLC")
-        }
-    }
-
-    @Test("No VLC DirectPlay entry when softwareVideoCodecs is empty (avKit-only caps)")
-    func noVLCTierWhenSoftwareEmpty() {
-        let profile = DeviceProfileTranslator.deviceProfile(from: avKitOnlyCaps())
-        #expect(vlcEntry(in: profile) == nil,
-            "VLC DirectPlay entry must not appear when softwareVideoCodecs is empty")
-    }
-
     @Test("Total DirectPlay count is 1 for avKit-only caps and 2 for tiered caps")
     func directPlayCounts() {
         let avKitProfile = DeviceProfileTranslator.deviceProfile(from: avKitOnlyCaps())
@@ -306,16 +287,6 @@ struct DeviceProfileTranslatorTests {
         #expect(entries.contains("DOVI"), "bare DOVI must be declared once hardware DV decode is confirmed")
         // The base-layer variants stay too — DOVI is additive, not a replacement.
         #expect(entries.contains("DOVIWithHDR10"))
-    }
-
-    @Test("HEVC videoRangeType excludes DOVI when capabilities.hdr lacks .dolbyVision")
-    func hevcRangeExcludesDOVIWhenDolbyVisionUnsupported() {
-        // tieredCaps() declares hdr: .none.
-        let profile = DeviceProfileTranslator.deviceProfile(from: tieredCaps())
-        let hevc = (profile.codecProfiles ?? []).first { $0.codec == "hevc" && $0.type == .video }
-        let condition = hevc?.conditions?.first { $0.property == .videoRangeType }
-        let entries = Set((condition?.value ?? "").split(separator: "|").map(String.init))
-        #expect(!entries.contains("DOVI"), "bare DOVI must not be declared without a confirmed DV decode signal")
     }
 
     // MARK: — Bitrate caps

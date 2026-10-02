@@ -706,8 +706,8 @@ final class PlayerViewModel {
     /// Probes the live transcode's copy-vs-reencode delivery (`TranscodeDelivery`)
     /// by play-session id. Defaulted to a nil-returning no-op so SMB, previews, and
     /// tests that don't care need no wiring; the Jellyfin path injects
-    /// `PlaybackInfoService.transcodingDelivery`. Nil = ffmpeg hasn't started / no
-    /// matching session yet — the probe treats it as "ask again".
+    /// `PlaybackInfoService.transcodingDelivery`. Nil = ffmpeg hasn't started, no
+    /// matching session yet, or the probe failed — the probe treats it as "ask again".
     private let fetchDelivery: @Sendable (String) async -> TranscodeDelivery?
     /// Wait-then-fetch schedule for the delivery probe: one sleep+fetch per entry, in
     /// order, until a non-nil result lands or the schedule runs out. Production waits

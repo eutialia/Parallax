@@ -4,10 +4,8 @@ import Foundation
 ///
 /// Jellyfin renders through its per-session Nuke pipeline (which carries auth),
 /// not through this type — so the Jellyfin path keeps its Session+pipeline.
-/// Phase-2 SMB produces `.local` thumbnails generated from the video; `.remote`
-/// is reserved for a future headered remote source.
+/// SMB produces `.local` thumbnails generated from the video.
 public enum ArtworkSource: Sendable, Hashable {
-    case remote(URL, headers: [String: String]?)
     case local(URL)
     case none
 }

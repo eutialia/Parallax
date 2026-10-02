@@ -14,7 +14,9 @@ public protocol PlaybackEngine: AnyObject, Sendable {
 
     /// The live playback clock, smooth enough for sub-second cue timing (the `state`
     /// stream's ~0.5s beats are too coarse). Read directly by the client-side subtitle
-    /// overlay so it can sync cues against any engine. `.zero` when nothing is loaded.
+    /// overlay so it can sync cues against any engine. `.invalid` while there is no
+    /// position worth drawing to (VLC: before the first frame and through the resume
+    /// seek), so readers must gate on `isValid` rather than treat it as 0:00.
     nonisolated var currentTime: CMTime { get }
 
     /// Single-consumer state stream. Only `PlayerViewModel` iterates this.

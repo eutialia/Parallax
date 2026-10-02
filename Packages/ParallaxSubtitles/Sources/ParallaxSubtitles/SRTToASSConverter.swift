@@ -53,8 +53,4 @@ enum SRTToASSConverter {
 
         return events
     }
-
-    static func script(from source: String, fontFamily: String) -> String {
-        ASSScriptBuilder.script(events: events(from: source), fontFamily: fontFamily)
-    }
 }

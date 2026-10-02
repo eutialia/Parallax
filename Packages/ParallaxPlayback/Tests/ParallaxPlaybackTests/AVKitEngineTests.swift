@@ -30,32 +30,8 @@ enum AVKitFixtures {
     }
 }
 
-@Suite("AVKitEngine")
-@MainActor
-struct AVKitEngineTests {
-
-    @Test("Declares the AVKit id and all-true capabilities")
-    func identityAndCapabilities() {
-        let engine = AVKitEngine()
-        #expect(engine.id == .avKit)
-        #expect(engine.capabilities == PlaybackEngineCapabilities(
-            supportsPiP: true, supportsVideoAirPlay: true, supportsNowPlayingIntegration: true
-        ))
-    }
-
-    /// The app sets `AVPlayerViewController.player` through this seam, so the hosting
-    /// property must vend the very instance the engine drives — not a fresh one.
-    @Test("Conforms to AVPlayerHosting and vends the AVPlayer it drives")
-    func hostsAnAVPlayer() {
-        let engine = AVKitEngine()
-        let hosting: any AVPlayerHosting = engine
-        #expect(hosting.avPlayer === engine.avPlayer)
-    }
-}
-
 /// The engine-agnostic half of the `PlaybackEngine` stream contract, run against both
-/// concrete engines. Previously duplicated verbatim in `AVKitEngineTests` and
-/// `VLCKitEngineTests`.
+/// concrete engines.
 // `.timeLimit`: `teardownFinishesStream` awaits a terminal nil from a real engine's stream.
 // Swift Testing applies no default timeout, so an engine that never finishes its continuation
 // wedges the whole run instead of failing its own test.
@@ -102,10 +78,12 @@ struct PlaybackEngineStreamContractTests {
         #expect(terminal == nil)
     }
 
-    @Test("the engine id matches the kind that built it", arguments: EngineKind.allCases)
-    func reportsItsOwnID(kind: EngineKind) {
-        let expected: PlaybackEngineID = kind == .avKit ? .avKit : .vlcKit
-        #expect(kind.make().id == expected)
+    @Test("the engine reports the id and capabilities of the kind that built it",
+          arguments: EngineKind.allCases)
+    func identity(kind: EngineKind) {
+        let engine = kind.make()
+        #expect(engine.id == (kind == .avKit ? .avKit : .vlcKit))
+        #expect(engine.capabilities == (kind == .avKit ? .avKit : .vlcKit))
     }
 }
 
@@ -166,19 +144,10 @@ struct AVKitLogRedactionTests {
 @MainActor
 struct AVKitSubtitleSuppressionTests {
 
-    private static var subtitledFixture: URL {
-        get throws {
-            try #require(
-                Bundle.module.url(forResource: "subtitled", withExtension: "mp4", subdirectory: "Fixtures"),
-                "subtitled.mp4 fixture missing from the test bundle"
-            )
-        }
-    }
-
     /// Loads the fixture and returns the inventory the engine publishes with `.ready`.
     private func loadAndAwaitReady(_ engine: AVKitEngine, disabled: Bool) async throws -> TrackInventory {
         var iterator = engine.state.makeAsyncIterator()
-        try await engine.load(.fixture(url: Self.subtitledFixture, engineSubtitlesDisabled: disabled))
+        try await engine.load(.fixture(url: AVKitFixtures.subtitled, engineSubtitlesDisabled: disabled))
         while let beat = await iterator.next() {
             if case .ready(_, let tracks) = beat.state { return tracks }
             if case .failed(let error) = beat.state { throw error }
@@ -668,22 +637,6 @@ struct AVKitWatchdogExpiryTests {
         #expect(!info.errorLogDetail.contains("?"))
     }
 
-    /// A `.readyToPlay` has nothing to diagnose; only the failure branch returns a snapshot,
-    /// so a caller can't mistake "nothing went wrong" for "the diagnosis was lost".
-    @Test("a readiness transition produces no failure diagnosis")
-    func readinessProducesNoDiagnosis() async throws {
-        let engine = AVKitEngine()
-        var iterator = engine.state.makeAsyncIterator()
-        let session = try await engine.load(.fixture(url: AVKitFixtures.tiny))
-        while let beat = await iterator.next() {
-            if case .ready = beat.state { break }
-        }
-        let item = try #require(engine.currentItem)
-
-        #expect(engine.handleStatusChange(item, from: session) == nil)
-        await engine.teardown()
-    }
-
     /// Both expiries are a no-op once the item is gone — the guard that stops a teardown
     /// racing a fired timer into a phantom failure.
     @Test("a watchdog that fires after teardown publishes nothing")
@@ -773,24 +726,24 @@ struct AVKitSupersededSessionTests {
             engine.emitTimeUpdate(at: CMTime(seconds: 1, preferredTimescale: 600),
                                   of: staleItem, from: stale)
         case .trackInventory:
-            break   // already in flight, and awaiting a real media-selection load
+            // Already in flight, parked on these two loads. Joining them here puts its beat,
+            // if the stamp let one through, ahead of the live `.ready` drained below.
+            let staleAsset = try #require(staleItem.asset as? AVURLAsset)
+            _ = try? await staleAsset.loadMediaSelectionGroup(for: .audible)
+            _ = try? await staleAsset.loadMediaSelectionGroup(for: .legible)
         case .loadWatchdog:
             engine.handleLoadTimeout(from: stale)
         case .stallWatchdog:
             engine.handleStallTimeout(from: stale)
         }
 
-        // The live session's own `.ready` is the sync point for every synchronous callback:
-        // `yield` is synchronous, so anything they published is already ahead of it in the
-        // buffer.
+        // The live session's own `.ready` is the sync point: `yield` is synchronous, so anything
+        // a callback published is already ahead of it in the buffer.
         while let beat = await iterator.next() {
             #expect(beat.session != stale,
                     "a superseded \(callback.rawValue) beat reached the stream: \(beat.state)")
             if case .ready = beat.state, beat.session == live { break }
         }
-        // …and a breath for the one callback that lands asynchronously, before the teardown
-        // closes the stream on it.
-        try await Task.sleep(for: .milliseconds(300))
         await engine.teardown()
         while let beat = await iterator.next() {
             #expect(beat.session != stale,

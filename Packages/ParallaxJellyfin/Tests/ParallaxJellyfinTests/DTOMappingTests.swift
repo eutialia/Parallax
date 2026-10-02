@@ -74,16 +74,30 @@ struct DTOMappingTests {
 
     @Test("Missing required fields cause every translator to return nil")
     func missingRequired() {
-        var dto = BaseItemDto()
-        dto.id = nil
-        #expect(dto.toMovie() == nil)
-        #expect(dto.toSeries() == nil)
-        #expect(dto.toMediaCollection() == nil)
-        dto.id = "x"
-        dto.name = nil
-        #expect(dto.toMovie() == nil)
-        #expect(dto.toSeries() == nil)
-        #expect(dto.toMediaCollection() == nil)
+        // Typed as the kind each translator accepts, so only the id / name guards can reject them.
+        var movie = BaseItemDto()
+        movie.type = .movie
+        var series = BaseItemDto()
+        series.type = .series
+        var collection = BaseItemDto()
+
+        #expect(movie.toMovie() == nil)
+        #expect(series.toSeries() == nil)
+        #expect(collection.toMediaCollection() == nil)
+
+        movie.id = "x"
+        series.id = "x"
+        collection.id = "x"
+        #expect(movie.toMovie() == nil)
+        #expect(series.toSeries() == nil)
+        #expect(collection.toMediaCollection() == nil)
+
+        movie.name = "n"
+        series.name = "n"
+        collection.name = "n"
+        #expect(movie.toMovie() != nil)
+        #expect(series.toSeries() != nil)
+        #expect(collection.toMediaCollection() != nil)
     }
 
     @Test("season.json → Season with seriesID linkage")
@@ -192,8 +206,8 @@ struct DTOMappingTests {
         return dto
     }
 
-    @Test("3840×2160 DOVI video stream → detailMetadata includes quality labels")
-    func movieDetailMetadataQuality() {
+    @Test("The video stream's dimensions and range map onto the movie")
+    func movieVideoStreamFields() {
         var dto = JellyfinFixtures.movieDto(id: "movie-badge-4k", name: "Badge Movie")
         dto.productionYear = 2020
         var stream = MediaStream()
@@ -202,18 +216,11 @@ struct DTOMappingTests {
         stream.height = 2160
         stream.videoRangeType = .dovi
         dto.mediaStreams = [stream]
-        let meta = dto.toMovie().map { DetailMetadata(movie: $0) }
-        #expect(meta?.textParts == ["2020"])
-        #expect(meta?.qualityLabels == ["4K", "HDR"])
-    }
-
-    @Test("No video stream → detailMetadata omits quality labels")
-    func movieDetailMetadataNoStream() {
-        var dto = JellyfinFixtures.movieDto(id: "movie-badge-empty", name: "No Stream Movie")
-        dto.productionYear = 1999
-        let meta = dto.toMovie().map { DetailMetadata(movie: $0) }
-        #expect(meta?.textParts == ["1999"])
-        #expect(meta?.qualityLabels.isEmpty == true)
+        let movie = dto.toMovie()
+        #expect(movie?.year == 2020)
+        #expect(movie?.width == 3840)
+        #expect(movie?.height == 2160)
+        #expect(movie?.videoRangeType == "DOVI")
     }
 
     @Test("Subtitle stream → hasSubtitles is true")
@@ -222,16 +229,13 @@ struct DTOMappingTests {
         sub.type = .subtitle
         let dto = JellyfinFixtures.movieDto(id: "movie-subs", name: "Subtitled Movie", streams: [sub])
         #expect(dto.toMovie()?.hasSubtitles == true)
-        #expect(dto.toMovie().map { DetailMetadata(movie: $0).hasSubtitles } == true)
     }
 
     @Test("hasSubtitles DTO flag without streams → hasSubtitles is true")
     func movieHasSubtitlesFromFlag() {
         var dto = JellyfinFixtures.movieDto(id: "movie-subs-flag", name: "Sidecar Subs Movie")
         dto.hasSubtitles = true
-        let movie = dto.toMovie()
-        #expect(movie?.hasSubtitles == true)
-        #expect(movie.map { DetailMetadata(movie: $0).hasSubtitles } == true)
+        #expect(dto.toMovie()?.hasSubtitles == true)
     }
 
     @Test("series maps communityRating and officialRating")
@@ -240,15 +244,8 @@ struct DTOMappingTests {
         dto.communityRating = 9.1
         dto.officialRating = "TV-MA"
         let series = dto.toSeries()
-        let meta = series.map { DetailMetadata(series: $0) }
         #expect(abs((series?.communityRating ?? 0) - 9.1) < 0.001)
         #expect(series?.officialRating == "TV-MA")
-        // A formatted-string expectation: the star glyph + one-decimal shape IS the spec the hero
-        // renders, and `DetailMetadata`'s formatter is private, so the literal is the assertion.
-        #expect(meta?.textParts.contains("★ 9.1") == true)
-        #expect(meta?.textParts.contains("TV-MA") == true)
-        #expect(meta?.qualityLabels.isEmpty == true)
-        #expect(meta?.hasSubtitles == false)
     }
 
     /// `dateCreated` is what the hero feed's newly-added-vs-new-episode classification runs on, so

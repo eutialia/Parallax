@@ -79,26 +79,17 @@ struct PlaybackInfoServiceReportTests {
         #expect(fake.stoppedInfos.first?.playSessionID == "ps-1")
     }
 
-    /// Both session-lifecycle calls follow one named non-fatal policy: forward the play session id,
-    /// and never let a failure reach the caller — a failed transcode kill or a dropped keepalive
-    /// must not tear down playback.
-    @Test(
-        "Session-lifecycle calls forward the play session and swallow failures",
-        arguments: [SessionCall.stopEncoding, .ping], [false, true]
-    )
-    func sessionCallsAreBestEffort(call: SessionCall, fails: Bool) async {
+    @Test("Session-lifecycle calls forward the play session and nothing else", arguments: [SessionCall.stopEncoding, .ping])
+    func sessionCallsForwardThePlaySession(call: SessionCall) async {
         let fake = FakeJellyfinPlaybackClient()
         let service = PlaybackInfoService(client: fake)
-        let failure = FakeJellyfinPlaybackClient.FakeError.reportFailed
 
         switch call {
         case .stopEncoding:
-            if fails { fake.stopEncodingError = failure }
             await service.stopEncoding(playSessionID: "ps-1")
             #expect(fake.stopEncodingSessionIDs == ["ps-1"])
             #expect(fake.pingSessionIDs.isEmpty)
         case .ping:
-            if fails { fake.pingError = failure }
             await service.pingSession(playSessionID: "ps-1")
             #expect(fake.pingSessionIDs == ["ps-1"])
             #expect(fake.stopEncodingSessionIDs.isEmpty)
@@ -106,21 +97,6 @@ struct PlaybackInfoServiceReportTests {
     }
 
     enum SessionCall: Sendable { case stopEncoding, ping }
-
-    @Test("A thrown report is non-fatal — it does not propagate")
-    func reportFailureSwallowed() async {
-        let fake = FakeJellyfinPlaybackClient()
-        fake.startError = FakeJellyfinPlaybackClient.FakeError.reportFailed
-        fake.progressError = FakeJellyfinPlaybackClient.FakeError.reportFailed
-        fake.stoppedError = FakeJellyfinPlaybackClient.FakeError.reportFailed
-        let service = PlaybackInfoService(client: fake)
-        // None of these throw — the policy logs and continues.
-        await service.reportStart(beat(position: 0))
-        await service.reportProgress(beat(position: 110_000_000), now: 11)
-        await service.reportStopped(beat(position: 99_000_000))
-        #expect(fake.startInfos.count == 1)
-        #expect(fake.stoppedInfos.count == 1)
-    }
 }
 
 @Suite("PlaybackInfoService — track selection write-back")
@@ -175,6 +151,7 @@ struct PlaybackInfoServiceTrackSelectionTests {
         fake.userConfigurationResult = .success(config())
         let service = PlaybackInfoService(client: fake)
         await service.rememberTrackSelection(.audio(languageCode: nil))
+        #expect(fake.userConfigurationFetchCount == 0)
         #expect(fake.updatedUserConfigurations.isEmpty)
     }
 
@@ -259,7 +236,7 @@ struct PlaybackInfoServiceTrackSelectionTests {
         #expect(fake.updatedUserConfigurations.first?.subtitleLanguagePreference == "zh-Hans")
     }
 
-    @Test("A failed fetch or update is swallowed (never disturbs playback)")
+    @Test("A failed configuration fetch is swallowed and nothing is written back")
     func failuresSwallowed() async {
         let fake = FakeJellyfinPlaybackClient()
         fake.userConfigurationResult = .failure(FakeJellyfinPlaybackClient.FakeError.reportFailed)

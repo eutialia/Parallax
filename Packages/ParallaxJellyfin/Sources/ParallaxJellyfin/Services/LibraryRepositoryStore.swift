@@ -22,7 +22,7 @@ public actor LibraryRepositoryStore {
             return entry.repo
         }
         let client = await clientFactory.make(for: session)
-        let repo = LibraryRepository(session: session, client: client)
+        let repo = LibraryRepository(client: client)
         reposByServer[session.id] = (session.accessToken, repo)
         return repo
     }

@@ -89,12 +89,13 @@ enum SubtitleFontTagger {
     /// Serif/Sans caption choice).
     ///
     /// - Parameter styleFontSize: the synthesized style's Fontsize, in script
-    ///   units. A run whose family declares a taller win box than the style font
-    ///   also gets `\fs` compensation so its em renders at this size instead of
-    ///   being divided by the box — otherwise it sits visually smaller than the
-    ///   Latin around it (and its outline proportionally heavier). The bundled
-    ///   boxes span 1.24 (Noto Sans Tamil) to 2.50 (Noto Serif Myanmar), so
-    ///   without this a Myanmar caption renders at 61% of a Latin one.
+    ///   units. A run whose family declares a different win box than the style
+    ///   font also gets `\fs` compensation so its em renders at this size instead
+    ///   of being scaled by the box ratio: a taller box would sit visually smaller
+    ///   than the Latin around it (and its outline proportionally heavier), a
+    ///   shorter one larger. The bundled boxes span 1.24 (Noto Sans Tamil) to
+    ///   2.50 (Noto Serif Myanmar), so without this a Myanmar caption renders at
+    ///   61% of a Latin one.
     static func tagged(_ text: String, plan: SubtitleFontPlan, styleFontSize: Double) -> String {
         rewritten(text, routing: plan.symbolRouting, closesWith: .styleFont) { line, runClass in
             guard let family = plan.family(forRun: runClass, line: line, scope: .allRuns) else {
@@ -103,7 +104,7 @@ enum SubtitleFontTagger {
             // Relative to the STYLE font's box: the app-side scale mapping
             // already compensates the style font itself, so runs only need the
             // difference.
-            let factor = plan.sizeFactor(forFamily: family) / plan.styleFontEmBoxFactor
+            let factor = SubtitleFontMetrics.emBoxFactor(forFamily: family) / plan.styleFontEmBoxFactor
             return Tags(
                 family: family,
                 size: abs(factor - 1) > 0.02 ? styleFontSize * factor : nil

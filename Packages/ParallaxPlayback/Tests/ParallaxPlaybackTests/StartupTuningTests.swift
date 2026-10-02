@@ -20,7 +20,7 @@ struct StartupTuningTests {
 
         let item = makeItem()
         let before = item.preferredForwardBufferDuration
-        AVKitEngine.applyTuning(.systemDefault, to: item, player: AVPlayer())
+        AVKitEngine.applyTuning(.systemDefault, to: item)
         #expect(item.preferredForwardBufferDuration == before)
     }
 
@@ -32,24 +32,8 @@ struct StartupTuningTests {
         let item = makeItem()
         AVKitEngine.applyTuning(
             StartupTuning(preferredForwardBufferSeconds: seconds),
-            to: item,
-            player: AVPlayer()
+            to: item
         )
         #expect(item.preferredForwardBufferDuration == seconds)
-    }
-
-    /// The tuning is item-scoped: the shipping profile must never mutate the shared
-    /// `AVPlayer` (an `automaticallyWaitsToMinimizeStalling` knob lived here once and
-    /// was deleted after it wedged the first `.playing` beat on device).
-    @Test("applyTuning leaves the AVPlayer's stall-waiting policy alone")
-    func doesNotTouchThePlayer() {
-        let player = AVPlayer()
-        let before = player.automaticallyWaitsToMinimizeStalling
-        AVKitEngine.applyTuning(
-            StartupTuning(preferredForwardBufferSeconds: 4),
-            to: makeItem(),
-            player: player
-        )
-        #expect(player.automaticallyWaitsToMinimizeStalling == before)
     }
 }

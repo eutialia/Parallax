@@ -7,8 +7,6 @@ import JellyfinAPI
 final class FakeJellyfinAuthClient: JellyfinAuthClient, @unchecked Sendable {
     private let lock = NSLock()
 
-    let serverURL: URL
-
     // Programmable hooks. Each Result is REPLAYED on every call, not consumed — a test can drive
     // the same method twice and get the same answer.
     var passwordSignInResult: Result<AuthenticationResult, Error> = .failure(FakeError.notConfigured)
@@ -16,6 +14,11 @@ final class FakeJellyfinAuthClient: JellyfinAuthClient, @unchecked Sendable {
     var signOutResult: Result<Void, Error> = .success(())
     var publicSystemInfoResult: Result<PublicSystemInfo, Error> = .failure(FakeError.notConfigured)
     var quickConnectEventsToYield: [Result<QuickConnect.Event, Error>] = []
+    /// Leaves the event stream open after the canned events, as a poller still awaiting approval does.
+    var quickConnectEventsStayOpen = false
+    /// Called from `deinit` with the Quick Connect secrets this client exchanged, for a test that
+    /// holds no reference and needs to know the run that owned the client is over.
+    var onDeinit: (@Sendable (_ exchangedSecrets: [String]) -> Void)?
 
     // Call records for assertions.
     private var recordedPasswordSignInCalls: [(username: String, password: String)] = []
@@ -28,8 +31,8 @@ final class FakeJellyfinAuthClient: JellyfinAuthClient, @unchecked Sendable {
 
     enum FakeError: Error { case notConfigured }
 
-    init(serverURL: URL) {
-        self.serverURL = serverURL
+    deinit {
+        onDeinit?(recordedQuickConnectSignInCalls)
     }
 
     func signIn(username: String, password: String) async throws -> AuthenticationResult {
@@ -58,7 +61,7 @@ final class FakeJellyfinAuthClient: JellyfinAuthClient, @unchecked Sendable {
     }
 
     func quickConnectEvents() -> AsyncThrowingStream<QuickConnect.Event, Error> {
-        let events = lock.withLock { quickConnectEventsToYield }
+        let (events, staysOpen) = lock.withLock { (quickConnectEventsToYield, quickConnectEventsStayOpen) }
         return AsyncThrowingStream { continuation in
             Task {
                 for event in events {
@@ -70,7 +73,7 @@ final class FakeJellyfinAuthClient: JellyfinAuthClient, @unchecked Sendable {
                         return
                     }
                 }
-                continuation.finish()
+                if !staysOpen { continuation.finish() }
             }
         }
     }
@@ -84,7 +87,7 @@ final class FakeJellyfinClientFactory: JellyfinClientFactory, @unchecked Sendabl
     func client(for url: URL) -> FakeJellyfinAuthClient {
         lock.withLock {
             if let existing = clientsByURL[url] { return existing }
-            let new = FakeJellyfinAuthClient(serverURL: url)
+            let new = FakeJellyfinAuthClient()
             clientsByURL[url] = new
             return new
         }

@@ -22,11 +22,6 @@ final class FakeJellyfinPlaybackClient: JellyfinPlaybackClient, @unchecked Senda
     /// Returns a per-index sentinel so a test can tell one subtitle stream's URL from another's
     /// without the fake pretending to know the real endpoint's shape.
     var subtitleURLForIndex: @Sendable (Int) -> URL? = { URL(string: "https://fake.invalid/subtitle-sentinel/\($0)") }
-    // Per-call failures so the named non-fatal policy can be exercised.
-    var startError: Error?
-    var progressError: Error?
-    var stoppedError: Error?
-    var stopEncodingError: Error?
 
     // Call records.
     private(set) var playbackInfoCalls: [(itemID: String, profile: DeviceProfile, startTimeTicks: Int?, selection: StreamSelection?)] = []
@@ -38,7 +33,6 @@ final class FakeJellyfinPlaybackClient: JellyfinPlaybackClient, @unchecked Senda
     private(set) var stoppedInfos: [PlaybackStopInfo] = []
     private(set) var stopEncodingSessionIDs: [String] = []
     private(set) var pingSessionIDs: [String] = []
-    var pingError: Error?
 
     enum FakeError: Error { case reportFailed }
 
@@ -75,39 +69,24 @@ final class FakeJellyfinPlaybackClient: JellyfinPlaybackClient, @unchecked Senda
         }
     }
 
-    func reportStart(_ info: PlaybackStateInfo) async throws {
-        try lock.withLock {
-            startInfos.append(info)
-            if let startError { throw startError }
-        }
+    func reportStart(_ info: PlaybackStateInfo) async {
+        lock.withLock { startInfos.append(info) }
     }
 
-    func reportProgress(_ info: PlaybackStateInfo) async throws {
-        try lock.withLock {
-            progressInfos.append(info)
-            if let progressError { throw progressError }
-        }
+    func reportProgress(_ info: PlaybackStateInfo) async {
+        lock.withLock { progressInfos.append(info) }
     }
 
-    func reportStopped(_ info: PlaybackStopInfo) async throws {
-        try lock.withLock {
-            stoppedInfos.append(info)
-            if let stoppedError { throw stoppedError }
-        }
+    func reportStopped(_ info: PlaybackStopInfo) async {
+        lock.withLock { stoppedInfos.append(info) }
     }
 
-    func stopEncoding(playSessionID: String) async throws {
-        try lock.withLock {
-            stopEncodingSessionIDs.append(playSessionID)
-            if let stopEncodingError { throw stopEncodingError }
-        }
+    func stopEncoding(playSessionID: String) async {
+        lock.withLock { stopEncodingSessionIDs.append(playSessionID) }
     }
 
-    func pingSession(playSessionID: String) async throws {
-        try lock.withLock {
-            pingSessionIDs.append(playSessionID)
-            if let pingError { throw pingError }
-        }
+    func pingSession(playSessionID: String) async {
+        lock.withLock { pingSessionIDs.append(playSessionID) }
     }
 
     // Delivery probe.
@@ -123,7 +102,6 @@ final class FakeJellyfinPlaybackClient: JellyfinPlaybackClient, @unchecked Senda
 
     // User configuration round-trip.
     var userConfigurationResult: Result<UserConfiguration, Error> = .success(UserConfiguration())
-    var updateUserConfigurationError: Error?
     private(set) var userConfigurationFetchCount = 0
     private(set) var updatedUserConfigurations: [UserConfiguration] = []
 
@@ -135,10 +113,7 @@ final class FakeJellyfinPlaybackClient: JellyfinPlaybackClient, @unchecked Senda
     }
 
     func updateUserConfiguration(_ configuration: UserConfiguration) async throws {
-        try lock.withLock {
-            updatedUserConfigurations.append(configuration)
-            if let updateUserConfigurationError { throw updateUserConfigurationError }
-        }
+        lock.withLock { updatedUserConfigurations.append(configuration) }
     }
 }
 

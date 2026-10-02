@@ -48,10 +48,6 @@ enum JellyfinFixtures {
         )
     }
 
-    static func persistedJellyfin(id: String, serverName: String? = nil) -> PersistedServer {
-        PersistedServer(id: ServerID(rawValue: id), kind: .jellyfin(jellyfinData(id: id, serverName: serverName)))
-    }
-
     static func identity(
         client: String = "Parallax",
         deviceName: String = "Tester",
@@ -105,23 +101,37 @@ enum JellyfinFixtures {
         let suiteName: String
     }
 
-    static func serverStore(_ label: String = "ServerStore") -> StoreHarness {
+    /// Rooted at a path nothing creates: `ServerStore` only ever deletes from its snapshot cache.
+    static func scratchSnapshots() -> SnapshotStore {
+        SnapshotStore(container: URL.temporaryDirectory.appending(
+            path: "scratch-snapshots-\(UUID().uuidString)", directoryHint: .isDirectory
+        ))
+    }
+
+    static func serverStore(
+        _ label: String = "ServerStore",
+        snapshots: SnapshotStore = scratchSnapshots()
+    ) -> StoreHarness {
         let (settings, suiteName) = settingsStore(label)
         let keychain = FakeKeychain()
         return StoreHarness(
-            store: ServerStore(settings: settings, keychain: keychain),
+            store: ServerStore(settings: settings, keychain: keychain, snapshots: snapshots),
             settings: settings,
             keychain: keychain,
             suiteName: suiteName
         )
     }
 
-    /// Writes `bytes` under the production persisted-servers key so `load()` reads exactly what a
-    /// shipped build would have written.
+    /// Typed in full on purpose: seeding through `ServerStore.persistedServersKey` would let a key
+    /// rename pass, and the key is where every shipped install's server list lives.
+    static let persistedServersKeyName = "ParallaxJellyfin.persistedSessions"
+
+    /// Writes `bytes` under the literal persisted-servers key, so `load()` reads what a shipped
+    /// build would have written.
     static func seedPersistedBytes(_ bytes: Data, suiteName: String) {
         let seeder = UserDefaults(suiteName: suiteName)!
         seeder.removePersistentDomain(forName: suiteName)
-        seeder.set(bytes, forKey: ServerStore.persistedServersKey.name)
+        seeder.set(bytes, forKey: persistedServersKeyName)
     }
 
     static func seedPersistedServers(_ servers: [PersistedServer], suiteName: String) throws {
@@ -129,7 +139,7 @@ enum JellyfinFixtures {
     }
 
     static func rawPersistedBytes(suiteName: String) -> Data? {
-        UserDefaults(suiteName: suiteName)!.data(forKey: ServerStore.persistedServersKey.name)
+        UserDefaults(suiteName: suiteName)!.data(forKey: persistedServersKeyName)
     }
 
     /// Re-reads the persisted array through a FRESH `SettingsStore`, i.e. what the next launch sees.

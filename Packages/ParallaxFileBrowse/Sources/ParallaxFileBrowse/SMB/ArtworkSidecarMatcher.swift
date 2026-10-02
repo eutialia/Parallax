@@ -27,7 +27,7 @@ enum ArtworkSidecarMatcher {
 
     /// Recognised sidecar image extensions (lowercased). ImageIO decodes all of these via
     /// `ImageTranscode.downscaledImage`; `webp` included since modern NAS scrapers emit it.
-    static let imageExtensions: Set<String> = ["jpg", "jpeg", "png", "heic", "webp"]
+    private static let imageExtensions: Set<String> = ["jpg", "jpeg", "png", "heic", "webp"]
 
     /// True for a non-directory entry name whose extension is a recognised image type. The
     /// directory exclusion is the caller's (it holds the `isDirectory` flag); this is the name test,

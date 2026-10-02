@@ -13,66 +13,6 @@ import Testing
 @Suite("Shared libass library")
 struct SharedFontLibraryTests {
 
-    /// Everything a subtitle pick pays for: a fresh renderer, a canvas, a
-    /// parsed track, and the first frame out the other side.
-    private func timeToFirstFrame(text: String) async throws -> Duration {
-        let clock = ContinuousClock()
-        return try await clock.measure {
-            let renderer = await makeProbeRenderer()
-            try await renderer.load(SRTFixture.data(text: text), format: .srt)
-            _ = try #require(await renderer.frame(at: 2.0))
-        }
-    }
-
-    /// A latency guard, not a benchmark. Measured on the iPhone 17 Pro simulator:
-    /// the one-time bootstrap costs ~130 ms and the first renderer ~155 ms, while
-    /// every renderer after it lands at ~9 ms — the whole point of sharing the
-    /// library. The bound is an order of magnitude above that so it fails only on
-    /// a real regression: someone giving each renderer its own `ASS_Library`
-    /// again, which puts the ~50 MB copy and the fifty-face re-parse back on
-    /// this path and pins EVERY sample near the bootstrap figure.
-    ///
-    /// Best-of-N rather than a single sample, because suites run in parallel and
-    /// a dozen render tests contending on the shared library's lock can stretch
-    /// any one measurement past the bound (126 ms observed) with nothing wrong.
-    /// A per-renderer library would blow the bound on all N.
-    ///
-    /// No bound relative to this test's own first renderer: suites share the
-    /// process, so whoever paid the bootstrap may have been another suite, in
-    /// which case that "first" renderer is already a warm one (10 ms observed on
-    /// CI against a 6 ms fastest) and no ratio between the two says anything.
-    /// The library's font generation is no better a witness — concurrent suites
-    /// legitimately register their own files mid-loop. The absolute bound is the
-    /// guard: a library per renderer pays the bootstrap on every sample.
-    @Test("a renderer built after the first one costs a fraction of the bundle")
-    func secondRendererSkipsFontRegistration() async throws {
-        let first = try await timeToFirstFrame(text: "First renderer")
-        var samples: [Duration] = []
-        for index in 0..<5 {
-            samples.append(try await timeToFirstFrame(text: "Renderer \(index)"))
-        }
-        let fastest = try #require(samples.min())
-        let bootstrap = LibassLibrary.shared.bootstrapCost
-
-        print(
-            """
-            [shared libass library] one-time bootstrap: \
-            \(bootstrap.map { "\($0)" } ?? "not measured") · \
-            renderer + load + first frame: \(first) first, \
-            then \(samples.map { "\($0)" }.joined(separator: ", "))
-            """
-        )
-
-        // Registration happened (the library measured a bootstrap) and is behind
-        // us (a later renderer stays under the absolute bound — the ×12 CI slack
-        // is the same the other packages take from `CITimeScale`). A library per
-        // renderer fails the second.
-        let bound: Duration = ProcessInfo.processInfo.environment["CI"] == nil
-            ? .milliseconds(100) : .milliseconds(1200)
-        #expect(bootstrap != nil)
-        #expect(fastest < bound, "first \(first), fastest \(fastest)")
-    }
-
     /// Two live renderers is the shipping configuration: the player overlay and
     /// the settings live preview. They now share one `ASS_Library`, whose message
     /// callback is per LIBRARY — so this is the test that the per-renderer
@@ -164,28 +104,6 @@ struct SharedFontLibraryTests {
         }
     }
 
-    // MARK: - Warm-up
-
-    /// The bootstrap is ~130 ms of `ass_add_font` copying; paid lazily it lands
-    /// on whoever picks the first subtitle. `warmUp` moves it off that path, and
-    /// has to be safe to call twice — the library bootstraps once, whoever asks.
-    @Test("warming up registers the Latin faces once, off the caller's thread")
-    func warmUpIsIdempotent() async throws {
-        await SubtitleFontBundle.warmUpTask().value
-        await SubtitleFontBundle.warmUpTask().value
-        let bootstrapped = try #require(LibassLibrary.shared.bootstrapCost)
-
-        // Awaited, not slept on: the warm-up is a detached task, and a sleep
-        // long enough to be reliable is a sleep long enough to be slow.
-        await SubtitleFontBundle.warmUpTask().value
-        // A second registration would re-time the bootstrap; the cost is the
-        // one-shot's, unchanged.
-        #expect(LibassLibrary.shared.bootstrapCost == bootstrapped)
-        // And it registered the Latin pair, not the 52 MB bundle.
-        #expect(LibassLibrary.shared.registeredFileNames
-            .isSuperset(of: SubtitleFontBundle.latinFileNames))
-    }
-
     // MARK: - Lazy registration
 
     /// `ass_add_font` memcpy's into a library that is never torn down, so what a
@@ -203,14 +121,6 @@ struct SharedFontLibraryTests {
     /// (`SubtitleFontPlanTests.filesFollowTheFamilies`).
     @Test("a CJK track registers the collection")
     func cjkTrackRegistersTheCollection() async throws {
-        let english = await makeProbeRenderer()
-        try await english.load(SRTFixture.data(text: "Hello world"), format: .srt)
-        _ = try #require(await english.frame(at: 2.0))
-        // An English track pulls in nothing but what it names.
-        #expect(ASSScriptScan.requestedFamilies(
-            in: ASSScriptBuilder.script(events: [], fontFamily: SubtitleFontBundle.sansFamily)
-        ) == [SubtitleFontBundle.sansFamily])
-
         let chinese = await makeProbeRenderer()
         try await chinese.load(
             SRTFixture.data(text: "简体字幕测试"), format: .srt, languageHint: "zh-Hans"

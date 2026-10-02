@@ -7,7 +7,9 @@ import Testing
 struct SRTToASSConverterTests {
 
     private func script(_ source: String) -> String {
-        SRTToASSConverter.script(from: source, fontFamily: SubtitleFontBundle.sansFamily)
+        ASSScriptBuilder.script(
+            events: SRTToASSConverter.events(from: source), fontFamily: SubtitleFontBundle.sansFamily
+        )
     }
 
     @Test("comma-millisecond timecodes become centisecond ASS timecodes")
@@ -154,8 +156,8 @@ struct SRTToASSConverterTests {
 
     @Test("the synthesized script carries a Default style at the requested font")
     func synthesizedStyle() {
-        let generated = SRTToASSConverter.script(
-            from: "1\n00:00:01,000 --> 00:00:02,000\nHi\n\n",
+        let generated = ASSScriptBuilder.script(
+            events: SRTToASSConverter.events(from: "1\n00:00:01,000 --> 00:00:02,000\nHi\n\n"),
             fontFamily: "Avenir Next"
         )
         #expect(generated.contains("PlayResX: 1280"))
@@ -171,8 +173,8 @@ struct SRTToASSConverterTests {
     /// A comma in the font name would shift every later field of the style line.
     @Test("commas in the font family cannot break the style line")
     func fontNameWithComma() {
-        let generated = SRTToASSConverter.script(
-            from: "1\n00:00:01,000 --> 00:00:02,000\nHi\n\n",
+        let generated = ASSScriptBuilder.script(
+            events: SRTToASSConverter.events(from: "1\n00:00:01,000 --> 00:00:02,000\nHi\n\n"),
             fontFamily: "Bad, Font"
         )
         #expect(generated.contains("Style: Default,Bad Font,48,"))

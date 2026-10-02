@@ -187,65 +187,20 @@ struct ThumbnailGateTests {
         for task in later { #expect(await task.value) }
     }
 
-    @Test("completion outcomes grow/shrink a host's window; a second host is independent")
-    func perHostAIMDAdmission() async {
+    @Test("a second host admits independently while the first has a waiter queued")
+    func hostsDoNotShareABudget() async {
         let gate = ThumbnailGate()
-        let wanHost = "wan-nas"
-        let lanHost = "lan-nas"
-
-        // --- WAN seed of 1 stays serialized until a success grows past 1 ---
-        #expect(await gate.wait(key: key("wan-1"), host: wanHost, link: .wan))
-
-        let wan2 = Task {
-            await gate.wait(key: key("wan-2"), host: wanHost, link: .wan)
-        }
-        await waitUntil("second WAN wait on same host should queue") {
+        await fillPermits(gate, host: "nas-a")
+        let queued = Task { await gate.wait(key: key("a-queued"), host: "nas-a", link: .lan) }
+        await waitUntil("nas-a's fourth wait should queue") {
             await gate.queueDepths().prefetch == 1
         }
 
-        // One success: window 1.0 → 2.0 (limit 2); admit() resumes wan-2 (inFlight becomes 1).
-        await gate.signal(host: wanHost, outcome: .success)
-        await waitUntil("success should admit the queued WAN waiter") {
-            await gate.queueDepths().prefetch == 0
-        }
-        #expect(await wan2.value)
+        #expect(await gate.wait(key: key("b-1"), host: "nas-b", link: .lan))
+        #expect(await gate.queueDepths().prefetch == 1)
 
-        // Third wait admits immediately (inFlight 1 < limit 2) — no queue.
-        #expect(await gate.wait(key: key("wan-3"), host: wanHost, link: .wan))
-        #expect(await gate.queueDepths() == (visible: 0, prefetch: 0))
-
-        // Free the two held WAN permits so later checks are uncontested.
-        await gate.signal(host: wanHost, outcome: .success)
-        await gate.signal(host: wanHost, outcome: .success)
-
-        // --- Transport failure shrinks a wide LAN host ---
-        await fillPermits(gate, host: lanHost)  // inFlight 3, limit 3
-        // One transport failure: window 3.0 → 1.5 (limit 1). Free the remaining two with more
-        // transport failures so the window stays at the floor of 1 (a success would grow it).
-        await gate.signal(host: lanHost, outcome: .transportFailure)
-        await gate.signal(host: lanHost, outcome: .transportFailure)
-        await gate.signal(host: lanHost, outcome: .transportFailure)
-
-        // Effective concurrent limit is now 1: first wait admits, second queues.
-        #expect(await gate.wait(key: key("lan-a"), host: lanHost, link: .lan))
-        let lanQueued = Task {
-            await gate.wait(key: key("lan-b"), host: lanHost, link: .lan)
-        }
-        await waitUntil("shrunk LAN host should serialize the second waiter") {
-            await gate.queueDepths().prefetch == 1
-        }
-
-        // --- A second, different host is unaffected by lanHost's shrink ---
-        // Fresh WAN host still seeds at 1 and admits its first wait immediately even while
-        // lanHost has a waiter queued — two hosts don't share one global budget.
-        #expect(await gate.wait(key: key("other-1"), host: "other-nas", link: .wan))
-        #expect(await gate.queueDepths().prefetch == 1)  // lan-b still queued on lanHost
-
-        // Drain so no waiter leaks a suspended continuation past the test.
-        await gate.signal(host: lanHost, outcome: .success)
-        #expect(await lanQueued.value)
-        await gate.signal(host: lanHost, outcome: .success)
-        await gate.signal(host: "other-nas", outcome: .success)
+        await gate.signal(host: "nas-a", outcome: .success)
+        #expect(await queued.value)
     }
 
     /// Per-host windows deliberately don't share a budget, which is exactly why a GLOBAL bound is

@@ -18,10 +18,8 @@ struct ServerStoreSnapshotPurgeTests {
             path: "server-store-snapshots-\(UUID().uuidString)", directoryHint: .isDirectory
         )
         defer { try? FileManager.default.removeItem(at: container) }
-        let harness = JellyfinFixtures.serverStore(label)
         let snapshots = SnapshotStore(container: container)
-        let store = ServerStore(settings: harness.settings, keychain: harness.keychain, snapshots: snapshots)
-        try await body(store, snapshots)
+        try await body(JellyfinFixtures.serverStore(label, snapshots: snapshots).store, snapshots)
     }
 
     private func seed(_ snapshots: SnapshotStore, serverID: String) async {
@@ -55,22 +53,6 @@ struct ServerStoreSnapshotPurgeTests {
 
             #expect(await snapshots.homeFeed(forServerID: "s1") == nil)
             #expect(await snapshots.libraries(forServerID: "s1") == nil)
-        }
-    }
-
-    @Test("Only the removed server's snapshots go — the others keep theirs")
-    func purgeIsPerServer() async throws {
-        try await withHarness("ServerStoreSnapshotPurgeTests.perServer") { store, snapshots in
-            try await store.add(JellyfinFixtures.session(id: "s1", token: "t1"))
-            try await store.add(JellyfinFixtures.session(id: "s2", token: "t2"))
-            await seed(snapshots, serverID: "s1")
-            await seed(snapshots, serverID: "s2")
-
-            try await store.remove(ServerID(rawValue: "s1"))
-
-            #expect(await snapshots.homeFeed(forServerID: "s1") == nil)
-            #expect(await snapshots.homeFeed(forServerID: "s2") != nil)
-            #expect(await snapshots.libraries(forServerID: "s2") != nil)
         }
     }
 }

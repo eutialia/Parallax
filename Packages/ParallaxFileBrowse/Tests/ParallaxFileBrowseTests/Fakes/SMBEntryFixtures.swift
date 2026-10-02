@@ -7,7 +7,7 @@ import Foundation
 enum SMBEntry {
 
     /// A regular file. Non-zero `size` by default — zero is the "incomplete stub" case that
-    /// `mediaFiles`/`browse` deliberately drop, so it has to be asked for explicitly.
+    /// `browse` deliberately drops, so it has to be asked for explicitly.
     static func file(
         _ name: String,
         size: Int64 = 1,

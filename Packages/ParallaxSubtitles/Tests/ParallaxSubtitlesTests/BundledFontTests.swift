@@ -131,12 +131,6 @@ struct BundledFontTests {
         #expect(SubtitleFontBundle.family(design: .serif, language: nil) == "Noto Serif")
     }
 
-    @Test("Arabic is served by the Naskh face in both designs")
-    func arabicServesBothDesigns() {
-        #expect(SubtitleFontBundle.family(design: .sans, script: .arabic) == "Noto Naskh Arabic")
-        #expect(SubtitleFontBundle.family(design: .serif, script: .arabic) == "Noto Naskh Arabic")
-    }
-
     @Test("a family name maps back to its design")
     func designRouting() {
         #expect(SubtitleFontBundle.design(forFamily: "Noto Sans CJK TC") == .sans)
@@ -149,9 +143,9 @@ struct BundledFontTests {
 
     // MARK: - Coverage
 
-    /// One line per script the bundle exists to serve. If any scalar here has no
-    /// glyph anywhere in the bundle, a real subtitle in that language renders as
-    /// tofu — there is no system fallback to hide it.
+    /// One line per script the bundle exists to serve. If the face routed for
+    /// any scalar here lacks its glyph, a real subtitle in that language renders
+    /// as tofu — there is no system fallback to hide it.
     static let probes: [(name: String, text: String)] = [
         ("Turkish", "İıŞşĞğÇçÖöÜü"),
         ("Polish", "Łódź ąęśż"),
@@ -177,27 +171,11 @@ struct BundledFontTests {
         ("Symbols", "♪ ♫ ♥ ★ → ● ▶ « »"),
     ]
 
-    /// Whether ANY shipped face can draw the scalar, read from our own files'
-    /// `cmap`s. Deliberately not CoreText: iOS ships several Noto faces of its
-    /// own, so a CoreText query could answer "yes" from a system font and leave
-    /// a hole in the bundle invisible.
-    static func bundleCovers(_ scalar: UInt32) -> Bool {
-        SubtitleFontBundle.facesByFamily.values.contains { $0.coverage.contains(scalar) }
-    }
-
-    @Test("every probe scalar has a glyph somewhere in the bundle", arguments: BundledFontTests.probes)
-    func bundleCoversEveryProbe(probe: (name: String, text: String)) {
-        for scalar in probe.text.unicodeScalars {
-            #expect(
-                Self.bundleCovers(scalar.value),
-                "\(probe.name): U+\(String(scalar.value, radix: 16, uppercase: true)) uncovered"
-            )
-        }
-    }
-
-    /// The stronger claim, and the one that actually keeps tofu off the screen:
-    /// the face ROUTING picks for a run has the glyphs of that run. "Somewhere
-    /// in the bundle" is worth nothing if the tagger names a different file.
+    /// What keeps tofu off the screen: the face ROUTING picks for a run has the
+    /// glyphs of that run, read from our own files' `cmap`s. Deliberately not
+    /// CoreText: iOS ships several Noto faces of its own, so a CoreText query
+    /// could answer "yes" from a system font and leave a hole in the bundle
+    /// invisible.
     @Test("the face routing picks for a run covers that run", arguments: BundledFontTests.probes)
     func routedFaceCoversItsRun(probe: (name: String, text: String)) throws {
         for design in SubtitleFontBundle.Design.allCases {

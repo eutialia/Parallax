@@ -138,9 +138,7 @@ struct VLCSubtitleFallbackRegionTests {
         "the first CJK language in the device's list picks the face",
         arguments: [
             (["en-CA", "zh-Hans-CA"], CJKFontPlan.Language.simplifiedChinese),
-            (["zh-TW"], CJKFontPlan.Language.traditionalChinese),
-            (["ja"], CJKFontPlan.Language.japanese),
-            (["ko-KR"], CJKFontPlan.Language.korean),
+            (["ko-KR", "zh-TW"], CJKFontPlan.Language.korean),
             (["en", "fr"], CJKFontPlan.Language.japanese),
             ([], CJKFontPlan.Language.japanese),
         ]

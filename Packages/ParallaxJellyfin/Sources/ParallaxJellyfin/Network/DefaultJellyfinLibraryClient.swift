@@ -6,8 +6,8 @@ public final class DefaultJellyfinLibraryClient: JellyfinLibraryClient, Sendable
     private let session: Session
     private let identity: DeviceIdentity
     /// Called when this server rejects the session's access token (HTTP 401) — see
-    /// `JellyfinResponseValidator`. nil in tests and previews, where nothing acts on it.
-    private let onTokenRejected: (@Sendable (ServerID) -> Void)?
+    /// `JellyfinResponseValidator`.
+    private let onTokenRejected: @Sendable (ServerID) -> Void
     /// The transport every request runs on. Defaulted to `.default` so production is unchanged;
     /// tests hand in a configuration carrying a stub `URLProtocol` so the real request/response
     /// path is exercised without a live server.
@@ -16,7 +16,7 @@ public final class DefaultJellyfinLibraryClient: JellyfinLibraryClient, Sendable
     public init(
         session: Session,
         identity: DeviceIdentity,
-        onTokenRejected: (@Sendable (ServerID) -> Void)? = nil,
+        onTokenRejected: @escaping @Sendable (ServerID) -> Void,
         sessionConfiguration: URLSessionConfiguration = .default
     ) {
         self.session = session
@@ -38,9 +38,7 @@ public final class DefaultJellyfinLibraryClient: JellyfinLibraryClient, Sendable
         // whichever screen happens to ask first.
         return JellyfinClient(
             configuration: config,
-            delegate: onTokenRejected.map {
-                JellyfinResponseValidator(serverID: session.id, onTokenRejected: $0)
-            },
+            delegate: JellyfinResponseValidator(serverID: session.id, onTokenRejected: onTokenRejected),
             sessionConfiguration: sessionConfiguration
         )
     }

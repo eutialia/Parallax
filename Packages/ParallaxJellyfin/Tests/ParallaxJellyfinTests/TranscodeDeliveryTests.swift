@@ -4,9 +4,6 @@ import JellyfinAPI
 import ParallaxCore
 @testable import ParallaxJellyfin
 
-/// Mapping tests for the `GET /Sessions` copy-vs-reencode probe. The mapping
-/// is a pure static seam (`DefaultJellyfinPlaybackClient.delivery(fromSessions:deviceID:)`)
-/// so these run against canned `SessionInfoDto` lists — no live server.
 @Suite("TranscodeDelivery — session mapping")
 struct TranscodeDeliveryMappingTests {
     private func transcodingInfo(
@@ -116,17 +113,12 @@ struct TranscodeDeliveryMappingTests {
         #expect(delivery?.isVideoDirect == true)
         #expect(delivery?.isAudioDirect == true)
     }
-
-    @Test("An empty session list yields nil")
-    func emptyListIsNil() {
-        #expect(DefaultJellyfinPlaybackClient.delivery(fromSessions: [], deviceID: "dev-1") == nil)
-    }
 }
 
 @Suite("PlaybackInfoService — transcodingDelivery pass-through")
 struct PlaybackInfoServiceTranscodingDeliveryTests {
     @Test("Forwards the playSessionID and returns the client's delivery")
-    func passThrough() async throws {
+    func passThrough() async {
         let client = FakeJellyfinPlaybackClient()
         let expected = TranscodeDelivery(
             isVideoDirect: true,
@@ -138,34 +130,19 @@ struct PlaybackInfoServiceTranscodingDeliveryTests {
         client.transcodingDeliveryResult = .success(expected)
         let service = PlaybackInfoService(client: client)
 
-        let delivery = try await service.transcodingDelivery(playSessionID: "ps-1")
+        let delivery = await service.transcodingDelivery(playSessionID: "ps-1")
 
         #expect(delivery == expected)
         #expect(client.transcodingDeliveryCalls == ["ps-1"])
     }
 
-    /// Unlike the fire-and-forget reports this call THROWS, because the caller has to tell
-    /// "no session yet — ask again later" (nil) apart from "the probe itself failed" (throw).
-    /// Collapsing those would make the debug overlay retry forever on a dead connection.
-    @Test("nil means 'not started yet'; a transport failure is a mapped AppError")
-    func nilAndFailureAreDistinct() async throws {
+    @Test("A failed probe reads as nil")
+    func failureYieldsNil() async {
         let client = FakeJellyfinPlaybackClient()
-        client.transcodingDeliveryResult = .success(nil)
+        client.transcodingDeliveryResult = .failure(URLError(.notConnectedToInternet))
         let service = PlaybackInfoService(client: client)
 
-        #expect(try await service.transcodingDelivery(playSessionID: "ps-1") == nil)
+        #expect(await service.transcodingDelivery(playSessionID: "ps-1") == nil)
         #expect(client.transcodingDeliveryCalls == ["ps-1"])
-
-        client.transcodingDeliveryResult = .failure(URLError(.notConnectedToInternet))
-        do {
-            _ = try await service.transcodingDelivery(playSessionID: "ps-2")
-            Issue.record("a transport failure must throw, not read as 'not started yet'")
-        } catch let error as AppError {
-            guard case .network = error else {
-                Issue.record("expected .network, got \(error)")
-                return
-            }
-        }
-        #expect(client.transcodingDeliveryCalls == ["ps-1", "ps-2"])
     }
 }

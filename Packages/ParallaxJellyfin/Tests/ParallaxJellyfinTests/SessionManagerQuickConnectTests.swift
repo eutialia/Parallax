@@ -97,50 +97,105 @@ struct SessionManagerQuickConnectTests {
         #expect(harness.client.quickConnectSignInCalls.isEmpty)
     }
 
-    /// The secret was approved but the token exchange failed — the code is spent, so this is a
-    /// plain failure, not an expiry the user can retry by re-approving.
-    @Test("A failed token exchange after approval reports the mapped failure")
-    func exchangeFailureAfterApproval() async throws {
+    /// The secret was approved but a later step failed. The code is spent, so each is a plain
+    /// failure with its mapped reason, not an expiry the user can retry by re-approving. A
+    /// composition failure (a response with no server id) must not yield a half-built `.signedIn`.
+    @Test("A failure after approval reports the mapped failure, never a session", arguments: PostApprovalFailure.allCases)
+    func failureAfterApproval(failure: PostApprovalFailure) async throws {
         let harness = SessionManagerHarness()
         harness.client.quickConnectEventsToYield = [.success(.authenticated(secret: "secret-xyz"))]
-        harness.client.quickConnectSignInResult = .failure(URLError(.timedOut))
-
-        let collected = await statuses(of: harness)
-
-        #expect(collected.last == .failed(reason: AppError.network(URLError(.timedOut)).userMessage))
-        #expect(await harness.store.sessions.isEmpty)
-    }
-
-    @Test("A failed public-info fetch after approval reports the mapped failure")
-    func publicInfoFailureAfterApproval() async throws {
-        let harness = SessionManagerHarness()
-        harness.client.quickConnectEventsToYield = [.success(.authenticated(secret: "secret-xyz"))]
-        harness.client.quickConnectSignInResult = .success(SessionManagerHarness.authResult(accessToken: "tok-qc"))
-        harness.client.publicSystemInfoResult = .failure(URLError(.cannotFindHost))
-
-        let collected = await statuses(of: harness)
-
-        #expect(collected.last == .failed(reason: AppError.network(URLError(.cannotFindHost)).userMessage))
-        #expect(await harness.store.sessions.isEmpty)
-    }
-
-    /// Post-auth composition can still fail (a response with no server id). The stream must report
-    /// it as a failure instead of yielding a half-built `.signedIn`.
-    @Test("A post-auth composition failure reports a failure, not a session")
-    func compositionFailureAfterApproval() async throws {
-        let harness = SessionManagerHarness()
-        harness.client.quickConnectEventsToYield = [.success(.authenticated(secret: "secret-xyz"))]
-        harness.client.quickConnectSignInResult = .success(
-            SessionManagerHarness.authResult(accessToken: "tok-qc", serverID: nil)
-        )
-        harness.client.publicSystemInfoResult = .success(SessionManagerHarness.publicInfo(id: nil))
-
-        let collected = await statuses(of: harness)
-
-        guard case .failed = collected.last else {
-            Issue.record("expected .failed, got \(String(describing: collected.last))")
-            return
+        switch failure {
+        case .exchange:
+            harness.client.quickConnectSignInResult = .failure(URLError(.timedOut))
+        case .publicInfo:
+            harness.client.quickConnectSignInResult = .success(SessionManagerHarness.authResult(accessToken: "tok-qc"))
+            harness.client.publicSystemInfoResult = .failure(URLError(.cannotFindHost))
+        case .composition:
+            harness.client.quickConnectSignInResult = .success(
+                SessionManagerHarness.authResult(accessToken: "tok-qc", serverID: nil)
+            )
+            harness.client.publicSystemInfoResult = .success(SessionManagerHarness.publicInfo(id: nil))
         }
+
+        let collected = await statuses(of: harness)
+
+        #expect(collected.last == .failed(reason: failure.expectedReason))
         #expect(await harness.store.sessions.isEmpty)
+    }
+
+    enum PostApprovalFailure: CaseIterable, Sendable {
+        case exchange, publicInfo, composition
+
+        var expectedReason: String {
+            switch self {
+            case .exchange: AppError.network(URLError(.timedOut)).userMessage
+            case .publicInfo: AppError.network(URLError(.cannotFindHost)).userMessage
+            case .composition: AppError.unexpected("", underlying: nil).userMessage
+            }
+        }
+    }
+
+    /// The auth client swallows its own cancellation and ends the event stream cleanly, so a run the
+    /// user backed out of leaves the loop like a finished one, possibly holding an approved secret.
+    /// It must stop there: exchanging the secret signs in to a server the user just walked away from.
+    @Test("A cancelled run never exchanges an approved secret", .timeLimit(.minutes(1)))
+    func cancelledRunNeverExchangesSecret() async throws {
+        let (released, release) = AsyncStream.makeStream(of: [String].self)
+        let storeHarness = JellyfinFixtures.serverStore("SessionManagerQuickConnectTests")
+        let manager = SessionManager(
+            serverStore: storeHarness.store,
+            factory: HandOffClientFactory(Self.approvingClient { exchanged in
+                release.yield(exchanged)
+                release.finish()
+            })
+        )
+
+        do {
+            var statuses = await manager
+                .signInWithQuickConnect(server: URL(string: "https://jellyfin.example.com")!)
+                .makeAsyncIterator()
+            #expect(await statuses.next() == .waitingForCode)
+            // Queued behind the approval, so seeing it means the run already holds the secret.
+            #expect(await statuses.next() == .polling(code: "AB12"))
+        }
+        // Dropping the status stream cancels the run; the client goes when the run ends.
+
+        var exchanged: [String]?
+        for await secrets in released { exchanged = secrets }
+        #expect(exchanged == [])
+        #expect(await storeHarness.store.sessions.isEmpty)
+    }
+
+    private static func approvingClient(
+        onDeinit: @escaping @Sendable ([String]) -> Void
+    ) -> FakeJellyfinAuthClient {
+        let client = FakeJellyfinAuthClient()
+        client.quickConnectEventsToYield = [
+            .success(.authenticated(secret: "secret-xyz")),
+            .success(.polling(code: "AB12")),
+        ]
+        client.quickConnectEventsStayOpen = true
+        client.quickConnectSignInResult = .success(SessionManagerHarness.authResult(accessToken: "tok-qc"))
+        client.publicSystemInfoResult = .success(SessionManagerHarness.publicInfo())
+        client.onDeinit = onDeinit
+        return client
+    }
+}
+
+/// Hands its one client over and keeps no reference, so the client lives exactly as long as the
+/// Quick Connect run that took it.
+private final class HandOffClientFactory: JellyfinClientFactory, @unchecked Sendable {
+    private let lock = NSLock()
+    private var client: FakeJellyfinAuthClient?
+
+    init(_ client: FakeJellyfinAuthClient) {
+        self.client = client
+    }
+
+    func make(serverURL: URL) async -> JellyfinAuthClient {
+        lock.withLock {
+            defer { client = nil }
+            return client!
+        }
     }
 }

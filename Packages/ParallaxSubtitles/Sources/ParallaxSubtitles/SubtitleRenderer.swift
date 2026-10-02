@@ -400,7 +400,7 @@ public actor SubtitleRenderer {
     /// libass' captured message log (font selection, parse warnings). Empty until
     /// the engine exists. The only ground truth for which font a glyph run used —
     /// a missing glyph renders as a perfectly valid tofu box.
-    public var diagnosticLog: [String] { engine?.messageLog.lines ?? [] }
+    var diagnosticLog: [String] { engine?.messageLog.lines ?? [] }
 
     // MARK: - Engine lifecycle
 

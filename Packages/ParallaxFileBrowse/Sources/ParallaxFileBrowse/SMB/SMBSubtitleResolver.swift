@@ -42,7 +42,7 @@ public struct SMBSubtitleResolver: Sendable {
     ///   - videoName: Basename of the video file, e.g. `"Movie.mkv"`.
     ///   - path: Directory path relative to the configured root, e.g. `"Movies"`.
     public func subtitles(for videoName: String, in path: String) async throws -> [SMBSubtitleMatch] {
-        // List once via SMBFileSource — allEntries rather than mediaFiles, since we need both the
+        // List once via SMBFileSource — allEntries rather than browse, since we need both the
         // subtitle siblings AND a video count, and reuse playableURL so path-building stays in one place.
         let allEntries = try await fileSource.allEntries(in: path)
 

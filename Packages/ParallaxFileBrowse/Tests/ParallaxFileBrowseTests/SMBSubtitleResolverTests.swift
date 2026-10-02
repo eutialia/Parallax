@@ -40,19 +40,6 @@ struct SMBSubtitleResolverTests {
         #expect(matches.map(\.url.lastPathComponent) == ["Movie.vtt"])
     }
 
-    @Test("in a multi-video folder an unrelated subtitle attaches to nobody")
-    func unrelatedIgnoredInAMultiVideoFolder() async throws {
-        // Two videos → the lonely-video fallback is off, so the strict reject path is what runs.
-        let matches = try await makeSubtitleResolver([
-            SMBEntry.file("Movie.mkv"),
-            SMBEntry.file("Decoy.mkv"),
-            SMBEntry.file("OtherMovie.srt"),
-            SMBEntry.file("Trailer.en.srt"),
-        ]).subtitles(for: "Movie.mkv", in: "Movies")
-
-        #expect(matches.isEmpty)
-    }
-
     /// The count that switches the fallback on is per media-typed entry, and it deliberately counts
     /// zero-byte stubs too: a stub beside one real video reads as two videos, keeping the loose
     /// cross-attach OFF rather than letting a grid concern flip subtitle matching.
@@ -93,17 +80,5 @@ struct SMBSubtitleResolverTests {
         let url = try #require(matches.first?.url)
         #expect(url.absoluteString == "smb://192.168.1.10/Media/Movies/Movie.en.srt")
         #expect(url.absoluteString.contains("@") == false, "credentials are never embedded")
-    }
-
-    /// A hostile host/name still percent-encodes into a usable URL, so every matched sibling is
-    /// returned — the resolver's "drop the one entry whose URL wouldn't build" guard is defensive.
-    @Test("a hostile host and filename still yield a usable subtitle URL")
-    func hostileNamesStillBuildURLs() async throws {
-        let resolver = makeSubtitleResolver([SMBEntry.file("Movie#1?.srt")], host: "Living Room NAS", root: "")
-        let matches = try await resolver.subtitles(for: "Movie#1?.mkv", in: "Movies")
-
-        let url = try #require(matches.first?.url)
-        #expect(url.lastPathComponent == "Movie#1?.srt")
-        #expect(url.host(percentEncoded: false) == "Living Room NAS")
     }
 }

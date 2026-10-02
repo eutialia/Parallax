@@ -29,10 +29,9 @@ private final class StubSMBLister: SMBLister, @unchecked Sendable {
 
 // MARK: - Test fixtures
 
-/// The one NAS every test here resolves against. Its id is load-bearing: `makeResolver`
-/// seeds the Keychain slot `token-<id>`, so the resolver finds a password.
+/// The one NAS every test here resolves against, under the id `addSMBServer` derives for its host.
 private func makeRef(share: String = "Media") -> SMBServerRef {
-    makeSMBRef(id: "smb-nas.local|Media|Movies", shares: [share])
+    makeSMBRef(id: "smb-nas.local", shares: [share])
 }
 
 /// Returns a `.movie` `Item` whose `ItemID` is encoded the same way `SMBMediaRepository` encodes it.
@@ -50,32 +49,23 @@ struct SMBPlaybackResolverTests {
 
     // MARK: - Helpers
 
-    /// Builds a resolver over a `ServerStore` wrapping `keychain`. `seedPassword` pre-stores a
-    /// password in the slot `makeRef()`'s id resolves to — the resolver now reads through
-    /// `ServerStore.smbPassword(for:)`, which THROWS `.auth(.credentialUnavailable)` on an empty
-    /// slot instead of degrading to a guest logon, so every happy-path test needs a seeded slot
-    /// (the default `""` mirrors a stored guest password). Pass `nil` to leave the slot empty.
+    /// Builds a resolver over an isolated `ServerStore`. `seedPassword` saves `makeRef()`'s server
+    /// through `addSMBServer`, the production write path, so the slot is wherever the resolver
+    /// reads it from. The default `""` mirrors a stored guest password; pass `nil` to leave the slot
+    /// empty, which the resolver must surface as `.auth(.credentialUnavailable)`.
     /// `resumeStore` defaults to a throwaway isolated store, NOT `SMBResumeStore.shared`: the shared
     /// one reads and writes the real `UserDefaults.standard` domain, so every test that didn't pass
     /// its own store was touching (and could inherit) live app state.
     private func makeResolver(
-        keychain: FakeKeychain = FakeKeychain(),
         seedPassword: String? = "",
         lister: StubSMBLister,
         resumeStore: SMBResumeStore? = nil
-    ) -> SMBPlaybackResolver {
+    ) async throws -> SMBPlaybackResolver {
+        let store = makeIsolatedServerStore(label: "SMBPlaybackResolverTests")
         if let seedPassword {
-            // Derived from the production slot rule, not a re-typed "token-<id>" literal — a change
-            // to the derivation must fail this suite rather than leave it passing against a slot the
-            // resolver no longer reads.
-            let account = ServerStore.tokenAccount(for: makeRef().id)
-            try? keychain.setValue(seedPassword, for: KeychainKey<String>(account: account))
+            let id = try await store.addSMBServer(makeRef().data, password: seedPassword)
+            try #require(id == makeRef().id, "makeRef()'s id must be the one addSMBServer derives")
         }
-        let suite = "SMBPlaybackResolverTests-store-\(UUID().uuidString)"
-        let store = ServerStore(
-            settings: SettingsStore(defaults: UserDefaults(suiteName: suite)!),
-            keychain: keychain
-        )
         var resolver = SMBPlaybackResolver(serverStore: store, makeLister: { _, _ in lister })
         resolver.resumeStore = resumeStore ?? SMBTestFixtures.inertResumeStore()
         return resolver
@@ -86,7 +76,7 @@ struct SMBPlaybackResolverTests {
     @Test("resolved URL is smb://host/share/path with no credentials embedded")
     func urlIsCredentialFree() async throws {
         let lister = StubSMBLister(entries: [])
-        let resolver = makeResolver(lister: lister)
+        let resolver = try await makeResolver(lister: lister)
         let item = makeItem(share: "Media", path: "Movies/Example.mkv")
         let ref = makeRef()
 
@@ -102,7 +92,7 @@ struct SMBPlaybackResolverTests {
     @Test("vlcOptions contain the three smb credential strings with the seeded password")
     func vlcOptionsCarryCredentials() async throws {
         let lister = StubSMBLister(entries: [])
-        let resolver = makeResolver(seedPassword: "s3cr3t", lister: lister)
+        let resolver = try await makeResolver(seedPassword: "s3cr3t", lister: lister)
         let item = makeItem()
         let ref = makeRef()
 
@@ -114,7 +104,7 @@ struct SMBPlaybackResolverTests {
     @Test("stored-empty guest password resolves with an empty smb-pwd option")
     func storedEmptyGuestPasswordResolves() async throws {
         let lister = StubSMBLister(entries: [])
-        let resolver = makeResolver(lister: lister)   // default seed: stored ""
+        let resolver = try await makeResolver(lister: lister)   // default seed: stored ""
         let item = makeItem()
         let ref = makeRef()
 
@@ -128,7 +118,7 @@ struct SMBPlaybackResolverTests {
         // The lost-slot incident contract: addSMBServer always stores a password (even ""), so an
         // absent slot is data loss — the resolver must surface it, never impersonate a guest.
         let lister = StubSMBLister(entries: [])
-        let resolver = makeResolver(seedPassword: nil, lister: lister)
+        let resolver = try await makeResolver(seedPassword: nil, lister: lister)
         let item = makeItem()
         let ref = makeRef()
 
@@ -162,7 +152,7 @@ struct SMBPlaybackResolverTests {
             .init(name: "Other.srt",      isDirectory: false, size: 1, modifiedAt: nil),
         ]
         let lister = StubSMBLister(entries: entries)
-        let resolver = makeResolver(lister: lister)
+        let resolver = try await makeResolver(lister: lister)
         let item = makeItem(share: "Media", path: "Movies/Example.mkv")
         let ref = makeRef()
 
@@ -179,7 +169,7 @@ struct SMBPlaybackResolverTests {
     func subtitleThrowingYieldsEmptyMap() async throws {
         let lister = StubSMBLister(entries: [])
         lister.shouldThrow = true
-        let resolver = makeResolver(lister: lister)
+        let resolver = try await makeResolver(lister: lister)
         let item = makeItem()
         let ref = makeRef()
 
@@ -195,7 +185,7 @@ struct SMBPlaybackResolverTests {
     @Test("title is the item's displayTitle (filename without extension)")
     func titleIsDisplayTitle() async throws {
         let lister = StubSMBLister(entries: [])
-        let resolver = makeResolver(lister: lister)
+        let resolver = try await makeResolver(lister: lister)
         let item = makeItem(share: "Media", path: "Movies/Example.mkv")
         let ref = makeRef()
 
@@ -209,7 +199,7 @@ struct SMBPlaybackResolverTests {
     @Test("undecodable ItemID (no share:path separator) throws AppError.source(.notFound)")
     func undecodableItemIDThrows() async throws {
         let lister = StubSMBLister(entries: [])
-        let resolver = makeResolver(lister: lister)
+        let resolver = try await makeResolver(lister: lister)
         // After the share-hierarchy refactor the share rides in the ItemID, so a cross-share item
         // resolves against the id's own share (the ref no longer carries a single authoritative
         // share). The only un-resolvable id now is one that can't be decoded at all — no colon, so
@@ -235,7 +225,7 @@ struct SMBPlaybackResolverTests {
     @Test("startTime is nil when the local resume store has no entry")
     func startTimeNilWithoutStoredResume() async throws {
         try await SMBTestFixtures.withResumeStore(suite: #function) { store in
-            let resolver = makeResolver(lister: StubSMBLister(entries: []), resumeStore: store)
+            let resolver = try await makeResolver(lister: StubSMBLister(entries: []), resumeStore: store)
 
             let result = try await resolver.resolve(makeItem(), ref: makeRef())
 
@@ -246,7 +236,7 @@ struct SMBPlaybackResolverTests {
     @Test("startTime comes from the local resume store when it holds a position")
     func startTimeFromStoredResume() async throws {
         try await SMBTestFixtures.withResumeStore(suite: #function) { store in
-            let resolver = makeResolver(lister: StubSMBLister(entries: []), resumeStore: store)
+            let resolver = try await makeResolver(lister: StubSMBLister(entries: []), resumeStore: store)
             let item = makeItem(path: "Movies/Resumable.mkv")
             await store.save(
                 position: CMTime(seconds: 300, preferredTimescale: 600),
@@ -270,7 +260,7 @@ struct SMBPlaybackResolverTests {
             .init(name: "Standalone.en.srt", isDirectory: false, size: 1, modifiedAt: nil),
         ]
         let lister = StubSMBLister(entries: entries)
-        let resolver = makeResolver(lister: lister)
+        let resolver = try await makeResolver(lister: lister)
         // ItemID encodes root="" → path is just the filename
         let item = makeItem(share: "Media", path: "Standalone.mkv")
         let ref = makeRef(share: "Media")

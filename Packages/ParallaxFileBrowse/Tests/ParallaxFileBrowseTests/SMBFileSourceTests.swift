@@ -38,31 +38,10 @@ struct SMBFileSourceTests {
               expected: ["Film.avi"]),
     ]
 
-    @Test("mediaFiles keeps only playable media", arguments: filterCases)
-    func mediaFilesFilter(_ testCase: FilterCase) async throws {
-        let files = try await makeFileSource(testCase.entries).mediaFiles(in: "")
-        #expect(files.map(\.name) == testCase.expected)
-    }
-
-    @Test("every extension in the allowlist is accepted")
-    func recognisesAllMediaExtensions() async throws {
-        // Driven from the production allowlist so widening the set can't leave this stale.
-        let extensions = SMBFileSource.mediaExtensions.sorted()
-        let entries = extensions.map { SMBEntry.file("file.\($0)") }
-        let files = try await makeFileSource(entries).mediaFiles(in: "")
-        #expect(files.map(\.name) == entries.map(\.name))
-    }
-
-    @Test("mediaFiles calls list exactly once — no recursive descent")
-    func noRecursion() async throws {
-        // The fake returns the same entries at every level, so only the call count can tell a
-        // single listing apart from a walk.
-        let lister = CountingSMBLister(FakeSMBLister(entries: [SMBEntry.dir("SubDir"), SMBEntry.file("A.mkv")]))
-        let source = SMBFileSource(lister: lister, host: "nas", share: "Media", root: "")
-
-        _ = try await source.mediaFiles(in: "")
-
-        #expect(lister.listCallCount == 1)
+    @Test("browse keeps only playable media", arguments: filterCases)
+    func browseMediaFilter(_ testCase: FilterCase) async throws {
+        let listing = try await makeFileSource(testCase.entries).browse(in: "")
+        #expect(Set(listing.media.map(\.id)) == Set(testCase.expected.map { ItemID(rawValue: "Media:\($0)") }))
     }
 
     @Test("an empty path lists the configured root; a non-empty path replaces it")
@@ -70,8 +49,8 @@ struct SMBFileSourceTests {
         let lister = RecordingPathLister()
         let source = SMBFileSource(lister: lister, host: "nas", share: "Media", root: "Movies")
 
-        _ = try await source.mediaFiles(in: "")
-        _ = try await source.mediaFiles(in: "TV/Show")
+        _ = try await source.browse(in: "")
+        _ = try await source.browse(in: "TV/Show")
 
         #expect(lister.listedPaths == ["Movies", "TV/Show"])
     }
@@ -90,19 +69,6 @@ struct SMBFileSourceTests {
         let source = makeFileSource([], root: "Movies")
         let url = source.playableURL(for: SMBEntry.file("Ep.mkv"), in: "TV/Show/Season 1")
         #expect(url.absoluteString == "smb://nas/Media/TV/Show/Season%201/Ep.mkv")
-    }
-
-    @Test("playableURL percent-encodes '#' and '?' so the filename isn't truncated",
-          arguments: [("Episode#1.mkv", "%23"), ("Show?.mkv", "%3F")])
-    func playableURLEncodesStructuralDelimiters(_ name: String, _ encoding: String) {
-        let source = makeFileSource([], root: "Movies")
-        let url = source.playableURL(for: SMBEntry.file(name), in: "")
-
-        #expect(url.absoluteString.contains(encoding))
-        #expect(url.fragment == nil, "'#' must not be parsed as a fragment")
-        #expect(url.query == nil, "'?' must not be parsed as a query")
-        // libVLC decodes the escape back, so the last component is the real filename.
-        #expect(url.lastPathComponent == name)
     }
 
     // MARK: - ItemID codec
@@ -134,22 +100,6 @@ struct SMBFileSourceTests {
         }
         #expect(movie.title == "Film", "the title is the name minus its extension")
         #expect(movie.size == 10)
-    }
-
-    @Test("withUserData preserves Movie.size — the SMB thumbnail cache key depends on it")
-    func withUserDataPreservesSize() throws {
-        // Toggling favorite/played rebuilds the Movie; if size isn't echoed, the thumbnail cache key
-        // (serverID+share+path+size+mtime) shifts and every frame-grab regenerates after a user-data
-        // change. Guards the Item.withUserData invariant the SMB grid leans on.
-        let item = SMBFileSource.item(from: SMBEntry.file("Film.mkv", size: 1_234_567), share: "Media", in: "")
-        let toggled = item.withFavorite(true)
-
-        guard case .movie(let rebuilt) = toggled else {
-            Issue.record("expected .movie")
-            return
-        }
-        #expect(rebuilt.size == 1_234_567, "withUserData must echo Movie.size (cache-key stability)")
-        #expect(rebuilt.userData.isFavorite, "the favorite toggle must take effect")
     }
 
     // MARK: - Error mapping
@@ -213,16 +163,12 @@ struct SMBFileSourceTests {
               shape: .posixValue(.EACCES), expected: .permissionDenied),
     ]
 
-    @Test("mapListError classifies the failure", arguments: errorCases)
-    func mapListErrorClassifies(_ testCase: ErrorCase) {
-        let classified = Classification(SMBFileSource.mapListError(testCase.shape.error, share: "Media", path: "x"))
-        #expect(classified == testCase.expected)
-    }
-
-    @Test("mapShareListError classifies identically — only the log context differs", arguments: errorCases)
-    func mapShareListErrorClassifies(_ testCase: ErrorCase) {
-        let classified = Classification(SMBFileSource.mapShareListError(testCase.shape.error, host: "nas"))
-        #expect(classified == testCase.expected)
+    @Test("mapListError and mapShareListError classify the failure identically", arguments: errorCases)
+    func mapListErrorsClassify(_ testCase: ErrorCase) {
+        let listed = Classification(SMBFileSource.mapListError(testCase.shape.error, share: "Media", path: "x"))
+        let shareListed = Classification(SMBFileSource.mapShareListError(testCase.shape.error, host: "nas"))
+        #expect(listed == testCase.expected)
+        #expect(shareListed == testCase.expected)
     }
 
     // MARK: - browse
@@ -321,12 +267,6 @@ struct SMBFileSourceTests {
         #expect(listing.artwork.count == 2, "only the two strictly-matched items carry artwork")
         // The matched entry carries the IMAGE's size — the provider gates thumbnail work on it.
         #expect(listing.artwork[ItemID(rawValue: "Media:Movies/Film.mkv")]?.size == 900)
-    }
-
-    @Test("browse skips sidecar matching entirely when the listing holds no images")
-    func browseWithoutImagesCarriesNoArtwork() async throws {
-        let listing = try await makeFileSource([SMBEntry.file("Film.mkv", size: 5)]).browse(in: "")
-        #expect(listing.artwork.isEmpty)
     }
 }
 

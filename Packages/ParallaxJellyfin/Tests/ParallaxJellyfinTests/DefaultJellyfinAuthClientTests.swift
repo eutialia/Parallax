@@ -44,12 +44,6 @@ struct DefaultJellyfinAuthClientTests {
         return result
     }
 
-    @Test("The client reports the server it was built for")
-    func serverURLIsTheConfiguredOne() {
-        let stub = StubHTTPTransport()
-        #expect(makeClient(stub: stub).serverURL == stub.baseURL)
-    }
-
     @Test("Password sign-in POSTs the credential to AuthenticateByName and returns the result")
     func passwordSignIn() async throws {
         let stub = StubHTTPTransport()
@@ -181,19 +175,6 @@ struct DefaultJellyfinAuthClientTests {
         #expect(request.headers["Authorization"]?.contains("Token=tok-to-revoke") == true)
     }
 
-    /// No token, nothing to revoke — but the SDK still clears its own state, so the call must not
-    /// invent a request against a key that doesn't exist.
-    @Test("Public info is fetched without a token on the wire")
-    func publicInfoIsUnauthenticated() async throws {
-        let stub = StubHTTPTransport()
-        stub.always(.encoded(PublicSystemInfo()))
-
-        _ = try await makeClient(stub: stub).fetchPublicSystemInfo()
-
-        let authorization = try stub.onlyExchange().headers["Authorization"] ?? ""
-        #expect(authorization.contains("Token=") == false)
-    }
-
     @Test("Public system info is fetched unauthenticated from the public endpoint")
     func publicSystemInfo() async throws {
         let stub = StubHTTPTransport()
@@ -205,7 +186,9 @@ struct DefaultJellyfinAuthClientTests {
 
         let fetched = try await makeClient(stub: stub).fetchPublicSystemInfo()
 
-        #expect(try stub.onlyExchange().path == "/System/Info/Public")
+        let request = try stub.onlyExchange()
+        #expect(request.path == "/System/Info/Public")
+        #expect((request.headers["Authorization"] ?? "").contains("Token=") == false)
         #expect(fetched.serverName == "Living Room")
         #expect(fetched.id == "server-id")
     }

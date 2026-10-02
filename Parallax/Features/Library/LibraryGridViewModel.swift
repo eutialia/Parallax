@@ -131,13 +131,9 @@ final class LibraryGridViewModel {
     }
 
     isolated deinit {
-        // Close any live source connection (SMB opens a share socket on first `items()`;
-        // Jellyfin's teardown is a no-op) when the grid is torn down. The capture keeps the
-        // repo alive until the disconnect completes, after the view model is released.
         inFlight?.cancel()
         genreTask?.cancel()
         changesTask?.cancel()
-        Task { [repo] in await repo.teardown() }
     }
 
     /// React to a user-data change from any surface. A Favorites-scope grid drops an item

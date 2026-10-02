@@ -45,18 +45,6 @@ struct SMBBridgeSessionTests {
         return (SMBBridgeSession(reader: reader, fileName: "video.mp4", contentType: "video/mp4"), reader)
     }
 
-    @Test("start returns a URL that serves the reader's bytes")
-    func startServesTheReader() async throws {
-        let (session, _) = makeSession()
-        let url = try await session.start(scope: .loopback)
-
-        let (body, response) = try await ephemeralHTTPSession().data(from: url)
-        await session.stop()
-
-        #expect((response as? HTTPURLResponse)?.statusCode == 200)
-        #expect(body == Self.payload)
-    }
-
     /// Bridge FIRST, reader second: inverting the order would hand a live serve loop a connection
     /// that has already been checked back into the pool. The reader's drain-time probe asks the
     /// bridge to start again — `.stopped` (not `.alreadyStarted`) proves the bridge went down first.

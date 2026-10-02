@@ -104,8 +104,6 @@ final class StubHTTPTransport: @unchecked Sendable {
 
     var exchanges: [Exchange] { lock.withLock { recorded } }
 
-    var lastExchange: Exchange? { lock.withLock { recorded.last } }
-
     /// The single recorded exchange. Most tests issue exactly one request, and asserting that
     /// there was exactly one is itself part of the contract (no accidental extra round-trip).
     func onlyExchange() throws -> Exchange {

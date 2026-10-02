@@ -13,7 +13,7 @@ public struct SMBFileSource: Sendable {
     // so non-media siblings and temp-suffix partials (.part/.crdownload/.!qB/.aria2) never reach
     // the grid. Widened past the Phase 2 spec §3a core to the legacy/less-common containers libVLC
     // still decodes (RealMedia via RV40+Cook, Ogg/Theora, DVD VOB, AVCHD .mts, ASF, MPEG-2 ES).
-    static let mediaExtensions: Set<String> = [
+    private static let mediaExtensions: Set<String> = [
         "mkv", "webm",
         "mp4", "m4v", "mov", "3gp",
         "ts", "m2ts", "mts",
@@ -47,11 +47,11 @@ public struct SMBFileSource: Sendable {
 
     /// True for a non-directory entry whose extension is a recognised playable media type.
     /// Deliberately size-AGNOSTIC: the zero-byte exclusion is a grid/playability concern applied
-    /// in `mediaFiles`, not here. The subtitle resolver's lonely-video count reuses this predicate,
+    /// in `browse`, not here. The subtitle resolver's lonely-video count reuses this predicate,
     /// and counting a zero-byte stub as a present video is the SAFE behaviour there — it keeps the
     /// loose cross-attach fallback OFF (a stub beside one real video reads as two videos, not one),
     /// rather than letting a grid concern silently flip subtitle matching. Shared so the count and
-    /// `mediaFiles` agree on "is this a media-typed file".
+    /// `browse` agree on "is this a media-typed file".
     static func isMediaFile(_ entry: SMBDirectoryEntry) -> Bool {
         guard !entry.isDirectory else { return false }
         return mediaExtensions.contains((entry.name as NSString).pathExtension.lowercased())
@@ -171,15 +171,6 @@ public struct SMBFileSource: Sendable {
             ?? (ns.domain == NSPOSIXErrorDomain ? Int32(ns.code) : nil)
     }
 
-    /// Lists top-level media files in `path` (or the configured `root` when `path` is empty).
-    /// Directories and non-media files are excluded. No recursion. Zero-byte stubs (an interrupted
-    /// download's freshly-created placeholder — they can't play) are dropped HERE, the grid path
-    /// only. (A sparse/truncated file with a full logical size still passes; that residual leaves
-    /// no listing-visible trace and is handled downstream by the thumbnail negative cache.)
-    public func mediaFiles(in path: String) async throws -> [SMBDirectoryEntry] {
-        try await allEntries(in: path).filter { Self.isMediaFile($0) && $0.size > 0 }
-    }
-
     /// Builds an `smb://host/share/path` URL. Credentials are NEVER included in the string.
     /// Path components are percent-encoded (see `SMBURL`) so `#`/`?` in a real filename don't
     /// truncate the URL.
@@ -195,7 +186,10 @@ public struct SMBFileSource: Sendable {
     /// One directory level at `path` (or the configured root when empty), partitioned into
     /// subfolders and media (mapped to `Item`), each ordered by `sort`. Folders are kept in their
     /// own array so they ALWAYS render above media regardless of `sort`; the sort only orders within
-    /// each group. Non-media and zero-byte files are excluded (same rule as `mediaFiles`). No recursion.
+    /// each group. Non-media files are excluded, and so are zero-byte stubs (an interrupted
+    /// download's freshly-created placeholder can't play). A sparse/truncated file with a full logical
+    /// size still passes; it leaves no listing-visible trace and is handled downstream by the
+    /// thumbnail negative cache. No recursion.
     public func browse(in path: String, sort: SMBBrowseSort = .default) async throws -> SMBBrowseListing {
         let dirPath = path.isEmpty ? root : path
         let entries = try await allEntries(in: path)
