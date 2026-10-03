@@ -508,13 +508,15 @@ struct VLCKitTeardownTests {
 
         // The task shares the engine's actor, so once it has entered `teardown()` the whole
         // synchronous prefix has run: a join-skipping teardown has already reached the player.
+        // Yield rather than sleep: stop A holds a cooperative thread, and a sleeper needs a free
+        // one to wake, which a small CI pool may not have while other suites hold stops too.
         final class Entered { var value = false }
         let entered = Entered()
         let teardown = Task {
             entered.value = true
             await engine.teardown()
         }
-        try await requireEventually({ entered.value }, "teardown never started")
+        while !entered.value { await Task.yield() }
         #expect(spy.drawable != nil, "teardown detached the drawable while stop A was still running")
         #expect(spy.stopCalls == 0)
 
