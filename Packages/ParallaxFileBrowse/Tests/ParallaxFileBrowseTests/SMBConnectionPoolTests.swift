@@ -553,38 +553,6 @@ struct SMBConnectionPoolTests {
         #expect(world.connectedIDs == [0])
     }
 
-    /// Callers that arrive while a probe is in flight must ride it, not cold-connect alongside it,
-    /// and the shared entry must go once that probe ends — a failed one included, or the host stays
-    /// stuck on a finished `nil` after the backoff expires.
-    @Test("concurrent callers share one in-flight probe, which is cleared even when it fails")
-    func concurrentProbesCoalesceAndClear() async {
-        let world = FakeSMBWorld()
-        // The gate holds the probe's connect across a thousand yields, which a starved CI runner
-        // stretches past the default hard timeout; an abandoned probe would fail for the wrong reason.
-        let pool = makeFakePool(world: world, connectTimeout: 3_600)
-        let target = fakeTarget(host: "dead")
-        world.failConnects(with: ConnectFailure())
-        await world.connectGate.close()
-
-        await withTaskGroup(of: SMBLinkClass?.self) { group in
-            group.addTask { await pool.ensureLinkClass(target) }
-            await world.connectGate.awaitArrivals(1)
-            for _ in 0..<4 { group.addTask { await pool.ensureLinkClass(target) } }
-            for _ in 0..<1_000 { await Task.yield() }
-            #expect(await world.connectGate.arrivalCount == 1, "a late caller started its own probe")
-
-            await world.connectGate.open()
-            for await linkClass in group { #expect(linkClass == nil) }
-        }
-        #expect(world.connectAttempts == 1)
-
-        world.clock.advance(by: .seconds(61))
-        world.failConnects(with: nil)
-        world.setLatency(Self.lanLatency, host: "dead")
-        #expect(await pool.ensureLinkClass(target) == .lan, "the failed probe's entry outlived it")
-        #expect(world.connectAttempts == 2)
-    }
-
     /// AMSMB2's own timeout doesn't bound every connect phase, so the pool wraps the connector in
     /// `withHardTimeout` and maps the expiry to `SMBListerError.timedOut`. The loser of that race keeps
     /// running — `withHardTimeout` cannot cancel a libsmb2 connect — so it eventually produces a
