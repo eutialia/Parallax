@@ -559,7 +559,9 @@ struct SMBConnectionPoolTests {
     @Test("concurrent callers share one in-flight probe, which is cleared even when it fails")
     func concurrentProbesCoalesceAndClear() async {
         let world = FakeSMBWorld()
-        let pool = makeFakePool(world: world)
+        // The gate holds the probe's connect across a thousand yields, which a starved CI runner
+        // stretches past the default hard timeout; an abandoned probe would fail for the wrong reason.
+        let pool = makeFakePool(world: world, connectTimeout: 3_600)
         let target = fakeTarget(host: "dead")
         world.failConnects(with: ConnectFailure())
         await world.connectGate.close()
