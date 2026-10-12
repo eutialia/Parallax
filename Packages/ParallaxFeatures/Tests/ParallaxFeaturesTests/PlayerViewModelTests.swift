@@ -30,7 +30,7 @@ private enum RoutingCase: String, CaseIterable, CustomTestStringConvertible {
 
     var testDescription: String { rawValue }
 
-    /// The delivered hints (`PlayerViewModel.deliveredHints`) and the engine id the
+    /// The delivered hints (`PlayerAssetFactory.deliveredHints`) and the engine id the
     /// factory must be asked for. A transcode's hints carry NO codecs — the HLS
     /// rendition targets the device profile, so the source codecs are irrelevant.
     var expected: (container: Container, videoCodec: VideoCodec?, engine: PlaybackEngineID) {
