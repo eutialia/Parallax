@@ -3,6 +3,7 @@ import SwiftUI
 import ParallaxCore
 import ParallaxJellyfin
 import ParallaxPlayback
+import ParallaxFeatures
 
 /// A debug-only panel surfacing what's *actually* playing on device: the
 /// server's routing decision + per-stream metadata, and the engine's live
@@ -104,7 +105,7 @@ struct DebugInfoOverlay: View {
         return "\(ms) (\(startupProfile.displayName))"
     }
 
-    /// Writing the store has no live effect on the running session — `AppDependencies`'
+    /// Writing the store has no live effect on the running session — `AppEnvironment.live()`'s
     /// engine factory reads it only at engine-construction time, so a pick here takes
     /// effect on the NEXT playback session, not this one (caption says so). The label
     /// updates immediately (not waiting on the next poll tick) since the pick happens

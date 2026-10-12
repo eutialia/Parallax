@@ -1,75 +1,7 @@
 import SwiftUI
 import ParallaxJellyfin
 import ParallaxCore
-
-/// The Home carousel's page state, hoisted OUT of the carousel view because the hero's two halves
-/// no longer live together: on iPhone/iPad the artwork is a fixed `heroBackdrop` behind the scroll
-/// view while the foreground rides the scroll content, so a `@State` inside either half would be
-/// invisible to the other. `HomeView` owns one of these and feeds both.
-///
-/// `@Observable` also keeps the insulation the old `@State` had: the continuous `position` is read
-/// only by the artwork, so a crossfade tick re-renders the picture without touching the foreground
-/// column, the page dots, or `HomeView`'s body.
-@Observable
-@MainActor
-final class HomeHeroCarouselState {
-    /// Continuous artwork crossfade driver — integers are settled pages, fractions are mid-fade.
-    var position: Double = 0
-    /// The settled page the foreground + dots show. Deliberately separate from `position`: the
-    /// artwork crossfades continuously while the text swaps only on settle.
-    var displayedPage = 0
-    /// Drives the foreground's hide-while-dragging transition.
-    var isDragging = false
-    private var gestureStart: Double?
-
-    /// A changed entry SET snaps back to the first page. Compared on ids by the caller, so a
-    /// favorite toggle doesn't reset the carousel.
-    func reset() {
-        position = 0
-        displayedPage = 0
-        gestureStart = nil
-        isDragging = false
-    }
-
-    func panChanged(translationX: CGFloat, width: CGFloat, reduceMotion: Bool) {
-        let start = gestureStart ?? position
-        gestureStart = start
-        // Hide the foreground the moment the drag begins — any travel, not distance-based.
-        // It stays hidden until release fades the page back in.
-        if !isDragging {
-            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) { isDragging = true }
-        }
-        position = clampedPage(start - Double(translationX) / Double(width), around: start)
-    }
-
-    func panEnded(translationX: CGFloat, velocityX: CGFloat, width: CGFloat, reduceMotion: Bool) {
-        let start = gestureStart ?? position
-        gestureStart = nil
-        // Project with velocity so a flick commits (UIScrollView-style); one page per gesture.
-        let projectedX = translationX + velocityX * 0.3
-        commit(
-            to: Int(clampedPage(start - Double(projectedX) / Double(width), around: start).rounded()),
-            reduceMotion: reduceMotion
-        )
-    }
-
-    /// Settle on `target`: spring the artwork there, and show the foreground for that page —
-    /// re-inserting it after a drag (fade in) or crossfading its `.id` on auto-advance.
-    func commit(to target: Int, reduceMotion: Bool) {
-        // Reduce Motion: jump the artwork and swap the foreground instantly — the full-bleed crossfade
-        // is the largest motion on Home, so it must not animate (mirrors the parallax/pill gating).
-        withAnimation(reduceMotion ? nil : .organicSettle) { position = Double(target) }
-        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.22)) {
-            isDragging = false
-            displayedPage = target
-        }
-    }
-
-    /// One drag or flick moves at most one page: clamp the target to ±1 around where it began.
-    private func clampedPage(_ raw: Double, around start: Double) -> Double {
-        min(start + 1, max(start - 1, raw))
-    }
-}
+import ParallaxFeatures
 
 /// The Home hero's PICTURE — the crossfading artwork, and nothing else. Handed to the screen's
 /// `heroBackdrop` (iPhone/iPad, where it paints behind the scroll view) and to `HomeHeroCarousel`
@@ -136,6 +68,23 @@ struct HomeHeroCarousel: View {
 
     private var regularWidth: Bool { idiom.usesLandscapeHeroBand }
     private var count: Int { entries.count }
+
+    private func panChanged(translationX: CGFloat, width: CGFloat) {
+        // Hide the foreground the moment the drag begins; release fades the page back in.
+        if !carousel.isDragging {
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) { carousel.beginDragging() }
+        }
+        carousel.drag(translationX: Double(translationX), width: Double(width))
+    }
+
+    /// Settle on `target`: spring the artwork there, and show the foreground for that page —
+    /// re-inserting it after a drag (fade in) or crossfading its `.id` on auto-advance.
+    private func commit(to target: Int) {
+        // Reduce Motion: jump the artwork and swap the foreground instantly — the full-bleed crossfade
+        // is the largest motion on Home, so it must not animate (mirrors the parallax/pill gating).
+        withAnimation(reduceMotion ? nil : .organicSettle) { carousel.settleArtwork(on: target) }
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.22)) { carousel.showPage(target) }
+    }
 
     /// BlurHash of the SETTLED page's hero image, feeding the band's floor bleed. Tracks
     /// `displayedPage` (like the foreground and dots), not the continuous crossfade `position` —
@@ -212,7 +161,7 @@ struct HomeHeroCarousel: View {
                 autoAdvanceInterval: 6,
                 isPaused: carousel.isDragging || prefersReducedResourceUsage,
                 reduceMotion: reduceMotion,
-                onAdvance: { carousel.commit(to: carousel.displayedPage + 1, reduceMotion: reduceMotion) }
+                onAdvance: { commit(to: carousel.displayedPage + 1) }
             )
             .frame(maxWidth: .infinity)
             .padding(.bottom, HeroMetrics.pageIndicatorBottomInset(idiom: idiom))
@@ -224,8 +173,8 @@ struct HomeHeroCarousel: View {
         #if !os(tvOS)
         .gesture(
             HorizontalPanGesture(
-                onChanged: { carousel.panChanged(translationX: $0, width: size.width, reduceMotion: reduceMotion) },
-                onEnded: { carousel.panEnded(translationX: $0, velocityX: $1, width: size.width, reduceMotion: reduceMotion) },
+                onChanged: { panChanged(translationX: $0, width: size.width) },
+                onEnded: { commit(to: carousel.endDrag(translationX: Double($0), velocityX: Double($1), width: Double(size.width))) },
                 isEnabled: count > 1
             )
         )
@@ -240,7 +189,7 @@ struct HomeHeroCarousel: View {
         // forward-only by design (auto-advance still cycles); up/down fall through to the shelves.
         .onMoveCommand { direction in
             guard count > 1, direction == .right, chevronFocused else { return }
-            carousel.commit(to: carousel.displayedPage + 1, reduceMotion: reduceMotion)
+            commit(to: carousel.displayedPage + 1)
         }
         #endif
     }
@@ -293,7 +242,7 @@ struct HomeHeroCarousel: View {
                         accessibilityLabel: "Next featured item",
                         bareUntilFocused: true
                     ) {
-                        carousel.commit(to: carousel.displayedPage + 1, reduceMotion: reduceMotion)
+                        commit(to: carousel.displayedPage + 1)
                     }
                     .focused($chevronFocused)
                 }

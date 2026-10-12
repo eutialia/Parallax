@@ -1,17 +1,37 @@
 import SwiftUI
 import ParallaxJellyfin
 import ParallaxCore
+import ParallaxFeatures
 
+/// Builds the search model once, on the first appearance, and keeps the provider list current.
 struct JellyfinSearchView: View {
-    @Environment(AppDependencies.self) private var deps
+    let app: AppModel
     @Environment(AppRouter.self) private var router
-    @Environment(UserDataActions.self) private var userDataActions
     @State private var viewModel: JellyfinSearchViewModel?
-    // Bind the search field to local state so keystrokes typed before the VM
-    // finishes its async construction aren't dropped on the floor (the old
-    // `viewModel?.query = $0` was a silent no-op while viewModel was nil).
-    @State private var query = ""
-    @State private var scope: SearchScope = .all
+
+    var body: some View {
+        Group {
+            if let viewModel {
+                JellyfinSearchScreen(viewModel: viewModel)
+            } else {
+                Color.clear.screenFloor()
+            }
+        }
+        // Keyed on the reload token, not `activeServerID`: search aggregates EVERY signed-in
+        // server, so adding or removing one must rebuild the provider list — and adding a second
+        // server never moves the active id (see AppRouter.libraryReloadToken).
+        .task(id: router.libraryReloadToken) {
+            let model = viewModel ?? JellyfinSearchViewModel(app: app)
+            viewModel = model
+            await model.refreshProviders()
+        }
+    }
+}
+
+private struct JellyfinSearchScreen: View {
+    /// Owns the query, the scope and the provider list; the field and the scope controls bind to
+    /// it directly.
+    @Bindable var viewModel: JellyfinSearchViewModel
     @Environment(\.appIdiom) private var idiom
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -31,7 +51,7 @@ struct JellyfinSearchView: View {
             // exactly when the placeholder returns: one coordinated, symmetric motion.
             #if !os(tvOS)
             if scopesVisible {
-                Picker("Search scope", selection: $scope) {
+                Picker("Search scope", selection: $viewModel.scope) {
                     scopeOptions
                 }
                 .pickerStyle(.segmented)
@@ -75,10 +95,10 @@ struct JellyfinSearchView: View {
         // centered" on device) and the focus engine treated it as system chrome. tvOS now draws
         // `SearchScopeChips` inside the scrolling content; iOS keeps the segmented Picker above it.
         #if os(tvOS)
-        .searchable(text: $query, prompt: Self.searchPrompt)
+        .searchable(text: $viewModel.query, prompt: Self.searchPrompt)
         #else
         .searchable(
-            text: $query,
+            text: $viewModel.query,
             placement: .navigationBarDrawer(displayMode: .always),
             prompt: Self.searchPrompt
         )
@@ -113,17 +133,6 @@ struct JellyfinSearchView: View {
         // scroll up under the drawer field.
         .scrollEdgeEffectStyle(.soft, for: .top)
         #endif
-        .onChange(of: query) { _, newValue in
-            viewModel?.query = newValue
-        }
-        .onChange(of: scope) { _, newValue in viewModel?.scope = newValue }
-        // A scope outlives its search session otherwise: search "Batman" scoped to
-        // Episodes, clear, search "Dune" — with the scope control hidden at idle, the
-        // stale Episodes scope would silently narrow the new search. Ending a session
-        // resets to All, so every fresh search starts unscoped, control visible or not.
-        .onChange(of: scopesVisible) { _, visible in
-            if !visible { scope = .all }
-        }
         .screenFloor()
         .itemDetailNavigation()
         // Search's status states (idle prompt, no results, failed) always render under the
@@ -131,32 +140,6 @@ struct JellyfinSearchView: View {
         // focus-target fallback must not add an invisible surface that competes with it
         // (see `statusStateProvidesTVFocusTarget`).
         .environment(\.statusStateProvidesTVFocusTarget, false)
-        // Keyed on the reload token, not `activeServerID`: search aggregates EVERY signed-in
-        // server, so adding or removing one must rebuild the provider list — and adding a second
-        // server never moves the active id (see AppRouter.libraryReloadToken).
-        .task(id: router.libraryReloadToken) {
-            let providers = await JellyfinSearchProvider.all(
-                for: await deps.serverStore.sessions,
-                repoFactory: deps.jellyfinLibraryRepoFactory
-            )
-            guard !providers.isEmpty else { return }
-            // Rebuild when the SET of servers changed, not just when there's no model yet: a
-            // model's providers are fixed at init, so signing into a second server left the
-            // existing single-server model in place and Search kept querying one server until the
-            // next launch — the exact bug keying this task on the reload token exists to fix.
-            if viewModel?.matches(providers) != true {
-                let vm = JellyfinSearchViewModel(providers: providers, userDataActions: userDataActions)
-                vm.start()
-                // Seed any text/scope set during construction before wiring up — the
-                // field is live while the VM builds, so both can change in that window.
-                if !query.isEmpty { vm.query = query }
-                if scope != .all { vm.scope = scope }
-                viewModel = vm
-            }
-        }
-        // Auto-recover a failed search when the network returns (or the app foregrounds online) by
-        // re-running the current query. Gated on `isStalled` so a results page is never re-queried.
-        .recoversFromOffline(isStalled: viewModel?.isStalled ?? false) { await viewModel?.retry() }
     }
 
     /// The screen's content, in ONE of two shells.
@@ -174,10 +157,10 @@ struct JellyfinSearchView: View {
     private var content: some View {
         if idiom == .tv {
             TVSearchScopeSurface(
-                scope: scope,
+                scope: viewModel.scope,
                 showsScopes: scopesVisible,
                 isShowingSkeleton: isShowingSkeleton,
-                onSelectScope: { scope = $0 }
+                onSelectScope: { viewModel.scope = $0 }
             ) {
                 stateBody
             }
@@ -200,33 +183,27 @@ struct JellyfinSearchView: View {
     /// state vocabulary exists once.
     @ViewBuilder
     private var stateBody: some View {
-        if let vm = viewModel {
-            switch vm.state {
-            case .idle:
-                // No scope row here: `hasActiveSearch` is false at idle, so iOS hides its Picker too.
-                StatusStateView(
-                    title: "Find something to watch",
-                    systemImage: "magnifyingglass",
-                    message: "Movies, shows, and episodes from your library."
-                )
-            case .loading:
-                PosterGridLoadingSkeleton(columns: posterCols, rows: 2)
-            case .loaded(let results):
-                if results.isEmpty {
-                    StatusStateView.searchNoResults
-                } else {
-                    // `.equatable()` so a per-keystroke `query` change can't re-render the tiles
-                    // (see JellyfinSearchResultsView). The refine overlay stays out in the shell,
-                    // in the reactive parent.
-                    JellyfinSearchResultsView(results: results).equatable()
-                }
-            case .failed(let message):
-                StatusStateView.failure("Couldn't search your library", message: message)
-            }
-        } else {
-            // The view model is still building — same skeleton, and `scopesVisible` is false, so
-            // tvOS shows no chips yet either.
+        switch viewModel.state {
+        case .idle:
+            // No scope row here: `hasActiveSearch` is false at idle, so iOS hides its Picker too.
+            StatusStateView(
+                title: "Find something to watch",
+                systemImage: "magnifyingglass",
+                message: "Movies, shows, and episodes from your library."
+            )
+        case .loading:
             PosterGridLoadingSkeleton(columns: posterCols, rows: 2)
+        case .loaded(let results):
+            if results.isEmpty {
+                StatusStateView.searchNoResults
+            } else {
+                // `.equatable()` so a per-keystroke `query` change can't re-render the tiles
+                // (see JellyfinSearchResultsView). The refine overlay stays out in the shell,
+                // in the reactive parent.
+                JellyfinSearchResultsView(results: results).equatable()
+            }
+        case .failed(let message):
+                StatusStateView.failure("Couldn't search your library", message: message)
         }
     }
 
@@ -235,7 +212,7 @@ struct JellyfinSearchView: View {
     /// over a NON-EMPTY loaded grid: the loading skeleton is already its own progress signal.
     @ViewBuilder
     private var refiningIndicator: some View {
-        if let vm = viewModel, vm.isSearching, case .loaded(let results) = vm.state, !results.isEmpty {
+        if viewModel.isSearching, case .loaded(let results) = viewModel.state, !results.isEmpty {
             SearchRefiningSkeleton()
                 // Passive status capsule, not a control — on tvOS it overlays the chip row
                 // region, and without this it would swallow focus/select from underneath.
@@ -246,25 +223,22 @@ struct JellyfinSearchView: View {
     /// The states that render scrolling content on iPhone/iPad: the skeleton and a non-empty grid.
     /// The status states own the whole viewport and stay out of a scroll (see `content`).
     private var scrollsStateBody: Bool {
-        guard let vm = viewModel else { return true }
-        switch vm.state {
+        switch viewModel.state {
         case .loading: return true
         case .loaded(let results): return !results.isEmpty
         case .idle, .failed: return false
         }
     }
 
-    /// True while the skeleton is what's on screen — the pre-view-model placeholder and `.loading`
-    /// render the same thing and both lock scrolling.
+    /// True while the skeleton is what's on screen; it locks scrolling.
     private var isShowingSkeleton: Bool {
-        guard let vm = viewModel else { return true }
-        return vm.state == .loading
+        viewModel.state == .loading
     }
 
     /// The scope row rides the VM's session flag so its show/hide is one motion with the
-    /// content swap (see the comment at the row) — false while the VM is still building.
+    /// content swap (see the comment at the row).
     private var scopesVisible: Bool {
-        viewModel?.hasActiveSearch ?? false
+        viewModel.hasActiveSearch
     }
 
     #if !os(tvOS)

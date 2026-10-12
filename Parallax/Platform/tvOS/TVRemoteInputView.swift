@@ -1,6 +1,7 @@
 #if os(tvOS)
 import SwiftUI
 import UIKit
+import ParallaxFeatures
 
 /// Captures raw Siri-Remote **presses** (press-typed taps = directional clicks,
 /// Select, Menu) and classifies them into `RemoteEvent`s for the HUD reducer. Analog

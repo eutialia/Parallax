@@ -180,3 +180,18 @@ public enum AVThumbnailError: Error, Sendable {
     /// CGImage → HEIC/JPEG data failed (genuine ImageIO failure, not a missing HEVC encoder).
     case encodingFailed
 }
+
+extension AVThumbnailer: FrameThumbnailing {
+    public func frame(from url: URL, at position: Float, timeout: Duration) async throws -> ThumbnailFrame {
+        try await thumbnailData(for: url, position: position, timeout: timeout)
+    }
+}
+
+extension AVThumbnailError: ThumbnailError {
+    public var isTimeout: Bool {
+        switch self {
+        case .timedOut: true
+        case .encodingFailed: false
+        }
+    }
+}

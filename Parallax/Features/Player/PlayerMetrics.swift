@@ -1,4 +1,7 @@
 import SwiftUI
+import ParallaxFeatures
+import ParallaxPlayback
+import ParallaxSubtitles
 
 /// Every player dimension derived from the design's unit scale `u = width / 1920`.
 /// The big-screen player (tvOS + iPad) is authored at a 1920-wide base; tvOS renders
@@ -270,4 +273,35 @@ struct PlayerMetrics: Equatable {
     static let phoneChipGap: CGFloat = 5
     static let phoneChipFontSize: CGFloat = 14
     static let phoneChipIconSize: CGFloat = 15
+}
+
+extension SubtitleStyle {
+    /// The converted-track override for one playback geometry — THE single source
+    /// for both the player overlay and the settings live preview, so the preview
+    /// cannot drift from what actually renders. Three mappings live here:
+    /// - the tuned per-device cue size (`PlayerMetrics.subtitleFontSize`) remapped
+    ///   onto the synthesized script's font base, keyed on the CANVAS height (the
+    ///   full surface for converted tracks — their cells map to the device);
+    /// - the font's own win box multiplied BACK: libass sizes VSFilter-style by
+    ///   dividing the style size by that box, so without the factor the size that
+    ///   renders is ~14% under the size that was tuned;
+    /// - the tuned rest position (`subtitleBottom`/`subtitleInsetX`) expressed as
+    ///   script-unit margins for THIS canvas. The synthesized script's own margin
+    ///   is proportional (5% of the canvas), which parked default cues ~15pt off
+    ///   an iPhone's landscape bottom — inside the home-indicator band.
+    @MainActor
+    func convertedRendererOverride(surface: CGSize, canvas: CGRect) -> SubtitleStyleOverride {
+        let metrics = PlayerMetrics.forSurface(surface)
+        let scriptPt = canvas.height * SubtitleRenderer.convertedScriptFontFraction
+        let family = fontDesign.resolvedRendererFamily
+        let base = scriptPt > 0 ? (metrics.subtitleFontSize * fontScale) / scriptPt : fontScale
+        let playRes = SubtitleRenderer.convertedScriptPlayRes
+        return rendererOverride(
+            fontScale: base * SubtitleFontMetrics.emBoxFactor(forFamily: family),
+            marginVertical: canvas.height > 0
+                ? metrics.subtitleBottom / canvas.height * playRes.height : nil,
+            marginHorizontal: canvas.width > 0
+                ? metrics.subtitleInsetX / canvas.width * playRes.width : nil
+        )
+    }
 }

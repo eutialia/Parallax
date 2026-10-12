@@ -1,7 +1,7 @@
 import Foundation
 
 /// The app's bundle identity, read once from Info.plist — the single source for version strings.
-/// Consumers: the Jellyfin client identity (`AppDependencies`) and the Settings → About Version row.
+/// Consumers: the Jellyfin client identity (`AppEnvironment.live()`) and the Settings → About Version row.
 enum AppInfo {
     /// Marketing version, e.g. "1.0".
     static var shortVersion: String {

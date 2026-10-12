@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import ParallaxFileBrowse
+import ParallaxFileBrowseTestSupport
 
 /// Pins `SMBFileSource.isTransportClass` — the shared cut that decides whether a listing retry or a
 /// thumbnail negative-cache poison should treat the error as "the socket died" vs "the server

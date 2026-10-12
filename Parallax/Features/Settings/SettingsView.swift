@@ -1,6 +1,7 @@
 import SwiftUI
 import ParallaxCore
 import ParallaxJellyfin
+import ParallaxFeatures
 
 /// The app's settings surface — the server list plus the add-server → sign-in flow, so server
 /// management lives in one place. Shown two ways: a centered form sheet on iPad (from the sidebar
@@ -18,8 +19,7 @@ struct SettingsView: View {
     /// button to dismiss; the tab relies on the tab bar as its exit.
     var isModal: Bool = false
 
-    @Environment(AppDependencies.self) private var deps
-    @Environment(AppRouter.self) private var router
+    @Environment(AppModel.self) private var app
     @State private var viewModel: SettingsViewModel?
     @State private var path: [Route] = []
     /// iPhone only: the Add-Server task presents as its OWN page sheet (option #1 / Modality HIG —
@@ -80,7 +80,7 @@ struct SettingsView: View {
                     if let viewModel {
                         AddServerFlow(
                             onAddedJellyfin: { Task { await viewModel.didAddServer() } },
-                            onAddedSMB: { Task { await viewModel.reloadAfterSMBChange() } },
+                            onAddedSMB: { Task { await viewModel.refresh() } },
                             onClose: { presentingAddServer = false }
                         )
                     }
@@ -98,11 +98,7 @@ struct SettingsView: View {
         .presentationBackground(BackgroundField.style)
         .task {
             if viewModel == nil {
-                viewModel = SettingsViewModel(
-                    sessionManager: deps.sessionManager,
-                    serverStore: deps.serverStore,
-                    router: router
-                )
+                viewModel = SettingsViewModel(app: app)
             }
             await viewModel?.refresh()
         }
@@ -233,12 +229,11 @@ struct SettingsView: View {
         }
     }
 
-    /// After a successful SMB add: refresh the list, bump the library revision so the navigation roots
-    /// merge the new SMB source in immediately, and pop to root. Does NOT re-point the router — SMB
-    /// servers are not active sessions.
+    /// After a successful SMB add: refresh the list and pop to root. Saving the share already
+    /// routed the new source (`SMBAddServerModel.save`).
     private func handleAddedSMBServer() {
         Task {
-            await viewModel?.reloadAfterSMBChange()
+            await viewModel?.refresh()
             path = []
         }
     }

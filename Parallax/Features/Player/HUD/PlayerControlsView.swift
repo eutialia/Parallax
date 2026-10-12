@@ -2,6 +2,7 @@ import SwiftUI
 import AVKit
 import CoreMedia
 import ParallaxPlayback
+import ParallaxFeatures
 
 /// Engine-agnostic player chrome, overlaid on the video host as independent
 /// edge-anchored overlays (top bar · centre transport · progress · control row) — no

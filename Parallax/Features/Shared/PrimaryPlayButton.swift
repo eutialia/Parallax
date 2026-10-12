@@ -1,4 +1,5 @@
 import SwiftUI
+import ParallaxFeatures
 
 /// Primary action over hero/detail artwork. iPhone/iPad: WHITE-TINTED INTERACTIVE LIQUID GLASS
 /// (owner directive 2026-08-10, amending the 2026-07-14 "flat pill" rule for the hero action row:

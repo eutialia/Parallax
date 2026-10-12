@@ -1,6 +1,7 @@
 import Testing
 import CoreGraphics
 import ParallaxPlayback
+import ParallaxFeatures
 @testable import Parallax
 
 /// `SubtitleStyle.freetypeRelativeFontSize` is the ONE place the two subtitle paths'
@@ -38,7 +39,7 @@ import ParallaxPlayback
     @Test("the divisor tracks each device class's tuned cue size", arguments: deviceCases)
     func divisorPerDeviceClass(device: SizingCase) {
         let n = SubtitleStyle.standard.freetypeRelativeFontSize(
-            surface: device.surface, metrics: device.metrics
+            surface: device.surface, cueSize: device.metrics.subtitleFontSize
         )
         #expect(n == device.expected)
     }
@@ -52,7 +53,7 @@ import ParallaxPlayback
     func divisorInvertsFontScale(scale: Double, expected: Int) {
         let style = SubtitleStyle.standard.with { $0.fontScale = scale }
         let n = style.freetypeRelativeFontSize(
-            surface: CGSize(width: 852, height: 393), metrics: .phone
+            surface: CGSize(width: 852, height: 393), cueSize: PlayerMetrics.phone.subtitleFontSize
         )
         #expect(n == expected)
     }
@@ -61,7 +62,7 @@ import ParallaxPlayback
     /// picture tall — and 0 would read as freetype's "Auto", i.e. its own 1/16th default.
     @Test func divisorHasAFloor() {
         let n = SubtitleStyle.standard.freetypeRelativeFontSize(
-            surface: CGSize(width: 100, height: 50), metrics: .phone
+            surface: CGSize(width: 100, height: 50), cueSize: PlayerMetrics.phone.subtitleFontSize
         )
         #expect(n == SubtitleStyle.freetypeRelativeFontSizeFloor)
     }

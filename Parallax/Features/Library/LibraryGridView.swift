@@ -1,6 +1,7 @@
 import SwiftUI
 import ParallaxJellyfin
 import ParallaxCore
+import ParallaxFeatures
 
 /// `LibraryGridView.body`'s branch discriminator — see `crossfadeStateSwap`. Covers both the
 /// pre-view-model placeholder and `gridContent`'s own initial-load placeholder under one
@@ -17,21 +18,15 @@ private enum LibraryContentPhase: Hashable {
 /// drill-down both open exactly one library. The cross-server Favorites wall is `FavoritesView`,
 /// which stacks one `LibraryGridViewModel` per server under its own header rather than merging them.
 struct LibraryGridView: View {
-    let scope: LibraryScope
-    let title: String
+    let collection: MediaCollection
     /// The Jellyfin session backing this grid. The grid is Jellyfin-only — SMB shares route to
     /// `SMBBrowseView` from the sidebar/list, never here — so the session drives both the repo
     /// (`mediaRepoFactory(session)`) and per-tile detail pushes (via `ItemNavigator`).
     let session: Session
 
-    init(collection: MediaCollection, session: Session) {
-        self.scope = .collection(collection.id)
-        self.title = collection.name
-        self.session = session
-    }
+    private var title: String { collection.name }
 
-    @Environment(AppDependencies.self) private var deps
-    @Environment(UserDataActions.self) private var userDataActions
+    @Environment(AppModel.self) private var app
     @Environment(\.appIdiom) private var idiom
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Jellyfin items carry 2:3 portrait posters; this drives BOTH the tile aspect ratio and the
@@ -73,10 +68,6 @@ struct LibraryGridView: View {
         .itemDetailNavigation()
         .screenFloor()
         .task { await loadViewModel() }
-        // Auto-recover the full-screen error when the network returns (or the app foregrounds
-        // online). Gated on `isStalled` (failed AND no items) so a loaded grid — and the
-        // stale-content refresh banner, which keeps its own "Try again" — are untouched.
-        .recoversFromOffline(isStalled: viewModel?.isStalled ?? false) { await viewModel?.load() }
     }
 
     /// `crossfadeStateSwap`'s discriminator for `body`'s Group. `.loaded` covers BOTH the real
@@ -97,8 +88,7 @@ struct LibraryGridView: View {
     /// already present is a no-op.
     private func loadViewModel() async {
         guard viewModel == nil else { return }
-        let repo = await deps.mediaRepoFactory(session)
-        let vm = LibraryGridViewModel(repo: repo, source: .jellyfin(session.id), scope: scope, userDataActions: userDataActions)
+        let vm = await app.libraryGrid(for: collection, on: session)
         viewModel = vm
         await vm.load()
     }

@@ -59,17 +59,21 @@ public final class DefaultJellyfinAuthClient: JellyfinAuthClient, Sendable {
     /// tests drive the real request path against a stub `URLProtocol`.
     private let sessionConfiguration: URLSessionConfiguration
     private let quickConnectPolling: QuickConnectPolling
+    /// Paces the Quick Connect poll, so a test advances the interval instead of waiting it out.
+    private let clock: any Clock<Duration>
 
     public init(
         serverURL: URL,
         identity: DeviceIdentity,
         sessionConfiguration: URLSessionConfiguration = .default,
-        quickConnectPolling: QuickConnectPolling = .default
+        quickConnectPolling: QuickConnectPolling = .default,
+        clock: any Clock<Duration> = ContinuousClock()
     ) {
         self.serverURL = serverURL
         self.identity = identity
         self.sessionConfiguration = sessionConfiguration
         self.quickConnectPolling = quickConnectPolling
+        self.clock = clock
     }
 
     private func newClient(accessToken: String? = nil) -> JellyfinClient {
@@ -110,10 +114,11 @@ public final class DefaultJellyfinAuthClient: JellyfinAuthClient, Sendable {
     public func quickConnectEvents() -> AsyncThrowingStream<QuickConnect.Event, Error> {
         let client = newClient()
         let polling = quickConnectPolling
+        let clock = clock
         return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    try await Self.runQuickConnect(client: client, polling: polling) { event in
+                    try await Self.runQuickConnect(client: client, polling: polling, clock: clock) { event in
                         continuation.yield(event)
                     }
                     continuation.finish()
@@ -132,6 +137,7 @@ public final class DefaultJellyfinAuthClient: JellyfinAuthClient, Sendable {
     private static func runQuickConnect(
         client: JellyfinClient,
         polling: QuickConnectPolling,
+        clock: any Clock<Duration>,
         yield: (QuickConnect.Event) -> Void
     ) async throws {
         let initiated = try await client.send(Paths.initiateQuickConnect).value
@@ -149,7 +155,7 @@ public final class DefaultJellyfinAuthClient: JellyfinAuthClient, Sendable {
                 yield(.authenticated(secret: approvedSecret))
                 return
             }
-            try await Task.sleep(for: polling.interval)
+            try await clock.sleep(for: polling.interval)
         }
 
         // The budget is spent with nobody approving the code: that IS expiry, typed at the layer

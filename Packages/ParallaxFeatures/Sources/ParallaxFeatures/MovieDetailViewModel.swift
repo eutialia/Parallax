@@ -1,0 +1,183 @@
+import Foundation
+import Observation
+import os
+import ParallaxCore
+import ParallaxJellyfin
+
+@Observable
+@MainActor
+public final class MovieDetailViewModel {
+    public enum LoadState: Equatable {
+        case idle, loading, loaded(MovieDetail), failed(String)
+    }
+
+    public private(set) var state: LoadState = .idle
+    public private(set) var isFavorite = false
+    public private(set) var isPlayed = false
+
+    /// Showing the blocking full-screen failure — the state an offline→online recovery should
+    /// re-`load()`. Offline recovery acts on it.
+    public var isStalled: Bool { if case .failed = state { true } else { false } }
+    /// Drives the stale-while-revalidate dim during `refresh()` (re-pull after a
+    /// playback session ends). Also a re-entrancy guard.
+    public private(set) var isRefreshing = false
+    /// True while a played toggle is round-tripping. `togglePlayed` gates re-entrant calls on
+    /// this: the service's own per-`(itemID, .played)` guard coalesces the NETWORK write, but
+    /// not this VM's local optimistic flip — without gating here, a rapid double-tap would flip
+    /// `isPlayed` back for a frame before the first call's `.skipped` resolution re-settles it.
+    /// Also read by `refresh()` and `apply(_:)` so they don't clobber the optimistic value with a
+    /// differently-sourced broadcast or re-fetch landing mid-toggle.
+    private var playedInFlight = false
+    /// True while a favorite toggle is round-tripping — mirrors `playedInFlight` exactly: the
+    /// service's own per-`(itemID, .favorite)` guard coalesces the NETWORK write, but not this
+    /// VM's local optimistic flip, so this guards `toggleFavorite`'s re-entrancy and gates
+    /// `isFavorite` in `apply(_:)` the same way `playedInFlight` gates `isPlayed`.
+    private var favoriteInFlight = false
+    private let repo: LibraryRepository
+    private let session: Session
+    /// Which server this movie lives on. Carried so user-data broadcasts are keyed by
+    /// (source, itemID) — an aggregated surface must not repaint a different server's tile, and
+    /// Jellyfin's path-derived item GUIDs mean two servers can genuinely mint the same id.
+    private let source: MediaSourceID
+    private let itemID: ItemID
+    private let userDataActions: UserDataActions
+    private let playback: PlaybackPresenter
+    private var changesTask: Task<Void, Never>?
+
+    init(repo: LibraryRepository, itemID: ItemID, session: Session, userDataActions: UserDataActions, playback: PlaybackPresenter) {
+        self.repo = repo
+        self.session = session
+        self.source = .jellyfin(session.id)
+        self.itemID = itemID
+        self.userDataActions = userDataActions
+        self.playback = playback
+        // Own the iterating Task; cancelled in deinit.
+        changesTask = userDataActions.subscribe { [weak self] change in
+            self?.apply(change)
+        }
+    }
+
+    isolated deinit {
+        changesTask?.cancel()
+    }
+
+    /// React to a user-data change from any surface (self-notification included — the event
+    /// carries the server's fresh copy, so re-applying it is idempotent). The patch goes
+    /// through `change.merged(into:)`, not the raw payload: a played-operation response's
+    /// favorite field (or a favorite response's played/position fields) is a DTO-boundary
+    /// default, not real state, so adopting it wholesale would flip the field the OTHER
+    /// operation owns. Because the merge already keeps the untouched field equal to what
+    /// `detail.movie.userData` held, mirroring both `isFavorite`/`isPlayed` off the merged
+    /// result is safe even for a same-operation change. Both flags apply the same no-clobber
+    /// rule: `isFavorite` skips the patch while `favoriteInFlight`, `isPlayed` skips while
+    /// `playedInFlight` — so a differently-sourced broadcast landing mid-toggle can't revert
+    /// either optimistic value.
+    private func apply(_ change: UserDataActions.Change) {
+        // Match on (source, itemID). This screen is single-server, so a change from ANOTHER server
+        // is never about this movie — and an id match alone can't prove otherwise, since Jellyfin
+        // derives item GUIDs deterministically from the media path (mirrored libraries collide).
+        guard change.source == source else { return }
+        guard case .loaded(let detail) = state, detail.movie.id == change.itemID else { return }
+        let merged = change.merged(into: detail.movie.userData)
+        state = .loaded(detail.withMovie(detail.movie.withUserData(merged)))
+        if !favoriteInFlight { isFavorite = merged.isFavorite }
+        if !playedInFlight { isPlayed = merged.played }
+    }
+
+    /// "Resume" when the movie is mid-watch — the player already resumes from the saved position.
+    public var playButtonTitle: String {
+        guard case .loaded(let md) = state else { return "Play" }
+        return ItemPlayButtonLabel.title(for: .movie(md.movie), resumeEpisode: nil)
+    }
+
+    /// Plays the loaded detail, so the player starts without a refetch.
+    public func play() {
+        guard case .loaded(let md) = state else { return }
+        playback.play(.movie(md), in: session)
+    }
+
+    public func load() async {
+        state = .loading
+        do {
+            let detail = try await repo.detail(for: itemID)
+            guard case .movie(let md) = detail else {
+                state = .failed("Your server returned something that isn't a movie.")
+                return
+            }
+            state = .loaded(md)
+            isFavorite = md.movie.userData.isFavorite
+            isPlayed = md.movie.userData.played
+        } catch let error as AppError {
+            Log.ui.error("MovieDetail load failed: \(error.userMessage)")
+            state = .failed(error.userMessage)
+        } catch {
+            Log.ui.error("MovieDetail load unexpected: \(String(describing: type(of: error)))")
+            state = .failed("Something went wrong. Go back and open it again.")
+        }
+    }
+
+    /// Re-pull the movie after a playback session ends so its progress-driven UI — the
+    /// Resume/Play label and the watched check — reflects the position the player just
+    /// moved. Stays on `.loaded` (no skeleton flash) and lets the `staleWhileRevalidate`
+    /// dim cover the swap. Re-fetch failure is non-fatal: keep the stale detail, log.
+    public func refresh() async {
+        guard case .loaded = state, !isRefreshing else { return }
+        isRefreshing = true
+        defer { isRefreshing = false }
+        do {
+            let detail = try await repo.detail(for: itemID)
+            guard case .movie(let md) = detail else { return }
+            state = .loaded(md)
+            // Finishing a movie marks it played server-side, so pick that up — but not
+            // while a manual Mark-Watched toggle is still round-tripping (`togglePlayed`
+            // owns the field until its write resolves). Favorite is never moved by
+            // playback, so refresh leaves `isFavorite` alone rather than race an
+            // in-flight favorite toggle.
+            if !playedInFlight { isPlayed = md.movie.userData.played }
+        } catch {
+            Log.ui.error("MovieDetail refresh failed: \(String(describing: type(of: error)))")
+        }
+    }
+
+    public func toggleFavorite() async {
+        // The service's in-flight guard coalesces the NETWORK write only — it never sees this
+        // VM's local optimistic flip. Without this early-return, a rapid double-tap would flip
+        // `isFavorite` back to `original` for a frame before the first call's `.skipped` outcome
+        // re-settles it, a visible flicker.
+        guard !favoriteInFlight else { return }
+        let original = isFavorite
+        favoriteInFlight = true
+        defer { favoriteInFlight = false }
+        isFavorite = !original
+        switch await userDataActions.toggleFavorite(itemID: itemID, source: source, currentlyFavorite: original, via: repo) {
+        case .success(let server):
+            isFavorite = server.isFavorite
+        case .skipped:
+            isFavorite = original
+        case .failure(let error):
+            isFavorite = original
+            Log.ui.error("toggleFavorite failed: \(error.userMessage) (\(error.networkDiagnostic))")
+        }
+    }
+
+    public func togglePlayed() async {
+        // The service's in-flight guard coalesces the NETWORK write only — it never sees this
+        // VM's local optimistic flip. Without this early-return, a rapid double-tap would flip
+        // `isPlayed` back to `original` for a frame before the first call's `.skipped` outcome
+        // re-settles it, a visible checkmark flicker.
+        guard !playedInFlight else { return }
+        let original = isPlayed
+        playedInFlight = true
+        defer { playedInFlight = false }
+        isPlayed = !original
+        switch await userDataActions.togglePlayed(itemID: itemID, source: source, currentlyPlayed: original, via: repo) {
+        case .success(let server):
+            isPlayed = server.played
+        case .skipped:
+            isPlayed = original
+        case .failure(let error):
+            isPlayed = original
+            Log.ui.error("togglePlayed failed: \(error.userMessage) (\(error.networkDiagnostic))")
+        }
+    }
+}

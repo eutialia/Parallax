@@ -1,52 +1,39 @@
 import SwiftUI
 import ParallaxJellyfin
 import ParallaxCore
+import ParallaxFeatures
 
-/// The iPhone Library tab's shell: resolves every configured source's libraries in ONE
-/// `MergedLibrary.resolve` pass — the same resolver the iPad sidebar and tvOS focus root use —
-/// and owns the load / empty / failure states. `LibraryListView` below is pure presentation.
+/// The iPhone Library tab's shell: renders `AppModel.libraries` — the same resolution the iPad
+/// sidebar and tvOS focus root show, loaded by the root — and owns the load / empty / failure
+/// states. `LibraryListView` below is pure presentation.
 ///
-/// There is no longer a separate SMB-only list: an SMB-only config is just a resolution with no
-/// Jellyfin groups and no Favorites card, so one view covers both. (The old split existed
-/// because the merged list anchored on a live `Session` for its Jellyfin view model; that view
-/// model is gone.)
+/// There is no separate SMB-only list: an SMB-only config is just a resolution with no Jellyfin
+/// groups and no Favorites card, so one view covers both.
 struct LibraryHostView: View {
-    @Environment(AppDependencies.self) private var deps
-    @Environment(AppRouter.self) private var router
-    /// One group per source, in server add order.
-    @State private var groups: [LibraryGroup] = []
-    /// Whether any Jellyfin server is signed in — gates the cross-server Favorites card (favorites
-    /// are a Jellyfin concept). `FavoritesView` resolves the servers themselves.
-    @State private var hasJellyfinSource = false
-    /// Sources whose library listing failed this pass. Non-empty drives offline recovery; it also
-    /// distinguishes "every server is unreachable" (a real failure worth a message) from "no
-    /// server has any visible library" (an empty state).
-    @State private var failedSourceIDs: Set<MediaSourceID> = []
-    /// Names of the servers in `failedSourceIDs`, for the partial-failure notice.
-    @State private var failedSourceNames: [String] = []
-    @State private var isResolvingSource = true
+    @Environment(AppModel.self) private var app
 
     var body: some View {
+        let libraries = app.libraries
         Group {
-            if !groups.isEmpty {
+            if !libraries.groups.isEmpty {
                 LibraryListView(
-                    groups: groups,
-                    showsFavorites: hasJellyfinSource,
+                    groups: libraries.groups,
+                    showsFavorites: libraries.hasJellyfinSource,
                     // A PARTIAL failure used to be silent: the full-screen error below only shows
                     // when every source failed, so with two servers one unreachable server just
                     // read as "I have fewer libraries than I remember". Naming it in-place is the
                     // same answer the Favorites wall gives with its per-section failure row.
-                    unreachableServers: failedSourceNames
+                    unreachableServers: libraries.failedSourceNames
                 )
                 .navigationTitle("Library")
                 // Note: no `.navigationSubtitle(session.serverName)`. It named a single server
                 // above a list that already mixed sources, and with several servers there is no
                 // one name to put there. Server identity now rides the per-server section headers
                 // inside the list, which is where it actually applies.
-            } else if isResolvingSource {
+            } else if libraries.isResolving {
                 LibraryListLoadingPlaceholder()
                     .navigationTitle("Library")
-            } else if !failedSourceIDs.isEmpty {
+            } else if !libraries.failedSourceIDs.isEmpty {
                 // Every source that could have contributed failed to list — offline, not empty.
                 StatusStateView.failure(
                     "Couldn't load libraries",
@@ -63,50 +50,5 @@ struct LibraryHostView: View {
             }
         }
         .screenFloor()
-        // Keyed on the reload token (not a single server id): a Jellyfin add/switch/sign-out
-        // (token's id part) AND an SMB add/remove (token's revision part) both rebuild the groups
-        // — mirrors how RootTabView / FocusRootView refresh theirs, so an added server shows up
-        // without a relaunch.
-        .task(id: router.libraryReloadToken) { await load() }
-        // Repopulate when the network returns (or the app foregrounds online) after a pass that
-        // couldn't reach a server. Gated on the failed set so healthy groups — and the local SMB
-        // shares — are never re-pulled.
-        .recoversFromOffline(isStalled: !failedSourceIDs.isEmpty) { await load() }
-    }
-
-    /// Resolve + commit every source's libraries. Captures into locals across the awaits, then
-    /// commits under a cancellation check: a token change cancels this task and starts a fresh
-    /// one, and a stale snapshot must not clobber the newer state.
-    private func load() async {
-        // Clear, don't just early-return: dropping the last source without a remount must not
-        // leave a stale list rendered (mirrors the roots' tasks).
-        guard router.hasAnySource else {
-            groups = []; hasJellyfinSource = false; failedSourceIDs = []; failedSourceNames = []; isResolvingSource = false
-            return
-        }
-        // One read of the store's shape drives both stages (see `MergedLibrary.SourceState`) —
-        // and the Favorites gate reads the same `sessions`, so the two can't disagree.
-        let sources = await MergedLibrary.SourceState.read(from: deps.serverStore)
-        // Stale-while-revalidate: the last known listing goes up before the network pass, so the
-        // list opens on real cards instead of the placeholder.
-        if let cached = await sources.hydratedGroups(ifColdGiven: groups, snapshots: deps.snapshots) {
-            groups = cached
-            hasJellyfinSource = !sources.sessions.isEmpty
-            isResolvingSource = false
-        }
-        let outcome = await sources.resolve(
-            retaining: groups,
-            snapshots: deps.snapshots,
-            jellyfinRepo: deps.mediaRepoFactory
-        )
-        // NOT a `defer`: on the cancelled path the placeholder must stay up. Clearing it there
-        // would drop the view to the "No libraries — add a source" empty state (groups is still
-        // empty) for the whole of the superseding pass.
-        guard !Task.isCancelled else { return }
-        groups = outcome.groups
-        hasJellyfinSource = !sources.sessions.isEmpty
-        failedSourceIDs = outcome.failedSourceIDs
-        failedSourceNames = outcome.failedSourceNames
-        isResolvingSource = false
     }
 }

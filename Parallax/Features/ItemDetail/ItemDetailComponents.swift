@@ -1,6 +1,7 @@
 import SwiftUI
 import ParallaxJellyfin
 import ParallaxCore
+import ParallaxFeatures
 
 /// `MovieDetailView`/`SeriesDetailView.body`'s branch discriminator — see `crossfadeStateSwap`.
 /// Shared by both (their loading/loaded/failed shape is identical) rather than duplicated per file.

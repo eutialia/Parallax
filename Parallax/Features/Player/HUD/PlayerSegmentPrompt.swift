@@ -1,6 +1,7 @@
 import SwiftUI
 import ParallaxJellyfin
 import ParallaxCore
+import ParallaxFeatures
 
 /// The contextual Skip Intro / Skip Recap / Next Episode button — a Netflix-style
 /// overlay anchored bottom-trailing, just above where the scrubber's remaining-time

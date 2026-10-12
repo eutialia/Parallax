@@ -1,6 +1,7 @@
 import SwiftUI
 import ParallaxCore
 import ParallaxJellyfin
+import ParallaxFeatures
 
 /// "Visible Libraries" picker (handoff 3h, the `4 of 6` row's destination). Lists a Jellyfin server's
 /// libraries with a checkmark on each visible one; tapping toggles it. The de-selected set persists per
@@ -9,17 +10,35 @@ import ParallaxJellyfin
 struct VisibleLibrariesView: View {
     let session: Session
 
-    @Environment(AppDependencies.self) private var deps
-    @Environment(AppRouter.self) private var router
-
-    @State private var collections: [MediaCollection] = []
-    @State private var hidden: Set<String> = []
-    @State private var isLoading = true
-    @State private var loadError: String?
+    @Environment(AppModel.self) private var app
+    @State private var model: VisibleLibrariesModel?
 
     var body: some View {
         SettingsScaffold(showsBrand: false) {
-            if isLoading {
+            if let model, !model.isLoading {
+                if let loadError = model.loadError {
+                    SettingsRetryError(message: loadError) { Task { await model.load() } }
+                } else if model.collections.isEmpty {
+                    SettingsSectionFooter("This server has no libraries.")
+                        .tvFocusableSurface()
+                } else {
+                    SettingsGroup(footer: "Hidden libraries won’t appear in your library list.") {
+                        ForEach(model.collections) { collection in
+                            let visible = !model.hidden.contains(collection.id.rawValue)
+                            Button { Task { await model.toggle(collection) } } label: {
+                                SettingsRowLabel(
+                                    systemImage: collection.collectionType.symbolName,
+                                    iconSize: 20,
+                                    title: collection.name,
+                                    accessory: visible ? .checkmark : .none
+                                )
+                            }
+                            .tvListRowButton()
+                            .accessibilityValue(visible ? "Visible" : "Hidden")
+                        }
+                    }
+                }
+            } else {
                 ProgressView()
                     .frame(maxWidth: .infinity, minHeight: 140)
                     // A pushed tvOS screen with no focusable content traps the remote (Menu
@@ -27,64 +46,15 @@ struct VisibleLibrariesView: View {
                     // are exactly that, so each keeps a focus target. The error branch has its
                     // Retry button; the loaded branch has the library rows.
                     .tvFocusableSurface()
-            } else if let loadError {
-                SettingsRetryError(message: loadError) { Task { await load() } }
-            } else if collections.isEmpty {
-                SettingsSectionFooter("This server has no libraries.")
-                    .tvFocusableSurface()
-            } else {
-                SettingsGroup(footer: "Hidden libraries won’t appear in your library list.") {
-                    ForEach(collections) { collection in
-                        let visible = !hidden.contains(collection.id.rawValue)
-                        Button { toggle(collection) } label: {
-                            SettingsRowLabel(
-                                systemImage: collection.collectionType.symbolName,
-                                iconSize: 20,
-                                title: collection.name,
-                                accessory: visible ? .checkmark : .none
-                            )
-                        }
-                        .tvListRowButton()
-                        .accessibilityValue(visible ? "Visible" : "Hidden")
-                    }
-                }
             }
         }
         .navigationTitle("Visible Libraries")
         #if !os(tvOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
-        .task { await load() }
-    }
-
-    private func load() async {
-        isLoading = true
-        loadError = nil
-        hidden = await deps.serverStore.hiddenCollectionIDs(for: session.id)
-        do {
-            collections = try await deps.jellyfinLibraryRepoFactory(session).collections()
-        } catch {
-            loadError = "Couldn’t load this server’s libraries."
-        }
-        isLoading = false
-    }
-
-    private func toggle(_ collection: MediaCollection) {
-        let id = collection.id.rawValue
-        let wasHidden = hidden.contains(id)
-        if wasHidden { hidden.remove(id) } else { hidden.insert(id) }
-        let snapshot = hidden
-        Task {
-            do {
-                try await deps.serverStore.setHiddenCollectionIDs(snapshot, for: session.id)
-                // Rebuild the merged library wherever it's shown, so the change is immediate.
-                router.bumpLibraryRevision()
-            } catch {
-                // Persist failed — revert the optimistic toggle so the checkmark matches what's stored,
-                // and DON'T bump the revision (the roots would re-read the unchanged set and diverge from
-                // this screen). The reverted checkmark is the feedback that the change didn't take.
-                if wasHidden { hidden.insert(id) } else { hidden.remove(id) }
-            }
+        .task {
+            if model == nil { model = VisibleLibrariesModel(session: session, app: app) }
+            await model?.load()
         }
     }
 }

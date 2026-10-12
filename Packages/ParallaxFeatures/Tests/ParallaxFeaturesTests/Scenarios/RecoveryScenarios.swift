@@ -1,0 +1,131 @@
+import Foundation
+import ParallaxCore
+import ParallaxFeatures
+import ParallaxFileBrowse
+import ParallaxJellyfin
+import ParallaxJellyfinTestSupport
+import Testing
+
+@MainActor
+@Suite("Offline recovery and foreground return", .timeLimit(.minutes(1)))
+struct RecoveryScenarios {
+    private static let nas = SMBServerData(host: "nas.local", username: "ana", domain: "WORKGROUP", shares: ["Media"])
+    private static let ref = SMBServerRef(id: ServerID(rawValue: "smb-nas.local"), data: nas)
+
+    private struct NASUnreachable: Error {}
+
+    private static func file(_ name: String) -> SMBDirectoryEntry {
+        SMBDirectoryEntry(name: name, isDirectory: false, size: 1, modifiedAt: nil)
+    }
+
+    private static func den() -> FakeJellyfinServer {
+        FakeJellyfinServer(name: "Den").user("ana").library("Films")
+            .movie("Heat", in: "Films").watch("Heat", minutes: 40)
+    }
+
+    @Test("a Home that failed while offline reloads by itself when the network returns")
+    func homeReloadsWhenTheNetworkReturns() async throws {
+        let den = Self.den()
+        let world = try await AppWorld.launch(signedIn: [(den, "ana")])
+        den.goOffline()
+        try await world.goOffline()
+        await world.openHome()
+        #expect(world.app.home?.state == .failed("Parallax couldn't reach your servers."))
+
+        den.comeBackOnline()
+        try await world.comeOnline()
+
+        try await world.until { world.continueWatching == ["Heat"] }
+        #expect(world.app.home?.state == .loaded)
+    }
+
+    @Test("sidebar libraries that failed while offline come back when the network returns")
+    func sidebarLibrariesComeBackOnReconnect() async throws {
+        let den = Self.den()
+        let world = try await AppWorld.launch(signedIn: [(den, "ana")])
+        den.goOffline()
+        try await world.goOffline()
+        await world.openHome()
+        #expect(world.sidebar.isEmpty)
+
+        den.comeBackOnline()
+        try await world.comeOnline()
+
+        try await world.until { world.sidebar == [AppWorld.SidebarSection(title: "Libraries", libraries: ["Films"])] }
+    }
+
+    @Test("a Home that failed because its server was down reloads when the user returns to the app")
+    func homeReloadsOnReturnFromBackground() async throws {
+        let den = Self.den()
+        let world = try await AppWorld.launch(signedIn: [(den, "ana")])
+        den.goOffline()
+        await world.openHome()
+        #expect(world.app.home?.state == .failed("Parallax couldn't reach your servers."))
+
+        world.background()
+        den.comeBackOnline()
+        world.foreground()
+
+        try await world.until { world.continueWatching == ["Heat"] }
+        #expect(world.app.home?.state == .loaded)
+    }
+
+    @Test("returning from the background to an SMB folder flushes the idle connections and lists the folder again")
+    func smbFolderRelistsAfterReturn() async throws {
+        let world = try await AppWorld.launch(savedSMB: [(Self.nas, "hunter2")])
+        world.nas.setFolder([Self.file("Alien.mp4")], share: "Media")
+        let root = await world.openSMBFolder(Self.ref, share: "Media")
+        try await world.until { root.media.map { $0.displayTitle } == ["Alien"] }
+        let idleBefore = world.nas.connectedIDs
+
+        world.nas.setFolder([Self.file("Alien.mp4"), Self.file("Brazil.avi")], share: "Media")
+        world.background()
+        world.foreground()
+
+        try await world.until { root.media.map { $0.displayTitle } == ["Alien", "Brazil"] }
+        #expect(world.nas.disconnectedIDs == idleBefore)
+        #expect(world.nas.connectedIDs.count == idleBefore.count + 1)
+        #expect(world.nas.listedPaths == ["/", "/"])
+    }
+
+    @Test("a cold launch's first activation is not a return from the background: the stalled share root is listed once")
+    func coldLaunchActivationDoesNotRelist() async throws {
+        let world = try await AppWorld.launch(savedSMB: [(Self.nas, "hunter2")])
+        world.nas.setListingOutcome(.fails(NASUnreachable()))
+        let root = await world.openSMBFolder(Self.ref, share: "Media")
+        try await world.until { root.isStalled }
+
+        world.settleLaunch()
+
+        #expect(world.app.lifecycle.foregroundReturns == 0)
+        #expect(world.nas.listedPaths == ["/"])
+
+        world.nas.setListingOutcome(.entries([Self.file("Alien.mp4")]))
+        world.background()
+        world.foreground()
+
+        try await world.until { root.media.map { $0.displayTitle } == ["Alien"] }
+        #expect(world.app.lifecycle.foregroundReturns == 1)
+    }
+
+    @Test("returning from the background lists a stalled SMB folder once, and re-lists the healthy one beside it")
+    func stalledFolderIsListedOnceOnReturn() async throws {
+        let world = try await AppWorld.launch(savedSMB: [(Self.nas, "hunter2")])
+        world.nas.setFolder([Self.file("Alien.mp4")], share: "Media")
+        world.nas.setListingOutcome(.fails(NASUnreachable()))
+        let root = await world.openSMBFolder(Self.ref, share: "Media")
+        let movies = await world.openSMBFolder(Self.ref, share: "Media", path: "Movies")
+        try await world.until { root.media.map { $0.displayTitle } == ["Alien"] && movies.isStalled }
+        world.settleLaunch()
+
+        world.nas.setFolder([Self.file("Brazil.avi")], share: "Media", path: "Movies")
+        world.background()
+        world.foreground()
+
+        // The healthy root's re-list starts in the same step that would re-list a recovered folder.
+        try await world.until { () async in world.nas.listedPaths.filter { $0 == "/" }.count == 2 }
+        try await world.until { movies.media.map { $0.displayTitle } == ["Brazil"] }
+        #expect(!movies.isRefreshing)
+        #expect(world.nas.listedPaths.filter { $0 != "/" } == ["Movies", "Movies"])
+    }
+}

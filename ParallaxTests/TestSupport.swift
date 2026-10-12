@@ -2,7 +2,7 @@ import Foundation
 import Testing
 import ParallaxCore
 import ParallaxJellyfin
-import ParallaxTestScaling
+import ParallaxFeatures
 @testable import Parallax
 
 extension Tag {
@@ -10,37 +10,6 @@ extension Tag {
     /// fake. Slow and environment-dependent by nature, so a fast unit run can exclude them with
     /// `--skip-tag integration`.
     @Tag static var integration: Self
-}
-
-/// Bounded yield loop shared by every test that waits on an async subscription (a
-/// `UserDataActions.changes()` broadcast, a `ConnectivityMonitor` path update, …): hands
-/// control to the subscriber's `for await` Task until it has processed the value, without a
-/// wall-clock sleep. Safe because everything under test runs on the MainActor cooperative
-/// executor — yielding is enough to let the subscription's task advance.
-@MainActor
-func waitUntil(_ condition: @MainActor () -> Bool) async {
-    for _ in 0..<1000 where !condition() {
-        await Task.yield()
-    }
-}
-
-/// The actor-polling variant: waits until an `async` condition holds (state on a non-MainActor
-/// actor, where the yield-loop above can't look), sleeping between polls. Records an Issue when
-/// the anti-hang ceiling expires — the ceiling is a hang detector, never part of the assertion,
-/// and it rides CITimeScale so an oversubscribed runner can't trip it while the code under
-/// test behaves correctly.
-func waitUntil(
-    _ comment: Comment,
-    _ condition: @escaping () async -> Bool
-) async {
-    let clock = ContinuousClock()
-    let start = clock.now
-    let ceiling: Duration = CITimeScale.seconds(10)
-    while start.duration(to: clock.now) < ceiling {
-        if await condition() { return }
-        try? await Task.sleep(for: .milliseconds(10))
-    }
-    Issue.record(comment)
 }
 
 /// A `JellyfinClientFactory` for suites that must construct a `SessionManager` (view models take

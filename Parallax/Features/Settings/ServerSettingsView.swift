@@ -1,6 +1,7 @@
 import SwiftUI
 import ParallaxCore
 import ParallaxJellyfin
+import ParallaxFeatures
 
 /// Per-Jellyfin-server settings detail (handoff 3h) — pushed from a server row in `SettingsView`. The
 /// VM-wiring shell: it maps the `Session` + `SettingsViewModel` into plain values + callbacks for
@@ -12,22 +13,15 @@ struct ServerSettingsView: View {
     let session: Session
     let vm: SettingsViewModel
 
-    @Environment(AppDependencies.self) private var deps
+    @Environment(AppModel.self) private var app
     @Environment(AppRouter.self) private var router
     @Environment(\.dismiss) private var dismiss
     @State private var isConfirmingRemove = false
     @State private var showingVisibleLibraries = false
-    @State private var status: ConnectionStatus = .checking
-    /// Fetched server version ("10.9.11"); nil renders a dash until the probe lands.
-    @State private var version: String?
-    /// "4 of 6" / "All" summary for the Visible Libraries row — refreshed when visibility changes.
-    @State private var visibleSummary = "All"
-
-    /// Point-in-time reachability of the server, derived from the public-info probe.
-    enum ConnectionStatus { case checking, connected, offline }
+    @State private var model: ServerSettingsModel?
 
     private var statusText: String {
-        switch status {
+        switch model?.status ?? .checking {
         case .checking: return "Checking…"
         case .connected: return "Connected"
         case .offline: return "Offline"
@@ -36,7 +30,7 @@ struct ServerSettingsView: View {
 
     /// Green LED only when reachable; a muted tertiary dot while checking or offline.
     private var statusLed: Color {
-        status == .connected ? Color.ok : Color.tertiaryLabel
+        model?.status == .connected ? Color.ok : Color.tertiaryLabel
     }
 
     var body: some View {
@@ -44,10 +38,10 @@ struct ServerSettingsView: View {
             serverName: session.serverName,
             host: session.displayHost,
             userName: session.user.name,
-            version: version,
+            version: model?.version,
             statusText: statusText,
             statusLed: statusLed,
-            visibleLibrariesLabel: visibleSummary,
+            visibleLibrariesLabel: model?.visibleSummary ?? "All",
             signOutError: vm.signOutErrorMessage,
             onVisibleLibraries: { showingVisibleLibraries = true },
             onRemove: { isConfirmingRemove = true }
@@ -56,9 +50,15 @@ struct ServerSettingsView: View {
             VisibleLibrariesView(session: session)
                 .tvHidesTabSidebar()
         }
-        .task { await probeServer() }
+        .task {
+            if model == nil { model = ServerSettingsModel(session: session, app: app) }
+            await model?.probeServer()
+        }
         // Keyed on the library revision so a visibility change (which bumps it) refreshes the "N of M".
-        .task(id: router.libraryReloadToken) { await loadLibrarySummary() }
+        .task(id: router.libraryReloadToken) {
+            if model == nil { model = ServerSettingsModel(session: session, app: app) }
+            await model?.loadLibrarySummary()
+        }
         .confirmationDialog("Remove this server?", isPresented: $isConfirmingRemove, titleVisibility: .visible) {
             Button("Remove", role: .destructive) {
                 Task {
@@ -75,32 +75,6 @@ struct ServerSettingsView: View {
         } message: {
             Text("\(session.serverName) will be removed from your servers.")
         }
-    }
-
-    /// Fetch the server version + reachability from the unauthenticated public-info endpoint. A thrown
-    /// request (offline / wrong host) flips the pill to "Offline"; the version stays nil → a dash.
-    private func probeServer() async {
-        let factory = DefaultJellyfinClientFactory(identityProvider: deps.deviceIdentityProvider)
-        let client = await factory.make(serverURL: session.serverURL)
-        do {
-            version = try await client.serverVersion()
-            status = .connected
-        } catch {
-            status = .offline
-        }
-    }
-
-    /// Compute the "N of M" / "All" Visible Libraries summary from the server's collections + hidden set.
-    /// A fetch failure leaves the previous label (the row stays useful even if the server is briefly down).
-    private func loadLibrarySummary() async {
-        let hidden = await deps.serverStore.hiddenCollectionIDs(for: session.id)
-        guard let collections = try? await deps.jellyfinLibraryRepoFactory(session).collections() else { return }
-        // A newer revision (e.g. rapid visibility toggles) cancels this task; don't let a stale fetch
-        // that resolved after the cancel overwrite the fresher summary the newer task already wrote.
-        guard !Task.isCancelled else { return }
-        let total = collections.count
-        let visible = collections.filter { !hidden.contains($0.id.rawValue) }.count
-        visibleSummary = (total == 0 || visible == total) ? "All" : "\(visible) of \(total)"
     }
 }
 
