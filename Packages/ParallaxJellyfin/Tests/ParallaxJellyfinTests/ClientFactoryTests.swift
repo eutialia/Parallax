@@ -73,29 +73,30 @@ struct ClientFactoryTests {
     @Test("Both session factories thread the token-rejection sink into their client")
     func sessionFactoriesForwardTokenRejection() async throws {
         let provider = identityProvider()
-        let reported = ReportedServerIDs()
-        let session = JellyfinFixtures.session(id: "s-reject")
+        let reported = ReportedRejections()
 
         let libraryStub = StubHTTPTransport()
         libraryStub.always(.json("{}", status: 401))
+        let librarySession = JellyfinFixtures.session(id: "s-reject", serverURL: libraryStub.baseURL)
         let libraryClient = await DefaultJellyfinLibraryClientFactory(
             identityProvider: provider,
             onTokenRejected: { reported.record($0) },
             sessionConfiguration: libraryStub.configuration
-        ).make(for: JellyfinFixtures.session(id: "s-reject", serverURL: libraryStub.baseURL))
+        ).make(for: librarySession)
         let libraryError = await #expect(throws: AppError.self) { _ = try await libraryClient.getCollections() }
         #expect(Self.isTokenInvalidated(libraryError))
 
         let playbackStub = StubHTTPTransport()
         playbackStub.always(.json("{}", status: 401))
+        let playbackSession = JellyfinFixtures.session(id: "s-reject", serverURL: playbackStub.baseURL)
         let playbackClient = await DefaultJellyfinPlaybackClientFactory(
             identityProvider: provider,
             onTokenRejected: { reported.record($0) },
             sessionConfiguration: playbackStub.configuration
-        ).make(for: JellyfinFixtures.session(id: "s-reject", serverURL: playbackStub.baseURL))
+        ).make(for: playbackSession)
         let playbackError = await #expect(throws: AppError.self) { try await playbackClient.pingSession(playSessionID: "ps-1") }
         #expect(Self.isTokenInvalidated(playbackError))
 
-        #expect(reported.ids == [session.id, session.id])
+        #expect(reported.sessions == [librarySession, playbackSession])
     }
 }

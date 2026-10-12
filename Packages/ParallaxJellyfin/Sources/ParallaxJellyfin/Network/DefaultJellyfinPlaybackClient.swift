@@ -11,7 +11,7 @@ public final class DefaultJellyfinPlaybackClient: JellyfinPlaybackClient, Sendab
     private let identity: DeviceIdentity
     /// Called when this server rejects the session's access token (HTTP 401) — see
     /// `JellyfinResponseValidator`.
-    private let onTokenRejected: @Sendable (ServerID) -> Void
+    private let onTokenRejected: @Sendable (Session) -> Void
     /// See `DefaultJellyfinLibraryClient.sessionConfiguration` — the injected transport that lets
     /// tests drive the real request path against a stub `URLProtocol`.
     private let sessionConfiguration: URLSessionConfiguration
@@ -19,7 +19,7 @@ public final class DefaultJellyfinPlaybackClient: JellyfinPlaybackClient, Sendab
     public init(
         session: Session,
         identity: DeviceIdentity,
-        onTokenRejected: @escaping @Sendable (ServerID) -> Void,
+        onTokenRejected: @escaping @Sendable (Session) -> Void,
         sessionConfiguration: URLSessionConfiguration = .default
     ) {
         self.session = session
@@ -42,7 +42,7 @@ public final class DefaultJellyfinPlaybackClient: JellyfinPlaybackClient, Sendab
         // accurate "your session expired" — plus the same sign-in-again route out.
         return JellyfinClient(
             configuration: config,
-            delegate: JellyfinResponseValidator(serverID: session.id, onTokenRejected: onTokenRejected),
+            delegate: JellyfinResponseValidator(session: session, onTokenRejected: onTokenRejected),
             sessionConfiguration: sessionConfiguration
         )
     }

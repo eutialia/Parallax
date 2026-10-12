@@ -9,7 +9,7 @@ import ParallaxCore
 /// must be reported and named; every other failure is transient and must not sign anyone out.
 @Suite("Jellyfin response validation")
 struct JellyfinResponseValidatorTests {
-    private let serverID = ServerID(rawValue: "server-1")
+    private let rejectedSession = JellyfinFixtures.session(id: "server-1", token: "tok-dead")
 
     /// An ephemeral session, never `URLSession.shared`: the `task` argument only exists to satisfy
     /// the `Get` hook's signature (the validator never touches it), and reaching into the shared
@@ -19,9 +19,9 @@ struct JellyfinResponseValidatorTests {
     private func validate(
         status: Int,
         headers: [String: String]? = nil,
-        onTokenRejected: @escaping @Sendable (ServerID) -> Void = { _ in }
+        onTokenRejected: @escaping @Sendable (Session) -> Void = { _ in }
     ) throws {
-        let validator = JellyfinResponseValidator(serverID: serverID, onTokenRejected: onTokenRejected)
+        let validator = JellyfinResponseValidator(session: rejectedSession, onTokenRejected: onTokenRejected)
         let url = URL(string: "https://jellyfin.example.test/Users/Views")!
         let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: headers)!
         try validator.client(
@@ -34,14 +34,14 @@ struct JellyfinResponseValidatorTests {
 
     @Test("A 2xx response passes without reporting anything", arguments: [200, 204, 299])
     func successPasses(status: Int) throws {
-        let reported = ReportedServerIDs()
+        let reported = ReportedRejections()
         try validate(status: status) { reported.record($0) }
-        #expect(reported.ids.isEmpty)
+        #expect(reported.sessions.isEmpty)
     }
 
-    @Test("A 401 reports the server and surfaces as an expired session")
+    @Test("A 401 reports the session whose token was rejected and surfaces as an expired session")
     func unauthorizedReportsAndNames() {
-        let reported = ReportedServerIDs()
+        let reported = ReportedRejections()
         do {
             try validate(status: 401) { reported.record($0) }
             Issue.record("expected a throw")
@@ -57,14 +57,14 @@ struct JellyfinResponseValidatorTests {
         } catch {
             Issue.record("expected AppError, got \(error)")
         }
-        #expect(reported.ids == [serverID])
+        #expect(reported.sessions == [rejectedSession])
     }
 
     /// The one that must not over-fire. A 500 or a 404 is transient or item-specific; signing the
     /// user out over it would take down a perfectly good server on a single bad request.
     @Test("Other failures throw a plain server error and never report a rejection", arguments: [403, 404, 500, 503])
     func otherFailuresDoNotSignOut(status: Int) {
-        let reported = ReportedServerIDs()
+        let reported = ReportedRejections()
         do {
             try validate(status: status) { reported.record($0) }
             Issue.record("expected a throw for HTTP \(status)")
@@ -77,7 +77,7 @@ struct JellyfinResponseValidatorTests {
         } catch {
             Issue.record("expected AppError, got \(error)")
         }
-        #expect(reported.ids.isEmpty)
+        #expect(reported.sessions.isEmpty)
     }
 
     /// The destructive false positive: a Jellyfin behind an auth gateway (Authelia, Authentik, a
@@ -93,7 +93,7 @@ struct JellyfinResponseValidatorTests {
         ["Basic realm=\"proxy\"", "Bearer", "Digest realm=\"gw\", nonce=\"abc\""]
     )
     func gatewayChallengeDoesNotSignOut(headerName: String, challenge: String) {
-        let reported = ReportedServerIDs()
+        let reported = ReportedRejections()
         do {
             try validate(status: 401, headers: [headerName: challenge]) { reported.record($0) }
             Issue.record("expected a throw — a gateway 401 is still a failed request")
@@ -108,6 +108,6 @@ struct JellyfinResponseValidatorTests {
         }
         // The load-bearing assertion: nothing was reported, so no session is dropped and no
         // Keychain token is deleted.
-        #expect(reported.ids.isEmpty)
+        #expect(reported.sessions.isEmpty)
     }
 }

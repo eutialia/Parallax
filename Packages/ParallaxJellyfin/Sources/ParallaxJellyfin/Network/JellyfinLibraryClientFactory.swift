@@ -6,17 +6,17 @@ public protocol JellyfinLibraryClientFactory: Sendable {
 
 public actor DefaultJellyfinLibraryClientFactory: JellyfinLibraryClientFactory {
     private let identityProvider: DeviceIdentityProvider
-    private let onTokenRejected: @Sendable (ServerID) -> Void
+    private let onTokenRejected: @Sendable (Session) -> Void
     /// The transport clients built here run on. Defaulted to `.default` so production is
     /// unchanged; tests hand in a configuration carrying a stub `URLProtocol`.
     private let sessionConfiguration: URLSessionConfiguration
 
-    /// - Parameter onTokenRejected: invoked with the server whose access token the server
+    /// - Parameter onTokenRejected: invoked with the session whose access token the server
     ///   rejected (HTTP 401). The app hands in a sink that drops that session so the server
     ///   surfaces as signed-out rather than silently returning nothing.
     public init(
         identityProvider: DeviceIdentityProvider,
-        onTokenRejected: @escaping @Sendable (ServerID) -> Void,
+        onTokenRejected: @escaping @Sendable (Session) -> Void,
         sessionConfiguration: URLSessionConfiguration = .default
     ) {
         self.identityProvider = identityProvider

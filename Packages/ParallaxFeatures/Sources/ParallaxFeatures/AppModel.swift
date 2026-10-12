@@ -33,16 +33,16 @@ public final class AppModel {
     let recoverableScreens = RecoverableScreens()
     @ObservationIgnored var smbLevels: [WeakLevel] = []
 
-    /// Servers whose access token the server itself rejected (HTTP 401). A stream rather than a
+    /// Sessions whose access token the server itself rejected (HTTP 401). A stream rather than a
     /// direct call so the network layer never has to know about the router or the main actor, and
     /// so a burst of simultaneous 401s is handled serially by one consumer instead of racing.
-    private let tokenRejections: AsyncStream<ServerID>
+    private let tokenRejections: AsyncStream<Session>
 
     let launchReveal: LaunchRevealCoverage
 
     public init(environment: AppEnvironment) {
         launchReveal = environment.launchReveal
-        let (tokenRejections, reportTokenRejected) = AsyncStream<ServerID>.makeStream()
+        let (tokenRejections, reportTokenRejected) = AsyncStream<Session>.makeStream()
         self.tokenRejections = tokenRejections
         services = AppServices(environment: environment) { reportTokenRejected.yield($0) }
         playback = PlaybackPresenter(clock: environment.clock)
@@ -175,8 +175,8 @@ public final class AppModel {
     /// Serial by construction: concurrent requests all 401 together, and `invalidateSession`
     /// returns false for every call after the first.
     private func signOutRejectedTokens() async {
-        for await serverID in tokenRejections {
-            guard await services.serverStore.invalidateSession(serverID) else { continue }
+        for await rejected in tokenRejections {
+            guard await services.serverStore.invalidateSession(rejected) else { continue }
             await routeToSources()
         }
     }

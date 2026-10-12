@@ -23,11 +23,14 @@ import ParallaxCore
 ///   `PassthroughAPIClientDelegate`), so this type owns status validation outright rather than
 ///   adding to it. It throws `AppError` directly, which `ErrorMapping` passes through untouched.
 final class JellyfinResponseValidator: APIClientDelegate, Sendable {
-    private let serverID: ServerID
-    private let onTokenRejected: @Sendable (ServerID) -> Void
+    /// The session whose token this client sends. Every rejection reports it, because a 401 is
+    /// about one token, not the whole server: if the user has signed in again since the request
+    /// left, the reply must not sign out the new token.
+    private let session: Session
+    private let onTokenRejected: @Sendable (Session) -> Void
 
-    init(serverID: ServerID, onTokenRejected: @escaping @Sendable (ServerID) -> Void) {
-        self.serverID = serverID
+    init(session: Session, onTokenRejected: @escaping @Sendable (Session) -> Void) {
+        self.session = session
         self.onTokenRejected = onTokenRejected
     }
 
@@ -56,7 +59,7 @@ final class JellyfinResponseValidator: APIClientDelegate, Sendable {
         // means something in FRONT of Jellyfin is asking — leave the session alone and report a
         // plain server error.
         guard response.value(forHTTPHeaderField: "WWW-Authenticate") == nil else {
-            Log.network.error("Jellyfin \(self.serverID.rawValue): HTTP 401 carrying an auth challenge — an upstream gateway, not a rejected token; session kept")
+            Log.network.error("Jellyfin \(self.session.id.rawValue): HTTP 401 carrying an auth challenge — an upstream gateway, not a rejected token; session kept")
             throw AppError.server(statusCode: 401, message: nil)
         }
 
@@ -64,8 +67,8 @@ final class JellyfinResponseValidator: APIClientDelegate, Sendable {
         // concurrent requests all 401 together, so it WILL be called several times for one dead
         // token). Deduplication belongs to the consumer, which can see whether the session is
         // already gone; doing it here would need per-server state that no one clears on re-login.
-        Log.network.error("Jellyfin \(self.serverID.rawValue): access token rejected (HTTP 401)")
-        onTokenRejected(serverID)
+        Log.network.error("Jellyfin \(self.session.id.rawValue): access token rejected (HTTP 401)")
+        onTokenRejected(session)
         throw AppError.auth(.tokenInvalidated)
     }
 }
