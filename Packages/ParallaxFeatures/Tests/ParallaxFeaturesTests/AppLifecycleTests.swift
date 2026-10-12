@@ -2,7 +2,7 @@ import ParallaxFeatures
 import Testing
 
 @MainActor
-@Suite("AppLifecycle")
+@Suite("AppLifecycle", .timeLimit(.minutes(1)))
 struct AppLifecycleTests {
     @Test(
         "only an activation that follows the background counts as a return",

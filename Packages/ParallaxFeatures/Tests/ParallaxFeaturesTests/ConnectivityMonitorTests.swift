@@ -22,7 +22,7 @@ private final class MockReachabilityMonitoring: ReachabilityMonitoring, @uncheck
 }
 
 @MainActor
-@Suite("ConnectivityMonitor")
+@Suite("ConnectivityMonitor", .timeLimit(.minutes(1)))
 struct ConnectivityMonitorTests {
     @Test("defaults to online before the first path update")
     func defaultsOnline() {

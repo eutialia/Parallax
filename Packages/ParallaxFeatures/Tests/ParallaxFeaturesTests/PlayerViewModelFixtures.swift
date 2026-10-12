@@ -609,9 +609,12 @@ func startReload(
     sourceLocation: SourceLocation = #_sourceLocation,
     action: @escaping @MainActor @Sendable () async -> Void
 ) async throws -> Task<Void, Never> {
-    await gate.arm()
+    gate.arm()
     let task = Task { @MainActor in await action() }
-    try await requireEventually({ vm.isMidSessionReload }, what, sourceLocation: sourceLocation)
+    // On the gate, not on `isMidSessionReload`: the flag goes up in the reload's prelude,
+    // several awaits before the resolve, and a case that acts on the flag alone races a
+    // reload that has not yet reached the call it means to hold.
+    try await requireEventually({ gate.hasParked && vm.isMidSessionReload }, what, sourceLocation: sourceLocation)
     return task
 }
 
@@ -622,22 +625,41 @@ func startReload(
 /// Armed explicitly (not on construction) because the same closure serves the fixture's own
 /// `start()`: a gate that blocked from the first call would deadlock the setup it is meant to
 /// follow.
-actor ResolveGate {
-    private var armed = false
-    private var waiters: [CheckedContinuation<Void, Never>] = []
+final class ResolveGate: Sendable {
+    private struct State {
+        var armed = false
+        var waiters: [CheckedContinuation<Void, Never>] = []
+    }
 
-    func arm() { armed = true }
+    private let state = Mutex(State())
+
+    func arm() { state.withLock { $0.armed = true } }
+
+    /// True while a resolve is suspended here, which is the proof a case needs that it stands
+    /// inside the call rather than somewhere on the way to it.
+    var hasParked: Bool { state.withLock { !$0.waiters.isEmpty } }
 
     func wait() async {
-        guard armed else { return }
-        await withCheckedContinuation { waiters.append($0) }
+        guard state.withLock({ $0.armed }) else { return }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            // Re-read under the lock: an `open()` between the check above and here would
+            // otherwise strand this continuation on a gate nobody will open again.
+            let resumeNow = state.withLock { s -> Bool in
+                guard s.armed else { return true }
+                s.waiters.append(continuation)
+                return false
+            }
+            if resumeNow { continuation.resume() }
+        }
     }
 
     /// Disarms and releases everything parked.
     func open() {
-        armed = false
-        let parked = waiters
-        waiters = []
+        let parked = state.withLock { s -> [CheckedContinuation<Void, Never>] in
+            s.armed = false
+            defer { s.waiters = [] }
+            return s.waiters
+        }
         parked.forEach { $0.resume() }
     }
 }

@@ -18,7 +18,7 @@ import Testing
 /// until the episodes land, this test fails — and that's the point: the reorder invalidates the
 /// premise `SeriesPlayActionTests`' "episodes still in flight" case is defending, so it should
 /// force a look rather than quietly leaving that case guarding nothing.
-@Suite("SeriesDetailViewModel.load() publishes .loaded before the episodes")
+@Suite("SeriesDetailViewModel.load() publishes .loaded before the episodes", .timeLimit(.minutes(1)))
 @MainActor
 struct SeriesDetailViewModelLoadOrderTests {
 

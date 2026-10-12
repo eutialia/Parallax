@@ -27,7 +27,7 @@ private let stalledCases: [StalledCase] = [
 /// full-screen failure (`.failed` AND no items) counts — never a loaded grid, and never the
 /// stale-content refresh banner (which keeps its own manual "Try again").
 @MainActor
-@Suite("LibraryGridViewModel.isStalled")
+@Suite("LibraryGridViewModel.isStalled", .timeLimit(.minutes(1)))
 struct LibraryGridViewModelStalledTests {
     /// Every fixture in this suite is one server; the grid ignores other sources' changes.
 

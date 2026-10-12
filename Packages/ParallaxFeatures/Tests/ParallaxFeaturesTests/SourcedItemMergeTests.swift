@@ -6,7 +6,7 @@ import ParallaxJellyfin
 
 /// The two cross-server merge rules the aggregated surfaces are built on. Both are pure functions
 /// over finite lists, so they're tested directly rather than through a view model.
-@Suite("Cross-server item merging")
+@Suite("Cross-server item merging", .timeLimit(.minutes(1)))
 @MainActor
 struct SourcedItemMergeTests {
     /// A partially-watched movie (a non-zero position is what puts it on the Continue

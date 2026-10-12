@@ -39,7 +39,7 @@ private func makeItem(share: String = "Media", path: String = "Movies/Example.mk
 
 // MARK: - Tests
 
-@Suite("SMBPlaybackResolver")
+@Suite("SMBPlaybackResolver", .timeLimit(.minutes(1)))
 struct SMBPlaybackResolverTests {
 
     // MARK: - Helpers

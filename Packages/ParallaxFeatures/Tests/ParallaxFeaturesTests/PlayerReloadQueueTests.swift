@@ -41,7 +41,7 @@ private func sidecarURL(session: Int) -> URL {
 /// loser was dropped on the floor; these hold them to the one rule that replaced them —
 /// merge into `PendingReload`, reload once, settle every dimension, and let the LAST reload
 /// of a run be the one that spends the intent.
-@Suite("PlayerViewModel — actions during a reload")
+@Suite("PlayerViewModel — actions during a reload", .timeLimit(.minutes(1)))
 @MainActor
 struct PlayerReloadQueueTests {
 
@@ -74,7 +74,7 @@ struct PlayerReloadQueueTests {
         #expect(vm.selectedAudioTrack == audio4)
         #expect(vm.selectedAudioTrack != standing)
 
-        await gate.open()
+        gate.open()
         await seeking.value
 
         #expect(asks.values == [ResolveAsk(),
@@ -109,7 +109,7 @@ struct PlayerReloadQueueTests {
         // keeps showing it instead of snapping back to the pre-scrub clock.
         #expect(vm.seekHold != nil)
 
-        await gate.open()
+        gate.open()
         await switching.value
 
         #expect(asks.values == [ResolveAsk(),
@@ -136,7 +136,7 @@ struct PlayerReloadQueueTests {
         await vm.selectAudioTrack(audio5)
         await vm.selectSubtitleTrack(burnIn)
 
-        await gate.open()
+        gate.open()
         await seeking.value
 
         #expect(asks.values == [ResolveAsk(),
@@ -169,7 +169,7 @@ struct PlayerReloadQueueTests {
         await vm.selectAudioTrack(audio4)
         await vm.selectAudioTrack(audio5)
 
-        await gate.open()
+        gate.open()
         await seeking.value
 
         #expect(asks.values.map(\.audio) == [nil, 3, 5], "the superseded pick reloaded, or the merge never ran: \(asks.values)")
@@ -209,7 +209,7 @@ struct PlayerReloadQueueTests {
 
         await vm.selectSubtitleTrack(text)
 
-        await gate.open()
+        gate.open()
         await switching.value
         try await requireEventually({ !fetched.isEmpty }, "the sidecar was never fetched")
 
@@ -239,7 +239,7 @@ struct PlayerReloadQueueTests {
         // reload's own mechanical resume.
         vm.setPlaying(false)
 
-        await gate.open()
+        gate.open()
         await switching.value
         await vm.awaitTransportQuiescence()
 
@@ -296,7 +296,7 @@ struct PlayerReloadQueueTests {
 
         vm.setPlaying(false)
 
-        await gate.open()
+        gate.open()
         await switching.value
         await vm.awaitTransportQuiescence()
 
@@ -324,14 +324,14 @@ struct PlayerReloadQueueTests {
             },
             engineFactory: { id, _ in engines.make(id) }
         )
-        await cold.arm()
+        cold.arm()
 
         // Cold start: no session, no track list, no duration — nothing exists to merge into.
         let starting = Task { @MainActor in await vm.start(item: PlayerFixtures.movieDetail()) }
         try await requireEventually({ vm.phase == .loading && asks.count == 1 }, "the start never reached resolve")
         #expect(vm.acceptsPlaybackCommands == false)
 
-        await cold.open()
+        cold.open()
         await starting.value
         engines.live.push(.playing(600))
         try await engines.live.settle()
@@ -346,7 +346,7 @@ struct PlayerReloadQueueTests {
         #expect(vm.phase == .loading)
         #expect(vm.acceptsPlaybackCommands)
 
-        await switching.open()
+        switching.open()
         await picking.value
         engines.live.push(.playing(600))
         try await engines.live.settle()
@@ -369,7 +369,7 @@ struct PlayerReloadQueueTests {
             await vm.selectAudioTrack(audio4)
         }
 
-        await gate.open()
+        gate.open()
         await switching.value
 
         // The drain has returned; nothing has beaten on the new session yet.
@@ -406,7 +406,7 @@ struct PlayerReloadQueueTests {
         await vm.selectAudioTrack(audio4)
         #expect(vm.selectedAudioTrack == audio4)   // optimistic while it is queued
 
-        await gate.open()
+        gate.open()
         await seeking.value
 
         #expect(asks.count == 2, "the discarded pick reloaded anyway")
@@ -474,7 +474,7 @@ struct PlayerReloadQueueTests {
 
         await vm.selectSubtitleTrack(text)
 
-        await gate.open()
+        gate.open()
         await picking.value
 
         #expect(asks.values.map(\.subtitle) == [nil, 7, 1], "the rollback overwrote the pick the user had moved to")
@@ -540,7 +540,7 @@ struct PlayerReloadQueueTests {
 
         await vm.selectSubtitleTrack(nil)
 
-        await gate.open()
+        gate.open()
         await picking.value
 
         #expect(asks.values.map(\.subtitle) == [nil, 1, -1])
@@ -576,7 +576,7 @@ struct PlayerReloadQueueTests {
         let merged = await vm.seek(to: CMTime(seconds: 4_200, preferredTimescale: 600))
         #expect(merged)
 
-        await gate.open()
+        gate.open()
         await picking.value
         try await requireEventually({ !fetched.isEmpty }, "the sidecar was never fetched")
 
@@ -600,7 +600,7 @@ struct PlayerReloadQueueTests {
                 await first.wait()
                 // R1's landing rebuilds the menus; park what follows it so the menu can be
                 // read exactly where it used to be rewritten from the outgoing indices.
-                await landing.arm()
+                landing.arm()
             }
             if call >= 3 { await landing.wait() }
             return PlayerFixtures.resolvedMultiTrackTranscode()
@@ -611,12 +611,12 @@ struct PlayerReloadQueueTests {
         }
 
         await vm.selectAudioTrack(audio4)
-        await first.open()
+        first.open()
         try await requireEventually({ asks.count == 3 }, "the merged reload never started")
 
         #expect(vm.selectedAudioTrack == audio4, "R1's landing rewrote the menu from the indices it resolved with")
 
-        await landing.open()
+        landing.open()
         await seeking.value
         #expect(vm.selectedAudioTrack == audio4)
     }
@@ -632,7 +632,7 @@ struct PlayerReloadQueueTests {
             let call = asks.count
             if call == 2 {
                 await first.wait()
-                await landing.arm()
+                landing.arm()
             }
             if call >= 3 { await landing.wait() }
             return PlayerFixtures.resolvedMultiTrackTranscode()
@@ -643,7 +643,7 @@ struct PlayerReloadQueueTests {
         }
 
         await vm.selectAudioTrack(audio4)
-        await first.open()
+        first.open()
         try await requireEventually({ asks.count == 3 }, "the merged reload never started")
 
         // The scrim over a merged reload names the track: the seek is incidental, the switch
@@ -651,7 +651,7 @@ struct PlayerReloadQueueTests {
         #expect(vm.loaderTitle == PlayerViewModel.LoaderCaption.switchingAudio)
         #expect(vm.loaderSubtitle == audio4.displayName)
 
-        await landing.open()
+        landing.open()
         await seeking.value
     }
 
@@ -683,7 +683,7 @@ struct PlayerReloadQueueTests {
         #expect(vm.selectedAudioTrack == standingAudio)
         #expect(vm.selectedSubtitleTrack == standingSubtitle)
 
-        await gate.open()
+        gate.open()
         await seeking.value
 
         #expect(asks.values == [ResolveAsk(), ResolveAsk(start: 3_000, audio: 3, subtitle: 1)],
@@ -730,7 +730,7 @@ struct PlayerReloadQueueTests {
         try await replacement.settle()
         try #require(vm.phase == .playing)
 
-        await gate.open()
+        gate.open()
         await switching.value
 
         #expect(asks.values == ["ep-1", "ep-1", "ep-2"], "the stale drain resolved again")
@@ -767,7 +767,7 @@ struct PlayerReloadQueueTests {
         }
         await vm.selectAudioTrack(audio5)
 
-        await gate.open()
+        gate.open()
         await switching.value
 
         #expect(asks.count == 2, "the queued pick reloaded against the stream the fallback resumed")
@@ -810,7 +810,7 @@ struct PlayerReloadQueueTests {
         }
         await vm.selectSubtitleTrack(nil)   // Off, queued behind the burn-in
 
-        await gate.open()
+        gate.open()
         await picking.value
 
         #expect(asks.count == 2, "the queued Off reloaded against the stream the fallback resumed")
@@ -934,7 +934,7 @@ struct PlayerReloadQueueTests {
             asks.append(ask(start, selection))
             let call = asks.count
             // Park the ROLLBACK (call 3), which is the iteration the record used to ride.
-            if call == 2 { await rollback.arm() }
+            if call == 2 { rollback.arm() }
             if call >= 3 { await rollback.wait() }
             return PlayerFixtures.resolvedMultiTrackTranscode(burnInDeliveryMethod: nil)
         })
@@ -947,7 +947,7 @@ struct PlayerReloadQueueTests {
 
         await vm.selectSubtitleTrack(nil)
 
-        await rollback.open()
+        rollback.open()
         await picking.value
 
         #expect(asks.values.map(\.subtitle) == [nil, 7, 1, -1])
@@ -1042,7 +1042,7 @@ struct PlayerReloadQueueTests {
         await vm.selectSubtitleTrack(text)
         #expect(vm.sidecarSubtitleInfo != nil, "the re-tap dropped the overlay it was already showing")
 
-        await gate.open()
+        gate.open()
         await seeking.value
 
         #expect(asks.values == [ResolveAsk(), ResolveAsk(start: 3_000, audio: 3, subtitle: 1)],
