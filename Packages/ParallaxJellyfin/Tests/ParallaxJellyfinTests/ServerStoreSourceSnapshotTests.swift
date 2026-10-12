@@ -113,7 +113,7 @@ struct ServerStoreSourceSnapshotTests {
         try await store.add(session("beta"))
         let before = await store.sourceSnapshot
 
-        await store.invalidateSession(ServerID(rawValue: "beta"))
+        await store.invalidateSession(session("beta"))
         let after = await store.sourceSnapshot
 
         #expect(before.setIdentity != after.setIdentity)

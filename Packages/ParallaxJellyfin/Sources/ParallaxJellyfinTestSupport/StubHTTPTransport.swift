@@ -140,6 +140,9 @@ public final class StubHTTPTransport: @unchecked Sendable {
         parked.forEach { $0() }
     }
 
+    /// How many requests are parked, waiting for `releaseReplies()`.
+    public var heldReplyCount: Int { lock.withLock { heldDeliveries.count } }
+
     /// Keeps `delivery` for `releaseReplies()` when replies to `path` are held. False means answer now.
     fileprivate func park(_ path: String, _ delivery: @escaping () -> Void) -> Bool {
         lock.withLock {

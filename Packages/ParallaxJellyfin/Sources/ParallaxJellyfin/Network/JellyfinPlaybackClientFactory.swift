@@ -6,7 +6,7 @@ public protocol JellyfinPlaybackClientFactory: Sendable {
 
 public actor DefaultJellyfinPlaybackClientFactory: JellyfinPlaybackClientFactory {
     private let identityProvider: DeviceIdentityProvider
-    private let onTokenRejected: @Sendable (ServerID) -> Void
+    private let onTokenRejected: @Sendable (Session) -> Void
     /// The transport clients built here run on. Defaulted to `.default` so production is
     /// unchanged; tests hand in a configuration carrying a stub `URLProtocol`.
     private let sessionConfiguration: URLSessionConfiguration
@@ -15,7 +15,7 @@ public actor DefaultJellyfinPlaybackClientFactory: JellyfinPlaybackClientFactory
     ///   the same sink so one revoked token is reported once, wherever it's noticed first.
     public init(
         identityProvider: DeviceIdentityProvider,
-        onTokenRejected: @escaping @Sendable (ServerID) -> Void,
+        onTokenRejected: @escaping @Sendable (Session) -> Void,
         sessionConfiguration: URLSessionConfiguration = .default
     ) {
         self.identityProvider = identityProvider

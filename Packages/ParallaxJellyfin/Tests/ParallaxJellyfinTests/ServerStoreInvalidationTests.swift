@@ -21,9 +21,10 @@ struct ServerStoreInvalidationTests {
     @Test("A rejected token drops the session but keeps the row, so the server reads as signed-out")
     func invalidationKeepsRow() async throws {
         let (store, _, _) = freshStore()
-        try await store.add(session(id: "s1", token: "dead"))
+        let dead = session(id: "s1", token: "dead")
+        try await store.add(dead)
 
-        let changed = await store.invalidateSession(ServerID(rawValue: "s1"))
+        let changed = await store.invalidateSession(dead)
 
         #expect(changed)
         #expect(await store.sessions.isEmpty)
@@ -39,9 +40,10 @@ struct ServerStoreInvalidationTests {
     @Test("The rejected token is deleted, so a relaunch doesn't resurrect the dead session")
     func invalidationDeletesToken() async throws {
         let (store, keychain, settings) = freshStore()
-        try await store.add(session(id: "s1", token: "dead"))
+        let dead = session(id: "s1", token: "dead")
+        try await store.add(dead)
 
-        await store.invalidateSession(ServerID(rawValue: "s1"))
+        await store.invalidateSession(dead)
 
         let stored: String? = try await keychain.read(JellyfinFixtures.tokenKey(forRawID: "s1"))
         #expect(stored == nil)
@@ -58,14 +60,15 @@ struct ServerStoreInvalidationTests {
     @Test("Re-invalidating an already signed-out server reports no change")
     func repeatInvalidationIsIdempotent() async throws {
         let (store, _, _) = freshStore()
-        try await store.add(session(id: "s1", token: "dead"))
+        let dead = session(id: "s1", token: "dead")
+        try await store.add(dead)
 
-        let unknown = await store.invalidateSession(ServerID(rawValue: "nope"))
+        let unknown = await store.invalidateSession(session(id: "nope", token: "dead"))
         #expect(unknown == false)
         #expect(await store.sessions.count == 1)
 
-        let first = await store.invalidateSession(ServerID(rawValue: "s1"))
-        let second = await store.invalidateSession(ServerID(rawValue: "s1"))
+        let first = await store.invalidateSession(dead)
+        let second = await store.invalidateSession(dead)
 
         #expect(first)
         #expect(second == false)
@@ -74,13 +77,32 @@ struct ServerStoreInvalidationTests {
     @Test("Invalidating one of two servers signs out only that one and hands active status to the survivor")
     func activeMovesToASurvivor() async throws {
         let (store, _, _) = freshStore()
-        try await store.add(session(id: "s1", token: "t1"))
+        let first = session(id: "s1", token: "t1")
+        try await store.add(first)
         try await store.add(session(id: "s2", token: "t2"))
 
-        await store.invalidateSession(ServerID(rawValue: "s1"))
+        await store.invalidateSession(first)
 
         #expect(await store.active?.id == ServerID(rawValue: "s2"))
         #expect(await store.sessions.map(\.id) == [ServerID(rawValue: "s2")])
         #expect(await store.servers.count == 2)
+    }
+
+    /// A rejection names the token a request carried. Signing the server in again replaces that
+    /// token, and a 401 still in flight for the old one must not sign the new one out.
+    @Test("A rejection of a replaced token leaves the session that replaced it alone")
+    func staleRejectionKeepsTheNewSession() async throws {
+        let (store, keychain, _) = freshStore()
+        let replaced = session(id: "s1", token: "old")
+        try await store.add(replaced)
+        let current = session(id: "s1", token: "new")
+        try await store.add(current)
+
+        let changed = await store.invalidateSession(replaced)
+
+        #expect(changed == false)
+        #expect(await store.sessions == [current])
+        let stored: String? = try await keychain.read(JellyfinFixtures.tokenKey(forRawID: "s1"))
+        #expect(stored == "new")
     }
 }
