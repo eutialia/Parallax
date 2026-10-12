@@ -72,7 +72,7 @@ public struct AppServices {
     /// - Parameter onTokenRejected: every library and playback client reports here when a server
     ///   rejects our access token. The sign-in client is deliberately NOT wired: a 401 while
     ///   signing in is a wrong password, not a dead session.
-    init(environment: AppEnvironment, onTokenRejected: @escaping @Sendable (ServerID) -> Void) {
+    init(environment: AppEnvironment, onTokenRejected: @escaping @Sendable (Session) -> Void) {
         // UserDefaults is documented thread-safe; the SDK just doesn't mark it Sendable.
         nonisolated(unsafe) let defaults = environment.defaults
         let settings = SettingsStore(defaults: defaults)

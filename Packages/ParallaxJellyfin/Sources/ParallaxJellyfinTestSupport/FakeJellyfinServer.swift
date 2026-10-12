@@ -321,6 +321,9 @@ public final class FakeJellyfinServer: Sendable {
         transport.releaseReplies()
     }
 
+    /// How many requests `holdResponses(to:)` has left unanswered so far.
+    public var heldResponseCount: Int { transport.heldReplyCount }
+
     /// The session a sign-in as `username` would produce, with its token already issued. Seeds a
     /// device that signed in on an earlier launch.
     public func session(signedInAs username: String) -> Session {

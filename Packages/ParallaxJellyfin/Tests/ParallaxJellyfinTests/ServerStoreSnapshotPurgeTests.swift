@@ -46,10 +46,11 @@ struct ServerStoreSnapshotPurgeTests {
     @Test("A rejected token drops the cached payloads it produced")
     func invalidationPurgesSnapshots() async throws {
         try await withHarness("ServerStoreSnapshotPurgeTests.invalidate") { store, snapshots in
-            try await store.add(JellyfinFixtures.session(id: "s1", token: "dead"))
+            let dead = JellyfinFixtures.session(id: "s1", token: "dead")
+            try await store.add(dead)
             await seed(snapshots, serverID: "s1")
 
-            await store.invalidateSession(ServerID(rawValue: "s1"))
+            await store.invalidateSession(dead)
 
             #expect(await snapshots.homeFeed(forServerID: "s1") == nil)
             #expect(await snapshots.libraries(forServerID: "s1") == nil)

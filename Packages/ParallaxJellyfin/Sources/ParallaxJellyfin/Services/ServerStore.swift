@@ -527,12 +527,17 @@ public actor ServerStore {
     /// failed delete is logged but not fatal — the stale token just gets re-rejected and
     /// re-invalidated next launch, which is self-healing rather than stuck.
     ///
+    /// Only the rejected token is dropped. A rejection can arrive after the user signed this server
+    /// in again, from an old request answering late or a burst of 401s still queued, and it says
+    /// nothing about the new token.
+    ///
     /// - Returns: `true` when a live session was actually dropped. Callers use this to skip
     ///   redundant work: a burst of concurrent requests all 401 at once, so this is called several
     ///   times for one dead token and only the first call changes anything.
     @discardableResult
-    public func invalidateSession(_ id: ServerID) async -> Bool {
-        guard loadedSessions.contains(where: { $0.id == id }) else { return false }
+    public func invalidateSession(_ rejected: Session) async -> Bool {
+        let id = rejected.id
+        guard loadedSessions.first(where: { $0.id == id })?.accessToken == rejected.accessToken else { return false }
         loadedSessions.removeAll { $0.id == id }
 
         let key = Self.secretKey(for: id)
