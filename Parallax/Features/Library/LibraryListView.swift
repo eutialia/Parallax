@@ -1,14 +1,15 @@
 import SwiftUI
 import ParallaxJellyfin
 import ParallaxCore
+import ParallaxFeatures
 
 /// The iPhone Library tab: every configured source's libraries as 16:9 banner cards, grouped
 /// into one titled section per server in the order the user added them — the card-list analogue
 /// of the iPad/tvOS sidebar's per-server `TabSection`s. Libraries are never merged across
 /// servers, so two servers that both expose "Movies" show two cards under two headers.
 ///
-/// Pure presentation: `LibraryHostView` owns the resolution (one `MergedLibrary.resolve` across
-/// every source) and the load/failure states. This view used to own a Jellyfin-only
+/// Pure presentation: `AppModel.loadLibraries()` owns the resolution (one `MergedLibrary.resolve`
+/// across every source) and `LibraryHostView` the load/failure states. This view used to own a Jellyfin-only
 /// `LibraryListViewModel` that re-fetched `collections()` and re-applied the hidden-library
 /// filter itself — a second copy of what `MergedLibrary` already does, and structurally
 /// single-server. It's gone; there is one resolver now.
@@ -80,8 +81,8 @@ struct LibraryListView: View {
 
 /// Names the servers missing from the list this pass. Deliberately a quiet inline notice, not an
 /// alert or a full-screen state: the libraries that DID load are right below it and stay usable, so
-/// this is information, not an interruption. Recovery is automatic (`.recoversFromOffline` on the
-/// host), which is why there's no retry button to press.
+/// this is information, not an interruption. Recovery is automatic (`AppModel.recoverStalledScreens`
+/// reloads the list when the network returns), which is why there's no retry button to press.
 private struct UnreachableServersNotice: View {
     let names: [String]
 

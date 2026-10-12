@@ -33,7 +33,7 @@ public struct PlayableAsset: Sendable {
     ///
     /// **Read once, when libvlc builds the PLAYER's library instance** — the freetype
     /// renderer belongs to the video output, not to a decoder, so this rides
-    /// `VLCKitEngine.libraryOptions(for:)` rather than a media option. A style change
+    /// `vlcInstanceArguments` rather than a media option. A style change
     /// applies from the next item, not the playing one; client-rendered sidecar tracks have
     /// no such limit.
     public let subtitleTextStyle: EngineSubtitleTextStyle?
@@ -53,7 +53,7 @@ public struct PlayableAsset: Sendable {
     /// per-media option can't reach — the vout's `is_late_dropped` flag inherits from
     /// the libvlc instance, not per-media variables, so `:no-drop-late-frames` on
     /// `vlcOptions` never takes effect. They join the subtitle look in
-    /// `VLCKitEngine.libraryOptions(for:)`, which is what the private libvlc instance
+    /// `vlcInstanceArguments`, which is what the private libvlc instance
     /// backing the player is built from. Nil = nothing beyond the subtitle arguments.
     public let vlcLibraryOptions: [String]?
 
@@ -108,5 +108,35 @@ public struct PlayableAsset: Sendable {
         self.engineSubtitlesDisabled = engineSubtitlesDisabled
         self.vlcOptions = vlcOptions
         self.vlcLibraryOptions = vlcLibraryOptions
+    }
+}
+
+extension PlayableAsset {
+    /// Every libvlc **instance** argument this asset needs, or nil when it needs none.
+    ///
+    /// Two families live here, for the same reason: neither is reachable from an input
+    /// item's variables. `vlcLibraryOptions` carries the vout flags the app already knew
+    /// about (`--no-drop-late-frames`); the `--freetype-*` set carries the subtitle look,
+    /// because the freetype text renderer is owned by the video output rather than by a
+    /// decoder (see `VLCKitEngine.mediaOptions(for:)`).
+    ///
+    /// Instance-scoped means these are fixed when the player is built, so the app compares
+    /// this result against what the live engine was constructed with before it reuses one.
+    /// The order is therefore load-bearing: same asset shape in, same array out.
+    /// Pure, so the argument strings are testable without a live decode.
+    public var vlcInstanceArguments: [String]? {
+        var options = vlcLibraryOptions ?? []
+        if let subtitleFontFamily {
+            // A font FAMILY NAME ("Font family for the font you want to use" — libvlc 3.0's
+            // freetype module), never a path: a path matches no family and drops the module
+            // back onto its built-in default.
+            options.append("--freetype-font=\(subtitleFontFamily)")
+        }
+        // The user's look AND the em the app's own renderer would have drawn at
+        // (`EngineSubtitleTextStyle`), so an embedded SRT the ENGINE draws matches an
+        // external one the CLIENT draws. ASS/SSA keep their authored styles either way
+        // (libass ignores freetype-*).
+        options.append(contentsOf: subtitleTextStyle?.freetypeSettings.map { "--\($0)" } ?? [])
+        return options.isEmpty ? nil : options
     }
 }

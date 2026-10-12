@@ -1,6 +1,7 @@
 #if !os(tvOS)
 import SwiftUI
 import UIKit
+import ParallaxFeatures
 
 /// Shared state for the iOS player layer: ONE vertical travel value that every
 /// motion writes — the present spring (height → 0), the pull-to-dismiss finger

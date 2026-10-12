@@ -3,6 +3,7 @@ import SwiftUI
 import Testing
 import ParallaxCore
 import ParallaxJellyfin
+import ParallaxFeatures
 import ParallaxFileBrowse
 import ParallaxPlayback
 import ParallaxPlaybackVLC
@@ -72,7 +73,9 @@ struct SMBBrowseRenderTests {
                 // Isolated defaults suite + the in-memory keychain: a layout capture must not
                 // read or write the device's real server list or Keychain (it never resolves a
                 // thumbnail in a synchronous render, so the store is pure scaffolding).
-                serverStore: makeIsolatedServerStore(label: "SMBBrowseRenderTests")
+                serverStore: makeIsolatedServerStore(label: "SMBBrowseRenderTests"),
+                connections: .live(),
+                cacheDirectory: .temporaryDirectory
             ),
             onPlay: { _ in }
         )

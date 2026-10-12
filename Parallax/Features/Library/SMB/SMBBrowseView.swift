@@ -2,24 +2,11 @@ import SwiftUI
 import ParallaxCore
 import ParallaxFileBrowse
 import ParallaxJellyfin
+import ParallaxFeatures
 #if DEBUG
 import ParallaxPlayback  // preview-only: builds a real MediaArtworkProvider for the stub grid
 import ParallaxPlaybackVLC
 #endif
-
-/// Navigation value for one level of an SMB share browse. Drilling into a folder just pushes a new
-/// value with the child's path; `smbBrowseDestination()` below resolves it recursively. The
-/// lister/`SMBFileSource` is deliberately NOT carried here — neither is `Hashable` — so each
-/// `SMBBrowseView` rebuilds its own from `ref` in `.task`. Rebuilding is cheap: the lister only
-/// borrows from the shared connection pool.
-struct SMBBrowsePath: Hashable {
-    /// The owning server — supplies the host + credentials to build a lister for this level.
-    let ref: SMBServerRef
-    /// The share being browsed (the server can host many).
-    let share: String
-    /// Share-relative path of this level; empty = share root.
-    let path: String
-}
 
 extension View {
     /// The single `SMBBrowsePath` navigation-destination registration for a stack: drilling into a
@@ -38,55 +25,38 @@ extension View {
 /// this same view); media plays through the app's `PlaybackPresenter`, the same entry point the
 /// library grid's SMB tiles use (`playback.playSMB(_:ref:)`).
 ///
-/// Connections belong to the shared pool, not to a level: `.task` builds a lister via
-/// `deps.makeSMBLister(ref)` and an `SMBFileSource(lister:host:share:root:"")`, then the view model
-/// lists `path.path`. Every level of every share borrows the same warm connections, so a drill-in
-/// costs no handshake and leaving a level tears nothing down — the pool ages idle connections out
-/// on its own, and only ever while nobody is using them. It deliberately KEEPS one warm connection
-/// per share indefinitely (not a leak: that survivor is what makes the next drill-in handshake-free
-/// — see `SMBConnectionPool.reapIdle`). Empty `root` because the level's absolute share-relative
-/// path is passed as the browse `path`, which replaces (never joins) `root`.
+/// Connections belong to the shared pool, not to a level: `.task` builds the level's
+/// `SMBBrowseViewModel`, whose `open()` builds a lister and lists `path.path`. Every level of every
+/// share borrows the same warm connections, so a drill-in costs no handshake and leaving a level
+/// tears nothing down — the pool ages idle connections out on its own, and only ever while nobody is
+/// using them. It deliberately KEEPS one warm connection per share indefinitely (not a leak: that
+/// survivor is what makes the next drill-in handshake-free — see `SMBConnectionPool.reapIdle`).
 struct SMBBrowseView: View {
     let path: SMBBrowsePath
 
+    @Environment(AppModel.self) private var app
     @Environment(AppDependencies.self) private var deps
-    @Environment(PlaybackPresenter.self) private var playback
     @Environment(\.appIdiom) private var idiom
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.prefersReducedResourceUsage) private var prefersReducedResourceUsage
     @State private var model: SMBBrowseViewModel?
-    /// Highest media index the viewport-ahead prefetch window has covered; -1 = none yet. Monotonic
-    /// per listing so scroll-back re-appearances don't re-hand items to the provider.
-    @State private var prefetchedThrough = -1
-    /// The `listingGeneration` the watermark belongs to. Checked SYNCHRONOUSLY in `prefetchWindow`
-    /// (not via an async `.task` reset, which loses to re-materialized cells' onAppear and would
-    /// leave a stale-high watermark suppressing the new listing's window).
-    @State private var prefetchedGeneration = -1
-    /// Set when the lister can't even be BUILT — there's no view model to carry an error yet.
-    @State private var setupError: String?
-    /// True when `setupError` is unrecoverable without re-adding the server (a confirmed-lost
-    /// Keychain slot). A transient fault (`.unexpected` keychain read error) stays non-terminal
-    /// so `.recoversFromOffline` may clear it and retry `openLevel()`.
-    @State private var setupErrorIsTerminal = false
-    /// True when `setupError` is a credential fault the user can fix here by re-entering the
-    /// password (a lost Keychain slot). Drives the recovery button on the failure state.
-    @State private var setupErrorOffersPasswordRecovery = false
     /// Drives the pushed password-recovery form. One level at a time can be in a failure state, so
     /// only one level's binding is ever live.
     @State private var isEnteringPassword = false
 
     var body: some View {
         Group {
-            if let model {
-                content(model: model)
-            } else if let setupError {
+            switch model?.setup {
+            case .open:
+                if let model { content(model: model) }
+            case .failed(let message, let isCredentialLoss):
                 StatusStateView(
                     title: "Can't Open Share",
                     systemImage: "externaldrive.badge.xmark",
-                    message: setupError,
-                    action: setupErrorOffersPasswordRecovery ? passwordRecoveryAction : nil
+                    message: message,
+                    action: isCredentialLoss ? passwordRecoveryAction : nil
                 )
-            } else {
+            case .opening, nil:
                 loadingSkeleton
             }
         }
@@ -133,95 +103,26 @@ struct SMBBrowseView: View {
         .navigationDestination(isPresented: $isEnteringPassword) {
             SMBPasswordRecoveryView(id: path.ref.id, data: path.ref.data) {
                 isEnteringPassword = false
-                retryAfterPasswordRecovery()
+                Task { await model?.reopenAfterPasswordRecovery() }
             }
             .tvHidesTabSidebar()
         }
-        // Lifecycle: on back-navigation the `.task` guard (`model != nil`) intentionally skips a
-        // reload and shows the cached listing — fast and stale-tolerant. There is no matching
-        // teardown: the level holds no connection, only a pooled borrower.
+        // Lifecycle: on back-navigation `appear()` finds the level already open and keeps the cached
+        // listing — fast and stale-tolerant. There is no matching teardown: the level holds no
+        // connection, only a pooled borrower.
         .task {
-            guard model == nil, setupError == nil else { return }
-            await openLevel()
+            let level = model ?? app.makeSMBBrowse(path)
+            model = level
+            await level.appear()
         }
-        // Auto-recover a "Share Unavailable" / "Couldn't open" level when the network returns (or
-        // the app foregrounds online) — re-lists this level. Gated on `isStalled` (errored AND
-        // nothing listed) so a populated level isn't re-listed; a non-terminal setup failure
-        // (transient keychain fault before the model existed) recovers by rebuilding the level.
-        // `load()` is sync (spawns its own task); the discarded result is fine in this Void closure.
-        .recoversFromOffline(isStalled: model?.isStalled ?? (setupError != nil && !setupErrorIsTerminal)) {
-            if let model {
-                model.load()
-            } else {
-                setupError = nil
-                Task { await openLevel() }
-            }
-        }
-        // After sleep every pooled socket is dead: flush idle corpses first, then re-list this
-        // level with the current content still on screen. Flush-then-refresh so this level's own
-        // re-list can't check out a connection that's already a corpse (checkout cold-connects when
-        // nothing warm is idle). It only orders THIS call: on a stalled level `.recoversFromOffline`
-        // fires its own `load()` on the same `.active` edge with no ordering against the flush, so
-        // that listing may still borrow a pre-flush corpse — the pool's warm-corpse retry
-        // (`PooledSMBLister.list`) absorbs it. Only the currently-visible top of the stack fires
-        // (see `.refreshesOnForeground`).
-        //
-        // Disabled while a player is up: on iOS the player is an OVERLAY, so this level stays
-        // mounted (no `onDisappear`) and a foreground return mid-playback would flush the pool and
-        // re-list over the very uplink the stream is using. The artwork provider's `playbackActive`
-        // hold covers thumbnail generation only — a directory listing is not gated by it.
-        .refreshesOnForeground(isEnabled: !playback.isPlayerPresent) {
-            await deps.flushSMBConnections()
-            // `refresh()` marks its own start and finish from inside its task — it returns as soon
-            // as that task is spawned, so a bracket here would only ever time the spawn.
-            model?.refresh()
-        }
+        .onAppear { model?.isOnScreen = true }
+        .onDisappear { model?.isOnScreen = false }
     }
 
     /// The recovery affordance both password-shaped failure states offer: re-enter the saved
     /// password for this server without removing it.
     private var passwordRecoveryAction: StatusStateView.Action {
         StatusStateView.Action("Enter Password…") { isEnteringPassword = true }
-    }
-
-    /// After the password verified and was stored: rebuild the level from scratch. Deliberately NOT
-    /// `model.load()` — an existing view model's lister was built with the OLD password (it's baked
-    /// into the credentials the pool keys connections by), so re-listing through it would just be
-    /// refused again. Dropping the model sends `openLevel()` back through the Keychain for the
-    /// password that was just stored.
-    private func retryAfterPasswordRecovery() {
-        model = nil
-        setupError = nil
-        setupErrorOffersPasswordRecovery = false
-        setupErrorIsTerminal = false
-        Task { await openLevel() }
-    }
-
-    /// Builds this level's lister + view model and starts the first list. Failure before the model
-    /// exists lands in `setupError`; only a confirmed-lost credential slot is terminal (no automatic
-    /// retry helps — the user has to supply the password) — everything else stays recoverable.
-    private func openLevel() async {
-        do {
-            let lister = try await deps.makeSMBLister(path.ref)
-            // The factory awaits a Keychain read, so this level may already have been popped (or the
-            // offline-recovery hook may have restarted it) by the time it returns — building a model
-            // and starting a listing then costs a borrow nothing will look at.
-            guard !Task.isCancelled else { return }
-            let source = SMBFileSource(lister: lister, host: path.ref.data.host, share: path.share, root: "")
-            let vm = SMBBrowseViewModel(source: source, share: path.share, path: path.path)
-            model = vm
-            vm.load()
-        } catch {
-            let appError = error as? AppError
-            if case .auth(.credentialUnavailable) = appError {
-                setupErrorIsTerminal = true
-                setupErrorOffersPasswordRecovery = true
-            } else {
-                setupErrorIsTerminal = false
-                setupErrorOffersPasswordRecovery = false
-            }
-            setupError = appError?.userMessage ?? "Couldn't open this share."
-        }
     }
 
     /// Inline title: the current folder's name (last path component), or the share name at the root.
@@ -235,29 +136,9 @@ struct SMBBrowseView: View {
     /// Cut to 3 rows while the system asks apps to defer non-essential prefetching.
     private var prefetchLookaheadRows: Int { prefersReducedResourceUsage ? 3 : 12 }
 
-    /// Viewport-ahead prefetch: when the media tile at `index` materialises in the lazy grid, hand
-    /// the provider the next `prefetchLookaheadRows` rows' worth of items past the current watermark.
-    /// Monotonic via `prefetchedThrough`, so each item is handed over once per listing; the provider
-    /// dedupes any overlap (cache / pending / negative-cache) anyway. The tile's own `.task` covers
-    /// `index` itself at visible priority.
-    private func prefetchWindow(from index: Int, model: SMBBrowseViewModel) {
-        // A fresh listing (load, re-sort) invalidates the watermark: indices reshuffled, so the
-        // coverage bound belongs to a dead order. Reset SYNCHRONOUSLY here — this handler runs in
-        // the same commit that materializes the new cells, so no onAppear can beat it.
-        if prefetchedGeneration != model.listingGeneration {
-            prefetchedGeneration = model.listingGeneration
-            prefetchedThrough = -1
-        }
-        let lookahead = prefetchLookaheadRows * AppLayout.landscapeGridColumns(idiom: idiom)
-        let upper = min(index + lookahead, model.media.count - 1)
-        let lower = max(prefetchedThrough + 1, index + 1)
-        guard lower <= upper else { return }
-        let slice = Array(model.media[lower...upper])
-        prefetchedThrough = upper
-        let sidecars = model.artwork
-        Task {
-            await deps.mediaArtworkProvider.prefetch(slice, ref: path.ref, sidecars: sidecars)
-        }
+    /// Items past the tile that just appeared to warm: `prefetchLookaheadRows` rows of the wall.
+    private var prefetchLookahead: Int {
+        prefetchLookaheadRows * AppLayout.landscapeGridColumns(idiom: idiom)
     }
 
     @ViewBuilder
@@ -316,8 +197,8 @@ struct SMBBrowseView: View {
                         share: path.share,
                         parentPath: path.path,
                         artworkProvider: deps.mediaArtworkProvider,
-                        onMediaTileAppeared: { prefetchWindow(from: $0, model: model) },
-                        onPlay: { playback.playSMB($0, ref: path.ref) }
+                        onMediaTileAppeared: { model.prefetchWindow(from: $0, lookahead: prefetchLookahead) },
+                        onPlay: { model.play($0) }
                     )
                     // Stale-while-revalidate dim → crossfade during a foreground re-list (shared
                     // with the library grid so the two never drift). Scoped to the grid, not the
@@ -577,7 +458,9 @@ private struct SMBBrowseGridPreview: View {
                             settings: SettingsStore(defaults: .standard),
                             keychain: Keychain(service: "preview"),
                             snapshots: SnapshotStore()
-                        )
+                        ),
+                        connections: .live(),
+                        cacheDirectory: .temporaryDirectory
                     ),
                     onPlay: { _ in }
                 )

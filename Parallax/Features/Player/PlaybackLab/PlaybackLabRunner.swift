@@ -6,6 +6,7 @@ import ParallaxCore
 import ParallaxJellyfin
 import ParallaxFileBrowse
 import ParallaxPlayback
+import ParallaxFeatures
 
 /// Drives one scripted Playback Lab session end to end: adds the SMB source
 /// from the scenario config, resolves the named file through the real listing
@@ -84,7 +85,7 @@ final class PlaybackLabRunner {
             if scenario.resume != true {
                 // Deterministic start: a prior run's saved position would silently
                 // shift what every scenario measures (see PlaybackLabScenario.resume).
-                await SMBResumeStore.shared.clear(item.id)
+                await deps.smbResumeStore.clear(item.id)
             }
             playback.playSMB(item, ref: ref)
             try await waitForViewModel()

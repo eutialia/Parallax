@@ -1,0 +1,211 @@
+import Foundation
+import Observation
+import ParallaxCore
+import ParallaxJellyfin
+
+/// Favorites across every signed-in Jellyfin server, as one **section per server** rather than one
+/// merged list.
+///
+/// Sectioning is what makes the sort control honest. Favorites carries the full library toolbar —
+/// five sort fields, a direction, and a genre filter — and each server sorts its own results
+/// server-side. Concatenating those streams under a single global "Title A→Z" gives a list that
+/// runs A→Z, then starts over at A halfway down: each half is sorted, the whole is visibly not.
+/// Interleaving them instead needs a client-side comparator that agrees with the server's ordering,
+/// which two of the five fields can't support — `releaseDate` (the default) is sorted server-side on
+/// full `PremiereDate` while `Movie`/`Series` keep only `year`, and `title` is sorted on `SortName`,
+/// which the server lowercases, article-normalizes, and lets users override per item. Showing the
+/// seam sidesteps both: each section is exactly the order its server returned, so fidelity is
+/// perfect and no cross-server comparison is ever made.
+///
+/// It also keeps pagination free. Each section owns a `LibraryGridViewModel` — the same one a
+/// single-server library grid uses, unchanged — so paging, genre fetching, stale-while-revalidate,
+/// and source-scoped user-data patching all come along. This type only fans one sort/filter choice
+/// out to them and unions their genres.
+@Observable
+@MainActor
+public final class FavoritesViewModel {
+    /// One server's favorites. `id` is the source, so a section survives its items changing.
+    ///
+    /// Holds the `Session` directly rather than a `LibrarySource`: favorites are a Jellyfin concept
+    /// (SMB has no favorite flag), so every section is Jellyfin-backed by construction, and the
+    /// tiles need the session anyway to build artwork URLs against their OWN server.
+    public struct Section: Identifiable {
+        public let session: Session
+        public let grid: LibraryGridViewModel
+        public var id: ServerID { session.id }
+        public var title: String { session.serverName }
+    }
+
+    public private(set) var sections: [Section] = []
+
+    /// The one sort every section is held to. Writing it fans out; each grid reloads itself from
+    /// its own server, which is what keeps each section's order server-authoritative.
+    var sort: ItemSort = .defaultForLibrary {
+        didSet {
+            guard sort != oldValue else { return }
+            for section in sections { section.grid.setSort(sort) }
+        }
+    }
+
+    var filter: ItemFilter = ItemFilter() {
+        didSet {
+            guard filter != oldValue else { return }
+            for section in sections { section.grid.setFilter(filter) }
+        }
+    }
+
+    // Picker lenses matching `LibraryGridViewModel`'s, so the shared controls drive this coordinator
+    // exactly as they drive a single grid.
+    public var selectedGenre: String? {
+        get { filter.genres.first }
+        set { filter.genres = newValue.map { [$0] } ?? [] }
+    }
+
+    public var sortField: ItemSort.Field {
+        get { sort.field }
+        // Picking a field adopts its natural direction (dates newest-first, titles A→Z) instead of
+        // inheriting the previous field's order — the direction palette re-labels per field, so a
+        // carried-over direction would silently flip meaning ("Newest" → "Z to A").
+        set { sort = ItemSort(field: newValue, direction: newValue.naturalDirection) }
+    }
+
+    public var sortDirection: ItemSort.Direction {
+        get { sort.direction }
+        set { sort = ItemSort(field: sort.field, direction: newValue) }
+    }
+
+    /// Every genre offered by any server, deduplicated and sorted — a genre that exists on only one
+    /// server still has to be selectable, or its titles are unreachable. Selecting one legitimately
+    /// empties the sections that don't carry it; the section headers are what make that read as
+    /// "nothing here" rather than as a bug.
+    public var availableGenres: [String] {
+        Array(Set(sections.flatMap(\.grid.availableGenres))).sorted()
+    }
+
+    /// True only while EVERY section is still fetching its genres — the first-load skeleton
+    /// condition. One slow server shouldn't hold the controls in a skeleton once another has
+    /// answered.
+    public var isLoadingGenres: Bool {
+        !sections.isEmpty && sections.allSatisfy(\.grid.isLoadingGenres)
+    }
+
+    /// Sections with something to draw. An empty section renders as a bare header over nothing,
+    /// which reads as breakage; a server with no favorites simply isn't mentioned. A section that
+    /// FAILED is kept (see `failedSections`) so the user learns which server is unreachable rather
+    /// than silently seeing fewer favorites than they have.
+    public var visibleSections: [Section] {
+        sections.filter { !$0.grid.items.isEmpty || $0.grid.isStalled }
+    }
+
+    /// Sections whose fetch failed outright. Rendered with an inline message under their header.
+    public var failedSections: [Section] {
+        sections.filter(\.grid.isStalled)
+    }
+
+    /// Every section has settled and none has anything — the real "No Favorites" state, as opposed
+    /// to the transient one during loading.
+    public var isEmpty: Bool {
+        !sections.isEmpty && sections.allSatisfy { $0.grid.items.isEmpty && $0.grid.state == .loaded }
+    }
+
+    /// Nothing has landed anywhere yet.
+    public var isInitialLoad: Bool {
+        sections.isEmpty || sections.allSatisfy { $0.grid.items.isEmpty && $0.grid.state != .loaded && !$0.grid.isStalled }
+    }
+
+    /// Every server failed. Only then does the whole screen become an error — one unreachable
+    /// server out of two must not hide the other's favorites.
+    public var hasFailedEntirely: Bool {
+        !sections.isEmpty && sections.allSatisfy(\.grid.isStalled)
+    }
+
+    /// The servers this wall currently answers for, in order — the rebuild test, mirroring
+    /// `HomeViewModel.sourceIDs` / `JellyfinSearchViewModel.matches`.
+    var sourceIDs: [ServerID] { sections.map(\.session.id) }
+
+    public init() {}
+
+    /// Builds a section for every server signed in right now. The view keys this on the router's
+    /// reload token, so signing into a second server adds its section without a relaunch.
+    public func load(from app: AppModel) async {
+        app.recoverableScreens.track(self, isStalled: { !$0.failedSections.isEmpty }, recover: { await $0.reloadFailedSections() })
+        await load(
+            sessions: await app.services.serverStore.sessions,
+            repoFactory: app.services.mediaRepoFactory,
+            userDataActions: app.userDataActions
+        )
+    }
+
+    /// Build one section per signed-in server, in the store's order (Jellyfin add order), and load
+    /// them concurrently. Sections are created before loading so the wall can render its headers and
+    /// per-section skeletons while the fetches are in flight.
+    ///
+    /// A no-op when the SET of servers is unchanged: the view keys this on the router's reload
+    /// token, which also moves for things that have nothing to do with the server set (a "Visible
+    /// Libraries" edit, an SMB share re-selection). Rebuilding then would throw away every section's
+    /// loaded items, pagination, and the user's scroll position to refetch identical content.
+    func load(
+        sessions: [Session],
+        repoFactory: @Sendable (Session) async -> any MediaRepository,
+        userDataActions: UserDataActions
+    ) async {
+        guard sourceIDs != sessions.map(\.id) else {
+            // Same servers — but a section may never have settled, because the pass that was
+            // loading it got cancelled by this very re-fire. Nothing else re-loads an existing
+            // grid, so without this the skeleton would stick.
+            await loadUnsettledSections()
+            return
+        }
+        var built: [Section] = []
+        for session in sessions {
+            // The current sort/filter go in through `init`, not pushed afterwards via
+            // `setSort`/`setFilter`: seeding arms no fetch, so each grid does exactly one — the
+            // `load()` below, already carrying the choice. Pushing instead would arm a second one
+            // that races it.
+            let grid = LibraryGridViewModel(
+                repo: await repoFactory(session),
+                source: .jellyfin(session.id),
+                scope: .favorites,
+                userDataActions: userDataActions,
+                sort: sort,
+                filter: filter
+            )
+            built.append(Section(session: session, grid: grid))
+        }
+        // Each `repoFactory` call above is an actor hop, so a superseded pass can still be sitting
+        // here when a newer one has already committed. Commit only if we're still the live pass —
+        // otherwise the stale server list clobbers the fresh one (the roots guard their resolves
+        // the same way).
+        guard !Task.isCancelled else { return }
+        sections = built
+
+        // Concurrent, and each section commits its own state as it lands: a slow server delays only
+        // its own strip. `LibraryGridViewModel` is `@MainActor`, so these interleave at await points
+        // rather than running in parallel — the win is the overlapped network time, not CPU.
+        await withTaskGroup(of: Void.self) { group in
+            for grid in built.map(\.grid) {
+                group.addTask { await grid.load() }
+            }
+        }
+    }
+
+    /// Load any section still sitting at `.idle` — a grid whose first `load()` was cancelled
+    /// mid-flight. Never touches a loaded, loading, or failed section.
+    private func loadUnsettledSections() async {
+        await withTaskGroup(of: Void.self) { group in
+            for grid in sections.map(\.grid) where grid.state == .idle {
+                group.addTask { await grid.load() }
+            }
+        }
+    }
+
+    /// Re-run the failed sections only. Offline recovery calls it, so a reconnect repairs the
+    /// unreachable server without re-pulling the ones already on screen.
+    public func reloadFailedSections() async {
+        await withTaskGroup(of: Void.self) { group in
+            for grid in sections.map(\.grid) where grid.isStalled {
+                group.addTask { await grid.load() }
+            }
+        }
+    }
+}

@@ -1,4 +1,5 @@
 import Foundation
+import ParallaxCoreTestSupport
 import Testing
 @testable import ParallaxJellyfin
 
@@ -33,17 +34,19 @@ struct LANServerDiscoveryTests {
     }
 }
 
-/// The retry/dedupe driver, exercised through the injected broadcaster only — no sockets, and no
-/// wall-clock waiting: the suite awaits the discovery task itself rather than polling
+/// The retry/dedupe driver, exercised through the injected broadcaster and clock only — no sockets,
+/// and no wall-clock waiting: the suite awaits the discovery task itself rather than polling
 /// `isDiscovering`, which is what made this timing-dependent before.
 @Suite("LANServerDiscovery retry driver")
 @MainActor
 struct LANServerDiscoveryDriverTests {
     private let payload = Data(#"{"Address":"http://192.168.1.10:8096","Id":"abc","Name":"Den"}"#.utf8)
 
-    private func discovery(_ batches: [[Data]]) -> (LANServerDiscovery, ScriptedBroadcaster) {
+    private func discovery(
+        _ batches: [[Data]], clock: TestClock = TestClock()
+    ) -> (LANServerDiscovery, ScriptedBroadcaster) {
         let scripted = ScriptedBroadcaster(batches)
-        return (LANServerDiscovery(broadcaster: { scripted($0) }), scripted)
+        return (LANServerDiscovery(clock: clock, broadcaster: { scripted($0) }), scripted)
     }
 
     /// The reason retries exist: iOS keeps the app active through the Local Network permission
@@ -61,6 +64,23 @@ struct LANServerDiscoveryDriverTests {
         #expect(discovery.isDiscovering == false)
         #expect(discovery.discovered.map(\.id) == ["abc"])
         #expect(scripted.calls == 3, "passes 4 and 5 must never run once a server answered")
+    }
+
+    @Test("The wait between passes runs on the injected clock, and the next pass follows its expiry")
+    func retryWaitsOnTheClock() async {
+        let clock = TestClock()
+        let (discovery, scripted) = discovery([[], [payload]], clock: clock)
+
+        discovery.start(timeout: 0, retries: 1, retryInterval: .seconds(2))
+        await clock.waitForSleepers()
+        #expect(scripted.calls == 1)
+        #expect(discovery.discovered.isEmpty)
+
+        clock.advance(by: .seconds(2))
+        await discovery.runningTask?.value
+
+        #expect(scripted.calls == 2)
+        #expect(discovery.discovered.map(\.id) == ["abc"])
     }
 
     /// Retries are bounded: a network with no Jellyfin must not broadcast forever.

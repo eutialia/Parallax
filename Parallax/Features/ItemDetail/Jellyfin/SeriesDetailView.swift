@@ -1,14 +1,14 @@
 import SwiftUI
 import ParallaxJellyfin
 import ParallaxCore
+import ParallaxFeatures
 
 struct SeriesDetailView: View {
     let itemID: ItemID
     let session: Session
 
-    @Environment(AppDependencies.self) private var deps
+    @Environment(AppModel.self) private var app
     @Environment(PlaybackPresenter.self) private var playback
-    @Environment(UserDataActions.self) private var userDataActions
     @Environment(\.appIdiom) private var idiom
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.displayScale) private var displayScale
@@ -79,18 +79,13 @@ struct SeriesDetailView: View {
                                     // (see `SeriesPlayAction`). The ACTION is what's
                                     // gated; `.disabled()` would drop the pill from the focus
                                     // chain and reproduce the bug.
-                                    let playAction = SeriesPlayAction.resolve(
-                                        resume: vm.resumeEpisode,
-                                        first: vm.firstEpisode,
-                                        episodesSettled: vm.episodesSettled
-                                    )
+                                    let playAction = vm.playAction
                                     PrimaryPlayButton(
                                         title: playAction.title,
                                         fillWidth: false,
                                         layoutReserveTitle: ItemPlayButtonLabel.layoutReserveTitle(for: .episodeNumbered)
                                     ) {
-                                        guard let target = playAction.target else { return }
-                                        playback.play(target, in: session)
+                                        vm.play()
                                     }
                                     // The pill stays focusable and enabled in both target-less
                                     // states (see above), so the hint is VoiceOver's only honest
@@ -165,23 +160,17 @@ struct SeriesDetailView: View {
         .toolbarBackgroundVisibility(.hidden, for: .navigationBar)
         .task {
             if viewModel == nil {
-                let repo = await deps.jellyfinLibraryRepoFactory(session)
-                viewModel = SeriesDetailViewModel(repo: repo, itemID: itemID, source: .jellyfin(session.id), userDataActions: userDataActions)
+                viewModel = await app.seriesDetail(itemID, on: session)
                 await viewModel?.load()
             }
         }
         // A finished playback session moved an episode's position (incl. prev/next jumps),
         // so re-pull the series the moment the player dismisses. The view stays MOUNTED
-        // under the player layer/cover, so `.task` never re-fires — `playback.request`
-        // clearing (id → nil) is the only "back from watching" edge. Mirrors HomeView.
-        .onChange(of: playback.request?.id) { oldID, newID in
-            if oldID != nil, newID == nil {
-                Task { await viewModel?.refresh() }
-            }
+        // under the player layer/cover, so `.task` never re-fires — the player closing is
+        // the only "back from watching" edge. Mirrors `AppModel.refreshHomeAfterPlayback()`.
+        .onChange(of: playback.closedSessions) {
+            Task { await viewModel?.refresh() }
         }
-        // Auto-recover the error screen when the network returns (or the app foregrounds online).
-        // Gated on `isStalled` so a loaded series is never re-pulled.
-        .recoversFromOffline(isStalled: viewModel?.isStalled ?? false) { await viewModel?.load() }
     }
 
     @ViewBuilder
@@ -231,7 +220,7 @@ struct SeriesDetailView: View {
             // touch-down press scale as its closest visual sibling, Home's Continue
             // Watching shelf.
             Button {
-                playback.play(episode.id, in: session)
+                vm.play(episode)
             } label: {
                 // `.lockup()`: sibling label children on tvOS so the below-tile title
                 // nudges clear of the focus lift (contained on iOS) — the metadata row

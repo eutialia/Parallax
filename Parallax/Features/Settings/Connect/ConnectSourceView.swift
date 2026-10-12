@@ -2,6 +2,7 @@ import SwiftUI
 import os
 import ParallaxCore
 import ParallaxJellyfin
+import ParallaxFeatures
 
 /// The logged-out entry point, folded onto the same surface as Settings: a `SettingsScaffold` (brand
 /// rail) hosting a CONNECT group with the two source choices. Tapping a choice PUSHES its add flow
@@ -12,18 +13,22 @@ import ParallaxJellyfin
 /// A successful Jellyfin sign-in (`LoginView` with `onSignedIn` nil drives the router itself) or a first
 /// SMB add routes to home, which unmounts this whole view.
 struct ConnectSourceView: View {
-    @Environment(AppDependencies.self) private var deps
     @Environment(AppRouter.self) private var router
+    @Environment(AppModel.self) private var app
     @State private var path: [ConnectRoute] = []
-    /// Servers Parallax still has on file but can no longer sign requests for. Non-empty when the
-    /// LAST source lost its session — a revoked token, or a Keychain slot that didn't survive.
-    @State private var signedOutServers: [SignedOutServerRow] = []
+    @State private var settings: SettingsViewModel?
 
     private enum ConnectRoute: Hashable {
         case jellyfin
         /// Re-authenticating a known server; payload is its address to pre-fill.
         case signInAgain(String)
         case smb
+    }
+
+    /// Servers Parallax still has on file but can no longer sign requests for. Non-empty when the
+    /// LAST source lost its session — a revoked token, or a Keychain slot that didn't survive.
+    private var signedOutServers: [SignedOutServerRow] {
+        SettingsView.signedOutRows(settings?.signedOutServers ?? [])
     }
 
     var body: some View {
@@ -45,7 +50,7 @@ struct ConnectSourceView: View {
                             SignedOutServerButton(
                                 server: server,
                                 onSignIn: { path.append(.signInAgain($0.serverURL)) },
-                                onRemove: { id in Task { await removeSignedOutServer(id) } }
+                                onRemove: { id in Task { await settings?.removeSignedOutServer(id) } }
                             )
                         }
                     }
@@ -73,7 +78,9 @@ struct ConnectSourceView: View {
                         .navigationBarTitleDisplayMode(.inline)
                         #endif
                 case .smb:
-                    SMBLoginView(onAdded: { routeAfterSMBAdd() })
+                    // Saving the share routes a first source onto SMB-only home
+                    // (`SMBAddServerModel.save`), which unmounts this view.
+                    SMBLoginView(onAdded: {})
                         .navigationTitle("Network Share")
                         #if !os(tvOS)
                         .navigationBarTitleDisplayMode(.inline)
@@ -81,39 +88,13 @@ struct ConnectSourceView: View {
                 }
             }
         }
-        .task { await loadSignedOutServers() }
+        .task {
+            if settings == nil { settings = SettingsViewModel(app: app) }
+            await settings?.refresh()
+        }
         // The surface color is owned by whoever wraps this per platform — `tvSettingsFloor()` on
         // tvOS, the hosted `SettingsScaffold` on iOS — so this view paints none of its own.
         .tvSettingsFloor()
-    }
-
-    /// A first SMB source was saved while logged out: route to SMB-only home (no Jellyfin session),
-    /// which unmounts this view and rearms the launch reveal over the first Home boot — the same path a
-    /// Jellyfin sign-in takes. The router falls back to SMB-only home when there's an auxiliary source
-    /// but no active session.
-    private func routeAfterSMBAdd() {
-        Task {
-            router.updateForSources(await deps.serverStore.sourceSnapshot)
-        }
-    }
-
-    private func loadSignedOutServers() async {
-        signedOutServers = await deps.serverStore.signedOutJellyfinServers.compactMap(SignedOutServerRow.init)
-    }
-
-    /// Discards a signed-out row from here. The login/home boundary can't move (a signed-out server
-    /// contributes no source, and we're already on the far side of it), but the router is still
-    /// re-pointed: `sourceSetIdentity` fingerprints every persisted row, signed-out ones included,
-    /// so skipping it would leave the roots' reload token naming a server that no longer exists.
-    /// Re-reads the list so the group empties (and disappears) once the last row goes.
-    private func removeSignedOutServer(_ id: ServerID) async {
-        do {
-            try await deps.serverStore.remove(id)
-        } catch {
-            Log.persistence.error("Connect removeSignedOutServer failed for \(id.rawValue): \(error.localizedDescription)")
-        }
-        router.updateForSources(await deps.serverStore.sourceSnapshot)
-        await loadSignedOutServers()
     }
 }
 

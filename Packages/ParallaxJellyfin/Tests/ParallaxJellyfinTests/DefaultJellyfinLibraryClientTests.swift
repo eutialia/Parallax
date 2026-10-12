@@ -3,6 +3,7 @@ import Testing
 import JellyfinAPI
 import ParallaxCore
 @testable import ParallaxJellyfin
+import ParallaxJellyfinTestSupport
 
 /// The SDK-backed browse client, driven over a stubbed transport (`StubHTTPTransport`) so the
 /// REAL request is built and the REAL response decoded. Two things are under test in every case:

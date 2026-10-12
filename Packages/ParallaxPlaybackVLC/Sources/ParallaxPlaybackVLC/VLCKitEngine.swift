@@ -424,7 +424,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// instance rather than from the input item. Two families qualify: the vout's
     /// `is_late_dropped` flag (`--no-drop-late-frames`, proven on device) and the whole
     /// `--freetype-*` subtitle look, whose renderer the vout builds. See
-    /// `libraryOptions(for:)`, which is what the app builds this argument from.
+    /// `PlayableAsset.vlcInstanceArguments`, which is what the app builds this argument from.
     /// Decided at CONSTRUCTION so exactly one player ever exists per engine: a mid-`load`
     /// player swap would race the SwiftUI host, which binds `vlcPlayer.drawable` as soon
     /// as the engine is published. Nil = the shared library instance.
@@ -1255,7 +1255,7 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         // variables: every `:freetype-*` media option is a silent no-op and the module falls
         // back to its built-in `SYSTEM_DEFAULT_FAMILY` ("Helvetica Neue" on Apple platforms),
         // which cannot shape CJK. That whole set therefore ships as instance arguments — see
-        // `libraryOptions(for:)`.
+        // `PlayableAsset.vlcInstanceArguments`.
         if let fontsDirectory = asset.subtitleFontsDirectory?.path {
             options.append(":ssa-fontsdir=\(fontsDirectory)")
         }
@@ -1274,34 +1274,6 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
         // NEVER logged — an entry here can carry a password.
         options.append(contentsOf: asset.vlcOptions ?? [])
         return options
-    }
-
-    /// Every libvlc **instance** argument this asset needs, or nil when it needs none.
-    ///
-    /// Two families live here, for the same reason: neither is reachable from an input
-    /// item's variables. `vlcLibraryOptions` carries the vout flags the app already knew
-    /// about (`--no-drop-late-frames`); the `--freetype-*` set carries the subtitle look,
-    /// because the freetype text renderer is owned by the video output rather than by a
-    /// decoder (see `mediaOptions(for:)`).
-    ///
-    /// Instance-scoped means these are fixed when the player is built, so the app compares
-    /// this result against what the live engine was constructed with before it reuses one.
-    /// The order is therefore load-bearing: same asset shape in, same array out.
-    /// Pure, so the argument strings are testable without a live decode.
-    public nonisolated static func libraryOptions(for asset: PlayableAsset) -> [String]? {
-        var options = asset.vlcLibraryOptions ?? []
-        if let fontFamily = asset.subtitleFontFamily {
-            // A font FAMILY NAME ("Font family for the font you want to use" — libvlc 3.0's
-            // freetype module), never a path: a path matches no family and drops the module
-            // back onto its built-in default.
-            options.append("--freetype-font=\(fontFamily)")
-        }
-        // The user's look AND the em the app's own renderer would have drawn at
-        // (`EngineSubtitleTextStyle`), so an embedded SRT the ENGINE draws matches an
-        // external one the CLIENT draws. ASS/SSA keep their authored styles either way
-        // (libass ignores freetype-*).
-        options.append(contentsOf: asset.subtitleTextStyle?.freetypeSettings.map { "--\($0)" } ?? [])
-        return options.isEmpty ? nil : options
     }
 
     /// Progress poll cadence (ms), matching `AVKitEngine`'s periodic observer. Named because

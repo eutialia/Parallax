@@ -1,29 +1,25 @@
 import SwiftUI
 import ParallaxJellyfin
 import ParallaxCore
+import ParallaxFeatures
 
 struct FocusRootView: View {
+    @Environment(AppModel.self) private var app
     @Environment(AppRouter.self) private var router
-    @Environment(AppDependencies.self) private var deps
-    @Environment(LaunchGate.self) private var launchGate
-    @Environment(UserDataActions.self) private var userDataActions
     @State private var selectedTab: AppTab = .home
-    @State private var session: Session?
-    /// One group per configured source, in server add order — the sidebar's titled sections.
-    /// Libraries are never merged across servers, so a group is exactly one server's libraries.
-    @State private var groups: [LibraryGroup] = []
-    /// Sources whose library listing failed this pass — the sidebar is missing THOSE servers'
-    /// libraries because the network is down, not because they have none. Gates
-    /// `.recoversFromOffline` so they repopulate on reconnect; healthy servers and the local SMB
-    /// shares are never re-pulled. Home recovers itself via `HomeView`'s own modifier (it shares
-    /// the preloaded view model), so recovery here re-resolves only the libraries.
-    @State private var failedSourceIDs: Set<MediaSourceID> = []
-    @State private var homeViewModel: HomeViewModel?
-    /// Flips true once the first library load settles — the readiness signal that reveals the tab
-    /// host. Independent of `session`: an SMB-only config has no Jellyfin session yet is fully ready
-    /// (its libraries are in `entries`). `@State`, so the `.id(activeServerID)` remount on a Jellyfin
-    /// switch resets it and re-gates behind the launch surface.
+    /// Flips true once the first `loadSources()` pass settles — the readiness signal that reveals
+    /// the tab host. `@State`, so the `.id(activeServerID)` remount on a Jellyfin switch resets it.
     @State private var isReady = false
+
+    /// One group per configured source, in server add order — the sidebar's titled sections.
+    private var groups: [LibraryGroup] { app.libraries.groups }
+
+    /// Reveal once the loads settle, or sooner when Home already has something focusable — a feed
+    /// hydrated from the cache. Showing the `.sidebarAdaptable` TabView with nothing to focus is
+    /// the failure this gate exists to prevent.
+    private var showsTabs: Bool {
+        isReady || app.home?.state == .loaded
+    }
 
     var body: some View {
         Group {
@@ -35,7 +31,7 @@ struct FocusRootView: View {
             // Apple TV app's spinner-then-everything-together launch). For an SMB-only config Home is
             // the (non-focusable) "no feed" placeholder, so the sidebar lands focus expanded on the
             // libraries — the correct entry point when there's no Jellyfin hero to focus.
-            if isReady {
+            if showsTabs {
                 tabView
             } else {
                 AppLaunchView()
@@ -57,115 +53,28 @@ struct FocusRootView: View {
         }
         // Same idea for the library tabs (`-openSMBTab` / `-openJellyfinTab`, first entry of that
         // source wins): scripted verification of the browse walls needs to land there without
-        // driving the hero + sidebar by key events. Two triggers, both needed: `isReady` covers
+        // driving the hero + sidebar by key events. Two triggers, both needed: `showsTabs` covers
         // the cold path (entries commit BEFORE the reveal), and `groups` covers the cache-reveal
-        // path — `revealFromCache` can flip `isReady` on a hydrated Home feed with NO cached
-        // groups, and nothing re-flips it when `loadLibraries()` lands the entries a moment
-        // later. One-shot via the tab check so later library reloads don't yank the selection.
-        .onChange(of: isReady) { _, _ in jumpToRequestedLibraryTab() }
+        // path — a hydrated Home feed reveals the tabs with NO groups yet, and the entries land a
+        // moment later. One-shot via the tab check so later library reloads don't yank the selection.
+        .onChange(of: showsTabs) { _, _ in jumpToRequestedLibraryTab() }
         .onChange(of: groups) { _, _ in jumpToRequestedLibraryTab() }
         #endif
+        // If the selected library tab's backing entry just vanished, snap to Home so the tab host
+        // isn't left on a gone tab (shared with RootTabView via `snappedIfStale`).
+        .onChange(of: groups) { _, groups in selectedTab = selectedTab.snappedIfStale(against: groups.allEntries) }
         // Keyed on the reload token (server switch + SMB add/remove), matching RootTabView.
         // The `.id(activeServerID)` remount above stays session-only.
         .task(id: router.libraryReloadToken) {
             // Bail only while there's NO source at all (the transient bootstrapping window); the
-            // token re-fires once a source resolves. An SMB-only config has `activeServerID == nil`
-            // but `hasAuxiliarySources == true`, so it passes here — where the old `activeServerID`
-            // gate stranded it on the launch spinner.
+            // token re-fires once a source resolves. An SMB-only config passes here.
             guard router.hasAnySource else { return }
-            // Home's feed (hero / Continue Watching / Next Up) is Jellyfin-only, and aggregates
-            // EVERY signed-in server — so the model is built from the full session list, not the
-            // active one. SMB-only (no sessions): no model; Home renders `HomeUnavailableView` and
-            // the libraries come from the sidebar.
-            var vm: HomeViewModel?
-            let feeds = await HomeViewModel.Feed.all(
-                for: await deps.serverStore.sessions,
-                repoFactory: deps.jellyfinLibraryRepoFactory
-            )
-            if !feeds.isEmpty {
-                vm = HomeViewModel(feeds: feeds, userDataActions: userDataActions, snapshots: deps.snapshots)
-            }
-            // Stale-while-revalidate: reveal on the last known sidebar + feed if they're on disk,
-            // rather than holding the launch surface for the network. The loads below then run
-            // exactly as before and replace what's on screen.
-            await revealFromCache(vm)
-            // Load the sidebar's libraries and Home's feed concurrently, then reveal once both
-            // settle — so the UI appears whole, with the hero (if any) already focusable.
-            // `loadLibraries()` commits entries/session/stall under its own cancellation check; it's
-            // the shared recovery path too, so the launch and reconnect loads never drift.
-            async let librariesLoaded: Void = loadLibraries()
-            if let vm {
-                async let homeLoaded: Void = vm.load()
-                _ = await (librariesLoaded, homeLoaded)
-            } else {
-                await librariesLoaded
-            }
-            // A token change cancels this task and starts a fresh one; a now-stale snapshot must not
-            // clobber the newer state.
+            // The sidebar's libraries and Home's feed load together, so the UI appears whole, with
+            // the hero (if any) already focusable. The launch hold releases inside.
+            await app.loadSources()
             guard !Task.isCancelled else { return }
-            self.homeViewModel = vm
-            self.isReady = true
-            // The launch stage's sync-hold releases here; the iris opens onto the ready UI.
-            launchGate.markContentReady()
+            isReady = true
         }
-        // Repopulate the sidebar's Jellyfin libraries when the network returns (or the app
-        // foregrounds online) after a launch that couldn't reach the server. Gated on
-        // the failed-source set so healthy servers — and the local SMB shares — are never re-pulled; the
-        // reload token doesn't move on a reconnect, so without this the libraries stayed gone until a
-        // server switch. Home recovers separately via its own modifier. Event-based, no pull-to-refresh.
-        .recoversFromOffline(isStalled: !failedSourceIDs.isEmpty) { await loadLibraries() }
-    }
-
-    /// Put the cached sidebar and Home feed on screen and open the launch surface on them, without
-    /// waiting for a single request. Runs before the real loads, which then replace both.
-    ///
-    /// The reveal stays gated on there being something FOCUSABLE — cached library rows, a hydrated
-    /// (non-empty) hero, or both. With neither, this returns having changed nothing and the launch
-    /// surface stays up until the network pass settles, exactly as before: showing the
-    /// `.sidebarAdaptable` TabView with nothing to focus is the failure this gate exists to prevent.
-    private func revealFromCache(_ model: HomeViewModel?) async {
-        let sources = await MergedLibrary.SourceState.read(from: deps.serverStore)
-        let cachedGroups = await sources.cachedGroups(snapshots: deps.snapshots)
-        let hydratedHome = await model?.hydrateFromCache() ?? false
-        let active = await deps.serverStore.active
-        // Cancellation re-checked AFTER the last suspension, like every other commit site here:
-        // a token move (server switch, sign-in) cancels this task mid-hop, and a stale pass must
-        // not flip `isReady` — and above all must not release the one-shot launch gate over the
-        // superseding pass's still-loading screen.
-        guard !Task.isCancelled, !cachedGroups.isEmpty || hydratedHome else { return }
-        if !cachedGroups.isEmpty { groups = cachedGroups }
-        // `tabView` needs BOTH a session and a model to hand Home its preloaded feed, so they're
-        // committed together — and the model goes over whether or not its own cache hit, because
-        // it is already built and the launch task is loading it. Left nil, Home would mount
-        // self-loading and duplicate that fetch against the same servers.
-        session = active
-        homeViewModel = model
-        isReady = true
-        launchGate.markContentReady()
-    }
-
-    /// Resolve + commit just the sidebar's merged library list. Shared by the launch `.task` (run
-    /// concurrently with the Home feed) and offline recovery, so the two never drift. Reads its own
-    /// `active`/hidden/servers snapshot and commits under a cancellation check: a token change
-    /// cancels the launch task, and a now-stale snapshot must not clobber newer state (or snap
-    /// selection off a tab still valid in the latest entries). Does NOT touch `isReady` / the launch
-    /// gate / the Home model — those are the launch task's to commit once both loads settle.
-    private func loadLibraries() async {
-        guard router.hasAnySource else { groups = []; session = nil; failedSourceIDs = []; return }
-        let sources = await MergedLibrary.SourceState.read(from: deps.serverStore)
-        let outcome = await sources.resolve(
-            retaining: groups,
-            snapshots: deps.snapshots,
-            jellyfinRepo: deps.mediaRepoFactory
-        )
-        let active = await deps.serverStore.active
-        guard !Task.isCancelled else { return }
-        session = active
-        groups = outcome.groups
-        failedSourceIDs = outcome.failedSourceIDs
-        // If the selected library tab's backing entry just vanished, snap to Home so the tab host
-        // isn't left on a gone tab (shared with RootTabView via `snappedIfStale`).
-        selectedTab = selectedTab.snappedIfStale(against: outcome.entries)
     }
 
     #if DEBUG
@@ -212,13 +121,7 @@ struct FocusRootView: View {
         TabView(selection: $selectedTab) {
             Tab("Home", systemImage: "house", value: AppTab.home) {
                 NavigationStack {
-                    // Jellyfin: adopt the launch gate's preloaded feed (hero focusable from frame 1).
-                    // SMB-only: the self-loading HomeView routes to `HomeUnavailableView`.
-                    if let session, let homeViewModel {
-                        HomeView(preloaded: (session, homeViewModel))
-                    } else {
-                        HomeView()
-                    }
+                    HomeView()
                 }
             }
             // Search is Jellyfin-backed (SMB has no search index) — omitted in an SMB-only config
@@ -229,7 +132,7 @@ struct FocusRootView: View {
             if router.hasSearchableSource {
                 Tab(value: AppTab.search, role: .search) {
                     NavigationStack {
-                        JellyfinSearchView()
+                        JellyfinSearchView(app: app)
                     }
                 }
             }
@@ -241,9 +144,7 @@ struct FocusRootView: View {
             // Favorites is a cross-SERVER virtual library, so it sits at top level rather than
             // inside a server's section (which would claim it belongs to that server). Jellyfin
             // concept — omitted SMB-only. Mirrors RootTabView's placement.
-            // `session != nil`, not `let session`: `FavoritesView` resolves every server itself, so
-            // the session is only a presence test here — binding it left an unused value.
-            if session != nil {
+            if app.libraries.hasJellyfinSource {
                 Tab("Favorites", systemImage: "heart", value: AppTab.favorites) {
                     NavigationStack {
                         FavoritesView()

@@ -1,4 +1,5 @@
 import SwiftUI
+import ParallaxFeatures
 
 /// The Settings "Storage" section: the generated SMB thumbnail cache's on-disk size plus a Clear
 /// action, with the handoff's explanatory footer. iOS/iPadOS render one row — title + size value + a

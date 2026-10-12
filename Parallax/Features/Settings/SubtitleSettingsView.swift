@@ -1,4 +1,5 @@
 import SwiftUI
+import ParallaxFeatures
 import ParallaxPlayback
 
 /// The Subtitles menu — a normal pushed screen (slides in like any settings sub-screen) holding the

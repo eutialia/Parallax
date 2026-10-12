@@ -2,6 +2,7 @@ import SwiftUI
 import Nuke
 import ParallaxCore
 import ParallaxJellyfin
+import ParallaxFeatures
 
 /// The one place a shelf's warm-up URL set is built, so the on-screen tile and its prefetch always
 /// resolve the IDENTICAL server URL (any drift warms a different cache key and just double-downloads).

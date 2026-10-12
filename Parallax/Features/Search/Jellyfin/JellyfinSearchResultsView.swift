@@ -1,6 +1,7 @@
 import SwiftUI
 import ParallaxJellyfin
 import ParallaxCore
+import ParallaxFeatures
 
 /// The search results sections — Shows / Movies / Episodes — split out as an `Equatable` view so
 /// typing can't re-render them.

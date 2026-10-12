@@ -4,6 +4,7 @@ import Observation
 import ParallaxPlayback
 import ParallaxSubtitles
 import SwiftUI
+import ParallaxFeatures
 
 /// Drives the settings preview through the REAL subtitle pipeline: the same
 /// `SubtitleRenderer`, the same converted-script synthesis (CJK font planning

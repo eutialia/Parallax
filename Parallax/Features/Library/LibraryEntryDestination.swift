@@ -1,5 +1,6 @@
 import SwiftUI
 import ParallaxCore
+import ParallaxFeatures
 
 /// The destination view for a `LibraryEntry`, branching by source: an SMB share opens the folder
 /// browser (`SMBBrowseView` at the share root), a Jellyfin collection opens the poster grid. The ONE

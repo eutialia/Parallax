@@ -19,6 +19,7 @@ PACKAGES=(
     ParallaxFileBrowse
     ParallaxPlayback
     ParallaxSubtitles
+    ParallaxFeatures
 )
 # Packages that only build for a simulator; every other directory under Packages/ must be listed above.
 SIMULATOR_ONLY=(

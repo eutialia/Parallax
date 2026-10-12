@@ -1,6 +1,7 @@
 import SwiftUI
 import ParallaxJellyfin
 import ParallaxCore
+import ParallaxFeatures
 
 /// `HomeView.content`'s branch discriminator — see `crossfadeStateSwap`.
 private enum HomeContentPhase: Hashable {
@@ -10,23 +11,12 @@ private enum HomeContentPhase: Hashable {
     case unavailable
 }
 
+/// Home renders `AppModel.home`, which both navigation roots load through
+/// `AppModel.loadSources()`; the view itself fetches nothing.
 struct HomeView: View {
-    @Environment(AppDependencies.self) private var deps
     @Environment(AppRouter.self) private var router
-    @Environment(LaunchGate.self) private var launchGate
-    @Environment(PlaybackPresenter.self) private var playback
-    @Environment(UserDataActions.self) private var userDataActions
+    @Environment(AppModel.self) private var app
     @Environment(\.appIdiom) private var idiom
-    /// Supplied by the tvOS launch gate (`FocusRootView`), which loads the feed up front so the
-    /// hero is on screen — and focusable — the instant the sidebar appears. When set, the view
-    /// skips its own fetch. iOS leaves this nil and self-loads in `.task` as before.
-    private let preloaded: (session: Session, viewModel: HomeViewModel)?
-    @State private var viewModel: HomeViewModel?
-    /// Whether Home has at least one Jellyfin server feeding it. Home aggregates every signed-in
-    /// server now, so there is no single "the session" for this screen — the per-item source rides
-    /// on each `SourcedItem` instead. This flag only distinguishes "a feed exists" from the
-    /// SMB-only placeholder.
-    @State private var hasFeed = false
     // Reference-type scroll channel: the per-frame scroll value lives on an @Observable so a
     // scroll write invalidates ONLY `HeroBand`'s artwork-transform wrappers that read it,
     // not HomeView's body or the whole carousel (title, actions, dots). When this was a plain
@@ -39,9 +29,10 @@ struct HomeView: View {
     // content. Both read this one object — see `HomeHeroCarouselState`.
     @State private var heroCarousel = HomeHeroCarouselState()
 
-    init(preloaded: (session: Session, viewModel: HomeViewModel)? = nil) {
-        self.preloaded = preloaded
-    }
+    /// Home aggregates every signed-in server, so there is no single "the session" for this
+    /// screen — the per-item source rides on each `SourcedItem`. nil is the SMB-only placeholder,
+    /// or the bootstrap skeleton.
+    private var viewModel: HomeViewModel? { app.home }
 
     var body: some View {
         ScrollView {
@@ -107,104 +98,6 @@ struct HomeView: View {
         // system's automatic material is what keeps that edge legible.
         .toolbarBackgroundVisibility(showsHeroBleed ? .hidden : .automatic, for: .navigationBar)
         .itemDetailNavigation()
-        // Keyed on `libraryReloadToken`, NOT raw `activeServerID`: an SMB-only cold launch keeps
-        // `activeServerID` nil across the bootstrap→home flip, so a task keyed on it fires once
-        // during `.bootstrapping` (releasing nothing, since destination isn't `.home` yet) and never
-        // re-fires — the launch reveal then hangs until the 15s watchdog. The token folds in
-        // `hasAuxiliarySources`, so it moves when SMB-only home resolves and re-fires `loadFeed`
-        // (which then releases the hold). A Jellyfin switch still moves the token via `activeServerID`.
-        .task(id: router.libraryReloadToken) { await loadFeed() }
-        // A finished playback session moved progress (incl. the new prev/next episode
-        // jumps), so re-pull the progress-driven shelves the moment the player dismisses.
-        // Home stays MOUNTED under the player layer/cover, so its `.task`/`.onAppear`
-        // never re-fire — `playback.request` clearing is the only "back from watching"
-        // edge. Guarded to the present→dismiss transition (oldID != nil, newID == nil).
-        .onChange(of: playback.request?.id) { oldID, newID in
-            if oldID != nil, newID == nil {
-                Task { await viewModel?.refresh() }
-            }
-        }
-        // Auto-recover when the network returns (or the app foregrounds online) instead of
-        // stranding the user on a stale "Couldn't load Home" — or, with several servers, on a Home
-        // permanently missing the one server that was down at launch. A fully failed screen
-        // re-`load()`s; a PARTIAL failure repairs only the dead servers, so the shelves that never
-        // stopped working don't flash back to a skeleton. A healthy feed is never re-pulled.
-        // Event-based — no pull-to-refresh.
-        .recoversFromOffline(isStalled: viewModel?.needsOfflineRepair ?? false) {
-            if viewModel?.isStalled == true {
-                await viewModel?.load()
-            } else {
-                await viewModel?.reloadFailedFeeds()
-            }
-        }
-    }
-
-    /// Per-source feed load for the `.task(id: libraryReloadToken)`. tvOS adopts the launch gate's
-    /// preloaded feed and skips the fetch; iOS self-loads once the session is active. Re-runs on a
-    /// Jellyfin switch AND when SMB-only home resolves (both move the token) — each step is guarded
-    /// so an already-built model isn't rebuilt.
-    private func loadFeed() async {
-        // tvOS launch gate already fetched the feed — adopt it and skip the
-        // redundant load. No gate release here: FocusRootView is the
-        // authoritative tvOS release site (it already fired before this mounts).
-        if let preloaded {
-            hasFeed = true
-            viewModel = preloaded.viewModel
-            return
-        }
-        // No Jellyfin session to feed Home. During bootstrapping this is transient (the source set
-        // lands shortly and the token moves, re-firing this task) — hold on the skeleton. But once
-        // SMB-only routing reaches `.home` without a Jellyfin session, that's the revealable
-        // `HomeUnavailableView` placeholder, so release the launch hold.
-        guard router.activeServerID != nil else {
-            if router.destination == .home { launchGate.markContentReady() }
-            return
-        }
-        // Build one feed per signed-in server — Home aggregates them all.
-        let feeds = await HomeViewModel.Feed.all(
-            for: await deps.serverStore.sessions,
-            repoFactory: deps.jellyfinLibraryRepoFactory
-        )
-        // The router cached an active server the store can no longer produce a session for — a
-        // desync (session cleared elsewhere, or a failed credential/keychain rebuild). Sessions are
-        // never transiently empty here (stable actor state, `load()` is already done), so an empty
-        // list means the cached id is genuinely stale. Re-sync the router to the store's truth
-        // instead of releasing the launch reveal onto an endless skeleton: with no Jellyfin session
-        // it falls to SMB-only home if an SMB source remains, else to `.login` (which finishes the
-        // launch stage), where the user can re-authenticate.
-        guard !feeds.isEmpty else {
-            router.updateForSources(await deps.serverStore.sourceSnapshot)
-            return
-        }
-        hasFeed = true
-        // Rebuild when the SET of servers changed, not just when there's no model yet. A model's
-        // feeds are fixed at init, so signing into a second server left the existing single-server
-        // model in place and Home kept aggregating one server until the next launch — the sidebar
-        // updated (it re-resolves from scratch) which made it look like a Home-only fault.
-        // Comparing source ids rather than rebuilding unconditionally keeps the loaded shelves on
-        // screen when the token moved for an unrelated reason (a visible-libraries edit, an SMB
-        // share re-selection), which would otherwise flash the skeleton for no new content.
-        if viewModel?.sourceIDs != feeds.map(\.source.sourceID) {
-            let model = HomeViewModel(feeds: feeds, userDataActions: userDataActions, snapshots: deps.snapshots)
-            viewModel = model
-            // Stale-while-revalidate: the last feed these servers returned is on disk, so put it
-            // up as loaded content and release the launch hold on it — the reveal then opens onto
-            // real shelves instead of a skeleton, and `load()` below replaces them in place. A
-            // cache miss falls through to exactly the previous behavior (skeleton until the
-            // network answers, gate released at the bottom).
-            if await model.hydrateFromCache() { launchGate.markContentReady() }
-            await model.load()
-        } else if viewModel?.needsNetworkLoad == true {
-            // Same servers, but the model never settled — it was hydrated from the cache and not
-            // yet revalidated, or its previous `load()` was cancelled by this very task re-firing
-            // (a token move that didn't change the source set). Without this nothing else would
-            // re-load an existing model, so the shelves would stay unverified indefinitely.
-            await viewModel?.load()
-        }
-        // Releases the cold-launch sync-hold: `load()` has returned (loaded
-        // OR failed — both are revealable screens). One-shot; server-switch
-        // re-runs are no-ops inside the gate.
-        launchGate.markContentReady()
     }
 
     /// Whether the scroll surface should bleed for a full-bleed hero band — see the
@@ -261,7 +154,7 @@ struct HomeView: View {
     /// branches (the pre-session bootstrap skeleton and `vm.state`'s own `.idle`/`.loading`)
     /// collapse to the same `.skeleton` case, since they render the identical placeholder.
     private var contentPhase: HomeContentPhase {
-        if let vm = viewModel, hasFeed {
+        if let vm = viewModel {
             switch vm.state {
             case .idle, .loading: return .skeleton
             case .loaded: return .loaded
@@ -276,7 +169,7 @@ struct HomeView: View {
 
     @ViewBuilder
     private var content: some View {
-        if let vm = viewModel, hasFeed {
+        if let vm = viewModel {
             @Bindable var vm = vm
             Group {
             switch vm.state {

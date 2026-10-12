@@ -2,6 +2,7 @@ import Foundation
 import SwiftUI
 import Testing
 @testable import Parallax
+import ParallaxFeatures
 
 /// The pulse's two pure pieces: the span it draws (`SeekDelta`) and the ramp it draws it on
 /// (`ScrubDeltaPulse.phase`). Everything else in that view is pixels, and belongs to the

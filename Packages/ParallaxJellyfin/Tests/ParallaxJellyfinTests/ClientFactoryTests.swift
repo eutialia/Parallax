@@ -3,6 +3,7 @@ import Testing
 import JellyfinAPI
 import ParallaxCore
 @testable import ParallaxJellyfin
+import ParallaxJellyfinTestSupport
 
 /// The three factories are the ONLY place a real client is constructed, so they own two facts the
 /// clients themselves can't: that the persisted device identity is resolved and threaded in

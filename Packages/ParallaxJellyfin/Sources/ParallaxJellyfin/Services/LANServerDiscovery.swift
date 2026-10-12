@@ -29,8 +29,10 @@ public final class LANServerDiscovery {
     /// deterministically without touching real sockets; defaults to the live
     /// BSD-socket broadcast.
     private let broadcaster: @Sendable (TimeInterval) -> [Data]
+    private let clock: any Clock<Duration>
 
-    public init(broadcaster: (@Sendable (TimeInterval) -> [Data])? = nil) {
+    public init(clock: any Clock<Duration>, broadcaster: (@Sendable (TimeInterval) -> [Data])? = nil) {
+        self.clock = clock
         self.broadcaster = broadcaster ?? LANServerDiscovery.broadcast
     }
 
@@ -45,7 +47,7 @@ public final class LANServerDiscovery {
         guard task == nil else { return }
         Log.network.info("LAN discovery started (timeout=\(timeout)s, retries=\(retries))")
         isDiscovering = true
-        let broadcaster = self.broadcaster
+        let (broadcaster, clock) = (self.broadcaster, self.clock)
         task = Task { [weak self] in
             var attempt = 0
             while !Task.isCancelled {
@@ -59,7 +61,7 @@ public final class LANServerDiscovery {
                 if !self.discovered.isEmpty || attempt >= retries { break }
                 attempt += 1
                 do {
-                    try await Task.sleep(for: retryInterval)
+                    try await clock.sleep(for: retryInterval)
                 } catch {
                     break  // cancelled
                 }
@@ -111,7 +113,8 @@ public final class LANServerDiscovery {
     // entitlement; DTS recommends BSD sockets). The protocol payload itself is
     // trivial, so we use Darwin's socket APIs directly.
 
-    nonisolated private static func broadcast(timeout: TimeInterval) -> [Data] {
+    /// The live broadcast pass, handed to `init(broadcaster:)` by the app's environment.
+    nonisolated public static func broadcast(timeout: TimeInterval) -> [Data] {
         let sock = Darwin.socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
         guard sock >= 0 else {
             Log.network.error("LANServerDiscovery: socket() failed errno=\(errno)")
@@ -171,9 +174,9 @@ public final class LANServerDiscovery {
 
         var responses: [Data] = []
         var buffer = [UInt8](repeating: 0, count: 4096)
-        let deadline = Date().addingTimeInterval(timeout)
+        let deadline = ContinuousClock.now + .seconds(timeout)
 
-        while Date() < deadline {
+        while ContinuousClock.now < deadline {
             if Task.isCancelled { break }
             var from = sockaddr()
             var fromLen = socklen_t(MemoryLayout<sockaddr>.size)

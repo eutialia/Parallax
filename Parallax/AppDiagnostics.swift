@@ -37,10 +37,9 @@ extension View {
     /// Records every scene-phase edge into the retained log, with a wall-clock stamp.
     ///
     /// **Why at the app root.** A crash that only happens after the device sleeps needs the log to
-    /// say where sleep and wake fell relative to everything else. Per-screen refresh modifiers
-    /// (`refreshesOnForeground`) already watch scene phase, but each of them is conditional — covered
-    /// views skip their turn — so none of them is a reliable record of what the SCENE did. This one
-    /// is unconditional and mounted once.
+    /// say where sleep and wake fell relative to everything else. The flows that act on a
+    /// foreground return are conditional — a covered level skips its turn — so none of them is a
+    /// reliable record of what the SCENE did. This one is unconditional and mounted once.
     func recordsScenePhaseForDiagnostics() -> some View {
         modifier(ScenePhaseDiagnostics())
     }

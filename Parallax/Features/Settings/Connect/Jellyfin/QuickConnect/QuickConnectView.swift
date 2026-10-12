@@ -1,14 +1,12 @@
 import SwiftUI
 import ParallaxJellyfin
+import ParallaxFeatures
 
 struct QuickConnectView: View {
-    let serverURLInput: String
-    let onSwitchToPassword: () -> Void
-    /// Reported up to `LoginView` so a successful pair runs the same success path as a
-    /// password sign-in (router update at the root, or pop + refresh inside settings).
-    let onSignedIn: () -> Void
+    /// The host form. A successful pair runs the same success path as a password sign-in through it
+    /// (router update at the root, or pop + refresh inside settings).
+    let login: LoginViewModel
 
-    @Environment(AppDependencies.self) private var deps
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var viewModel: QuickConnectViewModel?
     @State private var retryToken: Int = 0
@@ -23,7 +21,7 @@ struct QuickConnectView: View {
             // Switch back to password — occupies the exact slot the sign-in body's "Use
             // Quick Connect" button does, so toggling between the two happens in one place.
             Button {
-                withAnimation(reduceMotion ? nil : .smooth) { onSwitchToPassword() }
+                withAnimation(reduceMotion ? nil : .smooth) { login.switchToPassword() }
             } label: {
                 Label("Use password instead", systemImage: "person.fill")
                     .formActionLabel()
@@ -35,12 +33,9 @@ struct QuickConnectView: View {
             // id changes, so the stream lifetime is bound to view identity — no manual
             // cancel() or onDisappear plumbing needed.
             if viewModel == nil {
-                viewModel = QuickConnectViewModel(sessionManager: deps.sessionManager)
+                viewModel = login.makeQuickConnectModel()
             }
-            await viewModel?.consume(serverURLInput: serverURLInput)
-        }
-        .onChange(of: viewModel?.didSignIn ?? false) { _, signedIn in
-            if signedIn { onSignedIn() }
+            await viewModel?.consume(serverURLInput: login.serverURLInput)
         }
     }
 

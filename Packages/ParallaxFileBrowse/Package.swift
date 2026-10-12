@@ -11,6 +11,7 @@ let package = Package(
     ],
     products: [
         .library(name: "ParallaxFileBrowse", targets: ["ParallaxFileBrowse"]),
+        .library(name: "ParallaxFileBrowseTestSupport", targets: ["ParallaxFileBrowseTestSupport"]),
     ],
     dependencies: [
         .package(path: "../ParallaxCore"),
@@ -29,10 +30,18 @@ let package = Package(
                 .swiftLanguageMode(.v6),
             ]
         ),
+        .target(
+            name: "ParallaxFileBrowseTestSupport",
+            dependencies: ["ParallaxFileBrowse"],
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+            ]
+        ),
         .testTarget(
             name: "ParallaxFileBrowseTests",
             dependencies: [
                 "ParallaxFileBrowse",
+                "ParallaxFileBrowseTestSupport",
                 .product(name: "ParallaxTestScaling", package: "ParallaxCore"),
             ],
             swiftSettings: [

@@ -1,5 +1,6 @@
 import ParallaxJellyfin
 import ParallaxCore
+import ParallaxFeatures
 
 extension CollectionType {
     /// SF Symbol for a Jellyfin library, keyed off its `collectionType`. The single source
@@ -24,6 +25,22 @@ extension CollectionType {
             if kind.contains("book") { return "books.vertical" }
             if kind.contains("photo") || kind.contains("home") { return "photo" }
             return "rectangle.stack"
+        }
+    }
+}
+
+extension LibraryEntry {
+    /// SF Symbol for this entry's sidebar tab (iPad `RootTabView` / tvOS `FocusRootView`): a
+    /// network-share glyph for an SMB share, the media-type glyph for a Jellyfin collection.
+    /// `externaldrive.badge.wifi` reads as a networked drive — the clearest "network share" of the
+    /// candidates (rendered side by side in RootTabView's preview; `network`'s globe says "web" and
+    /// plain `externaldrive` says "local disk"), and the same glyph the SMB browse breadcrumb +
+    /// share picker already use, so the SMB visual language stays consistent. Outline (non-filled)
+    /// per Apple's sidebar convention — the system fills the selected row.
+    var tabSymbolName: String {
+        switch source {
+        case .smb: return "externaldrive.badge.wifi"
+        case .jellyfin: return collection.collectionType.symbolName
         }
     }
 }

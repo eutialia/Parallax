@@ -1,13 +1,10 @@
 import SwiftUI
+import ParallaxFeatures
 import ParallaxJellyfin
 
 struct RootView: View {
     @Environment(AppRouter.self) private var router
     @Environment(PlaybackPresenter.self) private var playback
-    @Environment(LaunchGate.self) private var launchGate
-    @Environment(AppDependencies.self) private var deps
-    /// Monotonic token per `isPlayerPresent` edge — see the `.onChange` below.
-    @State private var playbackPresenceSeq = 0
 
     var body: some View {
         @Bindable var router = router
@@ -58,38 +55,6 @@ struct RootView: View {
                 }
             }
         }
-        // The launch reveal covers the first HOME boot, not login. A serverless
-        // cold launch resolves to login with nothing to reveal, so cut the stage
-        // (no story playing behind the sign-in sheet); when a server is finally
-        // added (login → home), rearm it so the reveal plays over THAT boot — the
-        // same cover a cold launch with a saved server already gets. (Home's own
-        // hold release lives in `HomeView`'s load task.)
-        .onChange(of: router.destination, initial: true) { previous, destination in
-            switch destination {
-            case .login:
-                launchGate.finish()
-            case .home where previous == .login:
-                launchGate.rearm()
-            case .home, .bootstrapping:
-                break
-            }
-        }
-        // A server revoked our access token (HTTP 401 — an admin clearing devices, a server
-        // rebuild, the public demo server's nightly reset). Sign that ONE server out and re-route:
-        // the row stays in Settings as signed-out with a "Sign In Again" prompt, the other servers
-        // are untouched, and `updateForSources` moves the reload token so the sidebar and Home
-        // drop its libraries. Without this the app kept showing the server as connected while
-        // every request 401'd — no libraries, no error, no way back but removing it by hand.
-        //
-        // Lives at the root, above `RootTabView`'s `.id(activeServerID)` remount, so the consumer
-        // survives the re-route it triggers. Serial by construction: concurrent requests all 401
-        // together, and `invalidateSession` returns false for every call after the first.
-        .task {
-            for await serverID in deps.tokenRejections {
-                guard await deps.serverStore.invalidateSession(serverID) else { continue }
-                router.updateForSources(await deps.serverStore.sourceSnapshot)
-            }
-        }
         // Monochrome chrome: no brand accent anywhere. This overrides the system
         // accent for every control (selection, toggles, links) beneath the root.
         .tint(Color.label)
@@ -128,24 +93,6 @@ struct RootView: View {
             PlayerPresentationHost()
         }
         #endif
-        // Switching / adding / signing out a server closes any open player: its
-        // content belongs to the previous server's session.
-        .onChange(of: router.activeServerID) { _, _ in
-            playback.dismiss()
-        }
-        // SMB thumbnail generation yields the uplink to the player: the full-screen player
-        // covers the grid WITHOUT cancelling its cells' `.task`s, so without this hold the
-        // frame-grab pipeline keeps streaming over the same link the stream is using.
-        // `isPlayerPresent` (not `request`) so the hold spans the teardown grace too.
-        // The seq token is minted HERE (MainActor = ordered edges) because the unstructured
-        // Tasks below can reach the provider actor out of order — a reordered false-then-true
-        // would otherwise latch the hold with no player on screen.
-        .onChange(of: playback.isPlayerPresent) { _, present in
-            playbackPresenceSeq += 1
-            let seq = playbackPresenceSeq
-            let provider = deps.mediaArtworkProvider
-            Task { await provider.setPlaybackActive(present, seq: seq) }
-        }
         // Outermost so the settings sheet and the player layer inherit it too.
         .bridgesReducedResourceUsage()
     }

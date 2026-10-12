@@ -1,6 +1,7 @@
 import SwiftUI
 import ParallaxFileBrowse
 import ParallaxJellyfin
+import ParallaxFeatures
 
 /// Add-SMB-server form: collects host + credentials, validates the connection by
 /// enumerating shares, then hands off to `SMBShareSelectionView` to let the user
@@ -14,39 +15,15 @@ struct SMBLoginView: View {
     /// Called after a server is successfully saved (shares selected + stored in Keychain).
     var onAdded: () -> Void
 
+    @Environment(AppModel.self) private var app
     @Environment(AppDependencies.self) private var deps
     @Environment(\.scenePhase) private var scenePhase
 
-    @State private var host = ""
-    @State private var username = ""
-    @State private var password = ""
-    /// Defaulted, not user-editable — the redesign drops the Domain field (4 fields per the handoff);
-    /// WORKGROUP covers the overwhelming common case and the connection still passes it through.
-    @State private var domain = "WORKGROUP"
+    /// The add-server flow, shared with the pushed share picker.
+    @State private var model: SMBAddServerModel?
     #if !os(tvOS)
     @State private var showPassword = false
     #endif
-
-    @State private var connectionError: String?
-
-    @State private var discoveredShares: [SMBShare] = []
-    @State private var showShareSelector = false
-
-    /// The in-flight connection test. Held so backing out (Menu → onDisappear) or a fresh tap can
-    /// CANCEL it — without a handle the connect was fire-and-forget and couldn't be stopped, so a
-    /// slow/dead host wedged the spinner with no way out.
-    @State private var connectTask: Task<Void, Never>?
-    /// UI-level failsafe over the whole connect attempt. The lister already hard-bounds every
-    /// AMSMB2 call, yet a device run still spun forever — so the attempt is ALSO bounded here,
-    /// above every layer this view awaits. Runs on the MainActor.
-    @State private var watchdogTask: Task<Void, Never>?
-    /// The single source of the connecting state — every exit path (success, error,
-    /// timeout, cancel, onDisappear) resets this ONE value.
-    @State private var isConnecting = false
-    /// Diagnostic breadcrumb: the last stage the connect attempt reached, surfaced by the
-    /// watchdog's DEBUG error message. Reference-typed on purpose — stage transitions are
-    /// diagnostics, not display state, so writing them must not invalidate the form's view tree.
-    @State private var diagnostics = ConnectDiagnostics()
 
     #if !os(tvOS)
     /// Return-key field walk: return advances to the next field, "go" on the last (password) connects.
@@ -55,13 +32,18 @@ struct SMBLoginView: View {
     private enum Field: CaseIterable { case host, username, password }
     #endif
 
-    /// Host is required; the account is optional (blank = guest, per the handoff footer).
-    private var canConnect: Bool {
-        !host.trimmingCharacters(in: .whitespaces).isEmpty
-        && !isConnecting
+    var body: some View {
+        Group {
+            if let model { form(model: model) }
+        }
+        .task {
+            if model == nil { model = app.makeSMBAddServer() }
+        }
     }
 
-    var body: some View {
+    @ViewBuilder
+    private func form(model: SMBAddServerModel) -> some View {
+        @Bindable var model = model
         SettingsScaffold(showsBrand: false) {
             VStack(spacing: Space.s18) {
                 #if os(tvOS)
@@ -76,12 +58,12 @@ struct SMBLoginView: View {
                 #endif
 
                 #if !os(tvOS)
-                discoveredServersSection
+                discoveredServersSection(model: model)
                 #endif
 
-                fieldsSection
+                fieldsSection(model: model)
 
-                if let error = connectionError {
+                if let error = model.connectionError {
                     Text(error)
                         .font(.footnote)
                         .foregroundStyle(Color.destructive)
@@ -89,7 +71,7 @@ struct SMBLoginView: View {
                         .padding(.horizontal, SettingsMetrics.headerInset)
                 }
 
-                connectButton
+                connectButton(model: model)
             }
         }
         #if !os(tvOS)
@@ -104,17 +86,10 @@ struct SMBLoginView: View {
         // switch away) — a full reset, not just task cancellation: a cancelled task's early
         // returns skip the epilogue, and a bare cancel left `isConnecting` latched, so switching
         // tabs mid-connect and back showed a stale Cancel+spinner with no live task behind it.
-        .onDisappear { cancelConnect() }
-        .navigationDestination(isPresented: $showShareSelector) {
-            SMBShareSelectionView(
-                host: host,
-                username: username,
-                password: password,
-                domain: domain,
-                shares: discoveredShares,
-                onAdded: onAdded
-            )
-            .tvHidesTabSidebar()
+        .onDisappear { model.cancelConnect() }
+        .navigationDestination(isPresented: $model.showShareSelector) {
+            SMBShareSelectionView(model: model, onAdded: onAdded)
+                .tvHidesTabSidebar()
         }
     }
 
@@ -122,7 +97,7 @@ struct SMBLoginView: View {
 
     #if !os(tvOS)
     @ViewBuilder
-    private var discoveredServersSection: some View {
+    private func discoveredServersSection(model: SMBAddServerModel) -> some View {
         if !deps.smbDiscovery.discovered.isEmpty {
             SettingsGroup(title: "Discovered") {
                 ForEach(deps.smbDiscovery.discovered) { server in
@@ -131,7 +106,7 @@ struct SMBLoginView: View {
                         title: server.name,
                         subtitle: server.host
                     ) {
-                        host = server.host
+                        model.host = server.host
                     }
                 }
             }
@@ -144,59 +119,61 @@ struct SMBLoginView: View {
     /// tvOS uses the Settings-style row list (rows → single-field keyboard screen, no inline field
     /// pill); iOS keeps the inline grouped fields. See `CredentialRowList` for why.
     @ViewBuilder
-    private var fieldsSection: some View {
+    private func fieldsSection(model: SMBAddServerModel) -> some View {
         #if os(tvOS)
         // No last-field auto-connect: tvOS's system keyboard Done returns to the form, and the
         // always-present Connect button submits (gated to a complete form).
-        CredentialRowList(rows: credentialRows)
+        CredentialRowList(rows: credentialRows(model: model))
         #else
-        connectionFieldsSection
+        connectionFieldsSection(model: model)
         #endif
     }
 
     #if os(tvOS)
-    private var credentialRows: [CredentialRow] {
-        [
-            CredentialRow(id: "host", title: "Server", placeholder: "e.g. 192.168.1.10", text: $host, keyboard: .URL),
-            CredentialRow(id: "username", title: "Username", placeholder: "Optional", text: $username),
-            CredentialRow(id: "password", title: "Password", placeholder: "Optional", text: $password, isSecure: true),
+    private func credentialRows(model: SMBAddServerModel) -> [CredentialRow] {
+        @Bindable var model = model
+        return [
+            CredentialRow(id: "host", title: "Server", placeholder: "e.g. 192.168.1.10", text: $model.host, keyboard: .URL),
+            CredentialRow(id: "username", title: "Username", placeholder: "Optional", text: $model.username),
+            CredentialRow(id: "password", title: "Password", placeholder: "Optional", text: $model.password, isSecure: true),
         ]
     }
     #endif
 
     #if !os(tvOS)
-    private var connectionFieldsSection: some View {
-        VStack(spacing: Space.s18) {
+    private func connectionFieldsSection(model: SMBAddServerModel) -> some View {
+        @Bindable var model = model
+        return VStack(spacing: Space.s18) {
             SettingsGroup(title: "Server") {
                 CredentialFieldRow(icon: "externaldrive.badge.wifi") {
                     HStack(spacing: 0) {
                         Text("smb://").foregroundStyle(Color.tertiaryLabel)
                         // Placeholder must read as an OBVIOUS example: a plausible real-looking
                         // hostname here ("mynas.local") was mistaken for a LAN-discovered value.
-                        TextField("mynas.local", text: $host)
+                        TextField("mynas.local", text: $model.host)
                             .keyboardType(.URL)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
-                            .submitChain(.host, focus: $focusedField, onComplete: handleSubmit)
+                            .submitChain(.host, focus: $focusedField) { handleSubmit(model: model) }
                     }
                 }
             }
             SettingsGroup(title: "Sign In", footer: "Leave blank to connect as a guest.") {
                 CredentialFieldRow(icon: "person") {
-                    TextField("Username", text: $username)
+                    TextField("Username", text: $model.username)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                        .submitChain(.username, focus: $focusedField, onComplete: handleSubmit)
+                        .submitChain(.username, focus: $focusedField) { handleSubmit(model: model) }
                 }
                 CredentialFieldRow(icon: "lock") {
                     HStack {
                         Group {
-                            if showPassword { TextField("Password", text: $password) }
-                            else { SecureField("Password", text: $password) }
+                            if showPassword { TextField("Password", text: $model.password) }
+                            else { SecureField("Password", text: $model.password) }
                         }
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                        .submitChain(.password, focus: $focusedField, onComplete: handleSubmit)
+                        .submitChain(.password, focus: $focusedField) { handleSubmit(model: model) }
                         PasswordRevealToggle(isRevealed: $showPassword)
                     }
                 }
@@ -206,9 +183,9 @@ struct SMBLoginView: View {
 
     /// "Go" on the last field connects, but only when the host is filled — the same
     /// gate the Connect button enforces, so return on an incomplete form is a no-op.
-    private func handleSubmit() {
-        guard canConnect else { return }
-        connect()
+    private func handleSubmit(model: SMBAddServerModel) {
+        guard model.canConnect else { return }
+        model.connect()
     }
     #endif
 
@@ -221,116 +198,16 @@ struct SMBLoginView: View {
     /// stays focusable while connecting and tapping it cancels, so there's always a live focus target
     /// and a way out. While working, `formActionLabel` keeps the "Cancel" title VISIBLE beside the
     /// spinner — hidden, the in-flight button read as a frozen blank pill on Apple TV.
-    private var connectButton: some View {
+    private func connectButton(model: SMBAddServerModel) -> some View {
         Button {
-            if isConnecting { cancelConnect() } else { connect() }
+            if model.isConnecting { model.cancelConnect() } else { model.connect() }
         } label: {
-            Text(isConnecting ? "Cancel" : "Connect")
-                .formActionLabel(isWorking: isConnecting)
+            Text(model.isConnecting ? "Cancel" : "Connect")
+                .formActionLabel(isWorking: model.isConnecting)
         }
         .formActionButton(.solid)
         // Disabled ONLY when idle with an incomplete form — never while connecting, or focus is
         // stranded the instant the button would shed focus.
-        .disabled(!isConnecting && !canConnect)
+        .disabled(!model.isConnecting && !model.canConnect)
     }
-
-    // MARK: - Connection logic
-
-    private func connect() {
-        let trimHost = host.trimmingCharacters(in: .whitespaces)
-        let trimUser = username.trimmingCharacters(in: .whitespaces)
-
-        connectionError = nil
-        isConnecting = true
-        diagnostics.stage = "queued"
-        // Capture to avoid closing over @State bindings inside the Task — the dependency factory
-        // included, so nothing inside the escaping Task reads view state.
-        let capturedPassword = password
-        let capturedDomain = domain
-        let makeLister = deps.makeSMBListerForCredentials
-
-        // Replace any prior in-flight attempt and HOLD the handle so onDisappear / Cancel can stop
-        // it. Post-`await` writes are gated on `!Task.isCancelled` so a backed-out attempt never
-        // resurrects the spinner or pushes the share selector over a dismissed view.
-        connectTask?.cancel()
-        connectTask = Task {
-            diagnostics.stage = "task-started"
-            let lister = makeLister(
-                SMBCredentials(
-                    host: trimHost, username: trimUser,
-                    password: capturedPassword, domain: capturedDomain
-                )
-            )
-            do {
-                diagnostics.stage = "listing-shares"
-                let shares = try await lister.listShares()
-                diagnostics.stage = "listed(\(shares.count))"
-                guard !Task.isCancelled else { return }
-                // A server can enumerate ZERO visible shares (everything hidden/admin —
-                // `listShares` filters `$` shares). Pushing the picker then strands the tvOS
-                // focus engine on a screen whose only control is the disabled Add button — no
-                // focusable element, dead remote. Surface it as an inline error instead.
-                guard !shares.isEmpty else {
-                    connectionError = "\(trimHost) has no shares to add. Check the server's shared folders."
-                    isConnecting = false
-                    watchdogTask?.cancel()
-                    return
-                }
-                // Adopt the validated (trimmed) values so what we persist EXACTLY matches
-                // what connected. SMBShareSelectionView reads these straight into the saved
-                // SMBServerData, and the media-repo factory later reconnects with them — if
-                // we persisted the raw, untrimmed fields, a stray space would reconnect to a
-                // different host and fail. Password + domain are left as typed: those are
-                // exactly what the connection used.
-                host = trimHost
-                username = trimUser
-                // Hand the discovered shares to the selector.
-                discoveredShares = shares
-                showShareSelector = true
-            } catch {
-                diagnostics.stage = "threw"
-                guard !Task.isCancelled else { return }
-                // Never expose the password in the error message.
-                connectionError = "Couldn't connect to \(trimHost). Check the host and credentials."
-            }
-            isConnecting = false
-            watchdogTask?.cancel()
-        }
-
-        // UI failsafe ABOVE every awaited layer: the lister hard-bounds each AMSMB2 call, yet a
-        // device run still spun forever — whatever wedges below, this frees the form.
-        watchdogTask?.cancel()
-        watchdogTask = Task {
-            try? await Task.sleep(for: .seconds(30))
-            guard !Task.isCancelled, isConnecting else { return }
-            connectTask?.cancel()
-            connectTask = nil
-            isConnecting = false
-            #if DEBUG
-            connectionError = "Timed out after 30 s (stage: \(diagnostics.stage))."
-            #else
-            connectionError = "Timed out. Check the host and try again."
-            #endif
-        }
-    }
-
-    /// Abort an in-flight connection test and reset the form so the user isn't stranded on the
-    /// spinner. The underlying AMSMB2 connect runs a C poll loop that can't observe Swift
-    /// cancellation, but the lister's hard timeout bounds it and dropping the result here
-    /// frees the UI immediately.
-    private func cancelConnect() {
-        connectTask?.cancel()
-        connectTask = nil
-        watchdogTask?.cancel()
-        watchdogTask = nil
-        isConnecting = false
-    }
-
-}
-
-/// Mutable, non-observed connect diagnostics (see `SMBLoginView.diagnostics`): a reference type so
-/// breadcrumb writes bypass SwiftUI invalidation entirely.
-@MainActor
-private final class ConnectDiagnostics {
-    var stage = "idle"
 }
