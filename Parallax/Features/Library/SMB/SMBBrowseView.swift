@@ -4,6 +4,7 @@ import ParallaxFileBrowse
 import ParallaxJellyfin
 #if DEBUG
 import ParallaxPlayback  // preview-only: builds a real MediaArtworkProvider for the stub grid
+import ParallaxPlaybackVLC
 #endif
 
 /// Navigation value for one level of an SMB share browse. Drilling into a folder just pushes a new

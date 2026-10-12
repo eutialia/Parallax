@@ -12,7 +12,7 @@ import TVVLCKit
 /// `VLCVideoHost` UIViewRepresentable boundary to set `vlcPlayer.drawable = view`.
 ///
 /// This protocol's signature names `VLCMediaPlayer`, so the app target imports VLCKit
-/// alongside `ParallaxPlayback` to name it — through the same `canImport` module pick
+/// alongside `ParallaxPlaybackVLC` to name it — through the same `canImport` module pick
 /// used here, since the module is `MobileVLCKit` on iOS and `TVVLCKit` on tvOS. The
 /// binary target propagates out of the package, so no product declaration or re-export
 /// shim is needed.

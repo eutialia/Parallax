@@ -7,6 +7,7 @@ import ParallaxCore
 import ParallaxFileBrowse
 import ParallaxJellyfin
 import ParallaxPlayback
+import ParallaxPlaybackVLC
 import ParallaxSubtitles
 
 /// The active SMB/local session's resume-tracking state — see `PlayerViewModel.smbSession`.

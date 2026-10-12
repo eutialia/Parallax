@@ -5,6 +5,7 @@ import ImageIO
 import ParallaxTestScaling
 import ParallaxPlaybackTestSupport
 @testable import ParallaxPlayback
+@testable import ParallaxPlaybackVLC
 
 /// The `Duration` → libvlc-milliseconds conversion feeding `VLCMedia.parse(timeout:)`.
 /// Pure, and the clamps matter: 0 means INFINITE to libvlc (a hang), and an

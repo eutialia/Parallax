@@ -1,9 +1,9 @@
 name: Fetch VLCKit binaries
 description: >
   Puts the vendored MobileVLCKit (iOS) and TVVLCKit (tvOS) xcframeworks in place.
-  They are git-ignored, and the ParallaxPlayback binary targets point straight at
+  They are git-ignored, and the ParallaxPlaybackVLC binary targets point straight at
   them, so the package graph will not even resolve until both exist — every job
-  that touches ParallaxPlayback needs this, whichever platform it builds for.
+  that touches ParallaxPlaybackVLC needs this, whichever platform it builds for.
 
 runs:
   using: composite
@@ -23,7 +23,7 @@ runs:
     - name: Restore VLCKit cache
       uses: actions/cache@v4
       with:
-        path: Packages/ParallaxPlayback/Vendor
+        path: Packages/ParallaxPlaybackVLC/Vendor
         key: vlckit-${{ steps.versions.outputs.key }}
 
     - name: Fetch any missing VLCKit binary

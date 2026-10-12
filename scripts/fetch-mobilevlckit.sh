@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Fetches the VLCKit binaries the ParallaxPlayback package vendors on the 3.x
+# Fetches the VLCKit binaries the ParallaxPlaybackVLC package vendors on the 3.x
 # branch. VideoLAN ships iOS and tvOS as two separately named modules built from
 # the same source, and the app runs on both, so both are needed. Together they
 # unpack to ~1.7 GB, so they are git-ignored and fetched on demand instead of
@@ -10,7 +10,7 @@ set -euo pipefail
 MOBILE_VERSION="MobileVLCKit-3.7.3-319ed2c0-79128878"
 TV_VERSION="TVVLCKit-3.7.3-319ed2c0-79128878"
 
-DEST="$(dirname "$0")/../Packages/ParallaxPlayback/Vendor"
+DEST="$(dirname "$0")/../Packages/ParallaxPlaybackVLC/Vendor"
 BASE_URL="https://download.videolan.org/pub/cocoapods/prod"
 
 # fetch <framework name> <archive version string>

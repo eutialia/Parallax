@@ -6,6 +6,7 @@ import MobileVLCKit
 import TVVLCKit
 #endif
 import ParallaxPlayback
+import ParallaxPlaybackVLC
 
 /// Hosts VLC's render surface inside a SwiftUI view hierarchy.
 ///

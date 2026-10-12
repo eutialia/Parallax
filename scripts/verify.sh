@@ -17,11 +17,12 @@ PACKAGES=(
     ParallaxCore
     ParallaxJellyfin
     ParallaxFileBrowse
+    ParallaxPlayback
     ParallaxSubtitles
 )
 # Packages that only build for a simulator; every other directory under Packages/ must be listed above.
 SIMULATOR_ONLY=(
-    ParallaxPlayback
+    ParallaxPlaybackVLC
 )
 
 UNLISTED=()

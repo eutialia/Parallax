@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import ParallaxPlayback
+import ParallaxPlaybackVLC
 @testable import Parallax
 
 /// The frame-grab POISON rule, on its own. A recorded failure silences a file for hours (exponential

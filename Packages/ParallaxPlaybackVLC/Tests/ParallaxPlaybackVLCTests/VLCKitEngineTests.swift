@@ -9,6 +9,7 @@ import TVVLCKit
 import ParallaxCore
 import ParallaxPlaybackTestSupport
 @testable import ParallaxPlayback
+@testable import ParallaxPlaybackVLC
 
 @Suite("VLCKitEngine — live-player configuration")
 @MainActor
