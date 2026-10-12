@@ -15,7 +15,7 @@ import ParallaxSubtitles
 /// playSessionID, no progress reporting. The libVLC `smb://` path is the validated
 /// primary (the spike passed), so the asset routes to VLCKit via `hints.scheme == "smb"`
 /// and carries the credential options verbatim in `vlcOptions`.
-@Suite("PlayerViewModel SMB start")
+@Suite("PlayerViewModel SMB start", .timeLimit(.minutes(1)))
 @MainActor
 struct SMBPlaybackStartTests {
 

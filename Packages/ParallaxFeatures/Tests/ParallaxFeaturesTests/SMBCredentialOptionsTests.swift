@@ -38,7 +38,7 @@ private let credentialCases: [SMBCredentialCase] = [
     ),
 ]
 
-@Suite("SMBServerData credential options")
+@Suite("SMBServerData credential options", .timeLimit(.minutes(1)))
 struct SMBCredentialOptionsTests {
     @Test(
         "vlcCredentialOptions serializes user/password/domain in that fixed order",

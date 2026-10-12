@@ -37,7 +37,7 @@ private let resumeCases: [ResumeCase] = [
           seconds: 600, runtime: .seconds(0), expected: nil),
 ]
 
-@Suite("ResumePolicy")
+@Suite("ResumePolicy", .timeLimit(.minutes(1)))
 struct ResumePolicyTests {
     @Test("resume window: [floor, ceiling × runtime], nil outside it", arguments: resumeCases)
     fileprivate func resumeStartTime(_ c: ResumeCase) throws {

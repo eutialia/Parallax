@@ -8,7 +8,7 @@ import ParallaxJellyfin
 /// while never comparing their items against each other — so these tests pin both halves: the sort
 /// reaches every server, and each section stays exactly the order its server returned.
 @MainActor
-@Suite("FavoritesViewModel")
+@Suite("FavoritesViewModel", .timeLimit(.minutes(1)))
 struct FavoritesViewModelTests {
     /// Builds a coordinator over the given per-server fakes, keyed by server id.
     private func load(

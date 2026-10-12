@@ -45,7 +45,7 @@ private let keyDiscriminatorCases: [KeyDiscriminatorCase] = [
     ),
 ]
 
-@Suite("SMBThumbnailCache")
+@Suite("SMBThumbnailCache", .timeLimit(.minutes(1)))
 struct SMBThumbnailCacheTests {
 
     /// Smallest valid PNG: a 1×1 transparent image. Lets a test assert the cache round-trips the
