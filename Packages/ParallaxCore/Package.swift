@@ -6,6 +6,8 @@ let package = Package(
     platforms: [
         .iOS(.v26),
         .tvOS(.v26),
+        // Test host only: nothing ships on macOS, but `swift test` runs here.
+        .macOS(.v26),
     ],
     products: [
         // One process-wide copy of AppError/model type metadata is required for

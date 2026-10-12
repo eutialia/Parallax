@@ -6,6 +6,8 @@ let package = Package(
     platforms: [
         .iOS(.v26),
         .tvOS(.v26),
+        // Test host only: nothing ships on macOS, but `swift test` runs here.
+        .macOS(.v26),
     ],
     products: [
         .library(name: "ParallaxJellyfin", targets: ["ParallaxJellyfin"]),
