@@ -1,6 +1,5 @@
 import Darwin
 import Foundation
-import os
 
 /// The process facts that explain a death the crash handler never saw.
 ///
@@ -14,9 +13,9 @@ public enum DiagnosticsVitals {
 
     /// Compact vitals appended to every `mark`: memory headroom, memory in use, and thermal state.
     ///
-    /// `os_proc_available_memory` is the number Apple actually measures against — it counts DOWN to
-    /// zero as the app approaches its limit, so a last record showing a few MB left names jetsam as
-    /// the killer without any guesswork.
+    /// `limit_bytes_remaining` (from `task_info`) is the number Apple actually measures against — it
+    /// counts DOWN to zero as the app approaches its limit, so a last record showing a few MB left
+    /// names jetsam as the killer without any guesswork.
     ///
     /// Thermal state is here because the watchdog allowance is WALL CLOCK, not CPU time: a device at
     /// `.serious` or `.critical` is being throttled hard, so work that comfortably fits in ten
@@ -37,13 +36,18 @@ public enum DiagnosticsVitals {
         }
     }
 
-    /// Bytes remaining before this process hits its jetsam limit.
+    /// Bytes remaining before this process hits its jetsam limit: `task_vm_info.limit_bytes_remaining`,
+    /// the same field `os_proc_available_memory` reads. Read here because macOS has no such function.
     static func available() -> Int {
-        Int(os_proc_available_memory())
+        vmInfo().map { Int($0.limit_bytes_remaining) } ?? 0
     }
 
     /// Current physical footprint — the same figure jetsam scores the process on.
     static func footprint() -> Int {
+        vmInfo().map { Int($0.phys_footprint) } ?? 0
+    }
+
+    private static func vmInfo() -> task_vm_info_data_t? {
         var info = task_vm_info_data_t()
         var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
         let result = withUnsafeMutablePointer(to: &info) {
@@ -51,8 +55,7 @@ public enum DiagnosticsVitals {
                 task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
             }
         }
-        guard result == KERN_SUCCESS else { return 0 }
-        return Int(info.phys_footprint)
+        return result == KERN_SUCCESS ? info : nil
     }
 
     /// Whole megabytes. Deliberately not `ByteCountFormatStyle`: this string is appended to records
