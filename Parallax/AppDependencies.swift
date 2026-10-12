@@ -4,6 +4,7 @@ import ParallaxCore
 import ParallaxFileBrowse
 import ParallaxJellyfin
 import ParallaxPlayback
+import ParallaxPlaybackVLC
 
 @Observable
 @MainActor

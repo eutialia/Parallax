@@ -6,6 +6,9 @@ let package = Package(
     platforms: [
         .iOS(.v26),
         .tvOS(.v26),
+        // The test host only: no app ships on macOS. It lets `swift test` run these suites
+        // without a simulator.
+        .macOS(.v26),
     ],
     products: [
         .library(name: "ParallaxPlayback", targets: ["ParallaxPlayback"]),
@@ -15,24 +18,10 @@ let package = Package(
         .package(path: "../ParallaxCore"),
     ],
     targets: [
-        // VideoLAN's official 3.7.3 builds, fetched by scripts/fetch-mobilevlckit.sh
-        // (~1.7 GB unpacked for the pair, so they are git-ignored rather than
-        // committed). VideoLAN ships iOS and tvOS as two separately named modules
-        // built from the same source, so the package picks one per platform.
-        .binaryTarget(
-            name: "MobileVLCKit",
-            path: "Vendor/MobileVLCKit.xcframework"
-        ),
-        .binaryTarget(
-            name: "TVVLCKit",
-            path: "Vendor/TVVLCKit.xcframework"
-        ),
         .target(
             name: "ParallaxPlayback",
             dependencies: [
                 "ParallaxCore",
-                .target(name: "MobileVLCKit", condition: .when(platforms: [.iOS])),
-                .target(name: "TVVLCKit", condition: .when(platforms: [.tvOS])),
             ],
             swiftSettings: [ .swiftLanguageMode(.v6) ]
         ),
@@ -41,12 +30,6 @@ let package = Package(
             dependencies: [
                 "ParallaxPlayback",
                 "ParallaxCore",
-                // SpyVLCPlayer conforms to VLCPlayerControlling, whose requirements are
-                // VLCKit types. SwiftPM's own builds resolve them transitively; Xcode's
-                // explicit-module builds do not, and the app-hosted ParallaxTests bundle
-                // then fails with "cannot find type 'VLCPlayerControlling'".
-                .target(name: "MobileVLCKit", condition: .when(platforms: [.iOS])),
-                .target(name: "TVVLCKit", condition: .when(platforms: [.tvOS])),
                 // Never add ParallaxCoreTestSupport here: it's a SECOND product of the
                 // ParallaxCore package, and a sibling product drags in a duplicate
                 // ParallaxCore target when this reaches the app-hosted ParallaxTests

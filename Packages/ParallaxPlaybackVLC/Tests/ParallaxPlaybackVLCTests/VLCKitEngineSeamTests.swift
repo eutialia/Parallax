@@ -7,8 +7,10 @@ import MobileVLCKit
 import TVVLCKit
 #endif
 import ParallaxPlaybackTestSupport
+import ParallaxPlaybackVLCTestSupport
 import ParallaxTestScaling
 @testable import ParallaxPlayback
+@testable import ParallaxPlaybackVLC
 
 /// Everything the `VLCPlayerControlling` seam bought: the paths that used to be
 /// device-verified only because `VLCMediaPlayer` offered nothing to spy on.

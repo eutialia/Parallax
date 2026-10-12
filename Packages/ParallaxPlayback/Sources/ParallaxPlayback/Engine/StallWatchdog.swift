@@ -20,7 +20,7 @@ import Foundation
 /// whose stall it was armed on. A watchdog armed for media a reload has already replaced must not fail
 /// the media that replaced it.
 @MainActor
-final class StallWatchdog {
+public final class StallWatchdog {
     private var task: Task<Void, Never>?
     private let deadline: Duration
     private let onExpiry: @MainActor (PlaybackSessionID) -> Void
@@ -30,14 +30,14 @@ final class StallWatchdog {
     /// patience because a transient LAN/NAS hiccup or a Jellyfin transcode catching up can legitimately
     /// pause frames for tens of seconds before recovering on its own, and a false failure mid-movie is
     /// more disruptive than one at load. Wants a slow-network device pass.
-    init(deadline: Duration = .seconds(45), onExpiry: @escaping @MainActor (PlaybackSessionID) -> Void) {
+    public init(deadline: Duration = .seconds(45), onExpiry: @escaping @MainActor (PlaybackSessionID) -> Void) {
         self.deadline = deadline
         self.onExpiry = onExpiry
     }
 
     /// Start (or restart) the deadline for `session`. Idempotent: a prior armed timer is superseded
     /// so only the latest fires — re-arming on each `.buffering` beat resets the clock.
-    func arm(for session: PlaybackSessionID) {
+    public func arm(for session: PlaybackSessionID) {
         task?.cancel()
         task = Task { [deadline, onExpiry] in
             try? await Task.sleep(for: deadline)
@@ -47,7 +47,7 @@ final class StallWatchdog {
     }
 
     /// Cancel the pending deadline (a transport beat cleared the stall, or teardown). Idempotent.
-    func disarm() {
+    public func disarm() {
         task?.cancel()
         task = nil
     }

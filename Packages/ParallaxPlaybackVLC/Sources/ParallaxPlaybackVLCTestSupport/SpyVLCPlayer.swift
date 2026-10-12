@@ -1,6 +1,7 @@
 import CoreGraphics
 import Foundation
 import ParallaxPlayback
+import ParallaxPlaybackVLC
 #if canImport(MobileVLCKit)
 import MobileVLCKit
 #else

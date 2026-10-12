@@ -15,19 +15,19 @@ import Foundation
 /// No SwiftUI/Combine (package rule): a bare `Task` + `Duration`. `@MainActor` because the engines
 /// are, and the timeout closure mutates engine state.
 @MainActor
-final class LoadWatchdog {
+public final class LoadWatchdog {
     private var task: Task<Void, Never>?
     private let timeout: Duration
 
     /// 30s default: longer than the thumbnailer's 20s decode budget (a cold transcode/seek can
     /// legitimately take longer to first-frame than a single snapshot), short enough that a truly
     /// stuck load surfaces an error before the user gives up. Wants a slow-network device pass.
-    init(timeout: Duration = .seconds(30)) {
+    public init(timeout: Duration = .seconds(30)) {
         self.timeout = timeout
     }
 
     /// Start (or restart) the deadline. A prior armed timer is superseded so only the latest fires.
-    func arm(onTimeout: @escaping @MainActor () -> Void) {
+    public func arm(onTimeout: @escaping @MainActor () -> Void) {
         task?.cancel()
         task = Task { [timeout] in
             try? await Task.sleep(for: timeout)
@@ -37,7 +37,7 @@ final class LoadWatchdog {
     }
 
     /// Cancel the pending deadline (first beat arrived, or teardown). Idempotent.
-    func disarm() {
+    public func disarm() {
         task?.cancel()
         task = nil
     }

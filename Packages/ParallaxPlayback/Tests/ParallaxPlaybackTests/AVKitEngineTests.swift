@@ -30,8 +30,8 @@ enum AVKitFixtures {
     }
 }
 
-/// The engine-agnostic half of the `PlaybackEngine` stream contract, run against both
-/// concrete engines.
+/// The engine-agnostic half of the `PlaybackEngine` stream contract, run against AVKit here and
+/// against VLCKit in ParallaxPlaybackVLC.
 // `.timeLimit`: `teardownFinishesStream` awaits a terminal nil from a real engine's stream.
 // Swift Testing applies no default timeout, so an engine that never finishes its continuation
 // wedges the whole run instead of failing its own test.
@@ -39,51 +39,19 @@ enum AVKitFixtures {
 @MainActor
 struct PlaybackEngineStreamContractTests {
 
-    enum EngineKind: String, CaseIterable, CustomTestStringConvertible {
-        case avKit, vlcKit
-        var testDescription: String { rawValue }
-
-        @MainActor func make() -> any PlaybackEngine {
-            switch self {
-            case .avKit: AVKitEngine()
-            case .vlcKit: VLCKitEngine()
-            }
-        }
+    @Test("the state stream is pre-seeded with .idle")
+    func emitsIdleFirst() async {
+        await PlaybackEngineContract.emitsIdleFirst(AVKitEngine())
     }
 
-    @Test("the state stream is pre-seeded with .idle", arguments: EngineKind.allCases)
-    func emitsIdleFirst(kind: EngineKind) async {
-        let engine = kind.make()
-        var iterator = engine.state.makeAsyncIterator()
-        let first = await iterator.next()
-        guard case .idle = first?.state else {
-            Issue.record("expected .idle, got \(String(describing: first))")
-            return
-        }
+    @Test("teardown finishes the state stream so consumers' for-await loops end")
+    func teardownFinishesStream() async {
+        await PlaybackEngineContract.teardownFinishesStream(AVKitEngine())
     }
 
-    @Test("teardown finishes the state stream so consumers' for-await loops end",
-          arguments: EngineKind.allCases)
-    func teardownFinishesStream(kind: EngineKind) async {
-        let engine = kind.make()
-        var iterator = engine.state.makeAsyncIterator()
-        _ = await iterator.next()          // drain the buffered .idle
-        await engine.teardown()
-        // Any further buffered beats are allowed; the stream MUST terminate.
-        while let value = await iterator.next() {
-            if case .idle = value.state { continue }
-            break
-        }
-        let terminal = await iterator.next()
-        #expect(terminal == nil)
-    }
-
-    @Test("the engine reports the id and capabilities of the kind that built it",
-          arguments: EngineKind.allCases)
-    func identity(kind: EngineKind) {
-        let engine = kind.make()
-        #expect(engine.id == (kind == .avKit ? .avKit : .vlcKit))
-        #expect(engine.capabilities == (kind == .avKit ? .avKit : .vlcKit))
+    @Test("the engine reports the id and capabilities of the kind that built it")
+    func identity() {
+        PlaybackEngineContract.identity(AVKitEngine(), id: .avKit, capabilities: .avKit)
     }
 }
 

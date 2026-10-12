@@ -5,7 +5,7 @@ import ParallaxCore
 
 /// Source-agnostic still-frame thumbnailer backed by AVFoundation's
 /// `AVAssetImageGenerator`. Same result shape as `VLCThumbnailer`
-/// (`VLCThumbnailFrame`) so callers can swap engines without caring who
+/// (`ThumbnailFrame`) so callers can swap engines without caring who
 /// produced the HEIC/JPEG bytes. Intended for containers already routed to
 /// AVKit (probe-proven, hazard-free) over a localhost HTTP bridge — ranged
 /// reads of the `moov` atom plus one nearest-keyframe decode, without spinning
@@ -40,7 +40,7 @@ public final class AVThumbnailer {
         for url: URL,
         position: Float = 0.3,
         timeout: Duration = .seconds(20)
-    ) async throws -> VLCThumbnailFrame {
+    ) async throws -> ThumbnailFrame {
         // Already cancelled on entry: bail before an `AVURLAsset` / generator pair exists at all.
         // `withTaskCancellationHandler` does fire its handler in that case, but the handler hops
         // through a `Task` while the body is still constructing — the one window where "cancel"
@@ -56,10 +56,10 @@ public final class AVThumbnailer {
         // its children anyway), so the racers resolve one MainActor-owned continuation; whoever is
         // first wins and the loser is a no-op.
         return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<VLCThumbnailFrame, any Error>) in
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<ThumbnailFrame, any Error>) in
                 generation.install(continuation)
                 generation.work = Task { @MainActor in
-                    let result: Result<VLCThumbnailFrame, any Error>
+                    let result: Result<ThumbnailFrame, any Error>
                     do { result = .success(try await generation.run(position: position)) }
                     catch { result = .failure(error) }
                     generation.resolve(result)
@@ -91,7 +91,7 @@ public final class AVThumbnailer {
 private final class AVThumbnailGeneration {
     private let asset: AVURLAsset
     private let generator: AVAssetImageGenerator
-    private var continuation: CheckedContinuation<VLCThumbnailFrame, any Error>?
+    private var continuation: CheckedContinuation<ThumbnailFrame, any Error>?
 
     var work: Task<Void, Never>?
     var timer: Task<Void, Never>?
@@ -109,13 +109,13 @@ private final class AVThumbnailGeneration {
         generator.maximumSize = CGSize(width: 0, height: maximumHeight)
     }
 
-    func install(_ continuation: CheckedContinuation<VLCThumbnailFrame, any Error>) {
+    func install(_ continuation: CheckedContinuation<ThumbnailFrame, any Error>) {
         self.continuation = continuation
     }
 
     /// The two AVFoundation phases, in order. Both are ranged reads over the bridge, and both are
     /// inside the deadline the caller passed.
-    func run(position: Float) async throws -> VLCThumbnailFrame {
+    func run(position: Float) async throws -> ThumbnailFrame {
         let loadedDuration = try await asset.load(.duration)
         let hasDuration = loadedDuration.isValid && !loadedDuration.isIndefinite && loadedDuration.seconds > 0
         let requestedTime = hasDuration
@@ -130,7 +130,7 @@ private final class AVThumbnailGeneration {
         } catch {
             throw AVThumbnailError.encodingFailed
         }
-        return VLCThumbnailFrame(
+        return ThumbnailFrame(
             data: data,
             duration: hasDuration ? .seconds(loadedDuration.seconds) : nil
         )
@@ -162,7 +162,7 @@ private final class AVThumbnailGeneration {
     }
 
     /// First result wins; later ones are no-ops (the losing racer's frame is simply dropped).
-    func resolve(_ result: Result<VLCThumbnailFrame, any Error>) {
+    func resolve(_ result: Result<ThumbnailFrame, any Error>) {
         guard let continuation else { return }
         self.continuation = nil
         work?.cancel()
