@@ -191,6 +191,25 @@ struct SMBPlaybackStartTests {
         #expect(asset.subtitleFontsDirectory?.path == "/engine-fonts/serif")
     }
 
+    /// The style is read once per asset, so a preference that lands mid-construction can't
+    /// split the font directory, the family and the freetype look across two designs.
+    @Test("SMB: the asset's fonts and text style come from one sample of the user's style")
+    func smbAssetSamplesTheStyleOnce() async throws {
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        var samples = 0
+        let vm = makeVM(reporting: StubPlaybackReporting(), engine: engine, subtitleStyle: {
+            samples += 1
+            return .standard.with { $0.fontDesign = samples.isMultiple(of: 2) ? .sansSerif : .serif }
+        })
+
+        await vm.start(smbItem: smbItem())
+
+        let asset = try #require(engine.loadedAssets.first)
+        #expect(asset.subtitleFontsDirectory?.path == "/engine-fonts/serif")
+        #expect(asset.subtitleFontFamily == "Engine serif")
+        #expect(asset.subtitleTextStyle?.style.fontDesign == .serif)
+    }
+
     /// The whole point of the instance-argument move: VLC's freetype renderer belongs to
     /// the video output, whose variables inherit from the libvlc INSTANCE — so the family
     /// and the look have to be arguments the player is BUILT with. A media option here is
