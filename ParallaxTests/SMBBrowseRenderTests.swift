@@ -5,6 +5,7 @@ import ParallaxCore
 import ParallaxJellyfin
 import ParallaxFileBrowse
 import ParallaxPlayback
+import ParallaxPlaybackVLC
 @testable import Parallax
 
 /// One wall capture. A named case rather than a tuple because Swift Testing only destructures

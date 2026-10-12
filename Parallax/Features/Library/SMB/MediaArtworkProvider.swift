@@ -5,6 +5,7 @@ import ParallaxCore
 import ParallaxFileBrowse
 import ParallaxJellyfin
 import ParallaxPlayback
+import ParallaxPlaybackVLC
 
 /// A resolved tile artwork plus the source duration extracted while generating it. The duration
 /// rides alongside the image so an SMB tile can show its runtime under the thumbnail; nil when the
@@ -663,7 +664,7 @@ actor MediaArtworkProvider {
             // sometimes times out. So ask for an early frame DIRECTLY: 5% in is past a black leader but
             // shallow enough that the bytes are already streamed for the header. No vlcOptions: the
             // bridge URL needs none.
-            let frame: VLCThumbnailFrame
+            let frame: ThumbnailFrame
             if useAV {
                 do {
                     frame = try await avThumbnailer.thumbnailData(

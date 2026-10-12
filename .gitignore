@@ -34,7 +34,7 @@ scripts/playback-lab/results/
 __pycache__/
 
 # Vendored VLCKit binaries, iOS + tvOS — fetched by scripts/fetch-mobilevlckit.sh
-Packages/ParallaxPlayback/Vendor
+Packages/ParallaxPlaybackVLC/Vendor
 
 # Plan output, never published
 docs/superpowers/

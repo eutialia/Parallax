@@ -4,6 +4,7 @@ import UIKit
 import ParallaxCore
 import ParallaxFileBrowse
 import ParallaxPlayback
+import ParallaxPlaybackVLC
 @testable import Parallax
 
 /// End-to-end proof that `VLCThumbnailer` can generate a frame THROUGH `SMBHTTPBridge` —

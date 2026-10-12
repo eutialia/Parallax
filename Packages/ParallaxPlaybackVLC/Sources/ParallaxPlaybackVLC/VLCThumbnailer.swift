@@ -1,6 +1,7 @@
 import Foundation
 import CoreGraphics
 import ParallaxCore
+import ParallaxPlayback
 #if canImport(MobileVLCKit)
 import MobileVLCKit
 #else
@@ -41,20 +42,6 @@ import TVVLCKit
 /// yields a 569×320 thumbnail (1.778, exactly 16:9), NOT a 320×240 4:3 frame. `width: 0`
 /// is honored, so the API defaults to it. (Downstream `MediaImage` fill+crop would absorb
 /// a minor mismatch regardless.)
-/// A generated still frame plus the source's duration, read off the same `VLCMedia` the
-/// thumbnailer already had to parse. `Sendable` so it crosses the package→app boundary cleanly
-/// (a raw `CGImage`/`VLCMedia` would not). `duration` is nil when libvlc couldn't determine the
-/// length — the caller falls back (e.g. to file size for an SMB tile).
-public struct VLCThumbnailFrame: Sendable {
-    public let data: Data
-    public let duration: Duration?
-
-    public init(data: Data, duration: Duration?) {
-        self.data = data
-        self.duration = duration
-    }
-}
-
 @MainActor
 public final class VLCThumbnailer {
 
@@ -92,7 +79,7 @@ public final class VLCThumbnailer {
         height: CGFloat = 320,
         position: Float = 0.3,
         timeout: Duration = .seconds(20)
-    ) async throws -> VLCThumbnailFrame {
+    ) async throws -> ThumbnailFrame {
         // Global events-config consistency with the engine (idempotent). Does NOT
         // affect thumbnailer callback threading — see the type doc.
         VLCKitEngine.configureVLCEvents()
@@ -215,7 +202,7 @@ public final class VLCThumbnailer {
         // it's read here — after a successful frame — without a second parse. nil/0 means libvlc
         // never resolved it; the caller falls back rather than showing a bogus 0.
         let duration = Self.duration(of: media)
-        return VLCThumbnailFrame(data: data, duration: duration)
+        return ThumbnailFrame(data: data, duration: duration)
     }
 
     /// The media's length as a `Duration`, or nil if libvlc hasn't resolved it (`length.value`

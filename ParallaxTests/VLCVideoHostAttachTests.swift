@@ -2,6 +2,7 @@ import Testing
 import UIKit
 import CoreMedia
 import ParallaxPlayback
+import ParallaxPlaybackVLC
 @testable import Parallax
 #if canImport(MobileVLCKit)
 import MobileVLCKit

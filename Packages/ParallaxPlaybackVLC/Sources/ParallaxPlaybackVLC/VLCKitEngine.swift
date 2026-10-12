@@ -3,6 +3,7 @@ import CoreMedia
 import OSLog
 import Synchronization
 import ParallaxCore
+import ParallaxPlayback
 // VideoLAN ships the same VLCKit under two module names — MobileVLCKit on iOS,
 // TVVLCKit on tvOS — so every VLC file in this package selects one this way. It is
 // the one sanctioned exception to the no-platform-conditionals-in-Packages rule:
