@@ -1,6 +1,6 @@
 # Parallax
 
-Parallax is a media player for Apple platforms. Jellyfin and SMB are the primary sources. iOS and iPadOS ship first from a single `iphoneos` target, tvOS follows. macOS and visionOS are out of scope. The repo is public and the app is on the App Store, so anything you write into it is published.
+Parallax is a media player for Apple platforms. Jellyfin and SMB are the primary sources. iOS and iPadOS ship first from a single `iphoneos` target, tvOS follows. macOS ships nothing and is only the test host for the packages; visionOS is out of scope. The repo is public and the app is on the App Store, so anything you write into it is published.
 
 The app target under `Parallax/` is a thin shell. Every piece of logic lives in a local SwiftPM package under `Packages/`, and the packages must build and test without the app.
 
@@ -8,20 +8,23 @@ This file holds only what you would get wrong without being told. Eutialia's ins
 
 ## Repository map
 
-- `Parallax/` – SwiftUI app: navigation, `@Observable @MainActor` wrappers over package state, per-platform UI. The only place `#if os(...)` is allowed.
+- `Parallax/` – SwiftUI app: navigation, views bound to `ParallaxFeatures` models, per-platform UI, and `AppEnvironment.live()` with the real edges. The only place `#if os(...)` is allowed.
 - `Packages/ParallaxCore` – shared models, keychain, errors. No dependencies. Ships `ParallaxCoreTestSupport`.
 - `Packages/ParallaxJellyfin` – Jellyfin client on top of jellyfin-sdk.
 - `Packages/ParallaxFileBrowse` – SMB and local browsing.
-- `Packages/ParallaxPlayback` – URL-agnostic player. Entry point is `play(url:headers:hints:)`; state leaves as `AsyncStream<PlaybackState>`.
+- `Packages/ParallaxPlayback` – URL-agnostic player and the AVKit engine. Entry point is the `PlaybackEngine` protocol: `load(_: PlayableAsset)` opens a session; state leaves as `AsyncStream<PlaybackBeat>`, each beat tagged with its session.
+- `Packages/ParallaxPlaybackVLC` – the VLC engine and thumbnailer. iOS and tvOS only: VLCKit has no macOS build, so it cannot share a package with code that tests on the host. Owns `Vendor/`.
+- `Packages/ParallaxFeatures` – feature logic the views render: `AppModel` built from an `AppEnvironment` of edges, the router, presenter and app-lifetime flows. Its scenario tests run the same `AppModel` on fakes (`Tests/.../Scenarios/AppWorld.swift`).
 - `Packages/ParallaxSubtitles` – libass client renderer. Deliberately a dynamic product: VLCKit's dylib exports an old libass that captures a naive static link, so its link line must never contain VLCKit.
-- `ParallaxTests/` – app-hosted tests. Its local `FakeKeychain` copy is deliberate: linking the test-support product into the app bundle duplicates ParallaxCore and breaks `as AppError` casts.
+- `ParallaxTests/` – app-hosted tests, only for what needs UIKit, SwiftUI rendering or real VLC. Its local `FakeKeychain` copy is deliberate: linking the test-support product into the app bundle duplicates ParallaxCore and breaks `as AppError` casts.
 - `Config/` – `Version.xcconfig` is the only version source. `Signing.local.xcconfig` is gitignored and holds the real team; recreate it after a clone.
 - `DESIGN.md` – the design system. Code comments cite it as law; read it before touching visuals.
 
 ## Invariants
 
 - **No platform drift.** `#if os(...)` never appears in `Packages/`; pre-commit and CI reject it. UI may differ per platform, logic may not. A feature on one platform exists on all of them unless hardware makes it impossible.
-- **Packages import no SwiftUI or Combine.** State crosses into the app as an `AsyncStream` and gets wrapped there.
+- **Packages import no SwiftUI, UIKit or Combine.** Observation is allowed: `ParallaxFeatures` holds the `@Observable` models the views bind to. A value only UIKit knows (the idiom, a screen size) comes in as a parameter.
+- **Logic leaves the views.** A view's `.task`, `.onChange` or button calls one method on `AppModel` or a feature model; the flow itself lives in `ParallaxFeatures`. Anything that touches the network, disk, keychain, clock or hardware reaches the package only through `AppEnvironment`, so `AppWorld` can fake it.
 - **Navigation shape.** iPad is a `TabView` with `.sidebarAdaptable` and `TabSection`. iPhone is a bottom `TabView`. Drill-downs use `NavigationStack`. Never a `NavigationSplitView` at the root.
 - **Structural layout branches key on `userInterfaceIdiom`, never size class.** Large iPhones report regular width in landscape, and a size-class branch turns them into an iPad.
 - **Subtitles render what the author wrote.** App styling is an opt-in override, default off. Colors and positions are kept; fonts are the acceptable loss. Noto is the only font source, bundled; never a system-font fallback.
@@ -39,21 +42,23 @@ This file holds only what you would get wrong without being told. Eutialia's ins
 Headless `xcodebuild` is the default. It is deterministic and ignores Xcode's toolbar. Reach for the Xcode MCP only for what headless cannot do.
 
 - App: `xcodebuild -scheme Parallax -destination 'platform=iOS Simulator,name=iPhone 18 Pro' -derivedDataPath /tmp/dd-Parallax build`, or `test`.
-- Packages run from their own directory with the same destination. Multi-product packages test through `ParallaxCore-Package` and `ParallaxPlayback-Package`; the bare product schemes have no test action.
+- Packages: `scripts/verify.sh [filter]` runs `swift test` on the macOS host for every package except ParallaxPlaybackVLC, and fails if nothing matched. ParallaxPlaybackVLC links iOS-only VLCKit, so it alone runs from its own directory against the simulator destination, through `ParallaxPlaybackVLC-Package`; the bare product schemes have no test action.
 - Swift Testing results are absent from XCTest's "Executed N tests" line; grep for `✔`. `-only-testing:` takes the type name, not the `@Suite` display name, which matches nothing and fakes a pass.
-- Real-keychain suites self-skip on unentitled hosts. A skip is expected, a failure is real.
+- Behavior is proven by scenarios in `Packages/ParallaxFeatures/Tests/ParallaxFeaturesTests/Scenarios/`, on the host, through `AppWorld`. The `verify-parallax` skill is the workflow for a bug report or a behavior change.
+- Real-keychain suites run for real on the macOS host and self-skip on unentitled simulator hosts. A skip is expected, a failure is real.
 - Anti-hang deadlines go through `CITimeScale`: scale the ceiling, never the assertion. A CI-only flake is an unscaled deadline before it is a bug.
 - Run the tests for what you changed. CI owns the full matrix.
 
 ### When the Xcode MCP earns its place
 
-The `xcode` MCP drives a running Xcode. Three uses justify it:
+Since Xcode 27 the `xcode` MCP runs headless: `Xcode Service.app` serves it with no IDE window. Pass `workspaceIdentifier` as the absolute path to `Parallax.xcodeproj`. `XcodeSwitchScheme` and `XcodeSwitchRunDestination` change the workspace's active selection, the same state Xcode's toolbar shows, so switch back when Eutialia has the project open. These uses justify it:
 
-- `RenderPreview` to see a SwiftUI `#Preview`.
+- `RenderPreview` to see a SwiftUI `#Preview`. It boots a simulator and shuts it down afterwards; pass `timeout`.
+- `DeviceInteraction*` to confirm a flow on a real screen after its host scenario passes. Every call returns a screenshot and the element hierarchy; tap at positions read from the hierarchy, never from the screenshot. Close the session when done. Motion is never verified this way; that is Eutialia's.
 - `DocumentationSearch` for an Apple API you are not sure of. Swift 6.4 and iOS 27 moved past training data, so check before writing. The `apple-platform-references` skill covers the same ground offline.
 - `XcodeRefreshCodeIssuesInFile` for a per-file diagnostic pass when a full build is overkill.
 
-Its tools act on whatever scheme and destination Xcode's toolbar has selected and cannot change them. Edit with the native tools, not the MCP's write tools. The `swift-lsp` plugin is for hover and jump-to-definition only; its `No such module` errors are stale until a build runs.
+Never run tests through the MCP: `RunSomeTests` and `RunAllTests` still have no timeout. Edit with the native tools, not the MCP's write tools. The `swift-lsp` plugin is for hover and jump-to-definition only; its `No such module` errors are stale until a build runs.
 
 ## Platforms and engines
 
@@ -86,7 +91,7 @@ Never claim a visual outcome from reasoning. Sizes, alignment, materials, and ch
 ## Working with Eutialia
 
 - Her on-device observations are ground truth.
-- The ship order is fixed: implement, she device-tests, `/code-review --fix`, commit, PR. She grants each step. A clean build is not approval, and nothing lands on `main` directly.
+- The ship order is fixed: implement, device-tests, adversarial review, commit, PR. She grants each step. A clean build is not approval, and nothing lands on `main` directly.
 - Match the ceremony to the change. A one-file edit gets a direct edit, not a worktree and an exploration agent.
 - Plans, research notes, scratch scripts, and lab results are never committed. Keep them outside the tree or in the gitignored tool directories.
 - When she reverses a taste call, revert the whole thing, including the pieces that rode along. Do not layer a fix on top.
