@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import ParallaxFileBrowse
+import ParallaxFileBrowseTestSupport
 
 /// Drives the reader over a fake pooled connection (`FakeSMBConnection`), so the borrow lifecycle —
 /// lazy checkout, the taint rule, the drain, and the close guard — is pinned without a share.

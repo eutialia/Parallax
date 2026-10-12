@@ -1,6 +1,7 @@
 import SwiftUI
 import Nuke
 import ParallaxJellyfin
+import ParallaxFeatures
 
 /// Loads a raw image URL through the per-`Session` Nuke pipeline. Split out as its own
 /// view so the pipeline lookup happens inside a body with a stable identity, avoiding

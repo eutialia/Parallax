@@ -37,7 +37,7 @@ import Foundation
 /// Every one of these is a libvlc **instance** setting, not a media option: the freetype
 /// text renderer is created by the video output (`SpuRenderCreateAndLoadText`), whose
 /// `var_Inherit` chain ends at the libvlc instance and never sees an input item's
-/// variables. See `VLCKitEngine.libraryOptions(for:)`, which is what turns these into
+/// variables. See `PlayableAsset.vlcInstanceArguments`, which is what turns these into
 /// `--freetype-…` arguments.
 public struct EngineSubtitleTextStyle: Sendable, Hashable {
     public let style: SubtitleStyle
@@ -56,7 +56,7 @@ public struct EngineSubtitleTextStyle: Sendable, Hashable {
     /// which fields happened to be non-default.
     ///
     /// **Bare `name=value`, no sigil.** The prefix encodes the SCOPE and belongs to the
-    /// caller: these are instance-scoped, so `VLCKitEngine.libraryOptions(for:)` prepends
+    /// caller: these are instance-scoped, so `PlayableAsset.vlcInstanceArguments` prepends
     /// `--`. A `:` prefix would make them media options, which the freetype renderer
     /// cannot see at all (that was the defect).
     ///

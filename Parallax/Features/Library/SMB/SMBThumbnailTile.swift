@@ -1,6 +1,7 @@
 import SwiftUI
 import ParallaxCore
 import ParallaxFileBrowse
+import ParallaxFeatures
 
 /// SMB grid cell: the same poster chrome as the Jellyfin `MediaTile`, but its artwork resolves
 /// lazily — a strict sidecar image or a frame-grab, generated + cached on first appearance by

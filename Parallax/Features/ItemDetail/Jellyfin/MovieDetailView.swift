@@ -1,14 +1,14 @@
 import SwiftUI
 import ParallaxJellyfin
 import ParallaxCore
+import ParallaxFeatures
 
 struct MovieDetailView: View {
     let itemID: ItemID
     let session: Session
 
-    @Environment(AppDependencies.self) private var deps
+    @Environment(AppModel.self) private var app
     @Environment(PlaybackPresenter.self) private var playback
-    @Environment(UserDataActions.self) private var userDataActions
     @Environment(\.appIdiom) private var idiom
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var viewModel: MovieDetailViewModel?
@@ -69,11 +69,11 @@ struct MovieDetailView: View {
                                     // "Resume" when the movie is mid-watch — the player already
                                     // resumes from the saved position; the pill just never admitted it.
                                     PrimaryPlayButton(
-                                        title: ItemPlayButtonLabel.title(for: .movie(md.movie), resumeEpisode: nil),
+                                        title: vm.playButtonTitle,
                                         fillWidth: false,
                                         layoutReserveTitle: ItemPlayButtonLabel.layoutReserveTitle(for: .verbOnly)
                                     ) {
-                                        playback.play(.movie(md), in: session)
+                                        vm.play()
                                     }
                                     FavoriteActionButton(isFavorite: vm.isFavorite) {
                                         Task { await vm.toggleFavorite() }
@@ -141,23 +141,17 @@ struct MovieDetailView: View {
         .toolbarBackgroundVisibility(.hidden, for: .navigationBar)
         .task {
             if viewModel == nil {
-                let repo = await deps.jellyfinLibraryRepoFactory(session)
-                viewModel = MovieDetailViewModel(repo: repo, itemID: itemID, source: .jellyfin(session.id), userDataActions: userDataActions)
+                viewModel = await app.movieDetail(itemID, on: session)
                 await viewModel?.load()
             }
         }
         // A finished playback session moved this movie's position, so re-pull it the
         // moment the player dismisses. The view stays MOUNTED under the player layer/
-        // cover, so `.task` never re-fires — `playback.request` clearing (id → nil) is
-        // the only "back from watching" edge. Mirrors HomeView.
-        .onChange(of: playback.request?.id) { oldID, newID in
-            if oldID != nil, newID == nil {
-                Task { await viewModel?.refresh() }
-            }
+        // cover, so `.task` never re-fires — the player closing is the only "back from
+        // watching" edge. Mirrors `AppModel.refreshHomeAfterPlayback()`.
+        .onChange(of: playback.closedSessions) {
+            Task { await viewModel?.refresh() }
         }
-        // Auto-recover the error screen when the network returns (or the app foregrounds online).
-        // Gated on `isStalled` so a loaded title is never re-pulled.
-        .recoversFromOffline(isStalled: viewModel?.isStalled ?? false) { await viewModel?.load() }
     }
 
 }

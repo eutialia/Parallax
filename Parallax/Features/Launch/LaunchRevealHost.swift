@@ -1,5 +1,6 @@
 import SwiftUI
 import ParallaxCore
+import ParallaxFeatures
 
 /// Hosts the real root content with the launch stage played over it on cold
 /// launch. `content` keeps ONE structural identity for the whole process
@@ -82,12 +83,6 @@ private struct LaunchStageOverlay: View {
     /// already complete — nothing left to settle into).
     let onSettleStart: () -> Void
 
-    /// Failsafe: the hold is designed to loop until `markContentReady()`,
-    /// but a release path that never fires (hung bootstrap, a future router
-    /// destination nobody wired up) must not leave an input-blocking overlay
-    /// up forever. Generous on purpose — real loads release long before this.
-    private static let watchdogTimeout: Duration = .seconds(15)
-
     var body: some View {
         TimelineView(.animation) { timeline in
             // The clock zero is the first frame the user can SEE — `beginStage()`
@@ -110,10 +105,6 @@ private struct LaunchStageOverlay: View {
         .statusBarHidden(true)
         #endif
         .onAppear { gate.beginStage() }
-        .task {
-            guard (try? await Task.sleep(for: Self.watchdogTimeout)) != nil else { return }
-            gate.markContentReady()
-        }
     }
 
     /// The full story: intro → sync-hold (looping until the gate releases) →

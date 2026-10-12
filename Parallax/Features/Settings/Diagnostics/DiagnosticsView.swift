@@ -1,4 +1,5 @@
 import ParallaxCore
+import ParallaxFeatures
 import SwiftUI
 #if !os(tvOS)
 import CoreTransferable

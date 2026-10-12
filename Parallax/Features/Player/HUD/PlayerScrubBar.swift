@@ -1,5 +1,6 @@
 import SwiftUI
 import CoreMedia
+import ParallaxFeatures
 
 /// The lone progress bar shown while seeking with the chrome down — `PlayerProgressBar`
 /// in `.scrub` mode (big floating time bubble + chapter ticks) pinned to the scrubber's

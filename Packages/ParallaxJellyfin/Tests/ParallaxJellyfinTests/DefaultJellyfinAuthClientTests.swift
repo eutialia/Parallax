@@ -3,6 +3,7 @@ import Testing
 import JellyfinAPI
 import ParallaxCore
 @testable import ParallaxJellyfin
+import ParallaxJellyfinTestSupport
 
 /// The sign-in client, driven over a stubbed transport. It deliberately installs NO response
 /// validator — a 401 here is a wrong password at the login form, not a dead session — so the

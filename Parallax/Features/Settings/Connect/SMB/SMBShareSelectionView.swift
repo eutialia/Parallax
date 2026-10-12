@@ -1,34 +1,24 @@
 import SwiftUI
 import ParallaxFileBrowse
 import ParallaxJellyfin
+import ParallaxFeatures
 
 /// Multi-select share picker shown after a successful `listShares()`. Each `SMBShare` returned
 /// by the server is presented as a toggleable row; the user picks which shares to mount as
-/// libraries. Confirming calls `ServerStore.addSMBServer` with the selected share names and fires
+/// libraries. Confirming saves the server through the add flow (`SMBAddServerModel.save`) and fires
 /// `onAdded`. The enumeration is already done by the time this appears, so the picker holds no
 /// connection of its own.
 struct SMBShareSelectionView: View {
-    let host: String
-    let username: String
-    let password: String
-    let domain: String
-    let shares: [SMBShare]
+    let model: SMBAddServerModel
     var onAdded: () -> Void
-
-    @Environment(AppDependencies.self) private var deps
-
-    /// Share names that have been toggled on.
-    @State private var selected: Set<String> = []
-    @State private var isSaving = false
-    @State private var saveError: String?
 
     // MARK: - Derived
 
     private var addButtonTitle: String {
-        switch selected.count {
+        switch model.selectedShares.count {
         case 0: return "Add Shares"
         case 1: return "Add 1 Share"
-        default: return "Add \(selected.count) Shares"
+        default: return "Add \(model.selectedShares.count) Shares"
         }
     }
 
@@ -49,16 +39,16 @@ struct SMBShareSelectionView: View {
                 #endif
 
                 SettingsGroup(title: "Shares") {
-                    ForEach(shares, id: \.name) { share in
+                    ForEach(model.discoveredShares, id: \.name) { share in
                         ShareSelectionRow(
                             share: share,
-                            isSelected: selected.contains(share.name),
-                            onToggle: { toggle(share.name) }
+                            isSelected: model.selectedShares.contains(share.name),
+                            onToggle: { model.toggleShare(share.name) }
                         )
                     }
                 }
 
-                if let saveError {
+                if let saveError = model.saveError {
                     Text(saveError)
                         .font(.footnote)
                         .foregroundStyle(Color.destructive)
@@ -66,11 +56,13 @@ struct SMBShareSelectionView: View {
                         .padding(.horizontal, SettingsMetrics.headerInset)
                 }
 
-                Button(action: save) {
-                    Text(addButtonTitle).formActionLabel(isWorking: isSaving)
+                Button {
+                    Task { if await model.save() { onAdded() } }
+                } label: {
+                    Text(addButtonTitle).formActionLabel(isWorking: model.isSaving)
                 }
                 .formActionButton(.solid)
-                .disabled(selected.isEmpty || isSaving)
+                .disabled(model.selectedShares.isEmpty || model.isSaving)
                 .padding(.top, Space.s3)
             }
         }
@@ -78,33 +70,6 @@ struct SMBShareSelectionView: View {
         #if !os(tvOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
-    }
-
-    // MARK: - Selection
-
-    private func toggle(_ name: String) {
-        if selected.contains(name) { selected.remove(name) } else { selected.insert(name) }
-    }
-
-    // MARK: - Save
-
-    private func save() {
-        guard !selected.isEmpty else { return }
-        isSaving = true
-        saveError = nil
-        let capturedPassword = password
-        Task {
-            do {
-                try await deps.serverStore.addSMBServer(
-                    SMBServerData(host: host, username: username, domain: domain, shares: selected.sorted()),
-                    password: capturedPassword
-                )
-                onAdded()
-            } catch {
-                saveError = "Couldn't save the shares. Try again."
-                isSaving = false
-            }
-        }
     }
 }
 

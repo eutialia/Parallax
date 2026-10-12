@@ -1,4 +1,5 @@
 import SwiftUI
+import ParallaxFeatures
 
 /// The detail page's "open ledger": the overview/tagline column beside the labeled metadata ledger
 /// (Genres, Director, Studios, Cast & Crew), painted straight onto the page floor — no card, no
@@ -418,4 +419,29 @@ private struct DetailOverviewReadingPanel: View {
     .environment(\.appIdiom, .tv)
 }
 #endif
+#endif
+
+#if DEBUG
+extension DetailInfo {
+    /// Shared sample for `DetailMetadataSection` previews.
+    static let preview = DetailInfo(
+        title: "Blade Runner 2049",
+        tagline: "The key to the future is finally unearthed.",
+        // Two paragraphs on purpose: the detail overview must render Jellyfin's `\n` breaks in
+        // BOTH clamp states (the collapsed text is no longer flattened).
+        overview: """
+        Thirty years after the events of the first film, a new blade runner, LAPD Officer K, \
+        unearths a long-buried secret that has the potential to plunge what's left of society into \
+        chaos. K's discovery leads him on a quest to find Rick Deckard, a former LAPD blade runner \
+        who has been missing for thirty years.
+
+        Officer K's search forces him to question what it means to be human — and to whom the \
+        future belongs.
+        """,
+        genres: ["Science Fiction", "Drama", "Thriller", "Mystery"],
+        directors: ["Denis Villeneuve"],
+        studios: ["Alcon Entertainment", "Columbia Pictures"],
+        castAndCrew: ["Ryan Gosling", "Harrison Ford", "Ana de Armas"]
+    )
+}
 #endif

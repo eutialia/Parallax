@@ -2,6 +2,7 @@ import Testing
 import ParallaxCore
 import ParallaxPlayback
 @testable import Parallax
+import ParallaxFeatures
 
 /// Pins the row the panel scrolls to when a chip menu opens — and, on tvOS, focuses.
 /// `leadingRowID` is that one row for every menu; audio alone needs a second resolver,

@@ -379,3 +379,18 @@ private final class ThumbnailDelegate: NSObject, VLCMediaThumbnailerDelegate {
         }
     }
 }
+
+extension VLCThumbnailer: FrameThumbnailing {
+    public func frame(from url: URL, at position: Float, timeout: Duration) async throws -> ThumbnailFrame {
+        try await thumbnailData(for: url, position: position, timeout: timeout)
+    }
+}
+
+extension VLCThumbnailError: ThumbnailError {
+    public var isTimeout: Bool {
+        switch self {
+        case .timedOut, .parseTimedOut: true
+        case .encodingFailed: false
+        }
+    }
+}

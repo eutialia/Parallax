@@ -2,23 +2,18 @@
 import SwiftUI
 import ParallaxJellyfin
 import ParallaxCore
+import ParallaxFeatures
 
 struct RootTabView: View {
+    @Environment(AppModel.self) private var app
     @Environment(AppRouter.self) private var router
-    @Environment(AppDependencies.self) private var deps
     @Environment(\.horizontalSizeClass) private var hSize
     @Environment(\.colorScheme) private var colorScheme
     @State private var selectedTab: AppTab = .home
-    @State private var session: Session?
     /// One group per configured source, in server add order — the sidebar's titled, collapsible
     /// sections. Libraries are never merged across servers, so a group is exactly one server's
     /// libraries.
-    @State private var groups: [LibraryGroup] = []
-    /// Sources whose library listing failed this pass — the sidebar is missing THOSE servers'
-    /// libraries because the network is down, not because they have none. Gates
-    /// `.recoversFromOffline` so they repopulate when connectivity returns; healthy servers and
-    /// the local SMB shares are never re-pulled. Mirrors the content views' `isStalled`.
-    @State private var failedSourceIDs: Set<MediaSourceID> = []
+    private var groups: [LibraryGroup] { app.libraries.groups }
     /// The last library opened from the sidebar's Libraries section (a server collection or
     /// the virtual Favorites grid), surfaced as the lone dynamic tab in the collapsed tab bar
     /// (Apple Music style). In-memory only: this `@State` resets on the `.id(activeServerID)`
@@ -36,13 +31,11 @@ struct RootTabView: View {
         // AND an SMB add/remove (token's revision part) both rebuild `entries`. The `.id`
         // remount above stays on the session only, so a revision bump rebuilds the merged
         // list without tearing every tab down.
-        .task(id: router.libraryReloadToken) { await loadLibraries() }
-        // Repopulate the sidebar's Jellyfin libraries when the network returns (or the app
-        // foregrounds online) after a launch that couldn't reach the server. Gated on
-        // the failed-source set, so healthy servers — and the local SMB shares — are never re-pulled. The
-        // reload token (above) doesn't move on a reconnect, so without this the libraries stayed gone
-        // until a server switch. Event-based — no pull-to-refresh.
-        .recoversFromOffline(isStalled: !failedSourceIDs.isEmpty) { await loadLibraries() }
+        // Loads Home's feed alongside the libraries; Home itself fetches nothing.
+        .task(id: router.libraryReloadToken) { await app.loadSources() }
+        // If the selected library tab's backing entry just vanished, snap to Home so the detail
+        // pane isn't left on a gone tab (shared with FocusRootView via `snappedIfStale`).
+        .onChange(of: groups) { _, groups in selectedTab = selectedTab.snappedIfStale(against: groups.allEntries) }
         // Tabs that exist at only one layout — Library + Settings are compact-only (sidebar
         // layouts browse libraries from the sidebar and host Settings in its footer), the
         // per-library tabs are sidebar-only. Crossing the layout boundary (iPad Split View /
@@ -68,37 +61,6 @@ struct RootTabView: View {
     /// Stage Manager still adapt.
     private var isSidebarLayout: Bool {
         UIDevice.current.userInterfaceIdiom == .pad && hSize == .regular
-    }
-
-    /// Resolve + commit the sidebar's merged library list. Shared by the launch `.task` and offline
-    /// recovery so the two never drift. `active` may be nil in an SMB-only config — `MergedLibrary`
-    /// builds the SMB entries either way; a nil session just contributes no Jellyfin collections.
-    /// Captures into locals across the awaits, then commits under a cancellation check: a token
-    /// change cancels the launch task and starts a fresh one, and a now-stale snapshot must not
-    /// clobber the newer state (or snap selection off a tab that's still valid in the latest entries).
-    private func loadLibraries() async {
-        guard router.hasAnySource else { groups = []; session = nil; failedSourceIDs = []; return }
-        // One read of the store's shape drives both stages (see `MergedLibrary.SourceState`).
-        let sources = await MergedLibrary.SourceState.read(from: deps.serverStore)
-        // Stale-while-revalidate: put each server's last known listing up immediately, then
-        // replace it below.
-        if let cached = await sources.hydratedGroups(ifColdGiven: groups, snapshots: deps.snapshots) {
-            groups = cached
-            session = await deps.serverStore.active
-        }
-        let outcome = await sources.resolve(
-            retaining: groups,
-            snapshots: deps.snapshots,
-            jellyfinRepo: deps.mediaRepoFactory
-        )
-        let active = await deps.serverStore.active
-        guard !Task.isCancelled else { return }
-        session = active
-        groups = outcome.groups
-        failedSourceIDs = outcome.failedSourceIDs
-        // If the selected library tab's backing entry just vanished, snap to Home so the detail
-        // pane isn't left on a gone tab (shared with FocusRootView via `snappedIfStale`).
-        selectedTab = selectedTab.snappedIfStale(against: outcome.entries)
     }
 
     /// Tab selection that records the last sidebar-opened library *in the same transaction* as the
@@ -185,7 +147,7 @@ struct RootTabView: View {
             if router.hasSearchableSource {
                 Tab(value: AppTab.search, role: .search) {
                     NavigationStack {
-                        JellyfinSearchView()
+                        JellyfinSearchView(app: app)
                             .padNavigationBarMinimizesOnScroll()
                     }
                 }
@@ -198,9 +160,7 @@ struct RootTabView: View {
             // Favorites card) and Jellyfin-only — favorites are a Jellyfin concept, so an SMB-only
             // config (nil session) omits it. Hidden from the collapsed bar unless it's the
             // last-opened library, sharing the dynamic slot with the real libraries.
-            // `session != nil`, not `let session`: `FavoritesView` resolves every server itself, so
-            // the session is only a presence test here — binding it left an unused value.
-            if isSidebarLayout, session != nil {
+            if isSidebarLayout, app.libraries.hasJellyfinSource {
                 Tab("Favorites", systemImage: "heart", value: AppTab.favorites) {
                     NavigationStack {
                         FavoritesView()

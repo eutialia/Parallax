@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import ParallaxFileBrowse
+import ParallaxFileBrowseTestSupport
 
 /// Drives the lister over a fake pooled connection (`FakeSMBConnection`), pinning the borrow
 /// lifecycle it replaced a per-screen connection with: warm reuse, the discard-on-failure rule, and

@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import ParallaxFileBrowse
+import ParallaxFileBrowseTestSupport
 
 /// The ceiling is driven through the injected `sleep` seam instead of a real clock: the two race
 /// tests used to bound a 120s hung operation with 60s of slop, and flaked doing it.

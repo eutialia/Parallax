@@ -1,4 +1,5 @@
 import SwiftUI
+import ParallaxFeatures
 
 /// The single layered progress bar for every platform and state — replaces the iOS
 /// `Slider`, the tvOS focusable bar, and the old `ScrubBar`. Monochrome white over the

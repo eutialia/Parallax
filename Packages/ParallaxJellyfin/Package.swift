@@ -11,6 +11,7 @@ let package = Package(
     ],
     products: [
         .library(name: "ParallaxJellyfin", targets: ["ParallaxJellyfin"]),
+        .library(name: "ParallaxJellyfinTestSupport", targets: ["ParallaxJellyfinTestSupport"]),
     ],
     dependencies: [
         .package(path: "../ParallaxCore"),
@@ -35,10 +36,22 @@ let package = Package(
                 .swiftLanguageMode(.v6),
             ]
         ),
+        .target(
+            name: "ParallaxJellyfinTestSupport",
+            dependencies: [
+                "ParallaxJellyfin",
+                .product(name: "JellyfinAPI", package: "jellyfin-sdk-swift"),
+                .product(name: "Get", package: "Get"),
+            ],
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+            ]
+        ),
         .testTarget(
             name: "ParallaxJellyfinTests",
             dependencies: [
                 "ParallaxJellyfin",
+                "ParallaxJellyfinTestSupport",
                 "ParallaxCore",
                 .product(name: "Get", package: "Get"),
                 .product(name: "ParallaxCoreTestSupport", package: "ParallaxCore"),

@@ -1,5 +1,6 @@
 import ParallaxCore
 import SwiftUI
+import ParallaxFeatures
 
 // MARK: - Primitives
 

@@ -3,59 +3,15 @@ import CoreMedia
 import ParallaxCore
 import ParallaxJellyfin
 import ParallaxPlayback
+import ParallaxFeatures
 
 struct PlayerView: View {
-    private enum Source {
-        case resolved(ItemDetail, fromBeginning: Bool)
-        case unresolved(ItemID, fromBeginning: Bool)
-        /// A browsed SMB file resolved under the loading veil. Carries no `Session`
-        /// (SMB has none) — the resolver is reached via the environment in `.task`.
-        case smb(Item, SMBServerRef)
-    }
-    private let source: Source
-    /// The Jellyfin session this player resolves/reports against. Nil on the SMB
-    /// path, which has no server — `beginSession` only builds the Jellyfin-wired
-    /// view model when a session is present.
-    let session: Session?
+    /// What to play — the root hosts' shared entry point (`PlayerPresentationHost` on iOS, the
+    /// tvOS full-screen cover).
+    let request: PlaybackPresenter.Request
 
-    /// Play an already-loaded detail (e.g. the movie-detail Play button).
-    /// `fromBeginning` — the context menu's restart intent (Task 4): true starts
-    /// at 0:00 regardless of any saved resume position.
-    init(item: ItemDetail, session: Session, fromBeginning: Bool = false) {
-        self.source = .resolved(item, fromBeginning: fromBeginning)
-        self.session = session
-    }
-    /// Play by id — fetches the detail in the loading cover (direct episode play).
-    init(itemID: ItemID, session: Session, fromBeginning: Bool = false) {
-        self.source = .unresolved(itemID, fromBeginning: fromBeginning)
-        self.session = session
-    }
-    /// Play a browsed SMB file — the `SMBPlaybackItem` resolves under the loading
-    /// veil (no Jellyfin session). The resolver is reached via the environment in
-    /// `.task`, not captured here, so its Keychain isn't held by the view value.
-    init(smbItem item: Item, ref: SMBServerRef) {
-        self.source = .smb(item, ref)
-        self.session = nil
-    }
-    /// Build from a presenter request — the root hosts' shared entry point
-    /// (`PlayerPresentationHost` on iOS, the tvOS full-screen cover).
-    init(request: PlaybackPresenter.Request) {
-        switch request.target {
-        case .detail(let detail, let session, let fromBeginning):
-            self.init(item: detail, session: session, fromBeginning: fromBeginning)
-        case .itemID(let itemID, let session, let fromBeginning):
-            self.init(itemID: itemID, session: session, fromBeginning: fromBeginning)
-        case .smb(let item, let ref): self.init(smbItem: item, ref: ref)
-        }
-    }
-
-    @Environment(AppDependencies.self) private var deps
+    @Environment(AppModel.self) private var app
     @Environment(PlaybackPresenter.self) private var playback
-    /// Read at view-model construction for the ENGINE-facing knobs only (VLC's libass
-    /// directory, freetype family, and the `--freetype-*` look an embedded SRT renders
-    /// with). The client overlay takes the same preferences live, through
-    /// `SubtitleOverlayView`.
-    @Environment(SubtitlePreferences.self) private var subtitlePrefs
     #if !os(tvOS)
     /// The host's presentation state (travel + settled flag) the pull gesture
     /// drives — injected by `PlayerPresentationHost`, the only iOS mount point.
@@ -211,12 +167,13 @@ struct PlayerView: View {
             DisplayCriteriaMatcher.clear()
             #endif
         }
-        // A movie / series finale that played to its end dismisses the player the same
-        // way the Close chevron does (the VM flips `playbackDidComplete`); episodes
-        // auto-advance instead and never set it.
+        #if os(tvOS)
+        // A movie / series finale that played to its end closes the player (`runPlayer`);
+        // hand display-mode selection back as it goes, like the Close chevron does.
         .onChange(of: viewModel?.playbackDidComplete) { _, done in
-            if done == true { exitPlayer() }
+            if done == true { DisplayCriteriaMatcher.clear() }
         }
+        #endif
         // The player is an immersive "screening room": pin the whole surface (video
         // host, controls, subtitle/loader/error/debug overlays) to dark appearance so
         // every bare `.glassEffect(.regular)` resolves to the same dark frosted
@@ -228,139 +185,30 @@ struct PlayerView: View {
         .environment(\.colorScheme, .dark)
     }
 
-    /// Builds the player's view model on first appearance and starts playback. One-shot
-    /// (guarded on `viewModel == nil`): the `.task` can re-fire, but the session is built
-    /// once. The model is wired with the per-session dependency factories (playback info,
-    /// library repo) resolved here so they aren't captured before the session exists.
+    /// Builds the player's view model on first appearance and runs its session for as long as
+    /// the view's `.task` lives. One-shot (guarded on `viewModel == nil`): the `.task` can
+    /// re-fire, but the session is built once.
     private func beginSession() async {
         guard viewModel == nil else { return }
-        // SMB has no Jellyfin session: a server-less view model reporting to no one
-        // (`NoOpPlaybackReporting`) that resolves the file under the veil. The Jellyfin
-        // factories below need a `Session`, so they only run on the Jellyfin paths.
-        if case .smb(let item, let ref) = source {
-            // Sidecar subtitle URLs are `smb://` on BOTH SMB routes (the bridge serves only the
-            // video file), which the default URLSession fetch can't open — route the SMB scheme
-            // through the resolver (Keychain stays out of the view) and everything else through
-            // URLSession, mirroring the default closure's http body.
-            let smbResolver = deps.smbPlaybackResolver
-            let subtitleFetch: @Sendable (URL) async -> Data? = { url in
-                if url.scheme == "smb" {
-                    return await smbResolver.subtitleData(for: url, ref: ref)
-                }
-                // Same status guard as the default closure: URLSession returns
-                // HTTP error bodies instead of throwing, and those must read as
-                // "no data" so the format fallback can fire.
-                guard let (data, response) = try? await URLSession.shared.data(from: url),
-                      !data.isEmpty,
-                      (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) ?? true
-                else { return nil }
-                return data
-            }
-            let vm = PlayerViewModel(
-                deviceProfileBuilder: deps.deviceProfileBuilder,
-                playbackInfo: NoOpPlaybackReporting(),
-                resolve: { _, _, _, _ in
-                    // Unreachable on the SMB path — `start(resolvingSMB:)` delegates to
-                    // `start(smbItem:)`, which never calls the Jellyfin resolve.
-                    throw AppError.playback(.unsupportedFormat)
-                },
-                engineFactory: deps.playbackEngineFactory,
-                audioSession: deps.audioSession,
-                subtitleFetch: subtitleFetch,
-                // SMB-only: live-session frame grab → `MediaArtworkProvider` cache. Duration
-                // is threaded from the VM at call time (~8s in); the WAN I/O skip and the
-                // cache-key recipe both stay inside the provider. Jellyfin construction
-                // leaves the default no-op.
-                backfillThumbnail: { duration, captureFramePerformsIO, captureFrame in
-                    await deps.mediaArtworkProvider.backfillThumbnail(
-                        item: item, ref: ref, duration: duration,
-                        captureFramePerformsIO: captureFramePerformsIO, captureFrame: captureFrame
-                    )
-                },
-                subtitleStyle: subtitleStyleProvider,
-                playerSurface: playerSurfaceProvider
-            )
-            install(vm)
+        await app.runPlayer(for: request, subtitleSurface: subtitleSurfaceProvider) { vm in
+            viewModel = vm
             #if DEBUG
-            // Playback Lab seam: hand the live view model to a scripted lab run
-            // (no-op when no lab is active). Before start(), so the lab observes
-            // the loading phase from its first beat.
-            PlaybackLabRunner.active?.attach(vm)
+            // Playback Lab seam: hand the live view model to a scripted lab run (no-op when no
+            // lab is active). Before start(), so the lab observes the loading phase from its
+            // first beat.
+            if case .smb = request.target { PlaybackLabRunner.active?.attach(vm) }
             #endif
-            // The resolver — and its Keychain — is reached through the environment
-            // here, not captured at init, so the view value never holds it.
-            await vm.start(resolvingSMB: { try await deps.smbPlaybackResolver.resolve(item, ref: ref) })
-            return
-        }
-
-        guard let session else { return }
-        let info = await deps.playbackInfoFactory(session)
-        let repo = await deps.jellyfinLibraryRepoFactory(session)
-        let vm = PlayerViewModel(
-            deviceProfileBuilder: deps.deviceProfileBuilder,
-            playbackInfo: info,
-            resolve: { id, caps, start, selection in
-                try await info.resolve(
-                    item: id,
-                    capabilities: caps,
-                    startTime: start,
-                    selection: selection
-                )
-            },
-            engineFactory: deps.playbackEngineFactory,
-            audioSession: deps.audioSession,
-            fetchDetail: { try await repo.detail(for: $0) },
-            rememberTrackSelection: { await info.rememberTrackSelection($0) },
-            fetchSegments: { (try? await repo.mediaSegments(for: $0)) ?? [] },
-            fetchAdjacent: { (try? await repo.adjacentEpisodes(seriesID: $0, episodeID: $1)) ?? .none },
-            fetchDelivery: { await info.transcodingDelivery(playSessionID: $0) },
-            subtitleStyle: subtitleStyleProvider,
-            playerSurface: playerSurfaceProvider,
-            // Poster bytes for the scrub bar's accent hue. Through the session's own image
-            // pipeline, not a bare URLSession: the image endpoints reject anonymous reads on an
-            // auth-required server, and the pipeline is the one thing that carries the token. It
-            // shares the pipeline, that header, and the cache store with every poster tile — but
-            // not their cache ENTRIES, since `maxWidth` is part of Nuke's key and this asks for a
-            // thumbnail nothing else requests. `thumbnailMaxPixel` is the whole request: an
-            // accent needs a hue, not a picture.
-            //
-            // The capture is explicit and narrow on purpose: this closure lives as long as the
-            // view model does, and an implicit `self`/`session` capture would pin the whole
-            // Jellyfin session to it.
-            fetchArtwork: { [factory = deps.imagePipelineFactory, session] item in
-                guard let ref = item.accentImageRef else { return nil }
-                return await factory.imageData(for: ref, session: session,
-                                               maxWidth: ArtworkAccent.thumbnailMaxPixel)
-            }
-        )
-        install(vm)
-        switch source {
-        case .resolved(let item, let fromBeginning): await vm.start(item: item, fromBeginning: fromBeginning)
-        case .unresolved(let id, let fromBeginning): await vm.start(itemID: id, fromBeginning: fromBeginning)
-        case .smb: break   // handled above
         }
     }
 
-    /// The subtitle appearance the view model samples once, at asset construction. A
-    /// closure, not a value: `SubtitlePreferences` loads its persisted style
-    /// asynchronously, so a value read here could still be the pre-load default.
-    private var subtitleStyleProvider: @MainActor () -> SubtitleStyle {
-        { [subtitlePrefs] in subtitlePrefs.style }
-    }
-
-    /// The measured surface for the same sampling — nil until the floor's geometry has
-    /// landed, which normally beats the resolve it races.
-    private var playerSurfaceProvider: @MainActor () -> CGSize? {
-        { [size = $surfaceSize] in size.wrappedValue == .zero ? nil : size.wrappedValue }
-    }
-
-    /// Publish the session's view model AND hand the presenter its exit sequence, so the
-    /// dismissals that never reach `exitPlayer()` (the tvOS cover dismissing itself, a
-    /// server switch, the debug lab) still fence and end audio instead of playing on
-    /// through the slide-out. Weak: the presenter outlives every session.
-    private func install(_ vm: PlayerViewModel) {
-        viewModel = vm
-        playback.exitHandler = { [weak vm] in vm?.beginExit() }
+    /// The measured surface and the overlay's cue size on it, sampled once at asset
+    /// construction. The default surface stands in until the floor's geometry has landed, which
+    /// normally beats the resolve it races.
+    private var subtitleSurfaceProvider: @MainActor () -> SubtitleSurface {
+        { [size = $surfaceSize] in
+            let surface = size.wrappedValue == .zero ? PlayerMetrics.defaultSurface : size.wrappedValue
+            return SubtitleSurface(size: surface, cueSize: PlayerMetrics.forSurface(surface).subtitleFontSize)
+        }
     }
 
     /// Everything above the player's black floor — video host, veils, HUD, and

@@ -1,22 +1,5 @@
 import SwiftUI
-
-/// The span a committed-but-unlanded seek covers, as the two 0...1 track fractions the
-/// playhead jumped between: `from` is where the bar sat when the commit landed (A), `to` is
-/// the committed target (B). The sign of `to - from` IS the seek's direction, and a re-scrub
-/// mid-flight yields a fresh pair anchored at wherever the bar had got to — so the pair alone
-/// describes the whole animation. Built by `PlayerViewModel.seekSpan` off the live `SeekFlight`,
-/// which carries the identity these fractions deliberately don't.
-///
-/// Doubles as the drag's live span (concrete → virtual), which is the same shape of fact:
-/// two fractions and the direction between them.
-struct SeekDelta: Equatable {
-    var from: Double
-    var to: Double
-
-    var isForward: Bool { to >= from }
-    var lower: Double { min(from, to) }
-    var upper: Double { max(from, to) }
-}
+import ParallaxFeatures
 
 extension EnvironmentValues {
     /// Pins the scrub indicators into one renderable state, bypassing the pulse's arming

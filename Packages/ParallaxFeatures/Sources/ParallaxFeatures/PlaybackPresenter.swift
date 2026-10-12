@@ -1,0 +1,149 @@
+import Foundation
+import Observation
+import ParallaxJellyfin
+import ParallaxCore
+
+/// App-level "play this item now" coordinator. Every play intent — episode taps
+/// (Home, Search, a library grid, a season's episode list) and the detail pages'
+/// Play buttons — lands here, and ONE root-level host presents the player (see
+/// `RootView`): an overlay layer on iOS, a `fullScreenCover` on tvOS. Playback
+/// is never tied to a tab's navigation stack, and on iOS the app's live UI stays
+/// genuinely underneath the player — that's what the pull-to-dismiss reveals.
+@Observable
+@MainActor
+public final class PlaybackPresenter {
+    public struct Request: Identifiable {
+        public enum Target {
+            /// Detail already in hand (a detail page's Play button) — no refetch.
+            /// Carries its Jellyfin `Session`; SMB has none (`.smb` below).
+            /// `fromBeginning` is the explicit restart intent (the context menu's
+            /// "Play from Beginning" — Task 4): true skips any saved resume position.
+            case detail(ItemDetail, Session, fromBeginning: Bool)
+            /// Play by id — the player resolves it under its loading veil. Carries
+            /// the Jellyfin `Session` it resolves against and the same restart intent.
+            case itemID(ItemID, Session, fromBeginning: Bool)
+            /// Play a browsed SMB file — the player resolves the `SMBPlaybackItem`
+            /// (Keychain + sidecar subs) under its loading veil, no `Session` involved.
+            /// No restart intent: SMB tracks no server-side resume state.
+            case smb(Item, SMBServerRef)
+        }
+
+        public let id = UUID()
+        public let target: Target
+    }
+
+    public private(set) var request: Request?
+
+    /// How many presented players have been closed. Moves once per `dismiss()`, so a screen that
+    /// re-pulls progress after watching observes one edge instead of catching both edges of
+    /// `request`, which coalesce away when a play and its dismissal land close together.
+    public private(set) var closedSessions = 0
+
+    /// The live session's exit hand-off (`PlayerViewModel.beginExit`), registered by
+    /// `PlayerView` while a player is up and invoked by `dismiss()`.
+    ///
+    /// Not every dismissal goes through the player's own close button: the tvOS cover
+    /// dismisses itself through its item binding, a server switch closes the player from
+    /// `AppModel`, and the debug lab dismisses from a script. Those paths used to drop
+    /// straight into the slide-out with the engine still running, so audio played on for
+    /// the whole animation: exactly the bug `endAudio()` fixes for the close button.
+    /// Routing the hand-off through here means the presenter is the one place that has to
+    /// know.
+    ///
+    /// Weak-captured at the registration site: the presenter outlives every session.
+    /// `@ObservationIgnored` because it is a wire, not state; no view reads it.
+    @ObservationIgnored public var exitHandler: (@MainActor () -> Void)?
+
+    /// True while the player owns the screen — presented OR still sliding out during the
+    /// teardown grace. The iOS overlay leaves the live UI mounted and tappable underneath
+    /// for the whole slide-out (see `isTearingDown`), so anything that must stay inert
+    /// beneath the player (e.g. RootView disabling the tab host so the iPad sidebar
+    /// gesture can't steal taps) has to gate on THIS, not the raw `request` — which clears
+    /// the instant dismiss begins, re-arming those gestures mid-dismissal.
+    public var isPlayerPresent: Bool { request != nil || isTearingDown }
+
+    /// True while a dismissed player's removal transition is still on screen.
+    /// On iOS the outgoing PlayerView stays mounted (engine tearing down, audio
+    /// session deactivating) for the whole slide-out, and the live UI underneath
+    /// is already tappable — so without this latch a play() in that window would
+    /// mount a SECOND player whose audio the first one's async deactivate() then
+    /// kills. The cover used to absorb those taps for free; the overlay must not
+    /// accept them either.
+    private var isTearingDown = false
+
+    /// A play that arrived during the teardown grace. The underlying UI is
+    /// already live while the old player slides out, so a tap there is a
+    /// deliberate next pick, not a stray touch — dropping it read as a dead
+    /// button. Held (latest wins) and presented once the grace expires.
+    private var pendingRequest: Request?
+
+    /// Latch hold: the host's dismiss spring (0.45s) plus teardown headroom.
+    /// Injectable (tests pass .zero) — `.zero` disables the latch. Pure state
+    /// here: the present/dismiss ANIMATION is `PlayerPresentationHost`'s
+    /// business — this class never knows how the player moves.
+    private let teardownGrace: Duration
+    private let clock: any Clock<Duration>
+
+    public init(teardownGrace: Duration = .milliseconds(600), clock: any Clock<Duration> = ContinuousClock()) {
+        self.teardownGrace = teardownGrace
+        self.clock = clock
+    }
+
+    /// `fromBeginning` defaults false so every existing tap-to-resume call site is
+    /// unaffected — only the context menu's "Play from Beginning" (Task 4) passes true.
+    public func play(_ itemID: ItemID, in session: Session, fromBeginning: Bool = false) {
+        present(.init(target: .itemID(itemID, session, fromBeginning: fromBeginning)))
+    }
+
+    /// Play an already-loaded detail (e.g. the movie detail's Play button).
+    /// `fromBeginning` — see `play(_ itemID:in:fromBeginning:)`.
+    public func play(_ detail: ItemDetail, in session: Session, fromBeginning: Bool = false) {
+        present(.init(target: .detail(detail, session, fromBeginning: fromBeginning)))
+    }
+
+    /// Play a browsed SMB file. The player resolves the `SMBPlaybackItem` under its
+    /// loading veil (via `AppServices.smbPlaybackResolver`), so a resolution
+    /// failure lands on the failure scrim like the Jellyfin id path.
+    public func playSMB(_ item: Item, ref: SMBServerRef) {
+        present(.init(target: .smb(item, ref)))
+    }
+
+    public func dismiss() {
+        guard request != nil else { return }
+        // Fence + end audio BEFORE the request clears: clearing it is what starts the
+        // slide-out, and audio must already be gone by then. Consumed here so a second
+        // dismiss (the tvOS cover's binding firing after the close button's) can't call
+        // into a session that's already handed off (`beginExit()` is idempotent anyway).
+        exitHandler?()
+        exitHandler = nil
+        request = nil
+        closedSessions += 1
+        guard teardownGrace > .zero else { return }
+        isTearingDown = true
+        Task { [weak self, teardownGrace, clock] in
+            try? await clock.sleep(for: teardownGrace)
+            guard let self else { return }
+            self.isTearingDown = false
+            if let pending = self.pendingRequest {
+                self.pendingRequest = nil
+                self.present(pending)
+            }
+        }
+    }
+
+    private func present(_ new: Request) {
+        // Ignore a play() while a player is already presented — a fresh
+        // Request.id would tear it down and re-present (flicker + duplicate
+        // stop). That can only come from a tap race; drop it, like the old
+        // cover dropped mid-dismissal touches.
+        guard request == nil else { return }
+        // During the slide-out the engine is still tearing down — mounting a
+        // second player now would have its audio killed by the first one's
+        // async deactivate(). Hold the pick and present it after the grace.
+        guard !isTearingDown else {
+            pendingRequest = new
+            return
+        }
+        request = new
+    }
+}

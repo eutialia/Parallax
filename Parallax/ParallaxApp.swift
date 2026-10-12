@@ -9,6 +9,7 @@ import SwiftUI
 import os
 import AVFoundation
 import ParallaxCore
+import ParallaxFeatures
 import ParallaxJellyfin
 import ParallaxFileBrowse
 import ParallaxPlayback
@@ -22,26 +23,11 @@ struct ParallaxApp: App {
     @UIApplicationDelegateAdaptor(OrientationAppDelegate.self) private var orientationDelegate
     #endif
 
+    @State private var app: AppModel
     @State private var dependencies: AppDependencies
-    @State private var router: AppRouter = .init()
-    @State private var playback: PlaybackPresenter = .init()
-    /// App-wide favorite/played mutations + change broadcast. Injected here so any surface
-    /// (detail pages, and — next wave — long-press menus) mutates through one guarded service
-    /// and every screen showing the item can reflect the result. See `UserDataActions`.
-    @State private var userDataActions: UserDataActions = .init()
-    @State private var launchGate: LaunchGate
-    /// App-wide network reachability. Views stuck on an error subscribe via
-    /// `.recoversFromOffline` and auto-reload when this flips back online.
-    @State private var connectivity: ConnectivityMonitor = .init()
-    /// App-wide subtitle appearance. Read by the player overlay (`SubtitleOverlayView`)
-    /// and edited from Settings; overlay-only, so it never touches engine-native tracks.
-    @State private var subtitlePreferences: SubtitlePreferences = .init()
     /// Whether the Subtitles menu is open — drives the floating preview "lights" overlay.
     @State private var subtitlePreview: SubtitlePreviewState = .init()
 
-    /// The dependencies have to exist before the launch gate can be built — the gate's
-    /// mode is decided from what's on disk — so both are constructed here rather than in
-    /// their property initializers.
     init() {
         // FIRST, before dependencies: the retained log has to be open before anything it might want
         // to record runs, and arming `CrashSentinel` early is the difference between a crash during
@@ -66,26 +52,9 @@ struct ParallaxApp: App {
         }
         SubtitleFontBundle.warmUp()
 
-        let dependencies = AppDependencies.live()
-        _dependencies = State(initialValue: dependencies)
-        _launchGate = State(initialValue: LaunchGate(playsStory: Self.playsLaunchStory(for: dependencies)))
-    }
-
-    /// Whether this process plays the launch story at all. The story exists to cover
-    /// a boot the user would otherwise sit through; when there's nothing to cover it
-    /// becomes a toll, so these launches show content immediately with no stage:
-    ///
-    /// - a cached Home feed means launch opens onto real content, and
-    /// - an SMB-only setup has no server bootstrap at all — shares are browsed on demand.
-    ///
-    /// Both probes are synchronous (a directory listing and a `UserDefaults` decode — no
-    /// Keychain, no network, no actor hop), which is what lets the decision happen before
-    /// the first frame. Anything else — first run, a fresh install, a setup whose cache was
-    /// dropped — plays the story, as does a post-sign-in `rearm()`.
-    private static func playsLaunchStory(for dependencies: AppDependencies) -> Bool {
-        if dependencies.snapshots.hasCachedHomeFeed { return false }
-        if ServerStore.persistedSetupIsSMBOnly() { return false }
-        return true
+        let app = AppModel(environment: .live())
+        _app = State(initialValue: app)
+        _dependencies = State(initialValue: AppDependencies(services: app.services))
     }
 
     var body: some Scene {
@@ -98,15 +67,16 @@ struct ParallaxApp: App {
         // Read the live style HERE — not only inside the window-overlay's escaping closure — so a style
         // change registers a dependency, re-renders this content, and pushes the update into the overlay
         // window in real time (otherwise the preview only refreshes on menu re-entry).
-        let previewStyle = subtitlePreferences.style
+        let previewStyle = app.subtitlePreferences.style
         return RootView()
+            .environment(app)
             .environment(dependencies)
-            .environment(router)
-            .environment(playback)
-            .environment(userDataActions)
-            .environment(launchGate)
-            .environment(connectivity)
-            .environment(subtitlePreferences)
+            .environment(app)
+            .environment(app.router)
+            .environment(app.playback)
+            .environment(app.userDataActions)
+            .environment(app.launchGate)
+            .environment(app.subtitlePreferences)
             .environment(subtitlePreview)
             // The subtitle-preview "lights" float above EVERYTHING and fade in while the Subtitles menu
             // is open — only the cue + dim/spotlight float, not the menu itself. iOS uses a passthrough
@@ -140,13 +110,9 @@ struct ParallaxApp: App {
             // Unconditional scene-phase record for the retained log — see the modifier for why the
             // per-screen refresh modifiers can't stand in for it.
             .recordsScenePhaseForDiagnostics()
+            .forwardsScenePhase(to: app.lifecycle)
             .task {
-                do {
-                    try await dependencies.serverStore.load()
-                } catch {
-                    ParallaxCore.Log.persistence.error("ServerStore.load failed: \(error.localizedDescription)")
-                }
-                router.updateForSources(await dependencies.serverStore.sourceSnapshot)
+                await app.bootstrap()
 
                 #if DEBUG
                 // Scripted sign-in for simulator screenshot runs (same family as
@@ -160,10 +126,7 @@ struct ParallaxApp: App {
                     let password = args.indices.contains(i + 3) && !args[i + 3].hasPrefix("-")
                         ? args[i + 3] : ""
                     do {
-                        _ = try await dependencies.sessionManager.signIn(
-                            server: serverURL, username: args[i + 2], password: password
-                        )
-                        router.updateForSources(await dependencies.serverStore.sourceSnapshot)
+                        try await app.signIn(server: serverURL, username: args[i + 2], password: password)
                     } catch {
                         ParallaxCore.Log.persistence.error("uiSignIn failed: \(error.localizedDescription)")
                     }
@@ -173,18 +136,16 @@ struct ParallaxApp: App {
                 // UI-free SMB playback session for autonomous debugging — see
                 // PlaybackLabRunner.
                 if let labRunner = PlaybackLabRunner.makeIfRequested(
-                    dependencies: dependencies, playback: playback
+                    dependencies: dependencies, playback: app.playback
                 ) {
                     await labRunner.run()
                 }
                 #endif
             }
-            // Republish network reachability into `connectivity` for the app's lifetime, and
-            // forward the Low Data Mode / constrained-path signal into the device profile
-            // builder so the next resolve clamps `maxBitrate` (see `DeviceProfileBuilder`). Its own
-            // `.task` because it never returns; it shares the view's cancellation. Drives
-            // `.recoversFromOffline` on views stuck in an error state.
-            .task { await connectivity.observe(reportingConstraintTo: dependencies.deviceProfileBuilder) }
+            // The app-lifetime flows: token rejections, the launch reveal following the route,
+            // closing the player on a server switch, reachability. Its own `.task` because it
+            // never returns; it shares the view's cancellation.
+            .task { await app.run() }
             // Rebuild the device profile on the next resolve whenever HDR eligibility changes
             // (display connect/disconnect, Low Power Mode, other system resource shifts).
             // `AVPlayer.eligibleForHDRPlayback` is dynamic and explicitly NOT KVO-observable;

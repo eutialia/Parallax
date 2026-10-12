@@ -1,5 +1,6 @@
 import SwiftUI
 import ParallaxJellyfin
+import ParallaxFeatures
 
 /// The Jellyfin sign-in form. Pushed as a screen on both paths now — from the logged-out Connect
 /// picker and from Settings' "Add Server" — so it owns its own view model and wears the shared
@@ -13,13 +14,12 @@ struct LoginView: View {
     /// a guess, and it must not overwrite the exact address the user asked to sign back into.
     var prefilledServerURL: String?
     /// Called after a successful sign-in. When nil (the logged-out Connect path) the view drives the
-    /// router itself; Settings' add-server flow passes a closure to refresh + pop.
+    /// router itself via the model; Settings' add-server flow passes a closure to refresh + pop.
     var onSignedIn: (() -> Void)?
 
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(AppDependencies.self) private var deps
-    @Environment(AppRouter.self) private var router
+    @Environment(AppModel.self) private var app
     @State private var viewModel: LoginViewModel?
     #if !os(tvOS)
     @State private var showPassword = false
@@ -35,50 +35,19 @@ struct LoginView: View {
         // under its "Jellyfin" nav title — re-showing the lockup here would double-brand the flow.
         SettingsScaffold(showsBrand: false) { signInBody }
         #if !os(tvOS)
-        .onAppear {
-            // Discovery runs only while this screen is visible. Triggers the iOS Local Network
-            // permission prompt here (not mid-library browse) and fills the server URL / LAN list
-            // below. Retries catch a late grant during the permission alert; stop() on disappear
-            // cancels in-flight passes once the user leaves sign-in.
-            deps.lanDiscovery.start(retries: 3, retryInterval: .seconds(2))
-        }
-        .onDisappear {
-            deps.lanDiscovery.stop()
-        }
         .onChange(of: scenePhase) { _, newPhase in
-            // iOS exposes no Local Network authorization API — rescan when the scene becomes active
-            // again (e.g. user tapped Allow then returned).
             guard newPhase == .active else { return }
-            deps.lanDiscovery.start()
+            viewModel?.rescanDiscovery()
         }
         #endif
         .task {
             if viewModel == nil {
-                viewModel = LoginViewModel(sessionManager: deps.sessionManager)
-            }
-            // Re-authenticating a known server: fill its address before anything else can. Both
-            // discovery paths below only write into an EMPTY field, so this claims it first.
-            if let prefilledServerURL, let vm = viewModel, vm.serverURLInput.isEmpty {
-                vm.serverURLInput = prefilledServerURL
+                viewModel = LoginViewModel(app: app, prefilledServerURL: prefilledServerURL, onSignedIn: onSignedIn)
             }
             #if !os(tvOS)
-            // Auto-fill the server URL from LAN discovery when the field is empty (most networks have
-            // a single Jellyfin server).
-            if let vm = viewModel, vm.serverURLInput.isEmpty,
-               let first = deps.lanDiscovery.discovered.first {
-                vm.serverURLInput = first.address.absoluteString
-            }
+            await viewModel?.discoverServers()
             #endif
         }
-        #if !os(tvOS)
-        // Discovery usually completes AFTER the view appears (it races the Local Network permission
-        // prompt), so fill the URL in when it lands.
-        .onChange(of: deps.lanDiscovery.discovered.first?.address) { _, address in
-            if let address, let vm = viewModel, vm.serverURLInput.isEmpty {
-                vm.serverURLInput = address.absoluteString
-            }
-        }
-        #endif
     }
 
     @ViewBuilder
@@ -89,11 +58,7 @@ struct LoginView: View {
                 case .password:
                     passwordBody(vm: vm)
                 case .quickConnect:
-                    QuickConnectView(
-                        serverURLInput: vm.serverURLInput,
-                        onSwitchToPassword: { vm.switchToPassword() },
-                        onSignedIn: { Task { await handleSuccess() } }
-                    )
+                    QuickConnectView(login: vm)
                 }
             }
             // Identity tied to the mode so the swap is a real insert/remove that the transition
@@ -126,9 +91,9 @@ struct LoginView: View {
 
             #if !os(tvOS)
             // LAN-discovered servers as a grouped section: tap to quick-fill the URL.
-            if !deps.lanDiscovery.discovered.isEmpty {
+            if !vm.discoveredServers.isEmpty {
                 SettingsGroup(title: "Discovered") {
-                    ForEach(deps.lanDiscovery.discovered) { server in
+                    ForEach(vm.discoveredServers) { server in
                         SettingsListRow(
                             systemImage: "wifi",
                             title: server.name,
@@ -193,7 +158,7 @@ struct LoginView: View {
             // Connect (solid primary) — needs a server and a username; passwordless Jellyfin
             // accounts are valid, so the password field is not part of the gate.
             Button {
-                Task { await submitSignIn(vm: vm) }
+                Task { await vm.submit() }
             } label: {
                 Text("Connect").formActionLabel(isWorking: vm.isWorking)
             }
@@ -228,10 +193,6 @@ struct LoginView: View {
         }
     }
 
-    private func submitSignIn(vm: LoginViewModel) async {
-        if await vm.signIn() { await handleSuccess() }
-    }
-
     #if !os(tvOS)
     /// The iOS return chain's submit on the last field — only fires a sign-in when the server and
     /// username are filled (the password is optional, see `canSubmitPassword`); an incomplete form is
@@ -241,7 +202,7 @@ struct LoginView: View {
         // `!vm.isWorking` too: the Button is disabled while signing in, but the keyboard bypasses it —
         // without this a fast double-submit spawns two concurrent signIn()s.
         guard vm.canSubmitPassword, !vm.isWorking else { return }
-        Task { await submitSignIn(vm: vm) }
+        Task { await vm.submit() }
     }
     #endif
 
@@ -257,18 +218,4 @@ struct LoginView: View {
         return Text(prompt)
     }
     #endif
-
-    private func handleSuccess() async {
-        if let onSignedIn {
-            // Settings add-server flow: the caller refreshes its list, re-points the router, and pops
-            // this view off the settings stack.
-            onSignedIn()
-        } else {
-            // First sign-in (logged-out Connect): set destination AND activeServerID together. The
-            // per-source tasks (Home/Library/Search/RootTabView) are gated on the router's source
-            // state, so routing through `updateForSources` is what actually lets them fetch — setting
-            // only `destination` would strand every tab on its loading skeleton.
-            router.updateForSources(await deps.serverStore.sourceSnapshot)
-        }
-    }
 }

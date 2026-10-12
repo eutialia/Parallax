@@ -3,6 +3,7 @@ import Testing
 import JellyfinAPI
 import ParallaxCore
 @testable import ParallaxJellyfin
+import ParallaxJellyfinTestSupport
 
 @Suite("DefaultJellyfinPlaybackClient — URL construction")
 struct DefaultJellyfinPlaybackClientTests {

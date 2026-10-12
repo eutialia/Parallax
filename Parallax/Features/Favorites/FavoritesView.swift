@@ -1,6 +1,7 @@
 import SwiftUI
 import ParallaxCore
 import ParallaxJellyfin
+import ParallaxFeatures
 
 /// `FavoritesView.body`'s branch discriminator — see `crossfadeStateSwap`.
 private enum FavoritesContentPhase: Hashable {
@@ -22,9 +23,8 @@ private enum FavoritesContentPhase: Hashable {
 /// sort restarts partway down, so it has to be present whenever it's true, not only when it's
 /// crowded.
 struct FavoritesView: View {
-    @Environment(AppDependencies.self) private var deps
+    @Environment(AppModel.self) private var app
     @Environment(AppRouter.self) private var router
-    @Environment(UserDataActions.self) private var userDataActions
     @Environment(\.appIdiom) private var idiom
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -49,18 +49,7 @@ struct FavoritesView: View {
             .screenFloor()
             // Re-fired when the source set changes, so signing into a second server adds its
             // section without a relaunch — the same token both navigation roots key on.
-            .task(id: router.libraryReloadToken) {
-                await viewModel.load(
-                    sessions: await deps.serverStore.sessions,
-                    repoFactory: deps.mediaRepoFactory,
-                    userDataActions: userDataActions
-                )
-            }
-            // Repair only the sections that failed when the network returns; the servers already on
-            // screen are never re-pulled.
-            .recoversFromOffline(isStalled: !viewModel.failedSections.isEmpty) {
-                await viewModel.reloadFailedSections()
-            }
+            .task(id: router.libraryReloadToken) { await viewModel.load(from: app) }
     }
 
     private var contentPhase: FavoritesContentPhase {

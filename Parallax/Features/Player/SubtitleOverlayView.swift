@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import CoreMedia
+import ParallaxFeatures
 import ParallaxPlayback
 import ParallaxSubtitles
 
