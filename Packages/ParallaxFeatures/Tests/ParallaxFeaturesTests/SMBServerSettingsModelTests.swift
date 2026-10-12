@@ -41,7 +41,7 @@ private let shareReconciliationCases: [ShareReconciliationCase] = [
     ),
 ]
 
-@Suite("SMB server settings · share reconciliation")
+@Suite("SMB server settings · share reconciliation", .timeLimit(.minutes(1)))
 @MainActor
 struct SMBServerSettingsModelTests {
     @Test(
@@ -112,7 +112,7 @@ private let shareFocusCases: [ShareFocusCase] = [
 /// The tvOS focus relocation is not decoration: while the shares load, "Remove Server" is the
 /// screen's ONLY focusable row, so focus parks at the bottom and everything that appears above it
 /// inherits nothing (DOWN is a dead press). These pin which row each settled state hands focus to.
-@Suite("SMB server settings · focus targets")
+@Suite("SMB server settings · focus targets", .timeLimit(.minutes(1)))
 @MainActor
 struct SMBServerSettingsFocusTests {
     @Test("each settled load state maps to exactly one focus landing", arguments: shareFocusCases)

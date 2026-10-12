@@ -57,7 +57,7 @@ private let deliveryShapes = [
                       transcodeReasons: ["VideoCodecNotSupported"]),
 ]
 
-@Suite("PlayerViewModel integration")
+@Suite("PlayerViewModel integration", .timeLimit(.minutes(1)))
 @MainActor
 struct PlayerViewModelTests {
     @Test("resolves, selects .avKit, loads + plays, maps states, emits beats in order")
@@ -1740,15 +1740,15 @@ struct PlayerViewModelTests {
         let engine = engines.live
         // The switch's re-resolve parks in the gate, which is what keeps `isMidSessionReload`
         // up while the scrub commits underneath it — the race, held open.
-        await gate.arm()
         let audio = try #require(vm.availableAudioTracks.first { $0 != vm.selectedAudioTrack })
-        let switching = Task { @MainActor in await vm.selectAudioTrack(audio) }
-        try await requireEventually({ vm.isMidSessionReload }, "the switch never reached the reload")
+        let switching = try await startReload(gate, on: vm, "the switch never reached the reload") {
+            await vm.selectAudioTrack(audio)
+        }
 
         await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
         #expect(vm.seekHold != nil, "the queued target lost the hold that shows it")
 
-        await gate.open()
+        gate.open()
         await switching.value
 
         // Two reloads out of one window: the switch at the live position, then the merged
@@ -4715,7 +4715,7 @@ struct PlayerViewModelTests {
     /// and asserting it through the live `MPNowPlayingInfoCenter` made them answerable by
     /// whatever else had touched the singleton. The controller's own cases, for which the info
     /// center IS the subject, stay app-hosted (`NowPlayingControllerTests`).
-    @Suite("NowPlaying")
+    @Suite("NowPlaying", .timeLimit(.minutes(1)))
     @MainActor
     struct NowPlayingTests {
         @Test("PlayerViewModel publishes title/elapsed/rate to Now Playing on .playing")
@@ -4773,7 +4773,7 @@ struct PlayerViewModelTests {
     /// `PlayerViewModel.scheduleThumbnailBackfill()`. These tests drive the seam directly
     /// (never a real `MediaArtworkProvider`) with a short injected `backfillDelay` so nothing
     /// here waits wall-clock seconds for the real 8s default.
-    @Suite("SMB thumbnail backfill")
+    @Suite("SMB thumbnail backfill", .timeLimit(.minutes(1)))
     @MainActor
     struct SMBThumbnailBackfillTests {
         /// The backfill's delay runs on this; nothing else parks on an SMB session's clock.
@@ -4790,22 +4790,32 @@ struct PlayerViewModelTests {
         /// the injected `captureFrame`. Actor-isolated: the VM calls in from its own low-priority
         /// backfill `Task`, off the MainActor test body.
         private actor BackfillRecorder {
-            private(set) var invocations: [(duration: Duration?, performsIO: Bool, data: Data?)] = []
+            typealias Invocation = (duration: Duration?, performsIO: Bool, data: Data?)
+
+            private(set) var invocations: [Invocation] = []
+            private var awaitingFirst: [CheckedContinuation<Invocation, Never>] = []
 
             func record(duration: Duration?, performsIO: Bool, data: Data?) {
                 invocations.append((duration, performsIO, data))
+                awaitingFirst.forEach { $0.resume(returning: invocations[0]) }
+                awaitingFirst = []
+            }
+
+            /// The first invocation, whenever it lands. No ceiling of its own: the backfill runs
+            /// on a low-priority task that a loaded machine can starve for seconds, and the
+            /// suite's time limit is the anti-hang bound.
+            func first() async -> Invocation {
+                if let first = invocations.first { return first }
+                return await withCheckedContinuation { awaitingFirst.append($0) }
             }
         }
 
-        /// Polls until `recorder` has at least one invocation or `timeout` passes. The backfill
-        /// fires from a detached `Task` the beat handler never awaits, so `engine.settle()` alone
-        /// only proves the beat was consumed — not that the (short, injected) delay has elapsed.
-        /// Used by the negative cases too: it returns the INSTANT anything is recorded, so a
-        /// regression reports immediately instead of riding out a fixed sleep. The ceiling is an
-        /// anti-hang bound, so it scales for oversubscribed CI runners.
+        /// The negative cases' window: polls until `recorder` has an invocation or `timeout`
+        /// passes, so a regression reports the instant it records instead of riding out a fixed
+        /// sleep. A case that expects a backfill awaits `BackfillRecorder.first()` instead.
         private func waitForBackfill(
             _ recorder: BackfillRecorder,
-            timeout: Duration = CITimeScale.seconds(2)
+            timeout: Duration
         ) async {
             let deadline = ContinuousClock.now.advanced(by: timeout)
             while await recorder.invocations.isEmpty, ContinuousClock.now < deadline {
@@ -4890,7 +4900,7 @@ struct PlayerViewModelTests {
             try await engine.settle()
 
             await runOutBackfillDelay()
-            await waitForBackfill(recorder)
+            _ = await recorder.first()
 
             let invocations = await recorder.invocations
             #expect(invocations.count == 1)
@@ -4912,9 +4922,8 @@ struct PlayerViewModelTests {
             try await engine.settle()
 
             await runOutBackfillDelay()
-            await waitForBackfill(recorder)
 
-            #expect(await recorder.invocations.first?.data == frame)
+            #expect(await recorder.first().data == frame)
             #expect(engine.calls.contains("captureFrame"))
         }
 
@@ -4989,9 +4998,8 @@ struct PlayerViewModelTests {
             try await engine.settle()
 
             await runOutBackfillDelay()
-            await waitForBackfill(recorder)
 
-            #expect(await recorder.invocations.first?.duration == nil)
+            #expect(await recorder.first().duration == nil)
         }
     }
 }
@@ -5000,7 +5008,7 @@ struct PlayerViewModelTests {
 /// has a sidecar URL, so we fetch and draw it ourselves; an image stream has none, so
 /// the only thing that can draw it locally is the engine — and blinding the engine
 /// (`:no-spu`) to protect the sidecars would silently cost the user those tracks.
-@Suite("PlayerViewModel — direct-play subtitle ownership")
+@Suite("PlayerViewModel — direct-play subtitle ownership", .timeLimit(.minutes(1)))
 @MainActor
 struct DirectPlaySubtitleOwnershipTests {
 
@@ -5173,7 +5181,7 @@ struct DirectPlaySubtitleOwnershipTests {
 /// ffmpeg on first request), and the panel the pick was made from closes on the same
 /// turn as the tap. So the affordance is armed SYNCHRONOUSLY, by its own method, and
 /// these tests call it exactly the way the view does — with no `await` in sight.
-@Suite("PlayerViewModel — sidecar fetch indicator")
+@Suite("PlayerViewModel — sidecar fetch indicator", .timeLimit(.minutes(1)))
 @MainActor
 struct SidecarFetchIndicatorTests {
 
@@ -5327,7 +5335,7 @@ struct SidecarFetchIndicatorTests {
 /// The subtitle-delay nudge is the USER's intent for an ITEM; the engine's copy is
 /// scoped to the input `load()` just replaced. So the view model holds it and re-pushes
 /// it, and an episode change starts level.
-@Suite("PlayerViewModel — subtitle delay ownership")
+@Suite("PlayerViewModel — subtitle delay ownership", .timeLimit(.minutes(1)))
 @MainActor
 struct SubtitleDelayOwnershipTests {
 
@@ -5366,7 +5374,7 @@ struct SubtitleDelayOwnershipTests {
 /// The fetch is parked on a gate rather than raced against a sleep: "a slow fetch for the old
 /// item cannot paint the new one's bar" is a statement about ORDERING, and a timing-based
 /// version of it would pass on a fast runner for the wrong reason.
-@Suite("PlayerViewModel — artwork accent lifecycle")
+@Suite("PlayerViewModel — artwork accent lifecycle", .timeLimit(.minutes(1)))
 @MainActor
 struct PlayerAccentLifecycleTests {
 

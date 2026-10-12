@@ -32,7 +32,7 @@ private let connectGateCases: [ConnectGateCase] = [
     ConnectGateCase(name: "nothing at all", server: "", username: "", password: "", canSubmit: false),
 ]
 
-@Suite("Login view model · Connect gate")
+@Suite("Login view model · Connect gate", .timeLimit(.minutes(1)))
 @MainActor
 struct LoginViewModelTests {
     @Test("the Connect gate requires a server and a username — and nothing else", arguments: connectGateCases)
