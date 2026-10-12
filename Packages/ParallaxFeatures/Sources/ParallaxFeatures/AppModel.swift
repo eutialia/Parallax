@@ -213,9 +213,11 @@ public final class AppModel {
     }
 
     /// Switching, adding or signing out a server closes any open player: its content belongs to
-    /// the previous server's session.
+    /// the previous server's session. With no server before, there is no previous session to
+    /// close. That case includes the launch restore, which this observer can see late, after a
+    /// player has already opened.
     private func closePlayerOnServerSwitch() async {
-        var previous: ServerID??
+        var previous: ServerID?
         for await activeServerID in Observations({ self.router.activeServerID }) {
             if let previous, previous != activeServerID { playback.dismiss() }
             previous = activeServerID
