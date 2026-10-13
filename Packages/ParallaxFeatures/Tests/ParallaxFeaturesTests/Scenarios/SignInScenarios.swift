@@ -63,7 +63,7 @@ struct SignInScenarios {
         try await world.until { quickConnect.uiState == .showingCode("100001") }
         #expect(world.app.router.destination == .login)
 
-        await world.clock.waitForSleepers()
+        try await world.clock.waitForSleep(dueIn: .seconds(5))
         den.approveQuickConnect(code: "100001", as: "ana")
         world.clock.advance(by: .seconds(5))
         await pairing.value

@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import Observation
 import CoreMedia
 import Synchronization
 import ParallaxCoreTestSupport
@@ -72,6 +73,7 @@ final class SpyNowPlaying: NowPlayingUpdating {
 /// engine's id against the requested one, so a mis-tagged single instance reads as an engine
 /// change and the test then asserts against one object replaying two sessions' calls. Here a
 /// rebuild is simply a second entry.
+@Observable
 @MainActor
 final class EngineLedger {
     private(set) var engines: [FakePlaybackEngine] = []
@@ -701,7 +703,7 @@ func landDeliveryProbe(
     on clock: TestClock,
     sourceLocation: SourceLocation = #_sourceLocation
 ) async throws {
-    await clock.waitForSleepers(2)
+    try await clock.waitForSleep(dueIn: SessionDiagnostics.deliveryProbeSchedule[0])
     clock.advance(by: SessionDiagnostics.deliveryProbeSchedule[0])
     try await requireEventually({ vm.transcodeDelivery != nil }, "the delivery probe never landed",
                                 sourceLocation: sourceLocation)

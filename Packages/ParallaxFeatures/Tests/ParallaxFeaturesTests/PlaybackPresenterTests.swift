@@ -35,7 +35,7 @@ struct PlaybackPresenterTests {
     @Test("play sets a request whose target carries the item, the session, and the restart intent",
           arguments: [PlayTargetKind.itemID, .detail], [false, true])
     fileprivate func playSetsRequest(kind: PlayTargetKind, fromBeginning: Bool) throws {
-        let presenter = PlaybackPresenter()
+        let presenter = PlaybackPresenter(clock: TestClock())
         #expect(presenter.request == nil)
         let s = session()
         let itemID = ItemID(rawValue: "ep-1")
@@ -61,7 +61,7 @@ struct PlaybackPresenterTests {
 
     @Test("playSMB sets a .smb target carrying the item + ref (no Jellyfin session)")
     func playSMBSetsSMBTarget() {
-        let presenter = PlaybackPresenter()
+        let presenter = PlaybackPresenter(clock: TestClock())
         #expect(presenter.request == nil)
         let item = Item.movie(LibraryFixtures.movie(id: "Media:Movies/Example.mkv", title: "Example"))
         let ref = makeSMBRef()
@@ -76,7 +76,7 @@ struct PlaybackPresenterTests {
 
     @Test("a second play while presented is dropped (no flicker re-present)")
     func secondPlayDropped() {
-        let presenter = PlaybackPresenter()
+        let presenter = PlaybackPresenter(clock: TestClock())
         let s = session()
         presenter.play(ItemID(rawValue: "ep-1"), in: s)
         let first = presenter.request?.id
@@ -93,7 +93,7 @@ struct PlaybackPresenterTests {
     func dismissClearsRequest() {
         // .zero grace: skip the teardown latch — this test is about the clear,
         // not the transition window.
-        let presenter = PlaybackPresenter(teardownGrace: .zero)
+        let presenter = PlaybackPresenter(teardownGrace: .zero, clock: TestClock())
         let s = session()
         presenter.play(ItemID(rawValue: "ep-1"), in: s)
         presenter.dismiss()
@@ -112,7 +112,7 @@ struct PlaybackPresenterTests {
     /// would otherwise play through.
     @Test("dismiss runs the session's exit hand-off before clearing the request")
     func dismissRunsExitHandler() throws {
-        let presenter = PlaybackPresenter(teardownGrace: .zero)
+        let presenter = PlaybackPresenter(teardownGrace: .zero, clock: TestClock())
         let probe = ExitProbe()
         presenter.play(ItemID(rawValue: "ep-1"), in: session())
         presenter.setExitHandler(for: try #require(presenter.request).id) { [weak presenter] in
@@ -128,7 +128,7 @@ struct PlaybackPresenterTests {
     /// dismisses right behind it; the second must not call into a handed-off session.
     @Test("the exit hand-off is consumed by the first dismiss")
     func exitHandlerIsConsumed() throws {
-        let presenter = PlaybackPresenter(teardownGrace: .zero)
+        let presenter = PlaybackPresenter(teardownGrace: .zero, clock: TestClock())
         let s = session()
         let probe = ExitProbe()
         presenter.play(ItemID(rawValue: "ep-1"), in: s)
@@ -143,7 +143,7 @@ struct PlaybackPresenterTests {
     /// must not take over the newer player's exit.
     @Test("an exit registered for a request no longer presented never runs, and leaves the current one in place")
     func staleExitHandlerIsIgnored() throws {
-        let presenter = PlaybackPresenter(teardownGrace: .zero)
+        let presenter = PlaybackPresenter(teardownGrace: .zero, clock: TestClock())
         let s = session()
         let stale = ExitProbe()
         let live = ExitProbe()
@@ -171,7 +171,7 @@ struct PlaybackPresenterTests {
         presenter.play(ItemID(rawValue: "ep-3"), in: s)
         // Held, not mounted, while the outgoing player is still tearing down.
         #expect(presenter.request == nil)
-        await clock.waitForSleepers()
+        try await clock.waitForSleep(dueIn: .milliseconds(20))
         clock.advance(by: .milliseconds(20))
         try await pollUntil { presenter.request != nil }
         guard case .itemID(let id, _, _) = presenter.request?.target else {

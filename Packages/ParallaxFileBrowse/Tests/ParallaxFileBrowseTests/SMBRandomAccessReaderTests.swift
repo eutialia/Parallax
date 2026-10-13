@@ -1,4 +1,5 @@
 import Foundation
+import ParallaxCoreTestSupport
 import Testing
 @testable import ParallaxFileBrowse
 import ParallaxFileBrowseTestSupport
@@ -34,7 +35,7 @@ struct SMBRandomAccessReaderTests {
 
     @Test("read serves the requested slice and asks the share for exactly that range")
     func readServesRequestedRange() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let reader = makeReader(world: world)
 
         let data = try await reader.read(offset: 100, length: 32)
@@ -46,7 +47,7 @@ struct SMBRandomAccessReaderTests {
 
     @Test("a read past EOF returns the available prefix (POSIX pread), not an error")
     func readPastEOFReturnsPrefix() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let reader = makeReader(world: world)
 
         let tail = try await reader.read(offset: UInt64(Self.fixture.count) - 10, length: 4_096)
@@ -62,7 +63,7 @@ struct SMBRandomAccessReaderTests {
     @Test("an offset within `length` of UInt64.max clamps instead of trapping",
           arguments: [UInt64.max - 2, UInt64.max - 1, UInt64.max])
     func readNearUInt64MaxSaturates(_ offset: UInt64) async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let reader = makeReader(world: world)
 
         let data = try await reader.read(offset: offset, length: 4_096)
@@ -73,7 +74,7 @@ struct SMBRandomAccessReaderTests {
 
     @Test("a non-positive length short-circuits without borrowing a connection", arguments: [0, -1])
     func nonPositiveLengthNeverBorrows(_ length: Int) async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let reader = makeReader(world: world)
 
         let data = try await reader.read(offset: 0, length: length)
@@ -89,7 +90,7 @@ struct SMBRandomAccessReaderTests {
     @Test("a read that fails with ENODATA or ERANGE throws, flags a transport fault, and discards the borrow",
           arguments: [POSIXErrorCode.ENODATA, .ERANGE])
     func eofShapedPOSIXErrorIsARealFailure(_ code: POSIXErrorCode) async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world)
         let reader = makeReader(world: world, pool: pool)
         world.setReadOutcome(.fails(POSIXError(code)))
@@ -107,7 +108,7 @@ struct SMBRandomAccessReaderTests {
 
     @Test("fileSize is fetched once and cached — a second read costs no SMB round trip")
     func fileSizeIsCached() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let reader = makeReader(world: world)
 
         let first = try await reader.fileSize
@@ -123,7 +124,7 @@ struct SMBRandomAccessReaderTests {
     @Test("a missing or negative reported size clamps to zero",
           arguments: [(Int64?.none, UInt64(0)), (Int64(-1), UInt64(0)), (Int64(4_096), UInt64(4_096))])
     func fileSizeClampsToZero(_ reported: Int64?, _ expected: UInt64) async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let reader = makeReader(world: world)
         world.setFileSizeOutcome(.reports(reported))
 
@@ -133,7 +134,7 @@ struct SMBRandomAccessReaderTests {
 
     @Test("the borrowed connection's per-operation ceiling is re-pinned on checkout")
     func borrowPinsOperationTimeout() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let reader = makeReader(world: world, connectTimeout: 7)
 
         _ = try await reader.fileSize
@@ -149,7 +150,7 @@ struct SMBRandomAccessReaderTests {
     @Test("a connect-class failure flips hadTransportFault on both ops",
           arguments: [ReaderOp.read, .fileSize])
     func connectFailureMarksTransportFault(_ op: ReaderOp) async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let reader = makeReader(world: world)
         world.failConnects(with: innerTimeoutError)
 
@@ -181,7 +182,7 @@ struct SMBRandomAccessReaderTests {
 
     @Test("a non-transport read error leaves hadTransportFault false and still discards the borrow")
     func contentLevelReadDoesNotMarkTransportFault() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let reader = makeReader(world: world)
         // A plain Error has no POSIX code — content/decode shape, not a socket death.
         world.setReadOutcome(.fails(ReadFailure()))
@@ -203,7 +204,7 @@ struct SMBRandomAccessReaderTests {
     /// fire-and-forget-disconnects — same shape both app sites need.
     @Test("teardownCapturingTransportFault returns false on a clean reader and still tears it down")
     func teardownCapturesFalseOnCleanReader() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world)
         let reader = makeReader(world: world, pool: pool)
 
@@ -233,7 +234,7 @@ struct SMBRandomAccessReaderTests {
 
     @Test("teardownCapturingTransportFault returns prior transport evidence and discards the borrow")
     func teardownCapturesTrueAfterTransportFault() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world)
         let reader = makeReader(world: world, pool: pool)
         world.setReadOutcome(.fails(POSIXError(.ECONNRESET)))
@@ -255,7 +256,7 @@ struct SMBRandomAccessReaderTests {
     /// unwound, so it cannot set the flag itself.
     @Test("teardownCapturingTransportFault preserves earlier transport evidence across a later wedge")
     func teardownCapturesPriorFaultWhileNextOpIsWedged() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world)
         let reader = makeReader(world: world, pool: pool)
 
@@ -288,7 +289,7 @@ struct SMBRandomAccessReaderTests {
 
     @Test("a clean borrow is checked back into the pool and reused")
     func cleanBorrowIsCheckedIn() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world)
         let reader = makeReader(world: world, pool: pool)
 
@@ -303,7 +304,7 @@ struct SMBRandomAccessReaderTests {
 
     @Test("a borrow whose fileSize threw is discarded too")
     func thrownFileSizeDiscardsTheBorrow() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let reader = makeReader(world: world)
         world.setFileSizeOutcome(.fails(ReadFailure()))
 
@@ -336,7 +337,7 @@ struct SMBRandomAccessReaderTests {
     @Test("an op that hit AMSMB2's own reply timeout discards the borrow, never condemns it",
           arguments: [ReplyTimeoutCase.readThenDisconnect, .fileSizeThenDrain])
     func innerTimeoutDiscardsTheBorrow(_ scenario: ReplyTimeoutCase) async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world)
         let reader = makeReader(world: world, pool: pool)
 
@@ -362,7 +363,7 @@ struct SMBRandomAccessReaderTests {
     /// its borrow must be disqualified explicitly rather than becoming the next fetch's "warm" one.
     @Test("markUnreusable discards an otherwise clean borrow")
     func markUnreusableDiscardsACleanBorrow() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let reader = makeReader(world: world)
 
         _ = try await reader.read(offset: 0, length: 16)
@@ -377,7 +378,7 @@ struct SMBRandomAccessReaderTests {
 
     @Test("disconnect before any read leaves the pool untouched")
     func disconnectWithoutABorrowTouchesNothing() async {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let reader = makeReader(world: world)
 
         await reader.disconnect()
@@ -390,7 +391,7 @@ struct SMBRandomAccessReaderTests {
     /// lazily borrow a connection nothing would ever check back in.
     @Test("a read after disconnect throws CancellationError instead of re-borrowing")
     func readAfterDisconnectNeverBorrows() async {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let reader = makeReader(world: world)
 
         await reader.disconnect()
@@ -410,7 +411,7 @@ struct SMBRandomAccessReaderTests {
     /// there rather than leaked or discarded.
     @Test("a disconnect racing an in-flight checkout returns the connection to the pool")
     func disconnectDuringCheckoutReturnsTheConnection() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world)
         let reader = makeReader(world: world, pool: pool)
         await world.connectGate.close()
@@ -430,7 +431,7 @@ struct SMBRandomAccessReaderTests {
 
     @Test("fileSize keeps serving its cached value after disconnect")
     func cachedFileSizeSurvivesDisconnect() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let reader = makeReader(world: world)
 
         let size = try await reader.fileSize
@@ -444,7 +445,7 @@ struct SMBRandomAccessReaderTests {
 
     @Test("drainAndDisconnect with nothing borrowed is a no-op")
     func drainWithoutABorrowIsANoOp() async {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let reader = makeReader(world: world)
 
         await reader.drainAndDisconnect()
@@ -455,7 +456,7 @@ struct SMBRandomAccessReaderTests {
 
     @Test("drainAndDisconnect on a settled borrow checks it back in")
     func drainOnASettledBorrowChecksIn() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world)
         let reader = makeReader(world: world, pool: pool)
 
@@ -472,7 +473,7 @@ struct SMBRandomAccessReaderTests {
     /// instead of burning it.
     @Test("drainAndDisconnect waits for an in-flight read, then still checks the borrow in")
     func drainWaitsForAnInFlightRead() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world)
         let reader = makeReader(world: world, pool: pool)
 
@@ -498,7 +499,7 @@ struct SMBRandomAccessReaderTests {
     /// waits for the read to come back on its own.
     @Test("a read still wedged at the drain deadline is condemned instead of disconnected")
     func drainDeadlineCondemnsAWedgedBorrow() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world)
         // The drain wait is bounded by connectTimeout; a short one keeps the deadline path quick.
         let reader = makeReader(world: world, pool: pool, connectTimeout: 0.05)
@@ -531,7 +532,7 @@ struct SMBRandomAccessReaderTests {
     /// read is still in libsmb2's poll loop. That must condemn, not discard.
     @Test("disconnect with a read still in flight condemns the borrow")
     func disconnectWithAnInFlightReadCondemns() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world)
         let reader = makeReader(world: world, pool: pool)
 

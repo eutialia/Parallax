@@ -876,7 +876,7 @@ private struct SearchShell<Content: View>: View {
             }
         }
     }
-    .environment(PlaybackPresenter())
+    .environment(PlaybackPresenter(clock: ContinuousClock()))
 }
 
 /// The detail page's loaded shape, staged like `HeroBand`'s "floor clearance" previews: band,

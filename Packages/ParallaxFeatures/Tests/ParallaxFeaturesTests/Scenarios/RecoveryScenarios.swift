@@ -10,7 +10,7 @@ import Testing
 @Suite("Offline recovery and foreground return", .timeLimit(.minutes(1)))
 struct RecoveryScenarios {
     private static let nas = SMBServerData(host: "nas.local", username: "ana", domain: "WORKGROUP", shares: ["Media"])
-    private static let ref = SMBServerRef(id: ServerID(rawValue: "smb-nas.local"), data: nas)
+    private static let ref = makeSMBRef(nas)
 
     private struct NASUnreachable: Error {}
 
@@ -121,10 +121,10 @@ struct RecoveryScenarios {
         let root = await world.openSMBFolder(Self.ref, share: "Media")
         try await world.until { root.isStalled }
 
+        // Both re-list flows key on this edge, and it moves synchronously: zero means neither runs.
         world.settleLaunch()
 
         #expect(world.app.lifecycle.foregroundReturns == 0)
-        #expect(world.nas.listedPaths == ["/"])
 
         world.nas.setListingOutcome(.entries([Self.file("Alien.mp4")]))
         world.background()

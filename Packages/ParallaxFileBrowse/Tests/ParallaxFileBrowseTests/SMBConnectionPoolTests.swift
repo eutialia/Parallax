@@ -22,7 +22,7 @@ struct SMBConnectionPoolTests {
 
     @Test("a checked-in connection is reused for the same key — no second connect")
     func reusesWarmConnection() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world)
 
         let first = try await pool.checkout(fakeTarget())
@@ -35,7 +35,7 @@ struct SMBConnectionPoolTests {
 
     @Test("a changed password digest keys a fresh connection")
     func passwordDigestKeysFreshConnection() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world)
 
         let old = try await pool.checkout(fakeTarget(password: "old"))
@@ -49,7 +49,7 @@ struct SMBConnectionPoolTests {
 
     @Test("idle connections beyond the per-key cap are disconnected on checkin (oldest first)")
     func capEvictsOldestIdle() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world, maxIdlePerKey: 2)
 
         // Three simultaneous borrows → three cold connects (nothing idle to reuse).
@@ -78,7 +78,7 @@ struct SMBConnectionPoolTests {
 
     @Test("the reaper disconnects idle connections past the TTL, oldest first")
     func reapsIdlePastTTL() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world, idleTTL: .seconds(60))
 
         // Two idle entries, so the TTL sweep has something to drop without emptying the key.
@@ -88,7 +88,7 @@ struct SMBConnectionPoolTests {
         await pool.checkin(newer)
 
         world.clock.advance(by: .seconds(61))
-        await pool.reapIdle(asOf: world.clock.now())
+        await pool.reapIdle()
         await untilSettled { world.disconnectedIDs == [0] }
 
         #expect(world.disconnectedIDs == [0], "the older idle connection past the TTL must be reaped")
@@ -105,7 +105,7 @@ struct SMBConnectionPoolTests {
     /// same share.
     @Test("the reaper never drops a key's last warm connection, however long it has been idle")
     func reaperKeepsTheLastWarmConnection() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world, idleTTL: .seconds(60))
 
         let borrowed = try await pool.checkout(fakeTarget())
@@ -113,9 +113,9 @@ struct SMBConnectionPoolTests {
 
         // Far past the TTL, and swept repeatedly — the survivor is not merely granted one grace period.
         world.clock.advance(by: .seconds(3_600))
-        await pool.reapIdle(asOf: world.clock.now())
+        await pool.reapIdle()
         world.clock.advance(by: .seconds(3_600))
-        await pool.reapIdle(asOf: world.clock.now())
+        await pool.reapIdle()
 
         #expect(world.disconnectedIDs.isEmpty, "a key keeps one warm connection indefinitely")
         let reused = try await pool.checkout(fakeTarget())
@@ -127,7 +127,7 @@ struct SMBConnectionPoolTests {
     /// still not starve a different share of its survivor.
     @Test("each key keeps its own survivor")
     func eachKeyKeepsItsOwnSurvivor() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world, idleTTL: .seconds(60))
 
         let media = try await pool.checkout(fakeTarget(share: "Media"))
@@ -136,7 +136,7 @@ struct SMBConnectionPoolTests {
         await pool.checkin(backups)
 
         world.clock.advance(by: .seconds(120))
-        await pool.reapIdle(asOf: world.clock.now())
+        await pool.reapIdle()
 
         #expect(world.disconnectedIDs.isEmpty)
         #expect(await pool.idleCount == 2, "both keys kept their last connection")
@@ -146,7 +146,7 @@ struct SMBConnectionPoolTests {
     /// its disconnects must fan out rather than queue up behind each other.
     @Test("reap disconnects run concurrently, and never on the reaping caller's clock")
     func reapDisconnectsFanOut() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world, idleTTL: .seconds(60))
 
         // Three idle entries — borrowed simultaneously, or each checkin would just be reused by the
@@ -158,7 +158,7 @@ struct SMBConnectionPoolTests {
         world.clock.advance(by: .seconds(61))
         await world.teardownGate.close()
 
-        await pool.reapIdle(asOf: world.clock.now())
+        await pool.reapIdle()
 
         // The sweep returned without waiting for a single teardown to finish…
         #expect(world.disconnectedIDs.isEmpty, "the reaper never awaits a teardown")
@@ -176,7 +176,7 @@ struct SMBConnectionPoolTests {
     /// the libsmb2 use-after-free (76d6fcd) that pooling must never reintroduce.
     @Test("a checked-out connection is never disconnected while borrowed")
     func neverDisconnectsABorrowedConnection() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world, idleTTL: .seconds(60))
 
         let borrowed = try await pool.checkout(fakeTarget())   // conn 0, stays OUT
@@ -186,7 +186,7 @@ struct SMBConnectionPoolTests {
         await pool.checkin(spare)                              // conn 2 idle — the key's survivor
 
         world.clock.advance(by: .seconds(120))
-        await pool.reapIdle(asOf: world.clock.now())
+        await pool.reapIdle()
         await untilSettled { world.disconnectedIDs == [1] }
 
         #expect(world.disconnectedIDs == [1], "only the expired idle sibling is reaped")
@@ -202,7 +202,7 @@ struct SMBConnectionPoolTests {
     /// `flushIdle` must empty the whole map — every key, no last-warm carve-out.
     @Test("flushIdle empties idle entries across every key and disconnects them all")
     func flushIdleEmptiesEveryKey() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world)
         // Seeded BEFORE the flush so the doc comment's "link-class caches… untouched" promise has
         // something to survive.
@@ -226,7 +226,7 @@ struct SMBConnectionPoolTests {
     /// `flushIdle` must not touch it — the borrower can still check it back in cleanly.
     @Test("flushIdle never disconnects a borrowed connection")
     func flushIdleLeavesBorrowedUntouched() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world)
         // Seeded BEFORE the flush so the doc comment's "link-class caches… untouched" promise has
         // something to survive.
@@ -259,7 +259,7 @@ struct SMBConnectionPoolTests {
     /// exact dead socket the flush existed to remove.
     @Test("a borrow taken before flushIdle is disposed on checkin, never pooled")
     func checkinOfAPreFlushBorrowDisposesIt() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world)
 
         let preSleep = try await pool.checkout(fakeTarget())   // conn 0, still OUT across the flush
@@ -281,7 +281,7 @@ struct SMBConnectionPoolTests {
     /// afterwards is a live socket and pools normally.
     @Test("a borrow taken after flushIdle checks in normally")
     func checkinOfAPostFlushBorrowIdlesNormally() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world)
 
         await pool.flushIdle()
@@ -301,21 +301,19 @@ struct SMBConnectionPoolTests {
     /// else would reap them, since the opportunistic reaps only run on checkout/checkin.
     @Test("the scheduled sweep reaps a pool that went quiet")
     func scheduledSweepReapsAQuietPool() async throws {
-        let world = FakeSMBWorld()
-        let clock = TestClock()
+        let world = FakeSMBWorld(clock: TestClock())
         let interval = Duration.seconds(30)
-        let pool = makeFakePool(world: world, idleTTL: .seconds(60), sweepInterval: interval, clock: clock)
+        let pool = makeFakePool(world: world, idleTTL: .seconds(60), sweepInterval: interval)
 
         let borrowed = try await pool.checkout(fakeTarget())   // starts the sweep task
         let sibling = try await pool.checkout(fakeTarget())
         await pool.checkin(borrowed)
         await pool.checkin(sibling)                            // conn 1 is the key's survivor
-        world.clock.advance(by: .seconds(61))
 
         // No further pool traffic: only the scheduled sweep can tear this down.
-        try await clock.waitForSleep(dueIn: interval)
+        try await world.clock.waitForSleep(dueIn: interval)
         #expect(world.disconnectedIDs.isEmpty, "the sweep has not ticked yet")
-        clock.advance(by: interval)
+        world.clock.advance(by: .seconds(61))
 
         await untilSettled { !world.disconnectedIDs.isEmpty }
         #expect(world.disconnectedIDs == [0])
@@ -327,7 +325,7 @@ struct SMBConnectionPoolTests {
     /// connection to the idle list.
     @Test("a discarded borrow is disconnected and never reused")
     func discardTearsDownWithoutPooling() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world)
 
         let borrowed = try await pool.checkout(fakeTarget())
@@ -348,7 +346,7 @@ struct SMBConnectionPoolTests {
     /// condemned and why.
     @Test("a condemned borrow is parked untouched, then discarded on settle")
     func condemnParksThenDiscardsOnSettle() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world)
         let settlement = SMBOperationSettlement()
 
@@ -370,7 +368,7 @@ struct SMBConnectionPoolTests {
     /// graveyard — the release has to run inline on a condemn that arrives late.
     @Test("condemning an already-settled call releases immediately")
     func condemnAfterSettleReleasesImmediately() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world)
         let settlement = SMBOperationSettlement()
         settlement.markSettled()
@@ -388,7 +386,7 @@ struct SMBConnectionPoolTests {
     /// attaches, so every failure exit has something to dispose of properly.
     @Test("a connect that fails after building discards its half-built connection")
     func failedConnectDiscardsTheHalfBuiltConnection() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world)
         // The manager exists and the SHARE ATTACH is what failed — the production shape.
         world.failConnects(with: innerTimeoutError, afterBuilding: true)
@@ -407,7 +405,7 @@ struct SMBConnectionPoolTests {
     /// place would just hand the next borrow another one.
     @Test("requireFresh discards the key's idle connections instead of leaving them for the next borrow")
     func requireFreshPurgesTheKeysIdleConnections() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world)
 
         // Two idle connections for the key, plus one for a different key that must not be touched.
@@ -430,7 +428,7 @@ struct SMBConnectionPoolTests {
 
     @Test("linkClass is nil before any cold connect, then reflects cold-connect latency")
     func linkClassReflectsColdLatency() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world)
 
         #expect(await pool.linkClass(host: "lan") == nil)
@@ -446,7 +444,7 @@ struct SMBConnectionPoolTests {
 
     @Test("ensureLinkClass probes once (measuring + warming the pool) and skips once known")
     func ensureLinkClassProbesOnceAndWarms() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world)
         let target = fakeTarget(host: "lan")
         world.setLatency(Self.lanLatency, host: "lan")
@@ -464,7 +462,7 @@ struct SMBConnectionPoolTests {
 
     @Test("a warm reuse records no new link class")
     func warmReuseNeverReclassifies() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world)
 
         world.setLatency(Self.wanLatency, host: "host")
@@ -484,7 +482,7 @@ struct SMBConnectionPoolTests {
     /// of the session (narrowing the thumbnail admission window and disabling the AV backfill).
     @Test("one slow cold sample never demotes a LAN host; two consecutive ones do")
     func lanDemotionNeedsTwoConsecutiveSlowSamples() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world)
 
         world.setLatency(Self.lanLatency, host: "host")
@@ -513,7 +511,7 @@ struct SMBConnectionPoolTests {
     /// nothing about a stale `.wan` label is worth holding against it.
     @Test("a single fast cold sample promotes a WAN host immediately")
     func fastSamplePromotesImmediately() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world)
 
         world.setLatency(Self.wanLatency, host: "host")
@@ -529,7 +527,7 @@ struct SMBConnectionPoolTests {
     /// the memo, a fling through a fresh folder pays a full connect ceiling per batch.
     @Test("a failed probe returns nil and is memoised for the backoff window")
     func failedProbeIsMemoisedForTheBackoff() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world)
         let target = fakeTarget(host: "dead")
         world.failConnects(with: ConnectFailure())
@@ -562,16 +560,15 @@ struct SMBConnectionPoolTests {
     /// handed over instead.
     @Test("a cold connect that lost the hard-timeout race hands its orphan to the graveyard")
     func hardTimeoutOrphanReachesTheGraveyard() async throws {
-        let world = FakeSMBWorld()
-        let clock = TestClock()
+        let world = FakeSMBWorld(clock: TestClock())
         // The default 5 s connect timeout plus the 5 s grace.
         let ceiling = Duration.seconds(10)
-        let pool = makeFakePool(world: world, clock: clock)
+        let pool = makeFakePool(world: world)
         await world.connectGate.close()
 
         let checkout = Task { try await pool.checkout(fakeTarget()) }
-        try await clock.waitForSleep(dueIn: ceiling)
-        clock.advance(by: ceiling)
+        try await world.clock.waitForSleep(dueIn: ceiling)
+        world.clock.advance(by: ceiling)
 
         await #expect(throws: SMBListerError.timedOut) { _ = try await checkout.value }
         #expect(await pool.condemnedTotal == 0, "nothing exists to park yet — the connector is still hung")

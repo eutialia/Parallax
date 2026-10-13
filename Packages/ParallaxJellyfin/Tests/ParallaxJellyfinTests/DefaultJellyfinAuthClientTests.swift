@@ -2,6 +2,7 @@ import Foundation
 import Testing
 import JellyfinAPI
 import ParallaxCore
+import ParallaxCoreTestSupport
 @testable import ParallaxJellyfin
 import ParallaxJellyfinTestSupport
 
@@ -13,25 +14,39 @@ struct DefaultJellyfinAuthClientTests {
 
     private func makeClient(
         stub: StubHTTPTransport,
-        quickConnectPolling: QuickConnectPolling = .default
+        quickConnectPolling: QuickConnectPolling = .default,
+        clock: any Clock<Duration> = TestClock()
     ) -> DefaultJellyfinAuthClient {
         DefaultJellyfinAuthClient(
             serverURL: stub.baseURL,
             identity: JellyfinFixtures.identity(deviceID: "dev-1"),
             sessionConfiguration: stub.configuration,
-            quickConnectPolling: quickConnectPolling
+            quickConnectPolling: quickConnectPolling,
+            clock: clock
         )
     }
 
-    /// A budget with a negligible interval, so a test spends the polls instead of the wall clock.
-    private func fastPolling(maxPolls: Int) -> QuickConnectPolling {
-        QuickConnectPolling(interval: .milliseconds(1), maxPolls: maxPolls)
+    private static let pollInterval = Duration.seconds(5)
+
+    private func polling(maxPolls: Int) -> QuickConnectPolling {
+        QuickConnectPolling(interval: Self.pollInterval, maxPolls: maxPolls)
     }
 
-    private func quickConnectEvents(of client: DefaultJellyfinAuthClient) async throws -> [QuickConnect.Event] {
-        var collected: [QuickConnect.Event] = []
-        for try await event in client.quickConnectEvents() { collected.append(event) }
-        return collected
+    /// Collects the events while stepping the poll clock through `sleeps` waits, so the loop runs
+    /// on the test's schedule and never on real time.
+    private func quickConnectEvents(maxPolls: Int, sleeps: Int, stub: StubHTTPTransport) async throws -> [QuickConnect.Event] {
+        let clock = TestClock()
+        let client = makeClient(stub: stub, quickConnectPolling: polling(maxPolls: maxPolls), clock: clock)
+        let collecting = Task {
+            var collected: [QuickConnect.Event] = []
+            for try await event in client.quickConnectEvents() { collected.append(event) }
+            return collected
+        }
+        for _ in 0 ..< sleeps {
+            try await clock.waitForSleep(dueIn: Self.pollInterval)
+            clock.advance(by: Self.pollInterval)
+        }
+        return try await collecting.value
     }
 
     private func authResult(accessToken: String? = "tok-from-server") -> AuthenticationResult {
@@ -93,7 +108,7 @@ struct DefaultJellyfinAuthClientTests {
             .encoded(QuickConnectResult(isAuthenticated: true, secret: "approved-secret"))
         )
 
-        let events = try await quickConnectEvents(of: makeClient(stub: stub, quickConnectPolling: fastPolling(maxPolls: 5)))
+        let events = try await quickConnectEvents(maxPolls: 5, sleeps: 1, stub: stub)
 
         #expect(events == [.polling(code: "AB12"), .authenticated(secret: "approved-secret")])
         let exchanges = stub.exchanges
@@ -116,7 +131,7 @@ struct DefaultJellyfinAuthClientTests {
         stub.always(.encoded(QuickConnectResult(isAuthenticated: false)))
 
         let thrown = await #expect(throws: AppError.self) {
-            _ = try await self.quickConnectEvents(of: self.makeClient(stub: stub, quickConnectPolling: self.fastPolling(maxPolls: maxPolls)))
+            _ = try await self.quickConnectEvents(maxPolls: maxPolls, sleeps: maxPolls, stub: stub)
         }
 
         guard case .auth(let failure) = thrown else {
@@ -136,7 +151,7 @@ struct DefaultJellyfinAuthClientTests {
         stub.always(.json("{}"))
 
         let thrown = await #expect(throws: AppError.self) {
-            _ = try await self.quickConnectEvents(of: self.makeClient(stub: stub, quickConnectPolling: self.fastPolling(maxPolls: 3)))
+            _ = try await self.quickConnectEvents(maxPolls: 3, sleeps: 0, stub: stub)
         }
 
         guard case .unexpected = thrown else {

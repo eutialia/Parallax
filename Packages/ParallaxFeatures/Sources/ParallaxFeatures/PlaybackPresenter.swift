@@ -87,7 +87,7 @@ public final class PlaybackPresenter {
     private let teardownGrace: Duration
     private let clock: any Clock<Duration>
 
-    public init(teardownGrace: Duration = .milliseconds(600), clock: any Clock<Duration> = ContinuousClock()) {
+    public init(teardownGrace: Duration = .milliseconds(600), clock: any Clock<Duration>) {
         self.teardownGrace = teardownGrace
         self.clock = clock
     }

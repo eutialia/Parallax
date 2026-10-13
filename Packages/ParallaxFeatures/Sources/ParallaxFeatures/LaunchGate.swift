@@ -52,7 +52,7 @@ public final class LaunchGate {
     /// (or an SMB-only setup with no bootstrap at all) has nothing to cover, so
     /// it's born finished: content appears immediately, no stage, no reveal.
     /// `rearm()` still revives the full story for the post-sign-in moment.
-    public init(playsStory: Bool = true, clock: any Clock<Duration> = ContinuousClock()) {
+    public init(playsStory: Bool = true, clock: any Clock<Duration>) {
         self.clock = clock
         elapsed = clock.stopwatch()
         startDate = Date()

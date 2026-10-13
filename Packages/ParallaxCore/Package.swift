@@ -40,7 +40,7 @@ let package = Package(
         ),
         .target(
             name: "ParallaxCoreTestSupport",
-            dependencies: ["ParallaxCore"],
+            dependencies: ["ParallaxCore", "ParallaxTestScaling"],
             swiftSettings: [
                 .swiftLanguageMode(.v6),
             ]

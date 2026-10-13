@@ -166,10 +166,10 @@ struct SMBProbeDeadlineTests {
     }
 
     @Test("a wedged reader is abandoned at the deadline, returning nil")
-    func wedgedReaderTimesOut() async {
+    func wedgedReaderTimesOut() async throws {
         let clock = TestClock()
         async let result = SMBPlaybackResolver.probeWithDeadline(HangingReader(), within: .seconds(4), on: clock)
-        await clock.waitForSleepers()
+        try await clock.waitForSleep(dueIn: .seconds(4))
         clock.advance(by: .seconds(4))
 
         #expect(await result == nil)

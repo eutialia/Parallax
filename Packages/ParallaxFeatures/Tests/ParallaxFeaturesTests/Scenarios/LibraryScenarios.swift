@@ -21,12 +21,13 @@ struct LibraryScenarios {
         await visibleLibraries.load()
         let shows = try #require(visibleLibraries.collections.first { $0.name == "Shows" })
         await visibleLibraries.toggle(shows)
-        try await world.openHome()
 
-        #expect(world.sidebar == [
-            AppWorld.SidebarSection(title: "Den", libraries: ["Films"]),
-            AppWorld.SidebarSection(title: "Attic", libraries: ["Movies"]),
-        ])
+        try await world.until {
+            world.sidebar == [
+                AppWorld.SidebarSection(title: "Den", libraries: ["Films"]),
+                AppWorld.SidebarSection(title: "Attic", libraries: ["Movies"]),
+            ]
+        }
     }
 
     @Test("a large library pages in fifty at a time until it runs out")

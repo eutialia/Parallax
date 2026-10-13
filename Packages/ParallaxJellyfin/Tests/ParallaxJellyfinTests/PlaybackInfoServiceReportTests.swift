@@ -20,7 +20,7 @@ struct PlaybackInfoServiceReportTests {
     @Test("reportStart POSTs a PlaybackStateInfo with the play method and ids")
     func startReports() async {
         let fake = FakeJellyfinPlaybackClient()
-        let service = PlaybackInfoService(client: fake)
+        let service = PlaybackInfoService(client: fake, clock: TestClock())
         await service.reportStart(beat(position: 0, method: .transcode))
         #expect(fake.startInfos.count == 1)
         #expect(fake.startInfos.first?.itemID == "item-1")
@@ -82,7 +82,7 @@ struct PlaybackInfoServiceReportTests {
     @Test("reportStopped POSTs a PlaybackStopInfo and is best-effort")
     func stoppedReports() async {
         let fake = FakeJellyfinPlaybackClient()
-        let service = PlaybackInfoService(client: fake)
+        let service = PlaybackInfoService(client: fake, clock: TestClock())
         await service.reportStopped(beat(position: 99_000_000))
         #expect(fake.stoppedInfos.count == 1)
         #expect(fake.stoppedInfos.first?.positionTicks == 99_000_000)
@@ -92,7 +92,7 @@ struct PlaybackInfoServiceReportTests {
     @Test("Session-lifecycle calls forward the play session and nothing else", arguments: [SessionCall.stopEncoding, .ping])
     func sessionCallsForwardThePlaySession(call: SessionCall) async {
         let fake = FakeJellyfinPlaybackClient()
-        let service = PlaybackInfoService(client: fake)
+        let service = PlaybackInfoService(client: fake, clock: TestClock())
 
         switch call {
         case .stopEncoding:
@@ -131,7 +131,7 @@ struct PlaybackInfoServiceTrackSelectionTests {
     func audioWriteBack() async {
         let fake = FakeJellyfinPlaybackClient()
         fake.userConfigurationResult = .success(config(audioLanguage: "eng"))
-        let service = PlaybackInfoService(client: fake)
+        let service = PlaybackInfoService(client: fake, clock: TestClock())
         await service.rememberTrackSelection(.audio(languageCode: "fr"))
         #expect(fake.updatedUserConfigurations.count == 1)
         #expect(fake.updatedUserConfigurations.first?.audioLanguagePreference == "fra")
@@ -141,7 +141,7 @@ struct PlaybackInfoServiceTrackSelectionTests {
     func audioNoOpWhenSame() async {
         let fake = FakeJellyfinPlaybackClient()
         fake.userConfigurationResult = .success(config(audioLanguage: "eng"))
-        let service = PlaybackInfoService(client: fake)
+        let service = PlaybackInfoService(client: fake, clock: TestClock())
         await service.rememberTrackSelection(.audio(languageCode: "en"))
         #expect(fake.updatedUserConfigurations.isEmpty)
     }
@@ -150,7 +150,7 @@ struct PlaybackInfoServiceTrackSelectionTests {
     func audioOptOut() async {
         let fake = FakeJellyfinPlaybackClient()
         fake.userConfigurationResult = .success(config(rememberAudio: false))
-        let service = PlaybackInfoService(client: fake)
+        let service = PlaybackInfoService(client: fake, clock: TestClock())
         await service.rememberTrackSelection(.audio(languageCode: "fr"))
         #expect(fake.updatedUserConfigurations.isEmpty)
     }
@@ -159,7 +159,7 @@ struct PlaybackInfoServiceTrackSelectionTests {
     func audioNoLanguageNoWrite() async {
         let fake = FakeJellyfinPlaybackClient()
         fake.userConfigurationResult = .success(config())
-        let service = PlaybackInfoService(client: fake)
+        let service = PlaybackInfoService(client: fake, clock: TestClock())
         await service.rememberTrackSelection(.audio(languageCode: nil))
         #expect(fake.userConfigurationFetchCount == 0)
         #expect(fake.updatedUserConfigurations.isEmpty)
@@ -169,7 +169,7 @@ struct PlaybackInfoServiceTrackSelectionTests {
     func subtitleWriteBack() async {
         let fake = FakeJellyfinPlaybackClient()
         fake.userConfigurationResult = .success(config(subtitleMode: SubtitlePlaybackMode.none))
-        let service = PlaybackInfoService(client: fake)
+        let service = PlaybackInfoService(client: fake, clock: TestClock())
         await service.rememberTrackSelection(.subtitles(languageCode: "ger"))
         #expect(fake.updatedUserConfigurations.first?.subtitleLanguagePreference == "deu")
         #expect(fake.updatedUserConfigurations.first?.subtitleMode == .always)
@@ -179,7 +179,7 @@ struct PlaybackInfoServiceTrackSelectionTests {
     func subtitleKeepsSmartMode() async {
         let fake = FakeJellyfinPlaybackClient()
         fake.userConfigurationResult = .success(config(subtitleLanguage: "eng", subtitleMode: .smart))
-        let service = PlaybackInfoService(client: fake)
+        let service = PlaybackInfoService(client: fake, clock: TestClock())
         await service.rememberTrackSelection(.subtitles(languageCode: "fre"))
         #expect(fake.updatedUserConfigurations.first?.subtitleLanguagePreference == "fra")
         #expect(fake.updatedUserConfigurations.first?.subtitleMode == .smart)
@@ -189,7 +189,7 @@ struct PlaybackInfoServiceTrackSelectionTests {
     func subtitlesOff() async {
         let fake = FakeJellyfinPlaybackClient()
         fake.userConfigurationResult = .success(config(subtitleMode: .always))
-        let service = PlaybackInfoService(client: fake)
+        let service = PlaybackInfoService(client: fake, clock: TestClock())
         await service.rememberTrackSelection(.subtitles(languageCode: nil))
         #expect(fake.updatedUserConfigurations.first?.subtitleMode == SubtitlePlaybackMode.none)
 
@@ -210,7 +210,7 @@ struct PlaybackInfoServiceTrackSelectionTests {
     func subtitleCultureRowWriteBack(picked: String, persisted: String) async {
         let fake = FakeJellyfinPlaybackClient()
         fake.userConfigurationResult = .success(config(subtitleMode: .always))
-        let service = PlaybackInfoService(client: fake)
+        let service = PlaybackInfoService(client: fake, clock: TestClock())
         await service.rememberTrackSelection(.subtitles(languageCode: picked))
         #expect(fake.updatedUserConfigurations.first?.subtitleLanguagePreference == persisted)
     }
@@ -221,7 +221,7 @@ struct PlaybackInfoServiceTrackSelectionTests {
     func audioIgnoresCultureRows() async {
         let fake = FakeJellyfinPlaybackClient()
         fake.userConfigurationResult = .success(config())
-        let service = PlaybackInfoService(client: fake)
+        let service = PlaybackInfoService(client: fake, clock: TestClock())
         await service.rememberTrackSelection(.audio(languageCode: "zh-Hans"))
         #expect(fake.updatedUserConfigurations.first?.audioLanguagePreference == "zho")
     }
@@ -230,7 +230,7 @@ struct PlaybackInfoServiceTrackSelectionTests {
     func subtitleDedupeOnPersistedForm() async {
         let fake = FakeJellyfinPlaybackClient()
         fake.userConfigurationResult = .success(config(subtitleLanguage: "zh-hans", subtitleMode: .always))
-        let service = PlaybackInfoService(client: fake)
+        let service = PlaybackInfoService(client: fake, clock: TestClock())
         await service.rememberTrackSelection(.subtitles(languageCode: "zh-Hans"))
         #expect(fake.updatedUserConfigurations.isEmpty)
     }
@@ -241,7 +241,7 @@ struct PlaybackInfoServiceTrackSelectionTests {
     func subtitleAlpha3ReplacedByCultureRow() async {
         let fake = FakeJellyfinPlaybackClient()
         fake.userConfigurationResult = .success(config(subtitleLanguage: "zho", subtitleMode: .always))
-        let service = PlaybackInfoService(client: fake)
+        let service = PlaybackInfoService(client: fake, clock: TestClock())
         await service.rememberTrackSelection(.subtitles(languageCode: "zh-Hans"))
         #expect(fake.updatedUserConfigurations.first?.subtitleLanguagePreference == "zh-Hans")
     }
@@ -250,7 +250,7 @@ struct PlaybackInfoServiceTrackSelectionTests {
     func failuresSwallowed() async {
         let fake = FakeJellyfinPlaybackClient()
         fake.userConfigurationResult = .failure(FakeJellyfinPlaybackClient.FakeError.reportFailed)
-        let service = PlaybackInfoService(client: fake)
+        let service = PlaybackInfoService(client: fake, clock: TestClock())
         await service.rememberTrackSelection(.audio(languageCode: "fr"))
         #expect(fake.updatedUserConfigurations.isEmpty)
     }

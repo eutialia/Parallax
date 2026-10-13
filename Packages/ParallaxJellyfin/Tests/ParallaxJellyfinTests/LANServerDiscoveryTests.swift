@@ -67,12 +67,12 @@ struct LANServerDiscoveryDriverTests {
     }
 
     @Test("The wait between passes runs on the injected clock, and the next pass follows its expiry")
-    func retryWaitsOnTheClock() async {
+    func retryWaitsOnTheClock() async throws {
         let clock = TestClock()
         let (discovery, scripted) = discovery([[], [payload]], clock: clock)
 
         discovery.start(timeout: 0, retries: 1, retryInterval: .seconds(2))
-        await clock.waitForSleepers()
+        try await clock.waitForSleep(dueIn: .seconds(2))
         #expect(scripted.calls == 1)
         #expect(discovery.discovered.isEmpty)
 

@@ -1,6 +1,7 @@
 import Foundation
 import Get
 import JellyfinAPI
+import Observation
 import ParallaxJellyfin
 import Synchronization
 import Testing
@@ -16,7 +17,7 @@ import Testing
 ///
 /// Items are named, and every seeding and progress call addresses them by that name. An episode is
 /// named after its series and position, "Severance S1E2", so names stay unique.
-public final class FakeJellyfinServer: Sendable {
+public final class FakeJellyfinServer: Observable, Sendable {
     public let name: String
     /// The server's Jellyfin id, which `SessionManager` adopts as the persisted `ServerID`.
     public let id: String
@@ -148,12 +149,23 @@ public final class FakeJellyfinServer: Sendable {
 
     private let transport = StubHTTPTransport()
     private let state = Mutex(State())
+    /// Tells `Observations` a request was answered, so a wait on the server's ledgers re-reads them.
+    private let registrar = ObservationRegistrar()
 
     public init(name: String = "Jellyfin") {
         self.name = name
         self.id = "server-\(UUID().uuidString.lowercased())"
         transport.respond { [weak self] exchange in
-            self?.answer(exchange) ?? StubHTTPTransport.Reply(status: 503)
+            guard let self else { return StubHTTPTransport.Reply(status: 503) }
+            let reply = answer(exchange)
+            // On the main actor, where the waits observe: `Observations` installs its tracking
+            // after its read returns, so a change announced from this loading thread in that gap
+            // would be lost.
+            Task { @MainActor in
+                registrar.withMutation(of: self, keyPath: \.playbackReports) {}
+                registrar.withMutation(of: self, keyPath: \.playbackRequests) {}
+            }
+            return reply
         }
     }
 
@@ -283,12 +295,14 @@ public final class FakeJellyfinServer: Sendable {
 
     /// Every PlaybackInfo negotiation so far, in order.
     public var playbackRequests: [PlaybackRequest] {
-        state.withLock { $0.playbackRequests }
+        registrar.access(self, keyPath: \.playbackRequests)
+        return state.withLock { $0.playbackRequests }
     }
 
     /// Every playing, progress and stopped report so far, in order.
     public var playbackReports: [PlaybackReport] {
-        state.withLock { $0.playbackReports }
+        registrar.access(self, keyPath: \.playbackReports)
+        return state.withLock { $0.playbackReports }
     }
 
     /// Whether `title` is a favorite on the server right now.
@@ -296,7 +310,9 @@ public final class FakeJellyfinServer: Sendable {
         state.withLock { state in state.catalog.first { $0.name == title }?.isFavorite ?? false }
     }
 
-    /// Every request fails with a 503 until `comeBackOnline()`.
+    /// The server is unreachable until `comeBackOnline()`: every request throws a transport
+    /// `URLError(.cannotConnectToHost)`, as `URLSession` does against a host that is down. It never
+    /// answers an HTTP status.
     public func goOffline() {
         state.withLock { $0.isDown = true }
     }
@@ -415,7 +431,7 @@ public final class FakeJellyfinServer: Sendable {
     ]
 
     private func answer(_ exchange: StubHTTPTransport.Exchange) -> StubHTTPTransport.Reply {
-        if state.withLock({ $0.isDown }) { return StubHTTPTransport.Reply(status: 503) }
+        if state.withLock({ $0.isDown }) { return .failure(.cannotConnectToHost) }
         let requested = "\(exchange.method) \(exchange.path)"
         for entry in Self.routes {
             guard let pathID = Self.match(requested, entry.route) else { continue }

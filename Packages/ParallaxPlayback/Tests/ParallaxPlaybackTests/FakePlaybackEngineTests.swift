@@ -22,7 +22,7 @@ struct FakePlaybackEngineTests {
         let task = Task {
             for await beat in fake.state {
                 received.append(beat.state)
-                if received.count == 2 { break }
+                if received.count == 3 { break }
             }
         }
 
@@ -34,12 +34,15 @@ struct FakePlaybackEngineTests {
         await task.value
 
         #expect(fake.loadedAssets.map(\.url) == [url])
-        #expect(received.count == 2)
-        guard case .loading = received[0] else {
-            Issue.record("Expected .loading first, got \(received[0])"); return
+        #expect(received.count == 3)
+        guard case .idle = received[0] else {
+            Issue.record("Expected the seeded .idle first, got \(received[0])"); return
         }
-        guard case .ready(let d, _) = received[1] else {
-            Issue.record("Expected .ready second, got \(received[1])"); return
+        guard case .loading = received[1] else {
+            Issue.record("Expected .loading second, got \(received[1])"); return
+        }
+        guard case .ready(let d, _) = received[2] else {
+            Issue.record("Expected .ready third, got \(received[2])"); return
         }
         #expect(d == duration)
     }
@@ -48,13 +51,50 @@ struct FakePlaybackEngineTests {
     /// asserts on `calls.contains("seek(3000.0)")` and friends — so the literals here are
     /// the spec, not a re-derivation.
     @Test("play/pause/seek/teardown append to the call log in order")
-    func callOrder() async {
+    func callOrder() async throws {
         let fake = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        try await fake.load(.fixture(url: URL(string: "https://example.com/stream.mp4")!))
         await fake.play()
         await fake.pause()
         await fake.seek(to: CMTime(seconds: 30, preferredTimescale: 1000))
         await fake.teardown()
-        #expect(fake.calls == ["play", "pause", "seek(30.0)", "teardown"])
+        #expect(fake.calls == ["load", "play", "pause", "seek(30.0)", "teardown"])
+    }
+
+    @Test("before load a seek is a no-op, and a play is flagged as a test bug")
+    func transportBeforeLoad() async {
+        let fake = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        await fake.seek(to: CMTime(seconds: 30, preferredTimescale: 1000))
+        await withKnownIssue { await fake.play() }
+        #expect(fake.calls == [])
+        #expect(!fake.isPlayingNow)
+    }
+
+    @Test("a fake that lands seeks answers one with an observed beat at the target, in the loaded session")
+    func landedSeekPublishesTheTarget() async throws {
+        let fake = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
+        fake.landsSeeks = true
+        var beats: [PlaybackBeat] = []
+        let consumer = Task {
+            for await beat in fake.state { beats.append(beat) }
+        }
+        let session = try await fake.load(.fixture(url: URL(string: "https://example.com/stream.mp4")!))
+        let duration = CMTime(seconds: 3600, preferredTimescale: 1000)
+        fake.push(.ready(duration: duration, tracks: .empty))
+        await fake.play()
+
+        await fake.seek(to: CMTime(seconds: 90, preferredTimescale: 1000))
+        try await fake.settle()
+
+        guard let last = beats.last, case .playing(let position, let reported, nil, .observed) = last.state else {
+            Issue.record("the seek published \(String(describing: beats.last)) instead of an observed landing")
+            return
+        }
+        #expect(CMTimeGetSeconds(position) == 90)
+        #expect(reported == duration)
+        #expect(last.session == session)
+        await fake.teardown()
+        await consumer.value
     }
 
     /// The barrier every `PlayerViewModel` suite leans on instead of a `Task.sleep`:
@@ -72,10 +112,9 @@ struct FakePlaybackEngineTests {
             }
         }
 
-        fake.push(.idle)
         fake.push(.loading)
         try await fake.settle()
-        #expect(handled.count == 2)
+        #expect(handled.count == 2)   // the seeded .idle, then .loading
 
         fake.push(.ended)
         try await fake.settle()
@@ -85,18 +124,9 @@ struct FakePlaybackEngineTests {
         await task.value
     }
 
-    @Test("settle() is a no-op when nothing was pushed")
-    func settleWithoutPushesReturnsImmediately() async throws {
-        let fake = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        // No consumer at all: with zero pushed states there is nothing to drain, so
-        // this must return rather than sit out the safety timeout.
-        try await fake.settle(timeout: .seconds(1))
-    }
-
     @Test("settle() throws instead of hanging when no one consumes the stream")
     func settleTimesOutWithoutConsumer() async throws {
         let fake = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        fake.push(.idle)
         await #expect(throws: FakePlaybackEngine.SettleTimeout.self) {
             try await fake.settle(timeout: .milliseconds(20))
         }
@@ -109,10 +139,9 @@ struct FakePlaybackEngineTests {
         let task = Task {
             for await _ in fake.state { count += 1 }
         }
-        fake.push(.idle)
         fake.push(.loading)
         await fake.teardown()
         await task.value
-        #expect(count == 2)
+        #expect(count == 2)   // the seeded .idle, then .loading
     }
 }

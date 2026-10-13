@@ -416,22 +416,26 @@ public actor ServerStore {
         }
     }
 
+    /// An SMB server's id: `"smb-\(host)"`, stable across re-adds, never colliding with a
+    /// Jellyfin id (which has no `smb-` prefix), and readable in logs.
+    public static func smbServerID(host: String) -> ServerID {
+        ServerID(rawValue: "smb-\(host)")
+    }
+
     /// Persists a configured SMB server. The password goes to the SAME opaque
     /// Keychain slot Jellyfin uses for bearer tokens (`token-<id>`), so
     /// `remove(_:)` already cleans it up.
     ///
-    /// The `ServerID` is derived deterministically from `host` as
-    /// `"smb-\(host)"` — stable across re-adds, never collides with a Jellyfin id
-    /// (which has no `smb-` prefix), and human-readable in logs. Re-adding the
-    /// same host reuses the same id, so shares and credentials update in-place
-    /// rather than duplicating the row.
+    /// The `ServerID` is `smbServerID(host:)`. Re-adding the same host reuses the
+    /// same id, so shares and credentials update in-place rather than duplicating
+    /// the row.
     ///
     /// Does NOT touch `loadedSessions` or `activeID` — SMB servers have no
     /// `Session`, and making one "active" would nil-route the Jellyfin-keyed
     /// router to the login screen.
     @discardableResult
     public func addSMBServer(_ data: SMBServerData, password: String) async throws -> ServerID {
-        let id = ServerID(rawValue: "smb-\(data.host)")
+        let id = Self.smbServerID(host: data.host)
         let key = Self.secretKey(for: id)
 
         do {
