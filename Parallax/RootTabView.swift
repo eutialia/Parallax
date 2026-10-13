@@ -27,12 +27,6 @@ struct RootTabView: View {
         // so a switch tears down + rebuilds the tabs (and reloads the sidebar libraries)
         // against the new server instead of leaving them on the previous one's content.
         .id(router.activeServerID)
-        // Keyed on the reload token, not `activeServerID`: a server switch (token's id part)
-        // AND an SMB add/remove (token's revision part) both rebuild `entries`. The `.id`
-        // remount above stays on the session only, so a revision bump rebuilds the merged
-        // list without tearing every tab down.
-        // Loads Home's feed alongside the libraries; Home itself fetches nothing.
-        .task(id: router.libraryReloadToken) { await app.loadSources() }
         // If the selected library tab's backing entry just vanished, snap to Home so the detail
         // pane isn't left on a gone tab (shared with FocusRootView via `snappedIfStale`).
         .onChange(of: groups) { _, groups in selectedTab = selectedTab.snappedIfStale(against: groups.allEntries) }

@@ -24,7 +24,6 @@ private enum FavoritesContentPhase: Hashable {
 /// crowded.
 struct FavoritesView: View {
     @Environment(AppModel.self) private var app
-    @Environment(AppRouter.self) private var router
     @Environment(\.appIdiom) private var idiom
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -47,9 +46,7 @@ struct FavoritesView: View {
             #endif
             .itemDetailNavigation()
             .screenFloor()
-            // Re-fired when the source set changes, so signing into a second server adds its
-            // section without a relaunch — the same token both navigation roots key on.
-            .task(id: router.libraryReloadToken) { await viewModel.load(from: app) }
+            .task { await viewModel.run(in: app) }
     }
 
     private var contentPhase: FavoritesContentPhase {

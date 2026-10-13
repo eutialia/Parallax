@@ -21,7 +21,7 @@ struct PlayerScenarios {
         #expect(world.app.playback.request != nil)
 
         den.revokeAllTokens()
-        await world.openHome()
+        await world.app.movieDetail(ItemID(rawValue: "movie-1"), on: session).load()
         try await world.until { world.app.router.activeServerID == ServerID(rawValue: attic.id) }
         try await world.until { world.app.playback.request == nil }
 
@@ -35,7 +35,7 @@ struct PlayerScenarios {
         let den = FakeJellyfinServer(name: "Den").user("ana").library("Films")
             .movie("Heat", in: "Films", minutes: 170).watch("Heat", minutes: 42)
         let world = try await AppWorld.launch(signedIn: [(den, "ana")])
-        await world.openHome()
+        try await world.openHome()
         let session = try await world.session(on: den)
         let tile = try #require(world.app.home?.continueWatching.first)
         guard case .play(let heat) = MediaTileTap.resolve(tile.item, on: session, moviePlays: true) else {

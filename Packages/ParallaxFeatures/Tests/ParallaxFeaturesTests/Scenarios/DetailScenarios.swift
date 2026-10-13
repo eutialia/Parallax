@@ -27,13 +27,45 @@ struct DetailScenarios {
         world.clock.advance(by: .seconds(1))
         try await world.until { !world.app.playback.isPlayerPresent }
 
-        await world.openHome()
+        try await world.openHome()
         let tile = try #require(world.app.home?.continueWatching.first)
         let menu = MediaTileMenuAction.menu(for: tile.item, on: session, context: MediaTileMenuContext(moviePlaysOnTap: true))
         #expect(menu.contains(.playFromBeginning(arrival)))
         await world.app.perform(.playFromBeginning(arrival), on: session)
 
         #expect(world.playRequest == AppWorld.PlayRequest(item: arrival.rawValue, server: "Den", fromBeginning: true))
+    }
+
+    @Test("finishing a movie from its page and closing the player turns Resume back into Play")
+    func movieRefreshesAfterPlayback() async throws {
+        let den = FakeJellyfinServer(name: "Den").user("ana").library("Films")
+            .movie("Arrival", in: "Films", minutes: 116).watch("Arrival", minutes: 30)
+        let world = try await AppWorld.launch(signedIn: [(den, "ana")])
+        let detail = await world.app.movieDetail(ItemID(rawValue: den.itemID(of: "Arrival")), on: try await world.session(on: den))
+        await detail.load()
+        #expect(detail.playButtonTitle == "Resume")
+        detail.play()
+
+        den.finish("Arrival")
+        world.app.playback.dismiss()
+
+        try await world.until { detail.playButtonTitle == "Play" }
+    }
+
+    @Test("finishing an episode from the series page and closing the player moves Resume on to the next one")
+    func seriesRefreshesAfterPlayback() async throws {
+        let den = FakeJellyfinServer(name: "Den").user("ana").library("Shows", of: .shows)
+            .series("Severance", in: "Shows", episodes: [3]).finish("Severance S1E1")
+        let world = try await AppWorld.launch(signedIn: [(den, "ana")])
+        let detail = await world.app.seriesDetail(ItemID(rawValue: den.itemID(of: "Severance")), on: try await world.session(on: den))
+        await detail.load()
+        #expect(detail.playAction.title == "Resume S1 E2")
+        detail.play()
+
+        den.finish("Severance S1E2")
+        world.app.playback.dismiss()
+
+        try await world.until { detail.playAction.title == "Resume S1 E3" }
     }
 
     @Test("a series with its first episode watched offers to resume at the next one")

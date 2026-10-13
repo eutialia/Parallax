@@ -36,12 +36,18 @@ public final class ServerSettingsModel {
         }
     }
 
+    /// Keeps the Visible Libraries summary current for as long as the page is up: a visibility
+    /// change moves the source set's revision, which re-runs the count.
+    public func run() async {
+        await app.forEachSourceChange { await self.loadLibrarySummary() }
+    }
+
     /// Compute the "N of M" / "All" Visible Libraries summary from the server's collections + hidden set.
     /// A fetch failure leaves the previous label (the row stays useful even if the server is briefly down).
-    public func loadLibrarySummary() async {
+    private func loadLibrarySummary() async {
         let hidden = await app.services.serverStore.hiddenCollectionIDs(for: session.id)
         guard let collections = try? await app.services.jellyfinLibraryRepoFactory(session).collections() else { return }
-        // A newer revision (e.g. rapid visibility toggles) cancels this task; don't let a stale fetch
+        // A newer revision (e.g. rapid visibility toggles) cancels this pass; don't let a stale fetch
         // that resolved after the cancel overwrite the fresher summary the newer task already wrote.
         guard !Task.isCancelled else { return }
         let total = collections.count

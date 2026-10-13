@@ -37,6 +37,26 @@ struct SMBAddScenarios {
         #expect(await world.smbLibraries() == ["Attic.local/Media", "Attic.local/Photos"])
     }
 
+    @Test("a Bonjour browse that failed while the app was away starts again on return, and a NAS that came up meanwhile is listed")
+    func returningToTheFormRestartsAFailedBrowse() async throws {
+        let world = try await AppWorld.launch()
+        let add = world.app.makeSMBAddServer()
+        world.advertiseSMB(["Attic"])
+        let discovery = Task { await add.discoverServers() }
+        try await world.until { add.discoveredServers.map(\.host) == ["Attic.local"] }
+
+        world.background()
+        world.smbBrowseFails()
+        // Not rendered: the rows keep the last snapshot. Waits for the browse to wind down, so the
+        // return below finds it ended rather than racing its exit.
+        try await world.until { !world.app.services.smbDiscovery.isDiscovering }
+        world.advertiseSMB(["Attic", "Basement"])
+        world.foreground()
+
+        try await world.until { add.discoveredServers.map(\.host) == ["Attic.local", "Basement.local"] }
+        discovery.cancel()
+    }
+
     @Test("a wrong password on connect says the server refused and saves nothing")
     func wrongPasswordSavesNothing() async throws {
         let world = try await AppWorld.launch()

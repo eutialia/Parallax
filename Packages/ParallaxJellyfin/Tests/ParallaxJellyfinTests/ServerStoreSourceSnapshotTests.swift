@@ -31,7 +31,7 @@ struct ServerStoreSourceSnapshotTests {
 
     /// The anchor for every inequality assertion below: without ONE test pinning the composition,
     /// a degenerate implementation (a fresh UUID per mutation) would satisfy all of them.
-    @Test("setIdentity composes id + live marker per row, in persisted order")
+    @Test("setIdentity composes id + live token digest per row, in persisted order")
     func identityComposition() async throws {
         let store = freshStore()
         try await store.add(session("alpha"))
@@ -41,9 +41,9 @@ struct ServerStoreSourceSnapshotTests {
         )
         try await store.add(session("beta"))
 
-        // A live Jellyfin row is `id+`; a row with no live session is `id-`, which is what an SMB
-        // server always is (it has no Session at all).
-        #expect(await store.sourceSnapshot.setIdentity == "alpha+,smb-nas.local-,beta+")
+        // A live Jellyfin row is `id+` and its token's digest; a row with no live session is `id-`,
+        // which is what an SMB server always is (it has no Session at all).
+        #expect(await store.sourceSnapshot.setIdentity == "alpha+e11361fb,smb-nas.local-,beta+c4dc0970")
     }
 
     @Test("Adding a SECOND Jellyfin server changes setIdentity while the active session stays put")

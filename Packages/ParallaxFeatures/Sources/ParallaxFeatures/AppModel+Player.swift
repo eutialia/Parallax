@@ -163,6 +163,20 @@ extension AppModel {
     }
 }
 
+extension PlaybackPresenter.Request.Target {
+    /// Whether the source this player was opened from is still configured as it was: the same
+    /// Jellyfin session (same server, same token, since the player's repos carry it) or the same
+    /// SMB server.
+    func isLive(sessions: [Session], servers: [PersistedServer]) -> Bool {
+        switch self {
+        case .detail(_, let session, _), .itemID(_, let session, _):
+            sessions.contains { $0.id == session.id && $0.accessToken == session.accessToken }
+        case .smb(_, let ref):
+            servers.contains { $0.id == ref.id }
+        }
+    }
+}
+
 extension ItemDetail {
     /// The artwork the scrub bar's accent is derived from. The poster for a movie; for an
     /// episode the still first, falling back through season to series art — the same
