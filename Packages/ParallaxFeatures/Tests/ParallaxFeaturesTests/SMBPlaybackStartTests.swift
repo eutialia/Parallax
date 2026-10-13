@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import CoreMedia
 import Testing
 import ParallaxCore
@@ -290,18 +291,6 @@ struct SMBPlaybackStartTests {
         #expect(vm.availableSubtitleTracks.map(\.id) == [.vlc("s1")])
     }
 
-    @Test("subtitleURLs is populated from the smbItem's pre-resolved sidecar map")
-    func startPopulatesSubtitleURLMap() async throws {
-        let reporting = StubPlaybackReporting()
-        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
-        let vm = makeVM(reporting: reporting, engine: engine)
-
-        let subURL = URL(string: "file:///tmp/Example.en.srt")!
-        await vm.start(smbItem: smbItem(subtitleURLs: [0: subURL]))
-
-        #expect(vm.debugSubtitleURLs == [0: subURL])
-    }
-
     @Test("no Jellyfin reporting fires on the SMB path — resolved stays nil end to end")
     func smbPathNeverReports() async throws {
         let reporting = StubPlaybackReporting()
@@ -325,23 +314,34 @@ struct SMBPlaybackStartTests {
         #expect(await reporting.stoppedEncodings.isEmpty)
     }
 
-    @Test("stop() tears the SMB session down cleanly: subtitleURLs cleared, no reporting")
+    @Test("stop() tears the SMB session down cleanly: sidecars unloaded and unselectable, no reporting")
     func stopTearsDownCleanly() async throws {
         try await SMBTestFixtures.withResumeStore(suite: #function) { store in
             let reporting = StubPlaybackReporting()
             let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
-            let vm = makeVM(reporting: reporting, engine: engine, smbResumeStore: store)
-
+            let srt = Data("1\n00:00:01,000 --> 00:00:04,000\nHello world\n".utf8)
             let subURL = URL(string: "file:///tmp/Example.en.srt")!
+            let vm = makeVM(
+                reporting: reporting, engine: engine,
+                subtitleFetch: { $0 == subURL ? srt : nil },
+                smbResumeStore: store
+            )
+
             await vm.start(smbItem: smbItem(subtitleURLs: [0: subURL]))
             engine.push(.playing(15, duration: .seconds(6000)))
             try await engine.settle()
-            #expect(vm.debugSubtitleURLs == [0: subURL])
+            let track = try #require(vm.availableSubtitleTracks.first { $0.id == .jellyfinStream(0) })
+            await vm.selectSubtitleTrack(track)
+            await vm.debugAwaitSubtitleFetch()
+            #expect(vm.subtitleRenderer != nil)
 
             await vm.stop()
 
             #expect(engine.calls.contains("teardown"))
-            #expect(vm.debugSubtitleURLs.isEmpty)
+            #expect(vm.subtitleRenderer == nil)
+            await vm.selectSubtitleTrack(track)
+            await vm.debugAwaitSubtitleFetch()
+            #expect(vm.subtitleRenderer == nil, "the ended session's URL map must not serve a pick")
             // A session that never reported start must never report stop.
             #expect(await reporting.events.isEmpty)
             #expect(await reporting.stoppedEncodings.isEmpty)
@@ -387,36 +387,32 @@ struct SMBPlaybackStartTests {
     }
 
     /// The beats come faster than the store should be written, so a playing session persists at
-    /// most once per 10 s of the player's clock. The first beat always writes.
+    /// most once per 10 s of the player's clock. The first beat always writes. Saves land in the
+    /// order they were spawned, so a wrongly spawned save at 109 would show up in the sequence
+    /// ahead of 110.
     @Test("a playing SMB session persists its position at most once every 10 seconds")
     func resumeWritesAreThrottledOnTheClock() async throws {
-        try await SMBTestFixtures.withResumeStore(suite: #function) { store in
-            let clock = TestClock()
-            let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
-            let vm = makeVM(reporting: StubPlaybackReporting(), engine: engine, smbResumeStore: store, clock: clock)
-            let id = ItemID(rawValue: "smb-resume-throttle")
-            let stored = { await store.resumeTime(for: id).map(CMTimeGetSeconds) }
-            await vm.start(smbItem: smbItem(itemID: id))
+        let suiteName = "SMBPlaybackStartTests.\(UUID().uuidString)"
+        defer { UserDefaults().removePersistentDomain(forName: suiteName) }
+        let writes = PositionLog()
+        let store = SMBResumeStore(defaults: RecordingDefaults(suiteName: suiteName, log: writes)!)
+        let clock = TestClock()
+        let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+        let vm = makeVM(reporting: StubPlaybackReporting(), engine: engine, smbResumeStore: store, clock: clock)
+        let id = ItemID(rawValue: "smb-resume-throttle")
+        await vm.start(smbItem: smbItem(itemID: id))
 
-            engine.push(.playing(100, duration: .seconds(6_000)))
-            try await engine.settle()
-            await waitUntil("the first beat never wrote its position") { await stored() == 100 }
+        engine.push(.playing(100, duration: .seconds(6_000)))
+        try await engine.settle()
+        clock.advance(by: .seconds(9))
+        engine.push(.playing(109, duration: .seconds(6_000)))
+        try await engine.settle()
+        clock.advance(by: .seconds(1))
+        engine.push(.playing(110, duration: .seconds(6_000)))
+        try await engine.settle()
 
-            clock.advance(by: .seconds(9))
-            engine.push(.playing(109, duration: .seconds(6_000)))
-            try await engine.settle()
-            // A save is fire-and-forget, so a wrongly spawned one gets a short window to land.
-            let window = ContinuousClock.now + .milliseconds(100)
-            while await stored() == 100, ContinuousClock.now < window {
-                try await Task.sleep(for: .milliseconds(10))
-            }
-            #expect(await stored() == 100, "a beat inside the window wrote its position")
-
-            clock.advance(by: .seconds(1))
-            engine.push(.playing(110, duration: .seconds(6_000)))
-            try await engine.settle()
-            await waitUntil("the beat 10 s later never wrote its position") { await stored() == 110 }
-        }
+        await waitUntil("the beat 10 s later never wrote its position") { await store.resumeTime(for: id).map(CMTimeGetSeconds) == 110 }
+        #expect(writes.positions == [100, 110])
     }
 
     @Test("a stale throttled save can't outrun .ended's terminal clear")
@@ -553,5 +549,28 @@ struct SMBPlaybackStartTests {
         // stashed cleanup was reaped exactly once by the CancellationError branch.
         #expect(!engine.calls.contains("load"))
         #expect(await spy.count == 1)
+    }
+}
+
+private final class PositionLog: Sendable {
+    private let storage = Mutex<[Double]>([])
+    var positions: [Double] { storage.withLock { $0 } }
+    func append(_ new: [Double]) { storage.withLock { $0.append(contentsOf: new) } }
+}
+
+/// A `UserDefaults` that logs every position the resume store writes through it, in order.
+private final class RecordingDefaults: UserDefaults, @unchecked Sendable {
+    private let log: PositionLog
+
+    init?(suiteName: String, log: PositionLog) {
+        self.log = log
+        super.init(suiteName: suiteName)
+    }
+
+    override func set(_ value: Any?, forKey key: String) {
+        if let entries = value as? [String: [String: Double]] {
+            log.append(entries.values.compactMap { $0["pos"] })
+        }
+        super.set(value, forKey: key)
     }
 }

@@ -111,11 +111,11 @@ struct PlaybackPresenterTests {
     /// has to run, before the request clears: clearing it starts the slide-out the audio
     /// would otherwise play through.
     @Test("dismiss runs the session's exit hand-off before clearing the request")
-    func dismissRunsExitHandler() {
+    func dismissRunsExitHandler() throws {
         let presenter = PlaybackPresenter(teardownGrace: .zero)
         let probe = ExitProbe()
         presenter.play(ItemID(rawValue: "ep-1"), in: session())
-        presenter.exitHandler = { [weak presenter] in
+        presenter.setExitHandler(for: try #require(presenter.request).id) { [weak presenter] in
             probe.calls += 1
             probe.presentedAtExit = presenter?.request != nil
         }
@@ -127,16 +127,37 @@ struct PlaybackPresenterTests {
     /// One session, one exit. The close button dismisses and the tvOS cover's binding
     /// dismisses right behind it; the second must not call into a handed-off session.
     @Test("the exit hand-off is consumed by the first dismiss")
-    func exitHandlerIsConsumed() {
+    func exitHandlerIsConsumed() throws {
         let presenter = PlaybackPresenter(teardownGrace: .zero)
         let s = session()
         let probe = ExitProbe()
         presenter.play(ItemID(rawValue: "ep-1"), in: s)
-        presenter.exitHandler = { probe.calls += 1 }
+        presenter.setExitHandler(for: try #require(presenter.request).id) { probe.calls += 1 }
         presenter.dismiss()
         presenter.play(ItemID(rawValue: "ep-2"), in: s)   // a new session without a handler
         presenter.dismiss()
         #expect(probe.calls == 1)
+    }
+
+    /// A session that resumes late, after its own request was dismissed and a newer one opened,
+    /// must not take over the newer player's exit.
+    @Test("an exit registered for a request no longer presented never runs, and leaves the current one in place")
+    func staleExitHandlerIsIgnored() throws {
+        let presenter = PlaybackPresenter(teardownGrace: .zero)
+        let s = session()
+        let stale = ExitProbe()
+        let live = ExitProbe()
+        presenter.play(ItemID(rawValue: "ep-1"), in: s)
+        let first = try #require(presenter.request).id
+        presenter.dismiss()
+        presenter.play(ItemID(rawValue: "ep-2"), in: s)
+        presenter.setExitHandler(for: try #require(presenter.request).id) { live.calls += 1 }
+
+        presenter.setExitHandler(for: first) { stale.calls += 1 }
+        presenter.dismiss()
+
+        #expect(stale.calls == 0)
+        #expect(live.calls == 1)
     }
 
     @Test("a play during the dismissal's teardown grace is held — no second player over a stopping engine — then presented once the grace expires (latest pick wins)")

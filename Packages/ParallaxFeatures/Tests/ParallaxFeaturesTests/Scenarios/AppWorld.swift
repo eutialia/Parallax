@@ -31,6 +31,8 @@ final class AppWorld {
     let avThumbnailer: RecordingThumbnailer
     /// Every playback engine the app built, in build order. The last one is playing.
     let engines: EngineLedger
+    /// The shared audio session every player activates and deactivates.
+    let audioSession: RecordingAudioSession
     private let keychain: FakeKeychain
     private let lan: ScriptedLAN
     private let bonjour: ScriptedBonjour
@@ -69,6 +71,7 @@ final class AppWorld {
         let thumbnailer = RecordingThumbnailer()
         let avThumbnailer = RecordingThumbnailer()
         let engines = EngineLedger()
+        let audioSession = RecordingAudioSession()
         let reachability = ScriptedReachability()
         let display = ScriptedDisplay()
         let environment = AppEnvironment(
@@ -81,7 +84,7 @@ final class AppWorld {
             reachability: reachability,
             capabilityProbe: display,
             lanBroadcaster: { _ in lan.broadcast() },
-            audioSession: SilentAudioSession(),
+            audioSession: audioSession,
             smbConnections: nas.connections(clock: clock),
             browseSMBServices: { bonjour.browse() },
             hdrEligibilityChanges: { display.eligibilityChanges },
@@ -107,7 +110,8 @@ final class AppWorld {
 
         let world = AppWorld(
             environment: environment, servers: accounts.map(\.server) + lanServers, clock: clock,
-            nas: nas, thumbnailer: thumbnailer, avThumbnailer: avThumbnailer, engines: engines, keychain: keychain,
+            nas: nas, thumbnailer: thumbnailer, avThumbnailer: avThumbnailer, engines: engines,
+            audioSession: audioSession, keychain: keychain,
             lan: lan, bonjour: bonjour,
             reachability: reachability, display: display,
             suiteName: suiteName, storageDirectory: storageDirectory
@@ -119,7 +123,7 @@ final class AppWorld {
     private init(
         environment: AppEnvironment, servers: [FakeJellyfinServer], clock: TestClock,
         nas: FakeSMBWorld, thumbnailer: RecordingThumbnailer, avThumbnailer: RecordingThumbnailer,
-        engines: EngineLedger, keychain: FakeKeychain,
+        engines: EngineLedger, audioSession: RecordingAudioSession, keychain: FakeKeychain,
         lan: ScriptedLAN, bonjour: ScriptedBonjour, reachability: ScriptedReachability, display: ScriptedDisplay,
         suiteName: String,
         storageDirectory: URL
@@ -133,6 +137,7 @@ final class AppWorld {
         self.thumbnailer = thumbnailer
         self.avThumbnailer = avThumbnailer
         self.engines = engines
+        self.audioSession = audioSession
         self.keychain = keychain
         self.lan = lan
         self.bonjour = bonjour
@@ -229,14 +234,22 @@ final class AppWorld {
     var engine: FakePlaybackEngine { engines.live }
 
     /// Mounts the player for the presenter's request, as the root host does, and waits until the
-    /// engine it built has been told to play.
+    /// engine it built has been told to play. The host unmounts the player, ending its `.task`,
+    /// once the presenter no longer shows that request, whoever dismissed it.
     @discardableResult
     func openPlayer(sourceLocation: SourceLocation = #_sourceLocation) async throws -> PlayerViewModel {
         let request = try #require(app.playback.request, "nothing asked the player to open", sourceLocation: sourceLocation)
         let built = engines.count
         let app = app
-        playerSession = Task { [weak self] in
+        let session = Task { [weak self] in
             await app.runPlayer(for: request, subtitleSurface: { PlayerFixtures.phoneSurface }) { self?.player = $0 }
+        }
+        playerSession = session
+        mount {
+            for await shown in Observations({ app.playback.request?.id == request.id }) where !shown {
+                session.cancel()
+                return
+            }
         }
         try await until({ self.engines.count > built && self.engine.calls.contains("play") }, sourceLocation: sourceLocation)
         return try #require(player, sourceLocation: sourceLocation)
@@ -264,15 +277,19 @@ final class AppWorld {
         engine.push(.failed(.assetNotPlayable))
     }
 
-    /// Closes the player the way the Close chevron does: the presenter dismisses, and the view's
-    /// disappearance ends the session.
+    /// Closes the player the way the Close chevron does, and waits for its session to end.
     func closePlayer() async {
+        await dismissPlayer().value
+    }
+
+    /// Closes the player the way the Close chevron does, without waiting: the returned session
+    /// ends once the player has stopped.
+    func dismissPlayer() -> Task<Void, Never> {
         app.playback.dismiss()
-        playerSession?.cancel()
-        await player?.stop()
-        await playerSession?.value
+        let session = playerSession ?? Task {}
         playerSession = nil
         player = nil
+        return session
     }
 
     /// The device moves to a display that plays `hdr`, and the system says HDR eligibility changed.
@@ -535,7 +552,14 @@ private final class ScriptedDisplay: CapabilityProbe, Sendable {
     }
 }
 
-private struct SilentAudioSession: AudioSessionControlling {
-    func activate() async throws {}
-    func deactivate() async {}
+/// An audio session that records every activation and deactivation, in order.
+final class RecordingAudioSession: AudioSessionControlling {
+    enum Call: Equatable { case activate, deactivate }
+
+    private let log = Mutex<[Call]>([])
+
+    var calls: [Call] { log.withLock { $0 } }
+
+    func activate() async throws { log.withLock { $0.append(.activate) } }
+    func deactivate() async { log.withLock { $0.append(.deactivate) } }
 }

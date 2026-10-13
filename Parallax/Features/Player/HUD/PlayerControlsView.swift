@@ -341,11 +341,9 @@ struct PlayerControlsView: View {
         // is held out through `isScrubbing` so the paused glyph can't flash).
         .animation(.playerStateCrossfade, value: isScrubbing)
         .onAppear { scheduleHide() }
-        // The sleeping tasks outlive a dismissed player: the seek commit would fire
-        // into a mid-teardown engine, the others write to dead @State. Cancel them.
+        // The sleeping tasks outlive a dismissed player and write to dead @State. Cancel them.
         .onDisappear {
             hideTask?.cancel()
-            vm.seekCommits.cancel()
             seekFlashDismissTask?.cancel()
             scrubCommitTask?.cancel()
         }
@@ -1341,16 +1339,11 @@ struct PlayerControlsView: View {
         .allowsHitTesting(false)
     }
 
-    /// Accumulate the burst's target into `vm.seekCommits`; it fires ONE seek after the taps
+    /// Accumulate the burst's target into the view model; it fires ONE seek after the taps
     /// settle — per-tap seeks thrash a transcode and wedge the player (the tvOS click-seek
     /// lesson).
     private func scheduleSeekCommit(to target: Double) {
-        vm.seekCommits.schedule(target) { target in
-            // Routed through `commitSeek` (not a bare `seek`) so an out-of-buffer re-encode
-            // transcode's force-resuming re-anchor (#15845) can't un-pause a paused user. It
-            // fires 400ms after the last tap and reads the intent when it lands, not now.
-            await vm.commitSeek(to: CMTime(seconds: target, preferredTimescale: 600))
-        }
+        vm.scheduleSeek(to: target)
     }
 
     private func scheduleSeekFlashDismissal() {
@@ -1367,7 +1360,7 @@ struct PlayerControlsView: View {
     private func cancelPendingSeek() {
         // A burst whose commit is dropped must not leave the bar split.
         vm.cancelPreview()
-        vm.seekCommits.cancel()
+        vm.cancelPendingSeek()
         seekFlashDismissTask?.cancel()
         seekFlash = nil
     }

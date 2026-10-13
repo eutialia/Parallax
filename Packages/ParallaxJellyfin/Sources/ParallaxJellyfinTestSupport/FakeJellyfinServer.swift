@@ -310,6 +310,10 @@ public final class FakeJellyfinServer: Sendable {
         case all
         /// Only the library list (`/UserViews`).
         case libraryList
+        /// Only the PlaybackStopped reports.
+        case playbackStops
+        /// Only the transcode kills (`/Videos/ActiveEncodings`).
+        case encodingKills
     }
 
     /// Leaves the chosen requests from now on unanswered until `releaseResponses()`, which answers
@@ -319,8 +323,11 @@ public final class FakeJellyfinServer: Sendable {
         case .all:
             transport.holdReplies()
         case .libraryList:
-            let libraryList = Self.route(Paths.getUserViews()).split(separator: " ").last.map(String.init)
-            transport.holdReplies { $0 == libraryList }
+            transport.holdReplies { $0 == Self.path(of: Paths.getUserViews()) }
+        case .playbackStops:
+            transport.holdReplies { $0 == Self.path(of: Paths.reportPlaybackStopped()) }
+        case .encodingKills:
+            transport.holdReplies { $0 == Self.path(of: Paths.stopEncodingProcess(deviceID: "", playSessionID: "")) }
         }
     }
 
@@ -424,7 +431,11 @@ public final class FakeJellyfinServer: Sendable {
     private static let indexPlaceholder = Int.min
 
     private static func route<Response>(_ request: Request<Response>) -> String {
-        "\(request.method.rawValue) \(request.url?.path ?? "")"
+        "\(request.method.rawValue) \(path(of: request))"
+    }
+
+    private static func path<Response>(of request: Request<Response>) -> String {
+        request.url?.path ?? ""
     }
 
     /// The last path parameter when `requested` fits `route` ("" when the route has none), else
