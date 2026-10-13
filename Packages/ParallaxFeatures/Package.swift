@@ -31,9 +31,13 @@ let package = Package(
                 "ParallaxPlayback",
                 "ParallaxSubtitles",
             ],
+            // The app target's Approachable Concurrency: a nonisolated async function runs on its
+            // caller's actor unless it is `@concurrent`. Swift 6 mode already has the rest of it.
             swiftSettings: [
                 .swiftLanguageMode(.v6),
                 .defaultIsolation(MainActor.self),
+                .enableUpcomingFeature("NonisolatedNonsendingByDefault"),
+                .enableUpcomingFeature("InferIsolatedConformances"),
             ]
         ),
         .testTarget(
@@ -49,6 +53,8 @@ let package = Package(
             ],
             swiftSettings: [
                 .swiftLanguageMode(.v6),
+                .enableUpcomingFeature("NonisolatedNonsendingByDefault"),
+                .enableUpcomingFeature("InferIsolatedConformances"),
             ]
         ),
     ]

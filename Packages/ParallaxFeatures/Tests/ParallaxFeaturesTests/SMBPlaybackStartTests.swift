@@ -30,11 +30,12 @@ struct SMBPlaybackStartTests {
         // domain, so every test here that drives a `.playing` beat was writing live app state.
         smbResumeStore: SMBResumeStore? = nil,
         subtitleStyle: @escaping @MainActor () -> SubtitleStyle = { .standard },
-        observeLibraryOptions: @escaping @MainActor @Sendable ([String]?) -> Void = { _ in }
+        observeLibraryOptions: @escaping @MainActor @Sendable ([String]?) -> Void = { _ in },
+        clock: TestClock = TestClock()
     ) -> PlayerViewModel {
         return PlayerViewModel(
             deviceProfileBuilder: makeTestDeviceProfileBuilder(),
-            clock: TestClock(),
+            clock: clock,
             playbackInfo: reporting,
             resolve: { _, _, _, _ in
                 Issue.record("SMB playback must not call the Jellyfin resolve")
@@ -382,6 +383,39 @@ struct SMBPlaybackStartTests {
             } else {
                 #expect(resumed == nil)
             }
+        }
+    }
+
+    /// The beats come faster than the store should be written, so a playing session persists at
+    /// most once per 10 s of the player's clock. The first beat always writes.
+    @Test("a playing SMB session persists its position at most once every 10 seconds")
+    func resumeWritesAreThrottledOnTheClock() async throws {
+        try await SMBTestFixtures.withResumeStore(suite: #function) { store in
+            let clock = TestClock()
+            let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+            let vm = makeVM(reporting: StubPlaybackReporting(), engine: engine, smbResumeStore: store, clock: clock)
+            let id = ItemID(rawValue: "smb-resume-throttle")
+            let stored = { await store.resumeTime(for: id).map(CMTimeGetSeconds) }
+            await vm.start(smbItem: smbItem(itemID: id))
+
+            engine.push(.playing(100, duration: .seconds(6_000)))
+            try await engine.settle()
+            await waitUntil("the first beat never wrote its position") { await stored() == 100 }
+
+            clock.advance(by: .seconds(9))
+            engine.push(.playing(109, duration: .seconds(6_000)))
+            try await engine.settle()
+            // A save is fire-and-forget, so a wrongly spawned one gets a short window to land.
+            let window = ContinuousClock.now + .milliseconds(100)
+            while await stored() == 100, ContinuousClock.now < window {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            #expect(await stored() == 100, "a beat inside the window wrote its position")
+
+            clock.advance(by: .seconds(1))
+            engine.push(.playing(110, duration: .seconds(6_000)))
+            try await engine.settle()
+            await waitUntil("the beat 10 s later never wrote its position") { await stored() == 110 }
         }
     }
 

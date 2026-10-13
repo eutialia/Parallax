@@ -20,9 +20,10 @@ private struct SMBSessionState {
     /// when false — an estimate must never wipe real progress. Reset with the whole session,
     /// so a later Jellyfin/SMB session can't inherit a stale false. (`hasTrustworthyDuration`.)
     var hasTrustworthyDuration: Bool
-    /// Last time a resume position was persisted — throttles the `.playing`/`.paused` beat
-    /// writes to one per ~10s, mirroring the Jellyfin progress-report cadence.
-    var lastResumeWrite: Date = .distantPast
+    /// When a resume position was last persisted, on `PlayerViewModel.elapsed` — throttles the
+    /// `.playing`/`.paused` beat writes to one per ~10s, mirroring the Jellyfin progress-report
+    /// cadence. Nil until the first write, which always goes out.
+    var lastResumeWrite: Duration?
     /// The in-flight throttled save spawned by `saveSMBResumeThrottled`, cancelled and
     /// replaced on each new save. A stale save must not outrun a terminal write: `stop()` and
     /// `.ended` await it (via `clearSMBSession()`) before their own save/clear, so a delayed
@@ -646,8 +647,13 @@ public final class PlayerViewModel {
 
     private let deviceProfileBuilder: DeviceProfileBuilder
     /// Every timer the player runs: the stall debounce, the keepalive, the delivery probe, the
-    /// thumbnail backfill and the reload's resolve deadline.
+    /// thumbnail backfill, the reload's resolve deadline, the seek-hold watchdog and the SMB
+    /// resume throttle.
     private let clock: any Clock<Duration>
+    /// `clock` read as time since this view model was built.
+    private let elapsed: @Sendable () -> Duration
+    /// Folds a burst of ±10s seek taps (iOS double-tap) or clicks (tvOS) into one seek.
+    public let seekCommits: SeekCommitCoalescer
     /// The Jellyfin play session's reports, encode kill and keepalive. See `SessionReporter`.
     private let reporter: SessionReporter
     private let resolve: ResolveCall
@@ -747,13 +753,13 @@ public final class PlayerViewModel {
     private var seekHoldWatchdogTask: Task<Void, Never>?
 
     /// Cancellation is the whole supersession story: every restart cancels the standing task,
-    /// and a cancelled task declines after its wait whether or not the injected sleep cut that
+    /// and a cancelled task declines after its wait whether or not the sleep cut that
     /// wait short. Only a wait that RAN OUT ends the hold: a wait that threw, for cancellation
     /// or anything else, is not a budget that was spent.
     private func armSeekHoldWatchdog() {
         seekHoldWatchdogTask?.cancel()
-        seekHoldWatchdogTask = Task { [weak self, seekHoldWatchdog] in
-            do { try await seekHoldWatchdog(SeekHold.watchdog) } catch { return }
+        seekHoldWatchdogTask = Task { [weak self, clock] in
+            do { try await clock.sleep(for: SeekHold.watchdog) } catch { return }
             guard !Task.isCancelled, let self else { return }
             // Releasing without a position, which is the whole difference between this exit and
             // `absorb`'s: there was no beat for the whole budget — that is the wedge — and the
@@ -864,9 +870,8 @@ public final class PlayerViewModel {
     /// Deadline for the re-resolve inside an engine-reusing reload (re-anchor / track
     /// switch). That span shows the "Buffering" scrim with NO watchdog armed yet —
     /// `LoadWatchdog`/`StallWatchdog` only arm from `engine.play()` — so an unbounded
-    /// resolve left the scrim up forever (tvOS field report, 2026-07-20). Injectable
-    /// so tests can force the timeout without waiting wall-clock seconds.
-    private let reloadResolveDeadline: Duration
+    /// resolve left the scrim up forever (tvOS field report, 2026-07-20).
+    static let reloadResolveDeadline: Duration = .seconds(15)
 
     /// SMB-only thumbnail backfill sink: `(duration, engine.captureFramePerformsIO, captureFrame)
     /// → Void`. Default no-op so the Jellyfin construction site (and every test fixture) compiles
@@ -876,13 +881,7 @@ public final class PlayerViewModel {
     private let backfillThumbnail: @Sendable (Duration?, Bool, @escaping @Sendable () async -> Data?) async -> Void
 
     /// Delay before the SMB thumbnail backfill grabs its frame — see `scheduleThumbnailBackfill()`.
-    /// Injectable so tests don't wait wall-clock seconds for it to fire.
-    private let backfillDelay: Duration
-
-    /// The seek-hold watchdog's wait — see `armSeekHoldWatchdog()`. Injectable for one
-    /// reason: `SeekHold.watchdog` is 20 s, and the branch it guards (an engine that stops
-    /// beating forever) is otherwise only reachable by a test that waits 20 wall-clock seconds.
-    private let seekHoldWatchdog: @Sendable (Duration) async throws -> Void
+    static let backfillDelay: Duration = .seconds(8)
 
     /// Builds what the engine loads, from a resolved stream or an SMB file.
     private let assets: PlayerAssetFactory
@@ -906,24 +905,19 @@ public final class PlayerViewModel {
         rememberTrackSelection: @escaping @Sendable (TrackSelectionUpdate) async -> Void = { _ in },
         fetchSegments: @escaping @Sendable (ItemID) async -> [MediaSegment] = { _ in [] },
         fetchAdjacent: @escaping @Sendable (ItemID, ItemID) async -> AdjacentEpisodes = { _, _ in .none },
-        keepaliveInterval: Duration = .seconds(30),
         fetchDelivery: @escaping @Sendable (String) async -> TranscodeDelivery? = { _ in nil },
-        deliveryProbeSchedule: [Duration] = [.seconds(2), .seconds(5)],
-        reloadResolveDeadline: Duration = .seconds(15),
         smbResumeStore: SMBResumeStore,
         backfillThumbnail: @escaping @Sendable (Duration?, Bool, @escaping @Sendable () async -> Data?) async -> Void = { _, _, _ in },
-        backfillDelay: Duration = .seconds(8),
         subtitleStyle: @escaping @MainActor () -> SubtitleStyle = { .standard },
         subtitleSurface: @escaping @MainActor () -> SubtitleSurface,
         engineSubtitleFonts: @escaping @Sendable (SubtitleFontBundle.Design) -> EngineSubtitleFonts,
         prepareDisplay: @escaping @MainActor (any PlaybackEngine) async -> Void = { _ in },
-        seekHoldWatchdog: @escaping @Sendable (Duration) async throws -> Void = {
-            try await Task.sleep(for: $0)
-        },
         fetchArtwork: @escaping @Sendable (ItemDetail) async -> Data? = { _ in nil }
     ) {
         self.deviceProfileBuilder = deviceProfileBuilder
         self.clock = clock
+        self.elapsed = clock.stopwatch()
+        self.seekCommits = SeekCommitCoalescer(clock: clock)
         self.stall = StallDebounce(clock: clock)
         self.resolve = resolve
         self.engineFactory = engineFactory
@@ -933,21 +927,16 @@ public final class PlayerViewModel {
         self.sidecar = SidecarSubtitles(subtitleFetch: subtitleFetch)
         self.rememberTrackSelection = rememberTrackSelection
         self.succession = EpisodeSuccession(fetchSegments: fetchSegments, fetchAdjacent: fetchAdjacent)
-        self.reporter = SessionReporter(playbackInfo: playbackInfo, clock: clock, keepaliveInterval: keepaliveInterval)
-        self.diagnostics = SessionDiagnostics(
-            clock: clock, fetchDelivery: fetchDelivery, deliveryProbeSchedule: deliveryProbeSchedule
-        )
-        self.reloadResolveDeadline = reloadResolveDeadline
+        self.reporter = SessionReporter(playbackInfo: playbackInfo, clock: clock)
+        self.diagnostics = SessionDiagnostics(clock: clock, fetchDelivery: fetchDelivery)
         self.smbResumeStore = smbResumeStore
         self.backfillThumbnail = backfillThumbnail
-        self.backfillDelay = backfillDelay
         self.assets = PlayerAssetFactory(
             subtitleStyle: subtitleStyle,
             subtitleSurface: subtitleSurface,
             engineSubtitleFonts: engineSubtitleFonts
         )
         self.prepareDisplay = prepareDisplay
-        self.seekHoldWatchdog = seekHoldWatchdog
         self.accent = PlayerAccent(fetchArtwork: fetchArtwork)
     }
 
@@ -1288,8 +1277,9 @@ public final class PlayerViewModel {
     /// into the store actor so a beat never blocks on UserDefaults.
     private func saveSMBResumeThrottled() {
         guard let session = smbSession else { return }
-        guard Date.now.timeIntervalSince(session.lastResumeWrite) >= 10 else { return }
-        smbSession?.lastResumeWrite = .now
+        let now = elapsed()
+        if let last = session.lastResumeWrite, now - last < .seconds(10) { return }
+        smbSession?.lastResumeWrite = now
         let position = currentPosition
         let duration = (hasKnownDuration && session.hasTrustworthyDuration) ? currentDuration : nil
         let itemID = session.itemID
@@ -1326,13 +1316,11 @@ public final class PlayerViewModel {
     /// never affect playback. Cancelled on session teardown (`stop()`, `tearDownEngine()`, deinit).
     private func scheduleThumbnailBackfill() {
         thumbnailBackfillTask?.cancel()
-        // The delay is read HERE, and `self` is only reached after it: holding a strong `self`
-        // across an 8s sleep pins the whole view model for the length of the delay and puts the
-        // `isolated deinit`'s cancel out of reach. Same shape as the stall debounce /
-        // the delivery probe.
-        let delay = backfillDelay
+        // `self` is only reached after the sleep: holding a strong `self` across an 8s sleep
+        // pins the whole view model for the length of the delay and puts the `isolated deinit`'s
+        // cancel out of reach. Same shape as the stall debounce / the delivery probe.
         thumbnailBackfillTask = Task(priority: .low) { [weak self, clock] in
-            try? await clock.sleep(for: delay)
+            try? await clock.sleep(for: Self.backfillDelay)
             guard !Task.isCancelled, let self else { return }
             guard let session = self.smbSession, let engine = self.engine else { return }
             // Duration sampled NOW (not at schedule time): playback has progressed ~8s, and
@@ -1377,15 +1365,15 @@ public final class PlayerViewModel {
             // armed yet (see `reloadResolveDeadline`) — bound it, so a wedged
             // negotiation becomes the ordinary fallback (old stream resumes, the
             // failure is loud, the next scrub retries) instead of a stuck scrim.
-            let resolveStart = ContinuousClock.now
-            resolved = try await Self.withDeadline(reloadResolveDeadline, on: clock) { [resolve] in
+            let resolveStart = elapsed()
+            resolved = try await Self.withDeadline(Self.reloadResolveDeadline, on: clock) { [resolve] in
                 try await resolve(item.id, caps, startTime, selection)
             }
             // The second leg of the boundary trail (see `performTranscodeReload`): how long the
             // server took to hand back a replacement stream, and which play session it opened.
             Log.playback.info(
                 """
-                reload resolve: \(SessionDiagnostics.millis(since: resolveStart), privacy: .public)ms \
+                reload resolve: \(SessionDiagnostics.millis(self.elapsed() - resolveStart), privacy: .public)ms \
                 playSession=\(resolved.playSessionID, privacy: .public)
                 """
             )
@@ -1574,7 +1562,7 @@ public final class PlayerViewModel {
             // The load's return value IS the boundary: from here on this is the only session
             // whose beats this view model adopts, and everything the media it replaced still
             // has in flight is stamped with a session that no longer matches.
-            let loadStart = ContinuousClock.now
+            let loadStart = elapsed()
             let opened = try await engine.load(asset)
             // The re-anchor trail, and the only place it is emitted: a session transition is
             // the one event every silent failure in this path has in common, and it is a fact
@@ -1588,7 +1576,7 @@ public final class PlayerViewModel {
                 origin=\(isFreshSession ? "fresh" : (reusingEngine ? "reload" : "reroute"), privacy: .public) \
                 engine=\(rebuilt ? "rebuilt" : "reused", privacy: .public) \
                 at=\(CMTimeGetSeconds(asset.startTime ?? .zero), format: .fixed(precision: 1), privacy: .public)s \
-                load=\(SessionDiagnostics.millis(since: loadStart), privacy: .public)ms \
+                load=\(SessionDiagnostics.millis(self.elapsed() - loadStart), privacy: .public)ms \
                 playSession=\(self.resolved?.playSessionID ?? "—", privacy: .public)
                 """
             )
@@ -2725,7 +2713,7 @@ public final class PlayerViewModel {
             // was closed above: that failure — and every ordinary beat the abandoned item keeps
             // publishing at the pre-scrub clock — carries a session no longer active, so `handle`
             // drops it.
-            let boundary = ContinuousClock.now
+            let boundary = elapsed()
             await reporter.stopEncodingIfNeeded(for: resolved)
             try checkStillActive(generation: generation)
             // The stop report names the session `resolved` points at — which is the REPLACEMENT's
@@ -2742,7 +2730,7 @@ public final class PlayerViewModel {
                 """
                 reload boundary: superseded=\(superseded?.description ?? "none", privacy: .public) \
                 playSession=\(closingPlaySession ?? "—", privacy: .public) \
-                killed+reported in \(SessionDiagnostics.millis(since: boundary), privacy: .public)ms, \
+                killed+reported in \(SessionDiagnostics.millis(self.elapsed() - boundary), privacy: .public)ms, \
                 re-resolving at \(CMTimeGetSeconds(resume), format: .fixed(precision: 1), privacy: .public)s
                 """
             )

@@ -39,7 +39,7 @@ public struct HardTimeoutError: Error, Sendable {
 ///   - operation: the work being raced.
 public func withHardTimeout<T: Sendable>(
     seconds: TimeInterval,
-    sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { try await Task.sleep(for: .seconds($0)) },
+    sleep: @escaping @Sendable (TimeInterval) async throws -> Void,
     settlement: SMBOperationSettlement? = nil,
     operation: @escaping @Sendable () async throws -> T
 ) async throws -> T {

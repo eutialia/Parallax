@@ -6,7 +6,7 @@ import ParallaxFeatures
 /// destructive "Clear" text button — matching `iph-root`. tvOS makes the WHOLE row the action ("Clear
 /// Thumbnail Cache", size trailing), since the remote focuses the row, not a tiny inline button.
 struct ThumbnailCacheCard: View {
-    @Environment(AppDependencies.self) private var deps
+    @Environment(AppModel.self) private var app
 
     /// nil until the first size read completes; reset to 0 right after a clear.
     @State private var byteCount: Int64?
@@ -28,7 +28,7 @@ struct ThumbnailCacheCard: View {
             cacheRow
             #endif
         }
-        .task { byteCount = await deps.mediaArtworkProvider.cacheSize() }
+        .task { byteCount = await app.services.mediaArtworkProvider.cacheSize() }
         .confirmationDialog("Clear thumbnail cache?", isPresented: $isConfirming, titleVisibility: .visible) {
             Button("Clear Cache", role: .destructive) { Task { await clear() } }
             Button("Cancel", role: .cancel) {}
@@ -83,7 +83,7 @@ struct ThumbnailCacheCard: View {
 
     private func clear() async {
         isClearing = true
-        await deps.mediaArtworkProvider.clearCache()
+        await app.services.mediaArtworkProvider.clearCache()
         byteCount = 0
         isClearing = false
     }

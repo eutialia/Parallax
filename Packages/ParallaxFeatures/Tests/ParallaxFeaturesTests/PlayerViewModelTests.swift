@@ -933,8 +933,7 @@ struct PlayerViewModelTests {
             clock: clock,
             resolve: { _, _, start, _ in resolveCalls.append(start); return resolved },
             engine: engine,
-            fetchDelivery: { _ in delivery },
-            deliveryProbeSchedule: [.milliseconds(10)]
+            fetchDelivery: { _ in delivery }
         )
         await vm.start(item: PlayerFixtures.movieDetail())
         #expect(resolveCalls.count == 1)
@@ -982,8 +981,7 @@ struct PlayerViewModelTests {
             clock: clock,
             resolve: { _, _, _, _ in resolved },
             engine: engine,
-            fetchDelivery: { _ in nil },
-            deliveryProbeSchedule: [.milliseconds(5), .milliseconds(5)]
+            fetchDelivery: { _ in nil }
         )
         await vm.start(item: PlayerFixtures.movieDetail())
         #expect(vm.deliveryProbeExhausted == false)   // not armed until the first .playing beat
@@ -992,9 +990,9 @@ struct PlayerViewModelTests {
         // seek gate conservative (nil delivery) rather than stuck reading "probing…".
         // Each entry parks beside the keepalive.
         engine.push(.playing(10))
-        for _ in 0..<2 {
+        for wait in SessionDiagnostics.deliveryProbeSchedule {
             await clock.waitForSleepers(2)
-            clock.advance(by: .milliseconds(5))
+            clock.advance(by: wait)
         }
         try await requireEventually({ vm.deliveryProbeExhausted }, "the probe never gave up")
 
@@ -1139,8 +1137,7 @@ struct PlayerViewModelTests {
             clock: clock,
             resolve: { _, _, start, _ in resolveCalls.append(start); return resolved },
             engine: engine,
-            fetchDelivery: { _ in delivery },
-            deliveryProbeSchedule: [.milliseconds(10)]
+            fetchDelivery: { _ in delivery }
         )
         await vm.start(item: PlayerFixtures.movieDetail())
         let loadsAfterStart = engine.loadedAssets.count
@@ -1362,50 +1359,6 @@ struct PlayerViewModelTests {
 
     // MARK: - The reload window — from "we are reloading" to "the new session is open"
 
-    /// Parks the RELOAD's re-resolve, so a test can act inside the window between the app
-    /// committing to a reload (the standing session's encode job is already dead) and
-    /// `engine.load()` opening the replacement. That window is multi-second on device, and it
-    /// is where the abandoned item's own beats land.
-    private final class ReloadResolveGate: @unchecked Sendable {
-        private let lock = NSLock()
-        private var continuation: CheckedContinuation<Void, Never>?
-        private var isReleased = false
-        private var isParked = false
-        private var calls = 0
-
-        /// True while the re-resolve is suspended here — `waitUntil`-friendly proof that the
-        /// test really is inside the window, rather than a guess about scheduling.
-        var parked: Bool { lock.withLock { isParked } }
-
-        /// Parks the SECOND resolve only: the first is the fixture's own `start()`.
-        func parkIfReload() async {
-            let shouldPark = lock.withLock { () -> Bool in
-                calls += 1
-                return calls == 2 && !isReleased
-            }
-            guard shouldPark else { return }
-            await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-                let resumeNow = lock.withLock { () -> Bool in
-                    guard !isReleased else { return true }
-                    continuation = c
-                    isParked = true
-                    return false
-                }
-                if resumeNow { c.resume() }
-            }
-        }
-
-        func release() {
-            let due = lock.withLock { () -> CheckedContinuation<Void, Never>? in
-                isReleased = true
-                isParked = false
-                defer { continuation = nil }
-                return continuation
-            }
-            due?.resume()
-        }
-    }
-
     /// The device-observed decode scrim over a reload that went on to succeed. The engine's
     /// stamp only advances inside `engine.load()`, seconds after the reload killed the outgoing
     /// ffmpeg job — so for that whole window the ABANDONED item is still the active session, and
@@ -1414,25 +1367,27 @@ struct PlayerViewModelTests {
     /// be dropped from that moment, not from the load.
     @Test("a dead playlist's failure inside the reload window never reaches the scrim")
     func deadPlaylistFailureInsideTheReloadWindowIsDropped() async throws {
-        let gate = ReloadResolveGate()
+        // Parks the reload's re-resolve: the window between the app committing to a reload (the
+        // standing session's encode job is already dead) and `engine.load()` opening the
+        // replacement. Multi-second on device, and where the abandoned item's own beats land.
+        let gate = ResolveGate()
         let (vm, engines) = try await makeReanchorVM(at: 600, resolve: { _, _, _, _ in
-            await gate.parkIfReload()
+            await gate.wait()
             return PlayerFixtures.resolvedMultiTrackTranscode()
         })
         let engine = engines.live
         let standing = engine.session
 
-        let commit = Task {
+        let commit = try await startReload(gate, on: vm, "the reload never reached its re-resolve") {
             await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
         }
-        await waitUntil("the reload never reached its re-resolve") { gate.parked }
 
         // The item the reload left mounted, failing on the playlist whose job it just killed.
         engine.push(.failed(.assetNotPlayable), from: standing)
         try await engine.settle()
         #expect(vm.phase == .loading, "the abandoned item's failure took the reload's scrim")
 
-        gate.release()
+        gate.open()
         await commit.value
 
         #expect(engine.session != standing, "the reload never opened a new session")
@@ -1453,18 +1408,20 @@ struct PlayerViewModelTests {
     /// appeared. The beat is not the hold's to judge; it belongs to a session that is over.
     @Test("a standing-session beat inside the reload window cannot move the clock")
     func standingSessionBeatsInsideTheReloadWindowCannotMoveTheClock() async throws {
-        let gate = ReloadResolveGate()
+        // Parks the reload's re-resolve: the window between the app committing to a reload (the
+        // standing session's encode job is already dead) and `engine.load()` opening the
+        // replacement. Multi-second on device, and where the abandoned item's own beats land.
+        let gate = ResolveGate()
         let (vm, engines) = try await makeReanchorVM(at: 600, resolve: { _, _, _, _ in
-            await gate.parkIfReload()
+            await gate.wait()
             return PlayerFixtures.resolvedMultiTrackTranscode()
         })
         let engine = engines.live
         let standing = engine.session
 
-        let commit = Task {
+        let commit = try await startReload(gate, on: vm, "the reload never reached its re-resolve") {
             await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
         }
-        await waitUntil("the reload never reached its re-resolve") { gate.parked }
 
         engine.push(.playing(600, provenance: .observed), from: standing)
         try await engine.settle()
@@ -1474,7 +1431,7 @@ struct PlayerViewModelTests {
         #expect(vm.seekHold != nil, "the abandoned stream's observed beat released the hold")
         #expect(vm.phase == .loading)
 
-        gate.release()
+        gate.open()
         await commit.value
         #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000)
     }
@@ -1650,6 +1607,24 @@ struct PlayerViewModelTests {
         #expect(events.contains(.stopped(ticks: 3_000 * 10_000_000, itemID: "movie-1")))
     }
 
+    /// Moves `clock` on by `duration` once `parked` sleeps stand on it: the seek-hold watchdog
+    /// and the transcode keepalive, plus the delivery probe once a beat has opened the session.
+    private func runOutSeekHoldWatchdog(
+        on clock: TestClock, by duration: Duration = SeekHold.watchdog, parked: Int = 2
+    ) async {
+        await clock.waitForSleepers(parked)
+        clock.advance(by: duration)
+    }
+
+    /// A hold that has to survive the time the test just ran out. A watchdog that wrongly woke
+    /// releases it on a later MainActor turn, so this watches a short window before judging.
+    private func expectHoldStands(
+        _ vm: PlayerViewModel, _ what: Comment, sourceLocation: SourceLocation = #_sourceLocation
+    ) async throws {
+        try await pollUntil({ vm.seekHold == nil }, timeout: .milliseconds(100))
+        #expect(vm.seekHold != nil, what, sourceLocation: sourceLocation)
+    }
+
     /// The watchdog exit is the one release that is NOT the engine handing the position back,
     /// so it carries no position at all. The last thing a wedged engine said before it went
     /// quiet is the pre-seek clock; ending the hold is right — nothing else can unfreeze the
@@ -1658,17 +1633,15 @@ struct PlayerViewModelTests {
     @Test("the watchdog drops a wedged hold without adopting the stale clock under it")
     func watchdogReleaseNeverAdoptsTheStaleClock() async throws {
         let reporting = StubPlaybackReporting()
-        let watchdog = SeekHoldWatchdogGate()
-        let (vm, engines) = try await makeReanchorVM(at: 600, reporting: reporting,
-                                                     seekHoldWatchdog: watchdog.sleep)
+        let clock = TestClock()
+        let (vm, engines) = try await makeReanchorVM(at: 600, reporting: reporting, clock: clock)
         let engine = engines.live
 
         await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
         engine.push(.playing(0, provenance: .stale))
         try await engine.settle()
-        try await requireEventually({ watchdog.armings == 2 }, "the beat never restarted the watchdog")
 
-        watchdog.fire()
+        await runOutSeekHoldWatchdog(on: clock)
         try await requireEventually({ vm.seekHold == nil }, "the watchdog never released the hold")
         #expect(CMTimeGetSeconds(vm.currentPosition) == 3_000)   // the bar did not snap back
 
@@ -1682,13 +1655,12 @@ struct PlayerViewModelTests {
     /// position outright instead of waiting for a second watchdog.
     @Test("after the watchdog release the next observed beat owns the position")
     func watchdogReleasedHoldFollowsTheNextObservedBeat() async throws {
-        let watchdog = SeekHoldWatchdogGate()
-        let (vm, engines) = try await makeReanchorVM(at: 600, seekHoldWatchdog: watchdog.sleep)
+        let clock = TestClock()
+        let (vm, engines) = try await makeReanchorVM(at: 600, clock: clock)
         let engine = engines.live
 
         await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
-        try await requireEventually({ watchdog.armings == 1 }, "the commit never armed a watchdog")
-        watchdog.fire()
+        await runOutSeekHoldWatchdog(on: clock)
         try await requireEventually({ vm.seekHold == nil }, "the watchdog never released the hold")
 
         engine.push(.playing(3_001))
@@ -1768,15 +1740,15 @@ struct PlayerViewModelTests {
     /// unstick it, because the idle timer only re-arms when the flight ends.
     @Test("the watchdog fires with no beat at all, and the flight goes with the hold")
     func watchdogFiresWithNoBeatAtAll() async throws {
-        let watchdog = SeekHoldWatchdogGate()
-        let (vm, _) = try await makeReanchorVM(at: 600, seekHoldWatchdog: watchdog.sleep)
+        let clock = TestClock()
+        let (vm, _) = try await makeReanchorVM(at: 600, clock: clock)
         await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
         #expect(vm.seekHold != nil)
         #expect(vm.flight != nil)
-        try await requireEventually({ watchdog.armings == 1 }, "the commit never armed a watchdog")
-        #expect(watchdog.requested == [SeekHold.watchdog], "the watchdog spends a different deadline")
 
-        watchdog.fire()
+        await runOutSeekHoldWatchdog(on: clock, by: SeekHold.watchdog - .milliseconds(1))
+        try await expectHoldStands(vm, "the watchdog fired before its budget ran out")
+        clock.advance(by: .milliseconds(1))
 
         try await requireEventually({ vm.seekHold == nil }, "the hold outlived its watchdog")
         #expect(vm.flight == nil, "the HUD stays pinned for as long as the flight stands")
@@ -1788,22 +1760,19 @@ struct PlayerViewModelTests {
     /// the bar back to a stream still re-anchoring at the newer target.
     @Test("a re-scrub re-arms the watchdog — the superseded one cannot drop the hold that replaced it")
     func reScrubReArmsTheWatchdog() async throws {
-        let watchdog = SeekHoldWatchdogGate()
-        let (vm, _) = try await makeReanchorVM(at: 600, seekHoldWatchdog: watchdog.sleep)
+        let clock = TestClock()
+        let (vm, _) = try await makeReanchorVM(at: 600, clock: clock)
         await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
-        try await requireEventually({ watchdog.armings == 1 }, "the commit never armed a watchdog")
+        await runOutSeekHoldWatchdog(on: clock, by: .seconds(10))
         await vm.commitSeek(to: CMTime(seconds: 4_000, preferredTimescale: 600))
-        try await requireEventually({ watchdog.armings == 2 }, "the re-scrub never re-armed")
 
-        // The superseded watchdog has to RUN and decline for the negative below to be an
-        // observation rather than a race.
-        watchdog.fire(0)
-        try await requireEventually({ watchdog.completed.contains(0) }, "the superseded watchdog never ran")
-        #expect(CMTimeGetSeconds(vm.seekHold?.target ?? .invalid) == 4_000,
-                "the first commit's watchdog dropped the hold that replaced it")
+        // Past the first commit's deadline, short of the re-scrub's.
+        await runOutSeekHoldWatchdog(on: clock, by: SeekHold.watchdog - .seconds(10))
+        try await expectHoldStands(vm, "the first commit's watchdog dropped the hold that replaced it")
+        #expect(CMTimeGetSeconds(vm.seekHold?.target ?? .invalid) == 4_000)
 
         // …and the hold that stands has a live deadline of its own, not an inherited one.
-        watchdog.fire(1)
+        clock.advance(by: .seconds(10))
         try await requireEventually({ vm.seekHold == nil }, "the re-armed watchdog never fired")
     }
 
@@ -1814,21 +1783,20 @@ struct PlayerViewModelTests {
     /// its own 15 s ceiling plus a slow stream open tripped it under a live buffering scrim.
     @Test("a beat inside the window restarts the deadline — a slow, alive seek is not a wedge")
     func beatInsideTheWindowRestartsTheWatchdog() async throws {
-        let watchdog = SeekHoldWatchdogGate()
-        let (vm, engines) = try await makeReanchorVM(at: 600, seekHoldWatchdog: watchdog.sleep)
+        let clock = TestClock()
+        let (vm, engines) = try await makeReanchorVM(at: 600, clock: clock)
         let engine = engines.live
         await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
-        try await requireEventually({ watchdog.armings == 1 }, "the commit never armed a watchdog")
+        await runOutSeekHoldWatchdog(on: clock, by: .seconds(10))
 
         engine.push(.paused(3_000, provenance: .projected))
         try await engine.settle()
-        try await requireEventually({ watchdog.armings == 2 }, "the beat never restarted the deadline")
 
-        watchdog.fire(0)
-        try await requireEventually({ watchdog.completed.contains(0) }, "the superseded watchdog never ran")
-        #expect(vm.seekHold != nil, "the deadline the beat retired dropped the hold")
+        // Past the commit's deadline, short of the one the beat restarted.
+        await runOutSeekHoldWatchdog(on: clock, by: SeekHold.watchdog - .seconds(10))
+        try await expectHoldStands(vm, "the deadline the beat retired dropped the hold")
 
-        watchdog.fire(1)
+        clock.advance(by: .seconds(10))
         try await requireEventually({ vm.seekHold == nil }, "the restarted deadline never fired")
     }
 
@@ -2381,8 +2349,7 @@ struct PlayerViewModelTests {
             resolve: { _, _, _, _ in resolved },
             engine: engine,
             subtitleFetch: { _ in Data() },
-            fetchDelivery: { _ in reencode },
-            deliveryProbeSchedule: [.milliseconds(10)]
+            fetchDelivery: { _ in reencode }
         )
         await vm.start(item: PlayerFixtures.movieDetail())
         let loadsAfterStart = engine.loadedAssets.count
@@ -2442,8 +2409,7 @@ struct PlayerViewModelTests {
             },
             engine: engine,
             subtitleFetch: { _ in Data() },
-            fetchDelivery: { _ in reencode },
-            deliveryProbeSchedule: [.milliseconds(10)]
+            fetchDelivery: { _ in reencode }
         )
         await vm.start(item: PlayerFixtures.movieDetail())
         let loadsAfterStart = engine.loadedAssets.count
@@ -2514,8 +2480,7 @@ struct PlayerViewModelTests {
                 return resolved
             },
             engine: engine,
-            subtitleFetch: { _ in Data() },
-            reloadResolveDeadline: .milliseconds(80)
+            subtitleFetch: { _ in Data() }
         )
         await vm.start(item: PlayerFixtures.movieDetail())
         let loadsAfterStart = engine.loadedAssets.count
@@ -2533,9 +2498,10 @@ struct PlayerViewModelTests {
         engine.bufferedRange = 0...120
         let commit = Task { await vm.commitSeek(to: CMTime(seconds: 3000, preferredTimescale: 600)) }
         for await _ in wedged { break }
-        // The keepalive and the reload's deadline: the reload retired the delivery probe.
-        await clock.waitForSleepers(2)
-        clock.advance(by: .milliseconds(80))
+        // The keepalive, the seek-hold watchdog and the reload's deadline: the reload retired
+        // the delivery probe.
+        await clock.waitForSleepers(3)
+        clock.advance(by: PlayerViewModel.reloadResolveDeadline)
         await commit.value
 
         #expect(resolveCalls == 2)                                // re-anchor attempted once
@@ -2639,8 +2605,7 @@ struct PlayerViewModelTests {
             fetchDelivery: { _ in
                 defer { deliveryCalls += 1 }
                 return deliveries[min(deliveryCalls, deliveries.count - 1)]
-            },
-            deliveryProbeSchedule: [.milliseconds(10)]
+            }
         )
         await vm.start(item: PlayerFixtures.movieDetail())
 
@@ -3646,8 +3611,7 @@ struct PlayerViewModelTests {
             clock: clock,
             resolve: { _, _, _, _ in resolved },
             engine: engine,
-            fetchDelivery: { _ in reencode },
-            deliveryProbeSchedule: [.milliseconds(10)]
+            fetchDelivery: { _ in reencode }
         )
         await vm.start(item: PlayerFixtures.movieDetail())
         engine.push(.playing(10))
@@ -4203,12 +4167,11 @@ struct PlayerViewModelTests {
             reporting: reporting,
             clock: clock,
             resolve: { _, _, _, _ in resolved },
-            engine: engine,
-            keepaliveInterval: .milliseconds(20)
+            engine: engine
         )
         await vm.start(item: PlayerFixtures.movieDetail())
         await clock.waitForSleepers()
-        clock.advance(by: .milliseconds(20))
+        clock.advance(by: SessionReporter.keepaliveInterval)
         await waitUntil("the keepalive never pinged") { await !reporting.pings.isEmpty }
         // Pings flow on the interval, addressed to the live session — they keep
         // the server's 60s idle kill from reaping the job (and its segments)
@@ -4219,7 +4182,7 @@ struct PlayerViewModelTests {
 
         await vm.stop()
         let countAtStop = await reporting.pings.count
-        clock.advance(by: .milliseconds(100))
+        clock.advance(by: SessionReporter.keepaliveInterval * 3)
         #expect(await reporting.pings.count == countAtStop)
 
         // Direct play has no transcode job — no keepalive is armed.
@@ -4229,11 +4192,10 @@ struct PlayerViewModelTests {
             reporting: directReporting,
             clock: directClock,
             resolve: { _, _, _, _ in PlayerFixtures.resolved() },
-            engineFactory: { _, _ in FakePlaybackEngine(id: .avKit, capabilities: .avKit) },
-            keepaliveInterval: .milliseconds(20)
+            engineFactory: { _, _ in FakePlaybackEngine(id: .avKit, capabilities: .avKit) }
         )
         await directVM.start(item: PlayerFixtures.movieDetail())
-        directClock.advance(by: .milliseconds(100))
+        directClock.advance(by: SessionReporter.keepaliveInterval * 3)
         #expect(await directReporting.pings.isEmpty)
         await directVM.stop()
     }
@@ -4249,8 +4211,7 @@ struct PlayerViewModelTests {
             reporting: reporting,
             clock: clock,
             resolve: { _, _, _, _ in resolved },
-            engine: engine,
-            keepaliveInterval: .milliseconds(20)
+            engine: engine
         )
         await vm.start(item: PlayerFixtures.movieDetail())
         // The keepalive arms at resolve time (the job exists from then on), so a
@@ -4259,7 +4220,7 @@ struct PlayerViewModelTests {
         // as long as the user sits on the failure overlay.
         #expect(await reporting.stoppedEncodings == [resolved.playSessionID])
         let pingsAtFailure = await reporting.pings.count
-        clock.advance(by: .milliseconds(100))
+        clock.advance(by: SessionReporter.keepaliveInterval * 3)
         #expect(await reporting.pings.count == pingsAtFailure)
     }
 
@@ -4767,12 +4728,11 @@ struct PlayerViewModelTests {
         }
     }
 
-    /// The SMB thumbnail backfill seam (`scheduleThumbnailBackfill()`, `backfillThumbnail`,
-    /// `backfillDelay`): a session's first `.playing` beat schedules a low-priority, delayed
-    /// frame capture that lands in the app's `MediaArtworkProvider` sink — see
-    /// `PlayerViewModel.scheduleThumbnailBackfill()`. These tests drive the seam directly
-    /// (never a real `MediaArtworkProvider`) with a short injected `backfillDelay` so nothing
-    /// here waits wall-clock seconds for the real 8s default.
+    /// The SMB thumbnail backfill seam (`scheduleThumbnailBackfill()`, `backfillThumbnail`):
+    /// a session's first `.playing` beat schedules a low-priority frame capture,
+    /// `PlayerViewModel.backfillDelay` later, that lands in the app's `MediaArtworkProvider`
+    /// sink. These tests drive the seam directly (never a real `MediaArtworkProvider`) and run
+    /// the delay out on a `TestClock`.
     @Suite("SMB thumbnail backfill", .timeLimit(.minutes(1)))
     @MainActor
     struct SMBThumbnailBackfillTests {
@@ -4780,9 +4740,9 @@ struct PlayerViewModelTests {
         private let clock = TestClock()
 
         /// Lets the backfill's delay run out.
-        private func runOutBackfillDelay(_ delay: Duration = .milliseconds(5)) async {
+        private func runOutBackfillDelay() async {
             await clock.waitForSleepers()
-            clock.advance(by: delay)
+            clock.advance(by: PlayerViewModel.backfillDelay)
         }
 
         /// Records every `backfillThumbnail` invocation the VM drives — the `duration`/
@@ -4835,24 +4795,15 @@ struct PlayerViewModelTests {
         }
 
         /// `makeVM` with the shared recording sink already wired — what every SMB case here wants.
-        private func makeVM(
-            engine: FakePlaybackEngine,
-            recorder: BackfillRecorder,
-            backfillDelay: Duration = .milliseconds(5)
-        ) -> PlayerViewModel {
-            makeVM(
-                engine: engine,
-                backfillDelay: backfillDelay,
-                backfillThumbnail: recordingSink(into: recorder)
-            )
+        private func makeVM(engine: FakePlaybackEngine, recorder: BackfillRecorder) -> PlayerViewModel {
+            makeVM(engine: engine, backfillThumbnail: recordingSink(into: recorder))
         }
 
-        /// A `PlayerViewModel` on the SMB path with both backfill seams injectable — mirrors
-        /// `SMBPlaybackStartTests.makeVM` but exposes `backfillThumbnail`/`backfillDelay`, which
-        /// that suite predates.
+        /// A `PlayerViewModel` on the SMB path with the backfill sink injectable — mirrors
+        /// `SMBPlaybackStartTests.makeVM` but exposes `backfillThumbnail`, which that suite
+        /// predates.
         private func makeVM(
             engine: FakePlaybackEngine,
-            backfillDelay: Duration = .milliseconds(5),
             backfillThumbnail: @escaping @Sendable (Duration?, Bool, @escaping @Sendable () async -> Data?) async -> Void = { _, _, _ in }
         ) -> PlayerViewModel {
             PlayerViewModel(
@@ -4869,7 +4820,6 @@ struct PlayerViewModelTests {
                 subtitleFetch: { _ in nil },
                 smbResumeStore: SMBTestFixtures.inertResumeStore(),
                 backfillThumbnail: backfillThumbnail,
-                backfillDelay: backfillDelay,
                 subtitleSurface: { PlayerFixtures.phoneSurface },
                 engineSubtitleFonts: PlayerFixtures.engineSubtitleFonts
             )
@@ -4936,8 +4886,7 @@ struct PlayerViewModelTests {
         func stopBeforeDelayPreventsStore() async throws {
             let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
             let recorder = BackfillRecorder()
-            let delay = Duration.milliseconds(500)
-            let vm = makeVM(engine: engine, recorder: recorder, backfillDelay: delay)
+            let vm = makeVM(engine: engine, recorder: recorder)
 
             await vm.start(smbItem: smbItem())
             engine.push(.playing(1, duration: .seconds(6000)))
@@ -4948,7 +4897,7 @@ struct PlayerViewModelTests {
             await vm.stop()
 
             // Runs well past the delay, then polls, returning early the moment anything IS recorded.
-            clock.advance(by: delay * 3)
+            clock.advance(by: PlayerViewModel.backfillDelay * 3)
             await waitForBackfill(recorder, timeout: .milliseconds(Int(500 * CITimeScale.factor)))
             #expect(await recorder.invocations.isEmpty)
         }
@@ -4969,7 +4918,6 @@ struct PlayerViewModelTests {
                 subtitleFetch: { _ in nil },
                 smbResumeStore: SMBTestFixtures.inertResumeStore(),
                 backfillThumbnail: recordingSink(into: recorder),
-                backfillDelay: .milliseconds(5),
                 subtitleSurface: { PlayerFixtures.phoneSurface },
                 engineSubtitleFonts: PlayerFixtures.engineSubtitleFonts
             )
@@ -4978,9 +4926,9 @@ struct PlayerViewModelTests {
             engine.push(.playing(10, duration: resolved.runtime!))
             try await engine.settle()
 
-            // Runs far past the (short) delay, had a backfill been scheduled — the gate is
+            // Runs far past the delay, had a backfill been scheduled — the gate is
             // `smbSession != nil`, which a Jellyfin session never sets.
-            clock.advance(by: .seconds(1))
+            clock.advance(by: PlayerViewModel.backfillDelay * 3)
             await waitForBackfill(recorder, timeout: .milliseconds(Int(500 * CITimeScale.factor)))
             #expect(await recorder.invocations.isEmpty)
         }
@@ -5429,8 +5377,19 @@ struct PlayerAccentLifecycleTests {
         )
     }
 
-    /// Polls rather than sleeps a fixed span: the accent lands off the main actor, so the only
-    /// honest wait is "until it does, or the anti-hang bound".
+    /// The first hue the bar takes, whenever it lands. No ceiling of its own: the decode runs on a
+    /// utility-priority task that a loaded machine can starve for seconds, and the suite's time
+    /// limit is the anti-hang bound.
+    private func firstAccent(of vm: PlayerViewModel) async -> AccentHSB? {
+        for await hsb in Observations({ vm.accentHSB }) {
+            if let hsb { return hsb }
+        }
+        return nil
+    }
+
+    /// The negative cases' window: polls until a hue lands or `timeout` passes, so a regression
+    /// reports the instant it paints instead of riding out a fixed sleep. A case that expects a
+    /// hue awaits `firstAccent(of:)` instead.
     private func waitForAccent(_ vm: PlayerViewModel,
                                timeout: Duration = CITimeScale.seconds(2)) async {
         let deadline = ContinuousClock.now.advanced(by: timeout)
@@ -5455,8 +5414,7 @@ struct PlayerAccentLifecycleTests {
         }
 
         await vm.start(item: PlayerFixtures.episodeDetail(id: "ep-a"))
-        await waitForAccent(vm)
-        #expect(vm.accentHSB != nil)
+        #expect(await firstAccent(of: vm) != nil)
 
         await vm.start(item: PlayerFixtures.episodeDetail(id: "ep-b"))
         #expect(vm.accentHSB == nil, "an episode→episode swap must never carry the old poster's hue")
@@ -5491,8 +5449,7 @@ struct PlayerAccentLifecycleTests {
         let vm = makeVM(engine: engine) { _ in artwork }
 
         await vm.start(item: PlayerFixtures.episodeDetail(id: "ep-a"))
-        await waitForAccent(vm)
-        #expect(vm.accentHSB != nil)
+        #expect(await firstAccent(of: vm) != nil)
 
         await vm.stop()
         #expect(vm.accentHSB == nil)

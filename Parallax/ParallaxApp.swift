@@ -7,7 +7,6 @@
 
 import SwiftUI
 import os
-import AVFoundation
 import ParallaxCore
 import ParallaxFeatures
 import ParallaxJellyfin
@@ -24,7 +23,6 @@ struct ParallaxApp: App {
     #endif
 
     @State private var app: AppModel
-    @State private var dependencies: AppDependencies
     /// Whether the Subtitles menu is open — drives the floating preview "lights" overlay.
     @State private var subtitlePreview: SubtitlePreviewState = .init()
 
@@ -54,7 +52,6 @@ struct ParallaxApp: App {
 
         let app = AppModel(environment: .live())
         _app = State(initialValue: app)
-        _dependencies = State(initialValue: AppDependencies(services: app.services))
     }
 
     var body: some Scene {
@@ -70,11 +67,8 @@ struct ParallaxApp: App {
         let previewStyle = app.subtitlePreferences.style
         return RootView()
             .environment(app)
-            .environment(dependencies)
-            .environment(app)
             .environment(app.router)
             .environment(app.playback)
-            .environment(app.userDataActions)
             .environment(app.launchGate)
             .environment(app.subtitlePreferences)
             .environment(subtitlePreview)
@@ -136,28 +130,15 @@ struct ParallaxApp: App {
                 // UI-free SMB playback session for autonomous debugging — see
                 // PlaybackLabRunner.
                 if let labRunner = PlaybackLabRunner.makeIfRequested(
-                    dependencies: dependencies, playback: app.playback
+                    services: app.services, playback: app.playback
                 ) {
                     await labRunner.run()
                 }
                 #endif
             }
             // The app-lifetime flows: token rejections, the launch reveal following the route,
-            // closing the player on a server switch, reachability. Its own `.task` because it
+            // closing the player on a server switch, reachability, HDR eligibility. Its own `.task` because it
             // never returns; it shares the view's cancellation.
             .task { await app.run() }
-            // Rebuild the device profile on the next resolve whenever HDR eligibility changes
-            // (display connect/disconnect, Low Power Mode, other system resource shifts).
-            // `AVPlayer.eligibleForHDRPlayback` is dynamic and explicitly NOT KVO-observable;
-            // this notification is Apple's supported way to learn it moved. Per the spec,
-            // in-flight playback is intentionally NOT interrupted. A SEPARATE `.task` (mirrors
-            // the one above) so it shares the view's cancellation instead of leaking.
-            .task {
-                for await _ in NotificationCenter.default.notifications(
-                    named: AVPlayer.eligibleForHDRPlaybackDidChangeNotification
-                ) {
-                    await dependencies.deviceProfileBuilder.invalidate()
-                }
-            }
     }
 }

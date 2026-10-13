@@ -3,9 +3,10 @@ import Foundation
 /// Folds a burst of ±10s seek taps/clicks into ONE engine seek. Both the iOS double-tap
 /// (`PlayerControlsView`) and the tvOS click-seek (`PlayerView`) accumulate an absolute
 /// target and fire a single commit after a quiet interval — per-tap seeks thrash a
-/// transcode and wedge the player (the click-seek lesson). Owned per-surface: the commit
-/// closure routes through that surface's own seek path (`vm.commitSeek` /
-/// `apply(.seek)`), so this helper only owns the accumulate-then-fire-once timing.
+/// transcode and wedge the player (the click-seek lesson). The player view model owns one
+/// (`PlayerViewModel.seekCommits`), and only one surface per platform drives it; the commit
+/// closure routes through that surface's own seek path (`vm.commitSeek` / `apply(.seek)`),
+/// so this helper only owns the accumulate-then-fire-once timing.
 /// Cancel-on-newer — a fresh target restarts the clock.
 @MainActor
 public final class SeekCommitCoalescer {
@@ -20,16 +21,19 @@ public final class SeekCommitCoalescer {
     /// double-tap right after a drag would otherwise accumulate from the pre-scrub spot).
     public private(set) var pending: Double?
     private var task: Task<Void, Never>?
+    private let clock: any Clock<Duration>
 
-    public init() {}
+    init(clock: any Clock<Duration>) {
+        self.clock = clock
+    }
 
     /// Accumulate `target` and (re)arm the debounce; `commit` receives the settled target
     /// after the quiet interval. A newer `schedule` cancels the pending fire.
     public func schedule(_ target: Double, commit: @escaping (Double) async -> Void) {
         pending = target
         task?.cancel()
-        task = Task { [self] in
-            try? await Task.sleep(for: Self.interval)
+        task = Task { [self, clock] in
+            try? await clock.sleep(for: Self.interval)
             guard !Task.isCancelled, let target = pending else { return }
             pending = nil
             await commit(target)

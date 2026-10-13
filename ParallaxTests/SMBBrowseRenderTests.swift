@@ -74,8 +74,9 @@ struct SMBBrowseRenderTests {
                 // read or write the device's real server list or Keychain (it never resolves a
                 // thumbnail in a synchronous render, so the store is pure scaffolding).
                 serverStore: makeIsolatedServerStore(label: "SMBBrowseRenderTests"),
-                connections: .live(),
-                cacheDirectory: .temporaryDirectory
+                connections: .live(clock: ContinuousClock()),
+                cacheDirectory: .temporaryDirectory,
+                clock: ContinuousClock()
             ),
             onPlay: { _ in }
         )

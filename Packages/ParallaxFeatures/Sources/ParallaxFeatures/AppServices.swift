@@ -113,11 +113,14 @@ public struct AppServices {
 
         // One PlaybackInfoService per server, token-keyed — mirrors the LibraryRepositoryStore
         // wiring above.
-        let playbackStore = PlaybackInfoServiceStore(clientFactory: DefaultJellyfinPlaybackClientFactory(
-            identityProvider: identity,
-            onTokenRejected: onTokenRejected,
-            sessionConfiguration: environment.urlSessionConfiguration
-        ))
+        let playbackStore = PlaybackInfoServiceStore(
+            clientFactory: DefaultJellyfinPlaybackClientFactory(
+                identityProvider: identity,
+                onTokenRejected: onTokenRejected,
+                sessionConfiguration: environment.urlSessionConfiguration
+            ),
+            clock: environment.clock
+        )
         playbackInfoFactory = { session in await playbackStore.service(for: session) }
 
         let connections = environment.smbConnections
@@ -143,7 +146,11 @@ public struct AppServices {
 
         // Image traffic presents the persisted deviceID from the same provider as auth, rather
         // than a per-launch random UUID.
-        imagePipelineFactory = ImagePipelineFactory(identityProvider: identity)
+        imagePipelineFactory = ImagePipelineFactory(
+            identityProvider: identity,
+            sessionConfiguration: environment.urlSessionConfiguration,
+            cacheDirectory: environment.cachesDirectory
+        )
         deviceProfileBuilder = DeviceProfileBuilder(probe: environment.capabilityProbe)
         playbackEngineFactory = environment.makePlaybackEngine
         audioSession = environment.audioSession
@@ -156,14 +163,15 @@ public struct AppServices {
         let resumeStore = SMBResumeStore(defaults: defaults)
         smbResumeStore = resumeStore
         smbPlaybackResolver = SMBPlaybackResolver(
-            serverStore: store, connections: connections, resumeStore: resumeStore
+            serverStore: store, connections: connections, resumeStore: resumeStore, clock: environment.clock
         )
         mediaArtworkProvider = MediaArtworkProvider(
             thumbnailer: environment.thumbnailer,
-            avThumbnailer: AVThumbnailer(),
+            avThumbnailer: environment.avThumbnailer,
             serverStore: store,
             connections: connections,
-            cacheDirectory: environment.cachesDirectory.appending(path: "SMBThumbnails", directoryHint: .isDirectory)
+            cacheDirectory: environment.cachesDirectory.appending(path: "SMBThumbnails", directoryHint: .isDirectory),
+            clock: environment.clock
         )
     }
 }

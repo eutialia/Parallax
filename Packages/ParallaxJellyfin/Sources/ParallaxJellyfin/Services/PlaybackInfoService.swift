@@ -24,15 +24,19 @@ public actor PlaybackInfoService {
 
     /// Minimum seconds between throttled progress beats. A pause-flip or seek
     /// bypasses this and reports immediately.
-    static let progressThrottleSeconds: Double = 10
+    static let progressThrottle: Duration = .seconds(10)
 
-    // Cadence state. `lastReportedAt` is the clock value of the last sent
-    // progress/start beat; `lastPaused` detects pause flips.
-    private var lastReportedAt: Double = 0
+    private let elapsed: @Sendable () -> Duration
+
+    // Cadence state. `lastReportedAt` is the `elapsed` reading of the last sent
+    // progress beat, nil after a start so the first progress beat always goes out;
+    // `lastPaused` detects pause flips.
+    private var lastReportedAt: Duration?
     private var lastPaused: Bool = false
 
-    public init(client: JellyfinPlaybackClient) {
+    public init(client: JellyfinPlaybackClient, clock: any Clock<Duration> = ContinuousClock()) {
         self.client = client
+        self.elapsed = clock.stopwatch()
     }
 
     // MARK: - Resolve
@@ -326,19 +330,18 @@ public actor PlaybackInfoService {
     // MARK: - Progress reporting
 
     public func reportStart(_ beat: ProgressBeat) async {
-        lastReportedAt = 0
+        lastReportedAt = nil
         lastPaused = beat.isPaused
         let info = stateInfo(from: beat)
         await send("reportStart") { try await self.client.reportStart(info) }
     }
 
-    /// Throttled to ~10s; a pause flip or seek reports immediately. `now` is
-    /// an injected clock (seconds) so cadence is deterministic in tests.
-    public func reportProgress(_ beat: ProgressBeat, now: Double) async {
+    /// Throttled to ~10s on the injected clock; a pause flip or seek reports immediately.
+    public func reportProgress(_ beat: ProgressBeat) async {
+        let now = elapsed()
         let pauseFlipped = beat.isPaused != lastPaused
-        let elapsed = now - lastReportedAt
-        let throttled = elapsed >= Self.progressThrottleSeconds
-        guard pauseFlipped || throttled else {
+        let windowPassed = lastReportedAt.map { now - $0 >= Self.progressThrottle } ?? true
+        guard pauseFlipped || windowPassed else {
             lastPaused = beat.isPaused
             return
         }

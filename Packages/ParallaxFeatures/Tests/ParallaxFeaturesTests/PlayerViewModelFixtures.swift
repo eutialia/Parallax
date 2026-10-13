@@ -114,15 +114,9 @@ func makePlayerVM(
     subtitleFetch: @escaping @Sendable (URL) async -> Data? = { _ in Data() },
     fetchSegments: @escaping @Sendable (ItemID) async -> [MediaSegment] = { _ in [] },
     fetchAdjacent: @escaping @Sendable (ItemID, ItemID) async -> AdjacentEpisodes = { _, _ in .none },
-    keepaliveInterval: Duration = .seconds(30),
     fetchDelivery: @escaping @Sendable (String) async -> TranscodeDelivery? = { _ in nil },
-    deliveryProbeSchedule: [Duration] = [.seconds(2), .seconds(5)],
-    reloadResolveDeadline: Duration = .seconds(15),
     subtitleStyle: @escaping @MainActor () -> SubtitleStyle = { .standard },
     subtitleSurface: @escaping @MainActor () -> SubtitleSurface = { PlayerFixtures.phoneSurface },
-    seekHoldWatchdog: @escaping @Sendable (Duration) async throws -> Void = {
-        try await Task.sleep(for: $0)
-    },
     fetchArtwork: @escaping @Sendable (ItemDetail) async -> Data? = { _ in nil },
     rememberTrackSelection: @escaping @Sendable (TrackSelectionUpdate) async -> Void = { _ in }
 ) -> PlayerViewModel {
@@ -139,15 +133,11 @@ func makePlayerVM(
         rememberTrackSelection: rememberTrackSelection,
         fetchSegments: fetchSegments,
         fetchAdjacent: fetchAdjacent,
-        keepaliveInterval: keepaliveInterval,
         fetchDelivery: fetchDelivery,
-        deliveryProbeSchedule: deliveryProbeSchedule,
-        reloadResolveDeadline: reloadResolveDeadline,
         smbResumeStore: SMBTestFixtures.inertResumeStore(),
         subtitleStyle: subtitleStyle,
         subtitleSurface: subtitleSurface,
         engineSubtitleFonts: PlayerFixtures.engineSubtitleFonts,
-        seekHoldWatchdog: seekHoldWatchdog,
         fetchArtwork: fetchArtwork
     )
 }
@@ -167,15 +157,9 @@ func makePlayerVM(
     subtitleFetch: @escaping @Sendable (URL) async -> Data? = { _ in Data() },
     fetchSegments: @escaping @Sendable (ItemID) async -> [MediaSegment] = { _ in [] },
     fetchAdjacent: @escaping @Sendable (ItemID, ItemID) async -> AdjacentEpisodes = { _, _ in .none },
-    keepaliveInterval: Duration = .seconds(30),
     fetchDelivery: @escaping @Sendable (String) async -> TranscodeDelivery? = { _ in nil },
-    deliveryProbeSchedule: [Duration] = [.seconds(2), .seconds(5)],
-    reloadResolveDeadline: Duration = .seconds(15),
     subtitleStyle: @escaping @MainActor () -> SubtitleStyle = { .standard },
     subtitleSurface: @escaping @MainActor () -> SubtitleSurface = { PlayerFixtures.phoneSurface },
-    seekHoldWatchdog: @escaping @Sendable (Duration) async throws -> Void = {
-        try await Task.sleep(for: $0)
-    },
     fetchArtwork: @escaping @Sendable (ItemDetail) async -> Data? = { _ in nil }
 ) -> PlayerViewModel {
     makePlayerVM(
@@ -189,13 +173,9 @@ func makePlayerVM(
         subtitleFetch: subtitleFetch,
         fetchSegments: fetchSegments,
         fetchAdjacent: fetchAdjacent,
-        keepaliveInterval: keepaliveInterval,
         fetchDelivery: fetchDelivery,
-        deliveryProbeSchedule: deliveryProbeSchedule,
-        reloadResolveDeadline: reloadResolveDeadline,
         subtitleStyle: subtitleStyle,
         subtitleSurface: subtitleSurface,
-        seekHoldWatchdog: seekHoldWatchdog,
         fetchArtwork: fetchArtwork
     )
 }
@@ -664,52 +644,6 @@ final class ResolveGate: Sendable {
     }
 }
 
-/// Stands in for the seek-hold watchdog's 20 s sleep (`PlayerViewModel.init`'s
-/// `seekHoldWatchdog`), so the anti-wedge branch is a state a test drives rather than a wall
-/// clock it waits out.
-///
-/// Each arming parks on its OWN slot, keyed by order, which is the whole reason this is not a
-/// `ResolveGate`: `ResolveGate.open()` releases everything parked, and the case that matters —
-/// a re-scrub superseding a hold — needs the FIRST watchdog fired while the second is still
-/// asleep. `@MainActor` so `armings` reads synchronously from `requireEventually`.
-@MainActor
-final class SeekHoldWatchdogGate {
-    private var parked: [Int: CheckedContinuation<Void, Never>] = [:]
-    /// How many times the watchdog has been armed: the commit, and every beat that restarted
-    /// it while a hold stood. The index `fire(_:)` names; the newest is `armings - 1`.
-    private(set) var armings = 0
-    /// The armings whose wait has returned, fired or cancelled, so a test can prove a
-    /// superseded watchdog ran and declined instead of standing in a timeout.
-    private(set) var completed: Set<Int> = []
-    /// The deadline each arming asked to spend, so a test can pin `SeekHold.watchdog` to the
-    /// call that spends it.
-    private(set) var requested: [Duration] = []
-
-    /// Inject as `seekHoldWatchdog:`.
-    nonisolated var sleep: @Sendable (Duration) async throws -> Void {
-        { duration in await self.park(duration) }
-    }
-
-    private func park(_ duration: Duration) async {
-        let index = armings
-        armings += 1
-        requested.append(duration)
-        // Cancellation-aware, like the real sleep: a superseded arming returns at once instead
-        // of parking for the life of the process and leaking its continuation.
-        await withTaskCancellationHandler {
-            await withCheckedContinuation { parked[index] = $0 }
-        } onCancel: {
-            Task { @MainActor in self.fire(index) }
-        }
-        completed.insert(index)
-    }
-
-    /// Let the `index`-th arming's watchdog through; the newest when unspecified.
-    func fire(_ index: Int? = nil) {
-        parked.removeValue(forKey: index ?? armings - 1)?.resume()
-    }
-}
-
 /// THE mid-session-reload fixture: a playing transcode VM parked at `seconds`, with a buffer
 /// that ends 60s later — so every seek past it takes the slow `reloadTranscode` road, which is
 /// the window the reload suites stand inside.
@@ -727,9 +661,6 @@ final class SeekHoldWatchdogGate {
 func makeReanchorVM(
     at seconds: Double,
     reporting: StubPlaybackReporting = StubPlaybackReporting(),
-    seekHoldWatchdog: @escaping @Sendable (Duration) async throws -> Void = {
-        try await Task.sleep(for: $0)
-    },
     nowPlaying: any NowPlayingUpdating = SpyNowPlaying(),
     clock: any Clock<Duration> = TestClock(),
     subtitleFetch: @escaping @Sendable (URL) async -> Data? = { _ in Data() },
@@ -744,8 +675,7 @@ func makeReanchorVM(
                           engineFactory: { id, _ in engines.make(id) },
                           nowPlaying: nowPlaying,
                           subtitleFetch: subtitleFetch,
-                          seekHoldWatchdog: seekHoldWatchdog,
-                          rememberTrackSelection: rememberTrackSelection)
+                                            rememberTrackSelection: rememberTrackSelection)
     await vm.start(item: PlayerFixtures.movieDetail())
     let engine = engines.live
     engine.push(.playing(seconds))
@@ -762,9 +692,8 @@ func makeReanchorVM(
     return (vm, engines)
 }
 
-/// Runs out the delivery probe's first wait (the suites schedule it at 10ms) and stands there
-/// until the verdict lands. A transcode parks two sleeps on its clock by then: the keepalive and
-/// the probe.
+/// Runs out the delivery probe's first wait and stands there until the verdict lands. A
+/// transcode parks two sleeps on its clock by then: the keepalive and the probe.
 @MainActor
 func landDeliveryProbe(
     _ vm: PlayerViewModel,
@@ -772,7 +701,7 @@ func landDeliveryProbe(
     sourceLocation: SourceLocation = #_sourceLocation
 ) async throws {
     await clock.waitForSleepers(2)
-    clock.advance(by: .milliseconds(10))
+    clock.advance(by: SessionDiagnostics.deliveryProbeSchedule[0])
     try await requireEventually({ vm.transcodeDelivery != nil }, "the delivery probe never landed",
                                 sourceLocation: sourceLocation)
 }

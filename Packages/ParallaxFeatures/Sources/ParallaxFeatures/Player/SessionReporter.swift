@@ -10,9 +10,8 @@ final class SessionReporter {
     private let playbackInfo: any PlaybackReporting
     /// The keepalive's waits.
     private let clock: any Clock<Duration>
-    /// Ping cadence for `keepaliveTask` — half the server's 60s idle kill
-    /// timeout in production; injectable so tests don't wait 30s for a beat.
-    private let keepaliveInterval: Duration
+    /// Ping cadence for `keepaliveTask`: half the server's 60s idle kill timeout.
+    static let keepaliveInterval: Duration = .seconds(30)
     /// Keepalive for the server's transcode job: pings the play session on a
     /// timer so the 60s idle kill never fires while the player is mounted.
     /// Segment requests stop once a PAUSED player's buffer fills, and progress
@@ -30,10 +29,9 @@ final class SessionReporter {
     /// `.playing` beat still has a job to kill on exit.
     private var didStopEncoding = false
 
-    init(playbackInfo: any PlaybackReporting, clock: any Clock<Duration>, keepaliveInterval: Duration) {
+    init(playbackInfo: any PlaybackReporting, clock: any Clock<Duration>) {
         self.playbackInfo = playbackInfo
         self.clock = clock
-        self.keepaliveInterval = keepaliveInterval
     }
 
     isolated deinit {
@@ -85,7 +83,7 @@ final class SessionReporter {
         keepaliveTask = nil
         guard resolved.method == .transcode else { return }
         let sessionID = resolved.playSessionID
-        let interval = keepaliveInterval
+        let interval = Self.keepaliveInterval
         keepaliveTask = Task { [playbackInfo, clock] in
             while !Task.isCancelled {
                 do { try await clock.sleep(for: interval) } catch { return }

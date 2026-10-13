@@ -22,7 +22,11 @@ public final class LaunchGate {
     /// silently consumed that much of the animation, so the user only ever saw
     /// its tail — on a 0.4s micro-reveal, most of it. The launch screen's field
     /// color covers the gap, so a first-frame zero is seamless.
+    ///
+    /// A date because the overlay's `TimelineView` counts frames in dates. The release is
+    /// measured on `clock` from `stageStart`, the same zero.
     public private(set) var startDate: Date
+    private var stageStart: Duration
 
     /// Whether the overlay has anchored the clock since the last (re)arm.
     public private(set) var stageBegan = false
@@ -38,7 +42,9 @@ public final class LaunchGate {
     /// How long the hold may last before the gate releases it itself.
     static let holdTimeout: Duration = .seconds(15)
 
-    private let now: () -> Date
+    /// The hold watchdog sleeps on it, and the release is measured on it.
+    private let clock: any Clock<Duration>
+    private let elapsed: @Sendable () -> Duration
     private var armEpoch = 0
 
     /// The story is a first-impression piece — it earns its ~2.6s by covering a
@@ -46,10 +52,17 @@ public final class LaunchGate {
     /// (or an SMB-only setup with no bootstrap at all) has nothing to cover, so
     /// it's born finished: content appears immediately, no stage, no reveal.
     /// `rearm()` still revives the full story for the post-sign-in moment.
-    public init(playsStory: Bool = true, now: @escaping () -> Date = Date.init) {
-        self.now = now
-        startDate = now()
+    public init(playsStory: Bool = true, clock: any Clock<Duration> = ContinuousClock()) {
+        self.clock = clock
+        elapsed = clock.stopwatch()
+        startDate = Date()
+        stageStart = .zero
         isFinished = !playsStory
+    }
+
+    private func anchorStage() {
+        startDate = Date()
+        stageStart = elapsed()
     }
 
     /// Anchors the clock at the overlay's first appearance. Idempotent per arm:
@@ -57,7 +70,7 @@ public final class LaunchGate {
     public func beginStage() {
         guard !stageBegan else { return }
         stageBegan = true
-        startDate = now()
+        anchorStage()
     }
 
     /// Releases the sync-hold. A no-op on a launch born finished (nothing is
@@ -70,7 +83,7 @@ public final class LaunchGate {
         // hold is skipped. Computing against `startDate` here would pin the
         // release to a zero that `beginStage()` is still going to move.
         releasedAtRawTime = stageBegan
-            ? LaunchClock.rawTime(elapsed: now().timeIntervalSince(startDate))
+            ? LaunchClock.rawTime(elapsed: (elapsed() - stageStart) / .seconds(1))
             : 0
     }
 
@@ -78,12 +91,12 @@ public final class LaunchGate {
     /// never fires (hung bootstrap, a future router destination nobody wired up) must not leave an
     /// input-blocking overlay up forever. Generous on purpose: real loads release long before this.
     /// The timer runs from the stage's first frame; each (re)arm gets its own, and a hold that settles or is torn down drops it.
-    func releaseStuckHold(on clock: any Clock<Duration>) async {
+    func releaseStuckHold() async {
         var timer: Task<Void, Never>?
         for await pending in Observations({ self.pendingHold }) {
             timer?.cancel()
             timer = pending.map { _ in
-                Task {
+                Task { [clock] in
                     guard (try? await clock.sleep(for: Self.holdTimeout)) != nil else { return }
                     self.markContentReady()
                 }
@@ -117,7 +130,7 @@ public final class LaunchGate {
     public func rearm() {
         guard isFinished else { return }
         armEpoch += 1
-        startDate = now()
+        anchorStage()
         stageBegan = false
         releasedAtRawTime = nil
         isFinished = false

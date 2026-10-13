@@ -1,5 +1,7 @@
 import Testing
 import Foundation
+import ParallaxCore
+import ParallaxCoreTestSupport
 import ParallaxFeatures
 
 @MainActor
@@ -49,19 +51,19 @@ struct LaunchGateTests {
     /// must not eat the animation's opening. Only the first appearance per arm anchors.
     @Test("beginStage() anchors the clock once per arm")
     func beginStageAnchorsOnce() {
-        var now = Date(timeIntervalSinceReferenceDate: 0)
-        let gate = LaunchGate(now: { now })
-        let initDate = gate.startDate
+        let clock = TestClock()
+        let gate = LaunchGate(clock: clock)
         #expect(!gate.stageBegan)
 
-        now += 0.02
+        clock.advance(by: .seconds(2))   // boot, before the first frame
         gate.beginStage()
-        let anchored = gate.startDate
         #expect(gate.stageBegan)
-        #expect(anchored > initDate)
+        clock.advance(by: .seconds(1))
+        gate.beginStage()                // a later appearance moves nothing
+        clock.advance(by: .seconds(2))
+        gate.markContentReady()
 
-        gate.beginStage()
-        #expect(gate.startDate == anchored)
+        #expect(gate.releasedAtRawTime == LaunchClock.rawTime(elapsed: 3))
     }
 
     /// Content that's ready before the stage has rendered a frame (cache hydration beating

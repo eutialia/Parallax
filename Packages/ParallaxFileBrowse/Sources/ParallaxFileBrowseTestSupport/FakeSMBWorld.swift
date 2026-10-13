@@ -1,5 +1,6 @@
 import Foundation
 import os
+import ParallaxCoreTestSupport
 import ParallaxFileBrowse
 
 /// A controllable wall clock: `SMBConnectionPool` reads time through an injected `now`, so a test can
@@ -188,9 +189,9 @@ public final class FakeSMBWorld: @unchecked Sendable {
     }
 
     /// The production connection graph (`SMBConnections`) over this world: the real pool, listers
-    /// and readers, with only the connections faked.
-    public func connections() -> SMBConnections {
-        SMBConnections(pool: makeFakePool(world: self)) { try await self.connect($0, deliver: $1) }
+    /// and readers, with only the connections faked. Hard timeouts wait on `clock`.
+    public func connections(clock: any Clock<Duration>) -> SMBConnections {
+        SMBConnections(pool: makeFakePool(world: self, clock: clock)) { try await self.connect($0, deliver: $1) }
     }
 
     // MARK: - Connection behaviour
@@ -355,13 +356,15 @@ public final class FakeSMBConnection: SMBReadableConnection, SMBListableConnecti
 }
 
 /// A pool wired to `world`, with the background sweep pushed far out by default so only the
-/// opportunistic/explicit reaps under test run.
+/// opportunistic/explicit reaps under test run. Its hard timeouts wait on `clock`, which by default
+/// nobody advances: only a test that passes its own clock sees one fire.
 public func makeFakePool(
     world: FakeSMBWorld,
     connectTimeout: TimeInterval = 5,
     maxIdlePerKey: Int = 4,
     idleTTL: Duration = .seconds(60),
-    sweepInterval: Duration = .seconds(3_600)
+    sweepInterval: Duration = .seconds(3_600),
+    clock: any Clock<Duration> = TestClock()
 ) -> SMBConnectionPool<FakeSMBConnection> {
     SMBConnectionPool<FakeSMBConnection>(
         connectTimeout: connectTimeout,
@@ -369,6 +372,7 @@ public func makeFakePool(
         idleTTL: idleTTL,
         sweepInterval: sweepInterval,
         now: { [clock = world.clock] in clock.now() },
+        clock: clock,
         connect: { try await world.connect($0, deliver: $1) }
     )
 }
