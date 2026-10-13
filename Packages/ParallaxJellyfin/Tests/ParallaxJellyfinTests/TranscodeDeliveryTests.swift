@@ -1,4 +1,5 @@
 import Foundation
+import ParallaxCoreTestSupport
 import Testing
 import JellyfinAPI
 import ParallaxCore
@@ -128,7 +129,7 @@ struct PlaybackInfoServiceTranscodingDeliveryTests {
             transcodeReasons: ["AudioCodecNotSupported"]
         )
         client.transcodingDeliveryResult = .success(expected)
-        let service = PlaybackInfoService(client: client)
+        let service = PlaybackInfoService(client: client, clock: TestClock())
 
         let delivery = await service.transcodingDelivery(playSessionID: "ps-1")
 
@@ -140,7 +141,7 @@ struct PlaybackInfoServiceTranscodingDeliveryTests {
     func failureYieldsNil() async {
         let client = FakeJellyfinPlaybackClient()
         client.transcodingDeliveryResult = .failure(URLError(.notConnectedToInternet))
-        let service = PlaybackInfoService(client: client)
+        let service = PlaybackInfoService(client: client, clock: TestClock())
 
         #expect(await service.transcodingDelivery(playSessionID: "ps-1") == nil)
         #expect(client.transcodingDeliveryCalls == ["ps-1"])

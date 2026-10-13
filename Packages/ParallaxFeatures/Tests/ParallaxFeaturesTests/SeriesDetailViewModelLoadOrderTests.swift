@@ -1,6 +1,7 @@
 import Foundation
 import JellyfinAPI
 import ParallaxCore
+import ParallaxCoreTestSupport
 import ParallaxJellyfin
 import Testing
 @testable import ParallaxFeatures
@@ -31,7 +32,7 @@ struct SeriesDetailViewModelLoadOrderTests {
             itemID: ItemID(rawValue: "ser1"),
             session: makeSession("test-server"),
             userDataActions: UserDataActions(),
-            playback: PlaybackPresenter()
+            playback: PlaybackPresenter(clock: TestClock())
         )
 
         let load = Task { await vm.load() }

@@ -14,7 +14,7 @@ public actor DefaultJellyfinClientFactory: JellyfinClientFactory {
     public init(
         identityProvider: DeviceIdentityProvider,
         sessionConfiguration: URLSessionConfiguration = .default,
-        clock: any Clock<Duration> = ContinuousClock()
+        clock: any Clock<Duration>
     ) {
         self.identityProvider = identityProvider
         self.sessionConfiguration = sessionConfiguration

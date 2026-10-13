@@ -64,12 +64,10 @@ struct LaunchScenarios {
         let den = FakeJellyfinServer(name: "Den").user("ana")
         let world = try await AppWorld.launch(signedIn: [(den, "ana")])
         world.showLaunchStage()
-        await world.clock.waitForSleepers()
+        try await world.clock.waitForSleep(dueIn: .seconds(15))
+        #expect(world.clock.pendingSleeps.first == .seconds(15), "something can open the reveal before the watchdog")
 
-        world.clock.advance(by: .seconds(14))
-        #expect(world.app.launchGate.releasedAtRawTime == nil)
-
-        world.clock.advance(by: .seconds(1))
+        world.clock.advance(by: .seconds(15))
         try await world.until { world.app.launchGate.releasedAtRawTime != nil }
     }
 
@@ -78,11 +76,11 @@ struct LaunchScenarios {
         let den = FakeJellyfinServer(name: "Den").user("ana")
         let world = try await AppWorld.launch(signedIn: [(den, "ana")])
         world.showLaunchStage()
-        await world.clock.waitForSleepers()
+        try await world.clock.waitForSleep(dueIn: .seconds(15))
 
         await world.quit()
-        world.clock.advance(by: .seconds(15))
 
+        #expect(world.clock.pendingSleeps == [], "the watchdog outlived the app")
         #expect(world.app.launchGate.releasedAtRawTime == nil)
     }
 }

@@ -1,4 +1,5 @@
 import Foundation
+import ParallaxCoreTestSupport
 import Testing
 @testable import ParallaxJellyfin
 
@@ -7,7 +8,7 @@ struct PlaybackInfoServiceStoreTests {
     @Test("Playback services are memoized per server and rebuilt on a rotated token")
     func memoizationContract() async {
         let factory = FakeJellyfinPlaybackClientFactory()
-        let store = PlaybackInfoServiceStore(clientFactory: factory)
+        let store = PlaybackInfoServiceStore(clientFactory: factory, clock: TestClock())
         await verifyMemoization { await store.service(for: $0) }
     }
 
@@ -16,7 +17,7 @@ struct PlaybackInfoServiceStoreTests {
     @Test("Only a cache miss builds a client")
     func clientConstructionFollowsTheCache() async {
         let factory = FakeJellyfinPlaybackClientFactory()
-        let store = PlaybackInfoServiceStore(clientFactory: factory)
+        let store = PlaybackInfoServiceStore(clientFactory: factory, clock: TestClock())
 
         _ = await store.service(for: JellyfinFixtures.session(id: "s1", token: "tok-1"))
         _ = await store.service(for: JellyfinFixtures.session(id: "s1", token: "tok-1"))

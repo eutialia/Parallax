@@ -1,5 +1,6 @@
 import Foundation
 import CoreMedia
+import ParallaxCoreTestSupport
 import Testing
 import JellyfinAPI
 import ParallaxCore
@@ -84,7 +85,7 @@ struct PlaybackInfoServiceResolveTests {
         response.mediaSources = [source]
         response.playSessionID = "ps-1"
         fake.playbackInfoResult = .success(response)
-        return (PlaybackInfoService(client: fake), fake)
+        return (PlaybackInfoService(client: fake, clock: TestClock()), fake)
     }
 
     @Test("Non-transcode source resolves to .directPlay with a static (range-seekable) stream URL")
@@ -333,7 +334,7 @@ struct PlaybackInfoServiceResolveTests {
     func playbackInfoFailureMaps() async {
         let fake = FakeJellyfinPlaybackClient()
         fake.playbackInfoResult = .failure(URLError(.timedOut))
-        let service = PlaybackInfoService(client: fake)
+        let service = PlaybackInfoService(client: fake, clock: TestClock())
         await #expect(throws: AppError.self) {
             _ = try await service.resolve(
                 item: ItemID(rawValue: "item-1"),
@@ -501,7 +502,7 @@ struct PlaybackInfoServiceResolveTests {
         response.mediaSources = []
         response.playSessionID = "ps-1"
         fake.playbackInfoResult = .success(response)
-        let service = PlaybackInfoService(client: fake)
+        let service = PlaybackInfoService(client: fake, clock: TestClock())
         await #expect(throws: AppError.self) {
             _ = try await service.resolve(
                 item: ItemID(rawValue: "item-1"),

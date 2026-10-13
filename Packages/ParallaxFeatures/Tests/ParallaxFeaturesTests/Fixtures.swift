@@ -139,8 +139,9 @@ func makeSMBServerData(
     SMBServerData(host: host, username: username, domain: domain, shares: shares)
 }
 
-func makeSMBRef(id: String = "smb-nas|Media|Movies", shares: [String] = ["Media"]) -> SMBServerRef {
-    SMBServerRef(id: ServerID(rawValue: id), data: makeSMBServerData(shares: shares))
+/// `data` under the id `ServerStore.addSMBServer` gives it.
+func makeSMBRef(_ data: SMBServerData = makeSMBServerData()) -> SMBServerRef {
+    SMBServerRef(id: ServerStore.smbServerID(host: data.host), data: data)
 }
 
 /// A `ServerStore` on its own `UserDefaults` suite and a fake Keychain.

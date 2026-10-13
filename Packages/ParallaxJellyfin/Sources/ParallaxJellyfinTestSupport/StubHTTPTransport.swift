@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 
 /// Intercepts the SDK's real HTTP path so the SDK-backed clients (`DefaultJellyfinLibraryClient`,
 /// `DefaultJellyfinPlaybackClient`, `DefaultJellyfinAuthClient`) can be driven end to end —
@@ -8,7 +9,7 @@ import Foundation
 /// Each instance owns a unique host, so a parallel Swift Testing run can never route one suite's
 /// request into another's stub. Hand `configuration` to the client under test; it installs
 /// `StubURLProtocol` on that transport only.
-public final class StubHTTPTransport: @unchecked Sendable {
+public final class StubHTTPTransport: Observable, @unchecked Sendable {
 
     /// One intercepted request, in the shape assertions actually need.
     public struct Exchange: Sendable {
@@ -47,6 +48,10 @@ public final class StubHTTPTransport: @unchecked Sendable {
         public var status: Int
         public var headers: [String: String]
         public var body: Data
+        /// When set, the request never gets a response: the load fails with this `URLError`, the way
+        /// `URLSession` fails against a host that cannot be reached. `status`, `headers` and `body`
+        /// are ignored.
+        public var transportFailure: URLError.Code?
 
         public init(
             status: Int = 200,
@@ -68,6 +73,13 @@ public final class StubHTTPTransport: @unchecked Sendable {
             return Reply(status: status, body: (try? encoder.encode(value)) ?? Data("{}".utf8))
         }
 
+        /// No response at all: the request throws `URLError(code)` instead of seeing an HTTP status.
+        public static func failure(_ code: URLError.Code) -> Reply {
+            var reply = Reply()
+            reply.transportFailure = code
+            return reply
+        }
+
         /// A 2xx with no payload — what the fire-and-forget POSTs (`/Sessions/Playing`, …) return.
         public static let noContent = Reply(status: 204, headers: [:], body: Data())
     }
@@ -81,6 +93,8 @@ public final class StubHTTPTransport: @unchecked Sendable {
     private var responder: (@Sendable (Exchange) -> Reply)?
     private var holds: (@Sendable (String) -> Bool)?
     private var heldDeliveries: [() -> Void] = []
+    /// Tells `Observations` the parked requests changed, so a wait on `heldReplyCount` re-reads it.
+    private let registrar = ObservationRegistrar()
 
     public init() {
         let host = "stub-\(UUID().uuidString.lowercased()).test"
@@ -137,19 +151,31 @@ public final class StubHTTPTransport: @unchecked Sendable {
             defer { heldDeliveries.removeAll() }
             return heldDeliveries
         }
+        announceHeldReplies()
         parked.forEach { $0() }
     }
 
     /// How many requests are parked, waiting for `releaseReplies()`.
-    public var heldReplyCount: Int { lock.withLock { heldDeliveries.count } }
+    public var heldReplyCount: Int {
+        registrar.access(self, keyPath: \.heldReplyCount)
+        return lock.withLock { heldDeliveries.count }
+    }
+
+    /// On the main actor, where the waits observe: `Observations` installs its tracking after its
+    /// read returns, so a change announced from a URL loading thread in that gap would be lost.
+    private func announceHeldReplies() {
+        Task { @MainActor in registrar.withMutation(of: self, keyPath: \.heldReplyCount) {} }
+    }
 
     /// Keeps `delivery` for `releaseReplies()` when replies to `path` are held. False means answer now.
     fileprivate func park(_ path: String, _ delivery: @escaping () -> Void) -> Bool {
-        lock.withLock {
+        let parked = lock.withLock {
             guard holds?(path) == true else { return false }
             heldDeliveries.append(delivery)
             return true
         }
+        if parked { announceHeldReplies() }
+        return parked
     }
 
     // MARK: - Reading back
@@ -251,6 +277,10 @@ final class StubURLProtocol: URLProtocol {
         let request = request
         let deliver = {
             let reply = transport.handle(request)
+            if let code = reply.transportFailure {
+                self.client?.urlProtocol(self, didFailWithError: URLError(code))
+                return
+            }
             let response = HTTPURLResponse(
                 url: url,
                 statusCode: reply.status,

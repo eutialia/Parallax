@@ -1,5 +1,7 @@
 import Foundation
 import CoreMedia
+import Observation
+import Testing
 import Synchronization
 import ParallaxTestScaling
 import ParallaxPlayback
@@ -64,20 +66,50 @@ public final class FakePlaybackEngine: PlaybackEngine {
         var selectedAudioTrackID: TrackID? = nil
         var selectedSubtitleTrackID: TrackID? = nil
         var isPlayingNow = false
+        var hasLoaded = false
+        /// The duration the current session's last duration-carrying beat reported.
+        var duration: CMTime?
     }
-    private let recordedState = Mutex(RecordedState())
+    private let recordedState = ObservedRecord()
 
-    public var loadedAssets: [PlayableAsset] { recordedState.withLock { $0.loadedAssets } }
-    public var calls: [String] { recordedState.withLock { $0.calls } }
-    public var selectedAudioTrackID: TrackID? { recordedState.withLock { $0.selectedAudioTrackID } }
-    public var selectedSubtitleTrackID: TrackID? { recordedState.withLock { $0.selectedSubtitleTrackID } }
+    /// The recording behind a lock, observable: every write tells `Observations` to re-read, so
+    /// a scenario can wait on the calls instead of polling them.
+    ///
+    /// Writers run off the main actor and the observers on it. `Observations` installs its
+    /// tracking after its read returns, so a mutation announced in that gap is lost and the wait
+    /// hangs on a condition that already holds. Announcing on the main actor serializes it after
+    /// any read in flight.
+    private final class ObservedRecord: Observable, Sendable {
+        private let state = Mutex(RecordedState())
+        private let registrar = ObservationRegistrar()
+        private var revision: Int { 0 }
+
+        func read<T: Sendable>(_ body: (RecordedState) -> T) -> T {
+            registrar.access(self, keyPath: \.revision)
+            return state.withLock { body($0) }
+        }
+
+        func withLock(_ body: (inout RecordedState) -> Void) {
+            state.withLock { body(&$0) }
+            Task { @MainActor in registrar.withMutation(of: self, keyPath: \.revision) {} }
+        }
+    }
+
+    public var loadedAssets: [PlayableAsset] { recordedState.read { $0.loadedAssets } }
+    public var calls: [String] { recordedState.read { $0.calls } }
+    public var selectedAudioTrackID: TrackID? { recordedState.read { $0.selectedAudioTrackID } }
+    public var selectedSubtitleTrackID: TrackID? { recordedState.read { $0.selectedSubtitleTrackID } }
     /// The engine's transport as STATE, not as the tail of `calls`. `calls` answers "which
     /// commands were issued, in which order"; this answers "where did the transport end up",
     /// which is the invariant a caller that commands the engine from several places actually
     /// owes (`engine.isPlayingNow == vm.desiredPlaying` at quiescence). A test that asserts on
     /// the last logged string instead is order-sensitive to whichever unstructured task happened
     /// to finish last.
-    public var isPlayingNow: Bool { recordedState.withLock { $0.isPlayingNow } }
+    public var isPlayingNow: Bool { recordedState.read { $0.isPlayingNow } }
+
+    /// Lands every seek at once, as a fast engine does. Off by default, which is a slow engine the
+    /// contract also allows: suites that script a seek's settle beat by beat need it silent.
+    public nonisolated(unsafe) var landsSeeks = false
 
     /// Set to make every `load` throw after recording — a failed stream load.
     public nonisolated(unsafe) var loadError: Error? = nil
@@ -117,6 +149,9 @@ public final class FakePlaybackEngine: PlaybackEngine {
         self.gates = gates
         self.continuation = cont
         self.barrier = barrier
+        // Both real engines open their stream with an `.idle` from no session.
+        _ = barrier.notePush()
+        cont.yield(PlaybackBeat(session: .none, state: .idle))
         self.state = AsyncStream(unfolding: {
             // Re-entered ⇒ the consumer's loop body for every delivered state returned.
             barrier.noteConsumerTurn()
@@ -143,6 +178,9 @@ public final class FakePlaybackEngine: PlaybackEngine {
         // A push after the stream finished is dropped by the stream, so it must not be
         // counted either — otherwise it would be a debt `settle()` could never clear.
         guard barrier.notePush() else { return }
+        if session == self.session, let duration = state.reportedDuration {
+            recordedState.withLock { $0.duration = duration }
+        }
         continuation.yield(PlaybackBeat(session: session, state: state))
     }
 
@@ -197,11 +235,19 @@ public final class FakePlaybackEngine: PlaybackEngine {
             $0.calls.append("load")
         }
         if let loadError { throw loadError }
+        recordedState.withLock {
+            $0.hasLoaded = true
+            $0.duration = nil
+        }
         session = session.next()
         return session
     }
 
     public func play() async {
+        guard recordedState.read({ $0.hasLoaded }) else {
+            Issue.record("play() before load(): the engine protocol gives it no meaning")
+            return
+        }
         recordedState.withLock {
             $0.calls.append("play")
             $0.isPlayingNow = true
@@ -233,11 +279,19 @@ public final class FakePlaybackEngine: PlaybackEngine {
         await gates[.endAudio]!.park()
     }
 
+    /// A no-op before `load()`, as the protocol says. With `landsSeeks`, a seek on a loaded stream
+    /// publishes an `.observed` beat at `time` once it passes the `.seek` gate.
     public func seek(to time: CMTime) async {
+        guard recordedState.read({ $0.hasLoaded }) else { return }
         let seconds = CMTimeGetSeconds(time)
         let formatted = String(format: "%.1f", seconds)
         recordedState.withLock { $0.calls.append("seek(\(formatted))") }
         await gates[.seek]!.park()
+        let (duration, playing) = recordedState.read { ($0.duration, $0.isPlayingNow) }
+        guard landsSeeks, let duration else { return }
+        push(playing
+            ? .playing(position: time, duration: duration, buffered: nil, provenance: .observed)
+            : .paused(position: time, duration: duration, buffered: nil, provenance: .observed))
     }
 
     // MARK: - Gates
@@ -319,6 +373,18 @@ public final class FakePlaybackEngine: PlaybackEngine {
     public func captureFrame() async -> Data? {
         recordedState.withLock { $0.calls.append("captureFrame") }
         return captureFrameResult
+    }
+}
+
+private extension PlaybackState {
+    var reportedDuration: CMTime? {
+        switch self {
+        case .ready(let duration, _), .playing(_, let duration, _, _), .paused(_, let duration, _, _),
+             .buffering(_, let duration, _, _):
+            duration
+        case .idle, .loading, .ended, .failed:
+            nil
+        }
     }
 }
 

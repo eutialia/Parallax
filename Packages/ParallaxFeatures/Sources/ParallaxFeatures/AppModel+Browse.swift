@@ -44,14 +44,11 @@ extension AppModel {
     /// releases it sooner (see `loadLibraries()` / `loadHome()`).
     func loadSources() async {
         let token = router.libraryReloadToken
-        settledSourcesToken = nil
         async let librariesLoaded: Void = loadLibraries()
         await loadHome()
         if launchReveal == .home { releaseLaunchHold() }
         await librariesLoaded
         releaseLaunchHold()
-        guard isCurrent(token) else { return }
-        settledSourcesToken = token
     }
 
     /// Whether a load started against `token`'s sources may still commit. A newer source change

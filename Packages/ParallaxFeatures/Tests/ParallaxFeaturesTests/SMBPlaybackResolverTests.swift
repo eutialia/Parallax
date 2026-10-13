@@ -25,9 +25,9 @@ private final class SiblingListing {
 
 // MARK: - Test fixtures
 
-/// The one NAS every test here resolves against, under the id `addSMBServer` derives for its host.
+/// The one NAS every test here resolves against.
 private func makeRef(share: String = "Media") -> SMBServerRef {
-    makeSMBRef(id: "smb-nas.local", shares: [share])
+    makeSMBRef(makeSMBServerData(shares: [share]))
 }
 
 /// Returns a `.movie` `Item` whose `ItemID` is encoded the same way `SMBMediaRepository` encodes it.
@@ -62,15 +62,15 @@ struct SMBPlaybackResolverTests {
             let id = try await store.addSMBServer(makeRef().data, password: seedPassword)
             try #require(id == makeRef().id, "makeRef()'s id must be the one addSMBServer derives")
         }
-        let world = FakeSMBWorld()
+        let clock = TestClock()
+        let world = FakeSMBWorld(clock: clock)
         // No file bytes are readable, so the container probe fails and every resolve takes the
         // smb:// route these suites pin.
         world.setFileSizeOutcome(.fails(POSIXError(.ECONNREFUSED)))
         world.setListingOutcome(listing.shouldThrow ? .fails(SiblingListing.StubError.listFailed) : .entries(listing.entries))
-        let clock = TestClock()
         return SMBPlaybackResolver(
             serverStore: store,
-            connections: world.connections(clock: clock),
+            connections: world.connections(),
             resumeStore: resumeStore ?? SMBTestFixtures.inertResumeStore(),
             clock: clock
         )

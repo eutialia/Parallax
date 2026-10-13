@@ -23,8 +23,8 @@ struct DetailScenarios {
         ))
 
         world.app.playback.dismiss()
-        await world.clock.waitForSleepers()
-        world.clock.advance(by: .seconds(1))
+        try await world.clock.waitForSleep(dueIn: .milliseconds(600))
+        world.clock.advance(by: .milliseconds(600))
         try await world.until { !world.app.playback.isPlayerPresent }
 
         try await world.openHome()

@@ -11,7 +11,7 @@ struct SearchScenarios {
         let (world, search, _) = try await openSearch()
 
         search.query = "the"
-        await world.clock.waitForSleepers()
+        try await world.clock.waitForSleep(dueIn: .milliseconds(350))
         #expect(search.state == .idle)
         world.clock.advance(by: .milliseconds(350))
 
@@ -22,11 +22,11 @@ struct SearchScenarios {
     func scopeFiltersResults() async throws {
         let (world, search, _) = try await openSearch()
         search.query = "the"
-        await world.settleTyping()
+        try await world.settleTyping()
         try await world.until { titles(search) == Titles(movies: ["The Thing"], series: ["The Bear"]) }
 
         search.scope = .movies
-        await world.settleTyping()
+        try await world.settleTyping()
 
         try await world.until { titles(search) == Titles(movies: ["The Thing"], series: []) }
     }
@@ -35,14 +35,14 @@ struct SearchScenarios {
     func clearingResetsTheScope() async throws {
         let (world, search, _) = try await openSearch()
         search.query = "the"
-        await world.settleTyping()
+        try await world.settleTyping()
         try await world.until { titles(search) == Titles(movies: ["The Thing"], series: ["The Bear"]) }
         search.scope = .series
-        await world.settleTyping()
+        try await world.settleTyping()
         try await world.until { titles(search) == Titles(movies: [], series: ["The Bear"]) }
 
         search.query = ""
-        await world.settleTyping()
+        try await world.settleTyping()
 
         try await world.until { !search.hasActiveSearch }
         #expect(search.scope == .all)
@@ -53,15 +53,15 @@ struct SearchScenarios {
         let (world, search, _) = try await openSearch()
         let attic = FakeJellyfinServer(name: "Attic").user("bo").library("Movies").movie("The Fly", in: "Movies")
         search.query = "the"
-        await world.settleTyping()
+        try await world.settleTyping()
         try await world.until { titles(search) == Titles(movies: ["The Thing"], series: ["The Bear"]) }
         search.scope = .movies
-        await world.settleTyping()
+        try await world.settleTyping()
         try await world.until { titles(search) == Titles(movies: ["The Thing"], series: []) }
 
         try await world.app.signIn(server: attic.url, username: "bo", password: "")
         try await world.until { search.scope == .all }
-        await world.settleTyping()
+        try await world.settleTyping()
 
         try await world.until { titles(search) == Titles(movies: ["The Thing", "The Fly"], series: ["The Bear"]) }
     }
@@ -72,7 +72,7 @@ struct SearchScenarios {
         den.goOffline()
 
         search.query = "the"
-        await world.settleTyping()
+        try await world.settleTyping()
 
         try await world.until { search.isStalled }
         #expect(search.state == .failed("Parallax couldn't reach your servers."))
@@ -124,8 +124,8 @@ struct SearchScenarios {
 
 private extension AppWorld {
     /// The user stops typing: the debounce runs out.
-    func settleTyping() async {
-        await clock.waitForSleepers()
+    func settleTyping() async throws {
+        try await clock.waitForSleep(dueIn: .milliseconds(350))
         clock.advance(by: .milliseconds(350))
     }
 }

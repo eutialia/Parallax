@@ -67,7 +67,7 @@ public final class DefaultJellyfinAuthClient: JellyfinAuthClient, Sendable {
         identity: DeviceIdentity,
         sessionConfiguration: URLSessionConfiguration = .default,
         quickConnectPolling: QuickConnectPolling = .default,
-        clock: any Clock<Duration> = ContinuousClock()
+        clock: any Clock<Duration>
     ) {
         self.serverURL = serverURL
         self.identity = identity

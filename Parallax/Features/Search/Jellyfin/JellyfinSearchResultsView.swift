@@ -160,7 +160,7 @@ private let previewSearchEpisodes = [
         .contentMargins(.horizontal, AppLayout.contentHMargin(idiom: .compact), for: .scrollContent)
         .contentMargins(.vertical, AppLayout.searchContentVMargin(idiom: .compact), for: .scrollContent)
     }
-    .environment(PlaybackPresenter())
+    .environment(PlaybackPresenter(clock: ContinuousClock()))
     .background(Color.background)
     // The view reads its idiom from the environment (see the type's doc comment); `.compact` is
     // the environment default, but pin it so this preview can't drift if that default moves.
@@ -197,7 +197,7 @@ private let previewSearchEpisodes = [
             JellyfinSearchResultsView(results: results)
         }
     }
-    .environment(PlaybackPresenter())
+    .environment(PlaybackPresenter(clock: ContinuousClock()))
     .background(Color.background)
     .environment(\.colorScheme, .dark)
     // The ONLY idiom source now — the view and its `GridSection` children both read `\.appIdiom`

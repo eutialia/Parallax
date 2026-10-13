@@ -1,4 +1,5 @@
 import Foundation
+import ParallaxCoreTestSupport
 import Testing
 import JellyfinAPI
 import ParallaxCore
@@ -34,7 +35,8 @@ struct ClientFactoryTests {
         authStub.always(.noContent)
         let authClient = await DefaultJellyfinClientFactory(
             identityProvider: provider,
-            sessionConfiguration: authStub.configuration
+            sessionConfiguration: authStub.configuration,
+            clock: TestClock()
         ).make(serverURL: authStub.baseURL)
         try await authClient.signOut(accessToken: "tok-1")
 
