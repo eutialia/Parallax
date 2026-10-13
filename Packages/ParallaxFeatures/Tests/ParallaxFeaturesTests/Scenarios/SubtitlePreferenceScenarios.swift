@@ -15,7 +15,7 @@ struct SubtitlePreferenceScenarios {
         #expect(world.app.subtitlePreferences.style == .standard)
 
         world.app.subtitlePreferences.update(style)
-        try await world.until { world.persistedSubtitleStyle == style }
+        try await world.until { () async in world.persistedSubtitleStyle == style }
         await world.relaunch()
 
         try await world.until { world.app.subtitlePreferences.style == style }

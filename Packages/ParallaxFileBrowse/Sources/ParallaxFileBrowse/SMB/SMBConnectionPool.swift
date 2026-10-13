@@ -33,8 +33,9 @@ import ParallaxCore
 /// **Testability.** The connection is abstracted behind `PoolableSMBConnection` and produced by an
 /// injectable `connect` closure; production wires `SMB2Manager` (the convenience `init` below), and
 /// tests inject a fake so the reuse / keying / cap / reap / cold-latency / never-destroy-a-borrowed
-/// logic is exercised without a network. Wall-clock is injected too (`now`) so a test can simulate
-/// a slow connect (advancing a fake clock inside its connector) and TTL expiry without sleeping.
+/// logic is exercised without a network. Time comes from the one injected `clock` (connect latency, idle age, the sweep
+/// and every hard-timeout ceiling), so a test advances a single `TestClock` to simulate a slow
+/// connect and TTL expiry without sleeping.
 ///
 /// **Credentials.** The pool key hashes the password (`Data.sha256Hex`, ParallaxCore) — the raw password is
 /// never stored in the key nor logged. Folding the digest into the key means a changed credential
@@ -63,9 +64,11 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
     private let maxIdlePerKey: Int
     private let idleTTL: Duration
     private let sweepInterval: Duration
-    private let now: @Sendable () -> ContinuousClock.Instant
-    /// Waits out every hard-timeout ceiling: the cold connect's here, and the lister's operations.
+    /// The pool's only time source: waits out every hard-timeout ceiling (the cold connect's here,
+    /// and the lister's operations) and the sweep, and `uptime` reads its instants.
     let clock: any Clock<Duration>
+    /// Time on `clock` since the pool was made. Every stamp and age in the pool is one of these.
+    private let uptime: @Sendable () -> Duration
     private let connect: SMBConnectionBuilder<Connection>
 
     /// Warm, idle connections per key. Each entry stamps the instant it went idle so `reapIdle`
@@ -91,7 +94,7 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
     private var probes: [String: Task<SMBLinkClass?, Never>] = [:]
     /// When a host's last classification probe FAILED, so a dead host is re-probed once per backoff
     /// window rather than once per prefetch batch.
-    private var probeFailures: [String: ContinuousClock.Instant] = [:]
+    private var probeFailures: [String: Duration] = [:]
     private static var probeFailureBackoff: Duration { .seconds(60) }
 
     /// The scheduled idle sweep, started lazily on first `checkout` (a never-used pool spawns no
@@ -105,7 +108,7 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
 
     private struct IdleEntry {
         let connection: Connection
-        let since: ContinuousClock.Instant
+        let since: Duration
     }
 
     /// - Parameters:
@@ -115,8 +118,8 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
     ///     disconnects the oldest. 4 covers a scrolling grid's overlap without hoarding sessions.
     ///   - idleTTL: a connection idle longer than this is disconnected by the reaper (~60s).
     ///   - sweepInterval: cadence of the background reap, waited out on `clock` (opportunistic reaps cover the rest).
-    ///   - now: wall-clock source, injectable for deterministic tests.
-    ///   - clock: waits out the hard-timeout ceilings and the sweep interval.
+    ///   - clock: the pool's only time source: hard-timeout ceilings, the sweep interval, idle age
+    ///     and cold-connect latency.
     ///   - connect: builds + connects one share connection for a target, handing the built
     ///     connection to `deliver` before the share attach — see `SMBConnectionBuilder`. Production
     ///     wires `SMB2Manager` via the convenience `init`; tests inject a fake.
@@ -125,7 +128,6 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
         maxIdlePerKey: Int = 4,
         idleTTL: Duration = .seconds(60),
         sweepInterval: Duration = .seconds(30),
-        now: @escaping @Sendable () -> ContinuousClock.Instant = { ContinuousClock().now },
         clock: any Clock<Duration>,
         connect: @escaping SMBConnectionBuilder<Connection>
     ) {
@@ -133,14 +135,19 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
         self.maxIdlePerKey = max(1, maxIdlePerKey)
         self.idleTTL = idleTTL
         self.sweepInterval = sweepInterval
-        self.now = now
         self.clock = clock
+        self.uptime = Self.stopwatch(on: clock)
         self.connect = connect
         self.graveyard = SMBConnectionGraveyard<Connection>()
     }
 
     deinit {
         sweepTask?.cancel()
+    }
+
+    private static func stopwatch<C: Clock>(on clock: C) -> @Sendable () -> Duration where C.Duration == Duration {
+        let origin = clock.now
+        return { origin.duration(to: clock.now) }
     }
 
     /// Hands out a connected share connection for `target`: a warm idle one for the key when
@@ -164,7 +171,7 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
     ) async throws -> SMBPooledConnection<Connection> {
         startSweepIfNeeded()
         let key = target.key
-        await reapIdle(asOf: now())
+        await reapIdle()
 
         if requireFresh {
             // Purged in this same actor-isolated step, before anything is torn down: they are idle
@@ -183,7 +190,7 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
         }
 
         // Cold connect — timed for the link-class signal and bounded by the shared hard timeout.
-        let start = now()
+        let start = uptime()
         let connection: Connection
         // The connector keeps running after we give up (`withHardTimeout` never cancels it), and it
         // hands its connection over the moment it exists (see `SMBConnectionBuilder`), so anything
@@ -209,7 +216,7 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
             if error is HardTimeoutError { throw SMBListerError.timedOut }
             throw error
         }
-        let elapsed = start.duration(to: now())
+        let elapsed = uptime() - start
         SMBDiagnostics.pool.info("← cold connect ok \(target.host)/\(target.share) in \(elapsed)")
         recordColdLatency(host: target.host, elapsed: elapsed)
         // Stamped AFTER the connect: a flush that happened while this handshake was in flight
@@ -273,10 +280,10 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
             Task { await handle.connection.disconnectGracefully() }
             return
         }
-        await reapIdle(asOf: now())
+        await reapIdle()
 
         var entries = idle[handle.key] ?? []
-        entries.append(IdleEntry(connection: handle.connection, since: now()))
+        entries.append(IdleEntry(connection: handle.connection, since: uptime()))
 
         // Cap: evict the oldest (front) beyond the ceiling. Remove from `idle` BEFORE awaiting the
         // disconnect so a reentrant checkout can never re-borrow a connection mid-teardown.
@@ -321,7 +328,7 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
         if let known = coldLinkClass[target.host] { return known }
         if let inFlight = probes[target.host] { return await inFlight.value }
         if let failedAt = probeFailures[target.host],
-           failedAt.duration(to: now()) < Self.probeFailureBackoff {
+           uptime() - failedAt < Self.probeFailureBackoff {
             return nil
         }
 
@@ -342,7 +349,7 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
     }
 
     private func recordProbeFailure(host: String) {
-        probeFailures[host] = now()
+        probeFailures[host] = uptime()
     }
 
     /// Discards a borrowed connection instead of returning it to the idle pool — for a borrow whose
@@ -431,13 +438,14 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
     /// zero-borrower idle connections are ever disconnected (the load-bearing invariant). The
     /// disconnects run DETACHED and therefore concurrently: they are round trips on a real NAS, and
     /// serialising them charged the whole sweep to whoever happened to trigger it.
-    func reapIdle(asOf instant: ContinuousClock.Instant) async {
+    func reapIdle() async {
+        let instant = uptime()
         var expired: [Connection] = []
         for (key, entries) in idle {
             var kept: [IdleEntry] = []
             var reaped: [IdleEntry] = []
             for entry in entries {
-                if entry.since.duration(to: instant) >= idleTTL {
+                if instant - entry.since >= idleTTL {
                     reaped.append(entry)
                 } else {
                     kept.append(entry)
@@ -527,7 +535,7 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
             while !Task.isCancelled {
                 try? await clock.sleep(for: interval)
                 guard let self else { return }
-                await self.reapIdle(asOf: self.now())
+                await self.reapIdle()
             }
         }
     }

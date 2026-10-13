@@ -13,7 +13,7 @@ public actor PlaybackInfoServiceStore {
     // (token, service) so a rotated token forces a rebuild with a fresh client.
     private var servicesByServer: [ServerID: (token: String, service: PlaybackInfoService)] = [:]
 
-    public init(clientFactory: JellyfinPlaybackClientFactory, clock: any Clock<Duration> = ContinuousClock()) {
+    public init(clientFactory: JellyfinPlaybackClientFactory, clock: any Clock<Duration>) {
         self.clientFactory = clientFactory
         self.clock = clock
     }

@@ -10,8 +10,8 @@ struct LaunchGateTests {
     /// gate is born finished: no stage ever mounts, content is simply there.
     @Test("the caller decides at init whether a story plays at all")
     func playsStoryIsChosenAtInit() {
-        #expect(!LaunchGate().isFinished)
-        #expect(LaunchGate(playsStory: false).isFinished)
+        #expect(!LaunchGate(clock: TestClock()).isFinished)
+        #expect(LaunchGate(playsStory: false, clock: TestClock()).isFinished)
     }
 
     /// Reaching Home for the first time after a sign-in IS a first run — there was no cached
@@ -19,7 +19,7 @@ struct LaunchGateTests {
     /// able to play it there. Born-finished is exactly the state `rearm()` revives from.
     @Test("rearm() revives the full story on a launch that skipped it")
     func rearmRevivesSkippedStory() {
-        let gate = LaunchGate(playsStory: false)
+        let gate = LaunchGate(playsStory: false, clock: TestClock())
         gate.rearm()
 
         #expect(!gate.isFinished)
@@ -31,7 +31,7 @@ struct LaunchGateTests {
     /// reveal that's mid-play.
     @Test("rearm() leaves a story that is still playing alone")
     func rearmIgnoresAPlayingStory() {
-        let gate = LaunchGate()
+        let gate = LaunchGate(clock: TestClock())
         gate.beginStage()
         gate.rearm()
         #expect(gate.stageBegan)
@@ -41,7 +41,7 @@ struct LaunchGateTests {
     /// call sites stay unconditional, and a finished gate just ignores it.
     @Test("markContentReady() is a no-op on a launch born finished")
     func markContentReadyIsHarmlessWhenSkipped() {
-        let gate = LaunchGate(playsStory: false)
+        let gate = LaunchGate(playsStory: false, clock: TestClock())
         gate.markContentReady()
         #expect(gate.releasedAtRawTime == nil)
         #expect(gate.isFinished)
@@ -71,14 +71,14 @@ struct LaunchGateTests {
     /// against a zero that `beginStage()` is still going to move.
     @Test("a release before the stage began pins to raw time 0")
     func preStageReleaseIsRawZero() {
-        let gate = LaunchGate()
+        let gate = LaunchGate(clock: TestClock())
         gate.markContentReady()
         #expect(gate.releasedAtRawTime == 0)
     }
 
     @Test("rearm() re-arms the stage anchor")
     func rearmResetsAnchor() {
-        let gate = LaunchGate()
+        let gate = LaunchGate(clock: TestClock())
         gate.beginStage()
         gate.finish()
         gate.rearm()

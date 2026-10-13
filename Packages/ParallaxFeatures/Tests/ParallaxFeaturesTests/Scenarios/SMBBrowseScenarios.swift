@@ -10,7 +10,7 @@ import Testing
 @Suite("SMB browse", .timeLimit(.minutes(1)))
 struct SMBBrowseScenarios {
     private static let nas = SMBServerData(host: "nas.local", username: "ana", domain: "WORKGROUP", shares: ["Media"])
-    private static let ref = SMBServerRef(id: ServerID(rawValue: "smb-nas.local"), data: nas)
+    private static let ref = makeSMBRef(nas)
 
     private static func file(_ name: String, modified: TimeInterval = 0) -> SMBDirectoryEntry {
         SMBDirectoryEntry(name: name, isDirectory: false, size: 1, modifiedAt: Date(timeIntervalSince1970: modified))
@@ -68,7 +68,8 @@ struct SMBBrowseScenarios {
 
         recovery.password = "hunter2"
         recovery.submit()
-        try await world.until { recovered }
+        try await world.until { !recovery.isVerifying }
+        #expect(recovered)
         await root.reopenAfterPasswordRecovery()
         try await world.until { root.folders.map(\.name) == ["Movies"] }
         #expect(root.setup == .open)
@@ -99,7 +100,7 @@ struct SMBBrowseScenarios {
         let movies = await world.openSMBFolder(Self.ref, share: "Media", path: "Movies")
         try await world.until { !movies.isLoading }
 
-        movies.play(movies.media[0])
+        movies.play(try #require(movies.media.first))
 
         guard case .smb(let item, let ref) = world.app.playback.request?.target else {
             Issue.record("the presenter holds no SMB play request: \(String(describing: world.app.playback.request?.target))")

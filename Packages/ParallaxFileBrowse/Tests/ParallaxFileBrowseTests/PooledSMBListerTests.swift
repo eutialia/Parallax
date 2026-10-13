@@ -30,7 +30,7 @@ struct PooledSMBListerTests {
     /// coming back) must not re-handshake the share.
     @Test("two sequential listings ride ONE warm connection — no second cold connect")
     func sequentialListingsReuseOneConnection() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         world.setListingOutcome(.entries(Self.listing))
         let pool = makeFakePool(world: world)
         let lister = makePooledLister(world: world, pool: pool)
@@ -50,7 +50,7 @@ struct PooledSMBListerTests {
 
     @Test("an empty path lists the share root")
     func emptyPathListsRoot() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let lister = makePooledLister(world: world, pool: makeFakePool(world: world))
 
         _ = try await lister.list(share: "Media", path: "")
@@ -64,7 +64,7 @@ struct PooledSMBListerTests {
     /// borrow is guaranteed warm.
     @Test("every borrow re-pins its own ceiling, including a warm one inheriting another's")
     func everyBorrowRePinsItsOwnOperationTimeout() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world)
         let patient = makePooledLister(world: world, pool: pool, connectTimeout: 7)
         let impatient = makePooledLister(world: world, pool: pool, connectTimeout: 3)
@@ -81,7 +81,7 @@ struct PooledSMBListerTests {
     /// be served by a connection attached to the wrong tree.
     @Test("switching share takes a different pool key, and switching back reuses the first")
     func shareSwitchTakesADistinctKey() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world)
         let lister = makePooledLister(world: world, pool: pool)
 
@@ -102,7 +102,7 @@ struct PooledSMBListerTests {
     /// appeared. Entries must arrive while those teardowns are still in flight.
     @Test("a listing returns its entries without waiting for pool teardown, which fans out behind it")
     func listingNeverWaitsForPoolTeardown() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         world.setListingOutcome(.entries(Self.listing))
         let pool = makeFakePool(world: world, idleTTL: .seconds(60))
         let lister = makePooledLister(world: world, pool: pool)
@@ -135,7 +135,7 @@ struct PooledSMBListerTests {
 
     @Test("a listing that threw discards the borrow — it is never handed to the next caller")
     func thrownListingDiscardsTheBorrow() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world)
         let lister = makePooledLister(world: world, pool: pool)
         world.setListingOutcome(.fails(ListFailure()))
@@ -187,7 +187,7 @@ struct PooledSMBListerTests {
     @Test("what a failure on a warm borrow gets: a fresh retry or a surfaced answer, and a discard",
           arguments: warmBorrowFailures)
     func warmBorrowFailureRouting(_ scenario: WarmBorrowFailure) async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world)
         let lister = makePooledLister(world: world, pool: pool)
         // Listing 1 warms the pool; listing 2 is handed that warm borrow and fails on it; the third
@@ -222,7 +222,7 @@ struct PooledSMBListerTests {
     /// wait through a second ceiling for the same answer.
     @Test("a transport failure on a fresh connection is never retried")
     func freshConnectionFailureIsNotRetried() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world)
         let lister = makePooledLister(world: world, pool: pool)
         world.setListingOutcome(.fails(POSIXError(.ECONNRESET)))
@@ -238,7 +238,7 @@ struct PooledSMBListerTests {
     /// one held over from the borrow that started this.
     @Test("a retry that fails too surfaces its own error, without a third attempt")
     func retryFailureSurfaces() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world)
         let lister = makePooledLister(world: world, pool: pool)
         world.setListingScript([
@@ -265,7 +265,7 @@ struct PooledSMBListerTests {
     /// Transport-class on purpose: that is the error class the warm-borrow retry gate opens for.
     @Test("a connect failure surfaces as-is and is never retried")
     func connectFailureSurfacesWithoutARetry() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world)
         let lister = makePooledLister(world: world, pool: pool)
         world.failConnects(with: innerTimeoutError)
@@ -281,7 +281,7 @@ struct PooledSMBListerTests {
     /// outright, since nothing else holds a reference to one it never returned.
     @Test("a share enumeration whose connect times out discards its half-built connection too")
     func listSharesConnectTimeoutDiscardsTheHalfBuiltConnection() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world)
         let lister = makePooledLister(world: world, pool: pool)
         world.failConnects(with: innerTimeoutError, afterBuilding: true)
@@ -302,9 +302,8 @@ struct PooledSMBListerTests {
     /// AMSMB2's graceful teardown races libsmb2 still dispatching callbacks for the pending request.
     @Test("a wedged listing is condemned — never checked in, never disconnected — then discarded once its call settles")
     func wedgedListingIsCondemnedNotDisconnected() async throws {
-        let world = FakeSMBWorld()
-        let clock = TestClock()
-        let pool = makeFakePool(world: world, clock: clock)
+        let world = FakeSMBWorld(clock: TestClock())
+        let pool = makeFakePool(world: world)
         let lister = makePooledLister(world: world, pool: pool)
 
         // Warm a connection, then wedge the next listing inside the fake share.
@@ -312,8 +311,8 @@ struct PooledSMBListerTests {
         await untilSettled { await pool.idleCount == 1 }
         await world.operationGate.close()
         let wedged = Task { try await lister.list(share: "Media", path: "Movies") }
-        try await clock.waitForSleep(dueIn: Self.ceiling)
-        clock.advance(by: Self.ceiling)
+        try await world.clock.waitForSleep(dueIn: Self.ceiling)
+        world.clock.advance(by: Self.ceiling)
 
         await #expect(throws: SMBListerError.timedOut) { _ = try await wedged.value }
 
@@ -342,7 +341,7 @@ struct PooledSMBListerTests {
     /// not discard — the old code discarded here, which is a graceful disconnect over a live request.
     @Test("a cancelled listing whose call is still running is condemned, not discarded")
     func cancelledListingWithARunningCallIsCondemned() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world)
         let lister = makePooledLister(world: world, pool: pool)
 
@@ -376,7 +375,7 @@ struct PooledSMBListerTests {
     /// memory, so it is an ordinary completed failure: discarded, never parked.
     @Test("a listing that hit AMSMB2's own reply timeout is discarded, not condemned")
     func innerTimeoutListingIsDiscarded() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world)
         let lister = makePooledLister(world: world, pool: pool)
         world.setListingOutcome(.fails(innerTimeoutError))
@@ -391,7 +390,7 @@ struct PooledSMBListerTests {
 
     @Test("a share enumeration that hit AMSMB2's own reply timeout is discarded too")
     func innerTimeoutListSharesIsDiscarded() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world)
         let lister = makePooledLister(world: world, pool: pool)
         world.setShareListOutcome(.fails(innerTimeoutError))
@@ -409,7 +408,7 @@ struct PooledSMBListerTests {
     /// connection, so it uses a one-shot connection that is torn down instead of pooled.
     @Test("listShares runs on its own connection and never leaves one in the pool")
     func listSharesUsesAThrowawayConnection() async throws {
-        let world = FakeSMBWorld()
+        let world = FakeSMBWorld(clock: TestClock())
         let pool = makeFakePool(world: world)
         let lister = makePooledLister(world: world, pool: pool)
         world.setShareListOutcome(.shares([SMBShare(name: "Media", comment: "Movies & TV")]))
@@ -428,15 +427,14 @@ struct PooledSMBListerTests {
     /// — the connection just happens to have no pool key.
     @Test("a wedged share enumeration is condemned instead of torn down")
     func wedgedListSharesIsCondemned() async throws {
-        let world = FakeSMBWorld()
-        let clock = TestClock()
-        let pool = makeFakePool(world: world, clock: clock)
+        let world = FakeSMBWorld(clock: TestClock())
+        let pool = makeFakePool(world: world)
         let lister = makePooledLister(world: world, pool: pool)
         await world.operationGate.close()
 
         let wedged = Task { try await lister.listShares() }
-        try await clock.waitForSleep(dueIn: Self.ceiling)
-        clock.advance(by: Self.ceiling)
+        try await world.clock.waitForSleep(dueIn: Self.ceiling)
+        world.clock.advance(by: Self.ceiling)
 
         await #expect(throws: SMBListerError.timedOut) { _ = try await wedged.value }
 

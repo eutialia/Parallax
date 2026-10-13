@@ -34,7 +34,7 @@ public actor PlaybackInfoService {
     private var lastReportedAt: Duration?
     private var lastPaused: Bool = false
 
-    public init(client: JellyfinPlaybackClient, clock: any Clock<Duration> = ContinuousClock()) {
+    public init(client: JellyfinPlaybackClient, clock: any Clock<Duration>) {
         self.client = client
         self.elapsed = clock.stopwatch()
     }

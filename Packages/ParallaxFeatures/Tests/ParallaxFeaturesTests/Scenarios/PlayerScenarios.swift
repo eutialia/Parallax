@@ -50,7 +50,7 @@ struct PlayerScenarios {
 
         world.app.playback.dismiss()
 
-        try await world.until { ended || world.engines.count > 0 }
+        try await world.until { () async in ended || world.engines.count > 0 }
         #expect(world.engines.count == 0)
         #expect(den.playbackRequests.isEmpty)
     }
@@ -316,8 +316,10 @@ struct PlayerScenarios {
         #expect(intro.endSeconds == 90)
 
         await player.skipActiveSegment()
+        try await world.engine.settle()
 
         #expect(world.engine.calls.contains("seek(90.0)"))
+        #expect(player.flight == nil, "the bar never settled on the engine's landing")
         #expect(CMTimeGetSeconds(player.currentPosition) == 90)
         #expect(player.segmentPrompt == nil)
     }
@@ -353,6 +355,31 @@ struct PlayerScenarios {
         try await world.streamPlays(at: .seconds(600), of: .seconds(162 * 60))
         #expect(player.phase == .playing)
         #expect(player.selectedAudioTrack?.displayName == "English")
+    }
+
+    @Test("after an in-place reload, a beat the replaced stream still had in flight doesn't move the player")
+    func staleBeatAfterAnInPlaceReloadIsDropped() async throws {
+        let den = FakeJellyfinServer(name: "Den").user("ana").library("Films")
+            .movie("Ran", in: "Films", minutes: 162)
+            .streams("Ran", by: .transcode, audio: [
+                FakeJellyfinServer.AudioTrack(language: "jpn", title: "Japanese"),
+                FakeJellyfinServer.AudioTrack(language: "eng", title: "English"),
+            ])
+        let world = try await AppWorld.launch(signedIn: [(den, "ana")])
+        let session = try await world.session(on: den)
+        world.app.playback.play(ItemID(rawValue: den.itemID(of: "Ran")), in: session)
+        let player = try await world.openPlayer()
+        try await world.streamPlays(at: .seconds(600), of: .seconds(162 * 60))
+        let replaced = world.engine.session
+        await player.selectAudioTrack(try #require(player.availableAudioTracks.last))
+        try await world.streamPlays(at: .seconds(600), of: .seconds(162 * 60))
+
+        world.engine.push(.playing(30, duration: .seconds(162 * 60)), from: replaced)
+        try await world.engine.settle()
+
+        #expect(world.engines.count == 1)
+        #expect(CMTimeGetSeconds(player.currentPosition) == 600)
+        #expect(player.phase == .playing)
     }
 
     @Test("a film AVKit can't decode falls back to VLC at the same spot and plays")
@@ -428,13 +455,13 @@ struct PlayerScenarios {
     @Test("an SMB film's position survives a relaunch, and playing it again resumes there")
     func smbResumeSurvivesARelaunch() async throws {
         let nas = SMBServerData(host: "nas.local", username: "ana", domain: "WORKGROUP", shares: ["Media"])
-        let ref = SMBServerRef(id: ServerID(rawValue: "smb-nas.local"), data: nas)
+        let ref = makeSMBRef(nas)
         let world = try await AppWorld.launch(savedSMB: [(nas, "hunter2")])
         world.nas.setFolder([SMBDirectoryEntry(name: "Heat.mkv", isDirectory: false, size: 1, modifiedAt: nil)], share: "Media")
         world.nas.setContents(Data([0x1A, 0x45, 0xDF, 0xA3] + Array(repeating: 0, count: 60)))
         let films = await world.openSMBFolder(ref, share: "Media")
         try await world.until { !films.isLoading }
-        films.play(films.media[0])
+        films.play(try #require(films.media.first))
         let player = try await world.openPlayer()
         #expect(player.title == "Heat")
         #expect(world.engine.loadedAssets.last?.startTime == nil)
@@ -445,7 +472,7 @@ struct PlayerScenarios {
         await world.relaunch()
         let filmsAgain = await world.openSMBFolder(ref, share: "Media")
         try await world.until { !filmsAgain.isLoading }
-        filmsAgain.play(filmsAgain.media[0])
+        filmsAgain.play(try #require(filmsAgain.media.first))
         try await world.openPlayer()
 
         #expect(world.engine.loadedAssets.last?.startTime == .seconds(1800))

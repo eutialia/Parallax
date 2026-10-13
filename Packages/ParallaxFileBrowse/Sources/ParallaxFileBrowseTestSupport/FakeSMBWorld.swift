@@ -3,16 +3,6 @@ import os
 import ParallaxCoreTestSupport
 import ParallaxFileBrowse
 
-/// A controllable wall clock: `SMBConnectionPool` reads time through an injected `now`, so a test can
-/// simulate a slow cold connect and TTL expiry without ever sleeping. Starts at a captured
-/// `ContinuousClock` instant and only moves when a test (or the fake connector) advances it.
-public final class FakeClock: @unchecked Sendable {
-    private let state = OSAllocatedUnfairLock(initialState: ContinuousClock().now)
-    public init() {}
-    public func now() -> ContinuousClock.Instant { state.withLock { $0 } }
-    public func advance(by duration: Duration) { state.withLock { $0 = $0.advanced(by: duration) } }
-}
-
 /// Shared bookkeeping for the fake SMB layer: it vends monotonically-ided connections, records
 /// every connect/disconnect/timeout/read/listing the pool, reader and lister perform, and scripts
 /// what those operations do (canned bytes, canned entries, injected failures, held-open suspensions).
@@ -22,7 +12,14 @@ public final class FakeClock: @unchecked Sendable {
 /// `PooledSMBListerTests` (the listing borrow lifecycle).
 public final class FakeSMBWorld: @unchecked Sendable {
 
-    public init() {}
+    /// The one clock of the fake graph: the pool reads time off it, its hard timeouts and sweep
+    /// wait on it, and the connector advances it by a host's latency. A wedged connect parks a
+    /// `connectTimeout`-plus-grace sleep on it that only the test advancing it can end.
+    public let clock: TestClock
+
+    public init(clock: TestClock) {
+        self.clock = clock
+    }
 
     /// What `fileSizeOfItem` does.
     public enum FileSizeOutcome: Sendable {
@@ -52,7 +49,6 @@ public final class FakeSMBWorld: @unchecked Sendable {
         case fails(any Error)
     }
 
-    public let clock = FakeClock()
     /// Held by `connect`; closed by a test that needs to interleave with an in-flight cold connect.
     public let connectGate = AsyncGate()
     /// Held by every borrowed-connection operation (`fileSizeOfItem`, `readBytes`,
@@ -190,8 +186,8 @@ public final class FakeSMBWorld: @unchecked Sendable {
 
     /// The production connection graph (`SMBConnections`) over this world: the real pool, listers
     /// and readers, with only the connections faked. Hard timeouts wait on `clock`.
-    public func connections(clock: any Clock<Duration>) -> SMBConnections {
-        SMBConnections(pool: makeFakePool(world: self, clock: clock)) { try await self.connect($0, deliver: $1) }
+    public func connections() -> SMBConnections {
+        SMBConnections(pool: makeFakePool(world: self)) { try await self.connect($0, deliver: $1) }
     }
 
     // MARK: - Connection behaviour
@@ -223,7 +219,7 @@ public final class FakeSMBWorld: @unchecked Sendable {
         let connection = FakeSMBConnection(id: id, world: self, share: target.share)
         deliver(connection)
         if let error = failure.error { throw error }
-        clock.advance(by: latency)
+        if latency > .zero { clock.advance(by: latency) }
         return connection
     }
 
@@ -356,23 +352,20 @@ public final class FakeSMBConnection: SMBReadableConnection, SMBListableConnecti
 }
 
 /// A pool wired to `world`, with the background sweep pushed far out by default so only the
-/// opportunistic/explicit reaps under test run. Its hard timeouts wait on `clock`, which by default
-/// nobody advances: only a test that passes its own clock sees one fire.
+/// opportunistic/explicit reaps under test run. Time, hard timeouts included, is `world.clock`.
 public func makeFakePool(
     world: FakeSMBWorld,
     connectTimeout: TimeInterval = 5,
     maxIdlePerKey: Int = 4,
     idleTTL: Duration = .seconds(60),
-    sweepInterval: Duration = .seconds(3_600),
-    clock: any Clock<Duration> = TestClock()
+    sweepInterval: Duration = .seconds(3_600)
 ) -> SMBConnectionPool<FakeSMBConnection> {
     SMBConnectionPool<FakeSMBConnection>(
         connectTimeout: connectTimeout,
         maxIdlePerKey: maxIdlePerKey,
         idleTTL: idleTTL,
         sweepInterval: sweepInterval,
-        now: { [clock = world.clock] in clock.now() },
-        clock: clock,
+        clock: world.clock,
         connect: { try await world.connect($0, deliver: $1) }
     )
 }

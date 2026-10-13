@@ -92,7 +92,7 @@ struct HomeScenarios {
         let libraries = VisibleLibrariesModel(session: try await world.session(on: den), app: world.app)
         await libraries.load()
         await libraries.toggle(try #require(libraries.collections.last))
-        try await world.openHome()
+        try await world.until { world.sidebar == [AppWorld.SidebarSection(title: "Libraries", libraries: ["Films"])] }
 
         #expect(world.app.home === shown)
         #expect(world.minutesWatched("Heat") == 40)
@@ -110,9 +110,7 @@ struct HomeScenarios {
 
         try await world.app.signIn(server: den.url, username: "ana", password: "")
         den.watch("Heat", minutes: 50)
-        try await world.openHome()
-
-        #expect(world.app.home !== shown)
+        try await world.until { world.app.home !== shown }
         try await world.until { world.minutesWatched("Heat") == 50 }
     }
 

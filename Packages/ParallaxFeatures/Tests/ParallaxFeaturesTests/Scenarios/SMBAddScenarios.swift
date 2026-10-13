@@ -85,10 +85,10 @@ struct SMBAddScenarios {
         add.host = "nas.local"
         add.connect()
         await world.nas.connectGate.awaitArrivals()
-        await world.clock.waitForSleepers()
-        world.clock.advance(by: .seconds(29))
+        try await world.clock.waitForSleep(dueIn: .seconds(30))
+        #expect(world.clock.pendingSleeps.first == .seconds(30), "something can end the connect before the watchdog")
         #expect(add.isConnecting)
-        world.clock.advance(by: .seconds(1))
+        world.clock.advance(by: .seconds(30))
         try await world.until { !add.isConnecting }
 
         #expect(add.connectionError == "Timed out after 30 s (stage: listing-shares).")
@@ -103,7 +103,7 @@ struct SMBAddScenarios {
         #expect(world.app.router.destination == .home)
         #expect(await world.smbLibraries() == ["nas.local/Media", "nas.local/Photos"])
 
-        let settings = world.app.makeSMBServerSettings(id: ServerID(rawValue: "smb-nas.local"), data: nas)
+        let settings = world.app.makeSMBServerSettings(id: makeSMBRef(nas).id, data: nas)
         await settings.remove()
 
         #expect(await world.smbLibraries() == [])

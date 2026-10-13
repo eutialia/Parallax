@@ -66,7 +66,7 @@ final class AppWorld {
         let clock = TestClock()
         let lan = try ScriptedLAN(lanServers)
         let keychain = FakeKeychain()
-        let nas = FakeSMBWorld()
+        let nas = FakeSMBWorld(clock: clock)
         let bonjour = ScriptedBonjour()
         let thumbnailer = RecordingThumbnailer()
         let avThumbnailer = RecordingThumbnailer()
@@ -85,12 +85,16 @@ final class AppWorld {
             capabilityProbe: display,
             lanBroadcaster: { _ in lan.broadcast() },
             audioSession: audioSession,
-            smbConnections: nas.connections(clock: clock),
+            smbConnections: nas.connections(),
             browseSMBServices: { bonjour.browse() },
             hdrEligibilityChanges: { display.eligibilityChanges },
             thumbnailer: thumbnailer,
             avThumbnailer: avThumbnailer,
-            makePlaybackEngine: { id, _ in engines.make(id) },
+            makePlaybackEngine: { id, _ in
+                let engine = engines.make(id)
+                engine.landsSeeks = true
+                return engine
+            },
             makeNowPlaying: { SpyNowPlaying() },
             prepareDisplay: { _ in },
             engineSubtitleFonts: PlayerFixtures.engineSubtitleFonts,
@@ -172,12 +176,32 @@ final class AppWorld {
     }
 
     /// Waits for state the app reaches asynchronously, and ends the scenario at the caller's line
-    /// when it never arrives: every later step would run against the wrong state.
-    func until(_ condition: () -> Bool, sourceLocation: SourceLocation = #_sourceLocation) async throws {
-        guard try await pollUntil(condition) else { throw StateNeverArrived(awaitedAt: sourceLocation) }
+    /// when it never arrives: every later step would run against the wrong state. `condition` is
+    /// re-read whenever an observable property it read changes, so it must read observable state;
+    /// the deadline is only an anti-hang ceiling.
+    func until(_ condition: @escaping @MainActor () -> Bool, sourceLocation: SourceLocation = #_sourceLocation) async throws {
+        let arrived = try await withThrowingTaskGroup(of: Bool.self) { group in
+            group.addTask { await Self.firstHolds(condition) }
+            group.addTask {
+                try await Task.sleep(for: CITimeScale.seconds(5))
+                return false
+            }
+            defer { group.cancelAll() }
+            return try await group.next() ?? false
+        }
+        guard arrived else { throw StateNeverArrived(awaitedAt: sourceLocation) }
     }
 
-    /// `until`, for state behind an actor.
+    private static func firstHolds(_ condition: @escaping @MainActor () -> Bool) async -> Bool {
+        var observed = Observations(condition).makeAsyncIterator()
+        while let held = await observed.next() {
+            if held { return true }
+        }
+        return false
+    }
+
+    /// `until`, for state behind an actor or in `UserDefaults`, which no observation reaches: it
+    /// re-reads `condition` on a 20 ms tick.
     func until(_ condition: () async -> Bool, sourceLocation: SourceLocation = #_sourceLocation) async throws {
         let deadline = ContinuousClock.now + CITimeScale.seconds(5)
         while !(await condition()) {
@@ -195,10 +219,14 @@ final class AppWorld {
 
     // MARK: - Steps
 
-    /// Waits until Home's feed and the library list are loaded for the sources configured now. The
-    /// app loads them by itself whenever the sources change.
+    /// Waits until Home's feed and the library list are on screen. The app loads them by itself
+    /// whenever the sources change; a scenario that changes them waits for its own visible
+    /// difference instead, since this state also holds before the new pass starts.
     func openHome(sourceLocation: SourceLocation = #_sourceLocation) async throws {
-        try await until({ self.app.settledSourcesToken == self.app.router.libraryReloadToken }, sourceLocation: sourceLocation)
+        try await until({
+            self.app.isContentReady && !self.app.libraries.isResolving
+                && !(self.app.home?.needsNetworkLoad ?? false)
+        }, sourceLocation: sourceLocation)
     }
 
     /// Puts a screen on display: runs its `.task` until the world ends.
@@ -302,13 +330,13 @@ final class AppWorld {
     /// The network drops. Returns once the app has seen it.
     func goOffline() async throws {
         reachability.set(isSatisfied: false)
-        try await until { !app.connectivity.isOnline }
+        try await until { !self.app.connectivity.isOnline }
     }
 
     /// The network returns. Returns once the app has seen it.
     func comeOnline() async throws {
         reachability.set(isSatisfied: true)
-        try await until { app.connectivity.isOnline }
+        try await until { self.app.connectivity.isOnline }
     }
 
     /// The first activation of a cold launch, after the first screens are up.
