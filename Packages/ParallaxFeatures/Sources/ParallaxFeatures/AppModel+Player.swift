@@ -6,9 +6,12 @@ import ParallaxPlayback
 
 extension AppModel {
     /// The player's whole session, for as long as the calling task lives: builds the player for
-    /// a presenter request, starts playback, and closes the player when playback completes with
-    /// nowhere to advance. `install` receives the model before playback starts, so the view
-    /// renders the loading phase from the first beat.
+    /// a presenter request, starts playback, closes the presenter when playback completes with
+    /// nowhere to advance, and closes the model when the task is cancelled, whoever closed the
+    /// player. Returns once the model has stopped, and only then counts the session as ended.
+    /// `install` receives the model before playback starts, so the view renders the loading
+    /// phase from the first beat. A request dismissed while the player was being built never
+    /// starts.
     ///
     /// `subtitleSurface` is sampled once per session, at asset construction, for the engine's
     /// subtitle sizing.
@@ -17,38 +20,36 @@ extension AppModel {
         subtitleSurface: @escaping @MainActor () -> SubtitleSurface,
         install: (PlayerViewModel) -> Void
     ) async {
-        let vm: PlayerViewModel
+        let vm = switch request.target {
+        case .smb(let item, let ref):
+            makeSMBPlayer(item: item, ref: ref, subtitleSurface: subtitleSurface)
+        case .detail(_, let session, _), .itemID(_, let session, _):
+            await makeJellyfinPlayer(session: session, subtitleSurface: subtitleSurface)
+        }
+        guard !Task.isCancelled, playback.request?.id == request.id else { return }
+        // The dismissals that never reach the player's own close button (the tvOS cover
+        // dismissing itself, a server switch, the debug lab) still fence and end audio instead of
+        // playing on through the slide-out. Weak: the presenter outlives every session.
+        playback.setExitHandler(for: request.id) { [weak vm] in vm?.beginExit() }
+        install(vm)
         switch request.target {
         case .smb(let item, let ref):
-            vm = makeSMBPlayer(item: item, ref: ref, subtitleSurface: subtitleSurface)
-            present(vm, install)
             await vm.start(resolvingSMB: { [resolver = services.smbPlaybackResolver] in
                 try await resolver.resolve(item, ref: ref)
             })
-        case .detail(let detail, let session, let fromBeginning):
-            vm = await makeJellyfinPlayer(session: session, subtitleSurface: subtitleSurface)
-            present(vm, install)
+        case .detail(let detail, _, let fromBeginning):
             await vm.start(item: detail, fromBeginning: fromBeginning)
-        case .itemID(let itemID, let session, let fromBeginning):
-            vm = await makeJellyfinPlayer(session: session, subtitleSurface: subtitleSurface)
-            present(vm, install)
+        case .itemID(let itemID, _, let fromBeginning):
             await vm.start(itemID: itemID, fromBeginning: fromBeginning)
         }
         // A movie or a series finale that played to its end closes the player, the same way
-        // the Close chevron does; episodes auto-advance instead and never complete.
-        for await done in Observations({ vm.playbackDidComplete }) where done {
+        // the Close chevron does; episodes auto-advance instead and never complete. The
+        // session then lives on until the host unmounts the player.
+        for await done in Observations({ vm.playbackDidComplete }) where done && playback.request?.id == request.id {
             playback.dismiss()
-            return
         }
-    }
-
-    /// Hands the presenter the session's exit sequence, so the dismissals that never reach the
-    /// player's own close button (the tvOS cover dismissing itself, a server switch, the debug
-    /// lab) still fence and end audio instead of playing on through the slide-out. Weak: the
-    /// presenter outlives every session.
-    private func present(_ vm: PlayerViewModel, _ install: (PlayerViewModel) -> Void) {
-        playback.exitHandler = { [weak vm] in vm?.beginExit() }
-        install(vm)
+        await vm.close()
+        endedPlayerSessions += 1
     }
 
     /// A server-less player reporting to no one, which resolves the file under the veil.

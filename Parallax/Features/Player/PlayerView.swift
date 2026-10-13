@@ -144,23 +144,14 @@ struct PlayerView: View {
         // the dismissal begins.
         .onAppear { OrientationController.shared.beginPlayerPresentation() }
         #endif
+        #if os(tvOS)
         .onDisappear {
-            // THE teardown point for every dismissal: exitPlayer() only ends audio
-            // (so the frozen frame rides the slide-out and the teardown's
-            // main-thread burst can't eat its frames) and the host unmounts the
-            // view once the dismissal lands, so the full stop() runs here. Also the
-            // backstop for paths that never saw exitPlayer() (the system tearing
-            // the tvOS cover down). stop() is idempotent.
-            let vm = viewModel
-            Task { await vm?.stop() }
-            #if os(tvOS)
             idleTask?.cancel()
             landingLingerTask?.cancel()
             landingLinger = false
-            vm?.seekCommits.cancel()
             DisplayCriteriaMatcher.clear()
-            #endif
         }
+        #endif
         #if os(tvOS)
         // A movie / series finale that played to its end closes the player (`runPlayer`);
         // hand display-mode selection back as it goes, like the Close chevron does.
@@ -294,8 +285,8 @@ struct PlayerView: View {
 
     /// Exit on user intent: end audio NOW, tear down AFTER the slide-out.
     /// `beginExit()` owns that hand-off (fence the start path, freeze the last
-    /// frame, `endAudio()`); the full `stop()` waits for `onDisappear`, once the
-    /// dismiss animation has landed. Tearing down mid-slide unmounted the video
+    /// frame, `endAudio()`); the full `stop()` waits for the `.task` to end, once
+    /// the dismiss animation has landed and the host unmounts the view. Tearing down mid-slide unmounted the video
     /// host (the card went blank as it moved) and `replaceCurrentItem(nil)`'s
     /// synchronous main-thread burst ate dismissal frames (the "cut" slide-out).
     /// Audio is the only urgent part; the frozen frame rides the card out.
@@ -640,7 +631,7 @@ struct PlayerView: View {
         // floor. Clear any click-seek debris a previous mount left armed.
         .onAppear {
             hudState = didBeginPlayback ? .floor : .fullHUD
-            cancelClickSeek(vm)
+            vm.cancelPendingSeek()
             chromeVisible = hudState.chromeUp
         }
         // Command-acceptance transitions own the HUD floor hand-offs:
@@ -665,7 +656,7 @@ struct PlayerView: View {
                     }
                 }
             } else {
-                cancelClickSeek(vm)
+                vm.cancelPendingSeek()
                 idleTask?.cancel()
                 // Folding out here bypasses the reducer, so any preview it strands has to be
                 // dropped by hand — a scrub or a click step a re-buffer interrupted commits
@@ -775,10 +766,10 @@ struct PlayerView: View {
                                 durationSeconds: CMTimeGetSeconds(vm.currentDuration))
         let (next, effects) = reduce(hudState, event, ctx)
 
-        if vm.seekCommits.pending != nil {
+        if vm.pendingSeekTarget != nil {
             switch PlayerHUDState.pendingClickStep(after: next, on: event) {
-            case .drop: cancelClickSeek(vm)
-            case .flush: flushClickSeek(vm)
+            case .drop: vm.cancelPendingSeek()
+            case .flush: vm.flushPendingSeek()
             case .keep: break
             }
         }
@@ -799,30 +790,16 @@ struct PlayerView: View {
     }
 
     private func scheduleClickSeek(to target: Double, _ vm: PlayerViewModel) {
-        vm.seekCommits.schedule(target) { dest in
-            // Commit the ONE coalesced seek, then drop the bar the moment it lands —
-            // the click-seek bar used to ride the 4s `.clickSeek` idle timeout even after
-            // playback had already resumed at the new spot (user-reported lingering). The
-            // timeout stays only as a safety net if this task is cancelled mid-flight.
-            await apply(.seek(progress: dest), vm)
+        let duration = CMTimeGetSeconds(vm.currentDuration)
+        guard duration > 0 else { return }
+        vm.scheduleSeek(to: target * duration) {
+            // Drop the bar the moment the ONE coalesced seek lands — the click-seek bar used to
+            // ride the 4s `.clickSeek` idle timeout even after playback had already resumed at
+            // the new spot (user-reported lingering). The timeout stays only as a safety net if
+            // this task is cancelled mid-flight.
             guard !Task.isCancelled, case .clickSeek = hudState else { return }
             send(.idle, vm)
         }
-    }
-
-    /// Fire the single accumulated seek NOW and clear the pending target. Used by the
-    /// `send` leave-early path (the user navigates out of `.clickSeek` before the debounce);
-    /// the natural debounce path commits AND drops the bar in `scheduleClickSeek` instead.
-    /// A later flush with nothing pending is a no-op.
-    private func flushClickSeek(_ vm: PlayerViewModel) {
-        vm.seekCommits.flush { target in
-            runEffects([.seek(progress: target)], vm)
-        }
-    }
-
-    /// Drop the pending click-seek without committing (analog scrub will seek instead).
-    private func cancelClickSeek(_ vm: PlayerViewModel) {
-        vm.seekCommits.cancel()
     }
 
     /// Apply a transition's effects **in order, in a single task**, so an ordered batch like

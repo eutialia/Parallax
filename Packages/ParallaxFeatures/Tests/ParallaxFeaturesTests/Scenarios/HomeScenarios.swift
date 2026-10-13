@@ -181,8 +181,9 @@ struct HomeScenarios {
             return
         }
         world.app.playback.play(itemID, in: session)
+        try await world.openPlayer()
         den.watch("Arrival", minutes: 55)
-        world.app.playback.dismiss()
+        await world.closePlayer()
 
         try await world.until { world.continueWatching == ["Arrival", "Heat"] }
         #expect(world.minutesWatched("Arrival") == 55)

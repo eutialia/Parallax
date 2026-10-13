@@ -24,10 +24,11 @@ private struct SMBSessionState {
     /// `.playing`/`.paused` beat writes to one per ~10s, mirroring the Jellyfin progress-report
     /// cadence. Nil until the first write, which always goes out.
     var lastResumeWrite: Duration?
-    /// The in-flight throttled save spawned by `saveSMBResumeThrottled`, cancelled and
-    /// replaced on each new save. A stale save must not outrun a terminal write: `stop()` and
-    /// `.ended` await it (via `clearSMBSession()`) before their own save/clear, so a delayed
-    /// beat can never land on the store actor AFTER the terminal write and resurrect a resume.
+    /// The newest throttled save spawned by `saveSMBResumeThrottled`. Each save awaits the one
+    /// before it, so saves land in spawn order and an older position never overwrites a newer
+    /// one. A stale save must not outrun a terminal write: `stop()` and `.ended` await the chain
+    /// (via `clearSMBSession()`) before their own save/clear, so a delayed beat can never land on
+    /// the store actor AFTER the terminal write and resurrect a resume.
     var resumeSaveTask: Task<Void, Never>?
 }
 
@@ -439,9 +440,9 @@ public final class PlayerViewModel {
     /// cover down: the reload force-resumes and `commitSeek` re-pauses it, so a scrub
     /// committed while PAUSED can go its whole life without ever publishing `.playing`, and the
     /// heavy cover then sits over a rendered, healthy frame forever. And it opens the session
-    /// for reporting: the reload reset `didReportStart`, so with only `.playing` allowed to
-    /// report a start, Jellyfin never learned the new session at all — no progress, no stop
-    /// report, and the position the user re-anchored to was never persisted.
+    /// for reporting: the reload's replacement session has reported nothing yet, so with only
+    /// `.playing` allowed to report a start, Jellyfin never learned the new session at all — no
+    /// progress, no stop report, and the position the user re-anchored to was never persisted.
     private var reloadAwaitingFirstLiveBeat = false
 
     /// The reactive-fallback hop `.failed` spawns (`attemptReactiveFallback`), stored so
@@ -653,7 +654,7 @@ public final class PlayerViewModel {
     /// `clock` read as time since this view model was built.
     private let elapsed: @Sendable () -> Duration
     /// Folds a burst of ±10s seek taps (iOS double-tap) or clicks (tvOS) into one seek.
-    public let seekCommits: SeekCommitCoalescer
+    private let seekCommits: SeekCommitCoalescer
     /// The Jellyfin play session's reports, encode kill and keepalive. See `SessionReporter`.
     private let reporter: SessionReporter
     private let resolve: ResolveCall
@@ -686,12 +687,17 @@ public final class PlayerViewModel {
     /// server-preferred default, which is expressed in STREAM indices while the rows are
     /// keyed by renderer. Empty on SMB/local and on the transcode path.
     private var subtitleRowIDsByStream: [Int: TrackID] = [:]
-    /// Exit was requested (`beginExit()`/`stop()`): the in-flight start path bails
-    /// at its next checkpoint instead of resurrecting playback after dismissal.
-    private var isExiting = false
-    /// `stop()` already ran — the second caller is a no-op (exit fires it from the
-    /// dismiss trigger AND from `onDisappear` as a backstop).
-    private var didStop = false
+    /// The player was closed (`beginExit()`). Terminal: nothing reopens it, so a replay whose
+    /// teardown the close landed in never starts its next item.
+    private var isClosed = false
+    /// The session's teardown, running or done. Every `stop()` joins it; `resetForReplay`
+    /// clears it for the fresh session.
+    private var stopping: Task<Void, Never>?
+    /// The replay in flight (`retry()`, an episode handoff), which `close()` cancels and joins.
+    private var replaying: Task<Void, Never>?
+    /// The exit fence: the in-flight start path bails at its next checkpoint instead of
+    /// resurrecting playback after dismissal or across a replay's teardown.
+    private var isExiting: Bool { isClosed || stopping != nil }
     /// True while `start()` is executing. The HUD is live during loading, so a track
     /// pick could otherwise land in the sliver where `beginPlayback` is suspended
     /// (engine.load) and race it with a second resolve/engine.
@@ -1021,7 +1027,7 @@ public final class PlayerViewModel {
     /// exists and the player is neither exiting nor already torn down. No-op for movies
     /// and finales. Read synchronously at `.ended` to capture the advance target and
     /// raise the loading veil before the paused scrim can flash.
-    private var canAutoAdvance: Bool { !isExiting && !didStop && adjacentEpisodes.next != nil }
+    private var canAutoAdvance: Bool { !isExiting && adjacentEpisodes.next != nil }
 
     /// Tears the current session down and replays this same player surface with a
     /// different item — the in-player episode handoff. Reuses `retry()`'s reset
@@ -1034,8 +1040,7 @@ public final class PlayerViewModel {
             // has its own muxing and starts level. (A retry of the SAME item goes through
             // `resetForReplay` directly and keeps it, like `playbackRate`.)
             subtitleDelayMs = 0
-            await resetForReplay()
-            await start(itemID: id)
+            await replay { await self.start(itemID: id) }
         }
     }
 
@@ -1046,6 +1051,7 @@ public final class PlayerViewModel {
     /// `fromBeginning` — see `start(item:fromBeginning:)`; threaded through once the
     /// detail fetch lands.
     func start(itemID: ItemID, fromBeginning: Bool = false) async {
+        guard !isClosed else { return }
         phase = .loading
         pendingItemID = itemID
         pendingFromBeginning = fromBeginning
@@ -1069,6 +1075,7 @@ public final class PlayerViewModel {
     /// which every method resumes by SEEKING client-side on `.ready` (see
     /// `PlayerAssetFactory.asset(for:)`), so a restart is simply a nil start time.
     func start(item: ItemDetail, fromBeginning: Bool = false) async {
+        guard !isClosed else { return }
         isStartingPlayback = true
         defer { isStartingPlayback = false }
         phase = .loading
@@ -1156,6 +1163,7 @@ public final class PlayerViewModel {
     /// owns the pre-resolve veil + the resolve's own error mapping, so the audio
     /// session is never double-activated and `phase` is managed in one place per step.
     func start(resolvingSMB resolve: @escaping () async throws -> SMBPlaybackItem) async {
+        guard !isClosed else { return }
         phase = .loading
         // Kept so the failure scrim's "Try again" can replay the SMB path (retry() otherwise
         // reads only the Jellyfin playingItem/pendingItemID, which this path never sets).
@@ -1165,7 +1173,7 @@ public final class PlayerViewModel {
             // Stash the bridge cleanup BEFORE the exit fence below: `resolve()` already
             // started the bridge (bridge route), and `checkStillActive()` throws when a
             // dismissal landed in the resolve window (the common exit case). Stashing here
-            // means the live bridge is reachable — the `stop()` backstop (onDisappear always
+            // means the live bridge is reachable — the `stop()` backstop (`runPlayer` always
             // runs it) reads this property — instead of being dropped un-reaped. `start(smbItem:)`
             // re-stashes the same value; idempotent.
             smbCleanup = item.cleanup
@@ -1176,9 +1184,9 @@ public final class PlayerViewModel {
             await start(smbItem: item)
         } catch is CancellationError {
             // Exit raced the resolve — the view is gone. Reap the bridge we just stashed:
-            // if `stop()` already ran (onDisappear backstop firing during the resolve), it
-            // reaped nothing — `smbCleanup` was still nil then — and won't run again (its
-            // `didStop` guard), so the bridge would strand. `tearDownSMBBridge()` is idempotent
+            // if `stop()` already ran (`runPlayer` ending the session during the resolve), it
+            // reaped nothing — `smbCleanup` was still nil then — and won't run again, so the
+            // bridge would strand. `tearDownSMBBridge()` is idempotent
             // (nil-before-await), so it's safe even if a concurrent `stop()` also reaps it.
             await tearDownSMBBridge()
         } catch let error as AppError {
@@ -1201,6 +1209,7 @@ public final class PlayerViewModel {
     /// validated primary (the spike passed), so the asset routes to VLCKit via
     /// `hints.scheme == "smb"`.
     func start(smbItem: SMBPlaybackItem) async {
+        guard !isClosed else { return }
         isStartingPlayback = true
         defer { isStartingPlayback = false }
         phase = .loading
@@ -1211,7 +1220,7 @@ public final class PlayerViewModel {
         //
         // Stashed up front (before the first throw point): the resolver already started the
         // bridge, so ANY failure below — audio-session, an exit-during-load fence, or the load
-        // itself — must be able to tear it down. `stop()` is the backstop (onDisappear always
+        // itself — must be able to tear it down. `stop()` is the backstop (`runPlayer` always
         // calls it); the `.failed` catches below clean up explicitly for the no-exit failures.
         smbCleanup = smbItem.cleanup
         // The local-resume session: progress beats + stop()'s final write persist positions
@@ -1243,7 +1252,7 @@ public final class PlayerViewModel {
             let asset = assets.asset(for: smbItem)
             try await loadAndPlay(asset, reusingEngine: false, generation: sessionGeneration)
         } catch is CancellationError {
-            // Exit fence: the player is dismissing, so `stop()` (onDisappear backstop) owns the
+            // Exit fence: the player is dismissing, so `stop()` (`runPlayer`'s backstop) owns the
             // bridge teardown — don't race it here.
             await audioSession.deactivate()
         } catch let error as AppError {
@@ -1283,8 +1292,9 @@ public final class PlayerViewModel {
         let position = currentPosition
         let duration = (hasKnownDuration && session.hasTrustworthyDuration) ? currentDuration : nil
         let itemID = session.itemID
-        session.resumeSaveTask?.cancel()
+        let previous = session.resumeSaveTask
         smbSession?.resumeSaveTask = Task {
+            await previous?.value
             await smbResumeStore.save(position: position, duration: duration, for: itemID)
         }
     }
@@ -1385,7 +1395,7 @@ public final class PlayerViewModel {
         try checkStillActive(generation: generation)
         self.resolved = resolved
         sidecar.subtitleURLs = resolved.subtitleStreamURLs   // Jellyfin: index → authed VTT URL
-        reporter.startKeepalive(for: resolved)
+        reporter.begin(session: resolved)
         currentAudioStreamIndex = audioStreamIndex ?? resolved.defaultAudioStreamIndex
         // Carries the user's choice across audio switches (none stays none, a
         // chosen sub stays chosen). On FIRST play the preference application
@@ -1606,8 +1616,12 @@ public final class PlayerViewModel {
             // A load failure (or an exit mid-load) must not leave the engine + its
             // state subscription dangling: tear down before propagating, so
             // start()/the reload drain surface .failed with no leaked Task and
-            // no open AsyncStream. (Idempotent vs a stop() that already tore down.)
+            // no open AsyncStream. (Idempotent vs a stop() that already tore down.) The bridge
+            // goes with the engine: nothing consumes the stream, so the orphaned listener + its
+            // SMB connection must not outlive the failed load.
             await tearDownEngine()
+            await tearDownSMBBridge()
+            await reporter.stopEncodingIfNeeded()
             throw error
         }
         // Startup-metric anchor: recorded at dispatch, consumed by this session's
@@ -1646,15 +1660,15 @@ public final class PlayerViewModel {
     }
 
     /// Cancels the engine's state subscription and tears the engine down, clearing
-    /// the reference. The focused teardown (no session report, no UI reset) used by
-    /// a load failure and a failed track switch. The session's keepalive and
-    /// encoding die here too: with no engine left to consume the stream, pinging
-    /// the session would keep an orphaned ffmpeg job transcoding flat-out for as
-    /// long as the user sits on the failure overlay — the exact contention
-    /// `stopEncoding` exists to prevent. Both are idempotent vs a racing `stop()`.
+    /// the reference. The teardown with no session report and no UI reset: a load failure's,
+    /// and the first half of `stop()`'s. The session's keepalive and encoding die here too:
+    /// with no engine left to consume the stream, pinging the session would keep an orphaned
+    /// ffmpeg job transcoding flat-out for as long as the user sits on the failure overlay —
+    /// the exact contention `stopEncoding` exists to prevent — and a session that wedged
+    /// before its first `.playing` beat never reports a stop that would end the job either.
+    /// Idempotent vs a racing `stop()`.
     private func tearDownEngine() async {
-        reporter.stopKeepalive()
-        diagnostics.dropDelivery()
+        diagnostics.reset()
         // The backfill is a ONE-SHOT per SMB session, armed on the first `.playing` beat and
         // sitting on a multi-second delay. A reactive engine rebuild (AVKit → VLC) mid-delay would
         // otherwise let it fire against an engine being torn down and burn the session's only
@@ -1670,14 +1684,10 @@ public final class PlayerViewModel {
         // this view model no longer has any surface for.
         activeSession = nil
         await engineSlot.drain()
-        // A load failure tears the bridge down with the engine: nothing consumes the stream, so
-        // the orphaned listener + its SMB connection must not outlive the failed load.
-        await tearDownSMBBridge()
-        await reporter.stopEncodingIfNeeded(for: resolved)
     }
 
     /// THE exit hand-off, and the only urgent part of leaving: everything else rides the
-    /// close animation out (see `PlayerView.exitPlayer` / `stop()` on `onDisappear`).
+    /// close animation out (see `PlayerView.exitPlayer`, and `stop()` when `runPlayer` ends).
     ///
     /// Synchronous so it fences before the async `stop()` gets a MainActor turn: an
     /// in-flight `start()` resuming in between can't slip past a checkpoint and build/play
@@ -1690,15 +1700,16 @@ public final class PlayerViewModel {
     /// kill short.
     ///
     /// Idempotent, because the close button fences here AND the presenter fences again on
-    /// `dismiss()`, and a session only ends once.
+    /// `dismiss()`, and a session only ends once. Terminal: it closes the player for good.
     public func beginExit() {
-        guard !isExiting else { return }
-        isExiting = true
+        guard !isClosed else { return }
+        isClosed = true
+        seekCommits.cancel()
         freezeVideoSurface()
         // The seek is over too: `seek(to:)` and `commitSeek` both fence on `isExiting`, so
         // nothing can land this flight any more — and the surfaces stay mounted for the whole
         // slide-out, which without this carries a scrub bar and a timestamp bubble out of the
-        // screen with them. (`stop()` clears it as well, but that runs on `onDisappear`, at the
+        // screen with them. (`stop()` clears it as well, but `runPlayer` only runs that at the
         // END of the dismissal.)
         seekHold = nil
         flight = nil
@@ -1712,6 +1723,33 @@ public final class PlayerViewModel {
         let engine = engine
         Task { await engine?.endAudio() }
     }
+
+    /// The destination a coalesced seek burst has accumulated, nil when none is pending. A surface
+    /// bases the next tap's delta on it rather than the lagging live position.
+    public var pendingSeekTarget: Double? { seekCommits.pending }
+
+    /// Accumulates `seconds` into the pending seek burst and commits ONE `commitSeek` after the
+    /// taps settle: per-tap seeks thrash a transcode and wedge the player. `settled` runs after
+    /// that commit lands. A newer call restarts the quiet interval. It commits through
+    /// `commitSeek`, not a bare `seek`, so a re-encode transcode's force-resuming re-anchor
+    /// (#15845) can't un-pause a paused user.
+    public func scheduleSeek(to seconds: Double, settled: (@MainActor () async -> Void)? = nil) {
+        seekCommits.schedule(seconds) { [self] target in
+            await commitSeek(to: CMTime(seconds: target, preferredTimescale: 600))
+            await settled?()
+        }
+    }
+
+    /// Commits the pending burst now (the user left the surface early). No-op with none pending.
+    public func flushPendingSeek() {
+        seekCommits.flush { target in
+            Task { await commitSeek(to: CMTime(seconds: target, preferredTimescale: 600)) }
+        }
+    }
+
+    /// Drops the pending burst without committing, because another seek path takes over. Exit
+    /// does this itself.
+    public func cancelPendingSeek() { seekCommits.cancel() }
 
     /// Bails the start path when the player is exiting (`beginExit()`/`stop()`) or
     /// the hosting `.task` was cancelled (the view disappeared mid-load). Checked
@@ -1731,16 +1769,33 @@ public final class PlayerViewModel {
         if generation != sessionGeneration { throw CancellationError() }
     }
 
+    /// Ends the player for good, as the host does once the player's task ends however it
+    /// closed: the exit hand-off first (a host that went away without a dismissal still cuts
+    /// audio and holds the frame), then the teardown, then whatever replay it cut short.
+    func close() async {
+        beginExit()
+        replaying?.cancel()
+        await stop()
+        await replaying?.value
+    }
+
+    /// Tears the session down, once. A second call joins the teardown in flight instead of
+    /// returning before it is done. The teardown runs outside the caller's cancellation: the
+    /// host calls this from a cancelled task, and nothing here may be cut short.
     public func stop() async {
-        isExiting = true
-        guard !didStop else { return }
-        didStop = true
+        let teardown = stopping ?? Task { await self.tearDownSession() }
+        stopping = teardown
+        await teardown.value
+    }
+
+    private func tearDownSession() async {
+        seekCommits.cancel()
         // Final local-resume write for SMB sessions — no throttle, and BEFORE teardown
         // zeroes currentPosition. The store's own rules turn a <5s or ≥95%-of-known-
         // duration position into a clear. Skipped at exactly zero: a session that never
         // produced a beat (failed load, exit during resolve) must not wipe the stored
         // resume it was about to honor — the Jellyfin analog of reportStoppedIfNeeded's
-        // didReportStart gate. Nil after: the session is over.
+        // open-session gate. Nil after: the session is over.
         if let session = smbSession {
             // Capture before clearing — the terminal write below needs the id + trust bit.
             let itemID = session.itemID
@@ -1756,32 +1811,24 @@ public final class PlayerViewModel {
                 )
             }
         }
-        stateTask?.cancel()
-        stateTask = nil
-        activeSession = nil   // the session ends here; nothing published from now on is ours
         // Closes the retry()/resetForReplay window where a pending reactive-fallback
         // hop outlives its session: without this, a hop scheduled just before a
         // restart could build a VLC engine for the NEW session's state.
         reactiveFallbackTask?.cancel()
         reactiveFallbackTask = nil
-        reporter.stopKeepalive()
         transportTask?.cancel()
         transportTask = nil
-        // The same drain a rebuild's retirement goes through: the reference is dropped
-        // here, so nothing that re-reads `engine` can poke one that is winding down, and
-        // the await covers every teardown this session started — including one a track
-        // switch left running.
-        await engineSlot.drain()
-        // Kill the SMB bridge with the session: an orphaned listener holds an SMB connection and
-        // a LAN-reachable file URL. No-op on Jellyfin/VLC-route sessions (smbCleanup is nil).
-        await tearDownSMBBridge()
         nowPlaying.clear()
-        // Exit kills the encoding explicitly (not just via the stop report):
-        // a session that wedged before its first .playing beat never reports
-        // start/stop, and its orphaned job would contend with the next play.
-        await reporter.stopEncodingIfNeeded(for: resolved)
-        await reporter.reportStoppedIfNeeded(at: lastPosition, for: resolved)
+        // Drains every engine teardown this session started, including one a track switch
+        // left running, so nothing that re-reads `engine` can poke one that is winding down.
+        await tearDownEngine()
+        // Before anything that waits on the network: the next pick activates the same audio
+        // session once the presenter's teardown grace is up, and a deactivation landing after
+        // that would silence it.
         await audioSession.deactivate()
+        await tearDownSMBBridge()
+        await reporter.stopEncodingIfNeeded()
+        await reporter.reportStoppedIfNeeded(at: lastPosition)
         playingItem = nil
         accent.reset()
         pendingItemID = nil
@@ -1803,9 +1850,6 @@ public final class PlayerViewModel {
         // exit fence armed, and the exit freeze is what the card slides out on. The one
         // caller that comes back (`resetForReplay`) releases it itself, after disarming
         // the fence.
-        diagnostics.dropDelivery()
-        thumbnailBackfillTask?.cancel()
-        thumbnailBackfillTask = nil
         availableAudioTracks = []
         availableSubtitleTracks = []
         subtitleRowIDsByStream = [:]
@@ -1815,6 +1859,7 @@ public final class PlayerViewModel {
         sidecar.endSession()
         smbExternalSubtitleTracks = []
         currentPosition = .zero
+        lastPosition = .zero
         // The session is over, so any outstanding scrub target is too — a `retry()`/
         // `resetForReplay` restart must publish the NEW stream's beats, not a dead
         // seek's destination. (Deliberately NOT cleared in the transcode re-anchor
@@ -1845,21 +1890,37 @@ public final class PlayerViewModel {
         // Captured before resetForReplay() clears it (same pattern as item/id above) —
         // a retry after a failed restart must stay a restart, not quietly resume.
         let fromBeginning = pendingFromBeginning
-        await resetForReplay()
-        if let smb { await start(resolvingSMB: smb) }
-        else if let item { await start(item: item, fromBeginning: fromBeginning) }
-        else if let id { await start(itemID: id, fromBeginning: fromBeginning) }
-        else { Log.playback.error("retry() had no item or id to replay") }
+        await replay {
+            if let smb { await self.start(resolvingSMB: smb) }
+            else if let item { await self.start(item: item, fromBeginning: fromBeginning) }
+            else if let id { await self.start(itemID: id, fromBeginning: fromBeginning) }
+            else { Log.playback.error("retry() had no item or id to replay") }
+        }
+    }
+
+    /// Tears the session down and starts a fresh one on this view model, as one task `close()`
+    /// can cancel and join, so no replay outlives the player. A replay already in flight wins.
+    private func replay(_ start: @escaping () async -> Void) async {
+        guard replaying == nil else { return }
+        let task = Task {
+            guard await resetForReplay() else { return }
+            await start()
+        }
+        replaying = task
+        await task.value
+        replaying = nil
     }
 
     /// Tears the current session down (reporting its stop, killing its encode job)
     /// and clears the per-session fences so a fresh `start` can run on this same
     /// view model. Shared by `retry()` (same item) and `replacePlayback` (episode
     /// swap). `stop()` arms the exit fence; this is a restart, not an exit, so the
-    /// fence is disarmed for the fresh start path.
-    private func resetForReplay() async {
+    /// fence is disarmed for the fresh start path — unless the player closed meanwhile,
+    /// which returns false and leaves it armed.
+    private func resetForReplay() async -> Bool {
         await stop()
-        isExiting = false
+        guard !isClosed else { return false }
+        stopping = nil
         // Release any held frame THROUGH the action, not by clearing the flag alone: on
         // an in-place retry the host UIView survives, and a flag-only reset would strand
         // the pinned snapshot over the replayed video (the beat-side unfreeze guards on
@@ -1867,11 +1928,8 @@ public final class PlayerViewModel {
         // weak view makes this a no-op. AFTER the fence is disarmed, since the fence is
         // what keeps `stop()` from doing this on a real exit.
         unfreezeVideoSurface()
-        didStop = false
         phase = .idle
-        reporter.beginSession()
-        lastPosition = .zero
-        diagnostics.resetStartup()
+        return true
     }
 
     public func selectAudioTrack(_ track: AudioTrack) async {
@@ -2696,10 +2754,10 @@ public final class PlayerViewModel {
             // showing it would advertise instant seeks the reload can't honor.
             bufferedTo = nil
             // Kill the outgoing encoding FIRST (the replacement job must not fight
-            // an abandoned one for the source file), close the outgoing session,
-            // then reset the lifecycle flags — the reload is a brand-new play
-            // session that must reportStart/reportStopped/stopEncoding on its own
-            // terms. Trade-off: if the re-resolve FAILS, the silent fallback
+            // an abandoned one for the source file), then close the outgoing session.
+            // The replacement is a brand-new play session that reports and kills on its
+            // own terms from the moment it resolves (`SessionReporter.begin(session:)`).
+            // Trade-off: if the re-resolve FAILS, the silent fallback
             // resumes the old stream on a dead encoding — it plays out its buffer
             // and may stall into the failure scrim, which is still strictly better
             // than every successful reload livelocking.
@@ -2714,12 +2772,12 @@ public final class PlayerViewModel {
             // publishing at the pre-scrub clock — carries a session no longer active, so `handle`
             // drops it.
             let boundary = elapsed()
-            await reporter.stopEncodingIfNeeded(for: resolved)
+            await reporter.stopEncodingIfNeeded()
             try checkStillActive(generation: generation)
-            // The stop report names the session `resolved` points at — which is the REPLACEMENT's
+            // The stop report names the reporter's current session — which is the REPLACEMENT's
             // after a handoff, so a stale reload reporting here would close a session that just
             // opened.
-            await reporter.reportStoppedIfNeeded(at: lastPosition, for: resolved)
+            await reporter.reportStoppedIfNeeded(at: lastPosition)
             try checkStillActive(generation: generation)
             // The boundary the whole re-anchor trail hangs off: after this line the outgoing
             // ffmpeg job is dead and nothing has replaced it yet. The play session is named in
@@ -2734,11 +2792,10 @@ public final class PlayerViewModel {
                 re-resolving at \(CMTimeGetSeconds(resume), format: .fixed(precision: 1), privacy: .public)s
                 """
             )
-            reporter.beginSession()
             // The reload dispatches a fresh engine.play() below (via beginPlayback →
             // loadAndPlay), which re-arms the startup clock, and opens a session whose
             // delivery is its own: neither of the outgoing session's readings may linger.
-            diagnostics.resetForReload()
+            diagnostics.reset()
 
             try await beginPlayback(
                 item: item,
@@ -2779,10 +2836,10 @@ public final class PlayerViewModel {
     /// The design's "failures are loud, fallbacks are silent": when the re-resolve
     /// failed BEFORE the reused engine reloaded, the previous stream is still
     /// mounted — just paused — so resume it instead of killing playback, and let
-    /// the failure scrim offer a retry. The reporting flags were reset for the new
-    /// session that never started, so the resumed stream's next `.playing` beat
-    /// re-reports start against the outgoing session id (`resolved` still points at
-    /// it) — the server simply sees that session play again.
+    /// the failure scrim offer a retry. The reload already reported the outgoing
+    /// session stopped, so the resumed stream's next `.playing` beat reopens it
+    /// with a fresh start — the server simply sees that session play again. Its
+    /// encode stays killed, and so does its keepalive.
     ///
     /// If the failure hit at/after `engine.load`, `beginPlayback` already tore the
     /// engine down — nothing left to resume, so surface the fatal overlay exactly
@@ -2986,7 +3043,7 @@ public final class PlayerViewModel {
             return
         }
         if await reporter.reportLiveBeat(position: position, isPaused: isPaused,
-                                         opensSession: opensSession, for: resolved) {
+                                         opensSession: opensSession) {
             // The session is live: ffmpeg is running, so probe what it's actually doing to the video.
             diagnostics.startDeliveryProbe(for: resolved)
         }
@@ -3164,7 +3221,7 @@ public final class PlayerViewModel {
                 await clearSMBSession()
                 await smbResumeStore.clear(itemID)
             }
-            await reporter.reportStoppedIfNeeded(at: lastPosition, for: resolved)
+            await reporter.reportStoppedIfNeeded(at: lastPosition)
             // Deferred onto a fresh task so the in-flight `.ended` beat unwinds the engine's
             // state loop before the swap tears it down.
             if let advanceTarget {
@@ -3333,10 +3390,6 @@ extension PlayerViewModel {
     /// The resolved server-side playback metadata for the playing item.
     /// Debug HUD only — exposes the otherwise-private `resolved`.
     public var debugResolved: ResolvedPlayback? { resolved }
-
-    /// The active stream-index → sidecar subtitle URL map, so the SMB-start tests can
-    /// assert it's populated from the item and cleared on `stop()`.
-    var debugSubtitleURLs: [Int: URL] { sidecar.subtitleURLs }
 
     /// What one source format is handed, given the appearance the overlay last pushed.
     func debugEffectiveStyleOverride(for format: SubtitleSourceFormat) -> SubtitleStyleOverride? {

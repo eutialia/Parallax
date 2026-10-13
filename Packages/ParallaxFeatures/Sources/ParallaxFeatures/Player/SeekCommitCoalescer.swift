@@ -1,12 +1,11 @@
 import Foundation
 
 /// Folds a burst of ±10s seek taps/clicks into ONE engine seek. Both the iOS double-tap
-/// (`PlayerControlsView`) and the tvOS click-seek (`PlayerView`) accumulate an absolute
+/// and the tvOS click-seek accumulate an absolute
 /// target and fire a single commit after a quiet interval — per-tap seeks thrash a
-/// transcode and wedge the player (the click-seek lesson). The player view model owns one
-/// (`PlayerViewModel.seekCommits`), and only one surface per platform drives it; the commit
-/// closure routes through that surface's own seek path (`vm.commitSeek` / `apply(.seek)`),
-/// so this helper only owns the accumulate-then-fire-once timing.
+/// transcode and wedge the player (the click-seek lesson). The player view model owns one and
+/// exposes it as `scheduleSeek` / `flushPendingSeek` / `cancelPendingSeek`, so this helper only
+/// owns the accumulate-then-fire-once timing.
 /// Cancel-on-newer — a fresh target restarts the clock.
 @MainActor
 public final class SeekCommitCoalescer {

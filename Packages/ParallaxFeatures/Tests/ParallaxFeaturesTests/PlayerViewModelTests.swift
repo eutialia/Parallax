@@ -1234,8 +1234,8 @@ struct PlayerViewModelTests {
     /// instant it force-resumes — so that session can go its whole life without ever publishing
     /// `.playing`. Its first `.paused` beat is the only live beat it will ever have, and it has
     /// to carry both jobs: take the reload cover down (it used to sit over a rendered, healthy
-    /// frame forever), and report PlaybackStart, which the reload's own `didReportStart = false`
-    /// made mandatory — without it Jellyfin never learns the session exists, so no progress and
+    /// frame forever), and report PlaybackStart, which the reload's fresh play session makes
+    /// mandatory — without it Jellyfin never learns the session exists, so no progress and
     /// no stop report land, and the position the user re-anchored to is never persisted.
     @Test("a re-anchor that lands paused lifts the cover AND reports its start")
     func pausedFirstLiveBeatAfterReloadOpensTheSession() async throws {
@@ -2295,6 +2295,29 @@ struct PlayerViewModelTests {
         #expect(vm.seekSpan == nil)
     }
 
+    @Test("a coalesced seek commits once the taps settle, and a pending one dies with the player")
+    func pendingCoalescedSeekDoesNotOutliveThePlayer() async throws {
+        let clock = TestClock()
+        let (vm, engines) = try await makeReanchorVM(at: 600, clock: clock)
+        let engine = engines.live
+
+        vm.scheduleSeek(to: 640)
+        vm.scheduleSeek(to: 650)
+        try await clock.waitForSleep(dueIn: SeekCommitCoalescer.interval)
+        clock.advance(by: SeekCommitCoalescer.interval)
+        try await requireEventually({ engine.calls.contains("seek(650.0)") }, "the burst never committed")
+        #expect(!engine.calls.contains("seek(640.0)"))
+
+        vm.scheduleSeek(to: 660)
+        try await clock.waitForSleep(dueIn: SeekCommitCoalescer.interval)
+        vm.beginExit()
+        #expect(vm.pendingSeekTarget == nil)
+        #expect(!clock.pendingSleeps.contains(SeekCommitCoalescer.interval))
+        clock.advance(by: SeekCommitCoalescer.interval)
+        try await engine.settle()
+        #expect(!engine.calls.contains("seek(660.0)"))
+    }
+
     /// `.projected` is the engine's estimate off its OWN seek target, which the seek-settle
     /// contract calls display-safe: the picture is at, or running from, it. So the flight stops
     /// hiding a jump at that beat — the concrete indicator follows the clock again instead of
@@ -2498,9 +2521,9 @@ struct PlayerViewModelTests {
         engine.bufferedRange = 0...120
         let commit = Task { await vm.commitSeek(to: CMTime(seconds: 3000, preferredTimescale: 600)) }
         for await _ in wedged { break }
-        // The keepalive, the seek-hold watchdog and the reload's deadline: the reload retired
-        // the delivery probe.
-        await clock.waitForSleepers(3)
+        // The seek-hold watchdog and the reload's deadline: the reload's encode kill retired the
+        // keepalive, and its reset retired the delivery probe.
+        await clock.waitForSleepers(2)
         clock.advance(by: PlayerViewModel.reloadResolveDeadline)
         await commit.value
 
@@ -2614,7 +2637,7 @@ struct PlayerViewModelTests {
         try await landDeliveryProbe(vm, on: clock)
         #expect(vm.transcodeDelivery?.isVideoDirect == true)
 
-        // Switch audio → the reused engine reloads a fresh session (didReportStart resets).
+        // Switch audio → the reused engine reloads a fresh play session.
         let audio4 = try #require(vm.availableAudioTracks.first { $0.id == .jellyfinStream(4) })
         await vm.selectAudioTrack(audio4)
         // Stale delivery is cleared the moment the new session's probe arms.
@@ -3252,9 +3275,13 @@ struct PlayerViewModelTests {
         // the server extracting an embedded stream through ffmpeg.
         #expect(fetchedURLs.count == 1)
 
-        // A new session drops the cache — stream indices mean something else there.
+        // The session's end drops the cache and the URL map — stream indices mean something else
+        // in the next one — so the same pick draws nothing and asks for nothing.
         await vm.stop()
-        #expect(vm.debugSubtitleURLs.isEmpty)
+        await vm.selectSubtitleTrack(track)
+        await vm.debugAwaitSubtitleFetch()
+        #expect(vm.subtitleRenderer == nil)
+        #expect(fetchedURLs.count == 1)
     }
 
     // MARK: - Source-agnostic subtitle URL map
@@ -4222,6 +4249,66 @@ struct PlayerViewModelTests {
         let pingsAtFailure = await reporting.pings.count
         clock.advance(by: SessionReporter.keepaliveInterval * 3)
         #expect(await reporting.pings.count == pingsAtFailure)
+    }
+
+    @Test("a re-anchor whose re-resolve fails kills the encode once: the resumed stream reopens its session, and stop() closes it without a second kill")
+    func failedReanchorKillsTheEncodeOnce() async throws {
+        let reporting = StubPlaybackReporting()
+        let resolves = CallRecorder<Int>()
+        let (vm, engines) = try await makeReanchorVM(at: 600, reporting: reporting, resolve: { _, _, _, _ in
+            resolves.append(resolves.count)
+            guard resolves.count == 1 else { throw AppError.network(URLError(.notConnectedToInternet)) }
+            return PlayerFixtures.resolvedMultiTrackTranscode()
+        })
+
+        await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
+        try #require(vm.phase == .playing)   // the fallback resumed the outgoing stream
+        engines.live.push(.playing(605))
+        try await engines.live.settle()
+        await vm.stop()
+
+        let killed = await reporting.stoppedEncodings
+        let events = await reporting.events
+        #expect(killed == ["ps-1"])
+        #expect(events == [
+            .start(ticks: 600 * 10_000_000, isPaused: false, itemID: "movie-1"),
+            .stopped(ticks: 3_000 * 10_000_000, itemID: "movie-1"),
+            .start(ticks: 605 * 10_000_000, isPaused: false, itemID: "movie-1"),
+            .stopped(ticks: 605 * 10_000_000, itemID: "movie-1")
+        ])
+    }
+
+    @Test("a reload's encode kill ends the keepalive: the killed session gets no ping during the re-resolve, its replacement does")
+    func reloadKillEndsTheKeepalive() async throws {
+        let reporting = StubPlaybackReporting()
+        let clock = TestClock()
+        let gate = ResolveGate()
+        let resolves = CallRecorder<Int>()
+        let (vm, _) = try await makeReanchorVM(at: 600, reporting: reporting, clock: clock, resolve: { _, _, _, _ in
+            resolves.append(resolves.count)
+            await gate.wait()
+            return PlayerFixtures.resolvedMultiTrackTranscode(playSessionID: resolves.count == 1 ? "ps-1" : "ps-2")
+        })
+        // The keepalive and the delivery probe.
+        await clock.waitForSleepers(2)
+        clock.advance(by: .seconds(20))
+
+        let seeking = try await startReload(gate, on: vm) {
+            await vm.commitSeek(to: CMTime(seconds: 3_000, preferredTimescale: 600))
+        }
+        #expect(await reporting.stoppedEncodings == ["ps-1"])
+        // The killed session's interval runs out inside the re-resolve, whose own 15 s deadline
+        // is still 5 s away.
+        clock.advance(by: .seconds(10))
+        gate.open()
+        await seeking.value
+
+        await waitUntil("the replacement session never pinged") {
+            clock.advance(by: SessionReporter.keepaliveInterval)
+            return await reporting.pings.contains("ps-2")
+        }
+        let pinged = await reporting.pings
+        #expect(Set(pinged) == ["ps-2"])
     }
 
     @Test("selectAudioTrack forwards to the engine and updates selectedAudioTrack")

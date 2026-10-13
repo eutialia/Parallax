@@ -45,9 +45,10 @@ struct DetailScenarios {
         await detail.load()
         #expect(detail.playButtonTitle == "Resume")
         detail.play()
+        try await world.openPlayer()
 
         den.finish("Arrival")
-        world.app.playback.dismiss()
+        await world.closePlayer()
 
         try await world.until { detail.playButtonTitle == "Play" }
     }
@@ -61,9 +62,10 @@ struct DetailScenarios {
         await detail.load()
         #expect(detail.playAction.title == "Resume S1 E2")
         detail.play()
+        try await world.openPlayer()
 
         den.finish("Severance S1E2")
-        world.app.playback.dismiss()
+        await world.closePlayer()
 
         try await world.until { detail.playAction.title == "Resume S1 E3" }
     }
