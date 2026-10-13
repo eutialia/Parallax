@@ -85,6 +85,41 @@ struct SignInScenarios {
         #expect(login.discoveredServers.map(\.name) == ["Den"])
     }
 
+    @Test("a server that comes up while the app is away is listed on login once the user is back")
+    func returningToLoginRescansTheLAN() async throws {
+        let den = FakeJellyfinServer(name: "Den")
+        let attic = FakeJellyfinServer(name: "Attic")
+        let world = try await AppWorld.launch(discovering: [den])
+        let login = LoginViewModel(app: world.app)
+        let discovery = Task { await login.discoverServers() }
+        try await world.until { login.discoveredServers.map(\.name) == ["Den"] }
+
+        world.background()
+        try world.lanServerComesUp(attic)
+        world.foreground()
+
+        try await world.until { login.discoveredServers.map(\.name) == ["Den", "Attic"] }
+        discovery.cancel()
+    }
+
+    /// The Local Network prompt is a system alert: answering it deactivates the scene and activates
+    /// it again without ever backgrounding the app. That return has to rescan too.
+    @Test("answering the Local Network prompt rescans the LAN, though the app never left the foreground")
+    func activationWithoutBackgroundRescansTheLAN() async throws {
+        let den = FakeJellyfinServer(name: "Den")
+        let attic = FakeJellyfinServer(name: "Attic")
+        let world = try await AppWorld.launch(discovering: [den])
+        let login = LoginViewModel(app: world.app)
+        let discovery = Task { await login.discoverServers() }
+        try await world.until { login.discoveredServers.map(\.name) == ["Den"] }
+
+        try world.lanServerComesUp(attic)
+        world.foreground()
+
+        try await world.until { login.discoveredServers.map(\.name) == ["Den", "Attic"] }
+        discovery.cancel()
+    }
+
     @Test("re-authenticating a known server keeps its address even when another server is on the LAN")
     func prefilledAddressBeatsDiscovery() async throws {
         let den = FakeJellyfinServer(name: "Den")

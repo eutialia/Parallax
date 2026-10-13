@@ -24,6 +24,41 @@ struct LaunchScenarios {
         #expect(!world.app.launchGate.isFinished)
     }
 
+    @Test("a cold launch with a saved server keeps the library list loading, not empty, until the server answers")
+    func coldLaunchListLoadsInsteadOfEmpty() async throws {
+        let den = FakeJellyfinServer(name: "Den").user("ana").library("Films")
+        den.holdResponses(to: .libraryList)
+        let world = try await AppWorld.launch(signedIn: [(den, "ana")])
+        try await world.until { den.heldResponseCount == 1 }
+
+        #expect(world.app.libraries.isResolving)
+        #expect(world.sidebar.isEmpty)
+
+        den.releaseResponses()
+        try await world.openHome()
+        #expect(!world.app.libraries.isResolving)
+        #expect(world.sidebar == [AppWorld.SidebarSection(title: "Libraries", libraries: ["Films"])])
+    }
+
+    @Test("on Apple TV a relaunch with only the library list cached opens the reveal onto the tabs, not the spinner")
+    func tvRevealOnCachedLibrariesShowsTheTabs() async throws {
+        let den = FakeJellyfinServer(name: "Den").user("ana").library("Films").movie("Heat", in: "Films")
+        let world = try await AppWorld.launch(signedIn: [(den, "ana")], launchReveal: .homeAndLibraries)
+        try await world.openHome()
+        #expect(world.continueWatching.isEmpty)
+
+        den.holdResponses()
+        await world.relaunch()
+        try await world.until { world.app.launchGate.releasedAtRawTime != nil }
+
+        #expect(world.app.isContentReady)
+        #expect(world.sidebar == [AppWorld.SidebarSection(title: "Libraries", libraries: ["Films"])])
+        try await world.until { world.app.home?.state == .loading }
+
+        den.releaseResponses()
+        try await world.openHome()
+    }
+
     @Test("when content never settles, the launch reveal opens after 15 seconds")
     func revealOpensWhenContentNeverSettles() async throws {
         let den = FakeJellyfinServer(name: "Den").user("ana")

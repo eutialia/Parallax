@@ -14,7 +14,6 @@ struct ServerSettingsView: View {
     let vm: SettingsViewModel
 
     @Environment(AppModel.self) private var app
-    @Environment(AppRouter.self) private var router
     @Environment(\.dismiss) private var dismiss
     @State private var isConfirmingRemove = false
     @State private var showingVisibleLibraries = false
@@ -54,10 +53,9 @@ struct ServerSettingsView: View {
             if model == nil { model = ServerSettingsModel(session: session, app: app) }
             await model?.probeServer()
         }
-        // Keyed on the library revision so a visibility change (which bumps it) refreshes the "N of M".
-        .task(id: router.libraryReloadToken) {
+        .task {
             if model == nil { model = ServerSettingsModel(session: session, app: app) }
-            await model?.loadLibrarySummary()
+            await model?.run()
         }
         .confirmationDialog("Remove this server?", isPresented: $isConfirmingRemove, titleVisibility: .visible) {
             Button("Remove", role: .destructive) {

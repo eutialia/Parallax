@@ -32,7 +32,7 @@ struct ServerSettingsScenarios {
         let attic = FakeJellyfinServer(name: "Attic").user("bo")
         let world = try await AppWorld.launch(signedIn: [(den, "ana"), (attic, "bo")])
         den.revokeAllTokens()
-        await world.openHome()
+        await world.relaunch()
         try await world.until { world.app.router.activeServerID == ServerID(rawValue: attic.id) }
         let settings = SettingsViewModel(app: world.app)
         await settings.refresh()
@@ -88,7 +88,7 @@ struct ServerSettingsScenarios {
         let world = try await AppWorld.launch(signedIn: [(den, "ana")])
         let session = try #require(await world.app.services.serverStore.active)
         let page = ServerSettingsModel(session: session, app: world.app)
-        await page.loadLibrarySummary()
+        world.mount { await page.run() }
         #expect(page.visibleSummary == "All")
 
         let picker = VisibleLibrariesModel(session: session, app: world.app)
@@ -98,12 +98,11 @@ struct ServerSettingsScenarios {
         await picker.toggle(try #require(picker.collections.last))
         #expect(picker.hidden == ["library-Shows"])
         #expect(world.app.router.libraryReloadToken != tokenBefore)
-        await page.loadLibrarySummary()
-        #expect(page.visibleSummary == "1 of 2")
+        try await world.until { page.visibleSummary == "1 of 2" }
 
         await world.relaunch()
         let reopened = ServerSettingsModel(session: try #require(await world.app.services.serverStore.active), app: world.app)
-        await reopened.loadLibrarySummary()
-        #expect(reopened.visibleSummary == "1 of 2")
+        world.mount { await reopened.run() }
+        try await world.until { reopened.visibleSummary == "1 of 2" }
     }
 }

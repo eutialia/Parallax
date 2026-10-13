@@ -8,7 +8,6 @@ struct MovieDetailView: View {
     let session: Session
 
     @Environment(AppModel.self) private var app
-    @Environment(PlaybackPresenter.self) private var playback
     @Environment(\.appIdiom) private var idiom
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var viewModel: MovieDetailViewModel?
@@ -144,13 +143,6 @@ struct MovieDetailView: View {
                 viewModel = await app.movieDetail(itemID, on: session)
                 await viewModel?.load()
             }
-        }
-        // A finished playback session moved this movie's position, so re-pull it the
-        // moment the player dismisses. The view stays MOUNTED under the player layer/
-        // cover, so `.task` never re-fires — the player closing is the only "back from
-        // watching" edge. Mirrors `AppModel.refreshHomeAfterPlayback()`.
-        .onChange(of: playback.closedSessions) {
-            Task { await viewModel?.refresh() }
         }
     }
 

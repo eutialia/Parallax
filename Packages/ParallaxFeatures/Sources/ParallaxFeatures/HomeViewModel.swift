@@ -111,11 +111,11 @@ public final class HomeViewModel {
     private let snapshots: SnapshotStore?
     private var changesTask: Task<Void, Never>?
 
-    /// The servers this model aggregates, in order. `feeds` is fixed at init, so a change here
-    /// means the model is answering for the wrong set of servers and must be rebuilt — `AppModel.loadHome()`
+    /// The sessions this model aggregates, in order. `feeds` is fixed at init, so a change here
+    /// means the model is answering for the wrong sessions and must be rebuilt — `AppModel.loadHome()`
     /// compares against it rather than assuming one model lasts the whole session (adding a
     /// second server left the first model in place, so Home stayed single-server until relaunch).
-    var sourceIDs: [MediaSourceID] { feeds.map(\.source.sourceID) }
+    var sources: [LibrarySource] { feeds.map(\.source) }
 
     init(feeds: [Feed], userDataActions: UserDataActions, snapshots: SnapshotStore? = nil) {
         self.feeds = feeds

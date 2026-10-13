@@ -1,5 +1,5 @@
 import ParallaxCore
-import ParallaxFeatures
+@testable import ParallaxFeatures
 import ParallaxJellyfinTestSupport
 import Testing
 
@@ -60,10 +60,9 @@ struct SearchScenarios {
         try await world.until { titles(search) == Titles(movies: ["The Thing"], series: []) }
 
         try await world.app.signIn(server: attic.url, username: "bo", password: "")
-        await search.refreshProviders()
+        try await world.until { search.scope == .all }
         await world.settleTyping()
 
-        #expect(search.scope == .all)
         try await world.until { titles(search) == Titles(movies: ["The Thing", "The Fly"], series: ["The Bear"]) }
     }
 
@@ -95,9 +94,9 @@ struct SearchScenarios {
         await search.retry()
         #expect(search.state == .loading)
 
-        await search.refreshProviders()
+        world.mount { await search.run() }
 
-        #expect(titles(search) == Titles(movies: ["The Thing"], series: []))
+        try await world.until { titles(search) == Titles(movies: ["The Thing"], series: []) }
     }
 
     private func openSearch() async throws -> (AppWorld, JellyfinSearchViewModel, FakeJellyfinServer) {
@@ -107,7 +106,8 @@ struct SearchScenarios {
             .series("The Bear", in: "Shows", episodes: [])
         let world = try await AppWorld.launch(signedIn: [(den, "ana")])
         let search = JellyfinSearchViewModel(app: world.app)
-        await search.refreshProviders()
+        world.mount { await search.run() }
+        try await world.until { !search.sourceIDs.isEmpty }
         return (world, search, den)
     }
 

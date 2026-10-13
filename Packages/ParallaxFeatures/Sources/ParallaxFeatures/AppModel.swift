@@ -29,8 +29,15 @@ public final class AppModel {
     public internal(set) var home: HomeViewModel?
     /// The library list every navigation root shows.
     public internal(set) var libraries = LibraryList()
+    /// Whether what the launch reveal covers has something to show (see `releaseLaunchHold()`).
+    /// The tvOS root withholds its tabs until then: its sidebar can only hand focus to content
+    /// that has something focusable.
+    public internal(set) var isContentReady = false
+    /// The reload token whose `loadSources()` pass ran to its end; nil while one is in flight.
+    var settledSourcesToken: String?
     let clock: any Clock<Duration>
     let recoverableScreens = RecoverableScreens()
+    let playbackRefreshScreens = PlaybackRefreshScreens()
     @ObservationIgnored var smbLevels: [WeakLevel] = []
 
     /// Sessions whose access token the server itself rejected (HTTP 401). A stream rather than a
@@ -90,11 +97,9 @@ public final class AppModel {
     /// The flows that live as long as the app does. Never returns; cancel the calling task to stop.
     public func run() async {
         await withDiscardingTaskGroup { group in
+            group.addTask { await self.forEachSourceChange { await self.loadSources() } }
             group.addTask { await self.signOutRejectedTokens() }
-            group.addTask { await self.revealOverFirstHome() }
-            group.addTask { await self.closePlayerOnServerSwitch() }
-            group.addTask { await self.refreshHomeAfterPlayback() }
-            group.addTask { await self.forgetSourcesAtLogin() }
+            group.addTask { await self.refreshAfterPlayback() }
             group.addTask { await self.holdThumbnailsUnderThePlayer() }
             group.addTask { await self.launchGate.releaseStuckHold(on: self.clock) }
             group.addTask { await self.recoverStalledScreens() }
@@ -111,6 +116,8 @@ public final class AppModel {
         SMBAddServerModel(
             makeLister: services.makeSMBListerForCredentials,
             serverStore: services.serverStore,
+            discovery: services.smbDiscovery,
+            lifecycle: lifecycle,
             clock: clock,
             onSaved: { [weak self] in await self?.routeToSources() }
         )
@@ -152,9 +159,38 @@ public final class AppModel {
     }
 
     /// Hands the router one fresh read of the whole source configuration. Every site that changes
-    /// which servers exist, or which is signed in, ends here.
+    /// which servers exist, or which is signed in, ends here, so the consequences land here too,
+    /// in the same turn as the route:
+    ///
+    /// - Landing on login cuts the launch story and drops what Home and the library list held, so
+    ///   the next sign-in starts clean rather than on a previous server's shelves.
+    /// - Leaving login for home re-arms the reveal over that first Home boot, the cover a cold
+    ///   launch with a saved server gets.
+    /// - Another server becoming active closes the reveal again until its Home has settled, so the
+    ///   tabs never show over the previous server's reload.
+    /// - An open player closes once its own source is gone (see `isLive`). Another server
+    ///   becoming active leaves it playing.
     public func routeToSources() async {
-        router.updateForSources(await services.serverStore.sourceSnapshot)
+        let reading = await services.serverStore.sourceReading
+        let before = router.destination
+        let activeBefore = router.activeServerID
+        router.updateForSources(reading.snapshot)
+        switch (before, router.destination) {
+        case (_, .login):
+            launchGate.finish()
+            home = nil
+            libraries = LibraryList()
+            isContentReady = false
+        case (.login, .home):
+            launchGate.rearm()
+        case (.home, .home) where router.activeServerID != activeBefore:
+            isContentReady = false
+        case (.bootstrapping, .home), (.home, .home), (_, .bootstrapping):
+            break
+        }
+        if let target = playback.request?.target, !target.isLive(sessions: reading.sessions, servers: reading.servers) {
+            playback.dismiss()
+        }
     }
 
     /// Deletes a server's saved row (and its credentials) and re-routes: the source set changed even
@@ -181,25 +217,6 @@ public final class AppModel {
         }
     }
 
-    /// The launch reveal covers the first HOME boot, not login. A serverless cold launch resolves
-    /// to login with nothing to reveal, so the stage is cut (no story playing behind the sign-in
-    /// sheet); when a server is finally added (login → home), the reveal re-arms over THAT boot —
-    /// the same cover a cold launch with a saved server already gets.
-    private func revealOverFirstHome() async {
-        var previous: AppRouter.Destination?
-        for await destination in Observations({ self.router.destination }) where destination != previous {
-            switch destination {
-            case .login:
-                launchGate.finish()
-            case .home where previous == .login:
-                launchGate.rearm()
-            case .home, .bootstrapping:
-                break
-            }
-            previous = destination
-        }
-    }
-
     /// SMB thumbnail generation yields the uplink to the player: the full-screen player covers the
     /// grid WITHOUT cancelling its cells' artwork requests, so without this hold the frame-grab
     /// pipeline keeps streaming over the same link the stream is using. `isPlayerPresent` (not
@@ -209,18 +226,6 @@ public final class AppModel {
         let provider = services.mediaArtworkProvider
         for await present in Observations({ self.playback.isPlayerPresent }) {
             await provider.setPlaybackActive(present)
-        }
-    }
-
-    /// Switching, adding or signing out a server closes any open player: its content belongs to
-    /// the previous server's session. With no server before, there is no previous session to
-    /// close. That case includes the launch restore, which this observer can see late, after a
-    /// player has already opened.
-    private func closePlayerOnServerSwitch() async {
-        var previous: ServerID?
-        for await activeServerID in Observations({ self.router.activeServerID }) {
-            if let previous, previous != activeServerID { playback.dismiss() }
-            previous = activeServerID
         }
     }
 }

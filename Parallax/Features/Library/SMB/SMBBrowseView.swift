@@ -115,7 +115,6 @@ struct SMBBrowseView: View {
             model = level
             await level.appear()
         }
-        .onAppear { model?.isOnScreen = true }
         .onDisappear { model?.isOnScreen = false }
     }
 

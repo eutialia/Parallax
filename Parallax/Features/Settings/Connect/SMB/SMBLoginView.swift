@@ -7,8 +7,8 @@ import ParallaxFeatures
 /// enumerating shares, then hands off to `SMBShareSelectionView` to let the user
 /// choose which shares to mount as libraries.
 ///
-/// Discovery lifecycle mirrors `LoginView`: `deps.smbDiscovery.start()` on appear,
-/// `stop()` on disappear, `#if !os(tvOS)` gated because tvOS has no mDNS LAN discovery
+/// Discovery lifecycle mirrors `LoginView`: `SMBAddServerModel.discoverServers()` runs for as
+/// long as the form is up, `#if !os(tvOS)` gated because tvOS has no mDNS LAN discovery
 /// prompt and the Bonjour browser is unconditional (no permission gate — safe to run on
 /// tvOS too, but the picker rows are irrelevant on the 10-foot UI).
 struct SMBLoginView: View {
@@ -16,8 +16,6 @@ struct SMBLoginView: View {
     var onAdded: () -> Void
 
     @Environment(AppModel.self) private var app
-    @Environment(AppDependencies.self) private var deps
-    @Environment(\.scenePhase) private var scenePhase
 
     /// The add-server flow, shared with the pushed share picker.
     @State private var model: SMBAddServerModel?
@@ -75,12 +73,7 @@ struct SMBLoginView: View {
             }
         }
         #if !os(tvOS)
-        .onAppear { deps.smbDiscovery.start() }
-        .onDisappear { deps.smbDiscovery.stop() }
-        .onChange(of: scenePhase) { _, phase in
-            guard phase == .active else { return }
-            deps.smbDiscovery.start()
-        }
+        .task { await model.discoverServers() }
         #endif
         // Tear down any in-flight connection test when leaving the form (Menu/Back, or a tab
         // switch away) — a full reset, not just task cancellation: a cancelled task's early
@@ -98,9 +91,9 @@ struct SMBLoginView: View {
     #if !os(tvOS)
     @ViewBuilder
     private func discoveredServersSection(model: SMBAddServerModel) -> some View {
-        if !deps.smbDiscovery.discovered.isEmpty {
+        if !model.discoveredServers.isEmpty {
             SettingsGroup(title: "Discovered") {
-                ForEach(deps.smbDiscovery.discovered) { server in
+                ForEach(model.discoveredServers) { server in
                     SettingsListRow(
                         systemImage: "network",
                         title: server.name,
