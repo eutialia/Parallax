@@ -15,7 +15,7 @@ struct LazyImageRenderer: View {
     /// processor's `identifier`, so processed variants cache independently of the original.
     var processors: [any ImageProcessing] = []
 
-    @Environment(AppDependencies.self) private var deps
+    @Environment(AppModel.self) private var app
     @State private var pipeline: ImagePipeline?
 
     var body: some View {
@@ -40,7 +40,7 @@ struct LazyImageRenderer: View {
         // this refires on rotation; switching the pipeline also makes NukeUI
         // cancel the in-flight tasks bound to the old (stale-token) pipeline.
         .task(id: session) {
-            pipeline = await deps.imagePipelineFactory.pipeline(for: session)
+            pipeline = await app.services.imagePipelineFactory.pipeline(for: session)
         }
     }
 }

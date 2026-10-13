@@ -47,12 +47,6 @@ struct PlayerView: View {
     /// gates window-level pans into analog scrub; on any other focused control a
     /// swipe stays with the focus engine, same as a click.
     @State private var scrubberHasFocus = false
-    /// Debounces the click-seek: rapid ±10s clicks accumulate a target and fire ONE
-    /// engine seek after they settle. Per-click seeks thrash a transcode and wedge the
-    /// player in `.waitingToPlayAtSpecifiedRate` (which the engine reports as playing,
-    /// so play/pause then sticks). Shared with the iOS double-tap (`PlayerControlsView`)
-    /// via `SeekCommitCoalescer` — `.pending` is the un-committed target.
-    @State private var clickSeekCoalescer = SeekCommitCoalescer()
     /// Last activity-driven idle re-arm — coalesces the ~60Hz pan stream (re-arming
     /// a multi-second timer per delta churns a cancel+Task each frame for nothing).
     @State private var lastActivityRearm: ContinuousClock.Instant? = nil
@@ -163,7 +157,7 @@ struct PlayerView: View {
             idleTask?.cancel()
             landingLingerTask?.cancel()
             landingLinger = false
-            clickSeekCoalescer.cancel()
+            vm?.seekCommits.cancel()
             DisplayCriteriaMatcher.clear()
             #endif
         }
@@ -646,7 +640,7 @@ struct PlayerView: View {
         // floor. Clear any click-seek debris a previous mount left armed.
         .onAppear {
             hudState = didBeginPlayback ? .floor : .fullHUD
-            cancelClickSeek()
+            cancelClickSeek(vm)
             chromeVisible = hudState.chromeUp
         }
         // Command-acceptance transitions own the HUD floor hand-offs:
@@ -671,7 +665,7 @@ struct PlayerView: View {
                     }
                 }
             } else {
-                cancelClickSeek()
+                cancelClickSeek(vm)
                 idleTask?.cancel()
                 // Folding out here bypasses the reducer, so any preview it strands has to be
                 // dropped by hand — a scrub or a click step a re-buffer interrupted commits
@@ -781,9 +775,9 @@ struct PlayerView: View {
                                 durationSeconds: CMTimeGetSeconds(vm.currentDuration))
         let (next, effects) = reduce(hudState, event, ctx)
 
-        if clickSeekCoalescer.pending != nil {
+        if vm.seekCommits.pending != nil {
             switch PlayerHUDState.pendingClickStep(after: next, on: event) {
-            case .drop: cancelClickSeek()
+            case .drop: cancelClickSeek(vm)
             case .flush: flushClickSeek(vm)
             case .keep: break
             }
@@ -805,7 +799,7 @@ struct PlayerView: View {
     }
 
     private func scheduleClickSeek(to target: Double, _ vm: PlayerViewModel) {
-        clickSeekCoalescer.schedule(target) { dest in
+        vm.seekCommits.schedule(target) { dest in
             // Commit the ONE coalesced seek, then drop the bar the moment it lands —
             // the click-seek bar used to ride the 4s `.clickSeek` idle timeout even after
             // playback had already resumed at the new spot (user-reported lingering). The
@@ -821,14 +815,14 @@ struct PlayerView: View {
     /// the natural debounce path commits AND drops the bar in `scheduleClickSeek` instead.
     /// A later flush with nothing pending is a no-op.
     private func flushClickSeek(_ vm: PlayerViewModel) {
-        clickSeekCoalescer.flush { target in
+        vm.seekCommits.flush { target in
             runEffects([.seek(progress: target)], vm)
         }
     }
 
     /// Drop the pending click-seek without committing (analog scrub will seek instead).
-    private func cancelClickSeek() {
-        clickSeekCoalescer.cancel()
+    private func cancelClickSeek(_ vm: PlayerViewModel) {
+        vm.seekCommits.cancel()
     }
 
     /// Apply a transition's effects **in order, in a single task**, so an ordered batch like

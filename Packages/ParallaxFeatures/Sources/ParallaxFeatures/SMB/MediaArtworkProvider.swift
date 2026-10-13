@@ -130,8 +130,12 @@ public actor MediaArtworkProvider {
     /// of truth, so a relaunch can't restart a permanently-poisoned key at attempt 1 and sneak past
     /// its backoff. Transient failures self-heal by backoff EXPIRY (exponential, capped), not by
     /// relaunch; expired entries are pruned on lookup so the map stays bounded over a long session.
-    private var failures: [SMBThumbnailKey: (attempts: Int, instant: ContinuousClock.Instant)] = [:]
-    private let clock = ContinuousClock()
+    private var failures: [SMBThumbnailKey: (attempts: Int, at: Duration)] = [:]
+    /// The app's clock, read as time since this provider was built: the failure stamps, the
+    /// generation budget and the logged timings.
+    private let elapsed: @Sendable () -> Duration
+    /// The probe's deadline sleeps on it.
+    private let clock: any Clock<Duration>
     private static let failureBackoff: Duration = .seconds(180)
     /// Backoff ceiling — deliberately NOT permanent: a decodable-but-slow file (a big MKV that
     /// times out over VPN but grabs in 1–3s on LAN) must get another chance when circumstances
@@ -157,8 +161,11 @@ public actor MediaArtworkProvider {
         avThumbnailer: any FrameThumbnailing,
         serverStore: ServerStore,
         connections: SMBConnections,
-        cacheDirectory: URL
+        cacheDirectory: URL,
+        clock: any Clock<Duration>
     ) {
+        self.clock = clock
+        self.elapsed = clock.stopwatch()
         self.thumbnailer = thumbnailer
         self.avThumbnailer = avThumbnailer
         self.serverStore = serverStore
@@ -402,7 +409,7 @@ public actor MediaArtworkProvider {
         }
 
         // ONE ceiling shared by cover-art + frame-grab (probe / AV / VLC) — see `GenerationDeadline`.
-        let deadline = GenerationDeadline(clock: clock, budget: Self.generationTimeout)
+        let deadline = GenerationDeadline(elapsed: elapsed, budget: Self.generationTimeout)
         // MKV only: WebM's element subset excludes Attachments entirely, so the walk would be
         // pure waste (a guaranteed-nil probe) on every .webm file.
         let ext = (ctx.path as NSString).pathExtension.lowercased()
@@ -429,6 +436,16 @@ public actor MediaArtworkProvider {
         return (grab.artwork, grab.decodedAFrame ? .success : .transportFailure)
     }
 
+    /// `withHardTimeout` with its ceiling waited out on the app's clock.
+    private func hardTimeout<T: Sendable>(
+        seconds: TimeInterval, operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        let clock = clock
+        return try await withHardTimeout(
+            seconds: seconds, sleep: { try await clock.sleep(for: .seconds($0)) }, operation: operation
+        )
+    }
+
     /// The sidecar tier: read the whole sibling image over a pooled reader (bounded by
     /// `withHardTimeout`), downscale to tile resolution, HEIC-encode, and store with no duration of
     /// its own (a poster has none; any length already cached for the key survives).
@@ -448,10 +465,10 @@ public actor MediaArtworkProvider {
         let directory = (ctx.path as NSString).deletingLastPathComponent
         let sidecarPath = directory.isEmpty ? sidecar.name : "\(directory)/\(sidecar.name)"
         let reader = connections.reader(ctx.target(ref), sidecarPath)
-        let start = clock.now
+        let start = elapsed()
         do {
             let capped = Int(size)
-            let data = try await withHardTimeout(seconds: Self.sidecarReadTimeout) {
+            let data = try await hardTimeout(seconds: Self.sidecarReadTimeout) {
                 try await reader.read(offset: 0, length: capped)
             }
             guard let image = ImageTranscode.downscaledImage(from: data, maxPixelSize: Self.sidecarMaxPixel) else {
@@ -460,7 +477,7 @@ public actor MediaArtworkProvider {
             let heic = try ImageTranscode.encodeHEIC(image)
             // Clean lifecycle → the pooled connection checks back in reusable.
             await reader.disconnect()
-            let elapsed = start.duration(to: clock.now)
+            let elapsed = elapsed() - start
             guard let cached = await cache.store(heic, duration: nil, for: key) else {
                 // A write failure — not a decode failure, and the read itself worked. Fall through
                 // without poisoning and without blaming the link.
@@ -480,7 +497,7 @@ public actor MediaArtworkProvider {
             // right, exactly as `SMBFileSource.isTransportClass` treats it.
             let transportFault = await reader.hadTransportFault || error is HardTimeoutError
             await reader.disconnect()
-            let elapsed = start.duration(to: clock.now)
+            let elapsed = elapsed() - start
             Self.log.info("thumbnail sidecar FELL THROUGH: \(fileName, privacy: .public) [tier=sidecar \(Self.context(link), privacy: .public)] after \(elapsed.formattedSeconds, privacy: .public) (\(String(describing: error), privacy: .public)) — frame-grab fallback")
             return .fellThrough(transportFault: transportFault)
         }
@@ -494,32 +511,32 @@ public actor MediaArtworkProvider {
         fileName: String, link: SMBLinkClass?, deadline: GenerationDeadline
     ) async -> CoverArtAttempt {
         let reader = connections.reader(ctx.target(ref), ctx.path)
-        let start = clock.now
+        let start = elapsed()
         do {
             // Same race primitive the sidecar tier uses (`withHardTimeout`, below) rather than a
             // bespoke continuation: it cancels its own losing timer on a normal finish, so a fast
             // extract never leaves a sleeper parked for the rest of `coverArtTimeout`.
-            let data = try await withHardTimeout(
+            let data = try await hardTimeout(
                 seconds: deadline.capped(at: Self.coverArtTimeout).fractionalSeconds
             ) {
                 try await MatroskaCoverArt.extract(reader)
             }
             guard let data else {
-                let elapsed = start.duration(to: clock.now)
+                let elapsed = elapsed() - start
                 await reader.disconnect()
                 Self.log.info("thumbnail coverart fell through: \(fileName, privacy: .public) [tier=coverart \(Self.context(link), privacy: .public)] after \(elapsed.formattedSeconds, privacy: .public) (no embedded cover art)")
                 return .fellThrough(transportFault: false)
             }
             guard let image = ImageTranscode.downscaledImage(from: data, maxPixelSize: Self.sidecarMaxPixel) else {
                 // Undecodable bytes — not a poison, not link evidence (mirrors sidecar).
-                let elapsed = start.duration(to: clock.now)
+                let elapsed = elapsed() - start
                 await reader.disconnect()
                 Self.log.info("thumbnail coverart FELL THROUGH: \(fileName, privacy: .public) [tier=coverart \(Self.context(link), privacy: .public)] after \(elapsed.formattedSeconds, privacy: .public) (undecodable) — frame-grab fallback")
                 return .fellThrough(transportFault: false)
             }
             let heic = try ImageTranscode.encodeHEIC(image)
             await reader.disconnect()
-            let elapsed = start.duration(to: clock.now)
+            let elapsed = elapsed() - start
             guard let cached = await cache.store(heic, duration: nil, for: key) else {
                 Self.log.info("thumbnail coverart store failed: \(fileName, privacy: .public) [\(Self.context(link), privacy: .public)] — frame-grab fallback")
                 return .fellThrough(transportFault: false)
@@ -536,7 +553,7 @@ public actor MediaArtworkProvider {
             } else {
                 await reader.disconnect()
             }
-            let elapsed = start.duration(to: clock.now)
+            let elapsed = elapsed() - start
             Self.log.info("thumbnail coverart FELL THROUGH: \(fileName, privacy: .public) [tier=coverart \(Self.context(link), privacy: .public)] after \(elapsed.formattedSeconds, privacy: .public) (\(String(describing: error), privacy: .public)) — frame-grab fallback")
             return .fellThrough(transportFault: transportFault)
         }
@@ -573,7 +590,7 @@ public actor MediaArtworkProvider {
         // AVKit); otherwise stay on VLC. Size comes from the cache key when the listing had one
         // (`movie.size ?? 0` → 0 means unknown → nil).
         let probeResult = await SMBPlaybackResolver.probeWithDeadline(
-            reader, seconds: deadline.capped(at: Self.probeTimeout).fractionalSeconds)
+            reader, within: deadline.capped(at: Self.probeTimeout), on: clock)
         // Sticky transport evidence from the probe reader, sampled at discard. Nil probe always
         // routes to VLC on a FRESH reader; without capturing this bit the probe stage's link
         // fault vanished with the discarded borrow (same override shape as sidecarTransportFault).
@@ -639,7 +656,7 @@ public actor MediaArtworkProvider {
         link: SMBLinkClass?, useAV: Bool, deadline: GenerationDeadline,
         probeTransportFault: Bool
     ) async -> FrameGrabAttempt {
-        let start = clock.now
+        let start = elapsed()
         // Hoisted out of the `do` so the FAILURE log names the tier that actually ran: a fall-through
         // that then failed in VLC is `framegrab-av+vlc`, exactly as the success path labels it.
         var tier = useAV ? "framegrab-av" : "framegrab"
@@ -663,7 +680,7 @@ public actor MediaArtworkProvider {
                     // {...} ?? false`), so `probeTransportFault` — set only on a nil probe — is always
                     // false here; the session's own flag is the whole story.
                     if await session.hadTransportFault {
-                        let elapsed = start.duration(to: clock.now)
+                        let elapsed = elapsed() - start
                         let stats = await session.stats
                         Self.log.info("thumbnail FAILED: \(fileName, privacy: .public) [tier=framegrab-av \(Self.context(link), privacy: .public)] after \(elapsed.formattedSeconds, privacy: .public) (AV transport fault, no VLC fallback; \(String(describing: error), privacy: .public), \(stats.formatted, privacy: .public))")
                         return FrameGrabAttempt(
@@ -679,7 +696,7 @@ public actor MediaArtworkProvider {
                 frame = try await thumbnailer.frame(
                     from: bridgeURL, at: 0.05, timeout: deadline.remaining)
             }
-            let elapsed = start.duration(to: clock.now)
+            let elapsed = elapsed() - start
             let stats = await session.stats
             failures[key] = nil  // a decodable file: clear the in-memory stamp (store clears the disk marker)
             Self.log.info("thumbnail generated: \(fileName, privacy: .public) [tier=\(tier, privacy: .public) \(Self.context(link), privacy: .public)] in \(elapsed.formattedSeconds, privacy: .public) (\(stats.formatted, privacy: .public))")
@@ -696,7 +713,7 @@ public actor MediaArtworkProvider {
                 decodedAFrame: true
             )
         } catch {
-            let elapsed = start.duration(to: clock.now)
+            let elapsed = elapsed() - start
             // Probe-stage transport evidence ORs with the frame-grab session's: the discarded
             // probe reader is gone, so only this bit carries its hadTransportFault into poison
             // and AIMD (same composition as sidecarTransportFault → generateHoldingPermit).
@@ -832,7 +849,7 @@ public actor MediaArtworkProvider {
     /// file change (new key) resets early.
     private func isNegativelyCached(_ key: SMBThumbnailKey) async -> Bool {
         if let mem = failures[key] {
-            if isBackedOff(attempts: mem.attempts, elapsed: mem.instant.duration(to: clock.now)) { return true }
+            if isBackedOff(attempts: mem.attempts, elapsed: elapsed() - mem.at) { return true }
             // Expired — prune the mirror entry so the map stays bounded over a long session. The
             // disk marker carries the SAME count with an older-or-equal stamp, so it reads expired
             // too; no need to consult it on this pass.
@@ -840,6 +857,7 @@ public actor MediaArtworkProvider {
             return false
         }
         if let disk = await cache.failureState(for: key) {
+            // Wall time, not `clock`: the marker is a persisted date that has to survive a relaunch.
             let elapsedSeconds = max(0, Date().timeIntervalSince(disk.lastAttempt))
             return isBackedOff(attempts: disk.attempts, elapsed: .seconds(elapsedSeconds))
         }
@@ -859,7 +877,7 @@ public actor MediaArtworkProvider {
         // The disk marker owns the attempt count (it survives relaunch); mirror exactly what it
         // recorded so memory and disk can never disagree on how poisoned a key is.
         let recorded = await cache.recordFailure(for: key)
-        failures[key] = (attempts: recorded.attempts, instant: clock.now)
+        failures[key] = (attempts: recorded.attempts, at: elapsed())
     }
 
     // MARK: - Diagnostics helpers
@@ -934,18 +952,18 @@ nonisolated private struct FrameGrabAttempt {
 ///
 /// `nonisolated` for the same app-target MainActor-default reason as `WaiterList`.
 nonisolated private struct GenerationDeadline {
-    private let clock: ContinuousClock
-    private let expiry: ContinuousClock.Instant
+    private let elapsed: @Sendable () -> Duration
+    private let expiry: Duration
 
-    init(clock: ContinuousClock, budget: Duration) {
-        self.clock = clock
-        self.expiry = clock.now.advanced(by: budget)
+    init(elapsed: @escaping @Sendable () -> Duration, budget: Duration) {
+        self.elapsed = elapsed
+        self.expiry = elapsed() + budget
     }
 
     /// Budget left, never negative. An exhausted budget hands the next phase `.zero`, which its own
     /// timeout treats as an immediate expiry — the honest answer when there is nothing left to spend.
     var remaining: Duration {
-        max(.zero, clock.now.duration(to: expiry))
+        max(.zero, expiry - elapsed())
     }
 
     /// `cap`, or the remaining budget when that is smaller.

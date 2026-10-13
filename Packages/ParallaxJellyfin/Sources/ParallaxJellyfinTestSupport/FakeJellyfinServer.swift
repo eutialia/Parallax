@@ -62,12 +62,19 @@ public final class FakeJellyfinServer: Sendable {
         public let startSeconds: Int?
         public let audioStreamIndex: Int?
         public let subtitleStreamIndex: Int?
+        /// Whether the device profile accepted bare Dolby Vision HEVC, which only a device that
+        /// decodes it in hardware declares.
+        public let acceptsDolbyVision: Bool
 
-        public init(item: String, startSeconds: Int?, audioStreamIndex: Int? = nil, subtitleStreamIndex: Int? = nil) {
+        public init(
+            item: String, startSeconds: Int?, audioStreamIndex: Int? = nil, subtitleStreamIndex: Int? = nil,
+            acceptsDolbyVision: Bool = false
+        ) {
             self.item = item
             self.startSeconds = startSeconds
             self.audioStreamIndex = audioStreamIndex
             self.subtitleStreamIndex = subtitleStreamIndex
+            self.acceptsDolbyVision = acceptsDolbyVision
         }
     }
 
@@ -650,6 +657,9 @@ public final class FakeJellyfinServer: Sendable {
     /// pick. A transcode answers with an HLS playlist, direct play with the file.
     private func playbackInfo(_ itemID: String, _ exchange: StubHTTPTransport.Exchange) -> StubHTTPTransport.Reply {
         guard let body = try? exchange.decodedBody(PlaybackInfoDto.self) else { return StubHTTPTransport.Reply(status: 400) }
+        let hevcRanges = body.deviceProfile?.codecProfiles?
+            .first { $0.codec == "hevc" }?.conditions?
+            .first { $0.property == .videoRangeType }?.value ?? ""
         let answer = state.withLock { state -> (CatalogItem, String)? in
             guard let item = state.catalog.first(where: { $0.id == itemID }) else { return nil }
             state.playSessions += 1
@@ -657,7 +667,8 @@ public final class FakeJellyfinServer: Sendable {
                 item: item.name,
                 startSeconds: body.startTimeTicks.map { $0 / 10_000_000 },
                 audioStreamIndex: body.audioStreamIndex,
-                subtitleStreamIndex: body.subtitleStreamIndex
+                subtitleStreamIndex: body.subtitleStreamIndex,
+                acceptsDolbyVision: hevcRanges.split(separator: "|").contains("DOVI")
             ))
             return (item, "play-session-\(state.playSessions)")
         }

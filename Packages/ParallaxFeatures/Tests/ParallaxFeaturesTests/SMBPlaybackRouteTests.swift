@@ -2,7 +2,7 @@ import Foundation
 import Testing
 import ParallaxCore
 import ParallaxPlayback
-import ParallaxTestScaling
+import ParallaxCoreTestSupport
 @testable import ParallaxFeatures
 
 /// One routing row: a probe result plus the file size, and everything `route` must hand back for it.
@@ -167,27 +167,23 @@ struct SMBProbeDeadlineTests {
 
     @Test("a wedged reader is abandoned at the deadline, returning nil")
     func wedgedReaderTimesOut() async {
-        let clock = ContinuousClock()
-        let start = clock.now
-        // 0.2s deadline (not the 4s default) so the test proves the race without a
-        // wall-clock stall; the generous bound only guards against CI scheduling flake,
-        // so it rides CITimeScale (a stalled runner can blow a flat 6s ceiling).
-        let result = await SMBPlaybackResolver.probeWithDeadline(HangingReader(), seconds: 0.2)
-        let elapsed = start.duration(to: clock.now)
+        let clock = TestClock()
+        async let result = SMBPlaybackResolver.probeWithDeadline(HangingReader(), within: .seconds(4), on: clock)
+        await clock.waitForSleepers()
+        clock.advance(by: .seconds(4))
 
-        #expect(result == nil)
-        #expect(elapsed < CITimeScale.seconds(6))
+        #expect(await result == nil)
     }
 
-    @Test("a fast in-memory probe returns its result well before the deadline")
+    @Test("a fast in-memory probe returns its result before the deadline")
     func fastProbeReturnsResult() async {
-        // A minimal ftyp/qt header is enough for the probe to classify the container;
-        // it returns immediately, so the deadline task never fires.
+        // A minimal ftyp/qt header is enough for the probe to classify the container; the clock
+        // never moves, so only the probe can answer.
         var bytes = Data([0, 0, 0, 12])
         bytes.append(contentsOf: Array("ftypqt  ".utf8))
         let reader = InMemoryRandomAccessReader(data: bytes)
 
-        let result = await SMBPlaybackResolver.probeWithDeadline(reader, seconds: 5)
+        let result = await SMBPlaybackResolver.probeWithDeadline(reader, on: TestClock())
 
         #expect(result != nil)
         #expect(result?.container == .mov)

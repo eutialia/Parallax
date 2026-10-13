@@ -25,7 +25,7 @@ final class PlaybackLabRunner {
     private(set) static var active: PlaybackLabRunner?
 
     private let scenario: PlaybackLabScenario
-    private let deps: AppDependencies
+    private let services: AppServices
     private let playback: PlaybackPresenter
     private let telemetry = PlaybackLabTelemetry()
     private var vm: PlayerViewModel?
@@ -46,9 +46,9 @@ final class PlaybackLabRunner {
         }
     }
 
-    private init(scenario: PlaybackLabScenario, dependencies: AppDependencies, playback: PlaybackPresenter) {
+    private init(scenario: PlaybackLabScenario, services: AppServices, playback: PlaybackPresenter) {
         self.scenario = scenario
-        self.deps = dependencies
+        self.services = services
         self.playback = playback
     }
 
@@ -56,14 +56,14 @@ final class PlaybackLabRunner {
     /// argument is absent. Called once from `ParallaxApp`'s startup task after
     /// `ServerStore.load()`.
     static func makeIfRequested(
-        dependencies: AppDependencies, playback: PlaybackPresenter
+        services: AppServices, playback: PlaybackPresenter
     ) -> PlaybackLabRunner? {
         let args = CommandLine.arguments
         guard let i = args.firstIndex(of: "-playbackLab"), args.indices.contains(i + 1) else { return nil }
         let url = URL(fileURLWithPath: args[i + 1])
         do {
             let scenario = try JSONDecoder().decode(PlaybackLabScenario.self, from: Data(contentsOf: url))
-            let runner = PlaybackLabRunner(scenario: scenario, dependencies: dependencies, playback: playback)
+            let runner = PlaybackLabRunner(scenario: scenario, services: services, playback: playback)
             active = runner
             return runner
         } catch {
@@ -85,7 +85,7 @@ final class PlaybackLabRunner {
             if scenario.resume != true {
                 // Deterministic start: a prior run's saved position would silently
                 // shift what every scenario measures (see PlaybackLabScenario.resume).
-                await deps.smbResumeStore.clear(item.id)
+                await services.smbResumeStore.clear(item.id)
             }
             playback.playSMB(item, ref: ref)
             try await waitForViewModel()
@@ -118,14 +118,14 @@ final class PlaybackLabRunner {
         )
         // Idempotent across repeated runs: the deterministic ServerID makes
         // addSMBServer replace the existing row in place.
-        let id = try await deps.serverStore.addSMBServer(data, password: server.password)
+        let id = try await services.serverStore.addSMBServer(data, password: server.password)
         return SMBServerRef(id: id, data: data)
     }
 
     /// Lists the lab folder through the browse wall's own listing call, so the
     /// ItemID/URL the resolver sees is indistinguishable from a user tap.
     private func resolveItem(ref: SMBServerRef) async throws -> Item {
-        let lister = try await deps.makeSMBLister(ref)
+        let lister = try await services.makeSMBLister(ref)
         let source = SMBFileSource(lister: lister, host: ref.data.host, share: scenario.server.share, root: "")
         let listing: SMBBrowseListing
         do {

@@ -110,7 +110,7 @@ struct LoggedOutRootView: View {
 
 #if DEBUG
 /// Env-free renders of the logged-out Connect surface — the real `ConnectSourceView` reads
-/// `AppDependencies`/`AppRouter`, so it can't render in a preview. Mirrors the body's scaffold +
+/// `AppModel`/`AppRouter`, so it can't render in a preview. Mirrors the body's scaffold +
 /// groups.
 private struct ConnectPreview: View {
     var signedOut: [SignedOutServerRow] = []

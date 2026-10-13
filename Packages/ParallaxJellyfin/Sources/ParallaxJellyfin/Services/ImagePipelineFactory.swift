@@ -4,6 +4,11 @@ import ParallaxCore
 
 public actor ImagePipelineFactory {
     private let identityProvider: DeviceIdentityProvider
+    /// The transport every pipeline's loader starts from. Defaulted to `.default` like the API
+    /// clients; tests hand in a configuration carrying a stub `URLProtocol`.
+    private let sessionConfiguration: URLSessionConfiguration
+    /// Where each server's disk cache lives, one directory per server under it.
+    private let cacheDirectory: URL
     // Resolved once and reused — the provider returns the SAME persisted
     // deviceID the auth layer uses, so image traffic and API traffic present
     // one consistent device identity instead of a per-launch random UUID.
@@ -11,8 +16,14 @@ public actor ImagePipelineFactory {
     // Store (token, pipeline) so we can detect token rotation.
     private var pipelinesByServer: [ServerID: (token: String, pipeline: ImagePipeline)] = [:]
 
-    public init(identityProvider: DeviceIdentityProvider) {
+    public init(
+        identityProvider: DeviceIdentityProvider,
+        sessionConfiguration: URLSessionConfiguration = .default,
+        cacheDirectory: URL
+    ) {
         self.identityProvider = identityProvider
+        self.sessionConfiguration = sessionConfiguration
+        self.cacheDirectory = cacheDirectory
     }
 
     public func pipeline(for session: Session) async -> ImagePipeline {
@@ -25,7 +36,9 @@ public actor ImagePipelineFactory {
         // switches over and cancels the in-flight tasks bound to it.
         pipelinesByServer[session.id] = nil
         let identity = await resolveIdentity()
-        let pipeline = Self.makePipeline(session: session, identity: identity)
+        let pipeline = Self.makePipeline(
+            session: session, identity: identity, base: sessionConfiguration, cacheDirectory: cacheDirectory
+        )
         pipelinesByServer[session.id] = (session.accessToken, pipeline)
         return pipeline
     }
@@ -70,8 +83,11 @@ public actor ImagePipelineFactory {
         ].joined(separator: ", ")
     }
 
-    nonisolated private static func makePipeline(session: Session, identity: DeviceIdentity) -> ImagePipeline {
-        let urlSessionConfig = URLSessionConfiguration.default
+    nonisolated private static func makePipeline(
+        session: Session, identity: DeviceIdentity, base: URLSessionConfiguration, cacheDirectory: URL
+    ) -> ImagePipeline {
+        // A copy: the configuration is a shared reference, and the token header is this pipeline's.
+        let urlSessionConfig = base.copy() as! URLSessionConfiguration
         urlSessionConfig.httpAdditionalHeaders = [
             "X-Emby-Authorization": authorizationHeader(identity: identity, token: session.accessToken),
         ]
@@ -80,10 +96,11 @@ public actor ImagePipelineFactory {
 
         let dataLoader = DataLoader(configuration: urlSessionConfig)
 
-        var pipelineConfig = ImagePipeline.Configuration.withDataCache(
-            name: "com.lhdev.parallax.images.\(session.id.rawValue)"
-        )
+        var pipelineConfig = ImagePipeline.Configuration()
         pipelineConfig.dataLoader = dataLoader
+        pipelineConfig.dataCache = try? DataCache(path: cacheDirectory.appending(
+            path: "com.lhdev.parallax.images.\(session.id.rawValue)", directoryHint: .isDirectory
+        ))
         return ImagePipeline(configuration: pipelineConfig)
     }
 }

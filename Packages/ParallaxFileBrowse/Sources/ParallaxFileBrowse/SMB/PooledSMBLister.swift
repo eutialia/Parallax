@@ -248,6 +248,7 @@ public struct PooledSMBLister<Connection: SMBListableConnection>: SMBLister {
         do {
             return try await withHardTimeout(
                 seconds: connectTimeout + SMBConnectionPool<Connection>.hardTimeoutGrace,
+                sleep: { [clock = pool.clock] in try await clock.sleep(for: .seconds($0)) },
                 settlement: settlement,
                 operation: operation
             )

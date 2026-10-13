@@ -18,8 +18,8 @@ import Testing
 /// Faked: the Keychain, `UserDefaults` (a private suite), the storage and caches directories (a
 /// scratch directory), the Jellyfin transport (`FakeJellyfinServer`s), the LAN discovery broadcast,
 /// the SMB connections under the real pool (`nas`), Bonjour browsing, the clock, reachability
-/// (scripted, online until told otherwise), the capability probe, the audio session, the frame
-/// thumbnailer, the playback engines (`engines`), Now Playing, the display and VLC's subtitle fonts.
+/// (scripted, online until told otherwise), the display's HDR support and its eligibility changes, the audio session, both frame
+/// thumbnailers, the playback engines (`engines`), Now Playing, the display and VLC's subtitle fonts.
 @MainActor
 final class AppWorld {
     private(set) var app: AppModel
@@ -27,12 +27,15 @@ final class AppWorld {
     /// Every SMB host the app connects to; scenarios script one NAS.
     let nas: FakeSMBWorld
     let thumbnailer: RecordingThumbnailer
+    /// The AVFoundation thumbnailer, for the containers it opens.
+    let avThumbnailer: RecordingThumbnailer
     /// Every playback engine the app built, in build order. The last one is playing.
     let engines: EngineLedger
     private let keychain: FakeKeychain
     private let lan: ScriptedLAN
     private let bonjour: ScriptedBonjour
     private let reachability: ScriptedReachability
+    private let display: ScriptedDisplay
 
     private let environment: AppEnvironment
     /// The servers live as long as the world: their stub hosts route only while they exist.
@@ -64,8 +67,10 @@ final class AppWorld {
         let nas = FakeSMBWorld()
         let bonjour = ScriptedBonjour()
         let thumbnailer = RecordingThumbnailer()
+        let avThumbnailer = RecordingThumbnailer()
         let engines = EngineLedger()
         let reachability = ScriptedReachability()
+        let display = ScriptedDisplay()
         let environment = AppEnvironment(
             keychain: keychain,
             defaults: UserDefaults(suiteName: suiteName)!,
@@ -74,12 +79,14 @@ final class AppWorld {
             urlSessionConfiguration: StubHTTPTransport.configuration,
             clock: clock,
             reachability: reachability,
-            capabilityProbe: FakeCapabilityProbe(),
+            capabilityProbe: display,
             lanBroadcaster: { _ in lan.broadcast() },
             audioSession: SilentAudioSession(),
-            smbConnections: nas.connections(),
+            smbConnections: nas.connections(clock: clock),
             browseSMBServices: { bonjour.browse() },
+            hdrEligibilityChanges: { display.eligibilityChanges },
             thumbnailer: thumbnailer,
+            avThumbnailer: avThumbnailer,
             makePlaybackEngine: { id, _ in engines.make(id) },
             makeNowPlaying: { SpyNowPlaying() },
             prepareDisplay: { _ in },
@@ -100,8 +107,9 @@ final class AppWorld {
 
         let world = AppWorld(
             environment: environment, servers: accounts.map(\.server) + lanServers, clock: clock,
-            nas: nas, thumbnailer: thumbnailer, engines: engines, keychain: keychain, lan: lan, bonjour: bonjour,
-            reachability: reachability,
+            nas: nas, thumbnailer: thumbnailer, avThumbnailer: avThumbnailer, engines: engines, keychain: keychain,
+            lan: lan, bonjour: bonjour,
+            reachability: reachability, display: display,
             suiteName: suiteName, storageDirectory: storageDirectory
         )
         await world.app.bootstrap()
@@ -110,8 +118,10 @@ final class AppWorld {
 
     private init(
         environment: AppEnvironment, servers: [FakeJellyfinServer], clock: TestClock,
-        nas: FakeSMBWorld, thumbnailer: RecordingThumbnailer, engines: EngineLedger, keychain: FakeKeychain,
-        lan: ScriptedLAN, bonjour: ScriptedBonjour, reachability: ScriptedReachability, suiteName: String,
+        nas: FakeSMBWorld, thumbnailer: RecordingThumbnailer, avThumbnailer: RecordingThumbnailer,
+        engines: EngineLedger, keychain: FakeKeychain,
+        lan: ScriptedLAN, bonjour: ScriptedBonjour, reachability: ScriptedReachability, display: ScriptedDisplay,
+        suiteName: String,
         storageDirectory: URL
     ) {
         let app = AppModel(environment: environment)
@@ -121,11 +131,13 @@ final class AppWorld {
         self.clock = clock
         self.nas = nas
         self.thumbnailer = thumbnailer
+        self.avThumbnailer = avThumbnailer
         self.engines = engines
         self.keychain = keychain
         self.lan = lan
         self.bonjour = bonjour
         self.reachability = reachability
+        self.display = display
         self.suiteName = suiteName
         self.storageDirectory = storageDirectory
         lifetime = Task { await app.run() }
@@ -261,6 +273,13 @@ final class AppWorld {
         await playerSession?.value
         playerSession = nil
         player = nil
+    }
+
+    /// The device moves to a display that plays `hdr`, and the system says HDR eligibility changed.
+    /// Returns once the app has seen it.
+    func connectDisplay(playing hdr: HDRSupport) async throws {
+        display.connect(playing: hdr)
+        try await until { await self.app.services.deviceProfileBuilder.build().hdr == hdr }
     }
 
     /// The network drops. Returns once the app has seen it.
@@ -488,6 +507,30 @@ private final class ScriptedReachability: ReachabilityMonitoring, Sendable {
         state.withLock {
             $0.isSatisfied = isSatisfied
             _ = $0.latest?.yield(ReachabilityState(isSatisfied: isSatisfied, isConstrained: false))
+        }
+    }
+}
+
+private final class ScriptedDisplay: CapabilityProbe, Sendable {
+    private struct State {
+        var hdr: HDRSupport = .none
+        var latest: AsyncStream<Void>.Continuation?
+    }
+
+    private let state = Mutex(State())
+
+    func hdrSupport() -> HDRSupport { state.withLock { $0.hdr } }
+
+    var eligibilityChanges: AsyncStream<Void> {
+        let (stream, continuation) = AsyncStream<Void>.makeStream()
+        state.withLock { $0.latest = continuation }
+        return stream
+    }
+
+    func connect(playing hdr: HDRSupport) {
+        state.withLock {
+            $0.hdr = hdr
+            _ = $0.latest?.yield()
         }
     }
 }

@@ -5,6 +5,7 @@ import ParallaxCore
 import ParallaxJellyfin
 import ParallaxFileBrowse
 import ParallaxFileBrowseTestSupport
+import ParallaxCoreTestSupport
 @testable import ParallaxFeatures
 
 // MARK: - Scripted sibling listing
@@ -66,10 +67,12 @@ struct SMBPlaybackResolverTests {
         // smb:// route these suites pin.
         world.setFileSizeOutcome(.fails(POSIXError(.ECONNREFUSED)))
         world.setListingOutcome(listing.shouldThrow ? .fails(SiblingListing.StubError.listFailed) : .entries(listing.entries))
+        let clock = TestClock()
         return SMBPlaybackResolver(
             serverStore: store,
-            connections: world.connections(),
-            resumeStore: resumeStore ?? SMBTestFixtures.inertResumeStore()
+            connections: world.connections(clock: clock),
+            resumeStore: resumeStore ?? SMBTestFixtures.inertResumeStore(),
+            clock: clock
         )
     }
 

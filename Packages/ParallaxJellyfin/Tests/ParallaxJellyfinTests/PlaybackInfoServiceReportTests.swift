@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import JellyfinAPI
+import ParallaxCoreTestSupport
 @testable import ParallaxJellyfin
 
 @Suite("PlaybackInfoService — progress reporting")
@@ -31,42 +32,51 @@ struct PlaybackInfoServiceReportTests {
 
     /// The window itself is the service's policy, so the beats are placed RELATIVE to it: a
     /// re-tuned interval must not silently break this test, and the boundary is inclusive
-    /// (`elapsed >= interval` reports).
+    /// (`elapsed >= interval` reports). The first progress beat after a start always goes out.
     @Test("reportProgress drops beats inside the throttle window and sends the first one past it")
     func progressThrottle() async {
-        let window = PlaybackInfoService.progressThrottleSeconds
+        let window = PlaybackInfoService.progressThrottle
         let fake = FakeJellyfinPlaybackClient()
-        let service = PlaybackInfoService(client: fake)
-        await service.reportStart(beat(position: 0))  // primes the window at now = 0
-        await service.reportProgress(beat(position: 10_000_000), now: window * 0.3)   // dropped
-        await service.reportProgress(beat(position: 50_000_000), now: window * 0.9)   // dropped
-        await service.reportProgress(beat(position: 110_000_000), now: window)        // on the edge — sent
-        #expect(fake.progressInfos.count == 1)
-        #expect(fake.progressInfos.first?.positionTicks == 110_000_000)
+        let clock = TestClock()
+        let service = PlaybackInfoService(client: fake, clock: clock)
+        await service.reportStart(beat(position: 0))
+        await service.reportProgress(beat(position: 5_000_000))     // first after the start — sent
+        clock.advance(by: window / 10 * 3)
+        await service.reportProgress(beat(position: 10_000_000))    // dropped
+        clock.advance(by: window / 10 * 6)
+        await service.reportProgress(beat(position: 50_000_000))    // dropped
+        clock.advance(by: window / 10)
+        await service.reportProgress(beat(position: 110_000_000))   // on the edge — sent
+        #expect(fake.progressInfos.map(\.positionTicks) == [5_000_000, 110_000_000])
     }
 
     /// After a beat is sent the window restarts from it, so a second beat one window later is also
     /// sent — otherwise long playbacks would report once and go quiet.
     @Test("The window restarts from each sent beat")
     func progressThrottleWindowRestarts() async {
-        let window = PlaybackInfoService.progressThrottleSeconds
+        let window = PlaybackInfoService.progressThrottle
         let fake = FakeJellyfinPlaybackClient()
-        let service = PlaybackInfoService(client: fake)
+        let clock = TestClock()
+        let service = PlaybackInfoService(client: fake, clock: clock)
         await service.reportStart(beat(position: 0))
-        await service.reportProgress(beat(position: 100), now: window)
-        await service.reportProgress(beat(position: 200), now: window * 1.5)   // inside the new window
-        await service.reportProgress(beat(position: 300), now: window * 2)     // past it
+        await service.reportProgress(beat(position: 100))
+        clock.advance(by: window / 2)
+        await service.reportProgress(beat(position: 200))   // inside the window
+        clock.advance(by: window / 2)
+        await service.reportProgress(beat(position: 300))   // past it
         #expect(fake.progressInfos.map(\.positionTicks) == [100, 300])
     }
 
     @Test("A pause flip sends an immediate progress beat regardless of throttle")
     func pauseFlipImmediate() async {
         let fake = FakeJellyfinPlaybackClient()
-        let service = PlaybackInfoService(client: fake)
+        let clock = TestClock()
+        let service = PlaybackInfoService(client: fake, clock: clock)
         await service.reportStart(beat(position: 0, paused: false))
-        await service.reportProgress(beat(position: 20_000_000, paused: true), now: 2)  // pause flip at 2s
-        #expect(fake.progressInfos.count == 1)
-        #expect(fake.progressInfos.first?.isPaused == true)
+        await service.reportProgress(beat(position: 10_000_000))
+        clock.advance(by: .seconds(2))
+        await service.reportProgress(beat(position: 20_000_000, paused: true))  // pause flip at 2s
+        #expect(fake.progressInfos.map(\.isPaused) == [false, true])
     }
 
     @Test("reportStopped POSTs a PlaybackStopInfo and is best-effort")

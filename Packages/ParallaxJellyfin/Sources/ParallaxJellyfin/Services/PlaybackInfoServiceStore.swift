@@ -8,11 +8,14 @@ import Foundation
 /// token rotates (sign-out + sign-in to the same server).
 public actor PlaybackInfoServiceStore {
     private let clientFactory: JellyfinPlaybackClientFactory
+    /// Paces each service's progress reports.
+    private let clock: any Clock<Duration>
     // (token, service) so a rotated token forces a rebuild with a fresh client.
     private var servicesByServer: [ServerID: (token: String, service: PlaybackInfoService)] = [:]
 
-    public init(clientFactory: JellyfinPlaybackClientFactory) {
+    public init(clientFactory: JellyfinPlaybackClientFactory, clock: any Clock<Duration> = ContinuousClock()) {
         self.clientFactory = clientFactory
+        self.clock = clock
     }
 
     public func service(for session: Session) async -> PlaybackInfoService {
@@ -20,7 +23,7 @@ public actor PlaybackInfoServiceStore {
             return entry.service
         }
         let client = await clientFactory.make(for: session)
-        let service = PlaybackInfoService(client: client)
+        let service = PlaybackInfoService(client: client, clock: clock)
         servicesByServer[session.id] = (session.accessToken, service)
         return service
     }

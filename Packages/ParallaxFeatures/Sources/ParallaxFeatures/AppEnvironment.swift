@@ -29,8 +29,13 @@ public struct AppEnvironment {
     /// One live Bonjour browse for `_smb._tcp`: the complete set of service names on every change,
     /// stopping when the stream's consumer goes away.
     public let browseSMBServices: @Sendable () -> AsyncStream<[String]>
+    /// One element each time the device's HDR playback eligibility may have moved: a display
+    /// connected or disconnected, Low Power Mode, other system resource shifts.
+    public let hdrEligibilityChanges: @Sendable () -> AsyncStream<Void>
     /// Decodes a frame from any container (VLC in the app) for SMB tiles with no artwork.
     public let thumbnailer: any FrameThumbnailing
+    /// Decodes a frame with AVFoundation, the fast path for the containers it opens (mp4, mov).
+    public let avThumbnailer: any FrameThumbnailing
     /// Library options are instance-scoped and must exist at player creation (see
     /// `VLCKitEngine.init`), so they're a factory input, not a post-build configuration.
     public let makePlaybackEngine: @MainActor @Sendable (PlaybackEngineID, _ vlcLibraryOptions: [String]?) -> any PlaybackEngine
@@ -61,7 +66,9 @@ public struct AppEnvironment {
         audioSession: any AudioSessionControlling,
         smbConnections: SMBConnections,
         browseSMBServices: @escaping @Sendable () -> AsyncStream<[String]>,
+        hdrEligibilityChanges: @escaping @Sendable () -> AsyncStream<Void>,
         thumbnailer: any FrameThumbnailing,
+        avThumbnailer: any FrameThumbnailing,
         makePlaybackEngine: @escaping @MainActor @Sendable (PlaybackEngineID, _ vlcLibraryOptions: [String]?) -> any PlaybackEngine,
         makeNowPlaying: @escaping @MainActor @Sendable () -> any NowPlayingUpdating,
         prepareDisplay: @escaping @MainActor @Sendable (any PlaybackEngine) async -> Void,
@@ -83,7 +90,9 @@ public struct AppEnvironment {
         self.audioSession = audioSession
         self.smbConnections = smbConnections
         self.browseSMBServices = browseSMBServices
+        self.hdrEligibilityChanges = hdrEligibilityChanges
         self.thumbnailer = thumbnailer
+        self.avThumbnailer = avThumbnailer
         self.makePlaybackEngine = makePlaybackEngine
         self.makeNowPlaying = makeNowPlaying
         self.prepareDisplay = prepareDisplay

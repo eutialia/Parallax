@@ -64,6 +64,8 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
     private let idleTTL: Duration
     private let sweepInterval: Duration
     private let now: @Sendable () -> ContinuousClock.Instant
+    /// Waits out every hard-timeout ceiling: the cold connect's here, and the lister's operations.
+    let clock: any Clock<Duration>
     private let connect: SMBConnectionBuilder<Connection>
 
     /// Warm, idle connections per key. Each entry stamps the instant it went idle so `reapIdle`
@@ -112,8 +114,9 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
     ///   - maxIdlePerKey: how many warm connections to retain per key. Beyond this, `checkin`
     ///     disconnects the oldest. 4 covers a scrolling grid's overlap without hoarding sessions.
     ///   - idleTTL: a connection idle longer than this is disconnected by the reaper (~60s).
-    ///   - sweepInterval: cadence of the background reap (real time; opportunistic reaps cover the rest).
+    ///   - sweepInterval: cadence of the background reap, waited out on `clock` (opportunistic reaps cover the rest).
     ///   - now: wall-clock source, injectable for deterministic tests.
+    ///   - clock: waits out the hard-timeout ceilings and the sweep interval.
     ///   - connect: builds + connects one share connection for a target, handing the built
     ///     connection to `deliver` before the share attach — see `SMBConnectionBuilder`. Production
     ///     wires `SMB2Manager` via the convenience `init`; tests inject a fake.
@@ -123,6 +126,7 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
         idleTTL: Duration = .seconds(60),
         sweepInterval: Duration = .seconds(30),
         now: @escaping @Sendable () -> ContinuousClock.Instant = { ContinuousClock().now },
+        clock: any Clock<Duration>,
         connect: @escaping SMBConnectionBuilder<Connection>
     ) {
         self.connectTimeout = connectTimeout
@@ -130,6 +134,7 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
         self.idleTTL = idleTTL
         self.sweepInterval = sweepInterval
         self.now = now
+        self.clock = clock
         self.connect = connect
         self.graveyard = SMBConnectionGraveyard<Connection>()
     }
@@ -191,6 +196,7 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
             let connector = connect
             connection = try await withHardTimeout(
                 seconds: connectTimeout + Self.hardTimeoutGrace,
+                sleep: { [clock] in try await clock.sleep(for: .seconds($0)) },
                 settlement: settlement
             ) {
                 try await connector(target) { escrow.deliver($0) }
@@ -517,9 +523,9 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
     private func startSweepIfNeeded() {
         guard sweepTask == nil else { return }
         let interval = sweepInterval
-        sweepTask = Task { [weak self] in
+        sweepTask = Task { [weak self, clock] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: interval)
+                try? await clock.sleep(for: interval)
                 guard let self else { return }
                 await self.reapIdle(asOf: self.now())
             }
@@ -530,7 +536,7 @@ public actor SMBConnectionPool<Connection: PoolableSMBConnection> {
 // MARK: - Convenience: SMB2Manager-backed pool
 
 /// The production pool specialization: a pool of real `SMB2Manager` share connections. Aliased so
-/// app-side owners (`AppDependencies`, `MediaArtworkProvider`, `SMBPlaybackResolver`) can name and
+/// app-side owners (`AppServices`, `MediaArtworkProvider`, `SMBPlaybackResolver`) can name and
 /// construct the pool WITHOUT importing AMSMB2 — `SMB2Manager` stays an implementation detail behind
 /// this package. The concrete `SMBRandomAccessReader` pooled init takes this exact specialization.
 public typealias SMBSharePool = SMBConnectionPool<SMB2Manager>
@@ -547,12 +553,14 @@ extension SMBConnectionPool where Connection == SMB2Manager {
     public init(
         connectTimeout: TimeInterval = 15,
         maxIdlePerKey: Int = 4,
-        idleTTL: Duration = .seconds(60)
+        idleTTL: Duration = .seconds(60),
+        clock: any Clock<Duration>
     ) {
         self.init(
             connectTimeout: connectTimeout,
             maxIdlePerKey: maxIdlePerKey,
             idleTTL: idleTTL,
+            clock: clock,
             connect: { target, deliver in
                 guard let client = SMB2Manager(
                     url: target.serverURL, domain: target.domain, credential: target.credential
