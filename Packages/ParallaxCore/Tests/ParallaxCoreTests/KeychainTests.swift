@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import ParallaxCoreTestSupport
 import Testing
 @testable import ParallaxCore
@@ -86,6 +87,29 @@ struct KeychainTests {
             try await keychain.store("second", for: key)
             let read = try await keychain.read(key)
             #expect(read == "second")
+        }
+    }
+}
+
+/// What an unentitled host sees. The login keychain would accept these writes, so a store that
+/// succeeds here is a store into the developer's own keychain.
+@Suite(
+    "Keychain without the entitlement",
+    .enabled(if: !KeychainEntitlementProbe.hasKeychainAccess, "this host is entitled")
+)
+struct UnentitledKeychainTests {
+    @Test("storing fails with the missing-entitlement status instead of writing the login keychain")
+    func storeDoesNotFallBackToTheLoginKeychain() async {
+        let keychain = Keychain(service: "com.lhdev.parallax.tests")
+        let key = KeychainKey<String>(account: "unentitled-\(UUID().uuidString)")
+        do {
+            try await keychain.store("secret", for: key)
+            try? await keychain.delete(key)
+            Issue.record("the store succeeded on a host without the keychain entitlement")
+        } catch let Keychain.KeychainError.unexpectedStatus(status) {
+            #expect(status == errSecMissingEntitlement)
+        } catch {
+            Issue.record("unexpected error: \(error)")
         }
     }
 }

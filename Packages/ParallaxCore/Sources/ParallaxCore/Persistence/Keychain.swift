@@ -13,6 +13,9 @@ public protocol KeychainStoring: Sendable {
     func delete<Value: Codable & Sendable>(_ key: KeychainKey<Value>) async throws
 }
 
+/// Every query names the data-protection keychain. Without it macOS answers from the login keychain,
+/// so a host test run writes into the developer's own and needs no entitlement; iOS and tvOS only
+/// have the data-protection keychain, where the attribute changes nothing.
 public actor Keychain: KeychainStoring {
     public enum KeychainError: Error, Sendable {
         case unexpectedStatus(OSStatus)
@@ -40,6 +43,7 @@ public actor Keychain: KeychainStoring {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: key.account,
+            kSecUseDataProtectionKeychain as String: true,
         ]
         let attributes: [String: Any] = [
             kSecValueData as String: data,
@@ -63,6 +67,7 @@ public actor Keychain: KeychainStoring {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: key.account,
+            kSecUseDataProtectionKeychain as String: true,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
@@ -90,6 +95,7 @@ public actor Keychain: KeychainStoring {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: key.account,
+            kSecUseDataProtectionKeychain as String: true,
         ]
 
         let status = SecItemDelete(query as CFDictionary)
