@@ -6,7 +6,6 @@ import ParallaxFeatures
 /// Builds the search model once, on the first appearance, and keeps the provider list current.
 struct JellyfinSearchView: View {
     let app: AppModel
-    @Environment(AppRouter.self) private var router
     @State private var viewModel: JellyfinSearchViewModel?
 
     var body: some View {
@@ -17,13 +16,10 @@ struct JellyfinSearchView: View {
                 Color.clear.screenFloor()
             }
         }
-        // Keyed on the reload token, not `activeServerID`: search aggregates EVERY signed-in
-        // server, so adding or removing one must rebuild the provider list — and adding a second
-        // server never moves the active id (see AppRouter.libraryReloadToken).
-        .task(id: router.libraryReloadToken) {
+        .task {
             let model = viewModel ?? JellyfinSearchViewModel(app: app)
             viewModel = model
-            await model.refreshProviders()
+            await model.run()
         }
     }
 }

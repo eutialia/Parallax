@@ -16,7 +16,7 @@ struct HomeScenarios {
             .watch("Arrival", minutes: 10).finish("Andor S1E1")
         let world = try await AppWorld.launch(signedIn: [(den, "ana")])
 
-        await world.openHome()
+        try await world.openHome()
 
         #expect(world.continueWatching == ["Arrival", "Heat"])
         #expect(world.nextUp == ["Andor S1E2", "Severance S1E2"])
@@ -26,17 +26,19 @@ struct HomeScenarios {
     func launchWaitsForHomeAndLibraries() async throws {
         let den = FakeJellyfinServer(name: "Den").user("ana").library("Films")
             .movie("Arrival", in: "Films").watch("Arrival", minutes: 10)
-        let world = try await AppWorld.launch(signedIn: [(den, "ana")], launchReveal: .homeAndLibraries)
         den.holdResponses(to: .libraryList)
+        let world = try await AppWorld.launch(signedIn: [(den, "ana")], launchReveal: .homeAndLibraries)
 
-        let loading = Task { await world.openHome() }
+        let loading = Task { try await world.openHome() }
         try await world.until { world.continueWatching == ["Arrival"] && world.app.home?.isRefreshing == false }
         #expect(world.app.launchGate.releasedAtRawTime == nil)
+        #expect(!world.app.isContentReady)
 
         den.releaseResponses()
-        await loading.value
+        try await loading.value
 
         #expect(world.app.launchGate.releasedAtRawTime != nil)
+        #expect(world.app.isContentReady)
         #expect(world.sidebar == [AppWorld.SidebarSection(title: "Libraries", libraries: ["Films"])])
     }
 
@@ -44,15 +46,16 @@ struct HomeScenarios {
     func launchRevealsOnHome() async throws {
         let den = FakeJellyfinServer(name: "Den").user("ana").library("Films")
             .movie("Arrival", in: "Films").watch("Arrival", minutes: 10)
-        let world = try await AppWorld.launch(signedIn: [(den, "ana")], launchReveal: .home)
         den.holdResponses(to: .libraryList)
+        let world = try await AppWorld.launch(signedIn: [(den, "ana")], launchReveal: .home)
 
-        let loading = Task { await world.openHome() }
+        let loading = Task { try await world.openHome() }
         try await world.until { world.continueWatching == ["Arrival"] && world.app.launchGate.releasedAtRawTime != nil }
+        #expect(world.app.isContentReady)
         #expect(world.sidebar.isEmpty)
 
         den.releaseResponses()
-        await loading.value
+        try await loading.value
         #expect(world.sidebar == [AppWorld.SidebarSection(title: "Libraries", libraries: ["Films"])])
     }
 
@@ -62,19 +65,55 @@ struct HomeScenarios {
             .movie("Arrival", in: "Films").movie("Heat", in: "Films")
             .watch("Arrival", minutes: 10)
         let world = try await AppWorld.launch(signedIn: [(den, "ana")])
-        await world.openHome()
+        try await world.openHome()
         #expect(world.continueWatching == ["Arrival"])
 
         den.watch("Heat", minutes: 5)
-        await world.relaunch()
         den.holdResponses()
-        let loading = Task { await world.openHome() }
+        await world.relaunch()
+        let loading = Task { try await world.openHome() }
         try await world.until { world.continueWatching == ["Arrival"] }
 
         den.releaseResponses()
-        await loading.value
+        try await loading.value
 
         #expect(world.continueWatching == ["Heat", "Arrival"])
+    }
+
+    @Test("a source change that leaves the signed-in servers alone keeps Home's shelves without reloading them")
+    func unrelatedSourceChangeKeepsHome() async throws {
+        let den = FakeJellyfinServer(name: "Den").user("ana").library("Films").library("Shows", of: .shows)
+            .movie("Heat", in: "Films").watch("Heat", minutes: 40)
+        let world = try await AppWorld.launch(signedIn: [(den, "ana")])
+        try await world.openHome()
+        let shown = try #require(world.app.home)
+
+        den.watch("Heat", minutes: 50)
+        let libraries = VisibleLibrariesModel(session: try await world.session(on: den), app: world.app)
+        await libraries.load()
+        await libraries.toggle(try #require(libraries.collections.last))
+        try await world.openHome()
+
+        #expect(world.app.home === shown)
+        #expect(world.minutesWatched("Heat") == 40)
+        #expect(world.sidebar == [AppWorld.SidebarSection(title: "Libraries", libraries: ["Films"])])
+    }
+
+    @Test("signing in to the same server again rebuilds Home on the new session")
+    func reSignInRebuildsHome() async throws {
+        let den = FakeJellyfinServer(name: "Den").user("ana").library("Films").library("Shows", of: .shows)
+            .movie("Heat", in: "Films").watch("Heat", minutes: 40)
+        let world = try await AppWorld.launch(signedIn: [(den, "ana")])
+        try await world.openHome()
+        let shown = try #require(world.app.home)
+        #expect(world.minutesWatched("Heat") == 40)
+
+        try await world.app.signIn(server: den.url, username: "ana", password: "")
+        den.watch("Heat", minutes: 50)
+        try await world.openHome()
+
+        #expect(world.app.home !== shown)
+        try await world.until { world.minutesWatched("Heat") == 50 }
     }
 
     @Test("with two servers, Continue Watching merges both into one timeline")
@@ -88,7 +127,7 @@ struct HomeScenarios {
         den.watch("Ronin", minutes: 5)
         let world = try await AppWorld.launch(signedIn: [(den, "ana"), (attic, "bo")])
 
-        await world.openHome()
+        try await world.openHome()
 
         #expect(world.continueWatching == ["Ronin", "Arrival", "Heat"])
     }
@@ -99,10 +138,10 @@ struct HomeScenarios {
         let attic = FakeJellyfinServer(name: "Attic").user("bo").library("Movies").movie("Arrival", in: "Movies")
         den.watch("Heat", minutes: 40)
         attic.watch("Arrival", minutes: 10)
-        let world = try await AppWorld.launch(signedIn: [(den, "ana"), (attic, "bo")])
         attic.goOffline()
+        let world = try await AppWorld.launch(signedIn: [(den, "ana"), (attic, "bo")])
 
-        await world.openHome()
+        try await world.openHome()
 
         #expect(world.app.home?.state == .loaded)
         #expect(world.continueWatching == ["Heat"])
@@ -118,10 +157,10 @@ struct HomeScenarios {
     @Test("every server down shows Home's failure, not an empty feed")
     func everyServerDownFailsHome() async throws {
         let den = FakeJellyfinServer(name: "Den").user("ana")
-        let world = try await AppWorld.launch(signedIn: [(den, "ana")])
         den.goOffline()
+        let world = try await AppWorld.launch(signedIn: [(den, "ana")])
 
-        await world.openHome()
+        try await world.openHome()
 
         #expect(world.app.home?.state == .failed("Parallax couldn't reach your servers."))
     }
@@ -132,7 +171,7 @@ struct HomeScenarios {
             .movie("Arrival", in: "Films").movie("Heat", in: "Films")
             .watch("Arrival", minutes: 10).watch("Heat", minutes: 40)
         let world = try await AppWorld.launch(signedIn: [(den, "ana")])
-        await world.openHome()
+        try await world.openHome()
         #expect(world.continueWatching == ["Heat", "Arrival"])
         let session = try await world.session(on: den)
         let arrival = try #require(world.app.home?.continueWatching.last)

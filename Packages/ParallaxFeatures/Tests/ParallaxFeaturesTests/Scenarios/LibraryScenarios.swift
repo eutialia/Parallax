@@ -11,7 +11,7 @@ struct LibraryScenarios {
         let den = FakeJellyfinServer(name: "Den").user("ana").library("Films").library("Shows", of: .shows)
         let attic = FakeJellyfinServer(name: "Attic").user("bo").library("Movies")
         let world = try await AppWorld.launch(signedIn: [(den, "ana"), (attic, "bo")])
-        await world.openHome()
+        try await world.openHome()
         #expect(world.sidebar == [
             AppWorld.SidebarSection(title: "Den", libraries: ["Films", "Shows"]),
             AppWorld.SidebarSection(title: "Attic", libraries: ["Movies"]),
@@ -21,7 +21,7 @@ struct LibraryScenarios {
         await visibleLibraries.load()
         let shows = try #require(visibleLibraries.collections.first { $0.name == "Shows" })
         await visibleLibraries.toggle(shows)
-        await world.openHome()
+        try await world.openHome()
 
         #expect(world.sidebar == [
             AppWorld.SidebarSection(title: "Den", libraries: ["Films"]),

@@ -74,12 +74,16 @@ public final class JellyfinSearchViewModel {
         app.recoverableScreens.track(self, isStalled: { $0.isStalled }, recover: { await $0.retry() })
     }
 
-    /// Rebuilds the providers from the servers signed in right now. The view keys this on the
-    /// router's reload token: search aggregates EVERY signed-in server, so adding or removing one
-    /// must rebuild the list — and adding a second server never moves the active id. A new set
-    /// starts a new search session: the scope goes back to All, and a query on screen re-runs
-    /// against the new servers.
-    public func refreshProviders() async {
+    /// The screen's lifetime: rebuilds the providers on every source change. Search aggregates
+    /// EVERY signed-in server, so adding or removing one must rebuild the list, and adding a second
+    /// server never moves the active id.
+    public func run() async {
+        await app.forEachSourceChange { await self.refreshProviders() }
+    }
+
+    /// Rebuilds the providers from the servers signed in right now. A new set starts a new search
+    /// session: the scope goes back to All, and a query on screen re-runs against the new servers.
+    private func refreshProviders() async {
         start()
         let candidates = await JellyfinSearchProvider.all(
             for: await app.services.serverStore.sessions,

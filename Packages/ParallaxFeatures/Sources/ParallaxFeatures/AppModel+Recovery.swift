@@ -37,6 +37,35 @@ final class RecoverableScreens {
     }
 }
 
+/// The screens that re-pull progress when a player closes, held weakly like `RecoverableScreens`.
+@MainActor
+final class PlaybackRefreshScreens {
+    private struct Entry {
+        let id: ObjectIdentifier
+        let isAlive: @MainActor () -> Bool
+        let refresh: @MainActor () async -> Void
+    }
+
+    private var entries: [Entry] = []
+
+    /// Idempotent per model.
+    func track<Model: AnyObject & Sendable>(_ model: Model, refresh: @escaping @MainActor (Model) async -> Void) {
+        entries.removeAll { !$0.isAlive() }
+        let id = ObjectIdentifier(model)
+        guard !entries.contains(where: { $0.id == id }) else { return }
+        entries.append(Entry(
+            id: id,
+            isAlive: { [weak model] in model != nil },
+            refresh: { [weak model] in if let model { await refresh(model) } }
+        ))
+    }
+
+    /// The progress re-pull of every live screen.
+    var refreshes: [@MainActor () async -> Void] {
+        entries.filter { $0.isAlive() }.map(\.refresh)
+    }
+}
+
 struct WeakLevel {
     weak var level: SMBBrowseViewModel?
 }

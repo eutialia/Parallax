@@ -8,7 +8,6 @@ struct SeriesDetailView: View {
     let session: Session
 
     @Environment(AppModel.self) private var app
-    @Environment(PlaybackPresenter.self) private var playback
     @Environment(\.appIdiom) private var idiom
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.displayScale) private var displayScale
@@ -163,13 +162,6 @@ struct SeriesDetailView: View {
                 viewModel = await app.seriesDetail(itemID, on: session)
                 await viewModel?.load()
             }
-        }
-        // A finished playback session moved an episode's position (incl. prev/next jumps),
-        // so re-pull the series the moment the player dismisses. The view stays MOUNTED
-        // under the player layer/cover, so `.task` never re-fires — the player closing is
-        // the only "back from watching" edge. Mirrors `AppModel.refreshHomeAfterPlayback()`.
-        .onChange(of: playback.closedSessions) {
-            Task { await viewModel?.refresh() }
         }
     }
 

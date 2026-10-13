@@ -125,16 +125,25 @@ public actor ServerStore {
         SourceSnapshot(
             activeSessionID: active?.id,
             hasAuxiliarySources: hasSMBServers,
-            // Order-sensitive, and includes whether each row has a LIVE session: re-signing into a
-            // signed-out row keeps its persisted id but must still re-fire the roots, because that
-            // row goes from contributing no libraries to contributing its collections.
+            // Order-sensitive, and includes each row's LIVE token: re-signing into a signed-out row
+            // keeps its persisted id but must still re-fire the roots, because that row goes from
+            // contributing no libraries to contributing its collections; and re-signing a live row
+            // swaps the token every screen's clients were built with. Digested, because the
+            // identity ends up in the router's reload token.
             setIdentity: persistedServers
                 .map { server in
-                    let isLive = loadedSessions.contains { $0.id == server.id }
-                    return "\(server.id.rawValue)\(isLive ? "+" : "-")"
+                    guard let live = loadedSessions.first(where: { $0.id == server.id }) else {
+                        return "\(server.id.rawValue)-"
+                    }
+                    return "\(server.id.rawValue)+\(Data(live.accessToken.utf8).sha256Hex.prefix(8))"
                 }
                 .joined(separator: ",")
         )
+    }
+
+    /// `sourceSnapshot` with the sessions and rows it was built from, in the same actor hop.
+    public var sourceReading: SourceReading {
+        SourceReading(snapshot: sourceSnapshot, sessions: loadedSessions, servers: persistedServers)
     }
 
     public var active: Session? {

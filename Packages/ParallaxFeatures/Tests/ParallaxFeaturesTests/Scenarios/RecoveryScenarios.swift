@@ -26,10 +26,10 @@ struct RecoveryScenarios {
     @Test("a Home that failed while offline reloads by itself when the network returns")
     func homeReloadsWhenTheNetworkReturns() async throws {
         let den = Self.den()
-        let world = try await AppWorld.launch(signedIn: [(den, "ana")])
         den.goOffline()
+        let world = try await AppWorld.launch(signedIn: [(den, "ana")])
         try await world.goOffline()
-        await world.openHome()
+        try await world.openHome()
         #expect(world.app.home?.state == .failed("Parallax couldn't reach your servers."))
 
         den.comeBackOnline()
@@ -42,10 +42,10 @@ struct RecoveryScenarios {
     @Test("sidebar libraries that failed while offline come back when the network returns")
     func sidebarLibrariesComeBackOnReconnect() async throws {
         let den = Self.den()
-        let world = try await AppWorld.launch(signedIn: [(den, "ana")])
         den.goOffline()
+        let world = try await AppWorld.launch(signedIn: [(den, "ana")])
         try await world.goOffline()
-        await world.openHome()
+        try await world.openHome()
         #expect(world.sidebar.isEmpty)
 
         den.comeBackOnline()
@@ -54,12 +54,38 @@ struct RecoveryScenarios {
         try await world.until { world.sidebar == [AppWorld.SidebarSection(title: "Libraries", libraries: ["Films"])] }
     }
 
+    @Test("a library reload still in flight when the last server signs out leaves the login's empty list alone")
+    func reloadInFlightAtSignOutCommitsNothing() async throws {
+        let den = Self.den()
+        den.goOffline()
+        let world = try await AppWorld.launch(signedIn: [(den, "ana")])
+        try await world.goOffline()
+        try await world.openHome()
+        #expect(world.app.libraries.failedSourceNames == ["Den"])
+        den.comeBackOnline()
+        den.holdResponses(to: .libraryList)
+        try await world.comeOnline()
+        try await world.until { den.heldResponseCount == 1 }
+        let settings = SettingsViewModel(app: world.app)
+        await settings.refresh()
+        let session = try #require(settings.sessions.first)
+
+        await settings.signOut(session)
+        den.releaseResponses()
+        // A request sent after the release answers after it, so the reload has settled by then.
+        await world.app.movieDetail(ItemID(rawValue: den.itemID(of: "Heat")), on: session).load()
+
+        #expect(world.app.router.destination == .login)
+        #expect(world.app.libraries.isResolving)
+        #expect(world.app.libraries.failedSourceNames.isEmpty)
+    }
+
     @Test("a Home that failed because its server was down reloads when the user returns to the app")
     func homeReloadsOnReturnFromBackground() async throws {
         let den = Self.den()
-        let world = try await AppWorld.launch(signedIn: [(den, "ana")])
         den.goOffline()
-        await world.openHome()
+        let world = try await AppWorld.launch(signedIn: [(den, "ana")])
+        try await world.openHome()
         #expect(world.app.home?.state == .failed("Parallax couldn't reach your servers."))
 
         world.background()

@@ -1,7 +1,7 @@
 import Foundation
 import ParallaxCore
 import ParallaxCoreTestSupport
-import ParallaxFeatures
+@testable import ParallaxFeatures
 import ParallaxFileBrowse
 import ParallaxFileBrowseTestSupport
 import ParallaxJellyfin
@@ -30,6 +30,7 @@ final class AppWorld {
     /// Every playback engine the app built, in build order. The last one is playing.
     let engines: EngineLedger
     private let keychain: FakeKeychain
+    private let lan: ScriptedLAN
     private let bonjour: ScriptedBonjour
     private let reachability: ScriptedReachability
 
@@ -43,6 +44,8 @@ final class AppWorld {
     private(set) var player: PlayerViewModel?
     /// The player view's `.task`, which runs the player's session.
     private var playerSession: Task<Void, Never>?
+    /// The `.task`s of the screens on display (see `mount`).
+    private var mounted: [Task<Void, Never>] = []
 
     /// Launches the app the way a cold start does: `run()` and `bootstrap()`, as the app root's
     /// tasks call them. `signedIn` accounts and `savedSMB` servers (with their passwords) were saved
@@ -56,9 +59,7 @@ final class AppWorld {
         let suiteName = "AppWorld-\(UUID().uuidString)"
         let storageDirectory = URL.temporaryDirectory.appending(path: suiteName, directoryHint: .isDirectory)
         let clock = TestClock()
-        let lanReplies = try lanServers.map { server in
-            try JSONEncoder().encode(["Address": server.url.absoluteString, "Id": server.id, "Name": server.name])
-        }
+        let lan = try ScriptedLAN(lanServers)
         let keychain = FakeKeychain()
         let nas = FakeSMBWorld()
         let bonjour = ScriptedBonjour()
@@ -74,7 +75,7 @@ final class AppWorld {
             clock: clock,
             reachability: reachability,
             capabilityProbe: FakeCapabilityProbe(),
-            lanBroadcaster: { _ in lanReplies },
+            lanBroadcaster: { _ in lan.broadcast() },
             audioSession: SilentAudioSession(),
             smbConnections: nas.connections(),
             browseSMBServices: { bonjour.browse() },
@@ -99,7 +100,7 @@ final class AppWorld {
 
         let world = AppWorld(
             environment: environment, servers: accounts.map(\.server) + lanServers, clock: clock,
-            nas: nas, thumbnailer: thumbnailer, engines: engines, keychain: keychain, bonjour: bonjour,
+            nas: nas, thumbnailer: thumbnailer, engines: engines, keychain: keychain, lan: lan, bonjour: bonjour,
             reachability: reachability,
             suiteName: suiteName, storageDirectory: storageDirectory
         )
@@ -110,7 +111,8 @@ final class AppWorld {
     private init(
         environment: AppEnvironment, servers: [FakeJellyfinServer], clock: TestClock,
         nas: FakeSMBWorld, thumbnailer: RecordingThumbnailer, engines: EngineLedger, keychain: FakeKeychain,
-        bonjour: ScriptedBonjour, reachability: ScriptedReachability, suiteName: String, storageDirectory: URL
+        lan: ScriptedLAN, bonjour: ScriptedBonjour, reachability: ScriptedReachability, suiteName: String,
+        storageDirectory: URL
     ) {
         let app = AppModel(environment: environment)
         self.app = app
@@ -121,6 +123,7 @@ final class AppWorld {
         self.thumbnailer = thumbnailer
         self.engines = engines
         self.keychain = keychain
+        self.lan = lan
         self.bonjour = bonjour
         self.reachability = reachability
         self.suiteName = suiteName
@@ -146,6 +149,7 @@ final class AppWorld {
     deinit {
         lifetime.cancel()
         playerSession?.cancel()
+        mounted.forEach { $0.cancel() }
         UserDefaults().removePersistentDomain(forName: suiteName)
         try? FileManager.default.removeItem(at: storageDirectory)
     }
@@ -174,15 +178,20 @@ final class AppWorld {
 
     // MARK: - Steps
 
-    /// The signed-in tabs load Home's feed and the library list, as both navigation roots do
-    /// whenever the router's reload token moves.
-    func openHome() async {
-        await app.loadSources()
+    /// Waits until Home's feed and the library list are loaded for the sources configured now. The
+    /// app loads them by itself whenever the sources change.
+    func openHome(sourceLocation: SourceLocation = #_sourceLocation) async throws {
+        try await until({ self.app.settledSourcesToken == self.app.router.libraryReloadToken }, sourceLocation: sourceLocation)
+    }
+
+    /// Puts a screen on display: runs its `.task` until the world ends.
+    func mount(_ task: @escaping @MainActor () async -> Void) {
+        mounted.append(Task { await task() })
     }
 
     /// Opens `library` from the library list, as tapping its row does: the grid, not yet loaded.
     func openLibrary(_ library: String, on server: FakeJellyfinServer) async throws -> LibraryGridViewModel {
-        await openHome()
+        try await openHome()
         let entry = try #require(app.libraries.groups.allEntries.first {
             $0.collection.name == library && $0.source.sourceID == .jellyfin(ServerID(rawValue: server.id))
         })
@@ -288,9 +297,20 @@ final class AppWorld {
         app.lifecycle.update(.active)
     }
 
+    /// `server` starts answering LAN discovery broadcasts.
+    func lanServerComesUp(_ server: FakeJellyfinServer) throws {
+        try lan.comeUp(server)
+    }
+
     /// Bonjour now sees exactly these SMB services on the network.
     func advertiseSMB(_ serviceNames: [String]) {
         bonjour.advertise(serviceNames)
+    }
+
+    /// The Bonjour browser fails, as `NWBrowser` does when the network goes away, and ends its
+    /// stream.
+    func smbBrowseFails() {
+        bonjour.fail()
     }
 
     /// The Keychain lost the saved SMB server's password (a device migration, an access-group
@@ -389,18 +409,59 @@ final class RecordingThumbnailer: FrameThumbnailing {
     }
 }
 
-/// Bonjour browsing the scenario drives: `advertise` replaces what the latest browse sees.
+/// Bonjour browsing the scenario drives: every browse starts from what is advertised, then follows
+/// `advertise`.
 private final class ScriptedBonjour: Sendable {
-    private let latest = Mutex<AsyncStream<[String]>.Continuation?>(nil)
+    private struct State {
+        var advertised: [String] = []
+        var latest: AsyncStream<[String]>.Continuation?
+    }
+
+    private let state = Mutex(State())
 
     func browse() -> AsyncStream<[String]> {
         let (stream, continuation) = AsyncStream<[String]>.makeStream()
-        latest.withLock { $0 = continuation }
+        state.withLock {
+            $0.latest = continuation
+            continuation.yield($0.advertised)
+        }
         return stream
     }
 
     func advertise(_ serviceNames: [String]) {
-        _ = latest.withLock { $0?.yield(serviceNames) }
+        state.withLock {
+            $0.advertised = serviceNames
+            _ = $0.latest?.yield(serviceNames)
+        }
+    }
+
+    func fail() {
+        state.withLock {
+            $0.latest?.finish()
+            $0.latest = nil
+        }
+    }
+}
+
+/// LAN discovery the scenario drives: each broadcast pass hears every server that is up by then.
+private final class ScriptedLAN: Sendable {
+    private let replies: Mutex<[Data]>
+
+    init(_ servers: [FakeJellyfinServer]) throws {
+        replies = Mutex(try servers.map(Self.reply))
+    }
+
+    func broadcast() -> [Data] {
+        replies.withLock { $0 }
+    }
+
+    func comeUp(_ server: FakeJellyfinServer) throws {
+        let reply = try Self.reply(server)
+        replies.withLock { $0.append(reply) }
+    }
+
+    private static func reply(_ server: FakeJellyfinServer) throws -> Data {
+        try JSONEncoder().encode(["Address": server.url.absoluteString, "Id": server.id, "Name": server.name])
     }
 }
 

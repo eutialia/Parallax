@@ -37,6 +37,8 @@ public final class SMBAddServerModel {
 
     private let makeLister: @Sendable (SMBCredentials) -> any SMBLister
     private let serverStore: ServerStore
+    private let discovery: SMBBonjourDiscovery
+    private let lifecycle: AppLifecycle
     private let clock: any Clock<Duration>
     private let onSaved: () async -> Void
 
@@ -55,13 +57,34 @@ public final class SMBAddServerModel {
     init(
         makeLister: @escaping @Sendable (SMBCredentials) -> any SMBLister,
         serverStore: ServerStore,
+        discovery: SMBBonjourDiscovery,
+        lifecycle: AppLifecycle,
         clock: any Clock<Duration>,
         onSaved: @escaping () async -> Void
     ) {
         self.makeLister = makeLister
         self.serverStore = serverStore
+        self.discovery = discovery
+        self.lifecycle = lifecycle
         self.clock = clock
         self.onSaved = onSaved
+    }
+
+    // MARK: - Bonjour discovery
+
+    /// The SMB hosts Bonjour sees, for the form's picker rows.
+    public var discoveredServers: [SMBDiscoveredServer] { discovery.discovered }
+
+    /// Browses while the form is up; ending the calling task stops the browse. A browse that ended
+    /// while the scene was away (the browser failed) starts again on the next activation.
+    public func discoverServers() async {
+        var seen = lifecycle.activations
+        discovery.start()
+        defer { discovery.stop() }
+        for await count in Observations({ self.lifecycle.activations }) where count != seen {
+            seen = count
+            discovery.start()
+        }
     }
 
     public func connect() {

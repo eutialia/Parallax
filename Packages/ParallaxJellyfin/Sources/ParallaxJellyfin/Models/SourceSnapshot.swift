@@ -15,7 +15,8 @@ public struct SourceSnapshot: Sendable, Hashable {
     /// SMB-only config a real home rather than a login dead-end.
     public let hasAuxiliarySources: Bool
     /// Fingerprint of the configured sources: every persisted server id in order, each marked with
-    /// whether it currently has a live session. Any add, removal, sign-in, or sign-out changes it,
+    /// a digest of its live session's token, or as having none. Any add, removal, sign-in (a re-sign-in
+    /// to a live row included), or sign-out changes it,
     /// which is what makes the roots' reload key self-maintaining instead of depending on each
     /// mutation site remembering to bump a counter.
     public let setIdentity: String
@@ -36,4 +37,18 @@ public struct SourceSnapshot: Sendable, Hashable {
         hasAuxiliarySources: false,
         setIdentity: ""
     )
+}
+
+/// One read of the store: the router's snapshot together with the rows and sessions it was built
+/// from, so a decision made from the rows (is a player's source still live) agrees with the route.
+public struct SourceReading: Sendable {
+    public let snapshot: SourceSnapshot
+    public let sessions: [Session]
+    public let servers: [PersistedServer]
+
+    public init(snapshot: SourceSnapshot, sessions: [Session], servers: [PersistedServer]) {
+        self.snapshot = snapshot
+        self.sessions = sessions
+        self.servers = servers
+    }
 }

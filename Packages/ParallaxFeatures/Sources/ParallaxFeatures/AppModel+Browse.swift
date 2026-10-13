@@ -21,54 +21,79 @@ public nonisolated struct LibraryList: Equatable {
 }
 
 extension AppModel {
-    /// Loads what the signed-in tabs show — the library list and Home's feed — side by side. Both
-    /// navigation roots call it whenever the router's reload token moves: a server switch, a
-    /// source added or removed, a Visible Libraries edit.
+    /// Runs `load` for the configured sources, and again each time they change: a server switch, a
+    /// source added or removed, a Visible Libraries edit. A change cancels the load it supersedes.
+    /// Nothing runs off `.home`: bootstrapping has no sources yet, and login has dropped them.
+    public func forEachSourceChange(_ load: @escaping @MainActor () async -> Void) async {
+        var pass: Task<Void, Never>?
+        var current: String?
+        for await token in Observations({ self.router.destination == .home ? self.router.libraryReloadToken : nil })
+        where token != current {
+            current = token
+            pass?.cancel()
+            pass = token.map { _ in Task { await load() } }
+        }
+        pass?.cancel()
+        await pass?.value
+    }
+
+    /// Loads what the signed-in tabs show — the library list and Home's feed — side by side, on
+    /// every source change (see `run()`).
     ///
     /// The launch hold releases once what `launchReveal` covers has settled. Cached content
     /// releases it sooner (see `loadLibraries()` / `loadHome()`).
-    public func loadSources() async {
+    func loadSources() async {
+        let token = router.libraryReloadToken
+        settledSourcesToken = nil
         async let librariesLoaded: Void = loadLibraries()
         await loadHome()
         if launchReveal == .home { releaseLaunchHold() }
         await librariesLoaded
         releaseLaunchHold()
+        guard isCurrent(token) else { return }
+        settledSourcesToken = token
     }
 
-    /// Loaded OR failed, both are revealable. A cancelled pass leaves the release to the pass that
-    /// superseded it; bootstrapping has nothing to reveal yet; and a desync re-route to login
-    /// finishes the stage itself. One-shot; later passes are no-ops inside the gate.
+    /// Whether a load started against `token`'s sources may still commit. A newer source change
+    /// supersedes it the moment it lands, before the cancellation reaches the load, and a recovery
+    /// reload is never cancelled at all.
+    private func isCurrent(_ token: String) -> Bool {
+        !Task.isCancelled && router.libraryReloadToken == token
+    }
+
+    /// The one release of the launch hold, and the moment `isContentReady` turns true. iPhone and
+    /// iPad release once Home has settled; Apple TV once Home and the library list have, or sooner
+    /// on cached content with something to focus. Loaded OR failed, both are revealable. A
+    /// cancelled pass leaves the release to the pass that superseded it, and off `.home` there is
+    /// nothing to reveal. One-shot; later passes are no-ops inside the gate.
     private func releaseLaunchHold() {
         guard !Task.isCancelled, router.destination == .home else { return }
+        isContentReady = true
         launchGate.markContentReady()
     }
 
     /// Resolves every source's libraries in ONE `MergedLibrary` pass. Also the offline-recovery
-    /// path, so the launch and reconnect loads never drift. Commits under a cancellation check: a
-    /// token change cancels the pass and starts a fresh one, and a now-stale snapshot must not
-    /// clobber the newer state.
+    /// path, so the launch and reconnect loads never drift. Commits only while its sources are
+    /// still the configured ones (`isCurrent`): a now-stale snapshot must not clobber newer state.
     public func loadLibraries() async {
-        // Clear, don't just return: dropping the last source must not leave a stale list rendered.
-        guard router.hasAnySource else {
-            libraries = LibraryList(isResolving: false)
-            return
-        }
+        let token = router.libraryReloadToken
         // One read of the store's shape drives both stages (see `MergedLibrary.SourceState`) — and
         // the Favorites gate reads the same `sessions`, so the two can't disagree.
         let sources = await MergedLibrary.SourceState.read(from: services.serverStore)
         // Stale-while-revalidate: the last known listing goes up before the network pass.
-        if let cached = await sources.hydratedGroups(ifColdGiven: libraries.groups, snapshots: services.snapshots) {
+        if let cached = await sources.hydratedGroups(ifColdGiven: libraries.groups, snapshots: services.snapshots),
+           isCurrent(token) {
             libraries.groups = cached
             libraries.hasJellyfinSource = !sources.sessions.isEmpty
             libraries.isResolving = false
-            if launchReveal == .homeAndLibraries { launchGate.markContentReady() }
+            if launchReveal == .homeAndLibraries { releaseLaunchHold() }
         }
         let outcome = await sources.resolve(
             retaining: libraries.groups,
             snapshots: services.snapshots,
             jellyfinRepo: services.mediaRepoFactory
         )
-        guard !Task.isCancelled else { return }
+        guard isCurrent(token) else { return }
         libraries = LibraryList(
             groups: outcome.groups,
             failedSourceIDs: outcome.failedSourceIDs,
@@ -81,6 +106,7 @@ extension AppModel {
     /// Builds and loads Home's feed. Re-runs on every reload-token move; each step is guarded so an
     /// already-built model isn't rebuilt.
     func loadHome() async {
+        let token = router.libraryReloadToken
         // No Jellyfin session to feed Home: transient during bootstrapping (the source set lands
         // shortly and the token moves, re-running this), and for good in an SMB-only setup, where
         // Home is the placeholder.
@@ -92,6 +118,7 @@ extension AppModel {
             for: await services.serverStore.sessions,
             repoFactory: services.jellyfinLibraryRepoFactory
         )
+        guard isCurrent(token) else { return }
         // The router cached an active server the store can no longer produce a session for — a
         // desync (session cleared elsewhere, or a failed credential/keychain rebuild). Sessions are
         // never transiently empty here (stable actor state, `load()` is already done), so an empty
@@ -104,19 +131,19 @@ extension AppModel {
             await routeToSources()
             return
         }
-        // Rebuild when the SET of servers changed, not just when there's no model yet. A model's
-        // feeds are fixed at init, so signing into a second server must not leave the single-server
-        // model in place. Comparing source ids rather than rebuilding unconditionally keeps the
-        // loaded shelves on screen when the token moved for an unrelated reason (a visible-libraries
-        // edit, an SMB share re-selection, an active-server switch), which would otherwise flash the
-        // skeleton for no new content.
-        if home?.sourceIDs != feeds.map(\.source.sourceID) {
+        // Rebuild when the signed-in sessions changed, not just when there's no model yet. A model's
+        // feeds and their repos are fixed at init, so signing into a second server, or into the
+        // same one with a new token, must not leave the old model in place. Comparing sessions
+        // rather than rebuilding unconditionally keeps the loaded shelves on screen when the token
+        // moved for an unrelated reason (a visible-libraries edit, an SMB share re-selection),
+        // which would otherwise flash the skeleton for no new content.
+        if home?.sources != feeds.map(\.source) {
             let model = HomeViewModel(feeds: feeds, userDataActions: userDataActions, snapshots: services.snapshots)
             home = model
             // Stale-while-revalidate: the last feed these servers returned is on disk, so put it up
             // as loaded content and release the launch hold on it — the reveal then opens onto real
             // content instead of a skeleton, and `load()` below replaces it in place.
-            if await model.hydrateFromCache() { launchGate.markContentReady() }
+            if await model.hydrateFromCache() { releaseLaunchHold() }
             await model.load()
         } else if home?.needsNetworkLoad == true {
             // Same servers, but the model never settled — hydrated from the cache and not yet
@@ -125,23 +152,20 @@ extension AppModel {
         }
     }
 
-    /// A finished playback session moved progress, so re-pull Home's progress-driven shelves the
-    /// moment the player closes. Home stays mounted under the player, so closing it is the only
-    /// "back from watching" edge.
-    func refreshHomeAfterPlayback() async {
+    /// A finished playback session moved progress, so re-pull Home's progress-driven shelves and
+    /// every open detail page the moment the player closes. They stay mounted under the player,
+    /// so closing it is the only "back from watching" edge.
+    func refreshAfterPlayback() async {
         var seen: Int?
         for await closed in Observations({ self.playback.closedSessions }) {
-            if let seen, closed != seen { await home?.refresh() }
-            seen = closed
-        }
-    }
-
-    /// Landing on login drops what Home and the library list held: the tabs are torn down, and the
-    /// next sign-in must start from a clean slate rather than a previous server's shelves.
-    func forgetSourcesAtLogin() async {
-        for await destination in Observations({ self.router.destination }) where destination == .login {
-            home = nil
-            libraries = LibraryList()
+            defer { seen = closed }
+            guard let seen, closed != seen else { continue }
+            await withDiscardingTaskGroup { group in
+                if let home { group.addTask { await home.refresh() } }
+                for refresh in playbackRefreshScreens.refreshes {
+                    group.addTask { await refresh() }
+                }
+            }
         }
     }
 
@@ -167,6 +191,7 @@ extension AppModel {
             playback: playback
         )
         recoverableScreens.track(detail, isStalled: { $0.isStalled }, recover: { await $0.load() })
+        playbackRefreshScreens.track(detail, refresh: { await $0.refresh() })
         return detail
     }
 
@@ -180,6 +205,7 @@ extension AppModel {
             playback: playback
         )
         recoverableScreens.track(detail, isStalled: { $0.isStalled }, recover: { await $0.load() })
+        playbackRefreshScreens.track(detail, refresh: { await $0.refresh() })
         return detail
     }
 

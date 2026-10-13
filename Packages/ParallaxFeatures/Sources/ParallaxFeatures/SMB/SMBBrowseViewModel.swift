@@ -125,6 +125,10 @@ public final class SMBBrowseViewModel {
     private let playback: PlaybackPresenter
     private var source: SMBFileSource?
     private var loadTask: Task<Void, Never>?
+    /// The level's one open, kept after it settles so later calls do nothing. `openGeneration`
+    /// lets a replaced open tell it is no longer the current one.
+    private var openTask: Task<Void, Never>?
+    private var openGeneration = 0
     /// Highest media index the viewport-ahead prefetch window has covered; -1 = none yet. Monotonic
     /// per listing so scroll-back re-appearances don't re-hand items to the provider, and reset in
     /// the same main-actor turn a fresh listing lands, so no re-materialized cell's onAppear can
@@ -163,22 +167,37 @@ public final class SMBBrowseViewModel {
     }
 
     /// Builds this level's lister and starts the first list. Failure before the lister exists lands
-    /// in `setup`; only a confirmed-lost credential slot is terminal. A cancelled open changes
-    /// nothing, so the level stays reopenable. Does nothing once the lister exists or a failure
-    /// has landed.
+    /// in `setup`; only a confirmed-lost credential slot is terminal. There is one open at a time:
+    /// callers join the one in flight, and once it has settled this does nothing. A cancelled open
+    /// changes nothing and is forgotten, so the level stays reopenable; cancelling the caller
+    /// cancels the open.
     public func open() async {
-        guard source == nil, setup == .opening else { return }
+        let task = openTask ?? startOpen()
+        await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
+    }
+
+    private func startOpen() -> Task<Void, Never> {
+        openGeneration += 1
+        let generation = openGeneration
+        let task = Task { await self.buildSource(generation: generation) }
+        openTask = task
+        return task
+    }
+
+    private func buildSource(generation: Int) async {
+        func abandon() {
+            if openGeneration == generation { openTask = nil }
+        }
         do {
             let lister = try await makeLister(path.ref)
-            // The factory awaits a Keychain read, so this level may already have been popped (or the
-            // offline-recovery hook may have restarted it) by the time it returns — starting a
-            // listing then costs a borrow nothing will look at.
-            guard !Task.isCancelled else { return }
+            // The factory awaits a Keychain read, so this level may already have been popped, or
+            // the open replaced after a password change, by the time it returns.
+            guard !Task.isCancelled else { return abandon() }
             source = SMBFileSource(lister: lister, host: path.ref.data.host, share: path.share, root: "")
             setup = .open
             load()
         } catch {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else { return abandon() }
             let appError = error as? AppError
             let isCredentialLoss = if case .auth(.credentialUnavailable) = appError { true } else { false }
             setup = .failed(
@@ -189,10 +208,13 @@ public final class SMBBrowseViewModel {
     }
 
     /// The offline→online repair for a stalled level: re-list it, or rebuild it when the lister
-    /// never got built.
+    /// never got built. An open still in flight is joined, not restarted.
     public func recover() async {
         guard source != nil else {
-            setup = .opening
+            if case .failed = setup {
+                setup = .opening
+                openTask = nil
+            }
             await open()
             return
         }
@@ -201,8 +223,11 @@ public final class SMBBrowseViewModel {
 
     /// After a new password verified and was stored: rebuild the lister. Deliberately NOT `load()`
     /// — the current lister was built with the OLD password (it's baked into the credentials the
-    /// pool keys connections by), so re-listing through it would just be refused again.
+    /// pool keys connections by), so re-listing through it would just be refused again. An open
+    /// still in flight holds the old password, so it is cancelled and replaced.
     public func reopenAfterPasswordRecovery() async {
+        openTask?.cancel()
+        openTask = nil
         loadTask?.cancel()
         source = nil
         folders = []

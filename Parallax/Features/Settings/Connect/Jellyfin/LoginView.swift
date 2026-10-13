@@ -17,7 +17,6 @@ struct LoginView: View {
     /// router itself via the model; Settings' add-server flow passes a closure to refresh + pop.
     var onSignedIn: (() -> Void)?
 
-    @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(AppModel.self) private var app
     @State private var viewModel: LoginViewModel?
@@ -34,12 +33,6 @@ struct LoginView: View {
         // ConnectSourceView or Settings' AddServerChooseView) which owns the brand/intro, so it reads
         // under its "Jellyfin" nav title — re-showing the lockup here would double-brand the flow.
         SettingsScaffold(showsBrand: false) { signInBody }
-        #if !os(tvOS)
-        .onChange(of: scenePhase) { _, newPhase in
-            guard newPhase == .active else { return }
-            viewModel?.rescanDiscovery()
-        }
-        #endif
         .task {
             if viewModel == nil {
                 viewModel = LoginViewModel(app: app, prefilledServerURL: prefilledServerURL, onSignedIn: onSignedIn)

@@ -7,19 +7,9 @@ struct FocusRootView: View {
     @Environment(AppModel.self) private var app
     @Environment(AppRouter.self) private var router
     @State private var selectedTab: AppTab = .home
-    /// Flips true once the first `loadSources()` pass settles — the readiness signal that reveals
-    /// the tab host. `@State`, so the `.id(activeServerID)` remount on a Jellyfin switch resets it.
-    @State private var isReady = false
 
     /// One group per configured source, in server add order — the sidebar's titled sections.
     private var groups: [LibraryGroup] { app.libraries.groups }
-
-    /// Reveal once the loads settle, or sooner when Home already has something focusable — a feed
-    /// hydrated from the cache. Showing the `.sidebarAdaptable` TabView with nothing to focus is
-    /// the failure this gate exists to prevent.
-    private var showsTabs: Bool {
-        isReady || app.home?.state == .loaded
-    }
 
     var body: some View {
         Group {
@@ -31,7 +21,7 @@ struct FocusRootView: View {
             // Apple TV app's spinner-then-everything-together launch). For an SMB-only config Home is
             // the (non-focusable) "no feed" placeholder, so the sidebar lands focus expanded on the
             // libraries — the correct entry point when there's no Jellyfin hero to focus.
-            if showsTabs {
+            if app.isContentReady {
                 tabView
             } else {
                 AppLaunchView()
@@ -53,28 +43,17 @@ struct FocusRootView: View {
         }
         // Same idea for the library tabs (`-openSMBTab` / `-openJellyfinTab`, first entry of that
         // source wins): scripted verification of the browse walls needs to land there without
-        // driving the hero + sidebar by key events. Two triggers, both needed: `showsTabs` covers
-        // the cold path (entries commit BEFORE the reveal), and `groups` covers the cache-reveal
-        // path — a hydrated Home feed reveals the tabs with NO groups yet, and the entries land a
-        // moment later. One-shot via the tab check so later library reloads don't yank the selection.
-        .onChange(of: showsTabs) { _, _ in jumpToRequestedLibraryTab() }
+        // driving the hero + sidebar by key events. Two triggers, both needed: `isContentReady`
+        // covers the cold path (entries commit BEFORE the reveal), and `groups` covers the
+        // cache-reveal path — a hydrated Home feed reveals the tabs with NO groups yet, and the
+        // entries land a moment later. One-shot via the tab check so later library reloads don't
+        // yank the selection.
+        .onChange(of: app.isContentReady) { _, _ in jumpToRequestedLibraryTab() }
         .onChange(of: groups) { _, _ in jumpToRequestedLibraryTab() }
         #endif
         // If the selected library tab's backing entry just vanished, snap to Home so the tab host
         // isn't left on a gone tab (shared with RootTabView via `snappedIfStale`).
         .onChange(of: groups) { _, groups in selectedTab = selectedTab.snappedIfStale(against: groups.allEntries) }
-        // Keyed on the reload token (server switch + SMB add/remove), matching RootTabView.
-        // The `.id(activeServerID)` remount above stays session-only.
-        .task(id: router.libraryReloadToken) {
-            // Bail only while there's NO source at all (the transient bootstrapping window); the
-            // token re-fires once a source resolves. An SMB-only config passes here.
-            guard router.hasAnySource else { return }
-            // The sidebar's libraries and Home's feed load together, so the UI appears whole, with
-            // the hero (if any) already focusable. The launch hold releases inside.
-            await app.loadSources()
-            guard !Task.isCancelled else { return }
-            isReady = true
-        }
     }
 
     #if DEBUG

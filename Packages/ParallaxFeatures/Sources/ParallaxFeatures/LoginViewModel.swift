@@ -63,17 +63,29 @@ public final class LoginViewModel {
     /// Retries catch a late grant during the permission alert. Fills the server field from the
     /// first server found, whenever it lands — discovery races the permission prompt.
     public func discoverServers() async {
+        let activations = app.lifecycle.activations
         discovery.start(retries: 3, retryInterval: .seconds(2))
         defer { discovery.stop() }
+        await withDiscardingTaskGroup { group in
+            group.addTask { await self.prefillFromDiscovery() }
+            group.addTask { await self.rescan(after: activations) }
+        }
+    }
+
+    private func prefillFromDiscovery() async {
         for await address in Observations({ self.discovery.discovered.first?.address }) {
             if let address, serverURLInput.isEmpty { serverURLInput = address.absoluteString }
         }
     }
 
-    /// iOS exposes no Local Network authorization API — rescan when the scene becomes active
-    /// again (e.g. user tapped Allow then returned).
-    public func rescanDiscovery() {
-        discovery.start()
+    /// iOS exposes no Local Network authorization API, so every activation rescans: the user may
+    /// have just tapped Allow on the prompt, or come back from Settings with access granted.
+    private func rescan(after activations: Int) async {
+        var seen = activations
+        for await count in Observations({ self.app.lifecycle.activations }) where count != seen {
+            seen = count
+            discovery.start()
+        }
     }
 
     // MARK: - Sign in

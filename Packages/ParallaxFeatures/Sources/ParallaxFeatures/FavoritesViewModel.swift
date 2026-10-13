@@ -125,9 +125,13 @@ public final class FavoritesViewModel {
 
     public init() {}
 
-    /// Builds a section for every server signed in right now. The view keys this on the router's
-    /// reload token, so signing into a second server adds its section without a relaunch.
-    public func load(from app: AppModel) async {
+    /// The wall's lifetime: builds a section for every server signed in, and rebuilds on every
+    /// source change, so signing into a second server adds its section without a relaunch.
+    public func run(in app: AppModel) async {
+        await app.forEachSourceChange { await self.load(from: app) }
+    }
+
+    private func load(from app: AppModel) async {
         app.recoverableScreens.track(self, isStalled: { !$0.failedSections.isEmpty }, recover: { await $0.reloadFailedSections() })
         await load(
             sessions: await app.services.serverStore.sessions,
@@ -140,9 +144,9 @@ public final class FavoritesViewModel {
     /// them concurrently. Sections are created before loading so the wall can render its headers and
     /// per-section skeletons while the fetches are in flight.
     ///
-    /// A no-op when the SET of servers is unchanged: the view keys this on the router's reload
-    /// token, which also moves for things that have nothing to do with the server set (a "Visible
-    /// Libraries" edit, an SMB share re-selection). Rebuilding then would throw away every section's
+    /// A no-op when the SET of servers is unchanged: `run(in:)` re-runs this on every source
+    /// change, including ones that have nothing to do with the server set (a "Visible Libraries"
+    /// edit, an SMB share re-selection). Rebuilding then would throw away every section's
     /// loaded items, pagination, and the user's scroll position to refetch identical content.
     func load(
         sessions: [Session],
@@ -151,7 +155,7 @@ public final class FavoritesViewModel {
     ) async {
         guard sourceIDs != sessions.map(\.id) else {
             // Same servers — but a section may never have settled, because the pass that was
-            // loading it got cancelled by this very re-fire. Nothing else re-loads an existing
+            // loading it got cancelled by this very re-run. Nothing else re-loads an existing
             // grid, so without this the skeleton would stick.
             await loadUnsettledSections()
             return
