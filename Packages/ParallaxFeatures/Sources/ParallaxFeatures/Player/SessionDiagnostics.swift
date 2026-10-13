@@ -81,26 +81,16 @@ final class SessionDiagnostics {
         startupMillis = Self.millis(elapsed() - clockStart)
     }
 
-    /// The session restarts: no metric until its own first beat.
-    func resetStartup() {
+    /// The session is over, or a reload opened a fresh one: the outgoing metric and delivery
+    /// verdict must not linger, and a stale "exhausted" must not either — the debug row gates on
+    /// it while `transcodeDelivery` is nil, and would read "no delivery info" for the whole
+    /// window instead of "probing…" until the next session's first `.playing` beat re-probes.
+    func reset() {
         startupClockStart = nil
         startupMillis = nil
-    }
-
-    /// The session's transcode job is gone: so is the verdict on it, and any probe still asking.
-    func dropDelivery() {
         deliveryProbeTask?.cancel()
         deliveryProbeTask = nil
         transcodeDelivery = nil
-    }
-
-    /// A reload opens a fresh session: the outgoing one's metric and delivery verdict must not
-    /// linger, and a stale "exhausted" must not either — the debug row gates on it while
-    /// `transcodeDelivery` is nil, and would read "no delivery info" for the whole reload
-    /// window instead of "probing…" until the new session's first `.playing` beat re-probes.
-    func resetForReload() {
-        resetStartup()
-        dropDelivery()
         deliveryProbeExhausted = false
     }
 

@@ -153,13 +153,13 @@ extension AppModel {
     }
 
     /// A finished playback session moved progress, so re-pull Home's progress-driven shelves and
-    /// every open detail page the moment the player closes. They stay mounted under the player,
-    /// so closing it is the only "back from watching" edge.
+    /// every open detail page once the player has stopped and its stop report is answered. They
+    /// stay mounted under the player, so its end is the only "back from watching" edge.
     func refreshAfterPlayback() async {
         var seen: Int?
-        for await closed in Observations({ self.playback.closedSessions }) {
-            defer { seen = closed }
-            guard let seen, closed != seen else { continue }
+        for await ended in Observations({ self.endedPlayerSessions }) {
+            defer { seen = ended }
+            guard let seen, ended != seen else { continue }
             await withDiscardingTaskGroup { group in
                 if let home { group.addTask { await home.refresh() } }
                 for refresh in playbackRefreshScreens.refreshes {

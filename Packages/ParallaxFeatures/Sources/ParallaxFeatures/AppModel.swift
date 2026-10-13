@@ -35,6 +35,10 @@ public final class AppModel {
     public internal(set) var isContentReady = false
     /// The reload token whose `loadSources()` pass ran to its end; nil while one is in flight.
     var settledSourcesToken: String?
+    /// How many player sessions have stopped, their final reports answered. Moves once per
+    /// session, after `runPlayer` closed its model, so a screen re-pulling progress after
+    /// watching reads what the server has.
+    var endedPlayerSessions = 0
     let clock: any Clock<Duration>
     let recoverableScreens = RecoverableScreens()
     let playbackRefreshScreens = PlaybackRefreshScreens()

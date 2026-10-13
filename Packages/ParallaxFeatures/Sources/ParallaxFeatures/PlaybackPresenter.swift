@@ -34,13 +34,9 @@ public final class PlaybackPresenter {
 
     public private(set) var request: Request?
 
-    /// How many presented players have been closed. Moves once per `dismiss()`, so a screen that
-    /// re-pulls progress after watching observes one edge instead of catching both edges of
-    /// `request`, which coalesce away when a play and its dismissal land close together.
-    public private(set) var closedSessions = 0
-
-    /// The live session's exit hand-off (`PlayerViewModel.beginExit`), registered by
-    /// `PlayerView` while a player is up and invoked by `dismiss()`.
+    /// The presented session's exit hand-off (`PlayerViewModel.beginExit`), registered by
+    /// `AppModel.runPlayer` for its request and consumed by the `dismiss()` that clears it, so a
+    /// session that resumes late can't hand its exit to a newer player.
     ///
     /// Not every dismissal goes through the player's own close button: the tvOS cover
     /// dismisses itself through its item binding, a server switch closes the player from
@@ -52,7 +48,14 @@ public final class PlaybackPresenter {
     ///
     /// Weak-captured at the registration site: the presenter outlives every session.
     /// `@ObservationIgnored` because it is a wire, not state; no view reads it.
-    @ObservationIgnored public var exitHandler: (@MainActor () -> Void)?
+    @ObservationIgnored private var exitHandler: (@MainActor () -> Void)?
+
+    /// Registers `handler` as the exit of the request `requestID`. Ignored unless that request is
+    /// the one presented.
+    public func setExitHandler(for requestID: Request.ID, _ handler: @escaping @MainActor () -> Void) {
+        guard request?.id == requestID else { return }
+        exitHandler = handler
+    }
 
     /// True while the player owns the screen — presented OR still sliding out during the
     /// teardown grace. The iOS overlay leaves the live UI mounted and tappable underneath
@@ -117,7 +120,6 @@ public final class PlaybackPresenter {
         exitHandler?()
         exitHandler = nil
         request = nil
-        closedSessions += 1
         guard teardownGrace > .zero else { return }
         isTearingDown = true
         Task { [weak self, teardownGrace, clock] in

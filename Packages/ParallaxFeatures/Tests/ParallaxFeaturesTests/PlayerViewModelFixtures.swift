@@ -350,7 +350,8 @@ enum PlayerFixtures {
         startTime: CMTime? = nil,
         defaultSubtitleStreamIndex: Int? = 1,
         burnInDeliveryMethod: String? = "Encode",
-        chineseSidecarURL: URL = URL(string: "https://jf.example.com/Videos/movie-1/ms-1/Subtitles/1/Stream.vtt?api_key=abc&copyTimestamps=true")!
+        chineseSidecarURL: URL = URL(string: "https://jf.example.com/Videos/movie-1/ms-1/Subtitles/1/Stream.vtt?api_key=abc&copyTimestamps=true")!,
+        playSessionID: String = "ps-1"
     ) -> ResolvedPlayback {
         func audio(_ i: Int, _ title: String) -> MediaStreamInfo {
             MediaStreamInfo(index: i, kind: .audio, displayTitle: title, language: "jpn",
@@ -373,7 +374,7 @@ enum PlayerFixtures {
             videoCodec: .hevc,
             audioCodec: .trueHD,
             mediaSourceID: "ms-1",
-            playSessionID: "ps-1",
+            playSessionID: playSessionID,
             runtime: CMTime(seconds: 7200, preferredTimescale: 600),
             startTime: startTime,
             mediaStreams: [

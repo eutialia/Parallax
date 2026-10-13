@@ -11,23 +11,48 @@ import Testing
 @MainActor
 @Suite("Player", .timeLimit(.minutes(1)))
 struct PlayerScenarios {
-    @Test("the active server switching to another while a video is open closes the player")
+    @Test("the server a video plays from revoking its token closes the player and tears its engine down")
     func serverSwitchClosesThePlayer() async throws {
-        let den = FakeJellyfinServer(name: "Den").user("ana")
+        let den = FakeJellyfinServer(name: "Den").user("ana").library("Films").movie("Heat", in: "Films", minutes: 170)
         let attic = FakeJellyfinServer(name: "Attic").user("bo")
         let world = try await AppWorld.launch(signedIn: [(den, "ana"), (attic, "bo")])
-        let session = try #require(await world.app.services.serverStore.active)
-        world.app.playback.play(ItemID(rawValue: "movie-1"), in: session)
-        #expect(world.app.playback.request != nil)
+        world.app.playback.play(ItemID(rawValue: den.itemID(of: "Heat")), in: try await world.session(on: den))
+        try await world.openPlayer()
+        let runtime = Duration.seconds(170 * 60)
+        try await world.streamPlays(at: .seconds(600), of: runtime)
+        try await world.until { den.playbackReports.count == 1 }
 
         den.revokeAllTokens()
-        await world.app.movieDetail(ItemID(rawValue: "movie-1"), on: session).load()
-        try await world.until { world.app.router.activeServerID == ServerID(rawValue: attic.id) }
-        try await world.until { world.app.playback.request == nil }
+        world.clock.advance(by: .seconds(10))
+        // Not `streamPlays`: the report this beat sends closes the player, which may stop
+        // consuming beats before it settles.
+        world.engine.push(.playing(610, duration: .seconds(170 * 60)))
 
-        await world.clock.waitForSleepers()
-        world.clock.advance(by: .seconds(1))
-        try await world.until { !world.app.playback.isPlayerPresent }
+        try await world.until { world.app.router.activeServerID == ServerID(rawValue: attic.id) }
+        #expect(world.app.playback.request == nil)
+        try await world.until { world.engine.calls.contains("teardown") }
+        #expect(world.engines.count == 1)
+    }
+
+    @Test("a player dismissed while it is still being built never starts playback")
+    func dismissWhileBuildingNeverStarts() async throws {
+        let den = FakeJellyfinServer(name: "Den").user("ana").library("Films").movie("Heat", in: "Films")
+        let world = try await AppWorld.launch(signedIn: [(den, "ana")])
+        world.app.playback.play(ItemID(rawValue: den.itemID(of: "Heat")), in: try await world.session(on: den))
+        let request = try #require(world.app.playback.request)
+        var ended = false
+        let app = world.app
+        let mounting = Task {
+            await app.runPlayer(for: request, subtitleSurface: { PlayerFixtures.phoneSurface }) { _ in }
+            ended = true
+        }
+        defer { mounting.cancel() }
+
+        world.app.playback.dismiss()
+
+        try await world.until { ended || world.engines.count > 0 }
+        #expect(world.engines.count == 0)
+        #expect(den.playbackRequests.isEmpty)
     }
 
     @Test("a display that decodes Dolby Vision, connected between two plays, is offered to the server on the second")
@@ -168,6 +193,108 @@ struct PlayerScenarios {
         #expect(player.playbackDidComplete)
         #expect(world.engines.count == 1)
         #expect(den.playbackRequests.map(\.item) == ["Severance S1E2"])
+        try await world.until { world.engine.calls.contains("teardown") }
+        try await world.until { den.playbackReports.last?.kind == .stopped }
+        #expect(den.playbackReports.last == FakeJellyfinServer.PlaybackReport(.stopped, "Severance S1E2", at: 49 * 60))
+    }
+
+    @Test("closing the player while it hands off to the next episode closes it for good")
+    func closeDuringEpisodeHandoffStaysClosed() async throws {
+        let den = FakeJellyfinServer(name: "Den").user("ana").library("Shows", of: .shows)
+            .series("Severance", in: "Shows", episodes: [2])
+            .streams("Severance S1E1", by: .transcode)
+        let world = try await AppWorld.launch(signedIn: [(den, "ana")])
+        let session = try await world.session(on: den)
+        world.app.playback.play(ItemID(rawValue: den.itemID(of: "Severance S1E1")), in: session)
+        weak var player = try await world.openPlayer()
+        try await world.until { player?.nextEpisode?.name == "Severance S1E2" }
+        try await world.streamPlays(at: .seconds(49 * 60), of: .seconds(50 * 60))
+        den.holdResponses(to: .encodingKills)
+        world.streamEnds()
+        try await world.until { den.heldResponseCount == 1 }
+
+        let closing = world.dismissPlayer()
+        den.releaseResponses()
+        await closing.value
+        try await world.until { () async in player == nil }
+
+        #expect(world.engines.count == 1)
+        #expect(den.playbackRequests.map(\.item) == ["Severance S1E1"])
+        #expect(world.audioSession.calls == [.activate, .deactivate])
+    }
+
+    @Test("a player whose view goes away without a dismissal still ends its audio")
+    func viewGoingAwayEndsTheAudio() async throws {
+        let den = FakeJellyfinServer(name: "Den").user("ana").library("Films").movie("Heat", in: "Films", minutes: 170)
+        let world = try await AppWorld.launch(signedIn: [(den, "ana")])
+        world.app.playback.play(ItemID(rawValue: den.itemID(of: "Heat")), in: try await world.session(on: den))
+        let request = try #require(world.app.playback.request)
+        let app = world.app
+        let mounted = Task {
+            await app.runPlayer(for: request, subtitleSurface: { PlayerFixtures.phoneSurface }) { _ in }
+        }
+        try await world.until { world.engines.count == 1 && world.engine.calls.contains("play") }
+        try await world.streamPlays(at: .seconds(600), of: .seconds(170 * 60))
+
+        mounted.cancel()
+        await mounted.value
+
+        #expect(world.engine.calls.filter { ["endAudio", "teardown"].contains($0) } == ["endAudio", "teardown"])
+        #expect(world.audioSession.calls == [.activate, .deactivate])
+        #expect(den.playbackReports.last == FakeJellyfinServer.PlaybackReport(.stopped, "Heat", at: 600))
+    }
+
+    @Test("a closed player's audio is gone before the next pick plays, while its stop report is still on the wire")
+    func closedPlayersAudioEndsBeforeTheNextPlays() async throws {
+        let den = FakeJellyfinServer(name: "Den").user("ana").library("Films")
+            .movie("Heat", in: "Films", minutes: 170).movie("Ran", in: "Films", minutes: 162)
+        let world = try await AppWorld.launch(signedIn: [(den, "ana")])
+        let session = try await world.session(on: den)
+        world.app.playback.play(ItemID(rawValue: den.itemID(of: "Heat")), in: session)
+        try await world.openPlayer()
+        try await world.streamPlays(at: .seconds(600), of: .seconds(170 * 60))
+        try await world.until { den.playbackReports.count == 1 }
+        den.holdResponses(to: .playbackStops)
+
+        let closing = world.dismissPlayer()
+        world.app.playback.play(ItemID(rawValue: den.itemID(of: "Ran")), in: session)
+        try await world.until { den.heldResponseCount == 1 }
+        try await world.clock.waitForSleep(dueIn: .milliseconds(600))
+        world.clock.advance(by: .milliseconds(600))
+        try await world.until { world.app.playback.request != nil }
+        try await world.openPlayer()
+        den.releaseResponses()
+        await closing.value
+
+        #expect(world.audioSession.calls == [.activate, .deactivate, .activate])
+        #expect(den.playbackReports == [
+            FakeJellyfinServer.PlaybackReport(.started, "Heat", at: 600),
+            FakeJellyfinServer.PlaybackReport(.stopped, "Heat", at: 600),
+        ])
+    }
+
+    @Test("closing the player re-reads Home's progress only once the server has the stop report")
+    func homeRefreshesAfterTheStopReportLands() async throws {
+        let den = FakeJellyfinServer(name: "Den").user("ana").library("Films")
+            .movie("Heat", in: "Films", minutes: 170).watch("Heat", minutes: 42)
+        let world = try await AppWorld.launch(signedIn: [(den, "ana")])
+        try await world.openHome()
+        world.app.playback.play(ItemID(rawValue: den.itemID(of: "Heat")), in: try await world.session(on: den))
+        try await world.openPlayer()
+        let runtime = Duration.seconds(170 * 60)
+        try await world.streamPlays(at: .seconds(2520), of: runtime)
+        try await world.streamPlays(at: .seconds(2580), of: runtime)
+        try await world.until { den.playbackReports.count == 2 }
+        // Inside the 10 s progress throttle: only the stop report carries this position.
+        try await world.streamPlays(at: .seconds(2700), of: runtime)
+        den.holdResponses(to: .playbackStops)
+
+        let closing = world.dismissPlayer()
+        try await world.until { den.heldResponseCount == 1 }
+        den.releaseResponses()
+        await closing.value
+
+        try await world.until { world.minutesWatched("Heat") == 45 }
     }
 
     @Test("inside the intro the player offers to skip it, and skipping lands just past it")
