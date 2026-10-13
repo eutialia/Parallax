@@ -108,7 +108,7 @@ private struct ArtworkPrefetchModifier: ViewModifier {
     let urls: [URL]
     let session: Session
 
-    @Environment(AppDependencies.self) private var deps
+    @Environment(AppModel.self) private var app
     @Environment(\.prefersReducedResourceUsage) private var prefersReducedResourceUsage
     @State private var prefetcher: ImagePrefetcher?
 
@@ -127,7 +127,7 @@ private struct ArtworkPrefetchModifier: ViewModifier {
                     prefetcher = nil
                     return
                 }
-                let pipeline = await deps.imagePipelineFactory.pipeline(for: session)
+                let pipeline = await app.services.imagePipelineFactory.pipeline(for: session)
                 // The await is a suspension point: if the view left the screen or the URL set changed
                 // while the pipeline resolved, this task was cancelled. Bail before starting — past
                 // this point `onDisappear`/the superseding task can no longer stop us, so we'd leak a
@@ -154,7 +154,7 @@ private struct ArtworkPrefetchModifier: ViewModifier {
 private struct SourcedArtworkPrefetchModifier: ViewModifier {
     let groups: [ArtworkPrefetchGroup]
 
-    @Environment(AppDependencies.self) private var deps
+    @Environment(AppModel.self) private var app
     @Environment(\.prefersReducedResourceUsage) private var prefersReducedResourceUsage
     @State private var prefetchers: [ImagePrefetcher] = []
 
@@ -176,7 +176,7 @@ private struct SourcedArtworkPrefetchModifier: ViewModifier {
                 }
                 var resolved: [(pipeline: ImagePipeline, urls: [URL])] = []
                 for group in groups {
-                    let pipeline = await deps.imagePipelineFactory.pipeline(for: group.session)
+                    let pipeline = await app.services.imagePipelineFactory.pipeline(for: group.session)
                     // Each await is a suspension point: if the view left or the set changed while a
                     // pipeline resolved, bail before starting anything — past the start call the
                     // superseding task can no longer stop these.

@@ -30,6 +30,25 @@ struct PlayerScenarios {
         try await world.until { !world.app.playback.isPlayerPresent }
     }
 
+    @Test("a display that decodes Dolby Vision, connected between two plays, is offered to the server on the second")
+    func hdrEligibilityChangeReachesTheNextPlay() async throws {
+        let den = FakeJellyfinServer(name: "Den").user("ana").library("Films").movie("Heat", in: "Films")
+        let world = try await AppWorld.launch(signedIn: [(den, "ana")])
+        let heat = ItemID(rawValue: den.itemID(of: "Heat"))
+        world.app.playback.play(heat, in: try await world.session(on: den))
+        try await world.openPlayer()
+        await world.closePlayer()
+
+        try await world.connectDisplay(playing: .dolbyVision)
+        world.app.playback.play(heat, in: try await world.session(on: den))
+        try await world.clock.waitForSleep(dueIn: .milliseconds(600))
+        world.clock.advance(by: .milliseconds(600))
+        try await world.until { world.app.playback.request != nil }
+        try await world.openPlayer()
+
+        #expect(den.playbackRequests.map(\.acceptsDolbyVision) == [false, true])
+    }
+
     @Test("a half-watched movie opens at its saved position, its progress reaches the server, and Home resumes where it was closed")
     func halfWatchedMovieResumesAndReportsItsStop() async throws {
         let den = FakeJellyfinServer(name: "Den").user("ana").library("Films")
@@ -64,6 +83,32 @@ struct PlayerScenarios {
         await world.closePlayer()
         #expect(den.playbackReports.last == FakeJellyfinServer.PlaybackReport(.stopped, "Heat", at: 2580))
         try await world.until { world.minutesWatched("Heat") == 43 }
+    }
+
+    @Test("while a movie plays, its progress reaches the server at most once every 10 seconds")
+    func progressReportsAreThrottledOnTheClock() async throws {
+        let den = FakeJellyfinServer(name: "Den").user("ana").library("Films")
+            .movie("Heat", in: "Films", minutes: 170)
+        let world = try await AppWorld.launch(signedIn: [(den, "ana")])
+        let session = try await world.session(on: den)
+        world.app.playback.play(ItemID(rawValue: den.itemID(of: "Heat")), in: session)
+        try await world.openPlayer()
+        let runtime = Duration.seconds(170 * 60)
+
+        try await world.streamIsReady(duration: runtime)
+        try await world.streamPlays(at: .seconds(600), of: runtime)
+        try await world.streamPlays(at: .seconds(601), of: runtime)
+        world.clock.advance(by: .seconds(9))
+        try await world.streamPlays(at: .seconds(610), of: runtime)
+        world.clock.advance(by: .seconds(1))
+        try await world.streamPlays(at: .seconds(611), of: runtime)
+
+        try await world.until { den.playbackReports.count == 3 }
+        #expect(den.playbackReports == [
+            FakeJellyfinServer.PlaybackReport(.started, "Heat", at: 600),
+            FakeJellyfinServer.PlaybackReport(.progress, "Heat", at: 601),
+            FakeJellyfinServer.PlaybackReport(.progress, "Heat", at: 611),
+        ])
     }
 
     @Test("Play from Beginning on a half-watched movie starts it at zero")

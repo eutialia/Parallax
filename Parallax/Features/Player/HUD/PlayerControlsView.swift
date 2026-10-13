@@ -153,10 +153,6 @@ struct PlayerControlsView: View {
     #if !os(tvOS)
     /// The live double-tap seek flash (dome + chevrons + "N seconds"); nil when idle.
     @State private var seekFlash: SeekFlash?
-    /// Folds a double-tap burst into ONE engine seek after the taps settle — per-tap
-    /// seeks thrash a transcode and wedge the player (the tvOS click-seek lesson). Shared
-    /// with the tvOS click-seek (`PlayerView`) via `SeekCommitCoalescer`.
-    @State private var seekCoalescer = SeekCommitCoalescer()
     @State private var seekFlashDismissTask: Task<Void, Never>?
     /// The drag-scrub (and a11y-adjust) commit in flight. Stored — not an anonymous
     /// `Task` — so `onDisappear` can cancel it: a player dismissed mid-commit would
@@ -349,7 +345,7 @@ struct PlayerControlsView: View {
         // into a mid-teardown engine, the others write to dead @State. Cancel them.
         .onDisappear {
             hideTask?.cancel()
-            seekCoalescer.cancel()
+            vm.seekCommits.cancel()
             seekFlashDismissTask?.cancel()
             scrubCommitTask?.cancel()
         }
@@ -1345,11 +1341,11 @@ struct PlayerControlsView: View {
         .allowsHitTesting(false)
     }
 
-    /// Accumulate the burst's target into the shared `SeekCommitCoalescer`; it fires ONE
-    /// seek after the taps settle (the same fold-a-burst-into-one-seek debounce as the
-    /// tvOS click-seek).
+    /// Accumulate the burst's target into `vm.seekCommits`; it fires ONE seek after the taps
+    /// settle — per-tap seeks thrash a transcode and wedge the player (the tvOS click-seek
+    /// lesson).
     private func scheduleSeekCommit(to target: Double) {
-        seekCoalescer.schedule(target) { target in
+        vm.seekCommits.schedule(target) { target in
             // Routed through `commitSeek` (not a bare `seek`) so an out-of-buffer re-encode
             // transcode's force-resuming re-anchor (#15845) can't un-pause a paused user. It
             // fires 400ms after the last tap and reads the intent when it lands, not now.
@@ -1371,7 +1367,7 @@ struct PlayerControlsView: View {
     private func cancelPendingSeek() {
         // A burst whose commit is dropped must not leave the bar split.
         vm.cancelPreview()
-        seekCoalescer.cancel()
+        vm.seekCommits.cancel()
         seekFlashDismissTask?.cancel()
         seekFlash = nil
     }

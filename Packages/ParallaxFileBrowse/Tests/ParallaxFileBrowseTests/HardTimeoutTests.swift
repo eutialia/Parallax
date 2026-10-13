@@ -1,4 +1,5 @@
 import Foundation
+import ParallaxCoreTestSupport
 import Testing
 @testable import ParallaxFileBrowse
 import ParallaxFileBrowseTestSupport
@@ -13,10 +14,15 @@ struct HardTimeoutTests {
 
     private struct Boom: Error {}
 
+    /// A ceiling on a clock nobody advances.
+    private static let neverExpires: @Sendable (TimeInterval) async throws -> Void = { [clock = TestClock()] in
+        try await clock.sleep(for: .seconds($0))
+    }
+
     @Test("Operation errors propagate, not masked as timeouts")
     func operationErrorPropagates() async {
         await #expect(throws: Boom.self) {
-            try await withHardTimeout(seconds: 30) { () -> Int in throw Boom() }
+            try await withHardTimeout(seconds: 30, sleep: Self.neverExpires) { () -> Int in throw Boom() }
         }
     }
 
@@ -68,7 +74,7 @@ struct HardTimeoutTests {
     @Test("An operation that WINS its race is never reported as abandoned")
     func winningOperationIsNeverAbandoned() async throws {
         let settlement = SMBOperationSettlement()
-        let value = try await withHardTimeout(seconds: 30, settlement: settlement) { 42 }
+        let value = try await withHardTimeout(seconds: 30, sleep: Self.neverExpires, settlement: settlement) { 42 }
 
         #expect(value == 42)
         #expect(settlement.isAbandoned == false, "nothing was left running — this borrow is reusable")

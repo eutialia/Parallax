@@ -44,6 +44,7 @@ public final class AppModel {
     /// direct call so the network layer never has to know about the router or the main actor, and
     /// so a burst of simultaneous 401s is handled serially by one consumer instead of racing.
     private let tokenRejections: AsyncStream<Session>
+    private let hdrEligibilityChanges: @Sendable () -> AsyncStream<Void>
 
     let launchReveal: LaunchRevealCoverage
 
@@ -53,12 +54,14 @@ public final class AppModel {
         self.tokenRejections = tokenRejections
         services = AppServices(environment: environment) { reportTokenRejected.yield($0) }
         playback = PlaybackPresenter(clock: environment.clock)
-        launchGate = LaunchGate(playsStory: Self.playsLaunchStory(
-            snapshots: services.snapshots, defaults: environment.defaults
-        ))
+        launchGate = LaunchGate(
+            playsStory: Self.playsLaunchStory(snapshots: services.snapshots, defaults: environment.defaults),
+            clock: environment.clock
+        )
         connectivity = ConnectivityMonitor(monitor: environment.reachability)
         subtitlePreferences = SubtitlePreferences(store: services.settings)
         clock = environment.clock
+        hdrEligibilityChanges = environment.hdrEligibilityChanges
     }
 
     /// Whether this process plays the launch story at all. The story exists to cover
@@ -101,12 +104,21 @@ public final class AppModel {
             group.addTask { await self.signOutRejectedTokens() }
             group.addTask { await self.refreshAfterPlayback() }
             group.addTask { await self.holdThumbnailsUnderThePlayer() }
-            group.addTask { await self.launchGate.releaseStuckHold(on: self.clock) }
+            group.addTask { await self.launchGate.releaseStuckHold() }
             group.addTask { await self.recoverStalledScreens() }
             group.addTask { await self.refreshSMBLevelsOnForeground() }
             // Republishes reachability, and forwards the Low Data Mode signal into the device
             // profile builder so the next resolve clamps `maxBitrate`.
             group.addTask { await self.connectivity.observe(reportingConstraintTo: self.services.deviceProfileBuilder) }
+            group.addTask { await self.rebuildDeviceProfileOnHDRChange() }
+        }
+    }
+
+    /// The next resolve builds a fresh device profile whenever HDR eligibility moves. Playback in
+    /// flight keeps the profile it started with.
+    private func rebuildDeviceProfileOnHDRChange() async {
+        for await _ in hdrEligibilityChanges() {
+            await services.deviceProfileBuilder.invalidate()
         }
     }
 

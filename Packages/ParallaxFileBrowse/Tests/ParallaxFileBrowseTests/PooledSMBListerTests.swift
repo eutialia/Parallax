@@ -1,4 +1,5 @@
 import Foundation
+import ParallaxCoreTestSupport
 import Testing
 @testable import ParallaxFileBrowse
 import ParallaxFileBrowseTestSupport
@@ -19,16 +20,9 @@ struct PooledSMBListerTests {
         SMBEntry.file("Film.mkv"),
     ]
 
-    /// A `bounded` ceiling small enough to fire inside a test. The lister races
-    /// `connectTimeout + hardTimeoutGrace`, so the nominal timeout has to be derived by SUBTRACTING
-    /// the grace — which lands well below zero. Deliberate, and the same trick as
-    /// `SMBConnectionPoolTests.hardTimeoutOrphanReachesTheGraveyard`: `bounded` adds the grace
-    /// straight back, and `PooledSMBLister.operationCeiling` clamps at zero so the negative never
-    /// reaches a real connection's timeout setter.
-    private static let subSecondCeiling: TimeInterval = 0.2
-    private static var subSecondNominalTimeout: TimeInterval {
-        subSecondCeiling - SMBConnectionPool<FakeSMBConnection>.hardTimeoutGrace
-    }
+    /// The lister's `bounded` ceiling at its default 15 s `connectTimeout`: the timeout plus the
+    /// pool's 5 s grace.
+    private static let ceiling = Duration.seconds(20)
 
     // MARK: - Warm reuse
 
@@ -309,16 +303,17 @@ struct PooledSMBListerTests {
     @Test("a wedged listing is condemned — never checked in, never disconnected — then discarded once its call settles")
     func wedgedListingIsCondemnedNotDisconnected() async throws {
         let world = FakeSMBWorld()
-        let pool = makeFakePool(world: world)
-        let lister = makePooledLister(
-            world: world, pool: pool, connectTimeout: Self.subSecondNominalTimeout
-        )
+        let clock = TestClock()
+        let pool = makeFakePool(world: world, clock: clock)
+        let lister = makePooledLister(world: world, pool: pool)
 
         // Warm a connection, then wedge the next listing inside the fake share.
         _ = try await lister.list(share: "Media", path: "")
         await untilSettled { await pool.idleCount == 1 }
         await world.operationGate.close()
         let wedged = Task { try await lister.list(share: "Media", path: "Movies") }
+        try await clock.waitForSleep(dueIn: Self.ceiling)
+        clock.advance(by: Self.ceiling)
 
         await #expect(throws: SMBListerError.timedOut) { _ = try await wedged.value }
 
@@ -434,13 +429,16 @@ struct PooledSMBListerTests {
     @Test("a wedged share enumeration is condemned instead of torn down")
     func wedgedListSharesIsCondemned() async throws {
         let world = FakeSMBWorld()
-        let pool = makeFakePool(world: world)
-        let lister = makePooledLister(
-            world: world, pool: pool, connectTimeout: Self.subSecondNominalTimeout
-        )
+        let clock = TestClock()
+        let pool = makeFakePool(world: world, clock: clock)
+        let lister = makePooledLister(world: world, pool: pool)
         await world.operationGate.close()
 
-        await #expect(throws: SMBListerError.timedOut) { _ = try await lister.listShares() }
+        let wedged = Task { try await lister.listShares() }
+        try await clock.waitForSleep(dueIn: Self.ceiling)
+        clock.advance(by: Self.ceiling)
+
+        await #expect(throws: SMBListerError.timedOut) { _ = try await wedged.value }
 
         #expect(await pool.condemnedCount == 1)
         #expect(world.disconnectedIDs.isEmpty, "the one-shot connection is parked, not disconnected")

@@ -1,4 +1,5 @@
 import Foundation
+import ParallaxCoreTestSupport
 import ParallaxTestScaling
 import Testing
 @testable import ParallaxFileBrowse
@@ -301,7 +302,9 @@ struct SMBConnectionPoolTests {
     @Test("the scheduled sweep reaps a pool that went quiet")
     func scheduledSweepReapsAQuietPool() async throws {
         let world = FakeSMBWorld()
-        let pool = makeFakePool(world: world, idleTTL: .seconds(60), sweepInterval: .milliseconds(10))
+        let clock = TestClock()
+        let interval = Duration.seconds(30)
+        let pool = makeFakePool(world: world, idleTTL: .seconds(60), sweepInterval: interval, clock: clock)
 
         let borrowed = try await pool.checkout(fakeTarget())   // starts the sweep task
         let sibling = try await pool.checkout(fakeTarget())
@@ -309,16 +312,12 @@ struct SMBConnectionPoolTests {
         await pool.checkin(sibling)                            // conn 1 is the key's survivor
         world.clock.advance(by: .seconds(61))
 
-        // No further pool traffic: only the scheduled sweep can tear this down — and it sleeps on a
-        // REAL clock, so this waits in real time rather than in scheduler turns. The ceiling is an
-        // anti-hang bound, so it scales for oversubscribed CI runners instead of flaking on them —
-        // the CI-scaled ceiling (150s) sits above the ~45-100s whole-VM stalls observed on
-        // virtualized runners — a stall can only be outlasted, never prevented in-process — while
-        // staying under the suite's three-minute time limit so the wait still wins its race.
-        let deadline = ContinuousClock().now.advanced(by: CITimeScale.seconds(12.5))
-        while world.disconnectedIDs.isEmpty, ContinuousClock().now < deadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        // No further pool traffic: only the scheduled sweep can tear this down.
+        try await clock.waitForSleep(dueIn: interval)
+        #expect(world.disconnectedIDs.isEmpty, "the sweep has not ticked yet")
+        clock.advance(by: interval)
+
+        await untilSettled { !world.disconnectedIDs.isEmpty }
         #expect(world.disconnectedIDs == [0])
     }
 
@@ -564,14 +563,17 @@ struct SMBConnectionPoolTests {
     @Test("a cold connect that lost the hard-timeout race hands its orphan to the graveyard")
     func hardTimeoutOrphanReachesTheGraveyard() async throws {
         let world = FakeSMBWorld()
-        let ceiling: TimeInterval = 0.2
-        let pool = makeFakePool(
-            world: world,
-            connectTimeout: ceiling - SMBConnectionPool<FakeSMBConnection>.hardTimeoutGrace
-        )
+        let clock = TestClock()
+        // The default 5 s connect timeout plus the 5 s grace.
+        let ceiling = Duration.seconds(10)
+        let pool = makeFakePool(world: world, clock: clock)
         await world.connectGate.close()
 
-        await #expect(throws: SMBListerError.timedOut) { _ = try await pool.checkout(fakeTarget()) }
+        let checkout = Task { try await pool.checkout(fakeTarget()) }
+        try await clock.waitForSleep(dueIn: ceiling)
+        clock.advance(by: ceiling)
+
+        await #expect(throws: SMBListerError.timedOut) { _ = try await checkout.value }
         #expect(await pool.condemnedTotal == 0, "nothing exists to park yet — the connector is still hung")
 
         // The abandoned connector finally finishes, producing a connection with no owner.

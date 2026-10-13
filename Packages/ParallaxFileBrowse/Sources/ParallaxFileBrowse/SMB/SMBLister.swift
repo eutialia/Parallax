@@ -49,7 +49,7 @@ public protocol SMBLister: Sendable {
 /// The account one lister signs in with.
 ///
 /// A value type rather than four loose `String`s because the app passes these across a closure
-/// boundary (`AppDependencies.makeSMBLister`), and Swift function types cannot carry argument
+/// boundary (`AppServices.makeSMBLister`), and Swift function types cannot carry argument
 /// labels: three interchangeable strings in a row is a silent-transposition trap, and a swapped
 /// password/domain compiles cleanly then fails as a sign-in refusal that reads like the server's
 /// fault. The password lives only here and in the `URLCredential` handed to the SMB client —

@@ -35,7 +35,6 @@ struct SMBBrowseView: View {
     let path: SMBBrowsePath
 
     @Environment(AppModel.self) private var app
-    @Environment(AppDependencies.self) private var deps
     @Environment(\.appIdiom) private var idiom
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.prefersReducedResourceUsage) private var prefersReducedResourceUsage
@@ -195,7 +194,7 @@ struct SMBBrowseView: View {
                         ref: path.ref,
                         share: path.share,
                         parentPath: path.path,
-                        artworkProvider: deps.mediaArtworkProvider,
+                        artworkProvider: app.services.mediaArtworkProvider,
                         onMediaTileAppeared: { model.prefetchWindow(from: $0, lookahead: prefetchLookahead) },
                         onPlay: { model.play($0) }
                     )
@@ -240,7 +239,7 @@ struct SMBBrowseView: View {
     #endif
 }
 
-/// The folders-then-media wall for one browse level. Standalone (plain inputs, no `deps`/network)
+/// The folders-then-media wall for one browse level. Standalone (plain inputs, no environment or network)
 /// so it renders in a `#Preview` and stays the single place the two cell kinds + layout live.
 /// Folders are compact `FolderBrowseCard`s wrapped in a `NavigationLink` to the child path; media use
 /// the same `SMBThumbnailTile` the library grid uses, wrapped in a play button. Each kind is its own
@@ -414,7 +413,7 @@ struct FolderBrowseCard: View {
 }
 
 #if DEBUG
-/// Stub-data host for the browse grid (no network, no `deps`): a directory of season folders + a
+/// Stub-data host for the browse grid (no network, no environment): a directory of season folders + a
 /// wall of episodes so the dense 4-up landscape layout (folders on top, then media), both cell
 /// kinds, and the column density are all verifiable. Media tiles show the gray placeholder — the
 /// real provider is wired but never resolves a frame-grab without an SMB connection. The
@@ -458,8 +457,9 @@ private struct SMBBrowseGridPreview: View {
                             keychain: Keychain(service: "preview"),
                             snapshots: SnapshotStore()
                         ),
-                        connections: .live(),
-                        cacheDirectory: .temporaryDirectory
+                        connections: .live(clock: ContinuousClock()),
+                        cacheDirectory: .temporaryDirectory,
+                        clock: ContinuousClock()
                     ),
                     onPlay: { _ in }
                 )

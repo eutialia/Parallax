@@ -40,7 +40,7 @@ final class PlayerAccent {
     /// every failure — no ref, no bytes, no colour in the artwork — leaves the bar white. It is
     /// deliberately NOT awaited anywhere in the start path.
     ///
-    /// The decode is a `nonisolated` call, not a nested `Task.detached`: awaiting a detached
+    /// The decode is a `@concurrent` call, not a nested `Task.detached`: awaiting a detached
     /// task's `.value` is not a cancellation point, so a nested one outlived the item it was
     /// decoding for. A plain call inherits this task's cancellation and is one hop cheaper.
     func load(for item: ItemDetail) {
@@ -54,9 +54,10 @@ final class PlayerAccent {
         }
     }
 
-    /// The decode + vote, off the main actor. `nonisolated` is the whole point: this type is
-    /// `@MainActor`, and this is the one step that must not run there.
-    private nonisolated static func extractAccent(from data: Data) async -> AccentHSB? {
+    /// The decode + vote, off the main actor. `@concurrent` is the whole point: this type is
+    /// `@MainActor`, a plain `nonisolated async` function would run on its caller's actor, and
+    /// this is the one step that must not run there.
+    @concurrent private nonisolated static func extractAccent(from data: Data) async -> AccentHSB? {
         ArtworkAccent.accent(fromImageData: data)
     }
 

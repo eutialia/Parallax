@@ -23,7 +23,7 @@ import UniformTypeIdentifiers
 /// which is what the previews render.
 struct DiagnosticsView: View {
     #if DEBUG
-    @Environment(AppDependencies.self) private var deps
+    @Environment(AppModel.self) private var app
     #endif
     @State private var sessions: [DiagnosticsSession] = []
     @State private var isEnabled = DiagnosticsLog.isEnabled
@@ -83,7 +83,7 @@ struct DiagnosticsView: View {
     private var flushSMBConnections: (() -> Void)? {
         #if DEBUG
         return {
-            Task { await deps.flushSMBConnections() }
+            Task { await app.services.flushSMBConnections() }
         }
         #else
         return nil

@@ -45,9 +45,9 @@ public struct SMBConnections: Sendable {
         flushIdle = { await pool.flushIdle() }
     }
 
-    /// Real `SMB2Manager` connections.
-    public static func live() -> SMBConnections {
-        let pool = SMBSharePool()
+    /// Real `SMB2Manager` connections, their hard timeouts waited out on `clock`.
+    public static func live(clock: any Clock<Duration>) -> SMBConnections {
+        let pool = SMBSharePool(clock: clock)
         return SMBConnections(pool: pool) { PooledSMBLister(pool: pool, credentials: $0) }
     }
 }

@@ -21,6 +21,8 @@ public struct SMBPlaybackResolver {
     /// resolve.
     let connections: SMBConnections
     let resumeStore: SMBResumeStore
+    /// The container probe's deadline sleeps on it.
+    let clock: any Clock<Duration>
 
     /// Resolves a browsed SMB `Item` into a ready-to-play `SMBPlaybackItem`.
     ///
@@ -61,7 +63,7 @@ public struct SMBPlaybackResolver {
         // hard deadline: a hung share must not stall the loading veil — on timeout
         // or error we fall back to today's smb://+VLC route, which needs no probe.
         let reader = connections.reader(ctx.target(ref), ctx.path)
-        let probeResult = await Self.probeWithDeadline(reader)
+        let probeResult = await Self.probeWithDeadline(reader, on: clock)
 
         let (hints, useBridge) = Self.route(probe: probeResult, sizeBytes: item.sizeBytes)
 
@@ -272,7 +274,7 @@ public struct SMBPlaybackResolver {
             : nil
     }
 
-    /// Races a container probe against a hard `seconds` deadline, abandoning the probe
+    /// Races a container probe against a hard `deadline` on `clock`, abandoning the probe
     /// if the deadline wins. Returns the probe result, or `nil` on timeout/failure —
     /// `route(probe:sizeBytes:)` reads `nil` as "fall back to the VLC route."
     ///
@@ -285,14 +287,23 @@ public struct SMBPlaybackResolver {
     ///
     /// `nonisolated` for the same reason as `route`: it touches no main-actor state, and the
     /// thumbnail provider's actor probes through it too.
-    nonisolated static func probeWithDeadline(_ reader: any RandomAccessReading, seconds: Double = 4) async -> MediaProbeResult? {
+    nonisolated static func probeWithDeadline(
+        _ reader: any RandomAccessReading,
+        within deadline: Duration = .seconds(4),
+        on clock: any Clock<Duration>
+    ) async -> MediaProbeResult? {
         await withCheckedContinuation { (continuation: CheckedContinuation<MediaProbeResult?, Never>) in
             let latch = OneShotLatch(continuation)
-            let probe = Task { latch.resume(try? await MediaProbe.probe(reader)) }
-            Task {
-                try? await Task.sleep(for: .seconds(seconds))
-                probe.cancel()          // cooperative only; the latch already unblocked the caller
+            let probe = Task { try? await MediaProbe.probe(reader) }
+            let timer = Task {
+                guard (try? await clock.sleep(for: deadline)) != nil else { return }
+                probe.cancel()          // cooperative only: a wedged read ignores it
                 latch.resume(nil)
+            }
+            Task {
+                let result = await probe.value
+                timer.cancel()
+                latch.resume(result)
             }
         }
     }
