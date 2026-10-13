@@ -1,0 +1,39 @@
+diff --git a/Packages/ParallaxJellyfin/Sources/ParallaxJellyfinTestSupport/FakeJellyfinServer.swift b/Packages/ParallaxJellyfin/Sources/ParallaxJellyfinTestSupport/FakeJellyfinServer.swift
+index 7057f646..1ed5c393 100644
+--- a/Packages/ParallaxJellyfin/Sources/ParallaxJellyfinTestSupport/FakeJellyfinServer.swift
++++ b/Packages/ParallaxJellyfin/Sources/ParallaxJellyfinTestSupport/FakeJellyfinServer.swift
+@@ -141,6 +141,7 @@ public final class FakeJellyfinServer: Observable, Sendable {
+         var quickConnects: [String: PendingQuickConnect] = [:]
+         var issuedQuickConnects = 0
+         var isDown = false
++        var isBehindGateway = false
+         var configurations: [String: UserConfiguration] = [:]
+         var playSessions = 0
+         var playbackRequests: [PlaybackRequest] = []
+@@ -321,6 +322,16 @@ public final class FakeJellyfinServer: Observable, Sendable {
+         state.withLock { $0.isDown = false }
+     }
+ 
++    /// An authenticating reverse proxy in front of the server answers every request with a 401 Basic
++    /// challenge, before the server sees it, until `clearGateway()`. Issued tokens stay valid.
++    public func putBehindGateway() {
++        state.withLock { $0.isBehindGateway = true }
++    }
++
++    public func clearGateway() {
++        state.withLock { $0.isBehindGateway = false }
++    }
++
+     /// Which requests `holdResponses(to:)` leaves unanswered.
+     public enum HeldRequests: Sendable {
+         case all
+@@ -432,6 +443,9 @@ public final class FakeJellyfinServer: Observable, Sendable {
+ 
+     private func answer(_ exchange: StubHTTPTransport.Exchange) -> StubHTTPTransport.Reply {
+         if state.withLock({ $0.isDown }) { return .failure(.cannotConnectToHost) }
++        if state.withLock({ $0.isBehindGateway }) {
++            return StubHTTPTransport.Reply(status: 401, headers: ["WWW-Authenticate": "Basic realm=\"gateway\""])
++        }
+         let requested = "\(exchange.method) \(exchange.path)"
+         for entry in Self.routes {
+             guard let pathID = Self.match(requested, entry.route) else { continue }

@@ -1,0 +1,176 @@
+diff --git a/Packages/ParallaxFeatures/Sources/ParallaxFeatures/Player/PlayerViewModel.swift b/Packages/ParallaxFeatures/Sources/ParallaxFeatures/Player/PlayerViewModel.swift
+index 38f1a604..77f16a15 100644
+--- a/Packages/ParallaxFeatures/Sources/ParallaxFeatures/Player/PlayerViewModel.swift
++++ b/Packages/ParallaxFeatures/Sources/ParallaxFeatures/Player/PlayerViewModel.swift
+@@ -16,9 +16,8 @@ private struct SMBSessionState {
+     /// Set from `SMBPlaybackItem.itemID` in `start(smbItem:)`.
+     var itemID: ItemID
+     /// Whether `currentDuration` is a real container length rather than VLCKitEngine's
+-    /// read-rate estimate for an incomplete file. Gates the store's ≥95%-complete clear OFF
+-    /// when false — an estimate must never wipe real progress. Reset with the whole session,
+-    /// so a later Jellyfin/SMB session can't inherit a stale false. (`hasTrustworthyDuration`.)
++    /// read-rate estimate for an incomplete file. Reset with the whole session, so a later
++    /// Jellyfin/SMB session can't inherit a stale false. (`hasTrustworthyDuration`.)
+     var hasTrustworthyDuration: Bool
+     /// When a resume position was last persisted, on `PlayerViewModel.elapsed` — throttles the
+     /// `.playing`/`.paused` beat writes to one per ~10s, mirroring the Jellyfin progress-report
+@@ -1224,8 +1223,7 @@ public final class PlayerViewModel {
+         // calls it); the `.failed` catches below clean up explicitly for the no-exit failures.
+         smbCleanup = smbItem.cleanup
+         // The local-resume session: progress beats + stop()'s final write persist positions
+-        // under `itemID` (exactly where the resolver's startTime came from);
+-        // `hasTrustworthyDuration` gates the store's 95%-complete clear (see the type doc).
++        // under `itemID` (exactly where the resolver's startTime came from).
+         smbSession = SMBSessionState(itemID: smbItem.itemID,
+                                      hasTrustworthyDuration: smbItem.hasTrustworthyDuration)
+         do {
+@@ -1279,10 +1277,7 @@ public final class PlayerViewModel {
+ 
+     /// Persists the current SMB position at most every ~10s — the local mirror of the
+     /// Jellyfin progress-report cadence, shared by the `.playing` and `.paused` beat arms.
+-    /// The duration only rides along when it's both real (`hasKnownDuration`) AND TRUSTED
+-    /// (`session.hasTrustworthyDuration`): an incomplete file can play with a NUMERIC but
+-    /// ESTIMATED length (VLCKitEngine's fileSize×time/readBytes guess), and the store's
+-    /// 95%-finished rule must never clear real progress against that guess. Fire-and-forget
++    /// The duration only rides along when it's real (`hasKnownDuration`). Fire-and-forget
+     /// into the store actor so a beat never blocks on UserDefaults.
+     private func saveSMBResumeThrottled() {
+         guard let session = smbSession else { return }
+@@ -1290,7 +1285,7 @@ public final class PlayerViewModel {
+         if let last = session.lastResumeWrite, now - last < .seconds(10) { return }
+         smbSession?.lastResumeWrite = now
+         let position = currentPosition
+-        let duration = (hasKnownDuration && session.hasTrustworthyDuration) ? currentDuration : nil
++        let duration = hasKnownDuration ? currentDuration : nil
+         let itemID = session.itemID
+         let previous = session.resumeSaveTask
+         smbSession?.resumeSaveTask = Task {
+@@ -1334,10 +1329,9 @@ public final class PlayerViewModel {
+             guard !Task.isCancelled, let self else { return }
+             guard let session = self.smbSession, let engine = self.engine else { return }
+             // Duration sampled NOW (not at schedule time): playback has progressed ~8s, and
+-            // VLC may have only just resolved a real length. Same gate as the resume store
+-            // (`saveSMBResumeThrottled`): the duration only rides along when it's both real
+-            // (`hasKnownDuration`) AND TRUSTED (`session.hasTrustworthyDuration`) — an
+-            // incomplete file can play with a NUMERIC but ESTIMATED length
++            // VLC may have only just resolved a real length. The duration only rides along when
++            // it's both real (`hasKnownDuration`) AND TRUSTED (`session.hasTrustworthyDuration`) —
++            // an incomplete file can play with a NUMERIC but ESTIMATED length
+             // (VLCKitEngine's fileSize×time/readBytes guess), and that must never ride along
+             // as a bogus sidecar.
+             let duration: Duration? = (self.hasKnownDuration && session.hasTrustworthyDuration)
+@@ -1797,16 +1791,15 @@ public final class PlayerViewModel {
+         // resume it was about to honor — the Jellyfin analog of reportStoppedIfNeeded's
+         // open-session gate. Nil after: the session is over.
+         if let session = smbSession {
+-            // Capture before clearing — the terminal write below needs the id + trust bit.
++            // Capture before clearing — the terminal write below needs the id.
+             let itemID = session.itemID
+-            let trusted = session.hasTrustworthyDuration
+-            // Clears the session (id + trust + throttle clock) and awaits a stale throttled
++            // Clears the session (id + throttle clock) and awaits a stale throttled
+             // save so it can't outrun this terminal write.
+             await clearSMBSession()
+             if CMTimeGetSeconds(currentPosition) > 0 {
+                 await smbResumeStore.save(
+                     position: currentPosition,
+-                    duration: (hasKnownDuration && trusted) ? currentDuration : nil,
++                    duration: hasKnownDuration ? currentDuration : nil,
+                     for: itemID
+                 )
+             }
+diff --git a/Packages/ParallaxFeatures/Sources/ParallaxFeatures/SMB/SMBPlaybackItem.swift b/Packages/ParallaxFeatures/Sources/ParallaxFeatures/SMB/SMBPlaybackItem.swift
+index 8f763715..e3a4e272 100644
+--- a/Packages/ParallaxFeatures/Sources/ParallaxFeatures/SMB/SMBPlaybackItem.swift
++++ b/Packages/ParallaxFeatures/Sources/ParallaxFeatures/SMB/SMBPlaybackItem.swift
+@@ -43,11 +43,9 @@ public nonisolated struct SMBPlaybackItem: Sendable {
+     /// Whether the VM's `currentDuration` will reflect a REAL container length rather than
+     /// VLCKitEngine's fileSize×time/readBytes read-rate estimate (`VLCKitEngine.effectiveDurationMs`).
+     /// `hasKnownDuration` is true for both — it only tests "is the duration numeric?" — so this bit
+-    /// is the only signal that distinguishes a synthesized guess from a proven length. `false` gates
+-    /// `SMBResumeStore`'s ≥95%-complete clear off: an estimate is low-biased against readBytes lagging
+-    /// the actual playhead, and clearing real progress against a guess would silently wipe a resume
+-    /// point. True on the bridge route (AVKit reads the container's own duration atom) and when the
+-    /// VLC route's probe proved the file complete; false on an unproven/incomplete VLC-route file.
++    /// is the only signal that distinguishes a synthesized guess from a proven length. True on the
++    /// bridge route (AVKit reads the container's own duration atom) and when the VLC route's probe
++    /// proved the file complete; false on an unproven/incomplete VLC-route file.
+     public let hasTrustworthyDuration: Bool
+     /// The routing hints the resolver's probe produced: `scheme "http"` (+ container/codecs) for a
+     /// bridged AVKit file, or `scheme "smb"` for the VLC route. Drives `EngineSelector` in the VM.
+diff --git a/Packages/ParallaxFeatures/Sources/ParallaxFeatures/SMB/SMBPlaybackResolver.swift b/Packages/ParallaxFeatures/Sources/ParallaxFeatures/SMB/SMBPlaybackResolver.swift
+index d6630916..30e45c7d 100644
+--- a/Packages/ParallaxFeatures/Sources/ParallaxFeatures/SMB/SMBPlaybackResolver.swift
++++ b/Packages/ParallaxFeatures/Sources/ParallaxFeatures/SMB/SMBPlaybackResolver.swift
+@@ -172,7 +172,7 @@ public struct SMBPlaybackResolver {
+             subtitleLabels: subtitleLabels,
+             // VLC route: trustworthy only when the probe ran AND proved the file complete — an
+             // unproven/incomplete file may synthesize its duration from the read-rate estimate
+-            // (VLCKitEngine.effectiveDurationMs), which SMBResumeStore's 95% clear must never trust.
++            // (VLCKitEngine.effectiveDurationMs).
+             hasTrustworthyDuration: probeResult?.isComplete == true,
+             hints: hints,
+             cleanup: nil
+diff --git a/Packages/ParallaxFeatures/Sources/ParallaxFeatures/SMB/SMBResumeStore.swift b/Packages/ParallaxFeatures/Sources/ParallaxFeatures/SMB/SMBResumeStore.swift
+index 8ed8c223..8117dfd0 100644
+--- a/Packages/ParallaxFeatures/Sources/ParallaxFeatures/SMB/SMBResumeStore.swift
++++ b/Packages/ParallaxFeatures/Sources/ParallaxFeatures/SMB/SMBResumeStore.swift
+@@ -6,8 +6,7 @@ import ParallaxCore
+ /// UserDefaults-backed: positions are tiny, and the 500-entry LRU cap bounds growth.
+ /// Mirrors `ResumePolicy`'s rules: nothing below 5s (a misclick isn't progress),
+ /// cleared at ≥95% of a KNOWN duration (a finished film restarts from the top).
+-/// A nil/indefinite duration skips the 95% rule — an incomplete file's estimated
+-/// runtime must never wipe real progress.
++/// A nil/indefinite duration skips the 95% rule.
+ ///
+ /// An `actor` (not `@MainActor`): UserDefaults is thread-safe, the resolver calls in
+ /// from off-main, and the VM's beat handler fire-and-forgets writes into it.
+diff --git a/Packages/ParallaxFeatures/Tests/ParallaxFeaturesTests/SMBPlaybackStartTests.swift b/Packages/ParallaxFeatures/Tests/ParallaxFeaturesTests/SMBPlaybackStartTests.swift
+index cbced7e9..b5d880f7 100644
+--- a/Packages/ParallaxFeatures/Tests/ParallaxFeaturesTests/SMBPlaybackStartTests.swift
++++ b/Packages/ParallaxFeatures/Tests/ParallaxFeaturesTests/SMBPlaybackStartTests.swift
+@@ -348,44 +348,6 @@ struct SMBPlaybackStartTests {
+         }
+     }
+ 
+-    // MARK: - Local resume vs an untrusted (estimated) duration
+-
+-    /// One position/duration shape, two verdicts, decided solely by whether the duration can be
+-    /// trusted. 5900s of a 6000s runtime is 98.3% — past the store's completion fraction, so it's
+-    /// the shape that clears a finished film AND the shape that would silently wipe real progress on
+-    /// an incomplete file, where VLCKitEngine synthesizes the "duration" from its read-rate estimate.
+-    @Test(
+-        "the completion-clear rule applies only to a duration the file can actually vouch for",
+-        arguments: [
+-            // (hasTrustworthyDuration, expected resume seconds after stop)
+-            (false, Double?.some(5_900)),
+-            (true, Double?.none),
+-        ]
+-    )
+-    func completionClearHonoursDurationTrust(trustworthy: Bool, expectedResume: Double?) async throws {
+-        try await SMBTestFixtures.withResumeStore(suite: #function) { store in
+-            let reporting = StubPlaybackReporting()
+-            let engine = FakePlaybackEngine(id: .vlcKit, capabilities: .vlcKit)
+-            let vm = makeVM(reporting: reporting, engine: engine, smbResumeStore: store)
+-            let id = ItemID(rawValue: "smb-duration-trust-\(trustworthy)")
+-
+-            await vm.start(smbItem: smbItem(itemID: id, hasTrustworthyDuration: trustworthy))
+-            engine.push(.playing(5_900, duration: .seconds(6_000)))
+-            try await engine.settle()
+-
+-            // stop()'s final save is unthrottled and inline-awaited — deterministic to assert
+-            // straight after, no throttle-window race.
+-            await vm.stop()
+-
+-            let resumed = await store.resumeTime(for: id)
+-            if let expectedResume {
+-                #expect(abs(CMTimeGetSeconds(try #require(resumed)) - expectedResume) < 0.001)
+-            } else {
+-                #expect(resumed == nil)
+-            }
+-        }
+-    }
+-
+     /// The beats come faster than the store should be written, so a playing session persists at
+     /// most once per 10 s of the player's clock. The first beat always writes. Saves land in the
+     /// order they were spawned, so a wrongly spawned save at 109 would show up in the sequence

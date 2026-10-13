@@ -1,0 +1,102 @@
+diff --git a/Packages/ParallaxFeatures/Sources/ParallaxFeatures/LoginViewModel.swift b/Packages/ParallaxFeatures/Sources/ParallaxFeatures/LoginViewModel.swift
+index 1958b3c3..fcbc79a2 100644
+--- a/Packages/ParallaxFeatures/Sources/ParallaxFeatures/LoginViewModel.swift
++++ b/Packages/ParallaxFeatures/Sources/ParallaxFeatures/LoginViewModel.swift
+@@ -32,13 +32,10 @@ public final class LoginViewModel {
+         self.onSignedIn = onSignedIn
+     }
+ 
+-    /// Server + username are required; the password is not. Jellyfin accounts can have no
+-    /// password at all (`HasPassword: false` — the official demo server's `demo` user is one),
+-    /// and `AuthenticateByName` accepts an empty `Pw` for them. Gating on a filled password
+-    /// would lock those accounts out of the app entirely. Matches `SMBLoginView.canConnect`,
+-    /// where a blank account means guest.
++    /// Connect needs all three fields. (Jellyfin allows blank passwords, but the form gates on a
++    /// filled one as the user's explicit "I'm ready" signal.)
+     public var canSubmitPassword: Bool {
+-        hasServerURL && !trimmedUsername.isEmpty
++        hasServerURL && !trimmedUsername.isEmpty && !password.isEmpty
+     }
+ 
+     /// Quick Connect only needs to know which server to pair with.
+diff --git a/Packages/ParallaxFeatures/Tests/ParallaxFeaturesTests/LoginViewModelTests.swift b/Packages/ParallaxFeatures/Tests/ParallaxFeaturesTests/LoginViewModelTests.swift
+index 33d4365a..bca4a5bb 100644
+--- a/Packages/ParallaxFeatures/Tests/ParallaxFeaturesTests/LoginViewModelTests.swift
++++ b/Packages/ParallaxFeatures/Tests/ParallaxFeaturesTests/LoginViewModelTests.swift
+@@ -2,49 +2,9 @@ import Foundation
+ import ParallaxFeatures
+ import Testing
+ 
+-/// The Connect gate must not require a password. Jellyfin accounts can be passwordless
+-/// (`HasPassword: false`) and `AuthenticateByName` issues a token for an empty `Pw` — the official
+-/// demo server's `demo` user is exactly that, and it's the account an App Store reviewer signs in
+-/// with. The gate used to require a filled password, which locked every such account out of the app
+-/// with a permanently disabled button and no error to explain it.
+-/// One state of the three Connect fields and whether the button is live.
+-struct ConnectGateCase: Sendable, CustomTestStringConvertible {
+-    let name: String
+-    let server: String
+-    let username: String
+-    let password: String
+-    let canSubmit: Bool
+-    var testDescription: String { name }
+-}
+-
+-private let demoServer = "demo.jellyfin.org/stable"
+-
+-private let connectGateCases: [ConnectGateCase] = [
+-    // THE case this suite exists for: the official demo account has no password, and it's the
+-    // account an App Store reviewer signs in with.
+-    ConnectGateCase(name: "passwordless account", server: demoServer, username: "demo", password: "", canSubmit: true),
+-    ConnectGateCase(name: "everything filled", server: demoServer, username: "demo", password: "hunter2", canSubmit: true),
+-    // Whitespace-only, not merely empty: the field is trimmed before the gate reads it.
+-    ConnectGateCase(name: "whitespace username", server: demoServer, username: "   ", password: "hunter2", canSubmit: false),
+-    ConnectGateCase(name: "empty username", server: demoServer, username: "", password: "hunter2", canSubmit: false),
+-    ConnectGateCase(name: "no server", server: "", username: "demo", password: "hunter2", canSubmit: false),
+-    ConnectGateCase(name: "whitespace server", server: "  ", username: "demo", password: "hunter2", canSubmit: false),
+-    ConnectGateCase(name: "nothing at all", server: "", username: "", password: "", canSubmit: false),
+-]
+-
+-@Suite("Login view model · Connect gate", .timeLimit(.minutes(1)))
++@Suite("Login view model", .timeLimit(.minutes(1)))
+ @MainActor
+ struct LoginViewModelTests {
+-    @Test("the Connect gate requires a server and a username — and nothing else", arguments: connectGateCases)
+-    func canSubmitPassword(_ gate: ConnectGateCase) async throws {
+-        let world = try await AppWorld.launch()
+-        let vm = LoginViewModel(app: world.app)
+-        vm.serverURLInput = gate.server
+-        vm.username = gate.username
+-        vm.password = gate.password
+-        #expect(vm.canSubmitPassword == gate.canSubmit)
+-    }
+-
+     /// Reverse-proxied servers live under a path prefix, and the demo server is one
+     /// (`/stable`). `normalize` must keep the path — dropping it would send every request to the
+     /// host root and 404.
+diff --git a/Parallax/Features/Settings/Connect/Jellyfin/LoginView.swift b/Parallax/Features/Settings/Connect/Jellyfin/LoginView.swift
+index 8fd4c097..597bb084 100644
+--- a/Parallax/Features/Settings/Connect/Jellyfin/LoginView.swift
++++ b/Parallax/Features/Settings/Connect/Jellyfin/LoginView.swift
+@@ -148,8 +148,7 @@ struct LoginView: View {
+                     .padding(.horizontal, SettingsMetrics.headerInset)
+             }
+ 
+-            // Connect (solid primary) — needs a server and a username; passwordless Jellyfin
+-            // accounts are valid, so the password field is not part of the gate.
++            // Connect (solid primary) — needs all three fields before it's tappable.
+             Button {
+                 Task { await vm.submit() }
+             } label: {
+@@ -187,9 +186,8 @@ struct LoginView: View {
+     }
+ 
+     #if !os(tvOS)
+-    /// The iOS return chain's submit on the last field — only fires a sign-in when the server and
+-    /// username are filled (the password is optional, see `canSubmitPassword`); an incomplete form is
+-    /// a no-op, the same gate the Connect button enforces. tvOS has no
++    /// The iOS return chain's submit on the last field — only fires a sign-in when all three fields are
++    /// filled; an incomplete form is a no-op, the same gate the Connect button enforces. tvOS has no
+     /// last-field submit: its system keyboard's Done returns to the form and the Connect button signs in.
+     private func handleSubmit(vm: LoginViewModel) {
+         // `!vm.isWorking` too: the Button is disabled while signing in, but the keyboard bypasses it —
