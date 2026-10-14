@@ -100,7 +100,7 @@ struct SMBBrowseView: View {
         // share root). Pushed, not modal — it's a task within this browse, and the same idiom the
         // settings share list uses for the identical repair.
         .navigationDestination(isPresented: $isEnteringPassword) {
-            SMBPasswordRecoveryView(id: path.ref.id, data: path.ref.data) {
+            SMBPasswordRecoveryView(app: app, id: path.ref.id, data: path.ref.data) {
                 isEnteringPassword = false
                 Task { await model?.reopenAfterPasswordRecovery() }
             }

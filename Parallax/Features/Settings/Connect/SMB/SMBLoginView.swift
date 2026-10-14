@@ -15,10 +15,8 @@ struct SMBLoginView: View {
     /// Called after a server is successfully saved (shares selected + stored in Keychain).
     var onAdded: () -> Void
 
-    @Environment(AppModel.self) private var app
-
     /// The add-server flow, shared with the pushed share picker.
-    @State private var model: SMBAddServerModel?
+    @State private var model: SMBAddServerModel
     #if !os(tvOS)
     @State private var showPassword = false
     #endif
@@ -30,17 +28,12 @@ struct SMBLoginView: View {
     private enum Field: CaseIterable { case host, username, password }
     #endif
 
-    var body: some View {
-        Group {
-            if let model { form(model: model) }
-        }
-        .task {
-            if model == nil { model = app.makeSMBAddServer() }
-        }
+    init(app: AppModel, onAdded: @escaping () -> Void) {
+        _model = State(initialValue: app.makeSMBAddServer())
+        self.onAdded = onAdded
     }
 
-    @ViewBuilder
-    private func form(model: SMBAddServerModel) -> some View {
+    var body: some View {
         @Bindable var model = model
         SettingsScaffold(showsBrand: false) {
             VStack(spacing: Space.s18) {
@@ -56,10 +49,10 @@ struct SMBLoginView: View {
                 #endif
 
                 #if !os(tvOS)
-                discoveredServersSection(model: model)
+                discoveredServersSection
                 #endif
 
-                fieldsSection(model: model)
+                fieldsSection
 
                 if let error = model.connectionError {
                     Text(error)
@@ -69,7 +62,7 @@ struct SMBLoginView: View {
                         .padding(.horizontal, SettingsMetrics.headerInset)
                 }
 
-                connectButton(model: model)
+                connectButton
             }
         }
         #if !os(tvOS)
@@ -90,7 +83,7 @@ struct SMBLoginView: View {
 
     #if !os(tvOS)
     @ViewBuilder
-    private func discoveredServersSection(model: SMBAddServerModel) -> some View {
+    private var discoveredServersSection: some View {
         if !model.discoveredServers.isEmpty {
             SettingsGroup(title: "Discovered") {
                 ForEach(model.discoveredServers) { server in
@@ -112,18 +105,18 @@ struct SMBLoginView: View {
     /// tvOS uses the Settings-style row list (rows → single-field keyboard screen, no inline field
     /// pill); iOS keeps the inline grouped fields. See `CredentialRowList` for why.
     @ViewBuilder
-    private func fieldsSection(model: SMBAddServerModel) -> some View {
+    private var fieldsSection: some View {
         #if os(tvOS)
         // No last-field auto-connect: tvOS's system keyboard Done returns to the form, and the
         // always-present Connect button submits (gated to a complete form).
-        CredentialRowList(rows: credentialRows(model: model))
+        CredentialRowList(rows: credentialRows)
         #else
-        connectionFieldsSection(model: model)
+        connectionFieldsSection
         #endif
     }
 
     #if os(tvOS)
-    private func credentialRows(model: SMBAddServerModel) -> [CredentialRow] {
+    private var credentialRows: [CredentialRow] {
         @Bindable var model = model
         return [
             CredentialRow(id: "host", title: "Server", placeholder: "e.g. 192.168.1.10", text: $model.host, keyboard: .URL),
@@ -134,7 +127,7 @@ struct SMBLoginView: View {
     #endif
 
     #if !os(tvOS)
-    private func connectionFieldsSection(model: SMBAddServerModel) -> some View {
+    private var connectionFieldsSection: some View {
         @Bindable var model = model
         return VStack(spacing: Space.s18) {
             SettingsGroup(title: "Server") {
@@ -147,7 +140,7 @@ struct SMBLoginView: View {
                             .keyboardType(.URL)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
-                            .submitChain(.host, focus: $focusedField) { handleSubmit(model: model) }
+                            .submitChain(.host, focus: $focusedField) { handleSubmit() }
                     }
                 }
             }
@@ -156,7 +149,7 @@ struct SMBLoginView: View {
                     TextField("Username", text: $model.username)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                        .submitChain(.username, focus: $focusedField) { handleSubmit(model: model) }
+                        .submitChain(.username, focus: $focusedField) { handleSubmit() }
                 }
                 CredentialFieldRow(icon: "lock") {
                     HStack {
@@ -166,7 +159,7 @@ struct SMBLoginView: View {
                         }
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                        .submitChain(.password, focus: $focusedField) { handleSubmit(model: model) }
+                        .submitChain(.password, focus: $focusedField) { handleSubmit() }
                         PasswordRevealToggle(isRevealed: $showPassword)
                     }
                 }
@@ -176,7 +169,7 @@ struct SMBLoginView: View {
 
     /// "Go" on the last field connects, but only when the host is filled — the same
     /// gate the Connect button enforces, so return on an incomplete form is a no-op.
-    private func handleSubmit(model: SMBAddServerModel) {
+    private func handleSubmit() {
         guard model.canConnect else { return }
         model.connect()
     }
@@ -191,7 +184,7 @@ struct SMBLoginView: View {
     /// stays focusable while connecting and tapping it cancels, so there's always a live focus target
     /// and a way out. While working, `formActionLabel` keeps the "Cancel" title VISIBLE beside the
     /// spinner — hidden, the in-flight button read as a frozen blank pill on Apple TV.
-    private func connectButton(model: SMBAddServerModel) -> some View {
+    private var connectButton: some View {
         Button {
             if model.isConnecting { model.cancelConnect() } else { model.connect() }
         } label: {

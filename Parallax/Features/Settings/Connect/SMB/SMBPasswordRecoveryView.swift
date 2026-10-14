@@ -15,15 +15,7 @@ import ParallaxFeatures
 ///
 /// Verification runs before anything is written; see `SMBPasswordRecoveryModel`.
 struct SMBPasswordRecoveryView: View {
-    let id: ServerID
-    let data: SMBServerData
-    /// Called after the new password verified and was stored — the host reloads whatever it was
-    /// doing (the share list, the browse level) and pops this screen.
-    var onRecovered: () -> Void
-
-    @Environment(AppModel.self) private var app
-
-    @State private var model: SMBPasswordRecoveryModel?
+    @State private var model: SMBPasswordRecoveryModel
     #if !os(tvOS)
     @State private var showPassword = false
     /// Single-field chain: return is "go" and submits (see `submitChain`).
@@ -31,20 +23,17 @@ struct SMBPasswordRecoveryView: View {
     private enum Field: CaseIterable { case password }
     #endif
 
-    private var host: String { data.host }
+    private var host: String { model.data.host }
 
-    private var account: String { data.username.isEmpty ? "Guest" : data.username }
+    private var account: String { model.data.username.isEmpty ? "Guest" : model.data.username }
 
-    var body: some View {
-        Group {
-            if let model { form(model: model) }
-        }
-        .task {
-            if model == nil { model = app.makeSMBPasswordRecovery(id: id, data: data, onRecovered: onRecovered) }
-        }
+    /// `onRecovered` runs after the new password verified and was stored — the host reloads
+    /// whatever it was doing (the share list, the browse level) and pops this screen.
+    init(app: AppModel, id: ServerID, data: SMBServerData, onRecovered: @escaping () -> Void) {
+        _model = State(initialValue: app.makeSMBPasswordRecovery(id: id, data: data, onRecovered: onRecovered))
     }
 
-    private func form(model: SMBPasswordRecoveryModel) -> some View {
+    var body: some View {
         SettingsScaffold(showsBrand: false) {
             VStack(spacing: Space.s18) {
                 #if os(tvOS)
@@ -67,7 +56,7 @@ struct SMBPasswordRecoveryView: View {
                     SettingsRowLabel(systemImage: "person", title: "Account", value: account)
                 }
 
-                passwordSection(model: model)
+                passwordSection
 
                 if let errorMessage = model.errorMessage {
                     Text(errorMessage)
@@ -77,7 +66,7 @@ struct SMBPasswordRecoveryView: View {
                         .padding(.horizontal, SettingsMetrics.headerInset)
                 }
 
-                submitButton(model: model)
+                submitButton
             }
         }
         .navigationTitle("Enter Password")
@@ -94,7 +83,7 @@ struct SMBPasswordRecoveryView: View {
     /// tvOS uses the Settings-style row list (row → single-field keyboard screen); iOS keeps the
     /// inline grouped field. Same split as `SMBLoginView`.
     @ViewBuilder
-    private func passwordSection(model: SMBPasswordRecoveryModel) -> some View {
+    private var passwordSection: some View {
         @Bindable var model = model
         #if os(tvOS)
         CredentialRowList(
@@ -130,7 +119,7 @@ struct SMBPasswordRecoveryView: View {
 
     /// ONE button that morphs Save ⇄ Cancel, never a disabled button plus an inserted one: on tvOS
     /// disabling the focused control strands the focus engine (see `SMBLoginView.connectButton`).
-    private func submitButton(model: SMBPasswordRecoveryModel) -> some View {
+    private var submitButton: some View {
         Button {
             if model.isVerifying { model.cancel() } else { model.submit() }
         } label: {
