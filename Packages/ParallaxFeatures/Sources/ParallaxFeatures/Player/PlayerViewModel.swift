@@ -60,7 +60,7 @@ public final class PlayerViewModel {
     /// property enforces cannot be forgotten by the next one.
     public private(set) var phase: Phase = .idle {
         didSet {
-            if case .failed = phase { seekHold = nil }
+            if case .failed = phase { seekHold = nil; diagnostics.cancelOpen() }
             // `midSessionReload` means "phase is `.loading` because an engine-reusing
             // reload put it there", so the phase leaving `.loading` IS its end —
             // and it leaves on the NEW session's first live beat, several hundred ms after
@@ -455,6 +455,8 @@ public final class PlayerViewModel {
     /// See `SessionDiagnostics`.
     private let diagnostics: SessionDiagnostics
     public var startupMillis: Int? { diagnostics.startupMillis }
+    /// The retained record of this session's open, once its first frame played.
+    public var lastOpen: OpenRecord? { diagnostics.lastOpen }
     public var transcodeDelivery: TranscodeDelivery? { diagnostics.transcodeDelivery }
     public var deliveryProbeExhausted: Bool { diagnostics.deliveryProbeExhausted }
 
@@ -1040,7 +1042,7 @@ public final class PlayerViewModel {
             // has its own muxing and starts level. (A retry of the SAME item goes through
             // `resetForReplay` directly and keeps it, like `playbackRate`.)
             subtitleDelayMs = 0
-            await replay { await self.start(itemID: id) }
+            await replay(origin: .advance) { await self.start(itemID: id) }
         }
     }
 
@@ -1052,6 +1054,7 @@ public final class PlayerViewModel {
     /// detail fetch lands.
     func start(itemID: ItemID, fromBeginning: Bool = false) async {
         guard !isClosed else { return }
+        diagnostics.armOpen()
         phase = .loading
         pendingItemID = itemID
         pendingFromBeginning = fromBeginning
@@ -1076,6 +1079,7 @@ public final class PlayerViewModel {
     /// `PlayerAssetFactory.asset(for:)`), so a restart is simply a nil start time.
     func start(item: ItemDetail, fromBeginning: Bool = false) async {
         guard !isClosed else { return }
+        diagnostics.armOpen()
         isStartingPlayback = true
         defer { isStartingPlayback = false }
         phase = .loading
@@ -1164,12 +1168,13 @@ public final class PlayerViewModel {
     /// session is never double-activated and `phase` is managed in one place per step.
     func start(resolvingSMB resolve: @escaping () async throws -> SMBPlaybackItem) async {
         guard !isClosed else { return }
+        diagnostics.armOpen()
         phase = .loading
         // Kept so the failure scrim's "Try again" can replay the SMB path (retry() otherwise
         // reads only the Jellyfin playingItem/pendingItemID, which this path never sets).
         smbResolve = resolve
         do {
-            let item = try await resolve()
+            let item = try await diagnostics.timingResolve(route: { .smb(bridged: $0.isBridged) }, resolve)
             // Stash the bridge cleanup BEFORE the exit fence below: `resolve()` already
             // started the bridge (bridge route), and `checkStillActive()` throws when a
             // dismissal landed in the resolve window (the common exit case). Stashing here
@@ -1388,7 +1393,9 @@ public final class PlayerViewModel {
                 """
             )
         } else {
-            resolved = try await resolve(item.id, caps, startTime, selection)
+            resolved = try await diagnostics.timingResolve(route: { .jellyfin($0.method) }) {
+                try await resolve(item.id, caps, startTime, selection)
+            }
         }
         // The critical fence: resolve is the long network call, so this is where an
         // exit-during-loading usually lands. Bail BEFORE building an engine.
@@ -1624,9 +1631,9 @@ public final class PlayerViewModel {
             await reporter.stopEncodingIfNeeded()
             throw error
         }
-        // Startup-metric anchor: recorded at dispatch, consumed by this session's
-        // first `.playing` beat in `handle(_:)` — see `startupMillis`.
-        diagnostics.armStartupClock()
+        // Stopwatch anchor: recorded at dispatch with the engine that will play, consumed by this
+        // session's first `.playing` beat in `handle(_:)` — see `startupMillis`.
+        diagnostics.armStartupClock(engine: id)
         if isFreshSession { desiredPlaying = true }
         // Starting a stream supersedes any transport command still queued on the channel: a
         // pause armed before this load must not land on the engine it is about to start.
@@ -1890,7 +1897,7 @@ public final class PlayerViewModel {
         // Captured before resetForReplay() clears it (same pattern as item/id above) —
         // a retry after a failed restart must stay a restart, not quietly resume.
         let fromBeginning = pendingFromBeginning
-        await replay {
+        await replay(origin: .retry) {
             if let smb { await self.start(resolvingSMB: smb) }
             else if let item { await self.start(item: item, fromBeginning: fromBeginning) }
             else if let id { await self.start(itemID: id, fromBeginning: fromBeginning) }
@@ -1900,10 +1907,11 @@ public final class PlayerViewModel {
 
     /// Tears the session down and starts a fresh one on this view model, as one task `close()`
     /// can cancel and join, so no replay outlives the player. A replay already in flight wins.
-    private func replay(_ start: @escaping () async -> Void) async {
+    private func replay(origin: OpenOrigin, _ start: @escaping () async -> Void) async {
         guard replaying == nil else { return }
         let task = Task {
             guard await resetForReplay() else { return }
+            diagnostics.armOpen(origin: origin)
             await start()
         }
         replaying = task
@@ -1928,6 +1936,7 @@ public final class PlayerViewModel {
         // weak view makes this a no-op. AFTER the fence is disarmed, since the fence is
         // what keeps `stop()` from doing this on a real exit.
         unfreezeVideoSurface()
+        diagnostics.cancelOpen()
         phase = .idle
         return true
     }
@@ -3121,9 +3130,9 @@ public final class PlayerViewModel {
             }
         case .playing(let position, let duration, let buffered, let provenance):
             noteLiveBeat(framesMoving: true)
-            // First `.playing` beat of this session: land the startup metric and consume
-            // the anchor so a later `.playing` (resume-from-pause, post-stall) never
-            // overwrites it. `nil` when this beat isn't the first (already consumed).
+            // First `.playing` beat of this session: land the startup metric and the open's
+            // record, consuming the stopwatch so a later `.playing` (resume-from-pause,
+            // post-stall) never overwrites them. A no-op when this beat isn't the first.
             diagnostics.notePlaying()
             isPlaying = true
             stall.clear()
