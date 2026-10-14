@@ -207,13 +207,10 @@ public actor SMBHTTPBridge {
         }
         statsConnections += 1
         connections[ObjectIdentifier(connection)] = connection
-        connection.stateUpdateHandler = { [weak self] state in
-            switch state {
-            case .cancelled, .failed:
-                Task { await self?.remove(connection) }
-            default:
-                break
-            }
+        connection.stateUpdateHandler = { state in
+            // A failed connection parks its pending completions until cancelled, and the serve
+            // loop awaiting them holds the bridge.
+            if case .failed = state { connection.cancel() }
         }
         Task {
             let queue = self.queue
