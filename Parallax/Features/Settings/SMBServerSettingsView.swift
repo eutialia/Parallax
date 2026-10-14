@@ -13,9 +13,10 @@ struct SMBServerSettingsView: View {
     /// The shared settings view model (same instance the server-list root holds), refreshed after a
     /// removal so its `smbServers` list drops the row — see `removeServer()`.
     let vm: SettingsViewModel
+    /// Pops this page. Not `\.dismiss`, for the render loop described on `ServerSettingsView.onRemoved`.
+    let onRemoved: () -> Void
 
     @Environment(AppModel.self) private var app
-    @Environment(\.dismiss) private var dismiss
     @State private var model: SMBServerSettingsModel?
 
     @State private var isConfirmingRemove = false
@@ -228,12 +229,12 @@ struct SMBServerSettingsView: View {
     }
 
     /// Removes the server, then refreshes the shared settings list so the row goes with it (a list
-    /// that isn't refreshed keeps a ghost row until the panel is reopened). Always dismiss after: if
+    /// that isn't refreshed keeps a ghost row until the panel is reopened). Always pop after: if
     /// it was the last source the router tears the panel down (a no-op pop); otherwise this pops off
     /// the detail page of a server that no longer exists.
     private func removeServer() async {
         await model?.remove()
         await vm.refresh()
-        dismiss()
+        onRemoved()
     }
 }

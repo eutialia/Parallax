@@ -12,9 +12,12 @@ import ParallaxFeatures
 struct ServerSettingsView: View {
     let session: Session
     let vm: SettingsViewModel
+    /// Pops this page. Not `\.dismiss`: a view that reads it and owns a `navigationDestination`
+    /// re-renders on every change to it, and the pushed page's `tvHidesTabSidebar` changes it on
+    /// every pass, so the push loops the render graph forever on tvOS.
+    let onRemoved: () -> Void
 
     @Environment(AppModel.self) private var app
-    @Environment(\.dismiss) private var dismiss
     @State private var isConfirmingRemove = false
     @State private var showingVisibleLibraries = false
     @State private var model: ServerSettingsModel?
@@ -61,12 +64,12 @@ struct ServerSettingsView: View {
             Button("Remove", role: .destructive) {
                 Task {
                     await vm.signOut(session)
-                    // On success pop back — this server is gone. Always dismiss: if it was the last
-                    // SOURCE the router routed to login and tore the panel down (a no-op dismiss);
+                    // On success pop back — this server is gone. Always pop: if it was the last
+                    // SOURCE the router routed to login and tore the panel down (a no-op pop);
                     // if an SMB source remains the router keeps the panel, so without this pop the user
                     // is stranded on a ghost page for a server that no longer exists. On failure stay
                     // so the shared vm's error message shows.
-                    if vm.signOutErrorMessage == nil { dismiss() }
+                    if vm.signOutErrorMessage == nil { onRemoved() }
                 }
             }
             Button("Cancel", role: .cancel) {}
