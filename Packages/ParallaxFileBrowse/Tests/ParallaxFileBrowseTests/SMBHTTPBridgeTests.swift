@@ -28,6 +28,10 @@ struct SMBHTTPBridgeTests {
     /// times. Derived from the production ceiling: widening `chunkSize` must not silently stop
     /// exercising the multi-chunk path.
     private static let multiChunkSize = SMBHTTPBridge.chunkSize * 5 / 2
+    /// Must outrun what loopback socket buffers absorb, or the bridge finishes sending and idles in
+    /// `receive` instead of parking a `send`. Measured against the unfixed handler: 512 KiB passes
+    /// (no stall), 1,000,000 bytes fails. Two ceiling chunks leaves a wide margin over that edge.
+    private static let stalledSize = SMBHTTPBridge.chunkSize * 2
 
     /// Runs `body` against a started bridge and always stops it. Swift has no async `defer`, and the
     /// fire-and-forget `Task { await bridge.stop() }` this replaces let listeners outlive their test.
@@ -287,6 +291,27 @@ struct SMBHTTPBridgeTests {
         await #expect(throws: SMBHTTPBridge.BridgeError.stopped) { _ = try await bridge.start(scope: .loopback) }
     }
 
+    @Test("A bridge whose clients reset mid-download is freed once it stops")
+    func resetClientsDoNotPinTheBridge() async throws {
+        let freed = WeakBridge()
+        try await withBridge(size: Self.stalledSize) { bridge, url, _ in
+            freed.bridge = bridge
+            let downloads = try (0..<4).map { _ in try StalledDownload(url: url) }
+            await untilSettled { await bridge.liveConnectionCount == 4 }
+            let parked = QuietPoll()
+            await untilSettled {
+                try? await Task.sleep(for: .milliseconds(20))
+                return await parked.isQuiet(afterReading: bridge.stats.bytesRead)
+            }
+
+            downloads.prefix(2).forEach { $0.reset() }
+            await untilSettled { await bridge.liveConnectionCount == 2 }
+            await bridge.stop()
+            downloads.dropFirst(2).forEach { $0.close() }
+        }
+        await untilSettled { freed.bridge == nil }
+    }
+
     // MARK: - Malformed request heads
     //
     // URLSession will not emit any of these, so they go out over a raw socket. Each must close the
@@ -343,4 +368,18 @@ struct SMBHTTPBridgeTests {
             #expect(response.suffix(10) == data.subdata(in: 0..<10))
         }
     }
+}
+
+private final class QuietPoll: @unchecked Sendable {
+    private var last: UInt64 = 0
+    private var stablePolls = 0
+    func isQuiet(afterReading bytes: UInt64) -> Bool {
+        stablePolls = bytes > 0 && bytes == last ? stablePolls + 1 : 0
+        last = bytes
+        return stablePolls >= 10
+    }
+}
+
+private final class WeakBridge: @unchecked Sendable {
+    weak var bridge: SMBHTTPBridge?
 }
