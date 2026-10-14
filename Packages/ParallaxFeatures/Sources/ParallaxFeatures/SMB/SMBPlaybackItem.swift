@@ -56,6 +56,9 @@ public nonisolated struct SMBPlaybackItem: Sendable {
     /// the bridge route; nil on the VLC route (libVLC owns its own smb:// connection). Opaque on
     /// purpose — it carries the `ParallaxFileBrowse` bridge/reader the VM must never import.
     public let cleanup: (@Sendable () async -> Void)?
+    /// Whether the stream rides the local HTTP bridge (AVKit, or VLC over it) rather than libVLC's
+    /// own smb:// input.
+    public var isBridged: Bool { cleanup != nil }
 
     public init(
         itemID: ItemID,
