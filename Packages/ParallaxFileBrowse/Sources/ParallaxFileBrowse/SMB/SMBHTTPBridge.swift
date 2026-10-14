@@ -222,6 +222,9 @@ public actor SMBHTTPBridge {
         }
     }
 
+    /// Package-internal: lets tests wait on connection teardown instead of sleeping.
+    var liveConnectionCount: Int { connections.count }
+
     private func remove(_ connection: NWConnection) {
         connections.removeValue(forKey: ObjectIdentifier(connection))
     }
