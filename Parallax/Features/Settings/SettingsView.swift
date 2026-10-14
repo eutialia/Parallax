@@ -115,11 +115,11 @@ struct SettingsView: View {
         switch route {
         case .server(let session):
             if let vm = viewModel {
-                ServerSettingsView(session: session, vm: vm)
+                ServerSettingsView(session: session, vm: vm, onRemoved: { path = [] })
             }
         case .smbServer(let server):
             if let vm = viewModel {
-                SMBServerSettingsView(server: server, vm: vm)
+                SMBServerSettingsView(server: server, vm: vm, onRemoved: { path = [] })
             }
         case .addServerChoose:
             AddServerChooseView(
