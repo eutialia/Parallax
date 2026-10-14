@@ -80,7 +80,7 @@ struct ConnectSourceView: View {
                 case .smb:
                     // Saving the share routes a first source onto SMB-only home
                     // (`SMBAddServerModel.save`), which unmounts this view.
-                    SMBLoginView(onAdded: {})
+                    SMBLoginView(app: app, onAdded: {})
                         .navigationTitle("Network Share")
                         #if !os(tvOS)
                         .navigationBarTitleDisplayMode(.inline)

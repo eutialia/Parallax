@@ -10,12 +10,16 @@ import ParallaxFeatures
 struct VisibleLibrariesView: View {
     let session: Session
 
-    @Environment(AppModel.self) private var app
-    @State private var model: VisibleLibrariesModel?
+    @State private var model: VisibleLibrariesModel
+
+    init(session: Session, app: AppModel) {
+        self.session = session
+        _model = State(initialValue: VisibleLibrariesModel(session: session, app: app))
+    }
 
     var body: some View {
         SettingsScaffold(showsBrand: false) {
-            if let model, !model.isLoading {
+            if !model.isLoading {
                 if let loadError = model.loadError {
                     SettingsRetryError(message: loadError) { Task { await model.load() } }
                 } else if model.collections.isEmpty {
@@ -53,8 +57,7 @@ struct VisibleLibrariesView: View {
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .task {
-            if model == nil { model = VisibleLibrariesModel(session: session, app: app) }
-            await model?.load()
+            await model.load()
         }
     }
 }

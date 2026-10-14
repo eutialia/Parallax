@@ -9,23 +9,31 @@ import ParallaxFeatures
 /// (`SMBServerSettingsModel`): on appear it lists the shares, pre-checking the persisted ones, and
 /// each toggle persists + rebuilds the sidebar. A Remove action drops the server entirely.
 struct SMBServerSettingsView: View {
-    let server: PersistedServer
+    let ref: SMBServerRef
     /// The shared settings view model (same instance the server-list root holds), refreshed after a
     /// removal so its `smbServers` list drops the row — see `removeServer()`.
     let vm: SettingsViewModel
+    let app: AppModel
     /// Pops this page. Not `\.dismiss`, for the render loop described on `ServerSettingsView.onRemoved`.
     let onRemoved: () -> Void
 
-    @Environment(AppModel.self) private var app
-    @State private var model: SMBServerSettingsModel?
+    @State private var model: SMBServerSettingsModel
+
+    init(ref: SMBServerRef, vm: SettingsViewModel, app: AppModel, onRemoved: @escaping () -> Void) {
+        self.ref = ref
+        self.vm = vm
+        self.app = app
+        self.onRemoved = onRemoved
+        _model = State(initialValue: app.makeSMBServerSettings(id: ref.id, data: ref.data))
+    }
 
     @State private var isConfirmingRemove = false
     /// Drives the pushed password-recovery form (same `navigationDestination(isPresented:)` idiom
     /// the add-server form uses for its share picker).
     @State private var isEnteringPassword = false
 
-    private var loadState: SMBServerSettingsModel.LoadState { model?.loadState ?? .loading }
-    private var enabledShares: Set<String> { model?.enabledShares ?? [] }
+    private var loadState: SMBServerSettingsModel.LoadState { model.loadState }
+    private var enabledShares: Set<String> { model.enabledShares }
 
     // MARK: - tvOS focus
 
@@ -39,16 +47,9 @@ struct SMBServerSettingsView: View {
 
     // MARK: - Derived
 
-    private var data: SMBServerData? {
-        if case .smb(let d) = server.kind { return d } else { return nil }
-    }
+    private var host: String { ref.data.host }
 
-    private var host: String { data?.host ?? "" }
-
-    private var account: String {
-        guard let data, !data.username.isEmpty else { return "Guest" }
-        return data.username
-    }
+    private var account: String { ref.data.username.isEmpty ? "Guest" : ref.data.username }
 
     private var connectionPill: StatusPillData {
         switch loadState {
@@ -96,8 +97,7 @@ struct SMBServerSettingsView: View {
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .task {
-            if model == nil, let data { model = app.makeSMBServerSettings(id: server.id, data: data) }
-            await model?.loadShares()
+            await model.loadShares()
         }
         .confirmationDialog(
             "Remove this server?",
@@ -110,14 +110,12 @@ struct SMBServerSettingsView: View {
             Text("\(host) will be removed from your libraries.")
         }
         .navigationDestination(isPresented: $isEnteringPassword) {
-            if let data {
-                SMBPasswordRecoveryView(id: server.id, data: data) {
-                    isEnteringPassword = false
-                    // The password is live again — re-run the share load that failed.
-                    Task { await model?.loadShares() }
-                }
-                .tvHidesTabSidebar()
+            SMBPasswordRecoveryView(app: app, id: ref.id, data: ref.data) {
+                isEnteringPassword = false
+                // The password is live again — re-run the share load that failed.
+                Task { await model.loadShares() }
             }
+            .tvHidesTabSidebar()
         }
     }
 
@@ -133,7 +131,7 @@ struct SMBServerSettingsView: View {
 
             case .failed(let message, let offersPasswordRecovery):
                 SettingsRetryError(message: message, retryFocus: $retryFocused) {
-                    Task { await model?.loadShares() }
+                    Task { await model.loadShares() }
                 }
                 if offersPasswordRecovery {
                     // In-place recovery instead of the old remove-and-re-add dead end: the row
@@ -194,7 +192,7 @@ struct SMBServerSettingsView: View {
                 ShareSelectionRow(
                     share: share,
                     isSelected: enabledShares.contains(share.name)
-                ) { model?.toggle(share.name) }
+                ) { model.toggle(share.name) }
                     .tvFocused($focusedShare, equals: share.name)
             }
             ForEach(unavailable, id: \.self) { name in
@@ -202,7 +200,7 @@ struct SMBServerSettingsView: View {
                     share: SMBShare(name: name, comment: ""),
                     isSelected: true,
                     isUnavailable: true
-                ) { model?.toggle(name) }
+                ) { model.toggle(name) }
                     .tvFocused($focusedShare, equals: name)
             }
         }
@@ -233,7 +231,7 @@ struct SMBServerSettingsView: View {
     /// it was the last source the router tears the panel down (a no-op pop); otherwise this pops off
     /// the detail page of a server that no longer exists.
     private func removeServer() async {
-        await model?.remove()
+        await model.remove()
         await vm.refresh()
         onRemoved()
     }

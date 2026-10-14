@@ -32,7 +32,7 @@ struct SettingsView: View {
     /// add task is literally part of Settings.
     enum Route: Hashable {
         case server(Session)
-        case smbServer(PersistedServer)
+        case smbServer(SMBServerRef)
         case addServerChoose
         case addJellyfin
         /// Re-authenticating an existing, signed-out server; payload is its address to pre-fill.
@@ -115,11 +115,11 @@ struct SettingsView: View {
         switch route {
         case .server(let session):
             if let vm = viewModel {
-                ServerSettingsView(session: session, vm: vm, onRemoved: { path = [] })
+                ServerSettingsView(session: session, vm: vm, app: app, onRemoved: { path = [] })
             }
-        case .smbServer(let server):
+        case .smbServer(let ref):
             if let vm = viewModel {
-                SMBServerSettingsView(server: server, vm: vm, onRemoved: { path = [] })
+                SMBServerSettingsView(ref: ref, vm: vm, app: app, onRemoved: { path = [] })
             }
         case .addServerChoose:
             AddServerChooseView(
@@ -143,7 +143,7 @@ struct SettingsView: View {
                 .navigationBarTitleDisplayMode(.inline)
                 #endif
         case .addSMB:
-            SMBLoginView(onAdded: { handleAddedSMBServer() })
+            SMBLoginView(app: app, onAdded: { handleAddedSMBServer() })
                 .navigationTitle("Add SMB Server")
                 #if !os(tvOS)
                 .navigationBarTitleDisplayMode(.inline)
@@ -182,7 +182,7 @@ struct SettingsView: View {
                         path.append(.server(session))
                     }
                 },
-                onSelectSMBServer: { server in path.append(.smbServer(server)) },
+                onSelectSMBServer: { ref in path.append(.smbServer(ref)) },
                 onSignInSignedOut: { server in path.append(.signInAgain(server.serverURL)) },
                 onRemoveSignedOut: { id in Task { await vm.removeSignedOutServer(id) } },
                 onAddServer: {
@@ -216,7 +216,7 @@ struct SettingsView: View {
     static func smbServerRows(_ servers: [PersistedServer]) -> [SettingsSMBServerRow] {
         servers.compactMap { server in
             guard case .smb(let data) = server.kind else { return nil }
-            return SettingsSMBServerRow(server: server, host: data.host, subtitle: data.shareCountSubtitle)
+            return SettingsSMBServerRow(ref: SMBServerRef(id: server.id, data: data))
         }
     }
 
@@ -245,6 +245,7 @@ struct SettingsView: View {
 /// step pushes INSIDE this sheet with a back chevron. iPad doesn't use this — there Settings is already a
 /// form sheet, so the task pushes within it (no stacked sheets, per the Modality HIG).
 private struct AddServerFlow: View {
+    @Environment(AppModel.self) private var app
     var onAddedJellyfin: () -> Void
     var onAddedSMB: () -> Void
     /// Explicit close (the presenter flips its `isPresented` state) instead of `@Environment(\.dismiss)`:
@@ -273,7 +274,7 @@ private struct AddServerFlow: View {
                         .navigationTitle("Jellyfin")
                         .navigationBarTitleDisplayMode(.inline)
                 case .addSMB:
-                    SMBLoginView(onAdded: { onAddedSMB(); onClose() })
+                    SMBLoginView(app: app, onAdded: { onAddedSMB(); onClose() })
                         .navigationTitle("Network Share")
                         .navigationBarTitleDisplayMode(.inline)
                 default:
@@ -310,12 +311,11 @@ struct SettingsJellyfinRow: Identifiable {
 
 /// An SMB server's row data — one row per persisted server (one server per host).
 struct SettingsSMBServerRow: Identifiable {
-    let server: PersistedServer
-    let host: String
-    let subtitle: String
-    var id: ServerID { server.id }
+    let ref: SMBServerRef
+    var id: ServerID { ref.id }
+    var host: String { ref.data.host }
     /// Row meta line: "SMB · N shares".
-    var meta: String { "SMB · \(subtitle)" }
+    var meta: String { "SMB · \(ref.data.shareCountSubtitle)" }
 }
 
 /// Pure, previewable presentation of the settings root: the Servers, Playback, and Storage sections.
@@ -327,7 +327,7 @@ struct SettingsContentView<Storage: View>: View {
     var signedOutJellyfinServers: [SignedOutServerRow] = []
     var signOutError: String? = nil
     let onSelectJellyfin: (ServerID) -> Void
-    let onSelectSMBServer: (PersistedServer) -> Void
+    let onSelectSMBServer: (SMBServerRef) -> Void
     var onSignInSignedOut: (SignedOutServerRow) -> Void = { _ in }
     var onRemoveSignedOut: (ServerID) -> Void = { _ in }
     let onAddServer: () -> Void
@@ -377,7 +377,7 @@ struct SettingsContentView<Storage: View>: View {
                 )
             }
             ForEach(smbServers) { row in
-                Button { onSelectSMBServer(row.server) } label: {
+                Button { onSelectSMBServer(row.ref) } label: {
                     SettingsRowLabel(
                         systemImage: "externaldrive.badge.wifi",
                         iconSize: 22,
@@ -428,8 +428,8 @@ private struct SettingsRootPreview: View {
                 .init(id: ServerID(rawValue: "1"), name: "home-jellyfin", host: "jellyfin.example.lan"),
             ],
             smbServers: [
-                .init(server: PersistedServer(id: ServerID(rawValue: "s1"), kind: .smb(SMBServerData(host: "mynas.local", username: "", domain: "", shares: ["Media"]))), host: "mynas.local", subtitle: "1 share"),
-                .init(server: PersistedServer(id: ServerID(rawValue: "s2"), kind: .smb(SMBServerData(host: "nas2.local", username: "", domain: "", shares: ["Media", "TV"]))), host: "nas2.local", subtitle: "2 shares"),
+                .init(ref: SMBServerRef(id: ServerID(rawValue: "s1"), data: SMBServerData(host: "mynas.local", username: "", domain: "", shares: ["Media"]))),
+                .init(ref: SMBServerRef(id: ServerID(rawValue: "s2"), data: SMBServerData(host: "nas2.local", username: "", domain: "", shares: ["Media", "TV"]))),
             ],
             // A server with no usable sign-in (token lost from the Keychain, or revoked by the
             // server): must render between the live Jellyfin and SMB rows, visibly marked, never

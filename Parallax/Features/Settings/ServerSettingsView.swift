@@ -12,18 +12,26 @@ import ParallaxFeatures
 struct ServerSettingsView: View {
     let session: Session
     let vm: SettingsViewModel
+    let app: AppModel
     /// Pops this page. Not `\.dismiss`: a view that reads it and owns a `navigationDestination`
     /// re-renders on every change to it, and the pushed page's `tvHidesTabSidebar` changes it on
     /// every pass, so the push loops the render graph forever on tvOS.
     let onRemoved: () -> Void
 
-    @Environment(AppModel.self) private var app
     @State private var isConfirmingRemove = false
     @State private var showingVisibleLibraries = false
-    @State private var model: ServerSettingsModel?
+    @State private var model: ServerSettingsModel
+
+    init(session: Session, vm: SettingsViewModel, app: AppModel, onRemoved: @escaping () -> Void) {
+        self.session = session
+        self.vm = vm
+        self.app = app
+        self.onRemoved = onRemoved
+        _model = State(initialValue: ServerSettingsModel(session: session, app: app))
+    }
 
     private var statusText: String {
-        switch model?.status ?? .checking {
+        switch model.status {
         case .checking: return "Checking…"
         case .connected: return "Connected"
         case .offline: return "Offline"
@@ -32,7 +40,7 @@ struct ServerSettingsView: View {
 
     /// Green LED only when reachable; a muted tertiary dot while checking or offline.
     private var statusLed: Color {
-        model?.status == .connected ? Color.ok : Color.tertiaryLabel
+        model.status == .connected ? Color.ok : Color.tertiaryLabel
     }
 
     var body: some View {
@@ -40,25 +48,23 @@ struct ServerSettingsView: View {
             serverName: session.serverName,
             host: session.displayHost,
             userName: session.user.name,
-            version: model?.version,
+            version: model.version,
             statusText: statusText,
             statusLed: statusLed,
-            visibleLibrariesLabel: model?.visibleSummary ?? "All",
+            visibleLibrariesLabel: model.visibleSummary,
             signOutError: vm.signOutErrorMessage,
             onVisibleLibraries: { showingVisibleLibraries = true },
             onRemove: { isConfirmingRemove = true }
         )
         .navigationDestination(isPresented: $showingVisibleLibraries) {
-            VisibleLibrariesView(session: session)
+            VisibleLibrariesView(session: session, app: app)
                 .tvHidesTabSidebar()
         }
         .task {
-            if model == nil { model = ServerSettingsModel(session: session, app: app) }
-            await model?.probeServer()
+            await model.probeServer()
         }
         .task {
-            if model == nil { model = ServerSettingsModel(session: session, app: app) }
-            await model?.run()
+            await model.run()
         }
         .confirmationDialog("Remove this server?", isPresented: $isConfirmingRemove, titleVisibility: .visible) {
             Button("Remove", role: .destructive) {
