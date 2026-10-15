@@ -471,15 +471,24 @@ final class AppWorld {
     }
 }
 
-/// A frame thumbnailer that returns one fixed frame and records every URL it was asked to decode.
+/// A frame thumbnailer that records every URL and position it was asked to decode. It hands back
+/// the `script` frames in order, then `frame` once the script runs out.
 @MainActor
 final class RecordingThumbnailer: FrameThumbnailing {
-    static let frame = ThumbnailFrame(data: Data("frame".utf8), duration: .seconds(42))
+    static let frame = ThumbnailFrame(data: TestFrames.scene, duration: .seconds(42))
+    var script: [Data] = []
+    /// Set and close it to park every decode after it has been recorded. Left nil it adds no
+    /// suspension, which the timing-sensitive scenarios rely on.
+    var hold: AsyncGate?
     private(set) var requests: [URL] = []
+    private(set) var positions: [Float] = []
 
     func frame(from url: URL, at position: Float, timeout: Duration) async throws -> ThumbnailFrame {
         requests.append(url)
-        return Self.frame
+        positions.append(position)
+        await hold?.pass()
+        guard !script.isEmpty else { return Self.frame }
+        return ThumbnailFrame(data: script.removeFirst(), duration: Self.frame.duration)
     }
 }
 
