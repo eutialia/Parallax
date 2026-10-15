@@ -52,14 +52,15 @@ struct SMBArtworkScenarios {
         let heat = root.media[0]
         let poster = try #require(root.artwork[heat.id])
 
+        let listed = await world.nas.operationGate.arrivalCount
         await world.nas.operationGate.close()
         let loading = Task {
             await world.app.services.mediaArtworkProvider.artwork(for: heat, ref: AppWorld.smbRef, sidecar: poster)
         }
-        await world.nas.operationGate.awaitArrivals()
+        await world.nas.operationGate.awaitArrivals(listed + 1)
         try await world.clock.waitForSleep(dueIn: .seconds(10))
         world.clock.advance(by: .seconds(10))
-        try await world.until { await world.nas.operationGate.arrivalCount == 2 }
+        try await world.until { await world.nas.operationGate.arrivalCount >= listed + 2 }
         await world.nas.operationGate.open()
         let artwork = await loading.value
 
