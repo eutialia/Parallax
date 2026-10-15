@@ -33,14 +33,15 @@ nonisolated struct CachedThumbnail: Sendable, Equatable {
 /// no concurrency policy; `MediaArtworkProvider` owns those).
 ///
 /// New writes are HEIC (`.heic`) — a video frame / sidecar poster is a photographic still, which the
-/// lossy codec stores a fraction of the size PNG's lossless coder would. `existing(for:)` checks
-/// `.heic` first, then falls back to a legacy `.png` from before the codec switch: regenerating a
-/// whole wall at ~11s/tile over VPN just because the extension changed would be hostile, so the PNGs
-/// are read as-is and retired naturally by LRU eviction. This is a DELIBERATE exception to
-/// delete-over-deprecate — the cost of deletion falls on the user's bandwidth, not the codebase.
+/// lossy codec stores a fraction of the size PNG's lossless coder would. `existing(for:)` still
+/// reads a legacy `.png` from before the codec switch: regenerating a whole wall at ~11s/tile over
+/// VPN just because the extension changed would be hostile, so PNGs are read as-is and retired by
+/// LRU eviction. A DELIBERATE exception to delete-over-deprecate — the cost of deletion falls on the
+/// user's bandwidth, not the codebase.
 ///
-/// Three data kinds ride each key's base name:
+/// Four data kinds ride each key's base name:
 ///  - `.heic`/`.png` — the image itself (the eviction unit).
+///  - `.art` — empty marker: the image is a poster or cover art, exempt from the grey check.
 ///  - `.dur` — the source duration in milliseconds (best-effort; absence just yields nil duration).
 ///  - `.fail` — a PERSISTENT failure marker (attempt count + last-attempt epoch) so a file libvlc
 ///    can't decode isn't re-attempted (and re-charged the full timeout) on every launch. The
@@ -65,6 +66,10 @@ actor SMBThumbnailCache {
     /// file), so between sweeps the only unbounded growth is orphaned old-version entries.
     private let sweepInterval: Int
     private var writesSinceSweep: Int
+    /// Base names whose image has passed `FrameQuality` in this process: written by `store` (every
+    /// writer gates or transcodes first) or checked on first read. Frame-grabs cached before the
+    /// grey gate were never checked, and a grey one would otherwise be served forever.
+    private var verified: Set<String> = []
 
     /// The image extensions the cache reads, newest-codec first. `existing` probes them in order, so
     /// a key that has both (a legacy PNG never overwritten by a later HEIC store) resolves to the
@@ -77,6 +82,13 @@ actor SMBThumbnailCache {
     static var currentImageExtension: String { imageExtensions[0] }
     /// The pre-HEIC extension `existing` still honours so an old cache isn't invalidated wholesale.
     static var legacyImageExtension: String { imageExtensions[1] }
+
+    /// Who produced an image. Only a frame-grab can be decoder filler, so only its entries are
+    /// checked on first read; a poster or cover art is the author's own image, grey or not.
+    enum Origin: Sendable {
+        case frameGrab
+        case artwork
+    }
 
     /// - Parameters:
     ///   - directory: where thumbnails live (`<Caches>/SMBThumbnails/` in the app).
@@ -101,9 +113,11 @@ actor SMBThumbnailCache {
         self.directory = directory
     }
 
-    /// The cached thumbnail for `key` if a file already exists, else nil. Never generates. Probes
-    /// `.heic` then legacy `.png`; the returned record carries the duration read from the base name's
-    /// `.dur` sidecar (nil if absent).
+    /// The cached thumbnail for `key` if a file already exists, else nil. Never generates. The
+    /// returned record carries the duration read from the base name's `.dur` sidecar (nil if absent).
+    /// The first read of a frame-grab entry in a process decodes it at 32 px; a grey or undecodable
+    /// image is deleted and reads as a miss, so it regenerates through the gated path. Artwork
+    /// entries carry a marker and are never checked.
     ///
     /// On a hit it stamps the file's access date to now so `sweep()` can evict by TRUE recency: iOS
     /// does not bump a file's access time on a plain `stat`/read, so the cache must set it explicitly
@@ -114,6 +128,14 @@ actor SMBThumbnailCache {
         for ext in Self.imageExtensions {
             let url = directory.appendingPathComponent("\(base).\(ext)")
             guard fileManager.fileExists(atPath: url.path) else { continue }
+            if !verified.contains(base), !fileManager.fileExists(atPath: artworkMarkerURL(base: base).path) {
+                guard let data = try? Data(contentsOf: url), FrameQuality.isUsable(data) else {
+                    try? fileManager.removeItem(at: url)
+                    removeDuration(base: base)
+                    continue
+                }
+            }
+            verified.insert(base)
             touchAccessDate(url)
             return CachedThumbnail(url: url, duration: readDuration(base: base))
         }
@@ -127,7 +149,9 @@ actor SMBThumbnailCache {
     /// already produced valid bytes — so the caller must not treat it as a reason to negative-cache
     /// the key. No partial file is left behind on failure. A successful write CLEARS any persistent
     /// `.fail` marker for the key (the file just proved decodable).
-    func store(_ data: Data, duration: Duration?, for key: SMBThumbnailKey) -> CachedThumbnail? {
+    func store(
+        _ data: Data, duration: Duration?, for key: SMBThumbnailKey, origin: Origin = .frameGrab
+    ) -> CachedThumbnail? {
         let base = baseName(for: key)
         let url = directory.appendingPathComponent("\(base).\(Self.currentImageExtension)")
         do {
@@ -135,6 +159,11 @@ actor SMBThumbnailCache {
             try data.write(to: url, options: .atomic)
         } catch {
             return nil
+        }
+        verified.insert(base)
+        switch origin {
+        case .frameGrab: removeArtworkMarker(base: base)
+        case .artwork: try? Data().write(to: artworkMarkerURL(base: base), options: .atomic)
         }
         // A decodable file: drop any stale failure marker so its backoff doesn't linger.
         removeFailure(base: base)
@@ -235,6 +264,7 @@ actor SMBThumbnailCache {
     /// launch, and drops every failure marker so previously-undecodable files get a fresh attempt.
     func clear() {
         try? fileManager.removeItem(at: directory)
+        verified = []
         writesSinceSweep = sweepInterval
     }
 
@@ -280,6 +310,17 @@ actor SMBThumbnailCache {
     /// `sweep` and clears a stale sidecar when a key is re-stored without a duration.
     private func removeDuration(base: String) {
         try? fileManager.removeItem(at: durationSidecarURL(base: base))
+    }
+
+    /// The `.art` marker URL: present when a poster or cover art wrote the image. Persisted because
+    /// the poster tiers store no duration, and neither do some frame-grabs, so no other on-disk
+    /// signal tells the two apart across a relaunch.
+    private func artworkMarkerURL(base: String) -> URL {
+        directory.appendingPathComponent("\(base).art")
+    }
+
+    private func removeArtworkMarker(base: String) {
+        try? fileManager.removeItem(at: artworkMarkerURL(base: base))
     }
 
     /// Removes a base name's `.fail` marker if present (best-effort).
@@ -345,6 +386,7 @@ actor SMBThumbnailCache {
                 let base = (file.url.lastPathComponent as NSString).deletingPathExtension
                 removeDuration(base: base)
                 removeFailure(base: base)
+                removeArtworkMarker(base: base)
             }
         }
     }
