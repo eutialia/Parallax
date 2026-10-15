@@ -80,7 +80,7 @@ struct ServerSettingsScenarios {
         await page.probeServer()
 
         #expect(page.status == .connected)
-        #expect(page.version == "10.10.7")
+        #expect(page.version == "12.2.0")
     }
 
     @Test("hiding a library shows N of M on the server page and survives a relaunch")

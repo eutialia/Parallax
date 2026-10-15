@@ -11,7 +11,7 @@ public final class ServerSettingsModel {
     public enum ConnectionStatus { case checking, connected, offline }
 
     public private(set) var status: ConnectionStatus = .checking
-    /// Fetched server version ("10.9.11"); nil until the probe lands, and after a failed one.
+    /// Fetched server version ("12.2.0"); nil until the probe lands, and after a failed one.
     public private(set) var version: String?
     /// "4 of 6" / "All" summary for the Visible Libraries row.
     public private(set) var visibleSummary = "All"

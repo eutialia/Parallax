@@ -82,7 +82,7 @@ public actor PlaybackInfoService {
         let method: PlaybackMethod
         let url: URL?
         if let transcodingURL = source.transcodingURL {
-            // Server decided to transcode. Its URL already carries api_key.
+            // Server decided to transcode. Its URL already carries ApiKey.
             method = .transcode
             url = client.transcodeURL(relativePath: transcodingURL)
         } else {
@@ -119,7 +119,7 @@ public actor PlaybackInfoService {
         // profile + bit depth distinguish a decodable stream from one the
         // device/simulator can't handle (e.g. 10-bit H.264 that iOS won't
         // hardware-decode), and `method` shows direct-play vs HLS. URL is
-        // hashed because it embeds api_key.
+        // hashed because it embeds ApiKey.
         let videoStream = source.mediaStreams?.first(where: { $0.type == .video })
         Log.playback.info(
             """

@@ -1,5 +1,5 @@
 {
-  "originHash" : "bf30b64d14f3ad2dc07bdd409219c2f1b14a4a31f9b2748232c35d0a01cf6e7b",
+  "originHash" : "6107c587d094a3274640b2432499a7489ee365674e3be02bbcf0e2f0bc71083a",
   "pins" : [
     {
       "identity" : "amsmb2",
@@ -23,8 +23,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/jellyfin/jellyfin-sdk-swift.git",
       "state" : {
-        "revision" : "09d8f31886b6bea1cfc4719a39bdb6eac1287344",
-        "version" : "2.1.0"
+        "revision" : "8ce10a167ad0b4145b2bc005acf8bebcfe6ebe46",
+        "version" : "3.3.0"
       }
     },
     {

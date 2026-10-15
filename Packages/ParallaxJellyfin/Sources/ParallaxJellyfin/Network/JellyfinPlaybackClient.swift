@@ -31,7 +31,7 @@ public struct StreamRequest: Sendable, Hashable {
 /// Narrow client the PlaybackInfoService calls. Exposes the SDK
 /// PlaybackInfoResponse on purpose — DTO/codec translation happens in the
 /// service, mirroring how JellyfinLibraryClient hands BaseItemDto upward.
-/// `streamURL` / `transcodeURL` return self-contained URLs (api_key in the
+/// `streamURL` / `transcodeURL` return self-contained URLs (ApiKey in the
 /// query) so AVPlayer can fetch HLS segments without an auth header.
 public protocol JellyfinPlaybackClient: Sendable {
     /// Negotiates a playable stream. `selection` is nil on first play (the server

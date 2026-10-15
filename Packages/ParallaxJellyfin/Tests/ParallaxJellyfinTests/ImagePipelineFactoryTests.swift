@@ -56,7 +56,8 @@ struct ImagePipelineFactoryTests {
         #expect(data == bytes)
         let exchange = try stub.onlyExchange()
         #expect(exchange.path == "/Items/item-1/Images/Primary")
-        #expect(exchange.headers["X-Emby-Authorization"]?.contains("Token=\"tok-img\"") == true)
+        #expect(exchange.headers["Authorization"]?.contains("Token=\"tok-img\"") == true)
+        #expect(exchange.headers["X-Emby-Authorization"] == nil)
         #expect(configuration.httpAdditionalHeaders == nil)
         let cache = await factory.pipeline(for: session).configuration.dataCache as? DataCache
         #expect(cache?.path.standardizedFileURL == caches.appending(path: "com.lhdev.parallax.images.s1").standardizedFileURL)

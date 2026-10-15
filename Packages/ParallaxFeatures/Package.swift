@@ -19,7 +19,7 @@ let package = Package(
         .package(path: "../ParallaxPlayback"),
         .package(path: "../ParallaxSubtitles"),
         // Test-only: one suite drives a real `LibraryRepository` over a hand-built SDK transport.
-        .package(url: "https://github.com/jellyfin/jellyfin-sdk-swift.git", exact: "2.1.0"),
+        .package(url: "https://github.com/jellyfin/jellyfin-sdk-swift.git", exact: "3.3.0"),
     ],
     targets: [
         .target(

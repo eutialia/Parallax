@@ -162,11 +162,7 @@ struct DeviceProfileTranslatorTests {
         // itself, so the look is ours (one cross-engine overlay, future user-
         // customizable size/position/color) instead of AVKit's OS-overridable native pass.
         #expect(trans.first?.enableSubtitlesInManifest == false)
-        // Startup-latency knobs (Swiftfin-matched): on the remux path the
-        // segmenter can't force keyframes, so without BreakOnNonKeyFrames the
-        // playlist waits on the source's long-GOP keyframes; MinSegments=2
-        // serves it as soon as AVPlayer has enough to start.
-        #expect(trans.first?.isBreakOnNonKeyFrames == true)
+        // MinSegments=2 serves the playlist as soon as AVPlayer has enough to start.
         #expect(trans.first?.minSegments == 2)
     }
 

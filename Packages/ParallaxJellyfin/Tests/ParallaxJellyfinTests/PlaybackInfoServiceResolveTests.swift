@@ -32,7 +32,7 @@ struct PlaybackInfoServiceResolveTests {
         source.id = "ms-2"
         source.container = "mkv"
         source.runTimeTicks = 1_000_000_000
-        source.transcodingURL = "/videos/item-1/master.m3u8?api_key=tok-1&PlaySessionId=ps-1"
+        source.transcodingURL = "/videos/item-1/master.m3u8?ApiKey=tok-1&PlaySessionId=ps-1"
         source.defaultAudioStreamIndex = 3
         source.defaultSubtitleStreamIndex = 1
         var video = MediaStream()
@@ -75,7 +75,7 @@ struct PlaybackInfoServiceResolveTests {
     private func transcodeSourceWithReasons() -> MediaSourceInfo {
         var source = transcodeSource()
         source.transcodingURL =
-            "/videos/item-1/master.m3u8?api_key=tok-1&PlaySessionId=ps-1&TranscodeReasons=ContainerNotSupported,AudioCodecNotSupported"
+            "/videos/item-1/master.m3u8?ApiKey=tok-1&PlaySessionId=ps-1&TranscodeReasons=ContainerNotSupported,AudioCodecNotSupported"
         return source
     }
 
@@ -110,7 +110,7 @@ struct PlaybackInfoServiceResolveTests {
         #expect(resolved.videoCodec == .h264)
         #expect(resolved.audioCodec == .aac)
         // Wiring, not URL shape: the resolved URL IS what the stream-URL builder returned. The
-        // api_key/`/Videos/{id}/stream.{container}` shape is proven where the real builder runs
+        // ApiKey/`/Videos/{id}/stream.{container}` shape is proven where the real builder runs
         // (`DefaultJellyfinPlaybackClientTests`); asserting it here would only re-read a canned
         // string this fake wrote.
         #expect(resolved.url == fake.streamURLValue)
@@ -130,7 +130,7 @@ struct PlaybackInfoServiceResolveTests {
         #expect(resolved.method == .transcode)
         // It resolved the SERVER-provided transcodingURL verbatim, and returned exactly what the
         // transcode-URL builder handed back — no stream URL was built at all.
-        #expect(fake.transcodePaths == ["/videos/item-1/master.m3u8?api_key=tok-1&PlaySessionId=ps-1"])
+        #expect(fake.transcodePaths == ["/videos/item-1/master.m3u8?ApiKey=tok-1&PlaySessionId=ps-1"])
         #expect(resolved.url == fake.transcodeURLValue)
         #expect(fake.streamURLRequests.isEmpty)
     }

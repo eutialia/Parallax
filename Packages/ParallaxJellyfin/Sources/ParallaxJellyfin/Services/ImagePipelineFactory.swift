@@ -89,7 +89,7 @@ public actor ImagePipelineFactory {
         // A copy: the configuration is a shared reference, and the token header is this pipeline's.
         let urlSessionConfig = base.copy() as! URLSessionConfiguration
         urlSessionConfig.httpAdditionalHeaders = [
-            "X-Emby-Authorization": authorizationHeader(identity: identity, token: session.accessToken),
+            "Authorization": authorizationHeader(identity: identity, token: session.accessToken),
         ]
         urlSessionConfig.requestCachePolicy = .useProtocolCachePolicy
         urlSessionConfig.timeoutIntervalForRequest = 30

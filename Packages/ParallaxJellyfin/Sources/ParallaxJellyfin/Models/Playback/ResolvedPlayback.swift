@@ -3,8 +3,8 @@ import CoreMedia
 import ParallaxCore
 
 /// A self-contained, playable stream resolved from Jellyfin. The `url`
-/// already embeds `api_key` as a query parameter — AVPlayer does not send
-/// the X-Emby-Authorization header on HLS segment fetches, so a header-only
+/// already embeds `ApiKey` as a query parameter — AVPlayer does not send
+/// the Authorization header on HLS segment fetches, so a header-only
 /// URL would 401 silently mid-stream. Carries only Core enums + Jellyfin ids
 /// so the app (not this package) can map it to a ParallaxPlayback.PlayableAsset.
 /// `itemID` makes the value self-describing: progress reporting needs the

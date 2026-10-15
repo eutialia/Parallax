@@ -388,7 +388,7 @@ struct DefaultJellyfinLibraryClientTests {
     @Test("setFavorite POSTs to add and DELETEs to remove", arguments: [true, false])
     func setFavorite(isFavorite: Bool) async throws {
         let stub = StubHTTPTransport()
-        stub.always(.encoded(UserItemDataDto(isFavorite: isFavorite, isPlayed: false, playCount: 2)))
+        stub.always(.encoded(UserItemDataDto(isFavorite: isFavorite, isPlayed: false, key: "item-42", playCount: 2)))
 
         let data = try await makeClient(stub: stub).setFavorite(itemID: "item-42", isFavorite: isFavorite)
 
@@ -405,7 +405,7 @@ struct DefaultJellyfinLibraryClientTests {
     @Test("setPlayed POSTs to mark and DELETEs to unmark", arguments: [true, false])
     func setPlayed(isPlayed: Bool) async throws {
         let stub = StubHTTPTransport()
-        stub.always(.encoded(UserItemDataDto(isPlayed: isPlayed, playCount: 1, playbackPositionTicks: 900)))
+        stub.always(.encoded(UserItemDataDto(isPlayed: isPlayed, key: "item-7", playCount: 1, playbackPositionTicks: 900)))
 
         let data = try await makeClient(stub: stub).setPlayed(itemID: "item-7", isPlayed: isPlayed)
 
