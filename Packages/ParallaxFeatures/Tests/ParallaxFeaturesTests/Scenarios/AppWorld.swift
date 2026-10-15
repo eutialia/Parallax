@@ -44,6 +44,9 @@ final class AppWorld {
     private let servers: [FakeJellyfinServer]
     private let suiteName: String
     private let storageDirectory: URL
+    var thumbnailCacheDirectory: URL {
+        storageDirectory.appending(path: "Caches/SMBThumbnails", directoryHint: .isDirectory)
+    }
     private var lifetime: Task<Void, Never>
     /// The open player, as the player view holds it.
     private(set) var player: PlayerViewModel?
