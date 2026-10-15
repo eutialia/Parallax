@@ -1,6 +1,6 @@
 import Foundation
 import ParallaxCore
-import ParallaxFeatures
+@testable import ParallaxFeatures
 import ParallaxFileBrowse
 import ParallaxFileBrowseTestSupport
 import ParallaxJellyfin
@@ -144,6 +144,63 @@ struct SMBArtworkScenarios {
         await hold.open()
         for tile in tiles { _ = await tile.value }
     }
+
+    @Test("a grey thumbnail cached by an older build is evicted and regenerated on first read; a good one is served as is")
+    func cachedGreyThumbnailIsRegenerated() async throws {
+        let (world, provider, heat, ref) = try await Self.openHeat()
+        let ran = try await Self.addFile("Ran.wmv", to: world, ref: ref)
+        let seeding = SMBThumbnailCache(directory: world.thumbnailCacheDirectory)
+        _ = await seeding.store(TestFrames.mosaic, duration: .seconds(42), for: try Self.key(of: heat, ref: ref))
+        _ = await seeding.store(TestFrames.scene, duration: .seconds(42), for: try Self.key(of: ran, ref: ref))
+
+        let good = await provider.artwork(for: ran, ref: ref, sidecar: nil)
+        #expect(Self.frame(of: good) == "scene")
+        #expect(world.thumbnailer.positions == [])
+
+        let regenerated = await provider.artwork(for: heat, ref: ref, sidecar: nil)
+        #expect(Self.frame(of: regenerated) == "scene")
+        #expect(world.thumbnailer.positions == [0.05])
+    }
+
+    @Test("a grey poster cached by the sidecar tier is served across a relaunch without a re-download")
+    func greyPosterSurvivesRelaunch() async throws {
+        let ref = AppWorld.smbRef
+        let world = try await AppWorld.launch(savedSMB: [(AppWorld.smbServer, "hunter2")])
+        world.nas.setFolder([
+            SMBDirectoryEntry(name: "Heat.mkv", isDirectory: false, size: 4096, modifiedAt: nil),
+            SMBDirectoryEntry(name: "Heat-poster.jpg", isDirectory: false, size: 4096, modifiedAt: nil),
+        ], share: "Media")
+        world.nas.setContents(TestFrames.mosaic)
+        let root = await world.openSMBFolder(ref, share: "Media")
+        try await world.until { root.media.count == 1 }
+        let heat = root.media[0]
+        let poster = try #require(root.artwork[heat.id])
+        _ = await world.app.services.mediaArtworkProvider.artwork(for: heat, ref: ref, sidecar: poster)
+        #expect(world.thumbnailer.positions == [])
+
+        let relaunched = SMBThumbnailCache(directory: world.thumbnailCacheDirectory)
+        #expect(await relaunched.existing(for: try Self.key(of: heat, ref: ref)) != nil)
+    }
+
+    private static func key(of item: Item, ref: SMBServerRef) throws -> SMBThumbnailKey {
+        guard case .movie(let movie) = item, let (share, path) = SMBSourceResolver.shareAndPath(for: item) else {
+            throw StateNotFound()
+        }
+        return SMBThumbnailKey(
+            serverID: ref.id.rawValue, share: share, path: path, size: movie.size ?? 0, modifiedAt: movie.dateAdded)
+    }
+
+    private static func addFile(_ name: String, to world: AppWorld, ref: SMBServerRef) async throws -> Item {
+        world.nas.setFolder([
+            SMBDirectoryEntry(name: "Heat.wmv", isDirectory: false, size: 4096, modifiedAt: nil),
+            SMBDirectoryEntry(name: name, isDirectory: false, size: 4096, modifiedAt: nil),
+        ], share: "Media")
+        let root = await world.openSMBFolder(ref, share: "Media")
+        try await world.until { root.media.count == 2 }
+        return try #require(root.media.first { "\($0.id)".contains(name) })
+    }
+
+    private struct StateNotFound: Error {}
 
     private static func openHeat() async throws -> (AppWorld, MediaArtworkProvider, Item, SMBServerRef) {
         let ref = AppWorld.smbRef
