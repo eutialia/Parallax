@@ -78,9 +78,8 @@ struct SearchScopeChips: View {
     /// chip's text a shade and the four capsules rendered identically (render-proven in the
     /// "Search scope chips" preview below — that was the first cut). Prominent fills the capsule
     /// with the tint and picks a contrasting label for it, which is the difference that reads at 10
-    /// feet. `chipSelectedFill` is the same "active filter" fill the library header's Genre chip
-    /// uses; `chipRestFill` is its translucent counterpart, so an unselected chip still reads as
-    /// glass over the floor.
+    /// feet. `chipRestFill` is `chipSelectedFill`'s translucent counterpart, so an unselected chip
+    /// still reads as glass over the floor.
     ///
     /// The resting tint is `chipRestFill` and NOT the generic `selectionFill`/`fill` resting alphas:
     /// prominent glass composites its tint over a near-white backing on the LIGHT face, which ate

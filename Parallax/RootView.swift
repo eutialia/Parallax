@@ -57,7 +57,12 @@ struct RootView: View {
         }
         // Monochrome chrome: no brand accent anywhere. This overrides the system
         // accent for every control (selection, toggles, links) beneath the root.
+        // Not on tvOS: there an explicit tint turns every `.glass` button's focused platter into a
+        // tint-colored fill under a white label (white-on-white in dark mode), and the
+        // monochrome AccentColor asset already keeps the accent off blue.
+        #if !os(tvOS)
         .tint(Color.label)
+        #endif
         // iPad's settings sheet lives at the stable root — ABOVE RootTabView's
         // `.id(activeServerID)` remount — so switching/adding a server from inside it (which
         // re-points the router) doesn't tear the open panel down. iPhone uses a Settings tab
