@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import UIKit
 import ParallaxCore
 import ParallaxFeatures
 import ParallaxJellyfin
@@ -63,7 +64,7 @@ extension AppEnvironment {
                 )
             },
             clientName: "Parallax",
-            deviceName: "iOS Device",
+            deviceName: UIDevice.current.model,
             appVersion: AppInfo.shortVersion,
             launchReveal: {
                 #if os(tvOS)
