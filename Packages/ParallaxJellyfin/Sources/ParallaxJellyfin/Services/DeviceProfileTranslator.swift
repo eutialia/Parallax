@@ -318,6 +318,11 @@ enum DeviceProfileTranslator {
                         property: .videoBitDepth,
                         value: "10"
                     ),
+                    // Deliberately not the server's "main 10" spelling. On a match, Jellyfin
+                    // narrows the transcode's hevc-profile to the source's own profile, labels
+                    // its SDR re-encode fallback variant hvc1.2 (Main 10), and an HDR iPad's
+                    // AVPlayer then picks that variant over the stream copy. The cost:
+                    // Main 10 mp4/mov misses direct play and goes out as an HLS copy.
                     ProfileCondition(
                         condition: .equalsAny,
                         isRequired: false,
