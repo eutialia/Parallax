@@ -23,6 +23,7 @@ set -e
 REPO_ROOT=$(git rev-parse --show-toplevel)
 "$REPO_ROOT/scripts/check-no-platform-drift.sh"
 "$REPO_ROOT/scripts/check-scaled-time-limits.sh"
+"$REPO_ROOT/scripts/check-no-dismiss-in-nav-owner.sh"
 EOF
 
 chmod +x "$HOOK_PATH"
