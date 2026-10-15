@@ -5,9 +5,10 @@ import ParallaxFileBrowse
 import ParallaxJellyfin
 import ParallaxPlayback
 import Testing
+import ParallaxTestScaling
 
 @MainActor
-@Suite("SMB browse", .timeLimit(.minutes(1)))
+@Suite("SMB browse", .scaledTimeLimit())
 struct SMBBrowseScenarios {
     private static let nas = SMBServerData(host: "nas.local", username: "ana", domain: "WORKGROUP", shares: ["Media"])
     private static let ref = makeSMBRef(nas)

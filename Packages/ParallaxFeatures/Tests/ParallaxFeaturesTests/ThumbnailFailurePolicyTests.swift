@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import ParallaxTestScaling
 import ParallaxPlayback
 @testable import ParallaxFeatures
 
@@ -7,7 +8,7 @@ import ParallaxPlayback
 /// backoff, capped at 24h), so the cut between "this file is broken" and "the network blipped / we
 /// gave up" is worth pinning without a share, a bridge or a decode in the way — it was previously an
 /// inline condition inside a `catch` that only an end-to-end run could reach.
-@Suite("Thumbnail failure policy", .timeLimit(.minutes(1)))
+@Suite("Thumbnail failure policy", .scaledTimeLimit())
 struct ThumbnailFailurePolicyTests {
 
     struct PoisonCase: Sendable, CustomTestStringConvertible {

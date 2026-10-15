@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import ParallaxTestScaling
 import CoreMedia
 import ParallaxCore
 import ParallaxJellyfin
@@ -40,7 +41,7 @@ private func makeItem(share: String = "Media", path: String = "Movies/Example.mk
 
 // MARK: - Tests
 
-@Suite("SMBPlaybackResolver", .timeLimit(.minutes(1)))
+@Suite("SMBPlaybackResolver", .scaledTimeLimit())
 struct SMBPlaybackResolverTests {
 
     // MARK: - Helpers

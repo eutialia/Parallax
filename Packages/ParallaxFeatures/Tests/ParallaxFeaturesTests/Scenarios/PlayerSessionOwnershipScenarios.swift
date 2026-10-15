@@ -8,9 +8,10 @@ import ParallaxJellyfin
 import ParallaxJellyfinTestSupport
 import ParallaxPlayback
 import Testing
+import ParallaxTestScaling
 
 @MainActor
-@Suite("Player session ownership", .timeLimit(.minutes(1)))
+@Suite("Player session ownership", .scaledTimeLimit())
 struct PlayerSessionOwnershipScenarios {
     private static let nas = SMBServerData(host: "nas.local", username: "ana", domain: "WORKGROUP", shares: ["Media"])
     private static let ref = makeSMBRef(nas)

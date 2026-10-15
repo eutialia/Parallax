@@ -22,7 +22,7 @@ jobs:
   # here and run inside the app in app-hosted-tests.
   host-tests:
     runs-on: xcode-27
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       # CITimeScale widens anti-hang deadlines when CI is set.
       CI: 'true'
@@ -33,6 +33,8 @@ jobs:
         with:
           xcode-version: latest-stable
       - name: Run host package tests
+        # Worst observed 11.2 min. Under the job limit so a wedge fails here, attributed, before the job kill.
+        timeout-minutes: 17
         run: scripts/verify.sh
 
   package-tests:
@@ -72,6 +74,8 @@ jobs:
         if: matrix.vlckit
         uses: ./.github/actions/fetch-vlckit
       - name: Run ${{ matrix.package }} tests
+        # Worst observed 8.4 min; the job limit is 20 (setup included).
+        timeout-minutes: 17
         # VLCKit has no macOS build, so ParallaxPlaybackVLC can only test in the iOS Simulator.
         # The device is discovered from the image's own inventory instead of
         # hardcoding a model name that rots when the simulator lineup rotates.

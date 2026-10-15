@@ -1,4 +1,5 @@
 import Foundation
+import Testing
 
 /// Scales the suites' anti-hang ceilings on CI.
 ///
@@ -36,5 +37,16 @@ public enum CITimeScale {
     /// (`URLSessionConfiguration` timeouts).
     public static func interval(_ seconds: TimeInterval) -> TimeInterval {
         seconds * factor
+    }
+}
+
+extension Trait where Self == TimeLimitTrait {
+    /// `.timeLimit` of `minutes` on dev hardware, scaled by `CITimeScale.factor` on CI.
+    /// `.timeLimit` takes whole minutes only. The CI ceiling is capped at 10 minutes so a
+    /// real hang still fails its own test before the 17-minute host-tests step timeout
+    /// kills the run with no attribution; a limit already above the cap stays as written.
+    public static func scaledTimeLimit(minutes: Int = 1) -> Self {
+        let scaled = Int((Double(minutes) * CITimeScale.factor).rounded(.up))
+        return .timeLimit(.minutes(max(minutes, min(scaled, 10))))
     }
 }

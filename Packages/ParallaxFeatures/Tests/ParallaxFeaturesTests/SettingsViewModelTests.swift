@@ -2,12 +2,13 @@ import Foundation
 import ParallaxFeatures
 import ParallaxJellyfin
 import Testing
+import ParallaxTestScaling
 
 /// Locks in what the SMB server-settings screen relies on when it removes a server: the *published*
 /// `smbServers` list refreshes immediately (and the sidebar reloads), not just the store. The bug this guards: the detail view used to remove
 /// the server with its own inline copy of this logic that skipped the refresh, so the removed server
 /// lingered as a ghost row in the settings server list until Settings was closed and reopened.
-@Suite("Settings view model · SMB server removal", .timeLimit(.minutes(1)))
+@Suite("Settings view model · SMB server removal", .scaledTimeLimit())
 @MainActor
 struct SettingsViewModelTests {
     @Test("removing an SMB server from its settings page drops it from the server list right away — no panel reopen")

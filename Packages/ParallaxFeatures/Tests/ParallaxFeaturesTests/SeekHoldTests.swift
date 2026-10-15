@@ -1,6 +1,7 @@
 import CoreMedia
 import ParallaxPlayback
 import Testing
+import ParallaxTestScaling
 @testable import ParallaxFeatures
 
 /// `SeekHold` is the pure core of the seek-hold fix: given a committed seek target and the
@@ -17,7 +18,7 @@ import Testing
 /// at all — the windows it exists for are the ones where beats stop arriving — so it is a task
 /// in `PlayerViewModel` and it is tested there. The only thing left of it in this file is the
 /// constant's size.
-@Suite("SeekHold — the committed seek target's grip on the published position", .timeLimit(.minutes(1)))
+@Suite("SeekHold — the committed seek target's grip on the published position", .scaledTimeLimit())
 struct SeekHoldTests {
 
     private static func time(_ seconds: Double) -> CMTime {

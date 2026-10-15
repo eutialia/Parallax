@@ -5,9 +5,10 @@ import ParallaxFileBrowse
 import ParallaxJellyfin
 import ParallaxJellyfinTestSupport
 import Testing
+import ParallaxTestScaling
 
 @MainActor
-@Suite("Open timing", .timeLimit(.minutes(1)))
+@Suite("Open timing", .scaledTimeLimit())
 struct OpenTimingScenarios {
     @Test("an SMB film's open is recorded once, when its first frame plays, with no title or host in it")
     func smbOpenIsLoggedAtFirstPlaying() async throws {

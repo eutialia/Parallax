@@ -2,9 +2,10 @@ import ParallaxCore
 import ParallaxFeatures
 import ParallaxJellyfinTestSupport
 import Testing
+import ParallaxTestScaling
 
 @MainActor
-@Suite("Detail", .timeLimit(.minutes(1)))
+@Suite("Detail", .scaledTimeLimit())
 struct DetailScenarios {
     @Test("a half-watched movie's page offers Resume at its saved position, and Play from Beginning on its tile starts over")
     func resumeAndPlayFromBeginning() async throws {

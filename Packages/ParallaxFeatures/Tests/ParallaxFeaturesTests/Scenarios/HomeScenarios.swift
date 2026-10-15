@@ -2,9 +2,10 @@ import ParallaxCore
 import ParallaxFeatures
 import ParallaxJellyfinTestSupport
 import Testing
+import ParallaxTestScaling
 
 @MainActor
-@Suite("Home", .timeLimit(.minutes(1)))
+@Suite("Home", .scaledTimeLimit())
 struct HomeScenarios {
     @Test("Continue Watching and Next Up show the server's items, most recently watched first")
     func shelvesShowTheServersItems() async throws {

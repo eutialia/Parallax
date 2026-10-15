@@ -2,11 +2,12 @@ import CoreMedia
 import Foundation
 import ParallaxCoreTestSupport
 import Testing
+import ParallaxTestScaling
 @testable import ParallaxFeatures
 @testable import ParallaxJellyfin
 
 @MainActor
-@Suite("Session reporter", .timeLimit(.minutes(1)))
+@Suite("Session reporter", .scaledTimeLimit())
 struct SessionReporterTests {
     /// Records whether each final request arrived from a cancelled task: a real one would be
     /// cancelled on the wire and never reach the server.

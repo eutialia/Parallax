@@ -1,6 +1,7 @@
 import Foundation
 import ParallaxCoreTestSupport
 import Testing
+import ParallaxTestScaling
 @testable import ParallaxFileBrowse
 import ParallaxFileBrowseTestSupport
 
@@ -9,7 +10,7 @@ import ParallaxFileBrowseTestSupport
 ///
 /// Time-limited: every test here parks on a gate that only the test itself opens, so a race that
 /// stops settling should fail red rather than hang the whole run.
-@Suite("Hard timeout race", .timeLimit(.minutes(3)))
+@Suite("Hard timeout race", .scaledTimeLimit(minutes: 3))
 struct HardTimeoutTests {
 
     private struct Boom: Error {}

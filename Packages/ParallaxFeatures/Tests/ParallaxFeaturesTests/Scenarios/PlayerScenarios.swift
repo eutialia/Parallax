@@ -7,9 +7,10 @@ import ParallaxJellyfin
 import ParallaxJellyfinTestSupport
 import ParallaxPlayback
 import Testing
+import ParallaxTestScaling
 
 @MainActor
-@Suite("Player", .timeLimit(.minutes(1)))
+@Suite("Player", .scaledTimeLimit())
 struct PlayerScenarios {
     @Test("the server a video plays from revoking its token closes the player and tears its engine down")
     func serverSwitchClosesThePlayer() async throws {

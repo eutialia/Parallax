@@ -1,6 +1,7 @@
 import Foundation
 import CoreMedia
 import Testing
+import ParallaxTestScaling
 @testable import ParallaxFeatures
 import ParallaxPlayback
 import ParallaxPlaybackTestSupport
@@ -15,7 +16,7 @@ import ParallaxPlaybackTestSupport
 /// `Container` case, every engine/already-rerouted combination) in
 /// `ParallaxPlaybackTests/ReactiveFallbackTests.swift`. These tests prove the VM-level
 /// WIRING instead: which engine gets rebuilt and what the retry asset carries.
-@Suite("PlayerViewModel reactive AVKit→VLC fallback", .timeLimit(.minutes(1)))
+@Suite("PlayerViewModel reactive AVKit→VLC fallback", .scaledTimeLimit())
 @MainActor
 struct ReactivePlaybackFallbackTests {
 

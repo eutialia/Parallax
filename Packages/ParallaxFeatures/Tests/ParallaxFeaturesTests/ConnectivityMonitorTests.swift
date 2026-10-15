@@ -1,4 +1,5 @@
 import Testing
+import ParallaxTestScaling
 import ParallaxCore
 import ParallaxFeatures
 import ParallaxPlayback
@@ -22,7 +23,7 @@ private final class MockReachabilityMonitoring: ReachabilityMonitoring, @uncheck
 }
 
 @MainActor
-@Suite("ConnectivityMonitor", .timeLimit(.minutes(1)))
+@Suite("ConnectivityMonitor", .scaledTimeLimit())
 struct ConnectivityMonitorTests {
     @Test("defaults to online before the first path update")
     func defaultsOnline() {

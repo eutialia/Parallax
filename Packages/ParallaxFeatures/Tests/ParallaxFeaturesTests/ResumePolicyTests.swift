@@ -1,6 +1,7 @@
 import Foundation
 import CoreMedia
 import Testing
+import ParallaxTestScaling
 @testable import ParallaxFeatures
 
 /// One resume decision: a saved position + the item's runtime → the seconds playback
@@ -37,7 +38,7 @@ private let resumeCases: [ResumeCase] = [
           seconds: 600, runtime: .seconds(0), expected: nil),
 ]
 
-@Suite("ResumePolicy", .timeLimit(.minutes(1)))
+@Suite("ResumePolicy", .scaledTimeLimit())
 struct ResumePolicyTests {
     @Test("resume window: [floor, ceiling × runtime], nil outside it", arguments: resumeCases)
     fileprivate func resumeStartTime(_ c: ResumeCase) throws {

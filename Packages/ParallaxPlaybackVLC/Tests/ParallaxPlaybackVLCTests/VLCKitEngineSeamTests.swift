@@ -523,7 +523,7 @@ struct VLCKitEventsConfigurationTests {
 /// and used to ship them indistinguishable from a real landing, which is what let an expired
 /// hold republish the PRE-seek clock as `.playing`. Nothing here is ever `.stale`: while a hold
 /// stands the engine publishes the held value, so libvlc's lying clock never reaches the wire.
-@Suite("VLCKitEngine — the seek-settle contract", .timeLimit(.minutes(2)))
+@Suite("VLCKitEngine — the seek-settle contract", .scaledTimeLimit(minutes: 2))
 @MainActor
 struct VLCKitSeekSettleTests {
 
@@ -810,7 +810,7 @@ struct VLCKitSeekSettleTests {
 /// The load deadline only means something if nothing disarms it before the input opens. The
 /// poll's inventory diff used to publish the empty inventory of an input still stuck opening
 /// on its first tick, and that `.ready` disarmed the watchdog: a dead share spun forever.
-@Suite("VLCKitEngine — load readiness", .timeLimit(.minutes(1)))
+@Suite("VLCKitEngine — load readiness", .scaledTimeLimit())
 @MainActor
 struct VLCKitLoadReadinessTests {
 

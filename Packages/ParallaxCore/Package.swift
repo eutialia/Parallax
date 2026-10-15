@@ -47,7 +47,7 @@ let package = Package(
         ),
         .testTarget(
             name: "ParallaxCoreTests",
-            dependencies: ["ParallaxCore", "ParallaxCoreTestSupport"],
+            dependencies: ["ParallaxCore", "ParallaxCoreTestSupport", "ParallaxTestScaling"],
             swiftSettings: [
                 .swiftLanguageMode(.v6),
             ]

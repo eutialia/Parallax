@@ -1,4 +1,5 @@
 import Testing
+import ParallaxTestScaling
 import Foundation
 import ParallaxCore
 import ParallaxJellyfin
@@ -14,7 +15,7 @@ import ParallaxJellyfin
 /// and took `loadGenres()` with it: a grid stuck on the spinner with a permanently empty genre
 /// picker, roughly half the time.
 @MainActor
-@Suite("LibraryGridViewModel fetch arming", .timeLimit(.minutes(1)))
+@Suite("LibraryGridViewModel fetch arming", .scaledTimeLimit())
 struct LibraryGridViewModelSortSeedTests {
     private let seeded = ItemSort(field: .title, direction: .ascending)
 

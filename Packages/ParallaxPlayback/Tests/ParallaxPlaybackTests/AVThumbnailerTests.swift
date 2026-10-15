@@ -1,4 +1,5 @@
 import Testing
+import ParallaxTestScaling
 import Foundation
 import CoreGraphics
 import ParallaxPlaybackTestSupport
@@ -10,7 +11,7 @@ import ParallaxPlaybackTestSupport
 // 3 minutes matches every other live-I/O suite's backstop: loaded CI runners measured
 // 65–74s wall-clock on a decode that passes, so the 1-minute ceiling reported hangs
 // that never happened.
-@Suite("AVThumbnailer — 320px tier (live AVFoundation decode)", .timeLimit(.minutes(3)))
+@Suite("AVThumbnailer — 320px tier (live AVFoundation decode)", .scaledTimeLimit(minutes: 3))
 @MainActor
 struct AVThumbnailerTests {
 

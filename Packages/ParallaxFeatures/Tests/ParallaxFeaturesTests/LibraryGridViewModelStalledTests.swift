@@ -1,4 +1,5 @@
 import Testing
+import ParallaxTestScaling
 import Foundation
 import ParallaxCore
 import ParallaxJellyfin
@@ -27,7 +28,7 @@ private let stalledCases: [StalledCase] = [
 /// full-screen failure (`.failed` AND no items) counts — never a loaded grid, and never the
 /// stale-content refresh banner (which keeps its own manual "Try again").
 @MainActor
-@Suite("LibraryGridViewModel.isStalled", .timeLimit(.minutes(1)))
+@Suite("LibraryGridViewModel.isStalled", .scaledTimeLimit())
 struct LibraryGridViewModelStalledTests {
     /// Every fixture in this suite is one server; the grid ignores other sources' changes.
 

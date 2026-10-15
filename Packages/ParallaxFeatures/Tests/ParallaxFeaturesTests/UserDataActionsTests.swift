@@ -1,4 +1,5 @@
 import Testing
+import ParallaxTestScaling
 import Foundation
 import ParallaxCore
 import ParallaxFeatures
@@ -37,7 +38,7 @@ private let mergeCases: [MergeCase] = [
 /// Covers `UserDataActions`' two load-bearing contracts: the per-(item, op) in-flight guard
 /// coalesces overlapping writes, and a change event is broadcast on success only.
 @MainActor
-@Suite("UserDataActions", .timeLimit(.minutes(1)))
+@Suite("UserDataActions", .scaledTimeLimit())
 struct UserDataActionsTests {
     /// These tests exercise one server; the (source, itemID) key is covered by SourcedItemMergeTests.
 

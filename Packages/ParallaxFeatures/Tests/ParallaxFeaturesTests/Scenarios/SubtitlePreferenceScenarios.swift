@@ -1,9 +1,10 @@
 import ParallaxFeatures
 import ParallaxPlayback
 import Testing
+import ParallaxTestScaling
 
 @MainActor
-@Suite("Subtitle preferences", .timeLimit(.minutes(1)))
+@Suite("Subtitle preferences", .scaledTimeLimit())
 struct SubtitlePreferenceScenarios {
     @Test("a subtitle style change survives a relaunch")
     func styleSurvivesRelaunch() async throws {

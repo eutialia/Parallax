@@ -2,6 +2,7 @@ import Foundation
 import Synchronization
 import CoreMedia
 import Testing
+import ParallaxTestScaling
 import ParallaxCore
 @testable import ParallaxFeatures
 import ParallaxPlayback
@@ -16,7 +17,7 @@ import ParallaxSubtitles
 /// playSessionID, no progress reporting. The libVLC `smb://` path is the validated
 /// primary (the spike passed), so the asset routes to VLCKit via `hints.scheme == "smb"`
 /// and carries the credential options verbatim in `vlcOptions`.
-@Suite("PlayerViewModel SMB start", .timeLimit(.minutes(1)))
+@Suite("PlayerViewModel SMB start", .scaledTimeLimit())
 @MainActor
 struct SMBPlaybackStartTests {
 

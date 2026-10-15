@@ -1,4 +1,5 @@
 import Testing
+import ParallaxTestScaling
 @testable import ParallaxFeatures
 
 /// Unit tests for `SMBBonjourDiscovery`'s pure mapping logic.
@@ -8,7 +9,7 @@ import Testing
 /// test can reach is `discoveredServer(forServiceName:)`, so that mapping is the whole suite.
 /// (Dedup lives in the caller, not here; the tests that "proved" it were re-implementing the
 /// filter inside the test body, and `id == name` makes distinct-ids tautological.)
-@Suite("SMBBonjourDiscovery", .timeLimit(.minutes(1)))
+@Suite("SMBBonjourDiscovery", .scaledTimeLimit())
 struct SMBBonjourDiscoveryTests {
     @Test(
         "a Bonjour service name maps verbatim to id/name, with .local appended for the host",

@@ -1,12 +1,13 @@
 import Foundation
 import Testing
+import ParallaxTestScaling
 import ParallaxCore
 @testable import ParallaxFileBrowse
 
 /// `.serialized` caps what this suite costs at any one instant: run in parallel it stands up ~21
 /// listeners and sockets at once, plus the two multi-chunk fixtures, which a 2-core CI runner
 /// cannot absorb. One bridge at a time still exercises every path — nothing here tests concurrency.
-@Suite("SMBHTTPBridge", .serialized, .timeLimit(.minutes(3)))
+@Suite("SMBHTTPBridge", .serialized, .scaledTimeLimit(minutes: 3))
 struct SMBHTTPBridgeTests {
 
     /// `byte[i] == i % 251`, so any slice is verifiable by index alone. Filled in place: the

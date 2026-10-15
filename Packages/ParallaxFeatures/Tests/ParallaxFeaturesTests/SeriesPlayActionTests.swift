@@ -1,4 +1,5 @@
 import Testing
+import ParallaxTestScaling
 import ParallaxCore
 @testable import ParallaxFeatures
 
@@ -8,7 +9,7 @@ import ParallaxCore
 /// case below — "nothing loaded yet" must still produce a titled action, because the pill that
 /// renders it carries the hero action row's `prefersDefaultFocus` pin. No view, no view model,
 /// no repository is involved here.
-@Suite("SeriesPlayAction — the series hero's always-present play CTA", .timeLimit(.minutes(1)))
+@Suite("SeriesPlayAction — the series hero's always-present play CTA", .scaledTimeLimit())
 struct SeriesPlayActionTests {
 
     /// One resolve input paired with what the row must show. `name` is the phase of the load

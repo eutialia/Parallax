@@ -1,9 +1,10 @@
 import ParallaxFeatures
 import ParallaxJellyfinTestSupport
 import Testing
+import ParallaxTestScaling
 
 @MainActor
-@Suite("Revoked token", .timeLimit(.minutes(1)))
+@Suite("Revoked token", .scaledTimeLimit())
 struct RevokedTokenScenarios {
     @Test("a server that revokes our token is signed out, its row stays as signed-out, and the app returns to login when it was the only server")
     func revokedTokenSignsOutAndReturnsToLogin() async throws {

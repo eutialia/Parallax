@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import ParallaxTestScaling
 import ParallaxCore
 import ParallaxPlayback
 import ParallaxCoreTestSupport
@@ -101,7 +102,7 @@ private let routeCases: [RouteCase] = [
 /// The pure routing decision `SMBPlaybackResolver.route` makes from a probe result:
 /// bridge (AVKit over the localhost HTTP bridge) vs the legacy `smb://`+VLC route,
 /// plus the `PlaybackHints` each route carries. No I/O — every case is a table row.
-@Suite("SMBPlaybackResolver.route", .timeLimit(.minutes(1)))
+@Suite("SMBPlaybackResolver.route", .scaledTimeLimit())
 struct SMBPlaybackRouteTests {
     @Test("bridge eligibility and hints, per probe shape", arguments: routeCases)
     func route(_ row: RouteCase) {
@@ -121,7 +122,7 @@ struct SMBPlaybackRouteTests {
 /// `SMBPlaybackResolver.timingRepairLibraryOptions(for:)`: the pure decision behind the
 /// libvlc instance flags that repair the `.decodeOrderTimestamps` hazard (a broken vout
 /// clock drops ~half the frames — see the method's own doc for the full mechanism).
-@Suite("SMBPlaybackResolver.timingRepairLibraryOptions", .timeLimit(.minutes(1)))
+@Suite("SMBPlaybackResolver.timingRepairLibraryOptions", .scaledTimeLimit())
 struct SMBTimingRepairLibraryOptionsTests {
     @Test("nil probe → nil (no evidence of the hazard)")
     func nilProbe() {
@@ -151,7 +152,7 @@ struct SMBTimingRepairLibraryOptionsTests {
 
 /// The container-probe deadline race: a wedged SMB read must be abandoned at the
 /// deadline so the loading veil is never held hostage to AMSMB2's 15s socket timeout.
-@Suite("SMBPlaybackResolver.probeWithDeadline", .timeLimit(.minutes(1)))
+@Suite("SMBPlaybackResolver.probeWithDeadline", .scaledTimeLimit())
 struct SMBProbeDeadlineTests {
 
     /// A reader whose `read` never returns — models an SMB share stuck in a native

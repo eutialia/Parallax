@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import ParallaxTestScaling
 @testable import ParallaxFeatures
 
 /// One key field that must participate in the cache's file name, and the pair of keys that differ
@@ -45,7 +46,7 @@ private let keyDiscriminatorCases: [KeyDiscriminatorCase] = [
     ),
 ]
 
-@Suite("SMBThumbnailCache", .timeLimit(.minutes(1)))
+@Suite("SMBThumbnailCache", .scaledTimeLimit())
 struct SMBThumbnailCacheTests {
 
     /// Smallest valid PNG: a 1×1 transparent image. Lets a test assert the cache round-trips the
