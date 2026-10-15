@@ -150,8 +150,8 @@ struct SMBBrowseSortChipSkeleton: View {
 #if os(tvOS)
 /// tvOS in-content SMB sort chip — toolbar items can't join the focus engine on tvOS, so the
 /// control rides inside the scrollable content (`SMBBrowseView.sortHeader`, centered above the
-/// grid). Mirrors the `LibraryGridView` header chip: a native `.glass` Menu with inline pickers,
-/// `Color.label` tint.
+/// grid). Mirrors the `LibraryGridView` header chip: an untinted native `.glass` Menu with inline
+/// pickers (a tint recolors the tvOS focus platter, see `libraryHeaderMenu`).
 struct SMBBrowseSortChip: View {
     @Binding var field: SMBBrowseSort.Field
     @Binding var direction: SMBBrowseSort.Direction
@@ -176,7 +176,6 @@ struct SMBBrowseSortChip: View {
                 .font(.subheadline.weight(.medium))
         }
         .buttonStyle(.glass)
-        .tint(Color.label)
         .accessibilityLabel("Sort")
     }
 }

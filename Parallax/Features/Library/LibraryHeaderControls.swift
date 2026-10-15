@@ -101,13 +101,12 @@ struct LibraryHeaderControls: View {
         }
     }
 
-    /// Shares `libraryHeaderMenu` with Sort so the two chips are styled identically; a selected
-    /// genre flips the resting monochrome tint to the filled `chipSelectedFill`.
+    /// Shares `libraryHeaderMenu` with Sort so the two chips are styled identically. An active
+    /// filter shows as the genre's name in the label, not as a tint (see `libraryHeaderMenu`).
     private var genreMenu: some View {
         libraryHeaderMenu(
             title: selectedGenre ?? "Genre",
             systemImage: "theatermasks",
-            activeTint: selectedGenre != nil ? Color.chipSelectedFill : nil,
             accessibilityLabel: "Genre"
         ) {
             // Single-select genre filter, collapsed from a scrolling chip bar into one menu: the
@@ -120,10 +119,9 @@ struct LibraryHeaderControls: View {
             }
             .pickerStyle(.inline)
         }
+        .accessibilityValue(selectedGenre ?? "All Genres")
     }
 
-    /// No `activeTint`: Sort has no selected state, so it rests on the same monochrome
-    /// `Color.label` tint as an unselected Genre.
     private var sortMenu: some View {
         libraryHeaderMenu(
             title: "Sort",
@@ -194,9 +192,7 @@ struct LibraryHeaderControlsSkeleton: View {
 
 /// Shared label for the tvOS header menus (Genre, Sort) so the two read identically.
 /// Bare — the enclosing Menu wears the native `.glass` style, which owns the capsule,
-/// metrics, and label color: the label rests as `Color.label` over translucent glass
-/// (legible), and the focused platter brightens without recoloring it. A forced
-/// `foregroundStyle` would fight that, so leave it off. Selection shows via the menu's tint.
+/// metrics, and label color. A forced `foregroundStyle` would fight that, so leave it off.
 private func libraryHeaderChipLabel(_ title: String, systemImage: String) -> some View {
     Label(title, systemImage: systemImage)
         .labelStyle(.titleAndIcon)
@@ -204,24 +200,18 @@ private func libraryHeaderChipLabel(_ title: String, systemImage: String) -> som
 }
 
 /// Shared builder for the tvOS in-content header menus (Genre + Sort) so the pair is styled
-/// identically. Both wear the native `.glass` style — translucent Liquid Glass at rest,
-/// brightening on focus — with a `Color.label` resting tint (the value `RootView` pins
-/// app-wide), so the label reads legibly over the frosted capsule. A header passes a non-nil
-/// `activeTint` (Genre's `chipSelectedFill`) only to flip to the filled "active filter" look.
+/// identically. Both wear the native `.glass` style untinted, so tvOS draws its own focus: a
+/// white platter with a dark label in both appearances. A tinted `.glass` focuses to a
+/// tint-colored platter under a WHITE label instead, which a `Color.label` tint turned into
+/// white-on-white in dark mode, and any light tint still does. So no tint at all:
+/// an active Genre filter reads from its label, the genre's name.
 ///
 /// NOT `.bordered`: on tvOS its resting platter takes the tint AND it draws the label in that
 /// same tint, so under our monochrome `Color.label` the two collapse to one color and the
 /// label is invisible until focus inverts it. `.glass` keeps the label and capsule distinct.
-///
-/// The resting tint is set EXPLICITLY, not left to inherit: Genre used to clear it with
-/// `.tint(nil)`, which reset to the system accent and rendered a visibly different color
-/// from Sort (which inherited `Color.label`) — the asymmetry this fixes. Passing the tint
-/// unconditionally also keeps the modifier identity stable, so toggling a genre never tears
-/// down the Menu and drops tvOS focus.
 private func libraryHeaderMenu<Content: View>(
     title: String,
     systemImage: String,
-    activeTint: Color? = nil,
     accessibilityLabel: String,
     @ViewBuilder content: () -> Content
 ) -> some View {
@@ -231,7 +221,6 @@ private func libraryHeaderMenu<Content: View>(
         libraryHeaderChipLabel(title, systemImage: systemImage)
     }
     .buttonStyle(.glass)
-    .tint(activeTint ?? Color.label)
     .accessibilityLabel(accessibilityLabel)
 }
 
@@ -239,9 +228,8 @@ private func libraryHeaderMenu<Content: View>(
 /// Genre ⇄ Sort header parity + center-axis symmetry. The row splits into two equal halves —
 /// Genre trailing-aligned in the left, Sort leading-aligned in the right — so the gap between
 /// the pair stays centered on the axis (red hairline) however their content widths differ.
-/// Both share the monochrome `Color.label` resting tint; Genre flips to `chipSelectedFill`
-/// when a genre is active (second row). The third row is the no-genre case: Sort centers
-/// alone on the same axis. Wrapped in `.tint(Color.label)` to mirror RootView's global tint.
+/// Both rest untinted; the second row is an active Genre filter, shown by its name.
+/// The third row is the no-genre case: Sort centers alone on the same axis.
 #Preview("Header parity + axis", traits: .fixedLayout(width: 900, height: 470)) {
     VStack(spacing: Space.s40) {
         HStack(spacing: Space.s12) {
@@ -251,7 +239,7 @@ private func libraryHeaderMenu<Content: View>(
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         HStack(spacing: Space.s12) {
-            libraryHeaderMenu(title: "Action", systemImage: "theatermasks", activeTint: Color.chipSelectedFill, accessibilityLabel: "Genre") { Text("Genres") }
+            libraryHeaderMenu(title: "Action", systemImage: "theatermasks", accessibilityLabel: "Genre") { Text("Genres") }
                 .frame(maxWidth: .infinity, alignment: .trailing)
             libraryHeaderMenu(title: "Sort", systemImage: "arrow.up.arrow.down", accessibilityLabel: "Sort") { Text("Sort") }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -265,7 +253,6 @@ private func libraryHeaderMenu<Content: View>(
         Rectangle().fill(Color.red.opacity(0.55)).frame(width: 1)
     }
     .background(Color.background)
-    .tint(Color.label)
 }
 
 /// Skeleton ↔ live header parity, three rows: the redacted placeholder, the live control once
@@ -307,7 +294,6 @@ private func libraryHeaderMenu<Content: View>(
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     .background(.black)
     .preferredColorScheme(.dark)
-    .tint(Color.label)
 }
 
 /// One probe chip — the shipping Sort menu on an opaque fill so its frame is measurable, optionally
