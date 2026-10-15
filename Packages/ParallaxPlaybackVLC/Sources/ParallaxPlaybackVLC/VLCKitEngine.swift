@@ -1921,10 +1921,10 @@ public final class VLCKitEngine: NSObject, PlaybackEngine, VLCPlayerHosting {
     /// Neither releases, so the bar rides an extrapolation until the media ends. This is the
     /// floor under both, and it is unconditional on purpose.
     ///
-    /// Ordered against the app's own `SeekHold.watchdog` (20s) deliberately: the ENGINE has to
+    /// Ordered against the app's own `SeekHold.watchdog` (35s) deliberately: the ENGINE has to
     /// be the one that gives up first, so the beat that ends the app's hold is an honest
     /// `.observed` clock rather than whatever the app's watchdog happened to fire on. 15s
-    /// leaves 5s of margin at the 500ms cadence.
+    /// leaves 20s of margin at the 500ms cadence.
     static func seekHoldAbandoned(polls: Int) -> Bool {
         polls >= 30
     }
