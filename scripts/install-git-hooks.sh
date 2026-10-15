@@ -22,6 +22,7 @@ cat > "$HOOK_PATH" <<'EOF'
 set -e
 REPO_ROOT=$(git rev-parse --show-toplevel)
 "$REPO_ROOT/scripts/check-no-platform-drift.sh"
+"$REPO_ROOT/scripts/check-scaled-time-limits.sh"
 EOF
 
 chmod +x "$HOOK_PATH"
