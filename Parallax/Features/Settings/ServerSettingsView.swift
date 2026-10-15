@@ -92,7 +92,7 @@ struct ServerSettingsContentView: View {
     let serverName: String
     let host: String
     let userName: String
-    /// Server version string ("10.9.11"); nil renders a dash until the probe lands.
+    /// Server version string ("12.2.0"); nil renders a dash until the probe lands.
     var version: String?
     var statusText: String = "Connected"
     var statusLed: Color = Color.ok
@@ -160,7 +160,7 @@ private struct JellyfinServerDetailPreview: View {
                 serverName: "home-jellyfin",
                 host: "jellyfin.example.lan",
                 userName: "admin",
-                version: "10.9.11",
+                version: "12.2.0",
                 visibleLibrariesLabel: "4 of 6",
                 onVisibleLibraries: {},
                 onRemove: {}

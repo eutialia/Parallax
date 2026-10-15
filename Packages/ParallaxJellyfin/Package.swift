@@ -15,7 +15,7 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "../ParallaxCore"),
-        .package(url: "https://github.com/jellyfin/jellyfin-sdk-swift.git", exact: "2.1.0"),
+        .package(url: "https://github.com/jellyfin/jellyfin-sdk-swift.git", exact: "3.3.0"),
         // Already in the graph as the Jellyfin SDK's transport; declared explicitly so this
         // target can name `APIClientDelegate` (the per-response hook that catches a rejected
         // token) and pattern-match `APIError` instead of regexing an error's description.

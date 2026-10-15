@@ -19,19 +19,20 @@ public actor SessionManager {
         Log.network.info("signIn → \(server.redactedForLog)")
         let client = await factory.make(serverURL: server)
 
-        let authResult: AuthenticationResult
-        do {
-            authResult = try await client.signIn(username: username, password: password)
-        } catch {
-            Log.network.error("signIn authenticate failed: \(error.networkDiagnostic)")
-            throw ErrorMapping.appError(from: error)
-        }
-
         let publicInfo: PublicSystemInfo
         do {
             publicInfo = try await client.fetchPublicSystemInfo()
         } catch {
             Log.network.error("signIn publicInfo failed: \(error.networkDiagnostic)")
+            throw ErrorMapping.appError(from: error)
+        }
+        try Self.requireSupported(publicInfo)
+
+        let authResult: AuthenticationResult
+        do {
+            authResult = try await client.signIn(username: username, password: password)
+        } catch {
+            Log.network.error("signIn authenticate failed: \(error.networkDiagnostic)")
             throw ErrorMapping.appError(from: error)
         }
 
@@ -88,8 +89,20 @@ public actor SessionManager {
         continuation: AsyncStream<QuickConnectStatus>.Continuation
     ) async {
         Log.network.info("quickConnect → \(server.redactedForLog)")
-        continuation.yield(.waitingForCode)
         let client = await factory.make(serverURL: server)
+
+        let info: PublicSystemInfo
+        do {
+            info = try await client.fetchPublicSystemInfo()
+            try Self.requireSupported(info)
+        } catch {
+            Log.network.error("quickConnect publicInfo failed: \(error.networkDiagnostic)")
+            continuation.yield(.failed(reason: ErrorMapping.appError(from: error).userMessage))
+            continuation.finish()
+            return
+        }
+        continuation.yield(.waitingForCode)
+
         let events = client.quickConnectEvents()
 
         var secret: String?
@@ -142,16 +155,6 @@ public actor SessionManager {
             return
         }
 
-        let info: PublicSystemInfo
-        do {
-            info = try await client.fetchPublicSystemInfo()
-        } catch {
-            Log.network.error("quickConnect publicInfo failed: \(error.networkDiagnostic)")
-            continuation.yield(.failed(reason: ErrorMapping.appError(from: error).userMessage))
-            continuation.finish()
-            return
-        }
-
         do {
             let session = try buildSession(authResult: auth, server: server, publicInfo: info)
             try await serverStore.add(session)
@@ -162,6 +165,16 @@ public actor SessionManager {
             continuation.yield(.failed(reason: ErrorMapping.appError(from: error).userMessage))
         }
         continuation.finish()
+    }
+
+    /// Parallax supports Jellyfin 12.0 and newer. Checked on the unauthenticated public info, so an
+    /// older server is refused before any credential reaches it.
+    static func requireSupported(_ info: PublicSystemInfo) throws {
+        let major = info.version.flatMap { Int($0.prefix(while: \.isNumber)) }
+        guard let major, major >= 12 else {
+            Log.network.error("Refusing Jellyfin \(info.version ?? "with no version"): Parallax needs 12 or newer")
+            throw AppError.serverTooOld(version: info.version)
+        }
     }
 
     // Internal — accessible from the same target.

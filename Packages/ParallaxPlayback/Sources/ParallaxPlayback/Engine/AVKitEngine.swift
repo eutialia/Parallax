@@ -773,7 +773,7 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
         // HLS error log: segment fetch/parse failures retry silently and never
         // fail the item — a never-starting stream usually confesses here. The
         // URI is reduced to its trailing path (query stripped — that's where
-        // the api_key lives) so the log names WHICH resource failed: playlist,
+        // the ApiKey lives) so the log names WHICH resource failed: playlist,
         // init segment, or a specific media segment.
         if let events = item.errorLog()?.events, !events.isEmpty {
             // Whole log, not a tail: the sequence is the diagnosis. Path FIRST so an entry
@@ -902,7 +902,7 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     /// still failing on the playlist whose encode job the reload just killed.
     ///
     /// domain+code+localizedDescription are the actionable, token-free bits; the asset URL is
-    /// hashed because it embeds the api_key, and `errorLogDetail` is `.private` because it
+    /// hashed because it embeds the ApiKey, and `errorLogDetail` is `.private` because it
     /// appends CoreMedia's own free text (see `PlaybackDebugInfo.errorLogDetail`).
     @discardableResult
     private func logItemFailure(_ item: AVPlayerItem, from session: PlaybackSessionID) -> PlaybackDebugInfo {
@@ -981,11 +981,11 @@ public final class AVKitEngine: NSObject, PlaybackEngine, AVPlayerHosting {
     }
 
     /// Trailing path of an HLS resource URI with the query dropped (the query
-    /// is where the api_key lives): "main/123.mp4". Enough to tell playlist vs
+    /// is where the ApiKey lives): "main/123.mp4". Enough to tell playlist vs
     /// init vs media segment apart without leaking credentials.
     static func redactedTail(of uri: String) -> String? {
         guard let components = URLComponents(string: uri) else { return nil }
-        // `.path` drops the query, which is where the api_key lives — the redaction is
+        // `.path` drops the query, which is where the ApiKey lives — the redaction is
         // structural, not a filter, so a new query parameter can never leak through it.
         let parts = components.path.split(separator: "/")
             .filter { !Self.isOpaqueIdentifier($0) }

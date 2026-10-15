@@ -53,7 +53,7 @@ public extension Logger {
 public extension URL {
     /// Scheme/host/port/path of the URL with every credential-bearing component
     /// stripped, safe to drop into a log line. Jellyfin stream and transcode URLs
-    /// carry the access token as an `api_key` query item, and a malformed
+    /// carry the access token as an `ApiKey` query item, and a malformed
     /// user-typed URL can preserve `user:pass@` userinfo on the `failingURL` of a
     /// `URLError` — both must never reach Console.app, sysdiagnose, or crash logs.
     /// The query is replaced with `?<redacted>` when present so the shape stays
@@ -77,7 +77,7 @@ public extension Error {
     /// structured detail (code + symbol + failing URL) so an opaque
     /// "Network error" turns into something like
     /// `URLError code=-1022 (appTransportSecurityRequiresSecureConnection) failingURL=http://192.168.1.10:8096/...`.
-    /// The failing URL is routed through `URL.redactedForLog` so any `api_key`
+    /// The failing URL is routed through `URL.redactedForLog` so any `ApiKey`
     /// query item or `user:pass@` userinfo is stripped before it reaches the log.
     /// Other errors fall back to type name + description, which for the kean/Get
     /// and Jellyfin SDK errors covers status code / URL without echoing

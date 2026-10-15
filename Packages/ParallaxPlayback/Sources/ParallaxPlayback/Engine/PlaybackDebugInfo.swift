@@ -56,7 +56,7 @@ public struct PlaybackDebugInfo: Sendable, Equatable {
     /// Last few HLS error-log events, "domain code @path: comment" — segment fetch
     /// and parse failures RETRY SILENTLY without ever failing the item, so a stream
     /// that "never plays, no error" usually confesses here. URIs are reduced to a
-    /// redacted trailing path (query stripped — that's where the api_key lives),
+    /// redacted trailing path (query stripped — that's where the ApiKey lives),
     /// just enough to tell playlist vs init vs media segment apart.
     public var errorLogTail: [String]
     /// Every `AVPlayerItemAccessLogEvent`, oldest first, one entry per media request run:

@@ -22,7 +22,7 @@ struct DefaultJellyfinPlaybackClientTests {
 
     /// `static=true` is the range-seekable direct-play contract; the device and play session ids
     /// are what the server scopes the stream (and a later transcode kill) to.
-    @Test("Direct-play stream URL carries api_key, the source, the static flag and the session ids")
+    @Test("Direct-play stream URL carries ApiKey, the source, the static flag and the session ids")
     func directPlayURLHasAPIKey() throws {
         let built = client().streamURL(
             StreamRequest(
@@ -38,7 +38,7 @@ struct DefaultJellyfinPlaybackClientTests {
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
         func query(_ name: String) -> String? { items.first { $0.name == name }?.value }
         #expect(url.path == "/Videos/item-1/stream.mp4")
-        #expect(query("api_key") == "tok-1")
+        #expect(query("ApiKey") == "tok-1")
         #expect(query("mediaSourceId") == "ms-1")
         #expect(query("static") == "true")
         #expect(query("deviceId") == JellyfinFixtures.identity().deviceID)
@@ -47,16 +47,16 @@ struct DefaultJellyfinPlaybackClientTests {
 
     @Test("Server transcodingURL is resolved against the server and kept intact")
     func transcodeURLResolved() {
-        let url = client().transcodeURL(relativePath: "/videos/item-1/master.m3u8?api_key=tok-1&PlaySessionId=ps-1")
+        let url = client().transcodeURL(relativePath: "/videos/item-1/master.m3u8?ApiKey=tok-1&PlaySessionId=ps-1")
         #expect(url?.absoluteString.hasPrefix("https://j.example.com") == true)
         #expect(url?.absoluteString.contains("master.m3u8") == true)
-        #expect(url?.query?.contains("api_key=tok-1") == true)
+        #expect(url?.query?.contains("ApiKey=tok-1") == true)
     }
 
-    /// The sidecar fetch is client-side, so it needs api_key in the query AND absolute cue times —
+    /// The sidecar fetch is client-side, so it needs ApiKey in the query AND absolute cue times —
     /// the in-manifest WebVTT offset drifts on fMP4 segments (jellyfin/jellyfin#16647). This is
     /// where that URL shape is proven; the resolve tests only prove the wiring to it.
-    @Test("Subtitle sidecar URL carries copyTimestamps and api_key")
+    @Test("Subtitle sidecar URL carries copyTimestamps and ApiKey")
     func subtitleStreamURLShape() {
         let url = client().subtitleStreamURL(
             itemID: "item-1",
@@ -66,7 +66,7 @@ struct DefaultJellyfinPlaybackClientTests {
         )
         let absolute = url?.absoluteString ?? ""
         #expect(absolute.contains("/Videos/item-1/ms-1/Subtitles/3/Stream.vtt"))
-        #expect(url?.query?.contains("api_key=tok-1") == true)
+        #expect(url?.query?.contains("ApiKey=tok-1") == true)
         #expect(url?.query?.lowercased().contains("copytimestamps=true") == true)
     }
 

@@ -42,10 +42,13 @@ struct SessionManagerHarness {
         return result
     }
 
-    static func publicInfo(name: String? = "Living Room", id: String? = "server-id-from-server") -> PublicSystemInfo {
+    static func publicInfo(
+        name: String? = "Living Room", id: String? = "server-id-from-server", version: String? = "12.2.0"
+    ) -> PublicSystemInfo {
         var info = PublicSystemInfo()
         info.serverName = name
         info.id = id
+        info.version = version
         return info
     }
 }
@@ -82,6 +85,7 @@ struct SessionManagerSignInTests {
     func signInBadCredentials() async throws {
         let harness = SessionManagerHarness()
         harness.client.passwordSignInResult = .failure(JellyfinClient.ClientError.noAccessToken)
+        harness.client.publicSystemInfoResult = .success(SessionManagerHarness.publicInfo())
 
         do {
             _ = try await harness.manager.signIn(server: harness.serverURL, username: "alice", password: "wrong")
@@ -95,10 +99,9 @@ struct SessionManagerSignInTests {
         #expect(await harness.store.sessions.isEmpty)
     }
 
-    /// Authentication succeeded but the follow-up public-info fetch failed — the server is real,
-    /// the credential is good, and the failure is transport-shaped, so it must NOT read as a
-    /// rejected password.
-    @Test("A failed public-info fetch after authentication surfaces as the transport failure")
+    /// The public-info fetch failed: the failure is transport-shaped, so it must NOT read as a
+    /// rejected password, and the password never leaves the device.
+    @Test("A failed public-info fetch surfaces as the transport failure, before the password is sent")
     func signInPublicInfoFailure() async throws {
         let harness = SessionManagerHarness()
         harness.client.passwordSignInResult = .success(SessionManagerHarness.authResult())
@@ -114,6 +117,28 @@ struct SessionManagerSignInTests {
             }
             #expect(urlError.code == .timedOut)
         }
+        #expect(harness.client.passwordSignInCalls.isEmpty)
+        #expect(await harness.store.sessions.isEmpty)
+    }
+
+    @Test("A server older than Jellyfin 12 is refused with its version, before the password is sent",
+          arguments: ["11.0.3", "10.11.11", "unknown", nil] as [String?])
+    func signInRefusesOldServer(version: String?) async throws {
+        let harness = SessionManagerHarness()
+        harness.client.passwordSignInResult = .success(SessionManagerHarness.authResult())
+        harness.client.publicSystemInfoResult = .success(SessionManagerHarness.publicInfo(version: version))
+
+        do {
+            _ = try await harness.manager.signIn(server: harness.serverURL, username: "alice", password: "hunter2")
+            Issue.record("expected a throw")
+        } catch let error as AppError {
+            guard case .serverTooOld(let reported) = error else {
+                Issue.record("expected .serverTooOld, got \(error)")
+                return
+            }
+            #expect(reported == version)
+        }
+        #expect(harness.client.passwordSignInCalls.isEmpty)
         #expect(await harness.store.sessions.isEmpty)
     }
 

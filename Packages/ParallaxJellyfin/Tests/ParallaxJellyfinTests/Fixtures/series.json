@@ -14,6 +14,7 @@
     },
     "BackdropImageTags": ["series-backdrop-1"],
     "UserData": {
+        "Key": "series-uuid-1",
         "Played": false,
         "PlaybackPositionTicks": 0,
         "PlayCount": 0,

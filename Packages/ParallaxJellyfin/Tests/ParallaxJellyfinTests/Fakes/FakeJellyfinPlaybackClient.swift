@@ -5,7 +5,7 @@ import JellyfinAPI
 /// Programmable stand-in for the SDK-backed playback client.
 ///
 /// The canned URLs are deliberately OPAQUE SENTINELS, not imitations of the real ones: a fake that
-/// fabricated `api_key=…&master.m3u8` would let a resolve test "prove" URL construction that the
+/// fabricated `ApiKey=…&master.m3u8` would let a resolve test "prove" URL construction that the
 /// fake itself wrote. URL shape belongs to `DefaultJellyfinPlaybackClientTests`, where the real
 /// builder runs; here the only URL fact worth asserting is that `resolve` returned the sentinel
 /// the corresponding builder was asked for — i.e. the wiring.

@@ -23,6 +23,7 @@
     },
     "BackdropImageTags": ["backdrop-tag-1"],
     "UserData": {
+        "Key": "movie-uuid-1",
         "Played": false,
         "PlaybackPositionTicks": 0,
         "PlayCount": 0,

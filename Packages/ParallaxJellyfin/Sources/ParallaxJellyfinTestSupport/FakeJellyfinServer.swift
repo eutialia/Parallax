@@ -134,6 +134,7 @@ public final class FakeJellyfinServer: Observable, Sendable {
     }
 
     private struct State {
+        var version = "12.2.0"
         var users: [User] = []
         var libraries: [Library] = []
         var catalog: [CatalogItem] = []
@@ -176,6 +177,14 @@ public final class FakeJellyfinServer: Observable, Sendable {
     @discardableResult
     public func user(_ name: String, password: String = "") -> Self {
         state.withLock { $0.users.append(User(id: "user-\(name)", name: name, password: password)) }
+        return self
+    }
+
+    /// The Jellyfin version the server reports, 12.2.0 unless set. Settable mid-test, as a server
+    /// that was upgraded or rolled back is.
+    @discardableResult
+    public func version(_ version: String) -> Self {
+        state.withLock { $0.version = version }
         return self
     }
 
@@ -477,7 +486,7 @@ public final class FakeJellyfinServer: Observable, Sendable {
     // MARK: - System and sign-in
 
     private func publicSystemInfo() -> StubHTTPTransport.Reply {
-        .encoded(PublicSystemInfo(id: id, serverName: name, version: "10.10.7"))
+        .encoded(PublicSystemInfo(id: id, serverName: name, version: state.withLock { $0.version }))
     }
 
     private func authenticate(_ exchange: StubHTTPTransport.Exchange) -> StubHTTPTransport.Reply {
@@ -820,6 +829,7 @@ public final class FakeJellyfinServer: Observable, Sendable {
             isFavorite: item.isFavorite,
             isPlayed: item.played,
             itemID: item.id,
+            key: item.id,
             lastPlayedDate: item.lastPlayed,
             playCount: item.played ? 1 : 0,
             playbackPositionTicks: item.positionTicks
@@ -838,11 +848,14 @@ public final class FakeJellyfinServer: Observable, Sendable {
         }
     }
 
-    /// The token rides the Authorization header, or the `api_key` query on the URLs a player
-    /// fetches without headers (streams, subtitles).
+    /// The token rides the `MediaBrowser` Authorization header, or the `ApiKey` query on the URLs a
+    /// player fetches without headers (streams, subtitles). Like Jellyfin 12 with legacy
+    /// authorization off, nothing else counts: no `X-Emby-*` headers, no `api_key`.
     private func authenticatedUser(_ exchange: StubHTTPTransport.Exchange) -> String? {
-        let header = exchange.headers["Authorization"]?.firstMatch(of: /Token=([^,\s]+)/).map { String($0.1) }
-        guard let token = header ?? exchange.query("api_key") else { return nil }
+        let header = exchange.headers["Authorization"]
+            .flatMap { $0.hasPrefix("MediaBrowser ") ? $0.firstMatch(of: /Token=([^,\s]+)/) : nil }
+            .map { String($0.1) }
+        guard let token = header ?? exchange.query("ApiKey") else { return nil }
         return state.withLock { $0.tokens[token] }
     }
 

@@ -18,7 +18,7 @@ enum JellyfinLanguageTag {
     ///
     /// Snapshot of every hyphenated lookup code in the server's
     /// `Emby.Server.Implementations/Localization/iso6392.txt` as of Jellyfin
-    /// 10.11 (branch `release-10.11.z`) — re-diff against that file when bumping
+    /// 12.2 (tag `v12.2.0`) — re-diff against that file when bumping
     /// the supported server version. Drift is benign: an unlisted tag persists
     /// as alpha-3 and the resolve-time fallback still bridges it by base language.
     private static let cultureRows: [String: String] = [

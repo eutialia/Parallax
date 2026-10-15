@@ -1,11 +1,12 @@
 import Foundation
+import Get
 import JellyfinAPI
 import ParallaxCore
 
 /// SDK-backed playback client. Builds a fresh JellyfinClient per call exactly
 /// like DefaultJellyfinLibraryClient — cheap value-type config, no shared
 /// mutable state. URL helpers use the public client.url(with:queryAPIKey:) /
-/// client.url(path:) so api_key lands in the query.
+/// client.url(path:) so ApiKey lands in the query.
 public final class DefaultJellyfinPlaybackClient: JellyfinPlaybackClient, Sendable {
     private let session: Session
     private let identity: DeviceIdentity
@@ -137,14 +138,14 @@ public final class DefaultJellyfinPlaybackClient: JellyfinPlaybackClient, Sendab
             container: request.container,
             parameters: params
         )
-        // queryAPIKey: true appends api_key to the query — AVPlayer won't
-        // send the X-Emby-Authorization header on segment fetches.
+        // queryAPIKey: true appends ApiKey to the query — AVPlayer won't
+        // send the Authorization header on segment fetches.
         return client().url(with: videoRequest, queryAPIKey: true)
     }
 
     public func transcodeURL(relativePath: String) -> URL? {
         // The server's transcodingURL already contains every query param,
-        // including api_key. We only resolve it against the server base URL.
+        // including ApiKey. We only resolve it against the server base URL.
         client().url(path: relativePath)
     }
 
@@ -160,7 +161,7 @@ public final class DefaultJellyfinPlaybackClient: JellyfinPlaybackClient, Sendab
             routeFormat: format,
             parameters: params
         )
-        // queryAPIKey: true puts api_key in the query (same as streamURL) so the
+        // queryAPIKey: true puts ApiKey in the query (same as streamURL) so the
         // sidecar fetch authenticates without an auth header.
         return client().url(with: request, queryAPIKey: true)
     }
@@ -238,5 +239,18 @@ public final class DefaultJellyfinPlaybackClient: JellyfinPlaybackClient, Sendab
 
     public func updateUserConfiguration(_ configuration: UserConfiguration) async throws {
         try await client().send(Paths.updateUserConfiguration(userID: userID, configuration))
+    }
+}
+
+/// jellyfin-sdk 3.x dropped this path from its generated `Paths`, but 12.x still serves
+/// `DELETE /Videos/ActiveEncodings`. `package` so `FakeJellyfinServer` routes the same request.
+package extension Paths {
+    static func stopEncodingProcess(deviceID: String, playSessionID: String) -> Request<Void> {
+        Request(
+            path: "/Videos/ActiveEncodings",
+            method: "DELETE",
+            query: [("deviceId", deviceID), ("playSessionId", playSessionID)],
+            id: "StopEncodingProcess"
+        )
     }
 }

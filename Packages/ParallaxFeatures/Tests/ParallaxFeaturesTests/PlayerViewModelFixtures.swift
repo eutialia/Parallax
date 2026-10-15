@@ -299,7 +299,7 @@ enum PlayerFixtures {
     ) -> ResolvedPlayback {
         ResolvedPlayback(
             itemID: itemID,
-            url: URL(string: "https://jf.example.com/Videos/\(itemID)/stream.m3u8?api_key=abc")!,
+            url: URL(string: "https://jf.example.com/Videos/\(itemID)/stream.m3u8?ApiKey=abc")!,
             method: .directPlay,
             container: .mp4,
             videoCodec: .h264,
@@ -328,7 +328,7 @@ enum PlayerFixtures {
     static func resolvedTranscodedMKV() -> ResolvedPlayback {
         ResolvedPlayback(
             itemID: "movie-1",
-            url: URL(string: "https://jf.example.com/videos/movie-1/master.m3u8?api_key=abc")!,
+            url: URL(string: "https://jf.example.com/videos/movie-1/master.m3u8?ApiKey=abc")!,
             method: .transcode,
             container: .mkv,
             videoCodec: .av1,
@@ -352,7 +352,7 @@ enum PlayerFixtures {
         startTime: CMTime? = nil,
         defaultSubtitleStreamIndex: Int? = 1,
         burnInDeliveryMethod: String? = "Encode",
-        chineseSidecarURL: URL = URL(string: "https://jf.example.com/Videos/movie-1/ms-1/Subtitles/1/Stream.vtt?api_key=abc&copyTimestamps=true")!,
+        chineseSidecarURL: URL = URL(string: "https://jf.example.com/Videos/movie-1/ms-1/Subtitles/1/Stream.vtt?ApiKey=abc&copyTimestamps=true")!,
         playSessionID: String = "ps-1"
     ) -> ResolvedPlayback {
         func audio(_ i: Int, _ title: String) -> MediaStreamInfo {
@@ -370,7 +370,7 @@ enum PlayerFixtures {
         }
         return ResolvedPlayback(
             itemID: "movie-1",
-            url: URL(string: "https://jf.example.com/videos/movie-1/master.m3u8?api_key=abc")!,
+            url: URL(string: "https://jf.example.com/videos/movie-1/master.m3u8?ApiKey=abc")!,
             method: .transcode,
             container: .mkv,
             videoCodec: .hevc,
@@ -404,7 +404,7 @@ enum PlayerFixtures {
     static func resolvedVC1MKV(audioCodec: AudioCodec = .dts, itemID: String = "movie-2") -> ResolvedPlayback {
         ResolvedPlayback(
             itemID: itemID,
-            url: URL(string: "https://jf.example.com/Videos/movie-2/stream.mkv?api_key=abc")!,
+            url: URL(string: "https://jf.example.com/Videos/movie-2/stream.mkv?ApiKey=abc")!,
             method: .directPlay,
             container: .mkv,
             videoCodec: .vc1,
@@ -424,7 +424,7 @@ enum PlayerFixtures {
     static func resolvedDirectPlayExternalSub() -> ResolvedPlayback {
         ResolvedPlayback(
             itemID: "movie-1",
-            url: URL(string: "https://jf.example.com/Videos/movie-1/stream.mkv?api_key=abc")!,
+            url: URL(string: "https://jf.example.com/Videos/movie-1/stream.mkv?ApiKey=abc")!,
             method: .directPlay,
             container: .mkv,
             videoCodec: .vc1,       // routes to .vlcKit, like the reported case
@@ -440,7 +440,7 @@ enum PlayerFixtures {
             defaultAudioStreamIndex: nil,
             defaultSubtitleStreamIndex: 2,
             subtitleStreamURLs: [
-                2: URL(string: "https://jf.example.com/Videos/movie-1/ms-1/Subtitles/2/Stream.vtt?api_key=abc&copyTimestamps=true")!
+                2: URL(string: "https://jf.example.com/Videos/movie-1/ms-1/Subtitles/2/Stream.vtt?ApiKey=abc&copyTimestamps=true")!
             ]
         )
     }
@@ -450,12 +450,12 @@ enum PlayerFixtures {
     /// image stream (index 3, no URL — the server can only burn those in). The shape
     /// the "embedded text renders client-side on direct play" contract is about.
     static func resolvedDirectPlayEmbeddedSubs(
-        textURL: URL = URL(string: "https://jf.example.com/Videos/movie-1/ms-1/Subtitles/2/Stream.srt?api_key=abc")!,
-        secondTextURL: URL = URL(string: "https://jf.example.com/Videos/movie-1/ms-1/Subtitles/4/Stream.srt?api_key=abc")!
+        textURL: URL = URL(string: "https://jf.example.com/Videos/movie-1/ms-1/Subtitles/2/Stream.srt?ApiKey=abc")!,
+        secondTextURL: URL = URL(string: "https://jf.example.com/Videos/movie-1/ms-1/Subtitles/4/Stream.srt?ApiKey=abc")!
     ) -> ResolvedPlayback {
         ResolvedPlayback(
             itemID: "movie-1",
-            url: URL(string: "https://jf.example.com/Videos/movie-1/stream.mkv?api_key=abc")!,
+            url: URL(string: "https://jf.example.com/Videos/movie-1/stream.mkv?ApiKey=abc")!,
             method: .directPlay,
             container: .mkv,
             videoCodec: .vc1,      // routes to .vlcKit, like a real fansub MKV
@@ -512,7 +512,7 @@ enum PlayerFixtures {
             .sorted { $0.index < $1.index }
         return ResolvedPlayback(
             itemID: "movie-1",
-            url: URL(string: "https://jf.example.com/Videos/movie-1/stream.mkv?api_key=abc")!,
+            url: URL(string: "https://jf.example.com/Videos/movie-1/stream.mkv?ApiKey=abc")!,
             method: .directPlay,
             container: .mkv,
             videoCodec: .vc1,      // routes to .vlcKit
@@ -527,7 +527,7 @@ enum PlayerFixtures {
             // explicitly, and an auto-armed default would move first.
             defaultSubtitleStreamIndex: defaultSubtitleStreamIndex,
             subtitleStreamURLs: Dictionary(uniqueKeysWithValues: text.keys.map {
-                ($0, URL(string: "https://jf.example.com/Subtitles/\($0)/Stream.srt?api_key=abc")!)
+                ($0, URL(string: "https://jf.example.com/Subtitles/\($0)/Stream.srt?ApiKey=abc")!)
             })
         )
     }
@@ -554,7 +554,7 @@ enum PlayerFixtures {
     static func resolvedVP9WebM() -> ResolvedPlayback {
         ResolvedPlayback(
             itemID: "movie-2",
-            url: URL(string: "https://jf.example.com/Videos/movie-2/stream.webm?api_key=abc")!,
+            url: URL(string: "https://jf.example.com/Videos/movie-2/stream.webm?ApiKey=abc")!,
             method: .directPlay,
             container: .webm,
             videoCodec: .vp9,

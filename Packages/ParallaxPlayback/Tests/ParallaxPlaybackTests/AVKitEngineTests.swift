@@ -57,21 +57,21 @@ struct PlaybackEngineStreamContractTests {
 }
 
 /// `redactedTail` is the only thing that ever writes an HLS resource URI into a log,
-/// and the api_key rides in that URI's query — so dropping the query is a security
+/// and the ApiKey rides in that URI's query — so dropping the query is a security
 /// contract, not cosmetics.
 @Suite("AVKitEngine — HLS error-log redaction")
 @MainActor
 struct AVKitLogRedactionTests {
 
     @Test("names the resource, drops the query and the item id", arguments: [
-        ("https://jf.example.com/Videos/abc/main.m3u8?api_key=SECRET", "Videos/abc/main.m3u8"),
-        ("https://jf.example.com/Videos/abc/hls1/main/123.mp4?api_key=SECRET&x=1", "hls1/main/123.mp4"),
+        ("https://jf.example.com/Videos/abc/main.m3u8?ApiKey=SECRET", "Videos/abc/main.m3u8"),
+        ("https://jf.example.com/Videos/abc/hls1/main/123.mp4?ApiKey=SECRET&x=1", "hls1/main/123.mp4"),
         ("https://jf.example.com/master.m3u8", "master.m3u8"),
         // The real shape. Two components were not enough: a Jellyfin segment URI spends one of
         // them on `main`, so `47.mp4` arrived without the `hls1/main` that says it is a media
         // segment and not an init one — and a playlist URI spent both on a 32-hex item id.
         (
-            "https://jf.example.com/Videos/a1b2c3d4e5f60718293a4b5c6d7e8f90/hls1/main/47.mp4?api_key=SECRET",
+            "https://jf.example.com/Videos/a1b2c3d4e5f60718293a4b5c6d7e8f90/hls1/main/47.mp4?ApiKey=SECRET",
             "hls1/main/47.mp4"
         ),
         (
@@ -602,7 +602,7 @@ struct AVKitWatchdogExpiryTests {
         #expect(info.errorLogDetail != "none", "the diagnosis reported no HLS errors at all")
         #expect(info.errorLogDetail.contains("main.m3u8"), "the failing request went unnamed")
         #expect(info.errorLogDetail.contains("status="))
-        // The log may never carry a query — that is where the api_key rides.
+        // The log may never carry a query — that is where the ApiKey rides.
         #expect(!info.errorLogDetail.contains("?"))
     }
 

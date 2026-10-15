@@ -57,6 +57,7 @@ struct SessionManagerQuickConnectTests {
     )
     func streamFailureClassification(failure: QuickConnectFailure, expected: QuickConnectStatus) async throws {
         let harness = SessionManagerHarness()
+        harness.client.publicSystemInfoResult = .success(SessionManagerHarness.publicInfo())
         harness.client.quickConnectEventsToYield = [
             .success(.polling(code: "AB12")),
             .failure(failure.error),
@@ -98,6 +99,28 @@ struct SessionManagerQuickConnectTests {
         #expect(harness.client.quickConnectSignInCalls.isEmpty)
     }
 
+    /// An unreachable server, or one older than Jellyfin 12, fails before Quick Connect starts: no
+    /// code is shown for a sign-in that can't succeed.
+    @Test(
+        "An unreachable or too-old server fails before a code is requested",
+        arguments: [
+            (Result<PublicSystemInfo, Error>.failure(URLError(.cannotFindHost)),
+             AppError.network(URLError(.cannotFindHost)).userMessage),
+            (.success(SessionManagerHarness.publicInfo(version: "11.0.3")),
+             "Parallax needs Jellyfin 12 or newer. This server runs 11.0.3."),
+        ]
+    )
+    func failureBeforeCode(publicInfo: Result<PublicSystemInfo, Error>, reason: String) async throws {
+        let harness = SessionManagerHarness()
+        harness.client.publicSystemInfoResult = publicInfo
+        harness.client.quickConnectEventsToYield = [.success(.polling(code: "AB12"))]
+
+        let collected = await statuses(of: harness)
+
+        #expect(collected == [.failed(reason: reason)])
+        #expect(await harness.store.sessions.isEmpty)
+    }
+
     /// The secret was approved but a later step failed. The code is spent, so each is a plain
     /// failure with its mapped reason, not an expiry the user can retry by re-approving. A
     /// composition failure (a response with no server id) must not yield a half-built `.signedIn`.
@@ -108,9 +131,7 @@ struct SessionManagerQuickConnectTests {
         switch failure {
         case .exchange:
             harness.client.quickConnectSignInResult = .failure(URLError(.timedOut))
-        case .publicInfo:
-            harness.client.quickConnectSignInResult = .success(SessionManagerHarness.authResult(accessToken: "tok-qc"))
-            harness.client.publicSystemInfoResult = .failure(URLError(.cannotFindHost))
+            harness.client.publicSystemInfoResult = .success(SessionManagerHarness.publicInfo())
         case .composition:
             harness.client.quickConnectSignInResult = .success(
                 SessionManagerHarness.authResult(accessToken: "tok-qc", serverID: nil)
@@ -125,12 +146,11 @@ struct SessionManagerQuickConnectTests {
     }
 
     enum PostApprovalFailure: CaseIterable, Sendable {
-        case exchange, publicInfo, composition
+        case exchange, composition
 
         var expectedReason: String {
             switch self {
             case .exchange: AppError.network(URLError(.timedOut)).userMessage
-            case .publicInfo: AppError.network(URLError(.cannotFindHost)).userMessage
             case .composition: AppError.unexpected("", underlying: nil).userMessage
             }
         }

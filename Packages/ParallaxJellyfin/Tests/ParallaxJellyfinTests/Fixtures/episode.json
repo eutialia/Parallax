@@ -14,6 +14,7 @@
     "ParentPrimaryImageTag": "season-primary-1",
     "SeriesPrimaryImageTag": "series-primary-1",
     "UserData": {
+        "Key": "episode-uuid-1",
         "Played": true,
         "PlaybackPositionTicks": 0,
         "PlayCount": 1,

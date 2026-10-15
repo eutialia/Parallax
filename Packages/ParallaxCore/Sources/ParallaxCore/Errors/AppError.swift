@@ -10,6 +10,8 @@ public enum AppError: Error, Sendable {
     case auth(AuthFailure)
     /// The server returned a non-success status; `message` is its text, if any.
     case server(statusCode: Int, message: String?)
+    /// The server runs a Jellyfin older than Parallax supports; `version` is what it reported.
+    case serverTooOld(version: String?)
     /// The media source couldn't be resolved or prepared — see `SourceFailure`.
     case source(SourceFailure)
     /// Playback itself failed — see `PlaybackFailure`.
@@ -34,6 +36,9 @@ public enum AppError: Error, Sendable {
             return failure.userMessage
         case .server:
             return "Your server returned an error. Try again in a moment."
+        case .serverTooOld(let version):
+            return "Parallax needs Jellyfin 12 or newer. "
+                + (version.map { "This server runs \($0)." } ?? "This server didn't report its version.")
         case .source(let failure):
             return failure.userMessage
         case .playback(let failure):
@@ -51,6 +56,8 @@ public enum AppError: Error, Sendable {
             return "auth: \(failure)"
         case .server(let statusCode, let message):
             return "server: HTTP \(statusCode) \(message ?? "")"
+        case .serverTooOld(let version):
+            return "serverTooOld: \(version ?? "no version")"
         case .source(let failure):
             return "source: \(failure)"
         case .playback(let failure):

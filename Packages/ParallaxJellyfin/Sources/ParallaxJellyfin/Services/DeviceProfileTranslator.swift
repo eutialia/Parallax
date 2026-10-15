@@ -133,18 +133,6 @@ enum DeviceProfileTranslator {
             // size/position/color later — so the server must NOT embed a legible
             // group for AVPlayer to auto-select underneath it.
             enableSubtitlesInManifest: false,
-            // Startup-latency knobs, matching Swiftfin's native-AVPlayer profile.
-            // BreakOnNonKeyFrames matters most on the REMUX path (MKV+HEVC →
-            // stream-copy to HLS): with no re-encode the segmenter can't force
-            // keyframes, so without this flag every segment cut waits for the
-            // source's long-GOP keyframes — the playlist (gated on MinSegments
-            // segments existing) takes several GOPs to appear on a 4K movie.
-            // AVPlayer handles segments that open mid-GOP.
-            // The server marks BreakOnNonKeyFrames [Obsolete] and effectively
-            // always-false internally as of 10.9+ (it derives the behavior
-            // itself now); kept here for pre-10.9 servers still honoring the
-            // client hint — Swiftfin's native-AVPlayer profile does the same.
-            isBreakOnNonKeyFrames: true,
             // Request up to 7.1 (8ch) on every transcode. Audio channel layout
             // is output-side: iOS/tvOS hand AVPlayer the full multichannel bed
             // and downmix for the speaker / spatialize for AirPods / re-render

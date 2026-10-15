@@ -3029,7 +3029,7 @@ struct PlayerViewModelTests {
         // The resolve hands out an ORIGINAL-format URL (authored styling preserved)…
         // No server default: the auto-activation on start() would otherwise run the
         // same fetch+fallback pair once before the explicit pick below.
-        let assURL = URL(string: "https://jf.example.com/Videos/movie-1/ms-1/Subtitles/1/Stream.ass?api_key=abc")!
+        let assURL = URL(string: "https://jf.example.com/Videos/movie-1/ms-1/Subtitles/1/Stream.ass?ApiKey=abc")!
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode(
             defaultSubtitleStreamIndex: nil,
             chineseSidecarURL: assURL
@@ -3055,7 +3055,7 @@ struct PlayerViewModelTests {
 
         // Exactly one retry, extension swapped, auth query preserved.
         #expect(fetchedURLs.map(\.lastPathComponent) == ["Stream.ass", "Stream.vtt"])
-        #expect(fetchedURLs.last?.query?.contains("api_key") == true)
+        #expect(fetchedURLs.last?.query?.contains("ApiKey") == true)
         #expect(vm.sidecarSubtitleInfo == SidecarSubtitleInfo(format: .vtt, byteCount: vtt.count))
         #expect(vm.subtitleRenderer != nil)
     }
@@ -3101,7 +3101,7 @@ struct PlayerViewModelTests {
     @Test("an authored sidecar loads and is never given a style override")
     func authoredSidecarTakesNoOverride() async throws {
         let engine = FakePlaybackEngine(id: .avKit, capabilities: .avKit)
-        let assURL = URL(string: "https://jf.example.com/Videos/movie-1/ms-1/Subtitles/1/Stream.ass?api_key=abc")!
+        let assURL = URL(string: "https://jf.example.com/Videos/movie-1/ms-1/Subtitles/1/Stream.ass?ApiKey=abc")!
         let resolved = PlayerFixtures.resolvedMultiTrackTranscode(
             defaultSubtitleStreamIndex: nil, chineseSidecarURL: assURL
         )

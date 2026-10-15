@@ -4,7 +4,7 @@ import ParallaxCore
 
 public struct PlayableAsset: Sendable {
     public let url: URL
-    public let headers: [String: String]?         // nil for AVKit (auth via api_key query param)
+    public let headers: [String: String]?         // nil for AVKit (auth via ApiKey query param)
     public let hints: PlaybackHints
     public let startTime: CMTime?
     /// Authoritative server-side track metadata used to label the engine's
