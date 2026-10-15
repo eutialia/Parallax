@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import ParallaxTestScaling
 import ParallaxJellyfin
 @testable import ParallaxFeatures
 
@@ -38,7 +39,7 @@ private let credentialCases: [SMBCredentialCase] = [
     ),
 ]
 
-@Suite("SMBServerData credential options", .timeLimit(.minutes(1)))
+@Suite("SMBServerData credential options", .scaledTimeLimit())
 struct SMBCredentialOptionsTests {
     @Test(
         "vlcCredentialOptions serializes user/password/domain in that fixed order",

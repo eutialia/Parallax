@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import ParallaxTestScaling
 import ParallaxFileBrowse
 @testable import ParallaxFeatures
 
@@ -11,7 +12,7 @@ import ParallaxFileBrowse
 /// gate continuations: a regression that never resumes a waiter fails its own test instead of
 /// wedging the run (it sits above the CI-scaled `waitUntil` ceiling, which stays the first
 /// reporter).
-@Suite("ThumbnailGate", .timeLimit(.minutes(3)))
+@Suite("ThumbnailGate", .scaledTimeLimit(minutes: 3))
 struct ThumbnailGateTests {
 
     private let testHost = "host"

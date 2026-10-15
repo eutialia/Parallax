@@ -1,9 +1,10 @@
 import ParallaxFeatures
 import ParallaxJellyfinTestSupport
 import Testing
+import ParallaxTestScaling
 
 @MainActor
-@Suite("Sign in", .timeLimit(.minutes(1)))
+@Suite("Sign in", .scaledTimeLimit())
 struct SignInScenarios {
     @Test("signing in from login moves to home and replays the launch reveal over its first boot")
     func signingInMovesLoginToHome() async throws {

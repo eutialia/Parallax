@@ -2,9 +2,10 @@ import ParallaxCore
 @testable import ParallaxFeatures
 import ParallaxJellyfinTestSupport
 import Testing
+import ParallaxTestScaling
 
 @MainActor
-@Suite("Search", .timeLimit(.minutes(1)))
+@Suite("Search", .scaledTimeLimit())
 struct SearchScenarios {
     @Test("typing a query shows nothing until the typing settles, then the matches")
     func resultsArriveAfterTheDebounce() async throws {

@@ -2,9 +2,10 @@ import ParallaxCore
 import ParallaxFeatures
 import ParallaxJellyfinTestSupport
 import Testing
+import ParallaxTestScaling
 
 @MainActor
-@Suite("Favorites", .timeLimit(.minutes(1)))
+@Suite("Favorites", .scaledTimeLimit())
 struct FavoritesScenarios {
     @Test("favorites from two servers show as one section per server, each in its server's order")
     func sectionPerServer() async throws {

@@ -1,10 +1,11 @@
 import Testing
+import ParallaxTestScaling
 import Foundation
 import ParallaxCore
 import ParallaxJellyfin
 @testable import ParallaxFeatures
 
-@Suite("Grouped library list", .timeLimit(.minutes(1)))
+@Suite("Grouped library list", .scaledTimeLimit())
 @MainActor
 struct MergedLibraryTests {
     // MARK: - Fixtures

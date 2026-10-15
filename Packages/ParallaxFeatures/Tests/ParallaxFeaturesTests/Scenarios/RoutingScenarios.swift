@@ -4,11 +4,12 @@ import ParallaxFileBrowse
 import ParallaxJellyfin
 import ParallaxJellyfinTestSupport
 import Testing
+import ParallaxTestScaling
 
 /// What a change of sources does to the rest of the app, asserted the moment the change returns:
 /// a step the user takes right after must find it already in place.
 @MainActor
-@Suite("Routing", .timeLimit(.minutes(1)))
+@Suite("Routing", .scaledTimeLimit())
 struct RoutingScenarios {
     @Test("signing out of the last server lands on login with Home and the library list already empty")
     func loginClearsHomeAndLibraries() async throws {

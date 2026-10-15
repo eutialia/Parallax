@@ -4,6 +4,7 @@ import ParallaxCore
 import ParallaxCoreTestSupport
 import ParallaxJellyfin
 import Testing
+import ParallaxTestScaling
 @testable import ParallaxFeatures
 
 /// The hostile timing behind the focus bug, pinned so it can't drift silently.
@@ -19,7 +20,7 @@ import Testing
 /// until the episodes land, this test fails — and that's the point: the reorder invalidates the
 /// premise `SeriesPlayActionTests`' "episodes still in flight" case is defending, so it should
 /// force a look rather than quietly leaving that case guarding nothing.
-@Suite("SeriesDetailViewModel.load() publishes .loaded before the episodes", .timeLimit(.minutes(1)))
+@Suite("SeriesDetailViewModel.load() publishes .loaded before the episodes", .scaledTimeLimit())
 @MainActor
 struct SeriesDetailViewModelLoadOrderTests {
 

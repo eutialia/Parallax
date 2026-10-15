@@ -1,6 +1,7 @@
 import Foundation
 import CoreMedia
 import Testing
+import ParallaxTestScaling
 @testable import ParallaxFeatures
 import ParallaxPlayback
 import ParallaxPlaybackTestSupport
@@ -17,7 +18,7 @@ private enum OutroAdjacency: String, CaseIterable, CustomTestStringConvertible {
 /// detection (Skip Intro / Next Episode prompt), the skip seek, and episode
 /// succession (manual prev/next + end-of-video auto-advance). The data layer is
 /// covered in ParallaxJellyfin's MediaSegmentTests.
-@Suite("PlayerViewModel segments & succession", .timeLimit(.minutes(1)))
+@Suite("PlayerViewModel segments & succession", .scaledTimeLimit())
 @MainActor
 struct PlayerViewModelSegmentTests {
     private func playing(_ seconds: Double) -> PlaybackState {

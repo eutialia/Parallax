@@ -1,9 +1,10 @@
 import Testing
+import ParallaxTestScaling
 import ParallaxPlaybackTestSupport
 import ParallaxPlayback
 
 /// The double every scenario drives runs the same stream contract the real engines pass.
-@Suite("FakePlaybackEngine — PlaybackEngine stream contract", .timeLimit(.minutes(1)))
+@Suite("FakePlaybackEngine — PlaybackEngine stream contract", .scaledTimeLimit())
 @MainActor
 struct FakePlaybackEngineContractTests {
     private func makeEngine() -> FakePlaybackEngine {

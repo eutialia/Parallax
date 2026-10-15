@@ -2,6 +2,7 @@ import Foundation
 import AVFoundation
 import CoreMedia
 import Testing
+import ParallaxTestScaling
 import ParallaxPlaybackTestSupport
 @testable import ParallaxPlayback
 
@@ -35,7 +36,7 @@ enum AVKitFixtures {
 // `.timeLimit`: `teardownFinishesStream` awaits a terminal nil from a real engine's stream.
 // Swift Testing applies no default timeout, so an engine that never finishes its continuation
 // wedges the whole run instead of failing its own test.
-@Suite("PlaybackEngine stream contract", .timeLimit(.minutes(1)))
+@Suite("PlaybackEngine stream contract", .scaledTimeLimit())
 @MainActor
 struct PlaybackEngineStreamContractTests {
 
@@ -108,7 +109,7 @@ struct AVKitLogRedactionTests {
 // `.timeLimit`: every test here drains a real AVFoundation state stream until `.ready`. A
 // simulator with a wedged mediaserverd (or a fixture that failed to copy) publishes neither
 // beat, and `await iterator.next()` would suspend forever.
-@Suite("AVKitEngine — assets that render their own subtitles", .serialized, .timeLimit(.minutes(1)))
+@Suite("AVKitEngine — assets that render their own subtitles", .serialized, .scaledTimeLimit())
 @MainActor
 struct AVKitSubtitleSuppressionTests {
 
@@ -204,7 +205,7 @@ struct AVKitSubtitleSuppressionTests {
 /// 3-second fixture: the question is what AVFoundation does, which no fake can answer.
 // `.timeLimit`: each test drains a real AVFoundation stream until `.ready`; a wedged
 // mediaserverd would otherwise suspend forever.
-@Suite("AVKitEngine — the seek-settle contract", .serialized, .timeLimit(.minutes(1)))
+@Suite("AVKitEngine — the seek-settle contract", .serialized, .scaledTimeLimit())
 @MainActor
 struct AVKitSeekSettleTests {
 
@@ -442,7 +443,7 @@ struct AVKitSeekSettleTests {
 /// they fire is the whole diagnosis the user and the log get. The expiries are driven directly
 /// rather than waited out — `LoadWatchdog`'s own contract suite already covers the timer; this is
 /// about the beat it produces.
-@Suite("AVKitEngine — watchdog expiries", .serialized, .timeLimit(.minutes(1)))
+@Suite("AVKitEngine — watchdog expiries", .serialized, .scaledTimeLimit())
 @MainActor
 struct AVKitWatchdogExpiryTests {
 
@@ -653,7 +654,7 @@ enum SupersededCallback: String, CaseIterable, CustomTestStringConvertible {
 /// The race cannot be held open against real AVFoundation, so the superseded session is captured
 /// and its callbacks delivered by hand. Everything around them is the real engine.
 // `.timeLimit`: each case drains a real AVFoundation stream until the new item is `.ready`.
-@Suite("AVKitEngine — a superseded session publishes nothing", .serialized, .timeLimit(.minutes(2)))
+@Suite("AVKitEngine — a superseded session publishes nothing", .serialized, .scaledTimeLimit(minutes: 2))
 @MainActor
 struct AVKitSupersededSessionTests {
 

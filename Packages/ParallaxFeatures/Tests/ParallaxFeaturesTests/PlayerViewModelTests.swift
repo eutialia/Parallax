@@ -57,7 +57,7 @@ private let deliveryShapes = [
                       transcodeReasons: ["VideoCodecNotSupported"]),
 ]
 
-@Suite("PlayerViewModel integration", .timeLimit(.minutes(1)))
+@Suite("PlayerViewModel integration", .scaledTimeLimit())
 @MainActor
 struct PlayerViewModelTests {
     @Test("resolves, selects .avKit, loads + plays, maps states, emits beats in order")
@@ -4761,7 +4761,7 @@ struct PlayerViewModelTests {
     /// and asserting it through the live `MPNowPlayingInfoCenter` made them answerable by
     /// whatever else had touched the singleton. The controller's own cases, for which the info
     /// center IS the subject, stay app-hosted (`NowPlayingControllerTests`).
-    @Suite("NowPlaying", .timeLimit(.minutes(1)))
+    @Suite("NowPlaying", .scaledTimeLimit())
     @MainActor
     struct NowPlayingTests {
         @Test("PlayerViewModel publishes title/elapsed/rate to Now Playing on .playing")
@@ -4818,7 +4818,7 @@ struct PlayerViewModelTests {
     /// `PlayerViewModel.backfillDelay` later, that lands in the app's `MediaArtworkProvider`
     /// sink. These tests drive the seam directly (never a real `MediaArtworkProvider`) and run
     /// the delay out on a `TestClock`.
-    @Suite("SMB thumbnail backfill", .timeLimit(.minutes(1)))
+    @Suite("SMB thumbnail backfill", .scaledTimeLimit())
     @MainActor
     struct SMBThumbnailBackfillTests {
         /// The backfill's delay runs on this; nothing else parks on an SMB session's clock.
@@ -5024,7 +5024,7 @@ struct PlayerViewModelTests {
 /// has a sidecar URL, so we fetch and draw it ourselves; an image stream has none, so
 /// the only thing that can draw it locally is the engine — and blinding the engine
 /// (`:no-spu`) to protect the sidecars would silently cost the user those tracks.
-@Suite("PlayerViewModel — direct-play subtitle ownership", .timeLimit(.minutes(1)))
+@Suite("PlayerViewModel — direct-play subtitle ownership", .scaledTimeLimit())
 @MainActor
 struct DirectPlaySubtitleOwnershipTests {
 
@@ -5197,7 +5197,7 @@ struct DirectPlaySubtitleOwnershipTests {
 /// ffmpeg on first request), and the panel the pick was made from closes on the same
 /// turn as the tap. So the affordance is armed SYNCHRONOUSLY, by its own method, and
 /// these tests call it exactly the way the view does — with no `await` in sight.
-@Suite("PlayerViewModel — sidecar fetch indicator", .timeLimit(.minutes(1)))
+@Suite("PlayerViewModel — sidecar fetch indicator", .scaledTimeLimit())
 @MainActor
 struct SidecarFetchIndicatorTests {
 
@@ -5351,7 +5351,7 @@ struct SidecarFetchIndicatorTests {
 /// The subtitle-delay nudge is the USER's intent for an ITEM; the engine's copy is
 /// scoped to the input `load()` just replaced. So the view model holds it and re-pushes
 /// it, and an episode change starts level.
-@Suite("PlayerViewModel — subtitle delay ownership", .timeLimit(.minutes(1)))
+@Suite("PlayerViewModel — subtitle delay ownership", .scaledTimeLimit())
 @MainActor
 struct SubtitleDelayOwnershipTests {
 
@@ -5390,7 +5390,7 @@ struct SubtitleDelayOwnershipTests {
 /// The fetch is parked on a gate rather than raced against a sleep: "a slow fetch for the old
 /// item cannot paint the new one's bar" is a statement about ORDERING, and a timing-based
 /// version of it would pass on a fast runner for the wrong reason.
-@Suite("PlayerViewModel — artwork accent lifecycle", .timeLimit(.minutes(1)))
+@Suite("PlayerViewModel — artwork accent lifecycle", .scaledTimeLimit())
 @MainActor
 struct PlayerAccentLifecycleTests {
 

@@ -5,9 +5,10 @@ import ParallaxFileBrowse
 import ParallaxJellyfin
 import ParallaxJellyfinTestSupport
 import Testing
+import ParallaxTestScaling
 
 @MainActor
-@Suite("Offline recovery and foreground return", .timeLimit(.minutes(1)))
+@Suite("Offline recovery and foreground return", .scaledTimeLimit())
 struct RecoveryScenarios {
     private static let nas = SMBServerData(host: "nas.local", username: "ana", domain: "WORKGROUP", shares: ["Media"])
     private static let ref = makeSMBRef(nas)

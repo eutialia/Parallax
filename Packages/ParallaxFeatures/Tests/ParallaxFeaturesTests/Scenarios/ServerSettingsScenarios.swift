@@ -2,9 +2,10 @@ import ParallaxFeatures
 import ParallaxJellyfin
 import ParallaxJellyfinTestSupport
 import Testing
+import ParallaxTestScaling
 
 @MainActor
-@Suite("Server settings", .timeLimit(.minutes(1)))
+@Suite("Server settings", .scaledTimeLimit())
 struct ServerSettingsScenarios {
     @Test("signing out of one of two servers keeps the other active, and the signed-out row offers sign-in again")
     func signOutKeepsTheOtherServer() async throws {

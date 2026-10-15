@@ -1,4 +1,5 @@
 import Testing
+import ParallaxTestScaling
 import ParallaxPlaybackTestSupport
 import ParallaxPlaybackVLCTestSupport
 @testable import ParallaxPlayback
@@ -7,7 +8,7 @@ import ParallaxPlaybackVLCTestSupport
 /// The engine-agnostic `PlaybackEngine` stream contract, run against VLCKit. The AVKit half
 /// lives in ParallaxPlayback.
 // `.timeLimit`: see `PlaybackEngineStreamContractTests` in ParallaxPlayback.
-@Suite("VLCKitEngine — stream contract", .timeLimit(.minutes(1)))
+@Suite("VLCKitEngine — stream contract", .scaledTimeLimit())
 @MainActor
 struct VLCKitEngineStreamContractTests {
 
